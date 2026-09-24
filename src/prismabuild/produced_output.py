@@ -172,8 +172,12 @@ OUTPUT_FRAGMENTS_SUBDIR = "produced-output-fragments"
 #: (#1053): how the attempts that may own an origin path are found without
 #: listing every owner's scopes. `declare_instance` files it before the
 #: instance; the tier loop's origin-retirement tick files it for any scope
-#: that predates the index.
-OUTPUT_TEMPLATE_ATTEMPTS_SUBDIR = "produced-output-template-attempts"
+#: that predates the index. It lives inside `OUTPUT_TEMPLATES_SUBDIR`, which
+#: every residency enumerator skips as a record directory, so an egress or a
+#: census running older code never reads it as an unknown fragment
+#: namespace (#798); a template is filed as ``<template_id>.json``, and a
+#: dotted directory is never one.
+OUTPUT_TEMPLATE_ATTEMPTS_SUBDIR = ".attempts"
 #: Filed in that directory once a tick has indexed every scope it listed.
 #: Until then the attempts are found by listing the scopes themselves.
 ATTEMPT_INDEX_COMPLETE = ".index-complete-v1"
@@ -869,7 +873,8 @@ _PREFIX_REALPATHS: dict[str, str] = {}
 
 
 def _attempts_root(queue_root: str | Path) -> Path:
-    return Path(queue_root) / "residency" / OUTPUT_TEMPLATE_ATTEMPTS_SUBDIR
+    return (Path(queue_root) / "residency" / OUTPUT_TEMPLATES_SUBDIR
+            / OUTPUT_TEMPLATE_ATTEMPTS_SUBDIR)
 
 
 def _index_attempt(queue_root: str | Path, owner_action_key: str,
@@ -1218,8 +1223,14 @@ class _TickReads:
             self._commitments[str(path)] = (version, batches)
         return batches
 
-    def owned(self, scope: Path) -> tuple[dict[str, str], dict[str, str]]:
-        """`_attempt_owned_paths` for one attempt, re-derived only on change."""
+    def owned(self, scope: Path
+              ) -> tuple[object, dict[str, str], dict[str, str]]:
+        """``(fingerprint, committed, prewritten)`` for one attempt.
+
+        `_attempt_owned_paths`, re-derived only when the fingerprint -- the
+        versions of the commitments and of each prewrite record, taken
+        before either is read -- has changed.
+        """
 
         directory = scope / "prewrites"
         try:
@@ -1235,12 +1246,11 @@ class _TickReads:
                              for name in names))
         kept = self._owned.get(str(scope))
         if kept is not None and kept[0] == fingerprint:
-            return kept[1], kept[2]
+            return kept
         committed, prewritten = _attempt_owned_paths(
             self.queue.root, scope, self.batches(scope))
-        if fingerprint[0] is not None:
-            self._owned[str(scope)] = (fingerprint, committed, prewritten)
-        return committed, prewritten
+        self._owned[str(scope)] = (fingerprint, committed, prewritten)
+        return fingerprint, committed, prewritten
 
     def generation(self, owner: str) -> tuple[str, dict[str, object] | None]:
         if owner not in self._generations:
@@ -1288,7 +1298,7 @@ class _TickReads:
             if (owner, template_id, nonce) == mine:
                 continue
             scope = _attempt_scope(self.queue.root, owner, template_id, nonce)
-            committed, prewritten = self.owned(scope)
+            version, committed, prewritten = self.owned(scope)
             if not committed and not prewritten:
                 continue
             state = (_attempt_state(self.generation(owner), nonce)
@@ -1296,6 +1306,8 @@ class _TickReads:
             owners.add(owner, nonce, foreign=owner != mine[0],
                        committed=committed, prewritten=prewritten,
                        state=state)
+            owners.fingerprint.append((owner, template_id, nonce, version,
+                                       state))
         return owners
 
 
@@ -1312,6 +1324,10 @@ class _PathOwners:
     def __init__(self) -> None:
         self._attempts: list[tuple[str, str, bool, dict[str, str],
                                    dict[str, str], str]] = []
+        #: What the answers were read from: each attempt that names a path,
+        #: its records' versions and its state. Equal fingerprints give
+        #: equal answers.
+        self.fingerprint: list[tuple[object, ...]] = []
 
     def add(self, owner: str, nonce: str, *, foreign: bool,
             committed: dict[str, str], prewritten: dict[str, str],
@@ -7099,9 +7115,10 @@ def _ended_prewrite_dispositions(
                 orphaned.append(path)
         if orphaned:
             decided[batch_id] = {"action": "orphaned", "paths": orphaned,
-                                 "superseded": superseded, "held": held}
+                                 "superseded": superseded, "held": held,
+                                 "owners": owners.fingerprint}
         elif held:
-            decided[batch_id] = {"action": "hold"}
+            decided[batch_id] = {"action": "hold", "owners": owners.fingerprint}
         else:
             decided[batch_id] = {"action": "reclaim", "reason": "superseded",
                                  "superseded": superseded}
@@ -7130,6 +7147,41 @@ def _prepaid_intent_names(reads: _TickReads, instance: Mapping[str, object],
                and str(record.get("owner_nonce")) == str(attempt["nonce"])
                and str(record.get("owner_scope_id")) == str(attempt["scope_id"])
                for record in intents)
+
+
+#: What the tick last left in place for an ended attempt's prewrite (#1053),
+#: by the prewrite's report key: ``(inputs, action)``. ``action`` is
+#: ``orphaned``, or ``hold`` for a path another attempt still plans;
+#: ``inputs`` is what it was decided on -- the record's version, the
+#: version of each directory its paths are in (a file created, removed or
+#: renamed there changes it), and the other attempts' claims
+#: (`_PathOwners.fingerprint`). While all of those are unchanged the
+#: decision is too, and the tick neither takes the lock nor ``lstat``s one
+#: path: R13's 28 orphaned prewrites name 3,584 of them, every 5 s. A hold
+#: for a pool funding intent is decided again each cycle.
+_KEPT_PREWRITES: dict[str, tuple[tuple[object, ...], str]] = {}
+
+
+def _prewrite_inputs(record_path: Path, record: Mapping[str, object] | None,
+                     kept_dirs: Sequence[str] | None = None
+                     ) -> tuple[object, ...] | None:
+    """``(record version, directories, their versions)``, or None if unreadable.
+
+    The record's version is taken before the caller reads it and the
+    directories' before any path is ``lstat``ed, so a change that lands
+    between is seen as a change next cycle, never remembered as none.
+    """
+
+    try:
+        version = _file_version(record_path)
+        if kept_dirs is None:
+            paths = (record or {}).get("paths", [])
+            dirs = tuple(sorted({os.path.dirname(str(path)) for path in paths}))
+        else:
+            dirs = tuple(kept_dirs)
+        return (version, dirs, tuple(_file_version(item) for item in dirs))
+    except ProducedOutputError:
+        return None
 
 
 def _sweep_ended_prewrites(queue, instance: Mapping[str, object],
@@ -7172,31 +7224,71 @@ def _sweep_ended_prewrites(queue, instance: Mapping[str, object],
             _UNFILED_REPORTS.pop(key, None)
         return []
     directory = _prewrites_dir(queue.root, instance)
+    # First what is unchanged since the decision the tick last left in
+    # place: no lock, and no path read (`_KEPT_PREWRITES`).
+    owners_now: list[object] = []
+
+    def unchanged(batch_id: str) -> bool:
+        kept = _KEPT_PREWRITES.get(keys[batch_id])
+        if kept is None:
+            return False
+        (version, dirs, dir_versions, owners_then), _action = kept
+        inputs = _prewrite_inputs(directory / f"{batch_id}.prewrite.json",
+                                  None, kept_dirs=dirs)
+        if inputs is None or inputs != (version, dirs, dir_versions):
+            return False
+        if not owners_now:
+            try:
+                owners_now.append(
+                    reads.path_owners(instance, template).fingerprint)
+            except (ProducedOutputError, OSError, ValueError):
+                owners_now.append(None)
+        return owners_now[0] is not None and owners_now[0] == owners_then
+
+    batch_ids = [batch_id for batch_id in batch_ids if not unchanged(batch_id)]
+    if not batch_ids:
+        return []
     staged = not is_write_only(template)
     reports: list[tuple[str, dict[str, object]]] = []
     reclaimed: list[dict[str, object]] = []
     unlinked: list[str] = []
     with queue.stage_ownership_lock(str(instance["output_prefix"])):
         records: dict[str, dict[str, object]] = {}
+        inputs: dict[str, tuple[object, ...] | None] = {}
         for batch_id in batch_ids:
             base = {"prewrite": _batch_report_key(instance, batch_id)}
+            record_path = directory / f"{batch_id}.prewrite.json"
+            version = _prewrite_inputs(record_path, {})
             try:
-                record = _read_prewrite(directory / f"{batch_id}.prewrite.json")
+                record = _read_prewrite(record_path)
             except ProducedOutputError as exc:
+                _KEPT_PREWRITES.pop(keys[batch_id], None)
                 reports.append((batch_id, {
                     "event": ORIGIN_RETIREMENT_REFUSED_EVENT, **base,
                     "reason": "unknown-retain", "detail": str(exc)}))
                 continue
             if record is None:
+                _KEPT_PREWRITES.pop(keys[batch_id], None)
                 _UNFILED_REPORTS.pop(keys[batch_id], None)
                 continue
             records[batch_id] = record
+            # The record's version from before it was read; its directories'
+            # from before any of its paths is.
+            dirs = _prewrite_inputs(record_path, record)
+            inputs[batch_id] = (None if version is None or dirs is None
+                                else (version[0], dirs[1], dirs[2]))
         dispositions = _ended_prewrite_dispositions(
             queue, instance, template, records, reads)
         for batch_id, disposition in dispositions.items():
             base = {"prewrite": _batch_report_key(instance, batch_id),
                     "class_bytes": dict(records[batch_id]["class_bytes"])}
             action = disposition["action"]
+            kept = inputs.get(batch_id)
+            if action in ("orphaned", "hold") and kept is not None:
+                _KEPT_PREWRITES[keys[batch_id]] = (
+                    (*kept, disposition["owners"]), action)
+            else:
+                _KEPT_PREWRITES.pop(keys[batch_id], None)
             if action == "reclaim" and staged:
                 named = _prepaid_intent_names(
                     reads, instance, template, batch_id,

@@ -243,12 +243,14 @@ def test_the_orphan_event_names_what_the_tick_found(tmp_path: Path) -> None:
 
     assert po.origin_retirement_tick(queue) == [{
         "event": ORPHANED, "prewrite": key, "class_bytes": _class_bytes(8),
-        "paths": [str(a), str(b)], "superseded": [], "held": []}]
+        "paths": [str(a), str(b)], "superseded": [], "held": [],
+        "remedy": po.ORPHANED_PREWRITE_REMEDY}]
     assert po.origin_retirement_tick(queue) == []
     a.unlink()
     assert po.origin_retirement_tick(queue) == [{
         "event": ORPHANED, "prewrite": key, "class_bytes": _class_bytes(8),
-        "paths": [str(b)], "superseded": [], "held": []}]
+        "paths": [str(b)], "superseded": [], "held": [],
+        "remedy": po.ORPHANED_PREWRITE_REMEDY}]
     b.unlink()
     assert [e["reason"] for e in po.origin_retirement_tick(queue)] == ["absent"]
 
@@ -376,10 +378,8 @@ def test_an_unreachable_output_prefix_is_never_read_as_absent(
 
     assert [(e["event"], e["reason"]) for e in events] == [
         (po.ORIGIN_RETIREMENT_REFUSED_EVENT, "output-prefix-unreachable")]
-    events = po.origin_retirement_tick(queue)
-    assert [(event["event"], event["reason"]) for event in events] == [
-        (po.ORIGIN_PREWRITE_RECLAIMED_EVENT, "absent")]
-    assert not _record(queue, first).exists()
+    assert po.origin_retirement_tick(queue) == []
+    assert _record(queue, first).exists()
     assert _listed(queue) == []
     parked.rename(prefix)
     assert [e["event"] for e in po.origin_retirement_tick(queue)] == [ORPHANED]

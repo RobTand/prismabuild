@@ -15,7 +15,10 @@ inside the two steps #1053 changes, ``stage_release.sweep`` and
 ``produced_output.origin_retirement_tick``, beside the cycle's own
 ``LAST_CYCLE`` record (its per-step seconds and its kept-record counters).
 The same script runs against the tree before the change and after it; the
-difference is the change's cost.
+difference is the change's cost.  ``--writer`` creates one file in the
+directory every R13 path is in before each steady cycle, as the relaunch
+writing its own batches there does: a cycle that remembers a decision by
+that directory's version decides again.
 
 Run it through PrismaBuild, never on the tier host, and never against the
 live queue::
@@ -113,6 +116,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="where summary.json goes")
     parser.add_argument("--cycles", type=int, default=6,
                         help="cycles to run: one cold, the rest steady")
+    parser.add_argument("--writer", action="store_true",
+                        help="before each cycle after the first, create one "
+                             "file in the directory R13's paths are in, as a "
+                             "relaunch writing there does")
     args = parser.parse_args(argv)
     work = Path(args.work).resolve()
     out = Path(args.out).resolve()
@@ -145,6 +152,7 @@ def main(argv: list[str] | None = None) -> int:
 
     replay = r13_1053_replay.install(queue, prefix=work / "origin" / "adjoint",
                                      stage=stage)
+    entries = Path(next(iter(replay.prewrite_paths.values()))[0]).parent
     shape["r13_batches"] = len(replay.paths)
     shape["r13_prewrites"] = len(replay.prewrites)
     setup_s = time.monotonic() - built
@@ -174,6 +182,8 @@ def main(argv: list[str] | None = None) -> int:
     counter.install()
     rows = []
     for index in range(args.cycles):
+        if args.writer and index:
+            (entries / f"bench-writer-{index}.pt").write_bytes(b"w")
         counter.reset()
         events.clear()
         started = time.perf_counter()
@@ -198,7 +208,7 @@ def main(argv: list[str] | None = None) -> int:
     summary = {
         "checkout": str(HERE.parents[1]), "host": os.uname().nodename,
         "python": sys.version.split()[0], "shape": shape,
-        "setup_s": round(setup_s, 2), "cycles": rows,
+        "setup_s": round(setup_s, 2), "writer": args.writer, "cycles": rows,
         "r13_unretired_after": len(replay.unretired) - retired,
     }
     (out / "summary.json").write_text(json.dumps(summary, indent=1) + "\n")

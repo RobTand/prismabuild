@@ -306,3 +306,62 @@ def test_a_retirement_holds_while_a_live_successors_prewrite_names_the_path(
         "owner_action_key": successor["owner_action_key"],
         "nonce": successor["owner_attempt"]["nonce"], "batch_id": "b1"}}
     assert path.read_bytes() == payload
+
+
+def _private(instance: dict, path: Path) -> Path:
+    tag = hashlib.sha256(po._batch_report_key(
+        instance, "b1").encode()).hexdigest()[:16]
+    return Path(po._retiring_name(str(path), tag))
+
+
+def test_an_interrupted_delete_of_the_committed_file_is_finished(
+        tmp_path: Path) -> None:
+    """A crash after the move aside: the next tick deletes the moved file."""
+
+    template, queue, instance, path = _dead_consumed_batch(tmp_path)
+    private = _private(instance, path)
+    os.rename(path, private)
+
+    events = po.origin_retirement_tick(queue)
+
+    retired = _events(events, po.ORIGIN_RETIRED_EVENT)
+    assert len(retired) == 1 and retired[0]["unlinked"] == [str(path)], events
+    assert not private.exists() and not path.exists()
+
+
+def test_an_interrupted_delete_puts_a_writers_file_back(tmp_path: Path) -> None:
+    """A crash after moving a writer's file aside: the next tick restores it."""
+
+    template, queue, instance, path = _dead_consumed_batch(tmp_path)
+    private = _private(instance, path)
+    _successor_rename(path, b"the successor's bytes")()
+    os.rename(path, private)
+
+    events = po.origin_retirement_tick(queue)
+
+    retired = _events(events, po.ORIGIN_RETIRED_EVENT)
+    assert len(retired) == 1, events
+    assert retired[0]["unlinked"] == [] and retired[0]["superseded"] == [
+        str(path)]
+    assert path.read_bytes() == b"the successor's bytes"
+    assert not private.exists()
+
+
+def test_a_writers_file_displaced_by_a_later_one_is_kept_and_named(
+        tmp_path: Path) -> None:
+    """Two writes since the move aside: nothing is deleted, an operator decides."""
+
+    template, queue, instance, path = _dead_consumed_batch(tmp_path)
+    private = _private(instance, path)
+    _successor_rename(path, b"first")()
+    os.rename(path, private)
+    _successor_rename(path, b"second")()
+
+    events = po.origin_retirement_tick(queue)
+
+    refused = _events(events, po.ORIGIN_RETIREMENT_REFUSED_EVENT)
+    assert len(refused) == 1, events
+    assert refused[0]["reason"].startswith("origin-displaced")
+    assert str(private) in refused[0]["reason"]
+    assert private.read_bytes() == b"first" and path.read_bytes() == b"second"
+    assert po.origin_retirement_tick(queue) == [], "reported once"
