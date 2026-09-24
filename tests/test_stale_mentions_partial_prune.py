@@ -890,7 +890,13 @@ def test_a_symlinked_intermediate_directory_retains(fleet):
 
 
 def test_the_skip_checkpoint_cache_is_bounded(tmp_path, monkeypatch):
-    monkeypatch.setattr(stage_release, "SKIP_CHECKPOINT_MAX_ENTRIES", 1)
+    """One checkpoint per owner the latest sweep discovered, never more.
+
+    The bound is what is on disk, not a literal (#1056): an owner the sweep
+    did not discover is never cached, an owner it stops discovering is
+    forgotten, and a full cache refuses a newcomer rather than evicting.
+    """
+
     stage_release.reset_skip_checkpoints()
     fragment = tmp_path / "fragment.json"
     fragment.write_text("{}")
@@ -899,29 +905,47 @@ def test_the_skip_checkpoint_cache_is_bounded(tmp_path, monkeypatch):
     fragment_version = stage_release._path_version(fragment)
     material_version = stage_release._path_version(material)
     stamps = {str(tmp_path): stage_release._directory_version(tmp_path)}
-    assert stage_release._install_skip_checkpoint(
-        ("tier", "consumer", "mover-1"), fragment_version, material_version,
-        stamps)
-    assert stage_release._install_skip_checkpoint(
-        ("tier", "consumer", "mover-2"), fragment_version, material_version,
-        stamps)
-    assert len(stage_release._skip_checkpoints) == 1, (
-        "the cache must bound its entries")
-    assert not stage_release._skip_checkpoint_hit(
-        ("tier", "consumer", "mover-1"), fragment, material)
-    assert stage_release._skip_checkpoint_hit(
-        ("tier", "consumer", "mover-2"), fragment, material)
-    # The aggregate retained-path budget refuses a candidate that cannot fit.
+    one, two = ("tier", "consumer", "mover-1"), ("tier", "consumer", "mover-2")
+
+    def install(key, **kwargs):
+        return stage_release._install_skip_checkpoint(
+            key, fragment_version, material_version,
+            kwargs.get("stamps", stamps), kwargs.get("documents", {}))
+
+    assert not install(one), "no sweep has discovered this owner"
+    stage_release._retain_skip_checkpoints([one])
+    assert install(one)
+    assert not install(two), "an undiscovered owner is never cached"
+    assert stage_release._skip_checkpoint_hit(one, fragment, material)
+
+    stage_release._retain_skip_checkpoints([one, two])
+    assert install(two)
+    assert set(stage_release._skip_checkpoints) == {one, two}
+    stage_release._retain_skip_checkpoints([two])
+    assert set(stage_release._skip_checkpoints) == {two}, (
+        "an owner the sweep no longer discovers loses its checkpoint")
+    assert not stage_release._skip_checkpoint_hit(one, fragment, material)
+
+    # A full cache refuses; it never evicts the checkpoint it holds.
+    stage_release._retain_skip_checkpoints([one, two])
+    monkeypatch.setattr(stage_release, "_skip_checkpoint_capacity",
+                        lambda discovered: 1)
+    stage_release._retain_skip_checkpoints([one, two])
+    assert not install(one)
+    assert set(stage_release._skip_checkpoints) == {two}
+    assert stage_release._skip_checkpoint_hit(two, fragment, material)
+    monkeypatch.undo()
+
+    # A stamp of None, or co-owner documents never read, is never installed.
     stage_release.reset_skip_checkpoints()
-    monkeypatch.setattr(stage_release, "SKIP_CHECKPOINT_MAX_TOTAL_DIRS", 0)
-    assert not stage_release._install_skip_checkpoint(
-        ("tier", "consumer", "mover-3"), fragment_version, material_version,
-        stamps)
-    # A stamp of None is never installed.
-    monkeypatch.setattr(stage_release, "SKIP_CHECKPOINT_MAX_TOTAL_DIRS", 8192)
-    assert not stage_release._install_skip_checkpoint(
-        ("tier", "consumer", "mover-4"), fragment_version, material_version,
-        {str(tmp_path): None})
+    stage_release._retain_skip_checkpoints([one])
+    assert not install(one, stamps={str(tmp_path): None})
+    assert not install(one, documents=None)
+    assert not install(one, documents={str(fragment): None})
+    assert install(one, documents={str(fragment): fragment_version})
+    usage = stage_release.skip_checkpoint_usage()
+    assert usage["checkpoints"] == 1 and usage["fences"] == 2, usage
     stage_release.reset_skip_checkpoints()
     assert stage_release._skip_checkpoints == {}
-    assert stage_release._skip_checkpoint_usage == {"dirs": 0, "bytes": 0}
+    assert stage_release.skip_checkpoint_usage() == {
+        "checkpoints": 0, "capacity": 0, "fences": 0, "bytes": 0}

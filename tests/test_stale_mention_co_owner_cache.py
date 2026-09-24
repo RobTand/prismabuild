@@ -390,7 +390,8 @@ def test_the_checkpoint_holds_the_live_owner_shape():
     for key in owners:
         count = 2575 if key == ("big",) else 1680
         assert stage_release._install_skip_checkpoint(
-            key, fragment, material, _stamps(str(key), count)), (
+            key, fragment, material, _stamps(str(key), count),
+            documents={}), (
             f"{key}: a discovered owner of {count} entries, one parent "
             f"directory each, must fit")
     assert set(stage_release._skip_checkpoints) == set(owners)

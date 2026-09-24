@@ -197,17 +197,16 @@ LEDGER_UNREADABLE_EVENT = "stage-sweep-ledger-unreadable"
 #: which settles it exactly once.  The receipt says so explicitly.
 STALE_MENTION_EVENT = "stage-stale-mention-pruned"
 
-#: Bounds on the process-local, skip-only checkpoint cache (#853).  An entry
-#: beyond any bound is simply never cached or is forgotten; a forgotten
-#: candidate takes the uncached scan, which is slower, never weaker.  The
-#: aggregate retained-path and path-byte budgets bound the cache as a whole,
-#: not just its entry count.  A checkpoint is only ever installed for an
-#: unchanged, fully coherent owner and may only skip the cleanup scan --
-#: never a mutable-state check, a deletion, or an adoption.
-SKIP_CHECKPOINT_MAX_ENTRIES = 256
-SKIP_CHECKPOINT_MAX_DIRS = 1024
-SKIP_CHECKPOINT_MAX_TOTAL_DIRS = 8192
-SKIP_CHECKPOINT_MAX_TOTAL_BYTES = 1 << 20
+#: The process-local, skip-only checkpoint cache (#853, #1056) is bounded by
+#: what is on disk, not by literals: at most one checkpoint per owner the
+#: dead-owner sweep discovered on its latest pass
+#: (:func:`_retain_skip_checkpoints`), and each checkpoint's fences are the
+#: parent directories of its own fragment's paths plus the co-owner
+#: fragments that name them -- documents the census already holds parsed.
+#: A full cache refuses a newcomer, which then takes the uncached scan
+#: (slower, never weaker), and never evicts an owner the next pass visits.
+#: A checkpoint may only skip the cleanup scan -- never a mutable-state
+#: check, a deletion, or an adoption.
 
 
 def queue_identity(queue: pool.PoolQueue) -> str:
@@ -442,6 +441,8 @@ class _CensusMemo:
         self.sources: dict[tuple, frozenset[str]] = {}
         self.pins = _PinMemo()
         self.materials: dict[str, tuple[tuple, object]] = {}
+        #: A remembered fragment's file, by the parsed document's identity.
+        self.files: dict[int, str] = {}
         self.parses = 0     # fragments and material sidecars parsed
         self.reuses = 0     # fragments and material sidecars reused
 
@@ -468,6 +469,23 @@ class _CensusMemo:
             self.normalized[id(document)] = normalized
         return normalized
 
+    def version_of(self, document: Mapping[str, object],
+                   ) -> tuple[str, tuple] | None:
+        """The file and version a remembered fragment was read from, or ``None``.
+
+        The version is the one the parse, or its latest reuse, was fenced
+        on: ``fstat`` of the descriptor that read it (#1056 fences a skip
+        checkpoint on the co-owner fragments a verdict relied on).
+        """
+
+        key = self.files.get(id(document))
+        if key is None:
+            return None
+        hit = self.fragments.get(key)
+        if hit is None or hit[1] is not document:
+            return None
+        return key, hit[0]
+
     def forget(self, key: str) -> None:
         """Drop one fragment file's parse, and the path set keyed by it."""
 
@@ -475,6 +493,7 @@ class _CensusMemo:
         if old is not None:
             self.paths.pop(id(old[1]), None)
             self.normalized.pop(id(old[1]), None)
+            self.files.pop(id(old[1]), None)
 
 
 class _PinMemo(dict):
@@ -545,6 +564,11 @@ class CensusIndex(_CensusMemo):
         self._files: dict[str, frozenset[str]] = {}
         self.listed = 0       # directories listed
         self.kept = 0         # directories whose listing was reused
+        #: Dead owners whose stale-mention census a skip checkpoint stood
+        #: for, and dead owners censused (#1056): the cycle line counts both,
+        #: because a skip emits no per-owner receipt.
+        self.stale_skipped = 0
+        self.stale_censused = 0
 
     def fresh_pins(self) -> _PinMemo:
         """A pin memo for one call (see the class docstring)."""
@@ -991,6 +1015,7 @@ def _read_fragment(path: Path, memo: _CensusMemo | None = None,
         memo.forget(key)
         memo.fragments[key] = (version, document)
         memo.paths[id(document)] = _fragment_stage_paths(document)
+        memo.files[id(document)] = key
     return document
 
 
@@ -1233,6 +1258,7 @@ def _fragment_owners(root: Path, wanted: set[str], *,
                      except_consumer: str = "",
                      except_mover: str = "",
                      memo: _CensusMemo | None = None,
+                     named_by: list[dict[str, object]] | None = None,
                      ) -> tuple[dict[str, set[tuple[str, str]]], list[str]]:
     """Which of ``wanted`` paths are still vouched for, and by whom, in one walk.
 
@@ -1251,6 +1277,9 @@ def _fragment_owners(root: Path, wanted: set[str], *,
     is the root -- can be this caller's own.  A fragment carrying the same
     key in a nested produced namespace is a *different* owner's copy and
     keeps its protection; "same key" is never automatically self.
+
+    ``named_by``, when given, collects every document that names at least
+    one wanted path: the co-owner fragments a verdict relies on (#1056).
     """
 
     owners: dict[str, set[tuple[str, str]]] = {}
@@ -1262,9 +1291,13 @@ def _fragment_owners(root: Path, wanted: set[str], *,
         if named is not None:
             # The same exact string intersection as below, over the path
             # set the memo built when it parsed this version (#988).
-            for path in named & wanted:
+            shared = named & wanted
+            for path in shared:
                 owners.setdefault(path, set()).add((namespace, mover))
+            if shared and named_by is not None:
+                named_by.append(fragment)
             continue
+        names_one = False
         for entry in dict(fragment["entries"]).values():
             if not isinstance(entry, Mapping):
                 continue
@@ -1273,6 +1306,9 @@ def _fragment_owners(root: Path, wanted: set[str], *,
             # exact with no metadata touch.
             if isinstance(path, str) and path in wanted:
                 owners.setdefault(path, set()).add((namespace, mover))
+                names_one = True
+        if names_one and named_by is not None:
+            named_by.append(fragment)
     return owners, tainted
 
 
@@ -1846,20 +1882,24 @@ def _ownership_census(queue: pool.PoolQueue, mover_action_key: str, *,
     promotion sources: the order :func:`_evict_owned` argues from.  Called
     twice per egress since #988 -- once before the lock as a hint that fills
     ``memo``, and once under it, where the result is acted on.
+    ``co_owner_documents`` are the fragments that name any of ``entries``'
+    paths, for a skip checkpoint to fence on (#1056).
     """
 
     wanted = _wanted_stage_paths(dict(entries))
     claimed, claimed_taint, own_claimed = _claimed_paths_attributed(
         queue, tier_id, own_key=mover_action_key, memo=memo)
+    named_by: list[dict[str, object]] = []
     owners, fragment_taint = _fragment_owners(
         root, wanted,
         except_consumer=consumer_action_key,
-        except_mover=mover_action_key, memo=memo)
+        except_mover=mover_action_key, memo=memo, named_by=named_by)
     pins, pin_taint = reader_lease.live_for(
         queue, wanted, residency_root=root,
         memo=memo.pins if memo is not None else None)
     source_paths, source_taint = _claimed_source_paths(queue, stage, memo=memo)
     return {"claimed": claimed, "own_claimed": own_claimed, "owners": owners,
+            "co_owner_documents": named_by,
             "pins": pins, "source_paths": source_paths,
             "tainted": fragment_taint + claimed_taint + pin_taint + source_taint}
 
@@ -2432,7 +2472,12 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
 
 _skip_checkpoints: dict[tuple, dict[str, object]] = {}
 _skip_checkpoints_lock = threading.Lock()
-_skip_checkpoint_usage = {"dirs": 0, "bytes": 0}
+_skip_checkpoint_usage = {"fences": 0, "bytes": 0}
+#: The owners the dead-owner sweep discovered on its latest pass, as
+#: checkpoint keys, and how many checkpoints that allows
+#: (:func:`_retain_skip_checkpoints`).  Empty until a sweep has run: only an
+#: owner a sweep discovered can be skipped by one.
+_skip_checkpoint_scope: dict[str, object] = {"keys": frozenset(), "capacity": 0}
 
 
 def reset_skip_checkpoints() -> None:
@@ -2440,11 +2485,52 @@ def reset_skip_checkpoints() -> None:
 
     with _skip_checkpoints_lock:
         _skip_checkpoints.clear()
-        _skip_checkpoint_usage["dirs"] = 0
+        _skip_checkpoint_usage["fences"] = 0
         _skip_checkpoint_usage["bytes"] = 0
+        _skip_checkpoint_scope["keys"] = frozenset()
+        _skip_checkpoint_scope["capacity"] = 0
 
 
-def _path_version(path: Path) -> tuple[int, int, int, int, int] | None:
+def skip_checkpoint_usage() -> dict[str, int]:
+    """How many checkpoints, fences and fence path bytes the cache holds."""
+
+    with _skip_checkpoints_lock:
+        return {"checkpoints": len(_skip_checkpoints),
+                "capacity": int(_skip_checkpoint_scope["capacity"]),
+                **_skip_checkpoint_usage}
+
+
+def _skip_checkpoint_capacity(discovered: frozenset) -> int:
+    """How many checkpoints a sweep that discovered ``discovered`` may keep.
+
+    One per discovered owner (#1056).  Not a literal: the owners are the
+    fragments on disk the sweep's census found, and each checkpoint's fences
+    are bounded by its own fragment's entries and the co-owner fragments
+    that name them.
+    """
+
+    return len(discovered)
+
+
+def _retain_skip_checkpoints(discovered) -> None:
+    """Keep only the checkpoints of the owners a sweep just discovered.
+
+    The dead-owner sweep calls this once its discovery completes, before it
+    consults any checkpoint.  An owner it no longer discovers -- evicted,
+    adopted, its fragment gone -- loses its checkpoint here, so what the
+    cache holds follows what is on disk, and the capacity is what this
+    discovery allows.
+    """
+
+    keys = frozenset(discovered)
+    with _skip_checkpoints_lock:
+        for key in [key for key in _skip_checkpoints if key not in keys]:
+            _forget_checkpoint_locked(key)
+        _skip_checkpoint_scope["keys"] = keys
+        _skip_checkpoint_scope["capacity"] = _skip_checkpoint_capacity(keys)
+
+
+def _path_version(path: Path | str) -> tuple[int, int, int, int, int] | None:
     """Change evidence for one regular metadata file, or ``None``."""
 
     try:
@@ -2456,7 +2542,7 @@ def _path_version(path: Path) -> tuple[int, int, int, int, int] | None:
     return _metadata_version(info)
 
 
-def _directory_version(path: Path) -> tuple[int, int, int, int] | None:
+def _directory_version(path: Path | str) -> tuple[int, int, int, int] | None:
     """Change evidence for one immediate parent directory, or ``None``.
 
     ``lstat`` says what the name is, so a symlink or anything else is never a
@@ -2493,65 +2579,86 @@ def _skip_checkpoint_key(queue: pool.PoolQueue, root: Path, stage: Path,
 def _forget_checkpoint_locked(key: tuple) -> None:
     record = _skip_checkpoints.pop(key, None)
     if record is not None:
-        _skip_checkpoint_usage["dirs"] -= int(record["dir_count"])
+        _skip_checkpoint_usage["fences"] -= int(record["fence_count"])
         _skip_checkpoint_usage["bytes"] -= int(record["bytes"])
+
+
+def _co_owner_fences(memo: _CensusMemo,
+                     documents: list[dict[str, object]],
+                     ) -> dict[str, tuple] | None:
+    """The file version of every co-owner fragment a verdict relied on.
+
+    Each is the version the census under the lock read the document at
+    (:meth:`_CensusMemo.version_of`), never a fresh sample, so a co-owner
+    removed or rewritten after that read is seen by the next pass.  ``None``
+    when any document's version is unknown: then nothing may be cached.
+    """
+
+    fences: dict[str, tuple] = {}
+    for document in documents:
+        seen = memo.version_of(document)
+        if seen is None:
+            return None
+        fences[seen[0]] = seen[1]
+    return fences
 
 
 def _install_skip_checkpoint(key: tuple, fragment_version, material_version,
                              stamps: dict[str, tuple[int, int, int, int]],
+                             documents: dict[str, tuple] | None = None,
                              ) -> bool:
-    """Install the EXACT verified versions of one fully coherent owner.
+    """Install the EXACT verified versions of one owner with nothing to act on.
 
-    The caller passes the stamps it sampled around its scan and proved equal;
-    nothing is sampled again here, so a rename that lands between the scan and
-    this call can never be blessed as clean -- the next pass reads the
-    recorded (older) stamp, sees the difference and re-scans.  Every stamp
-    must be present.  The cache is bounded by entries, by total retained paths
-    and by total retained path bytes; overflow forgets the oldest entry and,
-    when a single candidate cannot fit, caches nothing.  A cache entry only
-    ever skips a cleanup scan: it holds no deletion or adoption authority.
+    The caller passes the stamps it sampled around its scan and proved equal,
+    and the co-owner fragment versions its census read (``documents``, which
+    ``None`` refuses); nothing is sampled again here, so a rename that lands
+    between the scan and this call can never be blessed as clean -- the next
+    pass reads the recorded (older) stamp, sees the difference and re-scans.
+    Every stamp must be present.  Only an owner the latest sweep discovered
+    is cached, one checkpoint each (:func:`_retain_skip_checkpoints`); when
+    the cache is full the newcomer is refused and nothing is evicted.  A
+    cache entry only ever skips a cleanup scan: it holds no deletion or
+    adoption authority.
     """
 
     if fragment_version is None or material_version is None or not stamps:
         return False
+    if documents is None:
+        return False
     if any(version is None for version in stamps.values()):
         return False
-    dirs = len(stamps)
-    chars = sum(len(name) for name in stamps)
-    if dirs > SKIP_CHECKPOINT_MAX_DIRS:
+    if any(version is None for version in documents.values()):
         return False
-
-    def over() -> bool:
-        return (_skip_checkpoint_usage["dirs"] + dirs
-                > SKIP_CHECKPOINT_MAX_TOTAL_DIRS
-                or _skip_checkpoint_usage["bytes"] + chars
-                > SKIP_CHECKPOINT_MAX_TOTAL_BYTES
-                or len(_skip_checkpoints) + 1 > SKIP_CHECKPOINT_MAX_ENTRIES)
-
+    fences = len(stamps) + len(documents)
+    chars = sum(len(name) for name in stamps) + sum(len(name) for name in documents)
     with _skip_checkpoints_lock:
         _forget_checkpoint_locked(key)
-        while _skip_checkpoints and over():
-            _forget_checkpoint_locked(next(iter(_skip_checkpoints)))
-        if over():
+        if (key not in _skip_checkpoint_scope["keys"]  # type: ignore[operator]
+                or len(_skip_checkpoints)
+                >= int(_skip_checkpoint_scope["capacity"])):  # type: ignore[arg-type]
             return False
         _skip_checkpoints[key] = {
             "fragment": fragment_version, "material": material_version,
-            "dirs": dict(stamps), "dir_count": dirs, "bytes": chars,
+            "dirs": dict(stamps), "documents": dict(documents),
+            "fence_count": fences, "bytes": chars,
         }
-        _skip_checkpoint_usage["dirs"] += dirs
+        _skip_checkpoint_usage["fences"] += fences
         _skip_checkpoint_usage["bytes"] += chars
     return True
 
 
 def _skip_checkpoint_hit(key: tuple, fragment_path: Path,
                          material_path: Path) -> bool:
-    """Whether an unchanged, fully coherent owner may skip its cleanup scan.
+    """Whether an unchanged owner with nothing to act on may skip its scan.
 
-    Every recorded stamp is re-read; any difference forgets the checkpoint and
-    runs the uncached check, so a rename, a replacement or a metadata rewrite
-    is seen before any skip.  A hit only ever skips the per-entry scan: the
-    owner's terminal, live, lease and plan state were checked before this is
-    consulted, and no deletion, adoption or mutable-state check is skipped.
+    Every recorded stamp is re-read -- this owner's fragment and material,
+    each parent directory of its paths, and each co-owner fragment its
+    verdict relied on; any difference forgets the checkpoint and runs the
+    uncached check, so a rename, a replacement, a removal or a metadata
+    rewrite is seen before any skip.  A hit only ever skips the per-entry
+    scan: the owner's terminal, live, lease and plan state were checked
+    before this is consulted, and no deletion, adoption or mutable-state
+    check is skipped.
     """
 
     with _skip_checkpoints_lock:
@@ -2561,8 +2668,13 @@ def _skip_checkpoint_hit(key: tuple, fragment_path: Path,
     fresh = (_path_version(fragment_path) == record["fragment"]
              and _path_version(material_path) == record["material"])
     if fresh:
+        for name, version in dict(record["documents"]).items():
+            if _path_version(name) != version:
+                fresh = False
+                break
+    if fresh:
         for name, version in dict(record["dirs"]).items():
-            if _directory_version(Path(name)) != version:
+            if _directory_version(name) != version:
                 fresh = False
                 break
     if not fresh:
@@ -2712,8 +2824,18 @@ def prune_stale_mentions(queue: pool.PoolQueue, mover_action_key: str, *,
     The receipt reports committed metadata prunes (only after the fragment
     write succeeds), already-absent entries, entries actually unlinked and
     their bytes, whether the fragment/material pair completed, and that the
-    whole charge was retained.  A fully coherent owner changes nothing and
-    installs the bounded skip checkpoint.
+    whole charge was retained.
+
+    An owner with nothing to act on -- no stale or absent path and no
+    superset material to trim, whether coherent, protected by co-owners, or
+    retained for any reason above -- changes nothing and installs a skip
+    checkpoint (#1056).  It fences this owner's fragment and material, every
+    parent directory of its paths, and every co-owner fragment the census
+    under the lock read, each at the version verified here.  The next pass
+    skips only while all of them are unchanged, and a skip only ever
+    retains, so a removed or rewritten co-owner re-runs this transaction
+    before anything it protected can prune or evict.  An owner with a stale
+    or absent path is never cached, whatever retains it.
     """
 
     fragment_path = residency_map.fragment_path(
@@ -2872,16 +2994,38 @@ def prune_stale_mentions(queue: pool.PoolQueue, mover_action_key: str, *,
         pins = census["pins"]
         source_paths = census["source_paths"]
         tainted = census["tainted"]
+        checkpoint_key = _skip_checkpoint_key(
+            queue, root, stage, tier_id, consumer_action_key, mover_action_key)
+        # The whole owner is retained, whatever its paths say, for any of
+        # these, in the order the transaction has always tested them.  Since
+        # #1056 they no longer end the classification: the path state below
+        # decides whether a skip checkpoint may stand for this owner.  The
+        # checkpoint certifies only that nothing is stale, absent or to trim,
+        # and a skip only ever retains, so a retention reason ending changes
+        # nothing it stands for -- while a stale path under any reason is
+        # never cached, because the retention only postpones its prune.
+        held_reason = ""
+        held_errors: list[str] = []
         if tainted:
-            retained_reason = "ownership-uncertain"
-            errors.extend(f"ownership uncertain: {item}" for item in tainted)
+            held_reason = "ownership-uncertain"
+            held_errors = [f"ownership uncertain: {item}" for item in tainted]
+        elif own_claimed:
+            held_reason = "same-key-claimed"
+        elif pins:
+            held_reason = "live-pin"
+
+        def uncached(reason: str, *why: str) -> dict[str, object]:
+            """Retain the whole owner uncached; the first reason found wins."""
+
+            nonlocal retained_reason
+            if held_reason:
+                retained_reason = held_reason
+                errors.extend(held_errors)
+            else:
+                retained_reason = reason
+                errors.extend(why)
             return receipt(retained=total)
-        if own_claimed:
-            retained_reason = "same-key-claimed"
-            return receipt(retained=total)
-        if pins:
-            retained_reason = "live-pin"
-            return receipt(retained=total)
+
         stage_abs = Path(os.path.abspath(str(stage)))
         overlap_claim = overlap_handoff = False
         contained: dict[str, str] = {}
@@ -2890,11 +3034,10 @@ def prune_stale_mentions(queue: pool.PoolQueue, mover_action_key: str, *,
             state = _containment_state(stage, path)
             contained[key] = state
             if state == "unknown":
-                retained_reason = "ownership-uncertain"
-                errors.append(
+                return uncached(
+                    "ownership-uncertain",
                     f"ownership uncertain: {entry['stage_path']} is not a "
                     f"contained stage path")
-                return receipt(retained=total)
             try:
                 relative = str(Path(os.path.abspath(str(path))).relative_to(
                     stage_abs))
@@ -2908,12 +3051,10 @@ def prune_stale_mentions(queue: pool.PoolQueue, mover_action_key: str, *,
                 resolved = ""
             if resolved in source_paths:
                 overlap_handoff = True
-        if overlap_claim:
-            retained_reason = "live-claim"
-            return receipt(retained=total)
-        if overlap_handoff:
-            retained_reason = "promotion-handoff"
-            return receipt(retained=total)
+        if not held_reason and overlap_claim:
+            held_reason = "live-claim"
+        elif not held_reason and overlap_handoff:
+            held_reason = "promotion-handoff"
         # The verified directory stamps, sampled around the classification
         # scan; nothing is sampled a third time for installation.
         parents = {Path(str(entry["stage_path"])).parent
@@ -2939,13 +3080,12 @@ def prune_stale_mentions(queue: pool.PoolQueue, mover_action_key: str, *,
                 absent.append(key)
                 continue
             except OSError as exc:
-                retained_reason = "ownership-uncertain"
-                errors.append(f"ownership uncertain: {key}: {exc}")
-                return receipt(retained=total)
+                return uncached("ownership-uncertain",
+                                f"ownership uncertain: {key}: {exc}")
             if not statmod.S_ISREG(info.st_mode):
-                retained_reason = "ownership-uncertain"
-                errors.append(f"ownership uncertain: {key} is not a regular file")
-                return receipt(retained=total)
+                return uncached(
+                    "ownership-uncertain",
+                    f"ownership uncertain: {key} is not a regular file")
             if owners.get(norm):
                 # A co-owner's fragment protects the physical file: keep this
                 # entry and its date exactly as they are.
@@ -2962,32 +3102,53 @@ def prune_stale_mentions(queue: pool.PoolQueue, mover_action_key: str, *,
             if live is None or not reader_lease.file_id_matches(
                     bound[key]["file_id"], live):
                 # Same inode, changed in place: divergence, not permission.
-                retained_reason = "ownership-uncertain"
-                errors.append(f"ownership uncertain: {key} changed in place")
-                return receipt(retained=total)
+                return uncached(
+                    "ownership-uncertain",
+                    f"ownership uncertain: {key} changed in place")
         dirs_after = {str(parent): _directory_version(parent) for parent in parents}
         if dirs_before != dirs_after:
-            retained_reason = "ownership-uncertain"
-            errors.append("ownership uncertain: a parent directory changed")
-            return receipt(retained=total)
+            return uncached("ownership-uncertain",
+                            "ownership uncertain: a parent directory changed")
         fragment_version_after = _path_version(fragment_path)
         material_version_after = _path_version(material_path)
         if (fragment_version_after is None or material_version_after is None
                 or fragment_version_after != fragment_version_before
                 or material_version_after != material_version_before):
-            retained_reason = "documents-changed"
-            return receipt(retained=total)
+            return uncached("documents-changed")
+        # What a skip checkpoint fences beyond this owner's own documents and
+        # directories: every co-owner fragment that names one of its paths,
+        # at the version the census under this lock read it (#1056).  One
+        # removed or rewritten re-runs this census on the next pass, where
+        # the file it protected may now prune or evict.
+        co_owner_fences = _co_owner_fences(memo, census["co_owner_documents"])
+        exact_material = set(material_entries) == set(entries)
+        if held_reason:
+            retained_reason = held_reason
+            errors.extend(held_errors)
+            # Idle means a pass without the reason would change nothing:
+            # nothing stale or absent, and no superset material to trim.
+            idle = (not prune and not absent
+                    and (retained_paths > 0 or exact_material))
+            cacheable = idle and _install_skip_checkpoint(
+                checkpoint_key, fragment_version_after,
+                material_version_after, dirs_after, co_owner_fences)
+            return receipt(retained=total, cacheable=cacheable)
         if not prune and not absent:
             if retained_paths:
+                # Protected by co-owners and otherwise coherent: nothing
+                # changes until a document it read does (#1056).
                 retained_reason = "co-owner"
-                return receipt(retained=total)
+                cacheable = _install_skip_checkpoint(
+                    checkpoint_key, fragment_version_after,
+                    material_version_after, dirs_after, co_owner_fences)
+                return receipt(retained=total, cacheable=cacheable)
             # A crash between the fragment and material writes leaves the
             # material a superset.  The strict reader walks every material
             # entry, so the pair is complete only when the material dates
             # exactly the fragment's validated keys: trim it before caching
             # this otherwise-coherent owner, under the same generation.
             material_final_version = material_version_after
-            if set(material_entries) != set(entries):
+            if not exact_material:
                 try:
                     reader_lease.write_material(
                         root, consumer_action_key=consumer_action_key,
@@ -3002,9 +3163,8 @@ def prune_stale_mentions(queue: pool.PoolQueue, mover_action_key: str, *,
                     return receipt(retained=total)
                 material_final_version = _path_version(material_path)
             cacheable = _install_skip_checkpoint(
-                _skip_checkpoint_key(queue, root, stage, tier_id,
-                                     consumer_action_key, mover_action_key),
-                fragment_version_after, material_final_version, dirs_after)
+                checkpoint_key, fragment_version_after,
+                material_final_version, dirs_after, co_owner_fences)
             return receipt(retained=total, cacheable=cacheable)
         if not retained_paths and len(prune) + len(absent) == total:
             # Fully stale and unprotected: the ordinary whole-owner egress is
@@ -3357,6 +3517,12 @@ def sweep_dead_owner_fragments(
     key for the consumers and movers the census names, never listed: the
     three terminal directories hold every action the fleet ever finished
     (38,000 names on 2026-09-23) and a fragment names a few hundred.
+
+    The stale-mention skip checkpoints follow the same discovery (#1056):
+    once it completes, only the owners it found keep a checkpoint, one
+    each, and ``index`` counts the owners a checkpoint skipped
+    (``stale_skipped``) and the owners censused (``stale_censused``) for
+    the cycle line, since a skip files no receipt.
     """
     root = Path(residency_root if residency_root is not None
                 else queue.root / pool.RESIDENCY)
@@ -3412,6 +3578,15 @@ def sweep_dead_owner_fragments(
     except OSError as exc:
         refuse(f"ownership uncertain: queue census: {exc}")
         return receipts
+    # Discovery is complete: the skip checkpoints kept are exactly those of
+    # the owners it found (#1056), so an owner that left -- evicted, adopted,
+    # its fragment gone -- stops holding a place in the cache, and the cache
+    # holds at most one checkpoint per owner on disk.
+    _retain_skip_checkpoints(
+        _skip_checkpoint_key(queue, root, Path(stage_roots[str(fragment["tier_id"])]),
+                             str(fragment["tier_id"]), consumer, mover)
+        for consumer, children in candidates.items()
+        for mover, fragment in children)
     uncertainty = (OSError, ValueError, pb.PrismaBuildError)
     for consumer, children in candidates.items():
         try:
@@ -3493,7 +3668,13 @@ def sweep_dead_owner_fragments(
                                             root, consumer, mover),
                                         reader_lease.material_path(
                                             root, consumer, mover)):
+                                    # No receipt for a skip; the cycle line
+                                    # counts it (#1056).
+                                    if index is not None:
+                                        index.stale_skipped += 1
                                     continue
+                                if index is not None:
+                                    index.stale_censused += 1
                                 receipts.append(prune_stale_mentions(
                                     queue, mover, consumer_action_key=consumer,
                                     stage=Path(stage_roots[tier]), tier_id=tier,

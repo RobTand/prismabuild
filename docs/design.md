@@ -8749,23 +8749,49 @@ planned length -- whether the fragment/material pair completed, and
 survivors remain, and an interrupted pair reports committed and physical
 work separately.
 
-Unchanged, fully coherent owners are skipped by a bounded, process-local,
-**skip-only** checkpoint: the fragment and material file versions -- sampled
-before their reads and again after the scan, and installed only when the two
-samples are equal -- plus device/inode/mtime/ctime stamps of every unique
-immediate parent directory of the fragment's paths, sampled before and after
-the classification scan and installed only when all are present and equal.
-Nothing is re-sampled at installation, so a rename landing after the scan can
-never be blessed as clean: the next pass reads the recorded (older) stamp,
-sees the difference and re-scans. A symlink or non-directory parent is never
-cached. A hit only ever skips the cleanup scan -- terminal, live, lease and
-plan checks still run, and no deletion or adoption is authorized by it. The
-cache is bounded by entry count, by total retained parent paths and by total
-retained path bytes: overflow forgets the oldest entry and, when one
-candidate cannot fit, caches nothing and takes the uncached scan. It never
-caches an unknown or an actionable stale candidate, and it holds no
+An owner with nothing to act on is skipped by a process-local, **skip-only**
+checkpoint (#853, #1056). Nothing to act on means no stale path, no absent
+path and no material superset to trim. That holds for a fully coherent owner,
+for an owner whose paths co-owners protect, and for an owner some retain
+reason holds: a taint, a same-key claim, a live pin, a live claim or a
+promotion handoff. A checkpoint certifies only the path classification, and a
+skip only ever retains, so a retain reason that ends changes nothing the
+checkpoint stands for. An owner with a stale or absent path is never cached,
+whatever retains it: the retention only postpones its prune.
+
+A checkpoint fences every input the classification read, each at the version
+the transaction verified, and nothing is re-sampled at installation:
+
+* this owner's fragment and material file versions, sampled before their
+  reads and again after the scan, and installed only when the two are equal;
+* device/inode/mtime/ctime stamps of every unique immediate parent directory
+  of the fragment's paths, sampled before and after the classification scan
+  and installed only when all are present and equal;
+* the file version of every co-owner fragment that names one of the owner's
+  paths, as the census under the stage ownership lock read it.
+
+The next pass skips only while every fence is unchanged. A rename landing
+after the scan is therefore never blessed as clean: the next pass reads the
+recorded (older) stamp, sees the difference and re-scans. A co-owner fragment
+that is removed or rewritten re-runs the census, where the path it protected
+may now prune, or the whole owner evict. A new co-owner needs no fence,
+because it can only add protection. A symlink or non-directory parent is
+never cached. A hit only ever skips the cleanup scan: terminal, live, lease
+and plan checks still run, and no deletion or adoption is authorized by it.
+
+The cache is bounded by what is on disk, not by literals. Once the dead-owner
+sweep's discovery completes, it keeps the checkpoints of the owners it
+discovered and forgets every other one, and it allows one checkpoint per
+discovered owner. A full cache refuses a newcomer, which takes the uncached
+scan (slower, never weaker); it never evicts an entry the next pass visits,
+because the sweep visits owners in the same order every cycle, and eviction
+by age would make every owner miss. Each checkpoint's fences are that owner's
+parent directories and the co-owner fragments that name its paths. The cache
+never caches an unknown or an actionable stale candidate, and it holds no
 ownership authority. The cache key includes the queue, residency and stage
-roots, so two roots can never share a checkpoint.
+roots, so two roots can never share a checkpoint. A skip files no per-owner
+receipt; the tier cycle line counts skipped and censused owners instead, as
+`census_stale_skipped` and `census_stale_censused`.
 
 A partially pruned owner is a **per-path cache, never a whole-range donor**.
 Its historical move receipt stays factual -- nothing rewrites it to hide the
