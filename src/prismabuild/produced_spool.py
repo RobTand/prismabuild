@@ -16,6 +16,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import socket
 import stat
 import time
@@ -55,6 +56,46 @@ class SpoolError(RuntimeError):
     pass
 
 
+def _identity_evidence(code, *, path, recorded, observed, entry_index=None, detail=None):
+    """What an identity refusal compared: the entry, the path, both identities (#1098)."""
+
+    evidence = {"code": code, "entry_index": entry_index, "path": str(path),
+                "recorded": recorded, "observed": observed}
+    if detail:
+        evidence["detail"] = str(detail)
+    return evidence
+
+
+class SpoolIdentityRefusal(SpoolError):
+    """An identity refusal, with the entry and both identities it compared (#1098).
+
+    ``code`` is the refusal's name as it was before #1098, so an answer's
+    ``refusal`` and a match on the start of the message read as before.
+    ``evidence`` names the entry, the path, the identity recorded and the
+    identity observed, and the message carries all of them.
+    """
+
+    def __init__(self, code, *, path, recorded, observed, entry_index=None, detail=None):
+        self.code = code
+        self.evidence = _identity_evidence(code, path=path, recorded=recorded,
+                                           observed=observed, entry_index=entry_index,
+                                           detail=detail)
+        entry = f"entry {entry_index} " if entry_index is not None else ""
+        text = f"{code}: {entry}{path}: recorded {recorded!r}, observed {observed!r}"
+        super().__init__(f"{text} ({detail})" if detail else text)
+
+
+def _observe(path, *, directory=None):
+    """A path's identity now, or why there is none: an identity refusal's observed side."""
+
+    try:
+        return _identity(path, directory=directory)
+    except FileNotFoundError:
+        return "absent"
+    except (OSError, SpoolError) as exc:
+        return f"unreadable: {exc}"
+
+
 class SpoolCapacityDeferred(SpoolError):
     """Only the bounded local spool is full; completed exports may free it."""
 
@@ -82,8 +123,11 @@ def _read(path, *, expected_sha256=None):
                 if not stat.S_ISREG(before.st_mode) or before.st_size > 8 << 20:
                     raise SpoolError("unknown-retain: nonregular or oversized spool record")
                 raw = handle.read((8 << 20) + 1)
-                if reader_lease.portable_identity(before) != reader_lease.portable_identity(os.fstat(handle.fileno())):
-                    raise SpoolError("unknown-retain: spool record changed during read")
+                after = reader_lease.portable_identity(os.fstat(handle.fileno()))
+                if reader_lease.portable_identity(before) != after:
+                    raise SpoolIdentityRefusal(
+                        "unknown-retain: spool record changed during read", path=path,
+                        recorded=reader_lease.portable_identity(before), observed=after)
         if expected_sha256 is not None and hashlib.sha256(raw).hexdigest() != expected_sha256:
             raise SpoolError("sealed spool record changed")
         body = core._decode_strict_json(raw, where="spool record")
@@ -430,7 +474,7 @@ class ProducedSpool:
             seen = set()
             sources = set()
             class_bytes = {"payload": 0, "checkpoint": 0}
-            for entry in entries:
+            for index, entry in enumerate(entries):
                 source = _path(entry["source_path"], group / "payload")
                 destination = _path(entry["destination_path"], Path(self.template["output_prefix"]))
                 temporary = Path(str(destination) + ".tmp")
@@ -445,7 +489,9 @@ class ProducedSpool:
                 identity = _identity(source)
                 size = _positive(entry["bytes"], "entry bytes")
                 if identity["size"] != size:
-                    raise SpoolError("local source size changed")
+                    raise SpoolIdentityRefusal("local source size changed", entry_index=index,
+                                               path=source, recorded={"bytes": size},
+                                               observed=identity)
                 artifact_class = entry.get("artifact_class", "payload")
                 if artifact_class not in class_bytes:
                     raise SpoolError("export artifact class must be payload or checkpoint")
@@ -537,6 +583,11 @@ class ProducedSpool:
                 if manifest is None:
                     raise SpoolError("export manifest is missing")
                 _check_receipt(receipt, manifest, record)
+            except SpoolIdentityRefusal as exc:
+                return {"ok": False, "complete": False, "refusal": exc.code,
+                        "evidence": exc.evidence,
+                        **_file_refusal(self.queue, group, self.owner, record,
+                                        exc.evidence, where="poll")}
             except (SpoolError, reader_lease.ReaderLeaseError) as exc:
                 return {"ok": False, "complete": False, "refusal": str(exc)}
             return {"ok": True, "complete": True, "export_key": key}
@@ -597,7 +648,12 @@ class ProducedSpool:
             reservation = self._reservation(group)
             if reservation.get("released"):
                 return {"ok": True, "duplicate": True}
-            return _release_acknowledged(group, _export_record(group, self.owner), reservation)
+            record = _export_record(group, self.owner)
+            released = _release_acknowledged(group, record, reservation)
+            if "evidence" in released:
+                released.update(_file_refusal(self.queue, group, self.owner, record,
+                                              released["evidence"], where="release"))
+            return released
 
 
 def _release_acknowledged(group, record, reservation):
@@ -615,12 +671,25 @@ def _release_acknowledged(group, record, reservation):
     sources = {_path(entry["source_path"], group / "payload"): entry["source_identity"]
                for entry in manifest["entries"]}
     actual = {path for path in (group / "payload").rglob("*") if not path.is_dir()}
-    if not actual.issubset(sources) or any(not _matches(path, sources[path]) for path in actual):
-        return {"ok": False, "refusal": "local-spool-changed-retain"}
+    code = "local-spool-changed-retain"
+
+    def refused(path, observed, detail=None):
+        return {"ok": False, "refusal": code, "evidence": _identity_evidence(
+            code, path=path, recorded=sources.get(path), observed=observed, detail=detail,
+            entry_index=next((index for index, entry in enumerate(manifest["entries"])
+                              if _path(entry["source_path"], group / "payload") == path),
+                             None))}
+
+    for path in sorted(actual):
+        if path not in sources:
+            return refused(path, _observe(path), "not a source the manifest names")
+        if not _matches(path, sources[path]):
+            return refused(path, _observe(path))
     for path in actual:
         with _parent(path) as directory:
-            if not reader_lease.file_id_matches(sources[path], _identity(path, directory=directory)):
-                return {"ok": False, "refusal": "local-spool-changed-retain"}
+            observed = _identity(path, directory=directory)
+            if not reader_lease.file_id_matches(sources[path], observed):
+                return refused(path, observed)
             os.unlink(path.name, dir_fd=directory)
             os.fsync(directory)
     reservation["released"] = True
@@ -698,10 +767,20 @@ def _check_receipt(receipt, manifest, record, *, destinations=True):
         raise SpoolError("export receipt binding is corrupt")
     for index, (entry, proof) in enumerate(zip(manifest["entries"], receipt["entries"])):
         _check_copy(proof, entry, index, record["manifest_sha256"])
+        path = entry["destination_path"]
         if not proof.get("complete"):
-            raise SpoolError("export-destination-changed")
-        if destinations and not _matches(entry["destination_path"], proof["identity"]):
-            raise SpoolError("export-destination-changed")
+            # ``destinations=False`` never stats canonical storage (#1001).
+            raise SpoolIdentityRefusal("export-destination-changed", entry_index=index,
+                                       path=path, recorded=proof.get("identity"),
+                                       observed=_observe(path) if destinations
+                                       else "not checked",
+                                       detail="the copy proof is not complete")
+        if destinations:
+            observed = _observe(path)
+            if not reader_lease.file_id_matches(proof["identity"], observed):
+                raise SpoolIdentityRefusal("export-destination-changed", entry_index=index,
+                                           path=path, recorded=proof["identity"],
+                                           observed=observed)
 
 
 # ---------------------------------------------------------------------------
@@ -1041,9 +1120,14 @@ def _export_entry(group, entry, index, manifest_sha256, pacer=None, others=None)
                 return _identity(path, directory=destination_parent)
             except FileNotFoundError:
                 return None
+        def refuse(code, path, recorded, observed, detail=None):
+            return SpoolIdentityRefusal(code, entry_index=index, path=path,
+                                        recorded=recorded, observed=observed, detail=detail)
         if proof and proof.get("complete"):
-            if not reader_lease.file_id_matches(proof["identity"], dest_identity(destination)):
-                raise SpoolError("completed destination changed")
+            landed = dest_identity(destination)
+            if not reader_lease.file_id_matches(proof["identity"], landed):
+                raise refuse("completed destination changed", destination,
+                             proof["identity"], landed or "absent")
             return proof
         # Pin the real local source before any unacknowledged recovery can
         # remove a canonical incarnation. Every ancestor and the leaf refuse
@@ -1052,9 +1136,12 @@ def _export_entry(group, entry, index, manifest_sha256, pacer=None, others=None)
                             dir_fd=source_parent)
         with os.fdopen(source_fd, "rb") as reader:
             source_identity = reader_lease.portable_identity(os.fstat(reader.fileno()))
-            if not stat.S_ISREG(os.fstat(reader.fileno()).st_mode) or not reader_lease.file_id_matches(
+            regular = stat.S_ISREG(os.fstat(reader.fileno()).st_mode)
+            if not regular or not reader_lease.file_id_matches(
                     entry["source_identity"], source_identity):
-                raise SpoolError("local source changed before export")
+                raise refuse("local source changed before export", source,
+                             entry["source_identity"], source_identity,
+                             None if regular else "not a regular file")
             if others is not None:
                 # A run interrupted inside `_retire_foreign` may have left a
                 # file at its private name; finish it before deciding again.
@@ -1071,20 +1158,33 @@ def _export_entry(group, entry, index, manifest_sha256, pacer=None, others=None)
                 # commit, of another attempt may name it (#1097): adopt it
                 # when its bytes are this entry's, retire it when only a
                 # failed group names it, and refuse otherwise.
+                code = "unowned or changed canonical destination"
                 if others is None:
-                    raise SpoolError("unowned or changed canonical destination")
-                adopted = others.take_over(destination_parent, destination, entry,
-                                           index, manifest_sha256, current)
+                    raise refuse(code, destination, ready or None, current)
+                try:
+                    adopted = others.take_over(destination_parent, destination, entry,
+                                               index, manifest_sha256, current)
+                except SpoolIdentityRefusal:
+                    raise
+                except SpoolError as exc:
+                    # The takeover's own refusal, with this entry and both
+                    # identities attached (#1098).
+                    named, _sep, detail = str(exc).partition(": ")
+                    raise refuse(named, destination, ready or None, current,
+                                 detail or None) from None
                 if adopted is not None:
                     _write(proof_path, adopted)
                     return adopted
-                current = dest_identity(destination)
-                if current is not None:
-                    raise SpoolError("unowned or changed canonical destination: "
-                                     "a file landed after the failed group's was retired")
+                landed = dest_identity(destination)
+                if landed is not None:
+                    raise refuse(code, destination, current, landed,
+                                 "a file landed after the failed group's was retired")
+                current = None
             if current is not None:
-                if not reader_lease.file_id_matches(current, dest_identity(destination)):
-                    raise SpoolError("canonical incarnation changed during recovery")
+                again = dest_identity(destination)
+                if not reader_lease.file_id_matches(current, again):
+                    raise refuse("canonical incarnation changed during recovery",
+                                 destination, current, again or "absent")
                 os.unlink(destination.name, dir_fd=destination_parent)
                 os.fsync(destination_parent)
                 # Never overlap an old unacknowledged canonical copy with a
@@ -1092,12 +1192,21 @@ def _export_entry(group, entry, index, manifest_sha256, pacer=None, others=None)
                 # so temp=0 remains bounded by the canonical payload budget.
             temporary_identity = dest_identity(temporary)
             if temporary_identity is not None:
-                if temporary_identity["ino"] != (proof or {}).get("temporary_ino"):
+                owned = {"temporary_ino": (proof or {}).get("temporary_ino")}
+                if temporary_identity["ino"] != owned["temporary_ino"]:
                     if others is None:
-                        raise SpoolError("unowned export temporary")
+                        raise refuse("unowned export temporary", temporary, owned,
+                                     temporary_identity)
                     # A failed group's export that died mid-copy (#1097).
-                    others.retire_temporary(destination_parent, temporary,
-                                            temporary_identity)
+                    try:
+                        others.retire_temporary(destination_parent, temporary,
+                                                temporary_identity)
+                    except SpoolIdentityRefusal:
+                        raise
+                    except SpoolError as exc:
+                        named, _sep, detail = str(exc).partition(": ")
+                        raise refuse(named, temporary, owned, temporary_identity,
+                                     detail or None) from None
                 else:
                     os.unlink(temporary.name, dir_fd=destination_parent)
             fd = os.open(temporary.name, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW,
@@ -1111,19 +1220,24 @@ def _export_entry(group, entry, index, manifest_sha256, pacer=None, others=None)
                 while block := reader.read(BLOCK_BYTES):
                     copied += len(block)
                     if copied > entry["bytes"]:
-                        raise SpoolError("source exceeded declared bytes")
+                        raise refuse("source exceeded declared bytes", source,
+                                     {"bytes": entry["bytes"]}, {"bytes_read": copied})
                     writer.write(block)
                     digest.update(block)
                     if pacer is not None:
                         pacer.wrote(len(block), writer)
                 writer.flush()
                 os.fsync(writer.fileno())
+            held = reader_lease.portable_identity(os.fstat(reader.fileno()))
+            named = _identity(source, directory=source_parent)
             if (copied != entry["bytes"] or digest.hexdigest() != entry["sha256"]
-                    or not reader_lease.file_id_matches(entry["source_identity"],
-                        reader_lease.portable_identity(os.fstat(reader.fileno())))
-                    or not reader_lease.file_id_matches(entry["source_identity"],
-                        _identity(source, directory=source_parent))):
-                raise SpoolError("source changed or digest mismatched while exporting")
+                    or not reader_lease.file_id_matches(entry["source_identity"], held)
+                    or not reader_lease.file_id_matches(entry["source_identity"], named)):
+                raise refuse("source changed or digest mismatched while exporting", source,
+                             {"bytes": entry["bytes"], "sha256": entry["sha256"],
+                              "identity": entry["source_identity"]},
+                             {"bytes": copied, "sha256": digest.hexdigest(),
+                              "identity": held, "identity_at_path": named})
             proof.update(ready_identity=_identity(temporary, directory=destination_parent),
                          sha256=digest.hexdigest())
             _write(proof_path, proof)
@@ -1161,38 +1275,167 @@ def export_group(queue, manifest_path, manifest_sha256, export_key, *,
         claim = pool._read_json(queue.item_path(pool.CLAIMED, export_key)) or {}
         if claim.get("claimed_host") != manifest["host"]:
             raise SpoolError("export is not claimed on the source host")
-        receipt = _read(group / "receipt.json")
-        if receipt is not None:
-            _check_receipt(receipt, manifest, record)
-            return {"ok": True, "duplicate": True, "entries": len(receipt["entries"])}
-        prewrite = po._read_prewrite(po._prewrites_dir(queue.root, manifest["instance"]) /
-                                    f"{manifest['batch_id']}.prewrite.json")
-        if (prewrite is None or prewrite.get("owner_action_key") != manifest["owner"]
-                or prewrite.get("owner_attempt") != manifest["instance"]["owner_attempt"]):
-            raise SpoolError("canonical prewrite authority is absent or changed")
-        class_bytes = {"payload": 0, "checkpoint": 0}
-        for entry in manifest["entries"]:
-            destination = _path(entry["destination_path"], Path(manifest["template"]["output_prefix"]))
-            if str(destination) not in prewrite["paths"] or str(destination) + ".tmp" not in prewrite["paths"]:
-                raise SpoolError("canonical export path is not owned")
-            class_bytes[entry["artifact_class"]] += entry["bytes"]
-        if any(class_bytes[key] > prewrite["class_bytes"][key] for key in class_bytes):
-            raise SpoolError("canonical artifact class budget changed or exceeded")
-        pacer = ExportPacer(pace_mb_s) if pace_mb_s is not None else None
-        others = _OtherClaims(queue, manifest, export_key, group)
-        landed = [_export_entry(group, entry, index, manifest_sha256, pacer, others)
-                  for index, entry in enumerate(manifest["entries"])]
-        receipt = {"schema": SCHEMA, "export_key": export_key,
-                   "manifest_sha256": manifest_sha256, "entries": landed}
-        if pacer is not None:
-            receipt["pacing"] = pacer.record(pace_tier)
+        try:
+            return _export_claimed_group(queue, group, manifest, record, manifest_sha256,
+                                         export_key, pace_mb_s, pace_tier)
+        except SpoolIdentityRefusal as exc:
+            # The group's proofs are on this host and go with the group; the
+            # refusal's evidence is filed where no spool cleanup reaches (#1098).
+            filed = _file_refusal(queue, group, manifest["owner"], record, exc.evidence,
+                                  where="export")
+            exc.add_note(f"produced_spool refusal: {json.dumps(filed, sort_keys=True)}")
+            raise
+
+
+def _export_claimed_group(queue, group, manifest, record, manifest_sha256, export_key,
+                          pace_mb_s, pace_tier):
+    """`export_group` once the group's lock is held and its claim checked."""
+
+    receipt = _read(group / "receipt.json")
+    if receipt is not None:
         _check_receipt(receipt, manifest, record)
-        _write(group / "receipt.json", receipt)
-        answer = {"ok": True, "entries": len(landed)}
-        adopted = sum(1 for proof in landed if "adopted" in proof)
-        if adopted or others.retired:
-            answer.update(adopted=adopted, retired=list(others.retired))
-        return answer
+        return {"ok": True, "duplicate": True, "entries": len(receipt["entries"])}
+    prewrite = po._read_prewrite(po._prewrites_dir(queue.root, manifest["instance"]) /
+                                f"{manifest['batch_id']}.prewrite.json")
+    if (prewrite is None or prewrite.get("owner_action_key") != manifest["owner"]
+            or prewrite.get("owner_attempt") != manifest["instance"]["owner_attempt"]):
+        raise SpoolError("canonical prewrite authority is absent or changed")
+    class_bytes = {"payload": 0, "checkpoint": 0}
+    for entry in manifest["entries"]:
+        destination = _path(entry["destination_path"], Path(manifest["template"]["output_prefix"]))
+        if str(destination) not in prewrite["paths"] or str(destination) + ".tmp" not in prewrite["paths"]:
+            raise SpoolError("canonical export path is not owned")
+        class_bytes[entry["artifact_class"]] += entry["bytes"]
+    if any(class_bytes[key] > prewrite["class_bytes"][key] for key in class_bytes):
+        raise SpoolError("canonical artifact class budget changed or exceeded")
+    pacer = ExportPacer(pace_mb_s) if pace_mb_s is not None else None
+    others = _OtherClaims(queue, manifest, export_key, group)
+    landed = [_export_entry(group, entry, index, manifest_sha256, pacer, others)
+              for index, entry in enumerate(manifest["entries"])]
+    receipt = {"schema": SCHEMA, "export_key": export_key,
+               "manifest_sha256": manifest_sha256, "entries": landed}
+    if pacer is not None:
+        receipt["pacing"] = pacer.record(pace_tier)
+    _check_receipt(receipt, manifest, record)
+    _write(group / "receipt.json", receipt)
+    answer = {"ok": True, "entries": len(landed)}
+    adopted = sum(1 for proof in landed if "adopted" in proof)
+    if adopted or others.retired:
+        answer.update(adopted=adopted, retired=list(others.retired))
+    return answer
+
+
+# ---------------------------------------------------------------------------
+# A refused group's evidence, filed where no spool cleanup reaches (#1098)
+# ---------------------------------------------------------------------------
+
+#: One record per refusal: ``<queue>/<dir>/<owner>/<batch>.<export>.<where>.<code>.json``.
+REFUSALS_SUBDIR = "produced-spool-refusals"
+REFUSAL_SCHEMA = "prismabuild.produced_spool.refusal.v1"
+#: A record holds the group's receipt and copy proofs.  Past this size it
+#: keeps only the refused entry's proof, and says how many it left out.
+REFUSAL_RECORD_MAX_BYTES = 4 << 20
+_COPY_PROOF = re.compile(r"copy-([0-9]+)\.json")
+
+
+def _refusal_path(queue, owner, record, where, code):
+    slug = re.sub(r"[^A-Za-z0-9]+", "-", str(code)).strip("-")[:48] or "refusal"
+    return (Path(queue.root) / REFUSALS_SUBDIR / str(owner)
+            / f"{record['batch_id']}.{str(record['export_key'])[:16]}.{where}.{slug}.json")
+
+
+def _file_refusal(queue, group, owner, record, evidence, *, where):
+    """File one refused group's evidence under the queue, once (#1098).
+
+    The group's copy proofs and receipt hold the identities the export
+    recorded, and they live in the producer's local spool, which the
+    retirement tick (#1001) removes with a dead attempt's group.  So the
+    refusal, its evidence, the receipt and every copy proof are written
+    under the queue when the refusal is made.  One record per group, export,
+    caller (``where``) and refusal code: a poll repeated on one refusal files
+    it once, and costs one ``stat`` after the first.  Filing never changes
+    the refusal: the answer is ``{"evidence_record": path}``, or
+    ``{"evidence_record_error": why}`` when the record could not be written.
+    """
+
+    try:
+        path = _refusal_path(queue, owner, record, where, evidence["code"])
+        if path.exists():
+            return {"evidence_record": str(path)}
+        proofs = []
+        for name in sorted((name for name in os.listdir(group) if _COPY_PROOF.fullmatch(name)),
+                           key=lambda name: int(_COPY_PROOF.fullmatch(name).group(1))):
+            try:
+                proofs.append(_read(group / name))
+            except SpoolError as exc:
+                proofs.append({"unreadable": name, "reason": str(exc)})
+        try:
+            receipt = _read(group / "receipt.json")
+        except SpoolError as exc:
+            receipt = {"unreadable": str(exc)}
+        body = {"schema": REFUSAL_SCHEMA, "where": where, "host": socket.gethostname(),
+                "unix": round(time.time(), 3), "owner": str(owner),
+                "batch_id": record["batch_id"], "export_key": record["export_key"],
+                "manifest_sha256": record["manifest_sha256"], "group": str(group),
+                "code": evidence["code"], "evidence": evidence,
+                "receipt": receipt, "copy_proofs": proofs}
+        raw = json.dumps(body, sort_keys=True, separators=(",", ":")).encode()
+        if len(raw) > REFUSAL_RECORD_MAX_BYTES:
+            index = evidence.get("entry_index")
+            body["copy_proofs"] = [proof for proof in proofs
+                                   if isinstance(proof, dict) and proof.get("entry_index") == index]
+            body["copy_proofs_total"] = len(proofs)
+            if isinstance(receipt, dict) and isinstance(receipt.get("entries"), list):
+                body["receipt"] = {**{key: value for key, value in receipt.items()
+                                      if key != "entries"},
+                                   "entries_total": len(receipt["entries"])}
+            raw = json.dumps(body, sort_keys=True, separators=(",", ":")).encode()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        fd = os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o644)
+        try:
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(raw + b"\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            try:
+                os.link(temporary, path)
+            except FileExistsError:
+                pass
+        finally:
+            os.unlink(temporary)
+        return {"evidence_record": str(path)}
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        return {"evidence_record_error": f"{type(exc).__name__}: {exc}"}
+
+
+def refusal_records(queue, *, owner=None, limit=None):
+    """The filed refusal records, oldest first: every owner's, or one owner's.
+
+    A record that cannot be read is listed as ``{"unreadable": path}``.
+    """
+
+    root = Path(queue.root) / REFUSALS_SUBDIR
+    try:
+        owners = [str(owner)] if owner is not None else sorted(os.listdir(root))
+    except OSError:
+        return []
+    records = []
+    for name in owners:
+        try:
+            files = sorted(item for item in os.listdir(root / name)
+                           if item.endswith(".json") and not item.startswith("."))
+        except OSError:
+            continue
+        for item in files:
+            try:
+                records.append(_read(root / name / item)
+                               or {"unreadable": str(root / name / item)})
+            except SpoolError:
+                records.append({"unreadable": str(root / name / item)})
+    records.sort(key=lambda value: float(value.get("unix", 0.0))
+                 if isinstance(value.get("unix"), (int, float)) else 0.0)
+    return records if limit is None else records[-limit:]
 
 
 # ---------------------------------------------------------------------------

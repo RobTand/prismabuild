@@ -164,6 +164,36 @@ def test_a_completed_export_rerun_names_both_destination_identities(tmp_path):
         f"the refusal does not name both inodes: {message}")
 
 
+def test_a_completed_copy_that_changed_names_both_identities(tmp_path, monkeypatch):
+    """A copy proof completed, the receipt never landed, and the file changed since."""
+
+    spool = world(tmp_path)
+    _source, destination, entries = prepare(spool)
+    handle = spool.submit_group("b1", entries)
+    claim_export(spool, handle)
+    original = ps._write
+
+    def interrupted(path, body):
+        if Path(path).name == "receipt.json":
+            raise RuntimeError("interrupted before the group acknowledgement")
+        return original(path, body)
+
+    monkeypatch.setattr(ps, "_write", interrupted)
+    with pytest.raises(RuntimeError, match="interrupted"):
+        _export(spool)
+    monkeypatch.setattr(ps, "_write", original)
+    recorded, observed = _replace(destination, b"other", tmp_path)
+
+    with pytest.raises(ps.SpoolIdentityRefusal) as refused:
+        _export(spool)
+
+    assert refused.value.code == "completed destination changed"
+    assert refused.value.evidence["entry_index"] == 0
+    assert refused.value.evidence["recorded"]["ino"] == recorded
+    assert refused.value.evidence["observed"]["ino"] == observed
+    assert str(recorded) in str(refused.value) and str(observed) in str(refused.value)
+
+
 def test_a_submit_refusal_names_the_declared_and_the_observed_size(tmp_path):
     spool = world(tmp_path)
     source, _destination, entries = prepare(spool, payload=b"hello")

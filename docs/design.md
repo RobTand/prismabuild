@@ -10531,6 +10531,57 @@ the origin-retirement tick as `superseded` once the successor commits the
 same paths (#1053). ctime is never compared in these checks, because a
 read can recall another client's write delegation and move it (#1096).
 
+#### What an identity refusal names, and where its evidence is kept (#1098)
+
+On 2026-09-24 q0's producer failed on `export-destination-changed`, and the
+refusal named neither the file nor the identities it compared. The copy
+proofs that held the recorded identities were in the producer's local
+spool, and the retirement tick removed them with the dead attempt's group.
+What would have settled #1096 was gone.
+
+Every identity refusal in `produced_spool` is now a `SpoolIdentityRefusal`.
+Its `code` is the refusal's name as it was before, so a caller that reads
+`refusal` or matches the start of the message sees no change. Its `evidence`
+and its message name the entry index, the path, the identity the spool
+recorded and the identity it observed (`absent`, or `unreadable: <why>`,
+when there is no file to stat):
+
+| Code | Where | Recorded | Observed |
+|---|---|---|---|
+| `export-destination-changed` | `_check_receipt`: a poll, a release, a commit or a rerun export | The copy proof's landed identity | The destination now |
+| `completed destination changed` | `_export_entry`, a completed copy proof | The copy proof's landed identity | The destination now |
+| `unowned or changed canonical destination` | `_export_entry`, a destination that is not this export's copy, or a failed group's file it may not adopt or retire (#1097) | This export's own pre-publication identity, if any | The destination |
+| `canonical incarnation changed during recovery` | `_export_entry`, removing its own unacknowledged copy | The identity it was about to remove | The destination now |
+| `unowned export temporary` | `_export_entry` | This export's `temporary_ino`, if any | The temporary |
+| `local source changed before export` | `_export_entry` | The manifest's source identity | The pinned source |
+| `source exceeded declared bytes`, `source changed or digest mismatched while exporting` | `_export_entry`, after the copy | The manifest's bytes, digest and source identity | The bytes read, their digest, the pinned source and the source at its name |
+| `local source size changed` | `submit_group` | The declared bytes | The source |
+| `unknown-retain: spool record changed during read` | `_read` | The record before the read | The record after it |
+| `local-spool-changed-retain` | `_release_acknowledged`: a release or the tick | The manifest's source identity | The local file |
+
+`poll_group` answers an identity refusal with `refusal` set to the code,
+`evidence`, and `evidence_record`. `release_group` does the same for
+`local-spool-changed-retain`, and `export_group` adds the record's path to
+the exception as a note, which the action's log prints.
+
+**The evidence outlives the spool.** When a poll, a release or an export
+makes an identity refusal, it files one record under
+`<queue>/produced-spool-refusals/<owner>/<batch>.<export key prefix>.<where>.<code>.json`:
+the code, the evidence, the group's receipt and every copy proof
+(`copy-N.json`), with the host, the export key and the manifest digest.
+The record is written once, through a temporary and a `link`; a poll
+repeated on the same refusal finds it with one `stat` and writes nothing.
+A record larger than 4 MiB keeps only the refused entry's proof and says
+how many it left out. Filing never changes the refusal: when the record
+cannot be written, the answer carries `evidence_record_error` instead.
+`produced_spool.refusal_records` reads them back. The retirement tick
+still removes the group; the record is under the queue, where no spool
+cleanup reaches.
+
+The identity checks themselves are unchanged: `file_id_matches` and
+`portable_identity` compare what they compared before, and which fields an
+identity pin should compare waits on the platform decision in #1096.
+
 ### What creates and what retires per-key state
 
 | State | Created by | Retired by | When |
@@ -10541,6 +10592,7 @@ read can recall another client's write delegation and move it (#1096).
 | Landing record `residency/<consumer>.landing.json` | The tier loop's `publish_landing_expectations`, for a claimed consumer (#989) | `publish_landing_expectations` for a consumer it sees that is not claimed; the plan reaper (`_sweep_dead_consumer`) with a plan it reaps; `pb_gc --queue-root` for the rest, such as a finished consumer that was never superseded | Its consumer terminal as above, re-read under the consumer's transition lock, fragments or not |
 | Tier-loop events `residency-events/<consumer>/` | The tier loop's `_emit` (#990) | `sweep_consumer_events` in the tier loop | The consumer is terminal or withdrawn |
 | Spool retirement records `produced-spool-retirements/<host>.jsonl` and `<host>.tick.json` | The spool retirement tick (#1001) | Never: the lines are records, one per retired namespace, so they grow with producer attempts as `done/` does. The tick file is replaced by each tick | Not applicable |
+| Spool refusal records `produced-spool-refusals/<owner>/*.json` | A poll, a release or an export that makes an identity refusal (#1098) | Never: each is the evidence of one refusal, one per group, export, caller and code, so they grow with refused groups | Not applicable |
 | GC receipts `gc-receipts/<utc>-<host>-<pid>.json` | Each `pb_gc --queue-root` run | Never: one record per operator run | Not applicable |
 
 The lock files, the residency namespaces and the landing records are retired
