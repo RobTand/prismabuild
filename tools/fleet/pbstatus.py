@@ -1908,11 +1908,10 @@ def blocked_origin_remedies(ref: Mapping[str, object], key: str) -> dict[str, st
     }
 
 
-#: What frees an orphaned write-only prewrite (#949). PB never deletes a
-#: file whose identity no commit recorded, so the operator does.
-ORPHANED_PREWRITE_REMEDY = (
-    "these files belong to no committed batch: check and remove them, and "
-    "the next tier cycle drops the prewrite's reservation")
+#: What frees an orphaned prewrite (#949, #1053): the one remedy the tier
+#: cycle's event names too. PB never deletes a file whose identity no commit
+#: recorded, so the operator does.
+ORPHANED_PREWRITE_REMEDY = produced_output.ORPHANED_PREWRITE_REMEDY
 
 
 def read_blocked_origins(queue_root: str | Path) -> dict:
@@ -1925,9 +1924,9 @@ def read_blocked_origins(queue_root: str | Path) -> dict:
     not apply, and the remedies.  ``complete`` is false when a record could
     not be read; the unreadable ones are named.
 
-    ``orphaned_prewrites`` lists the write-only prewrites whose attempt
-    ended before committing and whose files belong to no batch (#949), each
-    with the remedy.
+    ``orphaned_prewrites`` lists the prewrites, of any template (#1053),
+    whose attempt ended before committing and whose files belong to no batch
+    (#949), each with the remedy.
     """
 
     queue = pool.PoolQueue(queue_root)

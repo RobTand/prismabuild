@@ -376,8 +376,10 @@ def test_an_unreachable_output_prefix_is_never_read_as_absent(
 
     assert [(e["event"], e["reason"]) for e in events] == [
         (po.ORIGIN_RETIREMENT_REFUSED_EVENT, "output-prefix-unreachable")]
-    assert po.origin_retirement_tick(queue) == []
-    assert _record(queue, first).exists()
+    events = po.origin_retirement_tick(queue)
+    assert [(event["event"], event["reason"]) for event in events] == [
+        (po.ORIGIN_PREWRITE_RECLAIMED_EVENT, "absent")]
+    assert not _record(queue, first).exists()
     assert _listed(queue) == []
     parked.rename(prefix)
     assert [e["event"] for e in po.origin_retirement_tick(queue)] == [ORPHANED]
@@ -412,11 +414,13 @@ def test_one_pass_reads_each_owner_key_and_sibling_set_once(
     reads: list[str] = []
     scans: list[str] = []
     key_generation = po._key_generation
-    sibling_path_owners = po._sibling_path_owners
+    # The other attempts' paths are read through one tick's reads (#1053),
+    # once per instance whose prewrites are decided.
+    path_owners = po._TickReads.path_owners
     monkeypatch.setattr(po, "_key_generation", lambda q, key: (
         reads.append(key), key_generation(q, key))[1])
-    monkeypatch.setattr(po, "_sibling_path_owners", lambda *args: (
-        scans.append(_nonce(args[1])), sibling_path_owners(*args))[1])
+    monkeypatch.setattr(po._TickReads, "path_owners", lambda *args: (
+        scans.append(_nonce(args[1])), path_owners(*args))[1])
 
     events = po.origin_retirement_tick(queue)
 
@@ -435,8 +439,15 @@ def test_one_pass_reads_each_owner_key_and_sibling_set_once(
 # -- off the write-only path ---------------------------------------------------
 
 
-def test_a_read_back_templates_prewrite_is_not_swept(tmp_path: Path) -> None:
-    """Only a write-only template commits at origin (#912); others stage."""
+def test_a_read_back_templates_prewrite_is_swept_too(tmp_path: Path) -> None:
+    """A staged template's ended prewrite is swept like a write-only one (#1053).
+
+    #949 swept only write-only templates, and R13's 28 staged prewrites
+    stayed outstanding for ever. A staged template differs in one way: a
+    pool funding intent may name the batch, and then the prewrite is its
+    precommit authority and is held (`abort_prewrite` holds it the same
+    way). With none, as here, an absent file frees the reservation.
+    """
 
     template = fx._template(str(tmp_path / "canonical"))
     assert not po.is_write_only(template)
@@ -450,7 +461,10 @@ def test_a_read_back_templates_prewrite_is_not_swept(tmp_path: Path) -> None:
     assert pre["ok"], pre
     _attempt(queue, template, owner, claimed)
     assert po._producer_attempt_state(queue, first) == "dead"
+    path.parent.mkdir(parents=True, exist_ok=True)
 
-    assert po.origin_retirement_tick(queue) == []
-    assert _record(queue, first).exists()
+    events = po.origin_retirement_tick(queue)
+    assert [(event["event"], event["reason"]) for event in events] == [
+        (po.ORIGIN_PREWRITE_RECLAIMED_EVENT, "absent")]
+    assert not _record(queue, first).exists()
     assert _listed(queue) == []
