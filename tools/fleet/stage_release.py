@@ -4598,11 +4598,19 @@ def _unattributed_candidates(stage: Path, stage_resolved: Path,
                                         list[str]]:
     """The files :func:`reconcile` may delete, found without the lock (#988).
 
-    The walk and every per-file rule of the reconciliation, unchanged:
-    the root's own markers are skipped, a symlink or non-regular file is
-    skipped, a path resolving outside the stage is skipped, an attributed
-    path is skipped, a prewarm temporary is skipped, and a file the prewarm
-    stage marked -- or whose mark cannot be read -- is left.  Returns
+    The walk and every per-file rule of the reconciliation: the root's own
+    markers are skipped, a symlink or non-regular file is skipped, an
+    attributed path is skipped, a prewarm temporary is skipped, a file the
+    prewarm stage marked -- or whose mark cannot be read -- is left, and a
+    file that would be deleted but resolves outside the stage is skipped.
+
+    Containment is checked only for that last kind, a file about to carry an
+    identity (#1073).  It guards a deletion and nothing else, and resolving
+    every file of the live stage (54,400, 38,422 of them marked and only
+    counted) took 48% of the tier loop.  It still runs after the ``lstat``
+    that captures the identity: a directory swapped for a symlink before that
+    ``lstat`` is caught here, and one swapped after it changes the identity
+    the locked re-check compares, which never re-checks containment.  Returns
     ``(candidates, errors)``: each candidate as ``(path, identity,
     partial)`` where ``identity`` is the ``lstat`` version the caller must
     see again under the lock, or ``None`` for a file left as unowned-but-
@@ -4611,6 +4619,9 @@ def _unattributed_candidates(stage: Path, stage_resolved: Path,
 
     candidates: list[tuple[Path, tuple | None, bool]] = []
     errors: list[str] = []
+    # ``stage_resolved in resolved.parents``, as a string test: the resolved
+    # path lies strictly below the resolved stage.
+    inside = os.path.join(str(stage_resolved), "")
     for base, _directories, names in os.walk(stage):
         for name in sorted(names):
             path = Path(base) / name
@@ -4630,8 +4641,6 @@ def _unattributed_candidates(stage: Path, stage_resolved: Path,
                 info = os.lstat(path)
                 if not statmod.S_ISREG(info.st_mode):
                     continue
-                if stage_resolved not in path.resolve().parents:
-                    continue
             except OSError as exc:
                 errors.append(f"{path.name}: {exc}")
                 continue
@@ -4647,6 +4656,12 @@ def _unattributed_candidates(stage: Path, stage_resolved: Path,
                 if marked is None or marked:
                     candidates.append((path, None, False))
                     continue
+            try:
+                if not str(path.resolve()).startswith(inside):
+                    continue
+            except OSError as exc:
+                errors.append(f"{path.name}: {exc}")
+                continue
             candidates.append((path, _metadata_version(info), partial))
     return candidates, errors
 
