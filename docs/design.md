@@ -9549,6 +9549,49 @@ continues; and a pre-set external stop is never confused with the internal
 flag. The accepted red evidence (`853-red-results.json`, shards
 `c36202318cfa` and `d992f975c10a`) is retained separately.
 
+### An unattributed name whose bytes match is adopted, not waited out (#1081)
+
+A RAM promotion files its fragment and material sidecar once, at the end of
+its range. A promotion killed before then -- and every PB publish restarts the
+tier role, and its promotions with it -- leaves complete, digest-verified files
+under their final names that no record names. The retry runs under the same
+action key. The gate used to read each such name as positive absence: it copied
+the entry again, waited the whole `_PUBLISH_GRACE_S` (30 s) for a record that
+would never come, and then replaced the name with a new inode. Sixteen readers
+over 16 MiB entries make 16 x 16 MiB per 30 s, about 9 MB/s, which is the
+refill rate #1081 measured on the live RAM tier after a role restart (16
+threads parked in the publish poll).
+
+Under positive absence the gate now proves the name by its own bytes
+(`_StagedPublisher._content_proof`): the file is opened without following a
+symlink, hashed, and adopted if it is a regular file of the declared length
+whose SHA-256 is the trusted digest and whose identity (inode, size, mtime,
+ctime) is the same after the read as before it. The trusted digest is the
+manifest's declared one, or, for a digest-less manifest, the digest of the copy
+being published. With a declared digest the proof runs before any copy
+(`_adopt_by_content`), so a restarted promotion copies nothing it already
+holds. Adoption writes nothing, so the commit under the stage ownership lock
+only confirms the identity; the hash itself never runs under that lock or under
+an owner's transition lock (callers holding one pass `content=False`). A
+mismatch is remembered by identity and digest for the publisher's life, so a
+name that waits out the grace is hashed once rather than once per poll.
+
+The proof runs after every census that defers or refuses, in the gate's order:
+a record that names the path (proof, divergence, an undated or superseded
+vouch, unreadable state), a live pin, a live claim, and a copy in flight each
+keep exactly their verdicts. Unattributed bytes that do not match wait out the
+grace and heal by replacement as before. A mover's own undated vouch still
+refuses rather than falling through to the content proof, because the
+same-key resume above depends on that refusal to never replace changed bytes.
+
+The promotion receipt now carries `phase_timings`, as the stage mover's does,
+with the phase `content_proof` and the outcomes `adopted_by_content` (before
+any copy) and `adopted_by_content_at_publication` (after a digest-less copy).
+`tests/test_a_restarted_promotion_adopts_its_own_copies.py` drives the real
+stage mover and promoter: the restart adopts with no copy, no poll and no
+rename, and the copy in flight, live claim, live pin, dated divergence and
+unattributed wrong bytes keep their verdicts.
+
 ### A failed consumer's movers are withdrawn; a failed mover's partials are evicted (#620, #627)
 
 A consumer that fails with movers published leaves them running for nobody.
