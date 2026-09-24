@@ -7144,8 +7144,11 @@ class PoolQueue:
           copy reading the same spindles is what made the waited copy late.
         * Otherwise, at the measured cap (``cap.movers``: the mover count past
           which the pool's delivery stops rising), a row is denied
-          ``deferred_for_pool_readers`` while that many movers are claimed on
-          the tier.
+          ``deferred_for_pool_readers`` while that many movers claimed on the
+          tier are still reading: a claimed mover that filed a complete
+          receipt has stopped.  The count is read from the claimed rows at
+          claim time, not from a ledger, so claims racing on one tier can
+          each see room for one more.
 
         ``None`` means the plan does not bear on the row: not a stage mover,
         no record, no plan, or a plan older than ``OFFER_TIMEOUT_S`` by its
@@ -7210,12 +7213,26 @@ class PoolQueue:
                 claimed = self.movers_claimed_on_tier(tier_id)
             except (OSError, PoolContractError):
                 return None
-            if len(claimed) >= movers:
+            # A claimed mover that filed a complete receipt has stopped
+            # reading the pool; only the copies still reading count.
+            reading = [mover for mover in claimed
+                       if not self._copy_filed_complete(mover)]
+            if len(reading) >= movers:
                 return {"deny": DEFERRED_FOR_POOL_READERS, "tier_id": tier_id,
                         "cap_movers": movers,
                         "cap_basis": cap.get("basis"),         # type: ignore[union-attr]
+                        "movers_reading": len(reading),
                         "movers_claimed": len(claimed)}
         return None
+
+    def _copy_filed_complete(self, mover: str) -> bool:
+        """Whether ``mover`` filed a complete receipt: its copy has landed."""
+
+        try:
+            record = self.move_record(mover)
+        except (OSError, ValueError, PoolContractError):
+            return False
+        return isinstance(record, Mapping) and record.get("complete") is True
 
     def _landing_bytes_ahead(self, consumer: str
                              ) -> dict[str, tuple[int | None, list[str] | None]]:

@@ -4157,7 +4157,8 @@ the rows whose residency names a range:
   overfills, and records `tier_fill_waived` on the claim. Every other mover
   row on the tier is denied `deferred_for_declared_wait`.
 * Otherwise, a row is denied `deferred_for_pool_readers` while `cap.movers`
-  movers are claimed on the tier.
+  movers claimed on the tier are still reading. A claimed mover that filed a
+  complete receipt has stopped reading and does not count.
 
 Both denials are transient and take no pass, like a tier shortage. A plan
 older than `OFFER_TIMEOUT_S` by its record's `announced_unix` fails open to
@@ -4169,8 +4170,9 @@ when the record's file changes:
 
 * A listed copy is exempt from the disk pacer and the admission limit. The
   pacer still samples, so the receipt's `disk_pacing` still measures the pool,
-  but it never holds the copy. The receipt records `held_seconds` of 0 and
-  `reader_plan.exempt`.
+  but it never holds the copy while it is listed. The receipt records
+  `reader_plan.exempt`, and `held_seconds` is 0 for a copy listed from its
+  start.
 * An unlisted copy stands aside before each read while another copy on the
   tier is waited on. The receipt records `disk_pacing.yielded_seconds`, and
   the supply fold's shortfall test subtracts it as it subtracts
@@ -4201,6 +4203,8 @@ Known limits:
 * A listed copy that cannot be claimed, for example because the stage is
   full, still defers every other copy on the tier until the wait ends or the
   plan goes stale.
+* The cap is read from the claimed rows at claim time, not from a ledger, so
+  claims racing on one tier can each see room for one more mover.
 * `movers_claimed_on_tier` is counted when a copy starts, so a receipt's
   point on the curve is the concurrency it began under.
 

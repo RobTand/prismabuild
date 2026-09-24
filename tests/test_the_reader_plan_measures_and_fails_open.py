@@ -222,6 +222,24 @@ def test_the_cap_admits_that_many_movers_and_no_more(tmp_path: Path) -> None:
     assert len(queue.movers_claimed_on_tier(TIER)) == 2
 
 
+def test_a_claimed_copy_that_filed_its_receipt_no_longer_counts(
+        tmp_path: Path) -> None:
+    """The cap counts copies still reading the pool, not claimed rows."""
+
+    queue = _queue(tmp_path, fill=0)
+    for ordinal in range(3):
+        _mover(queue, f"{ordinal}".ljust(64, "e"), ordinal)
+    _announce(queue, waits=[], cap=1)
+
+    first = _claim(queue)
+    assert first is not None
+    assert _claim(queue) is None
+    queue.record_move(first, {**_receipt(1, 250), "action_key": first})
+
+    assert _claim(queue) is not None
+    assert len(queue.movers_claimed_on_tier(TIER)) == 2
+
+
 def test_a_stale_plan_fails_open(tmp_path: Path) -> None:
     """A tier loop that stopped announcing cannot hold the tier on its last word."""
 
