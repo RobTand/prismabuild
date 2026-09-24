@@ -9409,6 +9409,15 @@ every republish, #823's same-generation one included, is seen; a same-size
 rewrite of the same inode within one timestamp tick would not be, and no
 writer makes one. Absence and malformation are never cached.
 
+`acquire` reads the same documents twice, once as a pre-check and once
+under the stage ownership lock before it pins, and both reads use the same
+per-process store. Each still opens the file, the locked read under the
+lock, so each answer is as fresh as a plain read, and an acquire of
+unchanged documents parses and validates neither. The locked read therefore
+holds the lock for a few opens rather than for two full parses; movers of
+the same stage root wait on that lock. A reader that leases a window per
+call pays the parse once per republish instead of twice per call.
+
 ### A same-key retry resumes its own qualified coverage
 
 A mover's action key is a content hash, so a retried mover — a timeout, a

@@ -1642,6 +1642,53 @@ def _prune_cover_docs(root: str, consumer_action_key: str,
             del _COVER_DOCS[slot]
 
 
+def _reused_cover_doc(root, consumer_action_key: str, mover: str,
+                      which: str):
+    """One mover's sidecar or fragment, as a plain read returns it.
+
+    ``which`` is ``"material"`` or ``"fragment"``.  Returns the validated
+    document, ``None`` when the file is absent, or the error when it cannot
+    be read or validated: exactly what :func:`read_material`, or a read of
+    the fragment, returns.  The file is opened on every call, so the answer
+    is as fresh as a plain read (:func:`_read_cover_doc`), and it is parsed
+    and validated only when the descriptor's identity differs from the one
+    the process validated last.  Shares :func:`_cached_cover_docs`'s store,
+    so an acquire reuses what a cover lookup validated and the reverse.
+    The returned document is shared and must not be mutated.
+    """
+
+    from prismabuild import residency_map as map_mod
+
+    slot = (str(root), consumer_action_key, mover)
+    with _COVER_DOCS_LOCK:
+        held = _COVER_DOCS.get(slot)
+    held_material, held_fragment = held if held is not None else (None, None)
+    if which == "material":
+        path = material_path(root, consumer_action_key, mover)
+        validate = lambda value: validate_material(value)  # noqa: E731
+        mine = held_material
+    else:
+        path = map_mod.fragment_path(root, consumer_action_key, mover)
+        validate = lambda value: map_mod.validate_fragment(value)  # noqa: E731
+        mine = held_fragment
+    try:
+        fresh = _read_cover_doc(path, validate, mine)
+    except FileNotFoundError:
+        _forget_cover_docs(slot)
+        return None
+    except (OSError, ValueError) as exc:
+        _forget_cover_docs(slot)
+        return exc
+    with _COVER_DOCS_LOCK:
+        current = _COVER_DOCS.get(slot, (None, None))
+        _COVER_DOCS[slot] = ((fresh, current[1]) if which == "material"
+                             else (current[0], fresh))
+        _COVER_DOCS.move_to_end(slot)
+        while len(_COVER_DOCS) > COVER_DOCS_CACHE_PAIRS:
+            _COVER_DOCS.popitem(last=False)
+    return fresh[1]
+
+
 def _cached_cover_docs(root: Path, consumer_action_key: str, mover: str,
                        context: dict | None):
     """Validated (material, fragment) for one mover, identity-checked.
@@ -1954,7 +2001,11 @@ def acquire(queue, *, consumer_action_key: str, attempt: Mapping[str, str],
     optional caller-owned dict caching fragment/material/epoch reads across
     calls in one process, so a window batch does not re-stat over NFS per
     tensor.  Cached reads are a pre-check only: the lock re-reads fragment
-    and material fresh, so no cached stale admission proof can pin.
+    and material fresh, so no cached stale admission proof can pin.  Every
+    read of either document, the locked one included, opens the file and
+    parses it only when the descriptor's identity differs from the one this
+    process last validated (the cover lookup's store, #893), so an acquire
+    of unchanged documents parses neither.
 
     With ``file_pin=False`` nothing is filed: the coverage proof, identity
     stats and staged source names return for the caller to verify its copy
@@ -1974,7 +2025,6 @@ def acquire(queue, *, consumer_action_key: str, attempt: Mapping[str, str],
     """
 
     from prismabuild import pool as pool_mod
-    from prismabuild import residency_map as map_mod
 
     root = Path(residency_root if residency_root is not None
                 else Path(queue.root) / pool_mod.RESIDENCY)
@@ -2009,7 +2059,7 @@ def acquire(queue, *, consumer_action_key: str, attempt: Mapping[str, str],
         # fragment cache even when the generation is unchanged (#823).
         key = f"material:{consumer_action_key}:{mover}"
         fkey = f"fragment:{consumer_action_key}:{mover}"
-        fresh = read_material(root, consumer_action_key, mover)
+        fresh = _reused_cover_doc(root, consumer_action_key, mover, "material")
         if fresh is None or isinstance(fresh, Exception):
             return fresh
         if context.get(key) != fresh:
@@ -2023,14 +2073,11 @@ def acquire(queue, *, consumer_action_key: str, attempt: Mapping[str, str],
         # dropped this entry when the live sidecar changed.
         key = f"fragment:{consumer_action_key}:{mover}"
         if key not in context:
-            try:
-                with open(map_mod.fragment_path(
-                        root, consumer_action_key, mover)) as stream:
-                    context[key] = map_mod.validate_fragment(json.load(stream))
-            except FileNotFoundError:
-                return None
-            except (OSError, ValueError) as exc:
-                return exc
+            fragment = _reused_cover_doc(root, consumer_action_key, mover,
+                                         "fragment")
+            if fragment is None or isinstance(fragment, Exception):
+                return fragment
+            context[key] = fragment
         return context[key]
 
     stage_root = ""
@@ -2143,25 +2190,27 @@ def acquire(queue, *, consumer_action_key: str, attempt: Mapping[str, str],
         # egress either filed its fragment drop and retiring mark before
         # this snapshot (seen below) or waits out there until this pin
         # lands.  Cached reads are a pre-check only, never admission proof.
+        # Both documents are opened here, under the lock, so each answer is
+        # as fresh as a plain read; one whose descriptor shows the identity
+        # the process last validated is not parsed again, which keeps the
+        # lock's hold short for the movers that wait on it.
         for cover, mover in zip(covers, movers):
             manifest = str(cover.get("manifest_sha256") or "")
-            try:
-                with open(map_mod.fragment_path(
-                        root, consumer_action_key, mover)) as stream:
-                    fresh_fragment = map_mod.validate_fragment(
-                        json.load(stream))
-            except FileNotFoundError:
+            fresh_fragment = _reused_cover_doc(root, consumer_action_key,
+                                               mover, "fragment")
+            if fresh_fragment is None:
                 return {"ok": False, "refusal": "unpublished"}
-            except (OSError, ValueError) as exc:
+            if isinstance(fresh_fragment, Exception):
                 return {"ok": False,
-                        "refusal": f"ownership-uncertain: {exc}"}
+                        "refusal": f"ownership-uncertain: {fresh_fragment}"}
             if (str(fresh_fragment.get("tier_id") or "") != tier_id
                     or str(fresh_fragment.get("manifest_sha256") or "")
                     != manifest
                     or str(fresh_fragment.get("epoch") or "")
                     != str(epoch or "")):
                 return {"ok": False, "refusal": "unpublished"}
-            reread = read_material(root, consumer_action_key, mover)
+            reread = _reused_cover_doc(root, consumer_action_key, mover,
+                                       "material")
             if (reread is None or isinstance(reread, Exception)
                     or str(reread.get("generation") or "")
                     != generations[mover]):
