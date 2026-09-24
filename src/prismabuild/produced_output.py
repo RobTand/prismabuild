@@ -7180,14 +7180,24 @@ _KEPT_PREWRITES: dict[str, tuple[tuple[object, ...], str]] = {}
 
 
 def _prewrite_inputs(record_path: Path, record: Mapping[str, object] | None,
-                     kept_dirs: Sequence[str] | None = None
+                     kept_dirs: Sequence[str] | None = None,
+                     seen: dict[str, object] | None = None
                      ) -> tuple[object, ...] | None:
     """``(record version, directories, their versions)``, or None if unreadable.
 
     The record's version is taken before the caller reads it and the
     directories' before any path is ``lstat``ed, so a change that lands
     between is seen as a change next cycle, never remembered as none.
+    ``seen`` keeps each directory's version for one caller's pass: an
+    instance's prewrites usually name one directory.
     """
+
+    def version_of(directory: str) -> object:
+        if seen is None:
+            return _file_version(directory)
+        if directory not in seen:
+            seen[directory] = _file_version(directory)
+        return seen[directory]
 
     try:
         version = _file_version(record_path)
@@ -7196,7 +7206,7 @@ def _prewrite_inputs(record_path: Path, record: Mapping[str, object] | None,
             dirs = tuple(sorted({os.path.dirname(str(path)) for path in paths}))
         else:
             dirs = tuple(kept_dirs)
-        return (version, dirs, tuple(_file_version(item) for item in dirs))
+        return (version, dirs, tuple(version_of(item) for item in dirs))
     except ProducedOutputError:
         return None
 
@@ -7244,6 +7254,7 @@ def _sweep_ended_prewrites(queue, instance: Mapping[str, object],
     # First what is unchanged since the decision the tick last left in
     # place: no lock, and no path read (`_KEPT_PREWRITES`).
     owners_now: list[object] = []
+    seen: dict[str, object] = {}
 
     def unchanged(batch_id: str) -> bool:
         kept = _KEPT_PREWRITES.get(keys[batch_id])
@@ -7251,7 +7262,7 @@ def _sweep_ended_prewrites(queue, instance: Mapping[str, object],
             return False
         (version, dirs, dir_versions, owners_then), _action = kept
         inputs = _prewrite_inputs(directory / f"{batch_id}.prewrite.json",
-                                  None, kept_dirs=dirs)
+                                  None, kept_dirs=dirs, seen=seen)
         if inputs is None or inputs != (version, dirs, dir_versions):
             return False
         if not owners_now:
@@ -7272,6 +7283,7 @@ def _sweep_ended_prewrites(queue, instance: Mapping[str, object],
     with queue.stage_ownership_lock(str(instance["output_prefix"])):
         records: dict[str, dict[str, object]] = {}
         inputs: dict[str, tuple[object, ...] | None] = {}
+        locked_seen: dict[str, object] = {}
         for batch_id in batch_ids:
             base = {"prewrite": _batch_report_key(instance, batch_id)}
             record_path = directory / f"{batch_id}.prewrite.json"
@@ -7291,7 +7303,7 @@ def _sweep_ended_prewrites(queue, instance: Mapping[str, object],
             records[batch_id] = record
             # The record's version from before it was read; its directories'
             # from before any of its paths is.
-            dirs = _prewrite_inputs(record_path, record)
+            dirs = _prewrite_inputs(record_path, record, seen=locked_seen)
             inputs[batch_id] = (None if version is None or dirs is None
                                 else (version[0], dirs[1], dirs[2]))
         dispositions = _ended_prewrite_dispositions(
