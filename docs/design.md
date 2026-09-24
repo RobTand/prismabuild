@@ -9630,12 +9630,28 @@ end. Their digest is the range's *share namespace*
 
 Every scanner of the plan directory lists `<consumer>.json` names only, so the
 subdirectory is invisible to them. A registration is kept for as long as its
-mover can be published. A `done` mover whose range was evicted holds no
-tokens, so `_mover_state` reads it as unpublished and the window publishes it
-again. The one exception is an operator's live withdrawal of the registered
-mover (#708), which the window never republishes. A later submitter then
-replaces that registration, and the old record moves to
-`<namespace>.<mover>.withdrawn`.
+mover can be published under the tier announcement it was sealed against. A
+`done` mover whose range was evicted holds no tokens, so `_mover_state` reads
+it as unpublished and the window publishes it again. Two things make a later
+submitter replace the registration. The old record then moves to
+`<namespace>.<mover>.withdrawn` or `.stale`, and the new one is a first write:
+
+- An operator's live withdrawal of the registered mover (#708), which the
+  window never republishes.
+- A new tier announcement. A mover's argv names the interpreter and tool root
+  the stage tier announced when it was sealed
+  (`movement_actions.movement_tools`), and the tool root is one runtime
+  generation's directory. So a registration records that announcement
+  (`sealed_against`: `mover_python` and `mover_tools_root`), and a submission
+  that reads another one reuses it only while its mover is in `ready/` or
+  `claimed/`, or while its queue state cannot be read. Sealing a second mover
+  for a queued or running copy would copy the range twice. The fill price and
+  the progress grace are not compared: they are re-read at every seal, and
+  comparing them would reseal nearly every range.
+
+The replaced mover's index stays, because plans sealed against it still name
+it. When nothing live names it, the new mover adopts its resident range
+(`adopt_resident_ranges`) rather than copying it again.
 
 `pbrun --residency-share auto` (the default) seals this way. `off` seals a
 mover per consumer, as before, and is the A/B's other arm.
@@ -9659,7 +9675,10 @@ A fragment entry that nothing dates would read to every later publisher of the
 same staged name as a vouch still pending, which refuses forever (#1087). A
 date that no fragment cites is inert. The copy runs under the mover's
 transition lock, taken without blocking, and is rewritten only when the
-namespace's documents change.
+namespace's documents change. The readers come from the cycle's census, taken
+before the lock, so an egress that drops a reader's interest in between costs
+one more copy of the vouch and one more egress. Within a cycle each mover's
+index is read once (`residency_plan.share_namespace_of`).
 
 **Interest is derived, not filed.** A consumer is interested in a shared
 range while all of these hold (`stage_release.shared_interest`):
