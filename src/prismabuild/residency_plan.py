@@ -1416,10 +1416,13 @@ def seal_window(queue, plan: Mapping[str, object], *,
     predecessor cancellations a fresh seal's would.  ``renew`` is ``False``
     only for a caller re-attaching to its own live publication.
 
-    A renewal that refuses leaves nothing behind: a plan this call filed is
-    archived under ``superseded/`` (reason ``seal-refused``) before the
-    refusal is raised, so no filed plan outlives a submission that published
-    no consumer.  A plan that was already filed stays as it was.  Returns the
+    A renewal that refuses or fails leaves nothing behind: a plan this call
+    filed is archived under ``superseded/`` (reason ``seal-refused``) before
+    the error is raised, so no plan this call filed outlives it unpublished.
+    A plan that was already filed stays as it was.  What this cannot cover
+    is a process killed after the seal, or a publication that fails after
+    it: that plan stays filed with no row, and until it is reaped it keeps
+    any dead consumer's mover it names until the mover ends.  Returns the
     renewal's answer (``retired`` lists the markers it retired).
     """
 
@@ -1437,7 +1440,11 @@ def seal_window(queue, plan: Mapping[str, object], *,
             return {"consumer_action_key": key, "retired": []}
         try:
             return retire_predecessor_cancellations(queue, key, checked)
-        except ResidencyPlanError:
+        except Exception:
+            # Any failure, not only a refusal: an ``OSError`` out of the
+            # handoff proof or the withdrawn listing would otherwise leave a
+            # filed plan with no row and no ending, which the dead-consumer
+            # pass reads as a live seal's interest in every mover it names.
             filed = incarnation(path)
             if before is None and filed is not None:
                 target = (path.parent / SUPERSEDED

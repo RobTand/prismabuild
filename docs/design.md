@@ -7552,9 +7552,9 @@ child still names the old window. The immutable decision under
 markers made while those locks are held: a cancellation filed for a child
 after it survives, and the window's next cycle reads it as live -- it refuses
 to publish the child and marks the new plan superseded. The first lead is a
-child like any other here, with no special case. A renewal that refuses
-archives a plan the same call filed (reason `seal-refused`), so a refused
-submission leaves no filed plan behind. A release re-attaching to its own live
+child like any other here, with no special case. A renewal that refuses or
+fails archives a plan the same call filed (reason `seal-refused`), so a
+refused submission leaves no filed plan behind. A release re-attaching to its own live
 row (#913) renews nothing. The renewal never teaches the automatic publisher
 to ignore a marker: the window's `refuse_withdrawn` publications and its
 supersession pass are unchanged, and only the deliberate submission retires
@@ -7594,9 +7594,12 @@ index that does not list, reads there as nobody. Two rules close it:
 
 The kept mover keeps the dead consumer's plan filed, because `reap` will not
 archive it under a live child; a later pass reaps it once the mover has ended.
-A filed plan whose consumer was never published and never ended (a seal that
-stopped between its plan and its row) keeps a mover it names alive until that
-mover ends; the copy is bounded, and the orphan sweep reclaims its range. The
+A filed plan whose consumer was never published and never ended (a process
+killed between its seal and its row, or a publication that failed after the
+seal) keeps a mover it names alive until that mover ends; the copy is
+bounded, and the orphan sweep reclaims its range. No pass reaps such a plan
+yet, because the pass discovers only plans whose consumer has a terminal
+record. The
 pass's lock order stays parent before child; the one lock it takes the other
 way round, another consumer's while a mover's is held, is taken without
 blocking and never waits. The tests are in
