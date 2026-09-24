@@ -185,6 +185,19 @@ HOLDER_UNRESOLVED_EVENT = "stage-holder-unresolved"
 #: reporting every unresolved holder once more is the right amount of noise.
 _UNRESOLVED_REPORTS: dict[tuple[str, str], dict[str, str]] = {}
 
+#: The report of the dead owners on a tier that hold material and no token
+#: (#1061): how many, and the bytes their fragments name.  The orphan sweep
+#: takes them back under pressure, and nothing else counts them, so this is
+#: where an operator sees them.  Published once per change of the set the
+#: pass leaves, including a drop to none, and never for a set that was never
+#: there.
+UNCHARGED_OWNERS_EVENT = "stage-uncharged-dead-owners"
+
+#: The movers each tier's latest uncharged-owner report named, per queue and
+#: tier.  Process-local, like :data:`_UNRESOLVED_REPORTS`, and cleared with
+#: it by :func:`reset_holder_reports`.
+_UNCHARGED_REPORTS: dict[tuple[str, str], tuple[str, ...]] = {}
+
 #: The record an orphan sweep leaves when it cannot read a tier's ledger
 #: (#1007).  Which held movers still count as attribution is unknown then,
 #: and unknown ownership never deletes: the pass that needed the read is
@@ -3522,11 +3535,159 @@ class _TerminalNames:
 DEAD_OWNER_UNIT = "dead-owner"
 
 
+class _UnchargedOwners:
+    """The coherent dead owners no token holds, as one dead-owner pass found them.
+
+    #1061: a failed consumer's executed DONE mover whose move receipt never
+    completed holds no stage token -- the ledger released it at ``finish``
+    -- yet its files, its fragment and its material stay, and nothing in
+    them is stale.  The mint already counts those bytes: supply is writable
+    plus landed, and bytes no token holds are outside writable and outside
+    every token, so free space is right and a charge would subtract them
+    twice.  What no pass did was give them back, because the held-key pass
+    reads only held keys.  :func:`sweep_dead_owner_fragments` fills this;
+    :func:`sweep` evicts from it under pressure and reports it.
+
+    ``by_tier`` maps a tier to ``(mover, consumer, fragment)`` per owner:
+    the fragment the discovery validated, whose entries' bytes the report
+    sums only when the set it reports has changed, so a steady cycle pays a
+    list append per owner and no walk of its entries.  ``known`` is false when discovery
+    did not complete, and ``unknown_tiers`` names a tier whose ledger or
+    one of whose owners could not be read: the collection is then not a
+    census of that tier, and its report waits.
+    """
+
+    def __init__(self) -> None:
+        self.known = True
+        self.unknown_tiers: set[str] = set()
+        self.by_tier: dict[str, list[tuple[str, str, Mapping]]] = {}
+
+    def add(self, tier_id: str, mover: str, consumer: str,
+            fragment: Mapping) -> None:
+        self.by_tier.setdefault(tier_id, []).append((mover, consumer, fragment))
+
+    def census_of(self, tier_id: str) -> bool:
+        """Whether this pass's collection is a complete census of ``tier_id``."""
+
+        return self.known and tier_id not in self.unknown_tiers
+
+
+def _left_coherent(receipt: Mapping[str, object]) -> bool:
+    """Whether a stale-mention verdict left its owner whole and current.
+
+    The transaction's own "nothing to act on" verdicts (#853, #1056): the
+    owner retained whole with no retention reason, or under a co-owner, and
+    no error.  A retention reason -- a taint, a live pin or claim, a
+    handoff -- is not coherence, and neither is an eviction or a changed
+    document.  Nor is a partial prune, whose receipt carries no retention
+    reason either: the fragment the discovery read is no longer the one on
+    disk, so the owner is collected on the next pass, from the rewritten
+    fragment.
+    """
+
+    return (receipt.get("event") == STALE_MENTION_EVENT
+            and receipt.get("retained_reason") in ("", "co-owner")
+            and not receipt.get("partial")
+            and not receipt.get("errors"))
+
+
+def _fragment_bytes(fragment: Mapping[str, object]) -> int:
+    """The bytes a validated fragment's entries name."""
+
+    entries = fragment.get("entries")
+    if not isinstance(entries, Mapping):
+        return 0
+    return sum(int(entry.get("bytes") or 0) for entry in entries.values()
+               if isinstance(entry, Mapping))
+
+
+def _evict_uncharged_owner(queue: pool.PoolQueue, mover: str, consumer: str, *,
+                           tier_id: str, stage_root: str,
+                           residency_root: str | Path | None,
+                           ) -> dict[str, object] | None:
+    """Give back one uncharged dead owner's bytes, or ``None`` if it revived.
+
+    The death proof is taken again here, under the consumer's transition
+    lock and then the mover's (the dead-owner pass's order): neither may be
+    queued again, the consumer may hold no lease or plan, and the mover may
+    hold no token on the tier.  Anything else returns ``None`` and the pass
+    moves on.  The eviction is whole (#903), so a live pin, a promotion
+    handoff or the mover's own live copy declines it with nothing unlinked;
+    a co-owner's fragment or a claimed copy keeps its file through the
+    shared verdict, and the last owner to leave deletes.
+    """
+
+    try:
+        with queue._transition_locked(consumer):
+            for key in (consumer, mover):
+                live, why = residency_plan.live_state(queue, key)
+                if live or why:
+                    return None
+            if (not _metadata_absent(queue.lease_path(consumer))
+                    or not _metadata_absent(queue.residency_plan_path(consumer))):
+                return None
+            with queue.mover_transition_lock(mover):
+                if not _metadata_absent(
+                        queue.tier_ledger(tier_id).held_dir / mover):
+                    return None
+                return evict(queue, mover, consumer_action_key=consumer,
+                             stage_root=stage_root,
+                             residency_root=residency_root,
+                             reason="uncharged-owner-sweep", whole=True)
+    except (OSError, ValueError, pb.PrismaBuildError) as exc:
+        return {
+            "schema": pool.POOL_EGRESS_SCHEMA_V1, "event": DEAD_OWNER_EVENT,
+            "action_key": mover, "consumer_action_key": consumer,
+            "tier_id": tier_id, "stage_root": str(stage_root),
+            "reason": "uncharged-owner-sweep", "bytes_deleted": 0,
+            "complete": False, "errors": [f"ownership uncertain: {exc}"],
+            "host": socket.gethostname(), "unix": time.time(),
+        }
+
+
+def _uncharged_owner_report(queue: pool.PoolQueue, tier_id: str,
+                            stage_root: str,
+                            owners: list[tuple[str, str, Mapping]], *,
+                            evicted: Mapping[str, int],
+                            needed: int | None) -> list[dict[str, object]]:
+    """The tier's uncharged dead owners, once per change of the set (#1061).
+
+    ``owners`` is what the dead-owner pass found on the tier and
+    ``evicted`` maps each owner this pass gave back to the bytes it
+    deleted.  The report names what is left: the count and the bytes their
+    fragments name (a file two owners name counts once per owner), plus
+    what this pass evicted and the room the tier needed.  It is filed when
+    what is left differs from the last report, and whenever this pass
+    evicted one, so an owner found and evicted in one pass is reported.
+    """
+
+    left = [(mover, fragment) for mover, _consumer, fragment in owners
+            if mover not in evicted]
+    named = tuple(sorted(mover for mover, _fragment in left))
+    memo = (str(queue.root), tier_id)
+    if _UNCHARGED_REPORTS.get(memo, ()) == named and not evicted:
+        return []
+    _UNCHARGED_REPORTS[memo] = named
+    return [{
+        "schema": pool.POOL_EGRESS_SCHEMA_V1, "event": UNCHARGED_OWNERS_EVENT,
+        "action_key": "", "consumer_action_key": "", "tier_id": tier_id,
+        "stage_root": str(stage_root), "reason": "orphan-sweep",
+        "owners": len(left),
+        "bytes": sum(_fragment_bytes(fragment) for _mover, fragment in left),
+        "owners_evicted": len(evicted),
+        "bytes_evicted": sum(int(value) for value in evicted.values()),
+        "pressure_gib": needed,
+        "complete": True, "errors": [],
+        "host": socket.gethostname(), "unix": time.time(),
+    }]
+
+
 def sweep_dead_owner_fragments(
         queue: pool.PoolQueue, *, stage_roots: dict[str, str],
         residency_root: str | Path | None = None,
         index: CensusIndex | None = None,
         budget=None,
+        uncharged: "_UnchargedOwners | None" = None,
 ) -> list[dict[str, object]]:
     """Retire proven dead unmaterialized owners with no charge (#839, #866).
 
@@ -3556,7 +3717,21 @@ def sweep_dead_owner_fragments(
     promotion handoff or unreadable census. Withdrawn movers still require no
     receipt and are never partially pruned. Other terminal shapes and all
     produced namespaces remain excluded. No age or pressure is deletion
-    authority.
+    authority here.
+
+    ``uncharged`` collects what this pass leaves for the held-key pass
+    (#1061): each material-bearing DONE owner it proved dead that holds no
+    token on its tier and whose paths the stale-mention transaction found
+    whole and current -- a verdict of nothing to act on (retained whole,
+    alone or under a co-owner, with no error), or a skip checkpoint's hit,
+    which certifies the paths whatever retained the owner when it was
+    installed.  This pass deletes none of them.  Their deletion authority is
+    the same death proof, taken again under the consumer's lock by
+    :func:`sweep`, and pressure only decides when; ``evict`` rechecks
+    co-owners, claims, pins and handoffs under its own locks.  A discovery
+    that could not complete marks the collection unknown rather than empty,
+    and so does a consumer the cycle budget did not reach, for its tiers:
+    what the pass did not examine is not a census.
 
     Discovery reads only what can name a candidate (#992).  The census is
     ``index``'s when the tier loop passes its own, so a cycle re-reads only
@@ -3582,8 +3757,19 @@ def sweep_dead_owner_fragments(
     root = Path(residency_root if residency_root is not None
                 else queue.root / pool.RESIDENCY)
     if root.name == produced_output.OUTPUT_FRAGMENTS_SUBDIR:
+        if uncharged is not None:
+            uncharged.known = False
         return []
     receipts: list[dict[str, object]] = []
+
+    def unknown() -> list[dict[str, object]]:
+        """End the pass with nothing discovered, and say it was not a census."""
+
+        if uncharged is not None:
+            uncharged.known = False
+        return receipts
+
+    candidates: dict[str, list[tuple[str, dict]]] = {}
 
     def refuse(why: str, consumer: str = "", mover: str = "") -> None:
         receipts.append({
@@ -3593,16 +3779,22 @@ def sweep_dead_owner_fragments(
             "complete": False, "errors": [why],
             "host": socket.gethostname(), "unix": time.time(),
         })
+        if uncharged is not None and consumer:
+            # An owner this pass could not judge may be one the collection
+            # would hold: its tier's report waits for a pass that can.
+            for child, fragment in candidates.get(consumer, ()):
+                if not mover or child == mover:
+                    uncharged.unknown_tiers.add(str(fragment.get("tier_id")))
 
     fragments, tainted = _fragment_census(root, index)
     if tainted:
         refuse("ownership uncertain: " + "; ".join(tainted[:8]))
-        return receipts
+        return unknown()
     try:
         named = _TerminalNames(queue)
     except OSError as exc:
         refuse(f"ownership uncertain: queue census: {exc}")
-        return receipts
+        return unknown()
     held_by_tier: dict[str, set[str]] = {}
     for tier, stage in stage_roots.items():
         if stage_root_refusal(queue, stage) is not None:
@@ -3615,7 +3807,8 @@ def sweep_dead_owner_fragments(
             held_by_tier[tier] = set()
         except (OSError, pool.PoolContractError) as exc:
             refuse(f"ownership uncertain: tier ledger: {exc}")
-    candidates: dict[str, list[tuple[str, dict]]] = {}
+            if uncharged is not None:
+                uncharged.unknown_tiers.add(tier)
     try:
         for consumer, mover, fragment, direct in fragments:
             tier = fragment.get("tier_id")
@@ -3632,7 +3825,7 @@ def sweep_dead_owner_fragments(
                 candidates.setdefault(consumer, []).append((mover, fragment))
     except OSError as exc:
         refuse(f"ownership uncertain: queue census: {exc}")
-        return receipts
+        return unknown()
     # Discovery is complete: the skip checkpoints kept are exactly those of
     # the owners it found (#1056), so an owner that left -- evicted, adopted,
     # its fragment gone -- stops holding a place in the cache, and the cache
@@ -3648,12 +3841,18 @@ def sweep_dead_owner_fragments(
     for consumer in order:
         children = candidates[consumer]
         if budget is not None and not budget.start(DEAD_OWNER_UNIT, consumer):
+            if uncharged is not None:
+                # Not examined this cycle: its tiers' uncharged sets are
+                # not a census, so their reports wait (#1061).
+                uncharged.unknown_tiers.update(
+                    str(fragment.get("tier_id")) for _mover, fragment in children)
             continue
         try:
             _dead_owner_unit(queue, consumer, children, root=root,
                              stage_roots=stage_roots, index=index,
                              refuse=refuse, receipts=receipts,
-                             uncertainty=uncertainty)
+                             uncertainty=uncertainty,
+                             held_by_tier=held_by_tier, uncharged=uncharged)
         finally:
             if budget is not None:
                 budget.done(DEAD_OWNER_UNIT)
@@ -3664,8 +3863,14 @@ def _dead_owner_unit(queue: pool.PoolQueue, consumer: str,
                      children: list[tuple[str, dict]], *, root: Path,
                      stage_roots: dict[str, str], index: CensusIndex | None,
                      refuse, receipts: list[dict[str, object]],
-                     uncertainty: tuple[type[BaseException], ...]) -> None:
-    """One candidate consumer of `sweep_dead_owner_fragments`, under its locks."""
+                     uncertainty: tuple[type[BaseException], ...],
+                     held_by_tier: Mapping[str, set[str]] | None = None,
+                     uncharged: _UnchargedOwners | None = None) -> None:
+    """One candidate consumer of `sweep_dead_owner_fragments`, under its locks.
+
+    ``held_by_tier`` is the discovery's ledger listing and ``uncharged`` the
+    collection it fills (#1061); either absent collects nothing.
+    """
 
     try:
         with queue._transition_locked(consumer):
@@ -3750,13 +3955,22 @@ def _dead_owner_unit(queue: pool.PoolQueue, consumer: str,
                                 # counts it (#1056).
                                 if index is not None:
                                     index.stale_skipped += 1
-                                continue
-                            if index is not None:
-                                index.stale_censused += 1
-                            receipts.append(prune_stale_mentions(
-                                queue, mover, consumer_action_key=consumer,
-                                stage=Path(stage_roots[tier]), tier_id=tier,
-                                root=root, observed=observed))
+                                coherent = True
+                            else:
+                                if index is not None:
+                                    index.stale_censused += 1
+                                pruned = prune_stale_mentions(
+                                    queue, mover, consumer_action_key=consumer,
+                                    stage=Path(stage_roots[tier]), tier_id=tier,
+                                    root=root, observed=observed)
+                                receipts.append(pruned)
+                                coherent = _left_coherent(pruned)
+                            # #1061: an owner with no token whose paths the
+                            # transaction found whole is room under pressure.
+                            if (coherent and uncharged is not None
+                                    and held_by_tier is not None
+                                    and mover not in held_by_tier.get(tier, ())):
+                                uncharged.add(tier, mover, consumer, observed)
                             continue
                         if not _metadata_absent(
                                 queue.tier_ledger(tier).held_dir / mover):
@@ -3855,6 +4069,31 @@ def sweep(queue: pool.PoolQueue, *, stage_roots: dict[str, str],
     its own locks; a resubmitted consumer is excluded by the locked state
     recheck before eviction, so pressure deference would only preserve the block.
 
+    **An uncharged dead owner with material is an orphan under pressure
+    (#1061).**  A failed consumer's executed DONE mover whose move receipt
+    never completed holds no token -- the ledger released it at ``finish``
+    -- while its coherent files, fragment and material stay.  The mint
+    already counts those bytes (supply is writable plus landed, and no token
+    holds them), so they are never charged: a charge would subtract them
+    twice.  The dead-owner pass above names every such owner it proved dead
+    and left whole, and this pass takes them as candidates beside the held
+    orphans, in the same oldest-receipt order, only on a tier with pressure:
+    ``{}``, zero and ``None`` alike evict none of them, since without a
+    window waiting they are cache and nothing else.  Each goes through
+    :func:`_evict_uncharged_owner`, which retakes the death proof under the
+    consumer's lock and evicts whole, so a live pin, a handoff or the
+    mover's own live copy keeps every byte, and co-owners settle through
+    the shared verdict.  An owner a skip checkpoint stands for may have
+    been pinned or claimed when the checkpoint was installed, since the
+    checkpoint certifies paths and not retention reasons; while that
+    reason lives, each pressured cycle pays one declined eviction for it,
+    whose census (#1056 measured about 1.85 s per owner on the live stage)
+    runs before the decline.  The bytes each eviction deletes are credited
+    against the room the tier needs, in whole GiB, until the ledger's next
+    mint shows them, and the pass stops once the room is covered.  The
+    tier's set of such owners -- count and bytes -- is reported as
+    ``stage-uncharged-dead-owners`` once per change.
+
     **``index`` is the tier loop's census, kept from one cycle to the next
     (#992).**  Every census this pass takes -- the dead-owner discovery, the
     receipt-less owner lookup, each tier's reconciliation -- reads it, so a
@@ -3868,9 +4107,10 @@ def sweep(queue: pool.PoolQueue, *, stage_roots: dict[str, str],
 
     wanted, owners = live_claims(queue)
     swept: list[dict[str, object]] = []
+    uncharged = _UnchargedOwners()
     swept.extend(sweep_dead_owner_fragments(
         queue, stage_roots=stage_roots, residency_root=residency_root,
-        index=index, budget=budget))
+        index=index, budget=budget, uncharged=uncharged))
     # Taken once, and only when a held key has no receipt to name its
     # consumer (#892).
     fragment_owners: dict[str, list[tuple[str, bool]]] | str | None = None
@@ -3893,7 +4133,9 @@ def sweep(queue: pool.PoolQueue, *, stage_roots: dict[str, str],
                 tier_id=tier_id, stage_root=stage_root,
                 skipped="held-key pass and reconciliation", exc=exc))
             continue
-        orphans: list[tuple[float, str, str]] = []
+        # (staged unix, mover, consumer, uncharged): one age order for held
+        # orphans and uncharged dead owners alike (#1061).
+        orphans: list[tuple[float, str, str, bool]] = []
         retained: list[dict[str, object]] = []
         unresolved: dict[str, str] = {}
         for key in held:
@@ -3950,17 +4192,27 @@ def sweep(queue: pool.PoolQueue, *, stage_roots: dict[str, str],
                             why=why))
                         unresolved[key] = why
                     continue
-            staged_unix = 0.0
-            if isinstance(receipt, dict):
-                try:
-                    staged_unix = float(receipt.get("unix", 0.0) or 0.0)
-                except (TypeError, ValueError):
-                    staged_unix = 0.0
-            orphans.append((staged_unix, key, consumer))
-        orphans.sort()
+            orphans.append((_staged_unix(receipt), key, consumer, False))
         needed = None if pressure is None else int(pressure.get(tier_id, 0))
+        dead_uncharged = [
+            (mover, consumer)
+            for mover, consumer, _fragment in uncharged.by_tier.get(tier_id, ())
+            if mover not in wanted and mover not in owners]
+        if needed is not None and needed > 0:
+            # Only a tier that needs room reads their receipts: the order is
+            # all they are for, and no pressure evicts none of them (#1061).
+            orphans.extend(
+                (_staged_unix(queue.move_record(mover)), mover, consumer, True)
+                for mover, consumer in dead_uncharged)
+        orphans.sort()
         kind = storage_tiers.capacity_kind_of(tier_id)
-        for _, key, consumer in orphans:
+        # Bytes an uncharged eviction deleted are room the ledger cannot
+        # show until the next mint counts the grown writable: no token held
+        # them.  Credited here, floored to whole GiB as a charged egress
+        # frees them, so the pass stops once the room is covered.
+        credit_bytes = 0
+        evicted_uncharged: dict[str, int] = {}
+        for _, key, consumer, is_uncharged in orphans:
             if needed is not None:
                 if needed <= 0:
                     break      # nothing on this tier is waiting for the room
@@ -3968,13 +4220,34 @@ def sweep(queue: pool.PoolQueue, *, stage_roots: dict[str, str],
                     free = int(queue.tier_ledger(tier_id).available().get(kind, 0))
                 except (OSError, pool.PoolContractError):
                     break
-                if free >= needed:
+                if free + _tokens_for_newly_free_bytes(credit_bytes) >= needed:
                     break      # the window fits now; the rest stays resident
-            swept.append(evict(queue, key, consumer_action_key=consumer,
-                               stage_root=stage_root,
-                               residency_root=residency_root, reason="orphan-sweep"))
+            if not is_uncharged:
+                swept.append(evict(queue, key, consumer_action_key=consumer,
+                                   stage_root=stage_root,
+                                   residency_root=residency_root,
+                                   reason="orphan-sweep"))
+                continue
+            outcome = _evict_uncharged_owner(
+                queue, key, consumer, tier_id=tier_id, stage_root=stage_root,
+                residency_root=residency_root)
+            if outcome is None:
+                continue       # revived or charged since discovery: not ours
+            swept.append(outcome)
+            credit_bytes += int(outcome.get("bytes_deleted") or 0)
+            if outcome.get("complete"):
+                evicted_uncharged[key] = int(outcome.get("bytes_deleted") or 0)
+        if needed is not None:
+            needed_after_credit: int | None = (
+                needed - _tokens_for_newly_free_bytes(credit_bytes))
+        else:
+            needed_after_credit = None
+        if uncharged.census_of(tier_id):
+            swept.extend(_uncharged_owner_report(
+                queue, tier_id, stage_root, uncharged.by_tier.get(tier_id, []),
+                evicted=evicted_uncharged, needed=needed))
         reported: set[str] = set()
-        if retained and _still_short(queue, tier_id, kind, needed):
+        if retained and _still_short(queue, tier_id, kind, needed_after_credit):
             # A retained receipt-less holder is reported only when keeping it
             # costs something: the tier's window still lacks room after every
             # orphan that could go has gone.  Otherwise it is a quiet wait, as
@@ -4098,6 +4371,17 @@ def _unended_owner(queue: pool.PoolQueue, consumer: str) -> str:
     except (OSError, ValueError, pb.PrismaBuildError) as exc:
         return f"its consumer's outcome is unreadable: {exc}"
     return ""
+
+
+def _staged_unix(receipt: object) -> float:
+    """A move receipt's time, the orphan pass's age order; 0 when it has none."""
+
+    if not isinstance(receipt, dict):
+        return 0.0
+    try:
+        return float(receipt.get("unix", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _still_short(queue: pool.PoolQueue, tier_id: str, kind: str,
@@ -4346,9 +4630,10 @@ def _unresolved_reports(queue: pool.PoolQueue, tier_id: str, stage_root: str,
 
 
 def reset_holder_reports() -> None:
-    """Forget which unresolved holders were reported (tests, and restarts)."""
+    """Forget which unresolved holders and uncharged owners were reported."""
 
     _UNRESOLVED_REPORTS.clear()
+    _UNCHARGED_REPORTS.clear()
 
 
 def _is_mover_partial(name: str) -> bool:

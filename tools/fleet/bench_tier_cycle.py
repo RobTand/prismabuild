@@ -32,6 +32,11 @@ died.  ``--no-range-claims`` adds claimed exports that demand only the
 tier's fill rate and seal no range (the live ``produced_export.py`` shape).
 Before #1060 they tainted every ownership census on the tier while they were
 claimed; since, the claim census reads a rate-only claim as no copy.
+``--dead-owners-uncharged`` builds the same dead owners without their stage
+token (#1061), as the ledger leaves an owner whose move receipt never
+completed: it released the token at ``finish`` while the files, fragment
+and material stayed.  The receipt here still says complete, since the sweep
+reads the token and not the receipt.
 Each cycle row then carries the stage-lock hold its sweep receipts
 recorded.
 
@@ -224,7 +229,7 @@ def _dead_action(queue: pool.PoolQueue, key: str, status: str) -> None:
 
 
 def build_dead_owners(queue: pool.PoolQueue, stage: Path, *, pairs: int,
-                      entries: int) -> dict[str, int]:
+                      entries: int, charged: bool = True) -> dict[str, int]:
     """Co-owned dead owners: the #1056 live shape.
 
     Each pair shares ``entries`` staged files, each in its own ``.pbrange``
@@ -233,6 +238,10 @@ def build_dead_owners(queue: pool.PoolQueue, stage: Path, *, pairs: int,
     fragment and a material sidecar dating the files, so each is the
     other's co-owner and neither prunes anything.  Built before any other
     ready row, so each claim takes the row just published.
+
+    ``charged=False`` leaves out the stage token (#1061), as the ledger does
+    for a mover whose receipt never completed.  The mint is the same either
+    way, so only the charge differs between the two shapes.
     """
 
     counts: collections.Counter = collections.Counter()
@@ -283,7 +292,10 @@ def build_dead_owners(queue: pool.PoolQueue, stage: Path, *, pairs: int,
                 "entries_declared": entries, "entries_staged": entries,
                 "complete": True, "seconds": 20.0,
                 "unix": time.time() - 3600.0})
-            assert queue.tier_ledger(TIER).acquire(mover, {"stage_gib": 1})
+            if charged:
+                assert queue.tier_ledger(TIER).acquire(mover, {"stage_gib": 1})
+            else:
+                counts["dead_owners_uncharged"] += 1
             counts["dead_owners"] += 1
         counts["dead_owner_entries"] += entries
     return dict(counts)
@@ -327,7 +339,8 @@ def build_queue(queue: pool.PoolQueue, stage: Path, args) -> dict[str, int]:
     # Shapes built before #1056 name no dead owners and no no-range claims.
     counts.update(build_dead_owners(
         queue, stage, pairs=getattr(args, "dead_owner_pairs", 0),
-        entries=getattr(args, "dead_entries", 1680)))
+        entries=getattr(args, "dead_entries", 1680),
+        charged=not getattr(args, "dead_owners_uncharged", False)))
     for state, count in ((pool.DONE, args.done), (pool.FAILED, args.failed),
                          (pool.WITHDRAWN, args.withdrawn)):
         _terminal(queue, state, count)
@@ -587,6 +600,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dead-entries", type=int, default=1680,
                         help="entries in each dead owner's fragment, one "
                              "parent directory each")
+    parser.add_argument("--dead-owners-uncharged", action="store_true",
+                        help="build the dead owners without their stage "
+                             "token (#1061: a mover whose receipt never "
+                             "completed)")
     parser.add_argument("--no-range-claims", type=int, default=0,
                         help="claimed fill-rate-only exports that seal no "
                              "range (#1056)")
