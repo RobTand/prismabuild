@@ -66,6 +66,7 @@ import threading
 import time
 
 HERE = Path(__file__).resolve().parent
+ROOT = HERE.parents[1]
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parents[1] / "src"))
 sys.path.insert(0, str(HERE.parents[1] / "tests"))
@@ -82,6 +83,11 @@ _COUNTED = {
     "open": [(builtins, "open"), (io, "open"), (os, "open")],
     "listdir": [(os, "listdir")], "scandir": [(os, "scandir")],
     "rename": [(os, "rename"), (os, "replace")], "unlink": [(os, "unlink")],
+    "fsync": [(os, "fsync")],
+    # The whole-document reads and writes of an instance's commitments, the
+    # retirement's cost that does not depend on the box (#1072).
+    "commitments_read": [(po, "_read_commitments")],
+    "commitments_write": [(po, "_write_commitments")],
 }
 
 #: The sampler's own reads, taken before the counter wraps anything, so the
@@ -242,7 +248,7 @@ def run_cycles(args) -> int:
     stage_release.sweep = counter.step("stage_release.sweep",
                                        stage_release.sweep)
     receipts = tier_loop.ReceiptCache()
-    liveness = (tier_loop.Liveness()
+    liveness = (tier_loop.Liveness(interval_s=args.interval_s)
                 if callable(getattr(tier_loop, "Liveness", None)) else None)
 
     def discover(**_kwargs):
@@ -318,7 +324,23 @@ _CALLS = (
     ("os.listdir(", "listdir"), ("os.lstat(", "lstat"), ("os.stat(", "stat"),
     ("os.unlink(", "unlink"), ("unlink(", "unlink"), (".write(", "write"),
 )
-_OWN_DIRS = ("src/prismabuild", "tools/fleet")
+BENCH_FILE = os.path.basename(__file__)
+
+
+def _own(file: str) -> bool:
+    """Is ``file`` PrismaBuild's own source, as py-spy prints it shortened?
+
+    py-spy prints ``tier_loop.py`` or ``prismabuild/pool.py``, never the
+    full path, so a frame is ours when the name resolves to a file in this
+    checkout's ``tools/fleet`` or ``src`` (`bench_stage_adopt._resolve`).
+    This bench's own frames are the wrappers around the steps, not an
+    operation.
+    """
+
+    if os.path.basename(file) == BENCH_FILE:
+        return False
+    resolved = bench_stage_adopt._resolve(file)
+    return resolved is not None and ROOT in resolved.parents
 
 
 def classify(frames: list[tuple[str, str, int]]) -> tuple[str, str, str]:
@@ -332,20 +354,23 @@ def classify(frames: list[tuple[str, str, int]]) -> tuple[str, str, str]:
     step = "outside_cycle"
     for index, (function, file, _number) in enumerate(frames):
         base = os.path.basename(file)
-        if base == "bench_tier_cycle_r13.py" and function in (
-                "cold_cycle", "steady_cycle"):
+        if base == BENCH_FILE and function in ("cold_cycle", "steady_cycle"):
             wrapper = function
         if base == "tier_loop.py" and function in ("cycle", "_cycle"):
             step = function
-            if index + 1 < len(frames):
-                step = frames[index + 1][0]
+            # The first frame below `_cycle` that is not this bench's own
+            # counting wrapper names the step.
+            for below, file_below, _line_below in frames[index + 1:]:
+                if os.path.basename(file_below) != BENCH_FILE:
+                    step = below
+                    break
     codec = ""
     operation = "other"
     for function, file, number in reversed(frames):
         base = os.path.basename(file)
         if not codec and base in ("encoder.py", "decoder.py") and "json" in file:
             codec = "json-encode" if base == "encoder.py" else "json-decode"
-        if not any(part in file for part in _OWN_DIRS):
+        if not _own(file):
             continue
         text = bench_stage_adopt._line(file, number)
         call = next((name for needle, name in _CALLS if needle in text), "")
@@ -387,6 +412,16 @@ def analyze(profile: Path, rate: int) -> dict[str, object]:
             "top_frames": {name: {"s": round(count / rate, 3),
                                   "share": round(count / total, 4)}
                            for name, count in by_op[wrapper].most_common(20)},
+            # Each step's own frames, as shares of that step's samples: the
+            # retirement's are what #1072's before/after compares.
+            "step_frames": {
+                step: {name.partition(" :: ")[2]: {
+                    "s": round(count / rate, 3),
+                    "share": round(count / by_step[wrapper][step], 4)}
+                    for name, count in collections.Counter({
+                        name: count for name, count in by_op[wrapper].items()
+                        if name.startswith(f"{step} :: ")}).most_common(10)}
+                for step, _count in by_step[wrapper].most_common(4)},
         }
     return out
 
@@ -395,9 +430,9 @@ def analyze(profile: Path, rate: int) -> dict[str, object]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--work", required=True,
+    parser.add_argument("--work", default="",
                         help="scratch directory; emptied first; never /tmp")
-    parser.add_argument("--out", required=True,
+    parser.add_argument("--out", default="",
                         help="where summary.json, the cycles and the profile go")
     parser.add_argument("--cycles", type=int, default=6,
                         help="cycles to run: one cold, the rest steady")
@@ -420,10 +455,25 @@ def main(argv: list[str] | None = None) -> int:
                         help="py-spy samples per second")
     parser.add_argument("--age-sample-s", type=float, default=0.5,
                         help="seconds between reads of the tier record's age")
+    parser.add_argument("--interval-s", type=float, default=5.0,
+                        help="the serving loop's --interval-s, which a loop "
+                             "that budgets its cycle is told (the live tier "
+                             "loop runs --interval-s 5)")
     parser.add_argument("--run-cycles", action="store_true",
                         help=argparse.SUPPRESS)
     parser.add_argument("--cycles-out", default="", help=argparse.SUPPRESS)
+    parser.add_argument("--analyze", default="",
+                        help="attribute the samples of a recorded raw py-spy "
+                             "profile, print the result and exit; run it from "
+                             "the checkout that recorded the profile, whose "
+                             "line numbers the samples carry")
     args = parser.parse_args(argv)
+    if args.analyze:
+        print(json.dumps(analyze(Path(args.analyze), args.rate), indent=1,
+                         sort_keys=True))
+        return 0
+    if not args.out or (not args.run_cycles and not args.work):
+        parser.error("--work and --out are required")
     if args.run_cycles:
         return run_cycles(args)
 
@@ -486,6 +536,7 @@ def main(argv: list[str] | None = None) -> int:
                   "--run-cycles", "--work", str(work), "--out", str(out),
                   "--cycles", str(args.cycles),
                   "--age-sample-s", str(args.age_sample_s),
+                  "--interval-s", str(args.interval_s),
                   "--cycles-out", str(cycles_out)]
     if args.writer:
         argv_child.append("--writer")
