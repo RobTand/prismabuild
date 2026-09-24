@@ -4685,7 +4685,9 @@ and epoch, which is what the verdict compares.
 
 ### What the tier loop reads per cycle (#992, #1004)
 
-The tier loop runs one cycle every 5 s on the tier host. Until this change
+The tier loop runs one cycle every 5 s on the tier host: the fleet role
+passes `--interval-s 5` (`tools/fleet/fleet_boxes.json`), and
+`CYCLE_INTERVAL_S` falls back to 60 s without the flag. Until this change
 each cycle read the queue as if for the first time: it listed `done/`,
 `failed/` and `withdrawn/` (38,000 names on 2026-09-23), listed every
 residency namespace and parsed every fragment (429 namespaces, 1,957
@@ -7736,7 +7738,9 @@ Every range with an expectation carries `basis`: `reported`, `claim` or
 the time they took (see "A mover reports what it has landed" below).
 A queued range also carries its `queue_position` and `bytes_ahead`: every
 claimed mover's remaining bytes on the tier, then every earlier ready
-mover's, in the queue's own order (`_queue_order_of`).
+mover's, in the queue's own order (`_queue_order_of`). It names those movers
+in `movers_ahead` (#1022 review round 2), which the staged-wait verdict reads
+while a pacer hold keeps the bytes from moving.
 `residency_plan.expected_landings` replays that queue serially at one rate.
 The rate is the refill horizon's landing term, not a second model: the
 slowest complete copy among the tier's live plans (`_plan_landing`), else
@@ -7791,18 +7795,152 @@ frozen plan and checks each named mover against it and the queue:
 
 | Mover state | Exempt |
 |---|---|
-| `ready`, `claimed` | yes: a published mover already holds its room |
-| `unpublished`, `evicted` (in `done/`, no tokens), `failed` under a live plan | only while the tier loop is alive **and** the tier's filed commitment record (`tier-commitments/<tier>.json`, #930) shows `over_committed_gib <= 0` |
+| `ready` | only on evidence that it is coming (below) |
+| `claimed` | only on evidence that it is copying (below) |
+| `unpublished`, `evicted` (in `done/`, no tokens), `failed` under a live plan | only while the tier loop is alive, and then by the tier's filed commitment record (`tier-commitments/<tier>.json`, #930): yes when `over_committed_gib <= 0`; on an over-committed tier, by the record's claim order (#1011, table after next) |
 | `done` (in `done/`, holding tokens: landed or being adopted) | no: the copy finished, so a consumer still quiet is not waiting on it |
 | `withdrawn` | no: the window never republishes it (its publish passes `refuse_withdrawn`, and the refusal supersedes the plan, #708) |
 | `superseded`, `not-a-dependent`, `unknown` | no |
 
-The commitment condition is #1011: on an over-committed tier the claimed
-consumers wait on each other's room, and the `no_progress` kill is what
-breaks that, so their unpublished waits are not exempt there. A missing or
-unreadable commitment record, or a tier ledger the verdict cannot list for
-a `done` mover (`held_names_visible`), is not exempt either, and the verdict
-records why (`tier_over_committed_gib`, a mover's `detail`). A record with
+A queued mover is waited on only while it shows evidence (#1022 review, item
+1). Before, `ready` and `claimed` were exempt with no clock, so a row the
+claim pass can never place (`never_fits_tier_capacity`, `tier_unknown`, the
+#538 `cpus=` shape) or one it withholds held a GPU consumer for as long as
+it sat there. Each mover's entry in the verdict records the evidence it went
+on (`evidence`, `evidence_unix`):
+
+| Mover | Evidence | Exempt |
+|---|---|---|
+| `ready`, and every host's latest claim-pass reason on it (its denial ring, for its generation) is a refusal (`MOVER_REFUSAL_REASONS`, a `container_image_` reason) | `refused`; the entry names the reason as `refusal` and the host | no, and the hold accrues nothing |
+| `ready`, every host's latest reason is a refusal, a withhold or neutral, and at least one host withholds (`*_withholding`; a withhold outranks another host's refusal, since that host holds its box for the row) | `withheld` while the withhold's epoch is at most `WITHHOLD_CEILING_S` old, `withhold-lapsed` after that or with no epoch on file; the entry names the reason as `withhold`, the host, the epoch as `evidence_unix` and its `withhold_basis` | `withheld` only |
+| `ready`, otherwise | `copy-ahead-live` while a mover queued ahead of it at the wait's first check (`waiting_behind`: the landing record's `movers_ahead` at that check) is claimed with a live lease (below); else `baseline` on the wait's first check, and on the first check after a withhold or after the row was `claimed`; `bytes-ahead-fell` when its `bytes_ahead` in the consumer's landing record fell since the previous check; `carried` while the last of those is within the evidence window; `none` after a whole window without one | yes, except `none` |
+| `claimed` | `progress` or `claimed` when its landed-bytes report (`claimed/<key>.progress`, #1010) or, before its first report, its claim is at most `mover_report_latency_s()` (two heartbeats) old; `progress-grew` when the report's landed bytes grew since the previous check (one entry can take longer than two heartbeats to land); `lease-live` when its own lease is live (below); `none` otherwise | yes, except `none` |
+
+**A pacer hold is not a stall** (#1022 review round 2). A mover commits its
+report only when its landed bytes grow, and the tier loop rewrites a landing
+record only when the queue print changes. A pacer hold on a copy freezes
+both. A verdict that read only them ended a consumer one evidence window
+into a hold that the mover's worker was crediting, and holds run several
+of the campaign's 900 s chunk graces. So both readings also read the mover's
+lease (`PoolQueue._mover_lease`). A lease is live when it belongs to the
+mover's current claim and its heartbeat is within `LEASE_TIMEOUT_S`, the
+bound `reap_stale` applies before it takes a claim back. The worker
+heartbeats the lease whatever the copy lands. It credits a pacer hold or
+pool contention on evidence it samples itself (`pool_contention_exempt_s`,
+`start_gate_exempt_s`, #1010), and it ends a copy that stalls by its own
+`no_progress` rung. A live lease therefore says that the mover's own judge
+has not ended it. The entry records the heartbeat age and the credited
+seconds (`lease_heartbeat_age_s` and `hold_credited_s`; for a ready mover,
+`copy_ahead`, `copy_ahead_heartbeat_age_s` and `copy_ahead_hold_credited_s`),
+and its `evidence_unix` is the heartbeat, not the check. `waiting_behind` is
+fixed at the wait's first check and carried on the verdict, so a copy
+claimed later, one the claim pass placed instead of this mover, does not
+renew it. Recomputing `bytes_ahead` from the live queue at each check was
+the alternative. It falls on wall-clock alone, so it keeps falling for a
+mover that died. A ready mover with nothing queued ahead of it at the first
+check has no copy to read a lease from, and it keeps the `bytes_ahead` rule.
+That is a bounded end where `main` had none: before #1022 a ready mover was
+exempt with no clock, and now, if the claim pass neither places nor
+withholds for it, the consumer's wait ends one evidence window after the
+first check, about two phase graces after the consumer went quiet.
+
+**A withhold is the pool holding the box for the row** (#1022 review round
+3). A withhold is recorded when a row that has been denied
+`STARVATION_FLOOR` times keeps its stage host shut while the holders in its
+way drain soon (#924, `PoolQueue._withhold_verdict`): the row is next. The
+pool bounds that veto by `WITHHOLD_CEILING_S` (900 s) from the episode's
+start, `epoch_unix` in the row's passes sidecar, which is the same number as
+the campaign's chunk grace, but only for an episode with refills: work
+claimed after the epoch that refilled the veto (`_withhold_verdict`). An
+episode with none runs as long as its holders drain soon, which can reach a
+transient holder's declared end (`holder_bound`), past the 900 s the
+consumer allows it. The consumer then ends up to `WITHHOLD_CEILING_S` early
+(#1052). Round 2 read a withhold as "not coming", so a
+withhold that ran toward its ceiling ended a healthy consumer while the pool
+was about to place its mover. The verdict now reads it as evidence, with the
+epoch as its `evidence_unix` and the pool's own bound: `withheld` until
+`WITHHOLD_CEILING_S` past the epoch, and `withhold-lapsed` after that. A
+withhold with no episode on file (`in_flight`, `holder_tail`) is bounded by
+the row's first denial (`first_unix`), the clock the pool bounds `in_flight`
+by; `withhold_basis` says which (`episode` or `first-denial`), and a sidecar
+with neither is `withhold-lapsed`. Each new episode has a new epoch, so
+back-to-back episodes renew the wait, each for at most `WITHHOLD_CEILING_S`
+on the consumer's clock. The chain of episodes has no total bound, and the
+join between two episodes reads as a fresh `baseline`, not as a refusal:
+each renewal is evidence that the pool admitted and drained other work, a
+#924 fairness question rather than a liveness gap.
+When a withhold lifts, the ready rule takes its own `baseline` rather than
+carry the withhold's epoch, as it does after a `claimed` row is requeued: a
+previous entry's evidence time carries only within the ready rule.
+`deferred_behind_withholding` is recorded only for a producer's export
+(`cpu_admission.dependent_owner` returns `None` for anything but a
+`generation` action with `params.produced_spool`), so no stage mover
+carries it.
+
+`placement_mismatch` (the word of a box the row is not for) is neutral, and a
+host whose latest reason is anything else is transient, so the row goes to
+the evidence check. The evidence window is the consumer's own phase grace,
+the allowance its wait is judged against, floored at `OFFER_TIMEOUT_S`: the
+tier loop rewrites the landing record once a cycle, so no shorter window can
+see a fall. The rung passes this launch's previous verdict
+(`ProgressWatch.staged_wait`) with the grace, and the verdict carries its
+evidence forward. A previous verdict from another staged wait (its
+`since_unix` differs) is not used. A dead tier loop stops rewriting the
+landing record, so a ready mover then shows no fall: its consumer's wait
+ends after one window, the fail-closed side.
+
+On an over-committed tier the claimed consumers share the room in the
+order the tier loop ranks them (#1011, "Claimed consumers share a stage tier
+in admission order" below), and the verdict reads that order off the record:
+
+| Standing in `claim_order` | Exempt |
+|---|---|
+| any standing, when the order's last `relief` is `refused` or `unknown` (`CLAIM_ORDER_RELIEF_ENDS_WAIT`) | no: that relief made no room and names no victim, so an exemption by standing would be a wait with no end on an infrastructure fault |
+| `granted`, `head`, `satisfied` | yes: the order is serving it |
+| `held-back` | while the consumer ranked just ahead of it shows evidence (`ahead_evidence`, next list) |
+| the stuck rule's victim (`stuck_victim`): the last relief was `futile`, nobody is granted and every ranked consumer is blocked | no, as before #1011. Only the one consumer the rule names, the lowest ranked; the rest keep their standing's answer |
+| not ranked (no claim time, or a loop from before #1011) | no, as before #1011 |
+
+The ahead evidence is growth, not a clock (#1022 review, item 5). It is read
+off the ahead consumer's lease, whose progress observation its worker
+refreshes every heartbeat (`ProgressWatch.as_record`):
+
+* `ahead-ended`: it is no longer claimed, so it holds nothing the order
+  waits on. Live.
+* `ahead-waiting`: its own latest staged-wait verdict is exempt. Live.
+* `ahead-advanced` or `ahead-credited`: its `accepted_count` or its
+  `staged_wait_exempt_s` grew since this consumer's previous check. Live.
+* `baseline`: the first look at this consumer ahead, or a new attempt whose
+  counts restarted. Live.
+* `carried`: none of these now, but the last evidence is within the
+  evidence window. Live.
+* `ahead-within-grace`: none of these, but its own watch has not ended it:
+  its lease heartbeat is within `LEASE_TIMEOUT_S`, and the `quiet_s` its
+  watch reported plus the heartbeat's age is within its `grace_s`. Live,
+  with the heartbeat as `evidence_unix` (#1022 review round 3). A consumer
+  ahead in a phase with a longer grace than this one's reaches its own rung
+  later, so until then its stored verdict and credited seconds say nothing;
+  its watch is the judge that ends it, as a mover's worker is for a copy.
+* `none`: a whole window without evidence, and its watch does not vouch
+  for it. Not live.
+* `unread`: the lease does not read, belongs to another claim or carries
+  no counts. Live only while earlier evidence is within the window.
+
+The slack clock this replaces (`grace + CLAIM_ORDER_AHEAD_SLACK_S`, 75 s)
+had a 15 s margin against a 60 s cycle, so a late loop on the ahead
+consumer's box stripped the exemption from the consumer behind it. A late
+lease now delays the evidence by the lateness and ends the exemption only
+past a whole window. A stalled consumer ahead reports a quiet past its
+grace, shows nothing for a window, and its own rung ends it; a dead one
+stops its heartbeat, and the reaper ends its claim at `LEASE_TIMEOUT_S`,
+after which it reads `ahead-ended`. The verdict records the standing
+(`claim_order`, with the order's last `relief`) and, for a held-back
+consumer, `held_back_by`, `ahead_evidence`, `ahead_quiet_s` and
+`ahead_grace_s`.
+
+A missing or unreadable commitment record, or a tier ledger the verdict
+cannot list for a `done` mover (`held_names_visible`), is not exempt, and
+the verdict records why (`tier_over_committed_gib`, a mover's `detail`). A record with
 another token earns nothing. The rung credits only the time
 since the later of the wait's start and the last real advance, and it
 refunds the time the check itself took. The progress observation records
@@ -7817,8 +7955,8 @@ commitment record names (a) and (b) and their GiB among its terms
 (`tests/test_r12_and_the_capture_replay_under_the_refill_horizon.py`, which
 passes on `72c276d7d9d1` without this change). The commitment does not
 re-gate consumers that are already claimed: if three are claimed together,
-only `tier-over-committed` reports it (#1011). The staged-wait exemption does
-not cover their unpublished waits while the tier is over-committed.
+the tier is over-committed, and the claim order (#1011) decides which of
+them the tier serves first.
 
 **Limits.**
 
@@ -8041,6 +8179,312 @@ record. A claimed mover with no usable report keeps the claim-time price.
   caps is charged, and ends at its allowance.
 * **Unadmitted writes.** The caps are read caps. Writes that slow the pool
   without raising read await or backlog over a cap are not credited.
+
+### Claimed consumers share a stage tier in admission order (#1011)
+
+The #907 commitment gates newcomers only. A consumer that is already claimed
+is never re-checked, and its commitment can still outgrow the tier: its
+refill horizon lengthens when the landing rate falls, and the tier's room
+shrinks under adoption conflicts or foreign files. Once no claimed
+consumer's next range fits and nothing past any horizon is left to evict,
+each waits on the others' reading, none can read, and the state is a
+fixpoint of `cycle()`: nothing publishes and nothing is evicted. Before this
+change only a `no_progress` kill ended the wait, and a kill throws away a
+GPU consumer's work.
+
+**When the order applies.** Each cycle takes one commitment census before
+the pressure pass (`remember=False`, so admission's consumption memo does
+not move). On a stage tier the census finds over-committed, the pressure
+pass ranks the tier's claimed consumers on the need it already asks of each
+window: the next leg the window would publish, or the published leg it is
+waiting on (`window_pressure`, `_rank_claims`). A tier within its
+commitment is not ranked, and nothing below changes there: if the tier is
+not over-committed, what is free plus what is evictable already covers the
+next need.
+
+**The rank.** `window_credit.claim_order` sorts by two keys:
+
+1. A consumer blocked on the range it is reading comes before any
+   consumer's read-ahead.
+2. Among blocked consumers, the one blocked longest comes first
+   (`blocked_since_unix`); among the rest, the older recorded claim
+   (`claimed_unix`). The claim time and then the key break ties.
+
+A consumer's blocked-since time (`tier_loop._blocked_since`) is the later
+of its reader's staged-wait record (`since_unix`, #989), its last accepted
+report and its claim: it was not blocked before it last advanced, and a
+staged-wait record from before the claim is an earlier attempt's. Ranking
+blocked consumers by claim time instead starved the younger one (#1022
+review, item 2). With one 22 GiB phase and 30 GiB of room, the older claim
+was granted, read its range, blocked on the next, and was again the older
+claim, so the younger one's GPU idled and nothing ever ended its wait. By
+blocked-since, the younger one has been blocked longer by the time the
+older one blocks again, so it goes next: with k blocked consumers each is
+served within (k - 1) x (T_phase + T_land).
+
+It then spends the tier's free in that order. A consumer whose need fits
+what is left is `granted`. The first whose need does not fit is the `head`.
+Every consumer ranked after the head that needs anything is `held-back`,
+and one that needs nothing is `satisfied`.
+
+**Why blocked first.** The issue asks for strict admission order: the
+oldest consumer's next range before any younger consumer's. Strict order
+lets an older consumer's read-ahead take the room a younger consumer needs
+for the range it is blocked on, so a younger GPU idles while an older one
+buys latency it does not yet need. Blocked first serves the idle GPU
+first and keeps admission order within each group. The rank key and the
+fourth relief group below are the whole of this choice, so reversing it is
+a local change.
+
+**Making the head's room.** `evict_beyond_horizon` runs a second pass on
+every ranked tier with a head. Until the tier's free reaches the rank's
+`target_free_gib` (every granted need plus the head's), it evicts, in this
+order:
+
+1. ranges past any consumer's refill horizon that the first pass left;
+2. the legs of consumers ranked after the head, the lowest ranked first;
+3. the head's own legs past the one it needs;
+4. when the head is blocked, the read-ahead of consumers ranked before it;
+5. last, the landed chunks of the phase each blocked consumer ranked
+   after the head is reading, the lowest ranked first
+   (`preempt-reading-phase`, #1022 review item 4).
+
+Within a consumer, the farthest leg goes first. A leg goes only when its
+reader needs it later than the head can use the room: the same Belady rule
+the beyond-horizon pass uses, in seconds at each reader's measured
+consumption (`(start - read_through) / rate`). For a head that is not
+blocked, the comparison is with when its reader reaches its leg. For a
+blocked head it is with when its range can land, `need_bytes / rate` at its
+landing rate (#1022 review item 3). Comparing with now let relief evict a
+granted reader's next range, which that reader needed in seconds and may
+already have seen hit (`RANGE_HIT`); its gather then raises
+`StagedRangeNotLanded`, and a second eviction of the same layer ends the
+run. A leg whose reader's rate is not measured, or any leg under the rule
+when the head's landing rate is not, offers nothing. Two kinds of leg skip
+the rule for a blocked head because they are needed later by construction:
+the head's own legs past its need, and the legs of a blocked consumer
+ranked after it, which cannot read past its own blocked range before the
+head is served.
+
+Preemption is what makes chunked plans safe. A blocked consumer that holds
+landed chunks of its reading phase holds room while it waits, and the other
+groups never take a reading phase, so consumers that each hold part of
+their reading phase deadlock once the tier's effective room is less than
+what they hold plus the head's chunk (C_eff < Σ held_chunks + chunk_head).
+Admission checks the footprint only when a newcomer arrives, so it
+guarantees nothing after the room shrinks. A preempted chunk goes whole and
+is copied again when its consumer's turn comes. It is last, so a pass takes
+it only when nothing else reaches the target.
+
+Preemption does not take chunks from a consumer that reads backward (#1022
+review round 2): one that holds a landed chunk of its reading phase past the
+chunk it is blocked on (`need_start_bytes`), or whose `need_start_bytes` or
+tier ledger does not read. A reader reads in byte order, so that shape is a
+gather that lost a chunk and is waiting for it again, or copies that landed
+out of order. The first is the reader's one retry after
+`StagedRangeNotLanded` (PrismaQuant `StreamingContext._await_prefetch`, one
+retry a layer), and a second loss ends the run, so its chunks stay. When
+nothing else makes the room, the stuck rule ends one consumer, which is a
+recorded kill. The consumers kept whole are named in the order's
+`preempt_protected`, on the commitment record and in the futile event.
+
+The review asked for preempting only legs that end at or before the
+reader's `read_through_bytes`. That filter keeps every leg:
+`read_through_bytes` is the end of the reading phase
+(`residency_plan.refill_horizon`), and PrismaBuild knows no reader position
+inside a phase. The reader's staged wait names only the movers it still
+waits for, so a gather that spans a landed chunk and the blocked one looks
+like a reader past the landed one, and one preemption can still cost the
+reader its retry. The rule protects that retry only while the lost chunk is
+missing. A gather that spans three chunks can see the lost chunk land again
+while a later one is still coming. It then reads forward again and can lose
+a second time.
+
+The head's reading phase, and the reading phase of any consumer ranked
+before it, a leg whose copy or egress is queued or running, and a leg whose
+promotion holds the ram tier (#640) are never candidates. Each eviction is
+whole (`stage_release.evict`, `whole`), and a pass whose candidates together
+cannot reach the target evicts nothing (`claim-order-eviction-futile`, the
+#632 rule). The events are `claim-order-evicted`,
+`claim-order-eviction-declined`, `claim-order-eviction-futile` and
+`claim-order-eviction-refused`, and each names the head (`for_consumer`)
+and, for an eviction, why that range went (`basis`). The pass stamps its
+outcome on the order (`relief`: `not-needed`, `evicted`, `preempted`,
+`short`, `futile`, `refused` or `unknown`) and the stuck rule's victim
+(`stuck_victim`, below). `claim-order-eviction-futile` is told when the
+futile state starts or its head or victim changes, not every cycle it lasts
+(#1022 review item 6): `_emit` files a tier-level event into every consumer's
+event file on the tier, and at one line a minute the 256-line cap rotated
+real `window-gated` evidence out in about four hours.
+
+**Publication.** In `residency_window`, a ranked window publishes at most
+the one leg its standing is about: its free is capped at that leg's GiB
+(`publish_gib`, 0 when the leg is already queued), so a granted consumer
+cannot spend the head's room. A `granted` window or the `head` whose advance
+fence does not fit is permitted without one (`advance: claim-order`): on an
+over-committed tier the rank, not a fence, keeps its room. A `granted`
+window or the `head` also takes no fresh fence when one would fit (#1022
+review, item 2): the rank's walk over free is its reservation. A fence for
+the window's next phase took from free the room the walk gave its current
+range, which then could not claim (a 22 GiB grant held for `chain-042` on a
+30 GiB tier left 8 GiB for `chain-043`). A grant it already holds still
+binds. The head publishes only once relief has made its room (`relief` in
+`RELIEF_MADE_ROOM`: `not-needed`, `evicted` or `preempted`). A head row
+published before its room exists sits unfit in `ready/`, and when the claim
+pass reaches it first it takes the room the walk gave a granted leg: in the
+starvation fixture, A's head row claimed B's granted 22 GiB every cycle.
+Otherwise the head is gated `held-by-claim-order` with `waiting_reason`
+`claim-order-relief-<relief>`; a head whose leg is already queued is left
+as it is. With both rules the walk is the reservation: every row the order
+publishes has its room in free. The window's other gates, including the
+retired-prior check, still apply. A `held-back` window, or a claimed window
+on a ranked tier the rank left out, is gated `held-by-claim-order`. It
+publishes nothing and takes no fence, and a grant it already holds is kept
+rather than read as dangling. One head is served a cycle.
+
+**What a held-back consumer is told.** Three records name the consumer
+ranked just ahead of it (`ahead`), the head it waits on, the GiB it waits
+for and when its range can land:
+
+* the `window-gated` event, reason `held-by-claim-order`, in its tier-event
+  file (`residency-events/<consumer>/<host>.jsonl`, #1002);
+* its landing record: the range it waits for is `unpublished`, with
+  `held_back_by`, `waiting_on`, `waiting_gib`, `claim_rank` and the priced
+  `expected_landing_unix`. It is not a state of its own (#1022 review
+  round 2). PrismaQuant's reader (`residency_map._read_landing`) drops a
+  whole record that lists a state it does not know and falls back to its
+  bounded wait. Its `landing_verdict` waits on an `unpublished` range while
+  the tier loop lives and declares the range's mover, so the verdict below
+  decides;
+* the tier's commitment record, whose `claim_order` carries every claimed
+  consumer's rank, standing and leg, the head, the target and the relief.
+  The `no_progress` verdict reads it.
+
+The price is a lower bound: `now + CYCLE_INTERVAL_S * (rank - head_rank) +
+HEARTBEAT_S + bytes / rate`, where `bytes` is every leg ranked at or ahead
+of the consumer, its own included, and `rate` is the slowest landing rate
+among the ranked consumers' horizons. One head is served a cycle, then the
+legs copy one after another. Room that must come from a reader's egress
+rather than an eviction comes later.
+
+**No kill while the one ahead advances.** The staged-wait verdict (#989,
+tables above) exempts a held-back consumer while the consumer ranked just
+ahead of it shows evidence (`ahead_evidence`), and the head and granted
+consumers while the tier loop is alive. A consumer ahead that stalls with
+its range resident is not exempt (its mover is `done`), so its own rung
+ends it. One that stalls blocked shows no evidence for a whole window, and
+the consumer behind it is then not exempt either.
+
+**Deadlock freedom, and where it stops.** Five invariants, each enforced
+in one place:
+
+* I1. The head's reading phase, and that of every consumer ranked before
+  it, is never a relief candidate (`_claim_order_candidates`: only
+  consumers ranked after the head contribute reading-phase chunks, and only
+  when blocked).
+* I2. An eviction is whole or declined, and only of a complete, unpinned
+  copy whose copy and egress are not queued or running
+  (`stage_release.evict` with `whole`; `_claim_order_candidates`'s
+  `held`, `busy`, `_landing_rate` and ram-copy checks).
+* I3. A consumer's blocked-since time does not move while it stays blocked
+  on one range (`tier_loop._blocked_since` reads the reader's own
+  `since_unix`, bounded below by its last report and claim, which do not
+  change while it is blocked). So a consumer's rank among blocked consumers
+  only rises until it is served.
+* I4. A stuck order ends at most one consumer a cycle, the lowest ranked,
+  and the head only when it is the one ranked consumer
+  (`window_credit.stuck_victim`, read by `PoolQueue._tier_commitment_standing`;
+  every other rung reading the same record keeps its standing's answer).
+* I5. Each cycle on a ranked tier either serves the head (relief reaches
+  the target: `not-needed`, `evicted` or `preempted`, and the head's leg
+  publishes), or frees room (a `short` pass evicted what it could), or
+  nobody is granted, every ranked consumer is blocked and relief is futile,
+  and the stuck rule ends one consumer, whose room returns.
+
+From I3 and I5 a blocked consumer reaches the head within one cycle per
+consumer ranked ahead of it, each of which is served or ended. From I1 the
+head never loses the range it is reading to relief. From I2 no reader loses
+bytes it is reading. When relief is futile and some ranked consumer is
+granted or reading, that consumer's egress returns room as it reads past
+its phase; if it stalls instead, its own rung ends it and returns its room.
+The argument stops in two places: when the tier's effective room is less
+than one chunk of the head's (C_eff < chunk_head), no preemption can make
+it, and the stuck rule ends consumers one a cycle until the head is alone
+and is ended too; and when a pin is held forever (a reader that hangs
+holding its lease), I2 declines the eviction and relief stays short. The
+second is bounded by the reader's own `no_progress` rung.
+
+I5 does not cover three relief outcomes: `short` with nothing evicted,
+`refused` and `unknown`. Under `refused` (the stage root refused the
+eviction) and `unknown` (the tier ledger did not read), no standing is
+exempt (`CLAIM_ORDER_RELIEF_ENDS_WAIT`, read by
+`PoolQueue._tier_commitment_standing`): every consumer on the tier that
+waits on an unpublished, evicted or failed range waits as it did before
+#1011 on an over-committed tier, and its own rung ends it within one grace.
+A consumer whose mover is ready or claimed is judged on its mover's
+evidence, not its standing. That is the fail-closed answer to an
+infrastructure fault. The tier loop stamps either relief on a single failed
+read, and the record carries it for that cycle, so a consumer whose rung
+checks inside that cycle is ended on a one-cycle fault. Round 1 of #1022 exempted `granted`, `head` and
+`satisfied` whatever the relief; before #1011 none of them was exempt on an
+over-committed tier. `short` with nothing evicted keeps the standing's
+answer, because a reader pins a range only while it reads it, so a decline
+clears; `futile` keeps the one-victim rule (I4), because every consumer's
+rung reads the same record. The `short` gap is tracked in #1037.
+
+A tier that stays over-committed once no consumer is blocked also reports
+`futile`, with one `claim-order-eviction-futile` event when it becomes so:
+the eight-consumer drain's cycles 9 and 10 do. That is not a stuck order,
+because no ranked consumer is blocked, so the verdict keeps its exemptions.
+
+**Cost.** The order adds one commitment census a cycle, which the tier's
+commitment record reuses, so a cycle with no newcomer takes one census as
+before and a cycle that gates a newcomer takes two. The rank reuses the
+need the pressure pass already computes. The relief pass walks the ranked
+consumers' plans once, only on a tier that is short of its target. The
+eight-consumer drain test prints each cycle's wall seconds and the calls
+and seconds of every step the order adds, and bounds the calls: one rank
+and at most one candidate walk a cycle, and at most two censuses.
+
+**Limits.**
+
+* A mover row published before the order took effect is already in the
+  queue. It can win the claim race against the head's leg, and the order
+  cannot recall it.
+* One head is served a cycle, so N blocked consumers take N cycles to
+  drain, whatever the room.
+* Every granted window publishes one leg a cycle (#1022 review, item 7).
+  Measured on two chunked R12 plans, 11 GiB (11.70 GB) chunks, with 3, 4
+  and 6 chunks of room over three cycles
+  (`test_measure_the_legs_a_granted_chunked_window_publishes_a_cycle`):
+  every granted window published exactly one leg a cycle. That caps one
+  window's copy stream at chunk bytes per `CYCLE_INTERVAL_S`, 195 MB/s here,
+  above the fixture's slowest landing rate, 134 MB/s, so the cap costs
+  nothing at this chunk size. It binds for chunks below landing rate x
+  `CYCLE_INTERVAL_S` (8.05 GB, 7.5 GiB, at 134 MB/s), where one window's
+  stream is capped at chunk bytes / 60 s.
+* A preempted chunk is copied twice.
+* Only claimed consumers are ranked. A ready consumer whose leads are
+  published is bounded by the commitment it was admitted on (#907), not by
+  the order.
+* The priced landing is a lower bound (above).
+* A range several claimed consumers read is charged once per consumer: see
+  the finding below.
+
+**A range several claimed consumers read is charged to each.** Two
+consumers of one manifest name the same bytes (`tier_loop._descriptor`),
+and the staged name is content-addressed (`stage_move.stage_relative`), so
+the second copy adopts the first's file. The ledger is not told. Each
+consumer's mover is its own action key, because the key hashes
+`--consumer-action-key` (`tools/fleet/pbrun.py`), and each claim takes the
+range's full tokens from free (`PoolQueue._begin_tier_acquire`). Adoption
+takes over only a range that no live item names
+(`tier_loop.adoptable_ranges`). So the commitment counts the range once per
+consumer. Charging it once in the census alone would make the census
+disagree with the ledger it reads, and the fix belongs in the mover's
+identity and the tier ledger's claim, which this change does not touch.
+`tests/test_claimed_consumers_drain_a_tier_in_admission_order.py` records
+the per-consumer charge.
 
 ### Adopting a resident range, and when an orphan is evicted
 

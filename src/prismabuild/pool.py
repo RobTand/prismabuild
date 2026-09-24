@@ -152,6 +152,7 @@ from . import box_capacity
 from . import box_window
 from . import resource_scope
 from . import posix_lock
+from . import window_credit
 
 POOL_ITEM_SCHEMA_V1 = "prismaquant.prismabuild.pool_item.v1"
 POOL_CLAIM_INTENT_SCHEMA_V1 = "prismaquant.prismabuild.pool_claim_intent.v1"
@@ -301,6 +302,38 @@ LEASE_TIMEOUT_S = 300.0
 # budget is core's two windows and not a number of its own; the 5 s on top is
 # margin for the launcher's own exit once the relay has returned.
 TIMEOUT_GRACE_S = 2.0 * pb._PROCESS_GROUP_GRACE_SECONDS + 5.0
+
+# A queued stage mover exempts the consumer waiting on it only on evidence
+# (#1011, #1022 review item 1).  The claim pass's latest word on a ready row,
+# per host, is one of three kinds.  A refusal says the row cannot be placed
+# as it stands: its demand does not fit any tier or box, or does not parse.
+# A withhold says the pool holds the box for this row while the holders in
+# its way drain (#924), bounded by ``WITHHOLD_CEILING_S`` from the episode's
+# start: the row is next, so its consumer waits on it until that bound
+# (#1022 review round 3); it outranks another host's refusal.  Anything else
+# is transient.  ``placement_mismatch`` is none of them: it is the word of a
+# box the row is not for.  A row whose every host says refusal is not
+# coming, however long it waits.
+# ``deferred_behind_withholding`` is recorded only for a producer's export
+# (``cpu_admission.dependent_owner``), so no stage mover carries it.
+MOVER_REFUSAL_REASONS = frozenset({
+    "never_fits_tier_capacity", "tier_unknown", "never_fits_capacity",
+    "malformed_demand", "malformed_tier_demand", "empty_demand",
+    "malformed_container_images"})
+MOVER_REFUSAL_PREFIXES = ("container_image_",)
+MOVER_WITHHOLD_REASONS = frozenset({"deferred_behind_withholding"})
+MOVER_WITHHOLD_SUFFIX = "_withholding"
+MOVER_NEUTRAL_REASONS = frozenset({"placement_mismatch"})
+
+# Claim-order reliefs under which no standing exempts a wait (#1022 review
+# round 3).  ``refused`` (the stage root refused an eviction) and ``unknown``
+# (the tier ledger did not read) make no room and name no victim, so a wait
+# exempt by its standing would have no end on an infrastructure fault.  A
+# deny-list: ``short`` stays exempt (a reader pins a range only while it
+# reads it, so a decline clears), and ``futile`` keeps the one-victim rule
+# (``window_credit.stuck_victim``), which ends one consumer a cycle rather
+# than every blocked one.  The ``short`` gap is #1037.
+CLAIM_ORDER_RELIEF_ENDS_WAIT = frozenset({"refused", "unknown"})
 
 # The pool is also a lower-level transport for specialized producers whose
 # existing contract explicitly chooses its bound.  ``fleet/pbrun`` supplies a
@@ -1527,6 +1560,28 @@ def read_staged_wait(path: Path, *, token: str
     ``(None, "")``; anything else that does not read names its reason.
     """
 
+    return _read_staged_wait(path, token=token)
+
+
+def staged_wait_since(path: Path) -> float | None:
+    """When a claimed consumer's reader declared its staged wait, or ``None``.
+
+    For the tier loop's claim order (#1011), which ranks blocked consumers
+    by how long they have been blocked.  The token is not checked: only the
+    launch's worker knows it, and the answer ranks consumers and gates
+    nothing (the same footing as ``tier_loop._mover_report``).  The caller
+    keeps a time only when it falls inside the claim it ranks, so a record
+    an earlier attempt left behind does not move a consumer up the rank.
+    """
+
+    record, _reason = _read_staged_wait(path, token=None)
+    return None if record is None else float(record["since_unix"])  # type: ignore[arg-type]
+
+
+def _read_staged_wait(path: Path, *, token: str | None
+                      ) -> tuple[dict[str, object] | None, str]:
+    """:func:`read_staged_wait`, with ``token=None`` skipping the token check."""
+
     try:
         raw = pb._read_regular_file_nofollow(
             path, where="staged wait record",
@@ -1544,7 +1599,7 @@ def read_staged_wait(path: Path, *, token: str
         return None, "not an object"
     if record.get("schema") != pb_progress.STAGED_WAIT_SCHEMA_V1:
         return None, "wrong schema"
-    if record.get("token") != token:
+    if token is not None and record.get("token") != token:
         return None, "foreign token"
     movers = record.get("movers")
     since = record.get("since_unix")
@@ -6571,7 +6626,9 @@ class PoolQueue:
                 "dependents_read_s": round(time.monotonic() - started, 4)}
 
     def staged_wait_verdict(self, action_key: str, progress_path: Path, *,
-                            token: str, now: float | None = None
+                            token: str, now: float | None = None,
+                            prior: Mapping[str, object] | None = None,
+                            window_s: float | None = None,
                             ) -> dict[str, object] | None:
         """Whether a quiet consumer is blocked on its own staged range (#989).
 
@@ -6579,9 +6636,47 @@ class PoolQueue:
         verdict the ``no_progress`` rung acts on, with every named mover and
         the state this read found it in:
 
-        * ``ready`` or ``claimed``: the mover is queued or copying.  Its
-          liveness is the queue's own: a claimed mover whose worker died is
-          reaped by its lease, and the next read sees it ready or failed.
+        * ``ready`` or ``claimed``: the mover is queued or copying.  Exempt
+          only on evidence that it is coming (#1022 review, item 1), which
+          the mover's entry records (``evidence``, ``evidence_unix``):
+
+          - a ``ready`` row is not exempt while the claim pass's latest
+            word on it from every host that judged it is a refusal
+            (``MOVER_REFUSAL_REASONS``; the entry names it as ``refusal``):
+            nothing copies it while that stands, and the hold accrues
+            nothing.  A withhold (``MOVER_WITHHOLD_*``, named as
+            ``withhold``) is the pool holding the box for this row (#924):
+            exempt (``withheld``) until ``WITHHOLD_CEILING_S`` past the
+            withhold's epoch, its ``evidence_unix``; past it, or with no
+            epoch on file, not (``withhold-lapsed``, #1022 review round 3).
+            Otherwise it is exempt while a mover that was queued ahead of
+            it when the wait first looked (``waiting_behind``, from the
+            landing record's ``movers_ahead``) is claimed with a live lease
+            (``copy-ahead-live``), or while the bytes queued ahead of it in
+            the consumer's landing record (``bytes_ahead``, written by the
+            tier loop) fell within the evidence window: the first look is
+            the ``baseline``, a fall renews it (``bytes-ahead-fell``), and a
+            whole window with neither ends it (``none``).  The first look
+            after a withhold, or after the row was ``claimed`` (a worker
+            that died, and the reaper requeued the row), is a fresh
+            ``baseline``: evidence carries only within the ready rule.
+          - a ``claimed`` mover is exempt while its own progress report
+            (``claimed/<key>.progress``, whose landed bytes the reporter
+            commits only when they grow) or, before its first report, its
+            claim is at most ``movement_actions.mover_report_latency_s()``
+            (two heartbeats) old: ``progress`` or ``claimed``.  Or while the
+            report's landed bytes grew since the previous check
+            (``progress-grew``).  Or while its lease is live: the worker
+            running it heartbeats it within ``LEASE_TIMEOUT_S`` and has not
+            ended it (``lease-live``).  Else ``none``.
+
+          Both lease readings are the mover's own worker's judgment: it ends
+          a copy that stalls, and credits a pacer hold or pool contention
+          on evidence it samples itself (#1010), which a frozen report or
+          ``bytes_ahead`` cannot tell from a stall (#1022 review round 2).
+
+          A claimed mover whose worker died is reaped by its lease, and the
+          next read sees it ready or failed.
         * ``unpublished`` or ``failed``: the window has not published it,
           or will publish a recopy (#627).  Exempt only while the tier loop
           that publishes it is alive, which is the offer freshness bound the
@@ -6602,18 +6697,52 @@ class PoolQueue:
           mover included).  Not exempt, and ``detail`` says why.
         * ``not-a-dependent``: the consumer's plan does not name it.
 
-        ``unpublished``, ``evicted`` and ``failed`` are exempt only while the tier is
-        within its commitment as well: the tier loop's filed commitment
-        record (``tier-commitments/<tier>.json``, #930) shows
-        ``over_committed_gib <= 0``.  On an over-committed tier the claimed
-        consumers wait on each other's room (#1011), and ``no_progress`` is
-        what breaks that.  A missing or unreadable record is not exempt.
-        ``ready`` and ``claimed`` stay exempt there: a published mover
-        already holds its room.
+        ``unpublished``, ``evicted`` and ``failed`` are exempt only while the
+        tier loop that publishes them is alive, and then by the tier loop's
+        filed commitment record (``tier-commitments/<tier>.json``, #930):
+
+        * ``over_committed_gib <= 0``: exempt.  The tier has room for every
+          admitted window, so the range is coming.
+        * over-committed, and the record's claim order (#1011) ranks this
+          consumer ``granted``, ``head`` or ``satisfied``: exempt.  The tier
+          loop serves the claimed consumers in that rank and makes the
+          head's room from ranges ranked after it, so an over-committed tier
+          is no longer a deadlock by itself.  Not while the order's last
+          relief is in ``CLAIM_ORDER_RELIEF_ENDS_WAIT`` (``refused``,
+          ``unknown``): that relief made no room and names no victim, so no
+          standing is exempt (#1022 review round 3).
+        * over-committed, and the order holds this consumer back: exempt
+          while the consumer ranked just ahead of it shows evidence
+          (:meth:`_claim_order_ahead_live`): its claim ended, its own
+          staged wait is exempt, its accepted reports or credited waits
+          grew within the evidence window, or its own watch has not ended
+          it (a live lease, and a quiet within its own grace).  Not exempt
+          once a whole window passes with none of these, so the wait behind
+          a stalled consumer ends as it did before #1011.
+        * over-committed, and the order is stuck (``window_credit.
+          stuck_victim``): relief was futile, nobody is granted and every
+          ranked consumer is blocked.  Only the one consumer the rule names,
+          the lowest-ranked, is not exempt; the rest keep their standing's
+          answer.  One consumer ends a cycle, never all of them.
+        * over-committed, with no claim order that ranks this consumer, or
+          a missing or unreadable record: not exempt, as before #1011.
+
+        The evidence window is ``window_s``, the consumer's own phase grace
+        as the rung passes it (the allowance the wait is being judged
+        against), floored at ``OFFER_TIMEOUT_S``: the tier loop rewrites the
+        landing record once a cycle, and a loop is live within that bound,
+        so no shorter window can see a fall.  ``prior`` is this launch's
+        previous verdict (``ProgressWatch.staged_wait``): the evidence it
+        recorded is carried forward, which is what lets a rung that checks
+        again seconds later see a fall it saw a minute ago.  A prior from
+        another staged wait (its ``since_unix`` differs) is not used, and
+        with no prior the first look is the baseline.
 
         The wait is exempt when any named mover is still coming.  The read
         is the plan the consumer froze and one existence check per state per
-        named mover, the same children :meth:`dependent_rows` reads.
+        named mover, the same children :meth:`dependent_rows` reads, plus
+        for a queued mover its denial ring or progress report and the
+        consumer's landing record, read once.
         """
 
         from . import residency_plan as plan_mod
@@ -6626,6 +6755,16 @@ class PoolQueue:
         if record is None:
             return {"exempt": False, "reason": reason, "movers": [],
                     "checked_unix": moment}
+        window = max(float(window_s) if isinstance(window_s, (int, float))
+                     and not isinstance(window_s, bool) else 0.0,
+                     OFFER_TIMEOUT_S)
+        if not isinstance(prior, Mapping) or prior.get("since_unix") != record["since_unix"]:
+            # Evidence carries within one staged wait, never into the next.
+            prior = None
+        prior_movers = {
+            str(entry.get("key")): entry
+            for entry in ((prior or {}).get("movers") or ())  # type: ignore[union-attr]
+            if isinstance(entry, Mapping)}
         key = _residency_action_key(action_key)
         try:
             plan = plan_mod.read(self, key)
@@ -6637,6 +6776,8 @@ class PoolQueue:
         tier_alive: bool | None = None
         tier_age: float | None = None
         over_committed: int | None = None
+        claim: dict[str, object] | None = None
+        landing: dict[str, int] | None = None
         if plan is not None:
             try:
                 superseded = plan_mod.superseded(self, plan) is not None
@@ -6677,47 +6818,593 @@ class PoolQueue:
                              else "unpublished")
             except (OSError, ValueError) as exc:
                 state, detail = "unknown", repr(exc)
-            movers.append({"key": mover, "state": state}
-                          if detail is None else
-                          {"key": mover, "state": state, "detail": detail})
-            if state in (READY, CLAIMED):
-                exempt = True
+            entry: dict[str, object] = ({"key": mover, "state": state}
+                                        if detail is None else
+                                        {"key": mover, "state": state, "detail": detail})
+            if state == READY:
+                if landing is None:
+                    landing = self._landing_bytes_ahead(key)
+                ahead_bytes, ahead_movers = landing.get(mover, (None, None))
+                entry.update(self._ready_mover_evidence(
+                    mover, bytes_ahead=ahead_bytes, movers_ahead=ahead_movers,
+                    prior=prior_movers.get(mover), now=moment, window_s=window))
+                exempt = exempt or entry["evidence"] not in (
+                    "none", "refused", "withhold-lapsed")
+            elif state == CLAIMED:
+                entry.update(self._claimed_mover_evidence(
+                    mover, prior=prior_movers.get(mover), now=moment))
+                exempt = exempt or entry["evidence"] != "none"
             elif state in (FAILED, "unpublished", "evicted") and not superseded:
                 if tier_alive is None:
                     tier_id = str(plan["tier_id"])          # type: ignore[index]
                     tier_alive, tier_age = self._tier_loop_alive(tier_id, now=moment)
-                    over_committed = self._tier_over_committed_gib(tier_id)
-                exempt = exempt or (tier_alive and over_committed is not None
-                                    and over_committed <= 0)
+                    over_committed, claim = self._tier_commitment_standing(
+                        tier_id, key, now=moment, prior=prior, window_s=window)
+                exempt = exempt or bool(tier_alive and over_committed is not None and (
+                    over_committed <= 0
+                    or (claim is not None and bool(claim.get("exempt")))))
+            movers.append(entry)
         verdict: dict[str, object] = {
             "exempt": exempt, "movers": movers,
             "since_unix": record["since_unix"], "checked_unix": moment,
-            "plan_superseded": superseded}
+            "plan_superseded": superseded, "evidence_window_s": window}
         if tier_alive is not None:
             verdict["tier_loop_alive"] = tier_alive
             verdict["tier_record_age_s"] = tier_age
             # None: no commitment record filed, or one that does not read.
             verdict["tier_over_committed_gib"] = over_committed
+            if claim is not None:
+                # What the claim order said about this consumer (#1011).
+                verdict["claim_order"] = claim
+                if claim.get("held_back_by") is not None:
+                    verdict["held_back_by"] = claim["held_back_by"]
+                    verdict["ahead_quiet_s"] = claim.get("ahead_quiet_s")
+                    verdict["ahead_grace_s"] = claim.get("ahead_grace_s")
+                    verdict["ahead_evidence"] = claim.get("ahead_evidence")
         if not exempt:
             verdict["reason"] = "no named mover is still coming"
         return verdict
 
-    def _tier_over_committed_gib(self, tier_id: str) -> int | None:
-        """The tier's filed ``over_committed_gib``, or ``None`` when unknown.
+    def mover_report(self, mover: str) -> dict[str, object] | None:
+        """A stage mover's last landed-bytes report, or ``None`` (#1010).
 
-        Read once per verdict from the tier loop's own commitment record
-        (:meth:`tier_commitment`, #930).  ``None`` for no record, a record
-        that does not read, or a field that is not a whole number.
+        The progress record the mover writes for the worker's stall check
+        (``stage_move._ProgressReporter``), read once, bounded and without
+        following links, the way the worker reads it.  Its token is not
+        checked: the tier loop prices an expectation from it and the
+        staged-wait verdict reads its growth, and the worker unlinks the
+        file at every ending, so a report here is the running attempt's.
+        ``None`` for no report, one that does not read, or one that is not
+        a mover's (another schema or phase, a count that is not whole
+        bytes).
+        """
+
+        from . import movement_actions
+
+        try:
+            raw = pb._read_regular_file_nofollow(
+                self.action_progress_path(mover), where="mover progress report",
+                max_bytes=pb.MAX_ACTION_PROGRESS_BYTES)
+            record = json.loads(raw)
+        except FileNotFoundError:
+            return None
+        except (OSError, ValueError, RecursionError,
+                pb.ActionContractError, pb.CASTamperError,
+                pb.CASUnavailableError):
+            return None
+        if not isinstance(record, Mapping):
+            return None
+        units, at = record.get("units_completed"), record.get("reported_unix")
+        if (record.get("schema") != pb.PROGRESS_RECORD_SCHEMA_V1
+                or record.get("phase") not in movement_actions.MOVER_PROGRESS_PHASES
+                or isinstance(units, bool) or not isinstance(units, int) or units < 0
+                or isinstance(at, bool) or not isinstance(at, (int, float))
+                or not math.isfinite(float(at))):
+            return None
+        return {"landed_bytes": units, "reported_unix": float(at),
+                "landed_phase": str(record["phase"])}
+
+    def _landing_bytes_ahead(self, consumer: str
+                             ) -> dict[str, tuple[int | None, list[str] | None]]:
+        """``(bytes_ahead, movers_ahead)`` per queued mover in ``consumer``'s
+        landing record.
+
+        Empty when the record is missing or does not read: then a ready
+        mover has no fall and no mover ahead to show, and only its baseline
+        counts.  ``movers_ahead`` is ``None`` on a record that does not carry
+        it.
+        """
+
+        try:
+            record = residency_map.read_landing(residency_map.landing_path(
+                self.residency_fragment_root(), consumer))
+        except (OSError, ValueError, RecursionError):
+            return {}
+        out: dict[str, tuple[int | None, list[str] | None]] = {}
+        for row in record.get("ranges") or ():             # type: ignore[union-attr]
+            if not isinstance(row, Mapping):
+                continue
+            ahead = row.get("bytes_ahead")
+            movers = row.get("movers_ahead")
+            out[str(row["mover_action_key"])] = (
+                ahead if isinstance(ahead, int) and not isinstance(ahead, bool)
+                else None,
+                [str(key) for key in movers] if isinstance(movers, list) else None)
+        return out
+
+    def _mover_refusal(self, mover: str) -> tuple[str, str, str] | None:
+        """``(kind, reason, host)`` when the claim pass will not place ``mover``.
+
+        Each host's latest reason in the ready row's denial ring, for its
+        current generation.  A host whose latest reason is transient means
+        the row can still be placed: ``None``.  Otherwise the first withhold,
+        else the first refusal, ``kind`` being ``withhold`` or ``refusal``: a
+        host that withholds for the row holds its box for it, so the row is
+        coming there whatever another host says (#1022 review round 3).
+        """
+
+        try:
+            item = _read_json(self.item_path(READY, mover))
+        except (OSError, ValueError, PoolContractError):
+            return None
+        published = item.get("published_unix") if isinstance(item, Mapping) else None
+        if isinstance(published, bool) or not isinstance(published, (int, float)):
+            return None
+        latest: dict[str, str] = {}
+        for entry in self.denial_transitions(mover, published_unix=float(published)):
+            latest[str(entry.get("host"))] = str(entry.get("reason") or "")
+        refused: tuple[str, str, str] | None = None
+        withheld: tuple[str, str, str] | None = None
+        for host, reason in sorted(latest.items()):
+            if reason in MOVER_NEUTRAL_REASONS:
+                continue
+            if (reason in MOVER_REFUSAL_REASONS
+                    or reason.startswith(MOVER_REFUSAL_PREFIXES)):
+                refused = refused or ("refusal", reason, host)
+            elif (reason in MOVER_WITHHOLD_REASONS
+                  or reason.endswith(MOVER_WITHHOLD_SUFFIX)):
+                withheld = withheld or ("withhold", reason, host)
+            else:
+                return None
+        return withheld or refused
+
+    def _withhold_epoch(self, mover: str) -> tuple[float | None, str | None]:
+        """``(epoch_unix, basis)``: when the pool's withhold for ``mover`` began.
+
+        Read from the row's passes sidecar, which the claim pass rewrites at
+        every denial it counts (:meth:`record_pass`).  The episode's start
+        (``epoch_unix``, basis ``episode``) is what
+        :meth:`_withhold_verdict` bounds a veto by.  A withhold with no
+        episode on file (``in_flight``, ``holder_tail``) is bounded by the
+        row's first denial (``first_unix``, basis ``first-denial``), the
+        clock the pool bounds ``in_flight`` by.  ``(None, None)`` when the
+        sidecar does not read or carries neither.
+        """
+
+        try:
+            record = _read_json(self.passes_path(mover))
+        except (OSError, ValueError, PoolContractError):
+            return None, None
+        if not isinstance(record, Mapping):
+            return None, None
+        for field, basis in (("epoch_unix", "episode"), ("first_unix", "first-denial")):
+            value = record.get(field)
+            if (isinstance(value, (int, float)) and not isinstance(value, bool)
+                    and math.isfinite(float(value))):
+                return float(value), basis
+        return None, None
+
+    def _ready_mover_evidence(self, mover: str, *, bytes_ahead: int | None,
+                              prior: Mapping[str, object] | None, now: float,
+                              window_s: float,
+                              movers_ahead: list[str] | None = None,
+                              ) -> dict[str, object]:
+        """What says a ``ready`` mover is coming (#1022 review, item 1).
+
+        The claim pass's word first.  A refusal: not coming.  A withhold:
+        the pool is holding the stage host for this row while the holders in
+        its way drain (#924), so it is next (``withheld``), until
+        ``WITHHOLD_CEILING_S`` past the withhold's epoch
+        (:meth:`_withhold_epoch`); past it, or with no epoch on file, not
+        coming (``withhold-lapsed``, #1022 review round 3).  Then the
+        movers queued ahead of it when this staged wait first looked
+        (``waiting_behind``, the landing record's ``movers_ahead`` at that
+        look, carried on the verdict): while one of them is claimed and its
+        lease live (:meth:`_mover_lease`), the queue ahead of this mover is
+        being worked through (``copy-ahead-live``).  That holds through a
+        pacer hold on the copy ahead, when neither its report nor
+        ``bytes_ahead`` moves (#1022 review round 2).  The list is frozen at
+        the first look, so a copy claimed later -- one the claim pass placed
+        instead of this mover -- does not renew it.  Otherwise the fall in
+        ``bytes_ahead`` within the window, as before.
+
+        The ready rule carries evidence only from a previous entry that was
+        itself read by it: a previous entry in another state (``claimed``,
+        before a worker died and the reaper requeued the row) or a withhold
+        does not carry its time, and the ready rule takes its own
+        ``baseline`` (#1022 review round 3).
+        """
+
+        behind = (prior.get("waiting_behind") if isinstance(prior, Mapping)
+                  else None)
+        if not isinstance(behind, list):
+            behind = list(movers_ahead or ())
+        behind = [str(key) for key in behind]
+        refusal = self._mover_refusal(mover)
+        if refusal is not None:
+            kind, reason, host = refusal
+            if kind == "refusal":
+                return {kind: reason, "denied_by": host, "evidence": "refused"}
+            epoch, basis = self._withhold_epoch(mover)
+            live = epoch is not None and now - epoch <= WITHHOLD_CEILING_S
+            return {kind: reason, "denied_by": host,
+                    "evidence": "withheld" if live else "withhold-lapsed",
+                    "evidence_unix": epoch, "withhold_basis": basis,
+                    "withhold_ceiling_s": WITHHOLD_CEILING_S,
+                    "waiting_behind": behind}
+        out: dict[str, object] = {"bytes_ahead": bytes_ahead}
+        carries = (isinstance(prior, Mapping) and prior.get("state") == READY
+                   and prior.get("evidence") not in (
+                       "refused", "withheld", "withhold-lapsed"))
+        then = prior.get("evidence_unix") if carries else None      # type: ignore[union-attr]
+        before = prior.get("bytes_ahead") if carries else None      # type: ignore[union-attr]
+        out["waiting_behind"] = behind
+        live = self._first_live_copy(behind, now=now)
+        if live is not None:
+            copy, lease = live
+            out.update({"evidence": "copy-ahead-live",
+                        "evidence_unix": now - float(
+                            lease["lease_heartbeat_age_s"]),  # type: ignore[arg-type]
+                        "copy_ahead": copy,
+                        "copy_ahead_heartbeat_age_s": lease["lease_heartbeat_age_s"],
+                        "copy_ahead_hold_credited_s": lease.get("hold_credited_s")})
+        elif isinstance(then, bool) or not isinstance(then, (int, float)):
+            out.update({"evidence": "baseline", "evidence_unix": now})
+        elif (isinstance(bytes_ahead, int) and isinstance(before, int)
+                and not isinstance(before, bool) and bytes_ahead < before):
+            out.update({"evidence": "bytes-ahead-fell", "evidence_unix": now})
+        elif now - float(then) <= window_s:
+            out.update({"evidence": "carried", "evidence_unix": float(then)})
+        else:
+            out.update({"evidence": "none", "evidence_unix": float(then)})
+        return out
+
+    def _claimed_mover_evidence(self, mover: str, *,
+                                prior: Mapping[str, object] | None,
+                                now: float) -> dict[str, object]:
+        """What says a ``claimed`` mover is copying (#1022 review, item 1).
+
+        Its landed-bytes report (or, before the first, its claim) is at most
+        ``mover_report_latency_s()`` old: ``progress`` or ``claimed``.  Or
+        the report's landed bytes grew since the previous rung check
+        (``prior``): ``progress-grew``.  The second covers one entry that
+        takes longer than two heartbeats to land, which the reporter cannot
+        report until it lands.  Or its lease is live (:meth:`_mover_lease`):
+        ``lease-live``.  The reporter commits only when landed bytes grow,
+        so a pacer hold freezes the report for as long as it lasts, while the
+        worker keeps the lease and credits the hold (#1022 review round 2).
+        Otherwise ``none``.
+        """
+
+        from . import movement_actions
+
+        fresh_s = movement_actions.mover_report_latency_s()
+        out: dict[str, object] = {"evidence": "none"}
+        report = self.mover_report(mover)
+        if report is not None:
+            out.update({"progress_units": report["landed_bytes"],
+                        "progress_unix": report["reported_unix"],
+                        "progress_phase": report["landed_phase"]})
+        try:
+            claim = _read_json(self.item_path(CLAIMED, mover))
+        except (OSError, ValueError, PoolContractError):
+            claim = None
+        claimed = claim.get("claimed_unix") if isinstance(claim, Mapping) else None
+        stamps = []
+        if report is not None:
+            stamps.append(("progress", float(report["reported_unix"])))  # type: ignore[arg-type]
+        if isinstance(claimed, (int, float)) and not isinstance(claimed, bool):
+            stamps.append(("claimed", float(claimed)))
+        if stamps:
+            kind, at = max(stamps, key=lambda stamp: stamp[1])
+            out["evidence_unix"] = at
+            if now - at <= fresh_s:
+                out["evidence"] = kind
+        before = prior.get("progress_units") if isinstance(prior, Mapping) else None
+        if (out["evidence"] == "none" and report is not None
+                and isinstance(before, int) and not isinstance(before, bool)
+                and int(report["landed_bytes"]) > before):   # type: ignore[call-overload]
+            out["evidence"] = "progress-grew"
+        if out["evidence"] == "none":
+            # A pacer hold stops the report, not the lease (#1022 review
+            # round 2): the mover's own rung is the judge of its stall.
+            lease = self._mover_lease(mover, claim, now=now)
+            if lease is not None:
+                out.update(lease)
+                if lease["lease_live"]:
+                    out.update({"evidence": "lease-live",
+                                "evidence_unix": now - float(
+                                    lease["lease_heartbeat_age_s"])})  # type: ignore[arg-type]
+        out["evidence_fresh_s"] = fresh_s
+        return out
+
+    def _mover_lease(self, mover: str, claim: Mapping[str, object] | None, *,
+                     now: float) -> dict[str, object] | None:
+        """What a claimed mover's lease says of it (#1022 review round 2).
+
+        The worker that runs a stage mover heartbeats its lease while the
+        copy runs, whatever the copy lands, and ends the mover by its own
+        ``no_progress`` rung when it stalls: the mover's landed-bytes grace,
+        less the pacer holds and pool contention the worker credits on
+        evidence it samples itself (``ProgressWatch``,
+        ``pool_contention_exempt_s`` and ``start_gate_exempt_s``, #1010).  So
+        a lease that belongs to this claim, with a heartbeat within
+        ``LEASE_TIMEOUT_S`` -- the bound :meth:`reap_stale` applies before it
+        takes a claim back -- says the mover's own judge has not ended it:
+        ``lease_live``.  The credited seconds are recorded, not judged.
+        ``None`` when the lease does not read, names another claim, or its
+        heartbeat is not a usable time.
+        """
+
+        if not isinstance(claim, Mapping):
+            return None
+        try:
+            lease = _read_json(self.lease_path(mover))
+        except (OSError, ValueError, PoolContractError):
+            return None
+        if (not isinstance(lease, Mapping)
+                or lease.get("claimed_unix") != claim.get("claimed_unix")):
+            return None
+        age = offer_timing(lease.get("heartbeat_unix"), now=now).age_s
+        if age is None:
+            return None
+        out: dict[str, object] = {"lease_heartbeat_age_s": round(age, 3),
+                                  "lease_live": age <= LEASE_TIMEOUT_S}
+        observation = lease.get("progress_observation")
+        if isinstance(observation, Mapping):
+            credited = [float(value) for value in (
+                observation.get("pool_contention_exempt_s"),
+                observation.get("start_gate_exempt_s"))
+                if isinstance(value, (int, float)) and not isinstance(value, bool)]
+            if credited:
+                out["hold_credited_s"] = sum(credited)
+        return out
+
+    def _first_live_copy(self, movers: list[str], *, now: float
+                         ) -> tuple[str, dict[str, object]] | None:
+        """The first of ``movers`` that is claimed with a live lease, or ``None``.
+
+        One claim read per mover until one answers, and one lease read for
+        a claimed one.  A mover that has landed, failed or is still queued
+        is not claimed, so it answers nothing.
+        """
+
+        for mover in movers:
+            try:
+                claim = _read_json(self.item_path(CLAIMED, mover))
+            except (OSError, ValueError, PoolContractError):
+                continue
+            lease = self._mover_lease(mover, claim, now=now)
+            if lease is not None and lease["lease_live"]:
+                return mover, lease
+        return None
+
+    def _tier_commitment_standing(self, tier_id: str, key: str, *, now: float,
+                                  prior: Mapping[str, object] | None = None,
+                                  window_s: float = OFFER_TIMEOUT_S,
+                                  ) -> tuple[int | None, dict[str, object] | None]:
+        """``(over_committed_gib, claim)`` from the tier's commitment record.
+
+        One read of the record (#930).  ``claim`` is ``None`` unless the tier
+        is over-committed and the record's claim order ranks ``key`` (#1011);
+        otherwise it names the consumer's ``standing``, ``rank`` and the
+        order's last ``relief``, whether that standing exempts its wait, the
+        stuck rule's victim when the order is stuck, and for a held-back
+        consumer the one ahead of it (``held_back_by``) with the evidence it
+        showed (``ahead_evidence``).  Under a relief in
+        ``CLAIM_ORDER_RELIEF_ENDS_WAIT`` no standing is exempt.
         """
 
         try:
             record = self.tier_commitment(tier_id)
         except (OSError, ValueError, PoolContractError):
-            return None
+            return None, None
         value = None if record is None else record.get("over_committed_gib")
         if isinstance(value, bool) or not isinstance(value, int):
+            return None, None
+        if value <= 0:
+            return value, None
+        order = record.get("claim_order")                   # type: ignore[union-attr]
+        entries = order.get("entries") if isinstance(order, Mapping) else None
+        entry = next((item for item in entries or ()
+                      if isinstance(item, Mapping) and item.get("consumer") == key),
+                     None)
+        if entry is None:
+            return value, None
+        standing = str(entry.get("standing"))
+        claim: dict[str, object] = {"standing": standing, "rank": entry.get("rank")}
+        relief = order.get("relief")                        # type: ignore[union-attr]
+        if isinstance(relief, str):
+            claim["relief"] = relief
+        victim = window_credit.stuck_victim(order)
+        if victim is not None:
+            # Stuck: no candidate can make the head's room, nobody is
+            # granted and nobody is reading.  The rule ends one consumer, the
+            # lowest-ranked; everyone else keeps their standing's answer.
+            claim.update({"relief": "futile", "stuck_victim": victim})
+            if victim == key:
+                claim.update({"exempt": False,
+                              "reason": "claim order stuck: relief futile, "
+                                        "nobody granted and every ranked "
+                                        "consumer blocked; the lowest-ranked "
+                                        "is ended"})
+                return value, claim
+        if relief in CLAIM_ORDER_RELIEF_ENDS_WAIT:
+            # The relief made no room and names no victim: whatever the
+            # standing, the wait is not the order's (round 3, F3).  Every
+            # consumer on the tier waiting on an unpublished range reads
+            # this, as every one did before #1011 on an over-committed tier.
+            claim.update({"exempt": False,
+                          "reason": f"claim order relief {relief}: it made no "
+                                    "room and names no victim, so no standing "
+                                    "exempts the wait"})
+            return value, claim
+        if standing != "held-back":
+            claim["exempt"] = standing in ("granted", "head", "satisfied")
+            return value, claim
+        ahead = entry.get("ahead")
+        claim["held_back_by"] = ahead
+        claim["waiting_on"] = entry.get("waiting_on")
+        claim["expected_landing_unix"] = entry.get("expected_landing_unix")
+        earlier = (prior or {}).get("claim_order") if isinstance(prior, Mapping) else None
+        before = (earlier.get("ahead_evidence")
+                  if isinstance(earlier, Mapping)
+                  and earlier.get("held_back_by") == ahead else None)
+        live, evidence = self._claim_order_ahead_live(
+            str(ahead) if isinstance(ahead, str) else None, now=now,
+            prior=before if isinstance(before, Mapping) else None,
+            window_s=window_s)
+        claim.update({"exempt": live, "ahead_evidence": evidence,
+                      "ahead_quiet_s": evidence.get("quiet_s"),
+                      "ahead_grace_s": evidence.get("grace_s")})
+        return value, claim
+
+    def _claim_order_ahead_live(self, ahead: str | None, *, now: float,
+                                prior: Mapping[str, object] | None = None,
+                                window_s: float = OFFER_TIMEOUT_S,
+                                ) -> tuple[bool, dict[str, object]]:
+        """Whether the consumer ranked ahead of a held-back one advances (#1011).
+
+        ``(live, evidence)``, from growth rather than a clock (#1022 review,
+        item 5).  Read off the ahead consumer's lease, whose progress
+        observation its worker refreshes every heartbeat
+        (``ProgressWatch.as_record``).  ``evidence["evidence"]`` says which:
+
+        * ``ahead-ended``: it is no longer claimed, so it holds nothing the
+          order waits on.  Live.
+        * ``ahead-waiting``: its own latest staged-wait verdict is exempt,
+          so its own rung has judged its wait a dependency wait.  Live.
+        * ``ahead-advanced`` / ``ahead-credited``: its ``accepted_count`` or
+          its ``staged_wait_exempt_s`` grew since this consumer's previous
+          look (``prior``).  Live, and the evidence time moves to now.
+        * ``baseline``: the first look at this consumer ahead.  Live.
+        * ``carried``: none of the above now, but the last evidence is
+          within ``window_s``.  Live.
+        * ``ahead-within-grace``: none of the above, but its own watch has
+          not ended it: its lease heartbeat is within ``LEASE_TIMEOUT_S`` (the
+          bound :meth:`reap_stale` applies) and the quiet it reported, plus
+          the heartbeat's age, is within its own grace (``quiet_s`` against
+          ``grace_s``, which its rung credits exempt waits against).  Live,
+          and the evidence time is the heartbeat (#1022 review round 3).
+          The writer is the judge, as for a mover's lease: a consumer ahead
+          in a phase with a longer grace than this one's has not reached its
+          rung, so its stored verdict and credited seconds say nothing yet.
+        * ``none``: a whole window without evidence.  Not live.
+        * ``unread``: the lease does not read, belongs to another claim, or
+          carries no counts.  Live only while earlier evidence is within the
+          window.
+
+        A late loop on the ahead consumer's box delays its lease, and with
+        it the evidence, by that lateness; it does not end the exemption
+        unless the delay exceeds a whole window.  A stalled consumer ahead
+        reports a quiet past its grace, shows nothing for a window, and is
+        ended by its own rung; a dead one stops its heartbeat and is reaped
+        at ``LEASE_TIMEOUT_S``, after which it reads ``ahead-ended``.
+        """
+
+        out: dict[str, object] = {"ahead": ahead}
+        if not isinstance(ahead, str) or len(ahead) != 64:
+            out["evidence"] = "unread"
+            return False, out
+        then = prior.get("evidence_unix") if isinstance(prior, Mapping) else None
+        then = (float(then) if isinstance(then, (int, float))
+                and not isinstance(then, bool) else None)
+
+        def carried(kind: str) -> tuple[bool, dict[str, object]]:
+            if then is not None and now - then <= window_s:
+                out.update({"evidence": "carried" if kind == "none" else kind,
+                            "evidence_unix": then})
+                return True, out
+            out.update({"evidence": kind, "evidence_unix": then})
+            return False, out
+
+        try:
+            claim = _read_json(self.item_path(CLAIMED, ahead))
+        except (OSError, ValueError, PoolContractError):
+            return carried("unread")
+        if claim is None:
+            out.update({"evidence": "ahead-ended", "evidence_unix": now})
+            return True, out
+        try:
+            lease = _read_json(self.lease_path(ahead))
+        except (OSError, ValueError, PoolContractError):
+            return carried("unread")
+        if (not isinstance(lease, Mapping)
+                or lease.get("claimed_unix") != claim.get("claimed_unix")):
+            return carried("unread")
+        observation = lease.get("progress_observation")
+        if not isinstance(observation, Mapping):
+            return carried("unread")
+        count = observation.get("accepted_count")
+        credited = observation.get("staged_wait_exempt_s")
+        for field, value in (("quiet_s", observation.get("quiet_s")),
+                             ("grace_s", observation.get("grace_s")),
+                             ("heartbeat_unix", lease.get("heartbeat_unix"))):
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                out[field] = float(value)
+        if isinstance(count, bool) or not isinstance(count, int):
+            return carried("unread")
+        credited = (float(credited) if isinstance(credited, (int, float))
+                    and not isinstance(credited, bool) else 0.0)
+        out.update({"accepted_count": count, "staged_wait_exempt_s": credited})
+        waiting = observation.get("staged_wait")
+        before_count = prior.get("accepted_count") if isinstance(prior, Mapping) else None
+        before_credit = (prior.get("staged_wait_exempt_s")
+                         if isinstance(prior, Mapping) else None)
+        if isinstance(waiting, Mapping) and waiting.get("exempt") is True:
+            out.update({"evidence": "ahead-waiting", "evidence_unix": now})
+        elif then is None or (isinstance(before_count, int) and count < before_count):
+            # First look, or a new attempt whose counts restarted.
+            out.update({"evidence": "baseline", "evidence_unix": now})
+        elif isinstance(before_count, int) and count > before_count:
+            out.update({"evidence": "ahead-advanced", "evidence_unix": now})
+        elif (isinstance(before_credit, (int, float))
+              and credited > float(before_credit)):
+            out.update({"evidence": "ahead-credited", "evidence_unix": now})
+        elif then is not None and now - then <= window_s:
+            return carried("none")
+        else:
+            within = self._ahead_within_grace(lease, observation, now=now)
+            if within is None:
+                return carried("none")
+            out.update({"evidence": "ahead-within-grace", "evidence_unix": within[0],
+                        "heartbeat_age_s": round(within[1], 3)})
+        return True, out
+
+    @staticmethod
+    def _ahead_within_grace(lease: Mapping[str, object],
+                            observation: Mapping[str, object], *, now: float
+                            ) -> tuple[float, float] | None:
+        """``(heartbeat_unix, heartbeat_age_s)`` when a consumer's own watch
+        has not ended it (#1022 review round 3), else ``None``.
+
+        Its heartbeat is within ``LEASE_TIMEOUT_S``, and ``quiet_s`` plus the
+        heartbeat's age is within ``grace_s``: the quiet its watch reported
+        at the heartbeat, projected to now, is inside the allowance the watch
+        judges it by (``ProgressWatch.as_record``: ``quiet_s`` is measured
+        from the deadline's base, which every credited exemption moves).
+        """
+
+        heartbeat = lease.get("heartbeat_unix")
+        age = offer_timing(heartbeat, now=now).age_s
+        quiet, grace = observation.get("quiet_s"), observation.get("grace_s")
+        if (age is None or age > LEASE_TIMEOUT_S
+                or isinstance(quiet, bool) or not isinstance(quiet, (int, float))
+                or isinstance(grace, bool) or not isinstance(grace, (int, float))
+                or not math.isfinite(float(quiet)) or not math.isfinite(float(grace))
+                or float(quiet) + age > float(grace)):
             return None
-        return value
+        return float(heartbeat), float(age)                 # type: ignore[arg-type]
 
     def _tier_loop_alive(self, tier_id: str, *, now: float
                          ) -> tuple[bool, float | None]:
@@ -19041,8 +19728,14 @@ class PoolQueue:
                             # rung only, so a working action pays nothing.
                             exempt_checkpoint = time.monotonic()
                             try:
+                                # The previous verdict carries the evidence
+                                # it saw, and the phase grace is the window
+                                # a whole absence of evidence is judged over
+                                # (#1022 review, items 1 and 5).
                                 verdict = self.staged_wait_verdict(
-                                    key, progress_path, token=progress_token)
+                                    key, progress_path, token=progress_token,
+                                    prior=watch.staged_wait,
+                                    window_s=watch.grace_s)
                             except (OSError, ValueError, PoolContractError) as exc:
                                 verdict = {"exempt": False, "movers": [],
                                            "reason": f"unreadable: {exc!r}"}

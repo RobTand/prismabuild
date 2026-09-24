@@ -72,6 +72,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 import hashlib
+import math
 
 #: Grant holder prefix.  Never ``claiming.*`` (transfer refuses those) and
 #: never 64-hex (cannot collide with content-hashed action keys).
@@ -184,6 +185,140 @@ def gate_commitment(*, committed_gib: int, growth_gib: int,
         return {"admit": True, "reason": "", "lone": True}
     return {"admit": False, "reason": REASON_COMMITMENT, "permanent": False,
             "lone": False}
+
+
+#: A claimed consumer whose next range waits behind an older claim on a tier
+#: whose joint commitment is past its capacity (#1011).  Transient: the
+#: consumers ranked ahead of it are served first, one head a cycle.
+REASON_CLAIM_ORDER = "held-by-claim-order"
+
+#: The standings :func:`claim_order` gives a claimed consumer.
+CLAIM_SATISFIED = "satisfied"
+CLAIM_GRANTED = "granted"
+CLAIM_HEAD = "head"
+CLAIM_HELD_BACK = "held-back"
+
+
+def claim_order(claims, *, free_gib: int) -> dict[str, object]:
+    """Rank a tier's claimed consumers for its room (#1011).
+
+    Used only on a stage tier whose joint commitment (#907) is past its
+    capacity, where the claimed consumers cannot all have their horizons and
+    each waits on the others' reading.  ``claims`` holds one mapping per
+    claimed consumer: ``consumer`` (its key), ``claimed_unix`` (when its
+    claim was recorded), ``need_gib`` (the GiB its window takes from free
+    next, 0 when it needs nothing), ``blocked`` (whether that range is the
+    one it is reading, so it cannot progress without it) and, for a blocked
+    one, ``blocked_since_unix`` (when it became blocked).
+
+    The rank is blocked first.  A consumer blocked on its own reading range
+    comes before any consumer's read-ahead, because a read-ahead range buys
+    latency while a blocked range is the only thing between a GPU and its
+    next unit of work.  Among blocked consumers the one blocked longest is
+    served first (``blocked_since_unix``, falling back to the claim time
+    when it is absent), and among the rest the older claim; the claim time
+    and then the key break ties, the key for determinism only.  Ranking
+    blocked consumers by claim time instead starves the younger one (#1022
+    review): the older claim, granted, reads its range and blocks again,
+    and is again the older claim.  By the time it blocked, the younger one
+    has been blocked longer, so it goes first.
+
+    The walk spends ``free_gib`` in rank order.  A consumer whose need fits
+    what is left is ``granted``; the first whose need does not fit is the
+    ``head``, and every consumer ranked after it with a need is
+    ``held-back``: it publishes nothing until the head is served, and its
+    record names the consumer ranked just ahead of it (``ahead``) and the
+    head (``waiting_on``).  A consumer with no need is ``satisfied``.
+
+    Returns ``{"entries": [...], "head": key or None, "target_free_gib":
+    int}``.  ``target_free_gib`` is the free the tier must reach for every
+    granted consumer and the head to take their needs at once; with no head
+    it is what the granted consumers take.  The caller makes that room from
+    ranges ranked after the head, never from a range a consumer is reading.
+    """
+
+    ranked = sorted(claims, key=lambda claim: (
+        not bool(claim.get("blocked")), _waited_from(claim),
+        float(claim["claimed_unix"]), str(claim["consumer"])))
+    left = int(free_gib)
+    target = 0
+    head: str | None = None
+    entries: list[dict[str, object]] = []
+    ahead: str | None = None
+    for rank, claim in enumerate(ranked):
+        key = str(claim["consumer"])
+        need = max(0, int(claim.get("need_gib") or 0))
+        entry: dict[str, object] = {
+            "consumer": key, "rank": rank,
+            "claimed_unix": float(claim["claimed_unix"]),
+            "blocked": bool(claim.get("blocked")), "need_gib": need,
+            "ahead": ahead}
+        if claim.get("blocked"):
+            entry["blocked_since_unix"] = _waited_from(claim)
+        if need <= 0:
+            entry["standing"] = CLAIM_SATISFIED
+        elif head is not None:
+            entry["standing"] = CLAIM_HELD_BACK
+            entry["waiting_on"] = head
+        elif need <= left:
+            entry["standing"] = CLAIM_GRANTED
+            left -= need
+            target += need
+        else:
+            entry["standing"] = CLAIM_HEAD
+            entry["shortfall_gib"] = need - left
+            head = key
+            target += need
+        entries.append(entry)
+        ahead = key
+    return {"entries": entries, "head": head, "target_free_gib": target}
+
+
+def _waited_from(claim) -> float:
+    """When a ranked claim started waiting: blocked since, else claimed."""
+
+    since = claim.get("blocked_since_unix") if claim.get("blocked") else None
+    if (isinstance(since, (int, float)) and not isinstance(since, bool)
+            and math.isfinite(float(since))):
+        return float(since)
+    return float(claim["claimed_unix"])
+
+
+def stuck_victim(order) -> str | None:
+    """The one consumer a stuck claim order ends this cycle, or ``None`` (#1011).
+
+    Stuck: the order's last relief pass was ``futile`` -- every candidate
+    together, read-ahead and preemptable reading-phase chunks alike, could
+    not make the head's room -- no ranked consumer is granted, and every
+    ranked consumer is blocked.  Nobody is reading, so no egress will make
+    the room either, and without an ending the wait has no end.
+
+    A granted consumer means the order is moving: its range lands, it reads
+    it, and its egress returns room.  A consumer that is not blocked is
+    reading.  Either way the order is not stuck, and nobody is ended.
+
+    Every consumer's ``no_progress`` rung reads the same record, so the rule
+    names one victim rather than ending each blocked consumer whose grace
+    lapses: the lowest-ranked blocked consumer other than the head, whose
+    held ranges are the ones ranked farthest from being read.  Only when
+    the head is the one ranked consumer is it the victim, which is the
+    rule before #1011.  The next cycle ranks again, so a stuck order ends
+    at most one consumer a cycle.
+    """
+
+    if not isinstance(order, Mapping) or order.get("relief") != "futile":
+        return None
+    entries = [entry for entry in order.get("entries") or ()
+               if isinstance(entry, Mapping)]
+    if not entries:
+        return None
+    if any(not entry.get("blocked") or entry.get("standing") in (
+            CLAIM_GRANTED, CLAIM_SATISFIED) for entry in entries):
+        return None
+    head = order.get("head")
+    others = [entry for entry in entries if entry.get("consumer") != head]
+    victim = max(others or entries, key=lambda entry: int(entry.get("rank") or 0))
+    return str(victim.get("consumer"))
 
 
 def fence_fits(*, held_gib: int, ready_gib: int, output_gib: int,

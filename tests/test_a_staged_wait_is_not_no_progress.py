@@ -16,15 +16,18 @@ token.  Those are the same ``no_progress`` ending as before.
 """
 from __future__ import annotations
 
+import inspect
 import json
 from pathlib import Path
 import sys
+import time
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from prismabuild import core as pb, pool, progress, residency_plan  # noqa: E402
+from prismabuild import (  # noqa: E402
+    core as pb, movement_actions, pool, progress, residency_map, residency_plan)
 from test_a_resident_range_is_adopted_rather_than_recopied import (  # noqa: E402
     STAGE_KIND, TIER, _hexkey, _row)
 from test_progress_keeps_a_working_action_alive import _claimed, _policy  # noqa: E402
@@ -110,11 +113,14 @@ def test_a_consumer_waiting_on_its_claimed_mover_is_not_killed_no_progress(
     """The copy is slower than every earlier receipt, and the mover is alive.
 
     Quiet for 1.5 s against a 0.4 s grace, all of it blocked on the claimed
-    mover for its own range.  On main the rung kills it at 0.4 s.
+    mover for its own range.  On main the rung kills it at 0.4 s.  The
+    mover's landed-bytes report is fresh (within two heartbeats), which is
+    the evidence the exemption now needs (#1022 review, item 1).
     """
 
     queue, item, _plan, row = _consumer_with_mover(tmp_path, mover_seed="slow")
     _hand_to_claimed(queue, row)
+    _mover_reports(queue, row, units=1 << 30, reported_unix=time.time())
 
     outcome = _execute(queue, item)
 
@@ -123,7 +129,9 @@ def test_a_consumer_waiting_on_its_claimed_mover_is_not_killed_no_progress(
     assert observed["staged_wait_exempt_s"] > 0.4
     wait = observed["staged_wait"]
     assert wait["exempt"] is True
-    assert wait["movers"] == [{"key": str(row["action_key"]), "state": "claimed"}]
+    (mover,) = wait["movers"]
+    assert (mover["key"], mover["state"], mover["evidence"]) == (
+        str(row["action_key"]), "claimed", "progress")
 
 
 def test_a_ready_mover_is_waited_on_as_well(tmp_path: Path) -> None:
@@ -308,3 +316,505 @@ def test_a_queued_mover_stays_exempt_on_an_over_committed_tier(
 
     assert verdict["exempt"] is True
     assert verdict["movers"][0]["state"] == "ready"
+
+
+# -- a queued mover is waited on only on evidence (#1011 review, item 1) -----
+#
+# A ``ready`` or ``claimed`` mover used to exempt its consumer with no clock:
+# a row the claim pass can never place, or one it withholds, held a GPU
+# consumer for as long as the row sat there.  The exemption now holds only
+# while the mover shows progress: the bytes queued ahead of it in the
+# consumer's landing record fell (``bytes_ahead``), or its own progress
+# report grew within two heartbeats.  A refused or withheld row is not
+# exempt at all.  The verdict records the evidence it went on.
+
+
+def _judge(queue, item, progress_path, **evidence):
+    """``_verdict`` plus the evidence arguments the review added, passed only
+    where the method takes them, so a head without them fails on the
+    assertion and not on the call."""
+
+    accepted = inspect.signature(queue.staged_wait_verdict).parameters
+    return queue.staged_wait_verdict(
+        str(item["action_key"]), progress_path, token=TOKEN,
+        **{name: value for name, value in evidence.items() if name in accepted})
+
+
+def _landing_ahead(queue: pool.PoolQueue, item, row, *, bytes_ahead: int,
+                   movers_ahead: list[str] | None = None) -> None:
+    """The consumer's landing record, the tier loop's way: its one queued
+    range ``bytes_ahead`` behind the movers ahead of it (``movers_ahead``,
+    left out when ``None``).  Written as the tier loop's JSON, not through
+    ``write_landing``, so a head whose schema lacks a field reads the record
+    as unreadable -- no evidence -- rather than failing the fixture."""
+
+    residency = row["residency"]
+    queued: dict[str, object] = {
+        "mover_action_key": str(row["action_key"]), "phase": "chain-043",
+        "range_start_bytes": int(residency["range_start_bytes"]),
+        "range_end_bytes": int(residency["range_end_bytes"]),
+        "state": "ready", "queue_position": len(movers_ahead or ()),
+        "bytes_ahead": int(bytes_ahead),
+        "expected_landing_unix": time.time() + 600.0,
+        "claimed_unix": None, "waiting_for": "", "basis": "queue"}
+    if movers_ahead is not None:
+        queued["movers_ahead"] = list(movers_ahead)
+    path = residency_map.landing_path(queue.residency_fragment_root(),
+                                      str(item["action_key"]))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "schema": residency_map.RESIDENCY_LANDING_SCHEMA_V1,
+        "consumer_action_key": str(item["action_key"]), "tier_id": TIER,
+        "manifest_sha256": MANIFEST, "written_unix": time.time(),
+        "rates_measured_bytes_per_s": [], "ranges": [queued]}))
+
+
+def _mover_reports(queue: pool.PoolQueue, row, *, units: int,
+                   reported_unix: float) -> None:
+    """The claimed mover's own landed-bytes report (#1010), as
+    ``stage_move._ProgressReporter`` commits it: only when it grew."""
+
+    path = queue.action_progress_path(str(row["action_key"]))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "schema": pb.PROGRESS_RECORD_SCHEMA_V1, "token": "m" * 32,
+        "phase": movement_actions.MOVER_COPY_PHASE, "units_completed": units,
+        "reported_unix": reported_unix}))
+
+
+@pytest.mark.parametrize("reason,kind", [
+    ("never_fits_tier_capacity", "refusal"),
+    ("tier_unknown", "refusal"),
+    # The #538 shape: a ``cpus=`` demand no box's census can place.
+    ("never_fits_capacity", "refusal"),
+])
+def test_a_ready_mover_the_claim_pass_refuses_is_not_waited_on(
+        tmp_path: Path, reason: str, kind: str) -> None:
+    """Queued, and the claim pass's latest word on it is a refusal: nothing
+    will copy it while that stands, so the consumer's wait on it is not a
+    dependency wait.  Tier within commitment, loop alive.  A withhold is the
+    opposite, and has its own tests below (#1022 review round 3, F1)."""
+
+    queue, item, row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=0)
+    queue.publish(**dict(row))
+    ready = json.loads(queue.item_path(pool.READY, str(row["action_key"])).read_text())
+    queue._record_denial_transition(ready, host="dl380g10", reason=reason,
+                                    decision_reason=None)
+
+    verdict = _verdict(queue, item, progress_path)
+
+    assert verdict["exempt"] is False, verdict
+    mover = verdict["movers"][0]
+    assert mover["state"] == "ready"
+    assert mover.get(kind) == reason, mover
+
+
+def test_a_ready_mover_is_waited_on_while_the_bytes_ahead_of_it_fall(
+        tmp_path: Path) -> None:
+    """The first look is the baseline; a fall in ``bytes_ahead`` renews it;
+    a whole evidence window without one ends the exemption."""
+
+    queue, item, row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=0)
+    queue.publish(**dict(row))
+    window = 600.0
+    gib = 1 << 30
+    _landing_ahead(queue, item, row, bytes_ahead=100 * gib)
+    first = _judge(queue, item, progress_path, prior=None, window_s=window)
+
+    _landing_ahead(queue, item, row, bytes_ahead=40 * gib)
+    fell = _judge(queue, item, progress_path, prior=first, window_s=window,
+                  now=time.time() + 30.0)
+
+    stale = _judge(queue, item, progress_path, prior=fell, window_s=window,
+                   now=time.time() + 30.0 + window + 1.0)
+
+    assert first["exempt"] is True, first
+    assert first["movers"][0].get("evidence") == "baseline", first
+    assert fell["exempt"] is True, fell
+    assert fell["movers"][0].get("evidence") == "bytes-ahead-fell", fell
+    assert fell["movers"][0].get("bytes_ahead") == 40 * gib, fell
+    assert stale["exempt"] is False, stale
+    assert stale["movers"][0].get("evidence") == "none", stale
+
+
+def test_a_claimed_mover_is_waited_on_while_its_report_grows(
+        tmp_path: Path) -> None:
+    """Claimed, copying: exempt while its landed-bytes report is at most two
+    heartbeats old, and not after."""
+
+    queue, item, row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=0)
+    _hand_to_claimed(queue, row)
+    now = time.time()
+    _mover_reports(queue, row, units=5 << 30, reported_unix=now - 10.0)
+    fresh = _judge(queue, item, progress_path, now=now)
+
+    _mover_reports(queue, row, units=5 << 30,
+                   reported_unix=now - 2 * pool.HEARTBEAT_S - 1.0)
+    old = _judge(queue, item, progress_path, now=now)
+
+    assert fresh["exempt"] is True, fresh
+    assert fresh["movers"][0].get("evidence") == "progress", fresh
+    assert fresh["movers"][0].get("progress_units") == 5 << 30, fresh
+    assert old["exempt"] is False, old
+    assert old["movers"][0].get("evidence") == "none", old
+
+
+# -- a hold stops the report, not the lease (#1022 review round 2) -----------
+#
+# The disk pacer holds a copy while the pool is over its caps.  Nothing lands,
+# so the mover's report (committed only when landed bytes grow) and the
+# landing record's ``bytes_ahead`` (rewritten only when the queue changes)
+# both freeze, for as long as the hold lasts.  The worker running the mover
+# keeps heartbeating its lease, credits the hold on evidence it samples
+# itself, and ends the copy if it stalls (#1010).  The verdict reads that
+# lease, so a consumer waiting behind a held copy waits with it.  The
+# campaign's phase grace is 900 s for a chunk; the tests hold for three.
+
+GRACE_S = 900.0
+
+
+def _other_claimed_copy(queue: pool.PoolQueue, seed: str) -> str:
+    """Another consumer's mover on the tier, claimed and copying."""
+
+    row = {**_row(queue, _hexkey(seed), {STAGE_KIND: 21, "cpu": 2, "mem_gb": 1}),
+           "residency": {"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER,
+                         "manifest_sha256": "e" * 64, "manifest_bytes": 22 * 10 ** 9,
+                         "range_start_bytes": 0, "range_end_bytes": 22 * 10 ** 9}}
+    _hand_to_claimed(queue, row)
+    return str(row["action_key"])
+
+
+def _mover_lease(queue: pool.PoolQueue, mover: str, *, heartbeat_unix: float,
+                 held_s: float) -> None:
+    """The lease the worker running ``mover`` writes every heartbeat, with
+    the pacer hold it has credited so far (``ProgressWatch.as_record``).
+    Written directly: ``write_lease`` is the claiming worker's, and checks it
+    is that worker.  ``_hand_to_claimed`` claims at 1.0."""
+
+    queue.lease_path(mover).write_text(json.dumps({
+        "schema": pool.POOL_LEASE_SCHEMA_V1, "action_key": mover,
+        "owner": "copy-fixture", "heartbeat_unix": heartbeat_unix,
+        "claimed_unix": 1.0,
+        "progress_observation": {
+            "source": "action-progress", "accepted_count": 1,
+            "quiet_s": held_s, "grace_s": GRACE_S / 3.0,
+            "pool_contention_exempt_s": held_s, "start_gate_exempt_s": 0.0}}))
+
+
+def _hold(queue, item, progress_path, mover: str, *, start: float,
+          seconds: float) -> list[dict]:
+    """One rung check a heartbeat through a pacer hold ``seconds`` long:
+    ``mover``'s lease is refreshed and credits the hold, and nothing else
+    moves.  Each check passes the one before as its prior, as the rung does
+    (``ProgressWatch.staged_wait``)."""
+
+    verdicts: list[dict] = []
+    prior = None
+    for step in range(1, int(seconds // pool.HEARTBEAT_S) + 1):
+        now = start + step * pool.HEARTBEAT_S
+        _mover_lease(queue, mover, heartbeat_unix=now - 1.0,
+                     held_s=step * pool.HEARTBEAT_S)
+        prior = _judge(queue, item, progress_path, prior=prior,
+                       window_s=GRACE_S, now=now)
+        verdicts.append(prior)
+    return verdicts
+
+
+def test_a_claimed_mover_the_pacer_holds_keeps_its_consumer_waiting(
+        tmp_path: Path) -> None:
+    """The consumer's own mover is claimed, landed its first entry, and is
+    held for three graces.  Its report is stale after two heartbeats; its
+    lease is not.  On the first head the verdict read only the report and
+    ended the exemption two heartbeats into the hold."""
+
+    queue, item, row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=0)
+    _hand_to_claimed(queue, row)
+    mover = str(row["action_key"])
+    start = time.time()
+    _mover_reports(queue, row, units=1 << 30, reported_unix=start)
+
+    verdicts = _hold(queue, item, progress_path, mover, start=start,
+                     seconds=3 * GRACE_S)
+
+    ended = [verdict for verdict in verdicts if not verdict["exempt"]]
+    assert ended == [], ended[:1]
+    last = verdicts[-1]["movers"][0]
+    assert last["evidence"] == "lease-live", last
+    assert last["hold_credited_s"] == pytest.approx(3 * GRACE_S), last
+    assert last["progress_units"] == 1 << 30, last
+
+
+def test_a_claimed_mover_whose_lease_went_quiet_is_not_waited_on(
+        tmp_path: Path) -> None:
+    """The report is stale and the lease's heartbeat is older than the bound
+    the reaper takes a claim back at (``LEASE_TIMEOUT_S``): nothing says the
+    copy's worker is alive, so nothing says it is coming."""
+
+    queue, item, row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=0)
+    _hand_to_claimed(queue, row)
+    mover = str(row["action_key"])
+    now = time.time()
+    _mover_reports(queue, row, units=1 << 30, reported_unix=now - 3600.0)
+    _mover_lease(queue, mover, heartbeat_unix=now - pool.LEASE_TIMEOUT_S - 1.0,
+                 held_s=0.0)
+
+    verdict = _judge(queue, item, progress_path, now=now)
+
+    assert verdict["exempt"] is False, verdict
+    entry = verdict["movers"][0]
+    assert entry["evidence"] == "none", entry
+    assert entry.get("lease_live", False) is False, entry
+
+
+def test_a_ready_mover_behind_a_copy_the_pacer_holds_keeps_its_consumer_waiting(
+        tmp_path: Path) -> None:
+    """The consumer's mover is ready behind another consumer's copy, which
+    the pacer holds for three graces.  The landing record does not change:
+    ``bytes_ahead`` is frozen.  On the first head the evidence ran baseline,
+    carried, none, and the consumer was not exempt one window into the
+    hold."""
+
+    queue, item, row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=0)
+    queue.publish(**dict(row))
+    copy = _other_claimed_copy(queue, "heldcopy")
+    _landing_ahead(queue, item, row, bytes_ahead=22 * 10 ** 9, movers_ahead=[copy])
+
+    verdicts = _hold(queue, item, progress_path, copy, start=time.time(),
+                     seconds=3 * GRACE_S)
+
+    ended = [verdict for verdict in verdicts if not verdict["exempt"]]
+    assert ended == [], ended[:1]
+    last = verdicts[-1]["movers"][0]
+    assert last["state"] == "ready", last
+    assert last["evidence"] == "copy-ahead-live", last
+    assert last["copy_ahead"] == copy, last
+    assert last["copy_ahead_hold_credited_s"] == pytest.approx(3 * GRACE_S), last
+    assert last["waiting_behind"] == [copy], last
+
+
+def test_a_copy_claimed_after_the_wait_began_does_not_renew_it(
+        tmp_path: Path) -> None:
+    """Nothing was queued ahead of the ready mover when its wait first
+    looked.  Then another row is claimed instead of it -- the claim pass
+    placed that one and not this one -- and is copying.  Its lease is live,
+    but it was not ahead of this mover, so it says nothing about this one:
+    the exemption ends one window after the first look, as before."""
+
+    queue, item, row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=0)
+    queue.publish(**dict(row))
+    start = time.time()
+    _landing_ahead(queue, item, row, bytes_ahead=0, movers_ahead=[])
+    first = _judge(queue, item, progress_path, prior=None, window_s=GRACE_S,
+                   now=start)
+    passer = _other_claimed_copy(queue, "passer")
+    _landing_ahead(queue, item, row, bytes_ahead=22 * 10 ** 9, movers_ahead=[passer])
+    later = start + GRACE_S + 1.0
+    _mover_lease(queue, passer, heartbeat_unix=later - 1.0, held_s=0.0)
+
+    verdict = _judge(queue, item, progress_path, prior=first, window_s=GRACE_S,
+                     now=later)
+
+    assert first["exempt"] is True, first
+    assert verdict["exempt"] is False, verdict
+    entry = verdict["movers"][0]
+    assert entry["evidence"] == "none", entry
+    assert entry.get("waiting_behind", []) == [], entry
+
+
+# -- a withhold is the pool holding the box for the row (#1022 review round 3)
+#
+# F1.  A withhold (``*_withholding``) is the claim pass keeping the stage host
+# shut for this row while the holders in its way drain (#924): the row is
+# next, and the pool bounds the veto by ``WITHHOLD_CEILING_S`` from the
+# episode's start (``epoch_unix`` in the row's passes sidecar).  Round 2 read
+# it as "not coming", so a withhold that ran toward its ceiling ended a
+# healthy consumer whose chunk grace is the same 900 s.  The wait is now
+# exempt on the withhold, until the ceiling of its epoch.
+#
+# ``deferred_behind_withholding`` is not tested here: the claim pass records
+# it only for a producer's export (``cpu_admission.dependent_owner`` is
+# ``None`` for anything but a ``generation`` action with
+# ``params.produced_spool``), so no stage mover can carry it.
+
+
+def _withheld(queue: pool.PoolQueue, row, reason: str, *,
+              epoch_unix: float | None, first_unix: float | None) -> None:
+    """The claim pass's word on the ready ``row``: ``reason`` in its denial
+    ring, and the passes sidecar ``record_pass`` keeps for it, with the
+    withhold episode's start (``epoch_unix``) and the first denial
+    (``first_unix``) where given."""
+
+    key = str(row["action_key"])
+    ready = json.loads(queue.item_path(pool.READY, key).read_text())
+    queue._record_denial_transition(ready, host="dl380g10", reason=reason,
+                                    decision_reason=None)
+    passes: dict[str, object] = {"action_key": key, "passes": pool.STARVATION_FLOOR,
+                                 "updated_unix": time.time()}
+    if first_unix is not None:
+        passes["first_unix"] = first_unix
+    if epoch_unix is not None:
+        passes["epoch_unix"] = epoch_unix
+    path = queue.passes_path(key)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(passes))
+
+
+@pytest.mark.parametrize("reason", [
+    "reservation_unavailable_withholding",
+    # The host-PSI shape of PB #985: an adaptive refusal the drain resolves.
+    "adaptive_refused_withholding",
+])
+def test_a_ready_mover_the_claim_pass_withholds_for_is_waited_on(
+        tmp_path: Path, reason: str) -> None:
+    """F1: the withhold began 600 s ago, inside ``WITHHOLD_CEILING_S``, so
+    the pool is still holding the box for this row.  The wait is exempt, the
+    entry names the withhold and the host, and its ``evidence_unix`` is the
+    withhold's epoch, not the check."""
+
+    queue, item, row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=0)
+    queue.publish(**dict(row))
+    now = time.time()
+    epoch = now - 600.0
+    _withheld(queue, row, reason, epoch_unix=epoch, first_unix=epoch - 120.0)
+
+    verdict = _judge(queue, item, progress_path, prior=None, window_s=GRACE_S,
+                     now=now)
+
+    assert verdict["exempt"] is True, verdict
+    entry = verdict["movers"][0]
+    assert (entry["state"], entry["evidence"]) == ("ready", "withheld"), entry
+    assert (entry.get("withhold"), entry.get("denied_by")) == (reason, "dl380g10"), entry
+    assert entry.get("evidence_unix") == epoch, entry
+    assert entry.get("withhold_basis") == "episode", entry
+    assert entry.get("withhold_ceiling_s") == pool.WITHHOLD_CEILING_S, entry
+
+
+def test_a_withhold_with_no_episode_is_bounded_by_the_first_denial(
+        tmp_path: Path) -> None:
+    """F1: a withhold with no episode on file (``in_flight``: the tokens
+    are between an acquisition and its rename) is bounded by the row's own
+    first-denial clock, the one the pool bounds it by."""
+
+    queue, item, row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=0)
+    queue.publish(**dict(row))
+    now = time.time()
+    first = now - 100.0
+    _withheld(queue, row, "reservation_unavailable_withholding",
+              epoch_unix=None, first_unix=first)
+
+    verdict = _judge(queue, item, progress_path, prior=None, window_s=GRACE_S,
+                     now=now)
+
+    assert verdict["exempt"] is True, verdict
+    entry = verdict["movers"][0]
+    assert entry["evidence"] == "withheld", entry
+    assert (entry.get("evidence_unix"), entry.get("withhold_basis")) == (
+        first, "first-denial"), entry
+
+
+def test_a_withhold_on_one_host_outranks_a_refusal_on_another(
+        tmp_path: Path) -> None:
+    """F1: one box's census can never place the row (``never_fits_capacity``),
+    and the stage host withholds its box for it.  The row is coming on the
+    stage host, so the consumer waits on it, as it would on a host that says
+    nothing but a transient reason."""
+
+    queue, item, row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=0)
+    queue.publish(**dict(row))
+    now = time.time()
+    ready = json.loads(queue.item_path(pool.READY, str(row["action_key"])).read_text())
+    queue._record_denial_transition(ready, host="sparky", reason="never_fits_capacity",
+                                    decision_reason=None)
+    _withheld(queue, row, "reservation_unavailable_withholding",
+              epoch_unix=now - 60.0, first_unix=now - 120.0)
+
+    verdict = _judge(queue, item, progress_path, prior=None, window_s=GRACE_S,
+                     now=now)
+
+    assert verdict["exempt"] is True, verdict
+    entry = verdict["movers"][0]
+    assert (entry["evidence"], entry.get("denied_by")) == ("withheld", "dl380g10"), entry
+
+
+@pytest.mark.parametrize("epoch_age_s,first_age_s", [
+    # An episode past the ceiling: the pool has stopped withholding for it,
+    # so a ring that still says so is not a veto that is coming to an end.
+    (pool.WITHHOLD_CEILING_S + 1.0, pool.WITHHOLD_CEILING_S + 60.0),
+    # No sidecar at all: nothing bounds the withhold, so it is not waited on.
+    (None, None),
+], ids=["past-ceiling", "no-sidecar"])
+def test_a_withhold_past_its_ceiling_is_not_waited_on(
+        tmp_path: Path, epoch_age_s: float | None, first_age_s: float | None) -> None:
+    """F1's bound: exempt only within ``WITHHOLD_CEILING_S`` of the epoch."""
+
+    queue, item, row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=0)
+    queue.publish(**dict(row))
+    now = time.time()
+    _withheld(queue, row, "reservation_unavailable_withholding",
+              epoch_unix=None if epoch_age_s is None else now - epoch_age_s,
+              first_unix=None if first_age_s is None else now - first_age_s)
+
+    verdict = _judge(queue, item, progress_path, prior=None, window_s=GRACE_S,
+                     now=now)
+
+    assert verdict["exempt"] is False, verdict
+    entry = verdict["movers"][0]
+    assert entry["evidence"] == "withhold-lapsed", entry
+    assert entry.get("withhold") == "reservation_unavailable_withholding", entry
+
+
+def test_a_consumer_whose_mover_the_pool_stopped_withholding_gets_a_baseline(
+        tmp_path: Path) -> None:
+    """F1: the previous check, 100 s ago, saw a withhold whose epoch was
+    850 s old then, inside the ceiling.  The pool has since stopped
+    withholding and denies the row only transiently.  The withhold's epoch
+    is not carried into the ready rule, where it would read ``none`` at once
+    against a 900 s window: the ready rule takes its own baseline."""
+
+    queue, item, row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=0)
+    queue.publish(**dict(row))
+    mover = str(row["action_key"])
+    now = time.time()
+    _landing_ahead(queue, item, row, bytes_ahead=0, movers_ahead=[])
+    ready = json.loads(queue.item_path(pool.READY, mover).read_text())
+    queue._record_denial_transition(ready, host="dl380g10",
+                                    reason="reservation_unavailable",
+                                    decision_reason=None)
+    prior = {"since_unix": 1.0, "exempt": True, "movers": [{
+        "key": mover, "state": "ready", "evidence": "withheld",
+        "withhold": "reservation_unavailable_withholding",
+        "evidence_unix": now - 950.0, "waiting_behind": []}]}
+
+    verdict = _judge(queue, item, progress_path, prior=prior, window_s=GRACE_S,
+                     now=now)
+
+    entry = verdict["movers"][0]
+    assert (verdict["exempt"], entry.get("evidence")) == (True, "baseline"), entry
+
+
+def test_a_mover_requeued_after_its_worker_died_gets_a_fresh_baseline(
+        tmp_path: Path) -> None:
+    """F4: the previous check saw this mover ``claimed`` with a live lease
+    400 s ago; its worker died, the reaper took the claim back at
+    ``LEASE_TIMEOUT_S`` and the row is ``ready`` again with nothing ahead
+    of it.  The claimed entry's evidence time is not the ready rule's: the
+    ready evidence takes a baseline on the state change, instead of reading
+    ``none`` at once against a 300 s window.  (The RV-1022 review's probe.)"""
+
+    queue, item, row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=0)
+    queue.publish(**dict(row))
+    mover = str(row["action_key"])
+    _landing_ahead(queue, item, row, bytes_ahead=0, movers_ahead=[])
+    now = time.time()
+    first = _judge(queue, item, progress_path, prior=None, window_s=300.0, now=now)
+    prior = dict(first)
+    prior["movers"] = [{"key": mover, "state": "claimed", "evidence": "lease-live",
+                        "evidence_unix": now - pool.LEASE_TIMEOUT_S - 100.0,
+                        "lease_live": True}]
+
+    verdict = _judge(queue, item, progress_path, prior=prior, window_s=300.0,
+                     now=now)
+
+    entry = verdict["movers"][0]
+    assert entry["state"] == "ready", entry
+    assert (verdict["exempt"], entry.get("evidence")) == (True, "baseline"), entry

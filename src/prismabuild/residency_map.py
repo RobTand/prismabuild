@@ -90,6 +90,16 @@ RESIDENCY_LANDING_SCHEMA_V1 = "prismaquant.prismabuild.residency_landing.v1"
 #: not published (a stall, or a failed copy awaiting its recopy).
 #: ``terminal-no-receipt`` is a leg nothing will publish again: its mover
 #: failed and the plan is superseded.
+#:
+#: The range a claimed consumer waits for while the claim order serves the
+#: consumers ranked ahead of it on an over-committed stage tier (#1011) is
+#: ``unpublished`` too, and says so in fields of its own: the one ahead
+#: (``held_back_by``), the head (``waiting_on``), the GiB and its rank, and
+#: an ``expected_landing_unix`` that is the order's priced lower bound, or
+#: null when no landing rate is known.  Not a state of its own: the reader
+#: (PQ ``residency_map._read_landing``) drops a whole record that lists a
+#: state it does not know, and then falls back to its bounded wait (#1022
+#: review round 2).
 LANDING_STATES = ("ready", "claimed", "unpublished", "evicted",
                   "done-not-resident", "terminal-no-receipt")
 _LANDING_KEYS = frozenset({
@@ -106,7 +116,13 @@ _LANDING_RANGE_KEYS = frozenset({
     # claimed mover's own landed-bytes report, ``claim`` from its claim
     # time, ``queue`` for a ready range.  A ``reported`` range also carries
     # the report's bytes, time and the rate they landed at.
-    "basis", "landed_bytes", "reported_unix", "live_bytes_per_s"})
+    "basis", "landed_bytes", "reported_unix", "live_bytes_per_s",
+    # A range the claim order holds back (#1011).
+    "held_back_by", "waiting_on", "waiting_gib", "claim_rank",
+    "expected_landing_basis",
+    # A ready range: the movers queued ahead of it in the tier's order,
+    # whose bytes ``bytes_ahead`` counts (#1022 review round 2).
+    "movers_ahead"})
 #: The values ``basis`` may take (#1010).
 LANDING_BASES = ("reported", "claim", "queue")
 
@@ -668,11 +684,38 @@ def validate_landing(value: object) -> dict[str, object]:
         for name in ("reported_unix", "live_bytes_per_s"):
             if name in entry:
                 row[name] = _finite_or_none(entry[name], where=name)
+        if "movers_ahead" in entry:
+            movers = entry["movers_ahead"]
+            if not isinstance(movers, list):
+                raise ResidencyMapError("movers_ahead must be an array")
+            row["movers_ahead"] = [_action_key(mover, where="movers_ahead")
+                                   for mover in movers]
         if state in ("ready", "claimed"):
             if expected is None:
                 raise ResidencyMapError("a queued range carries its expected landing")
             _nonnegative(row["queue_position"], where="queue_position")
             _nonnegative(row["bytes_ahead"], where="bytes_ahead")
+        elif "held_back_by" in entry:
+            # Priced, not queued: the landing is the order's lower bound.
+            if state != "unpublished":
+                raise ResidencyMapError(
+                    "only an unpublished range is held back by the claim order")
+            held_back_by = entry.get("held_back_by")
+            waiting_on = entry.get("waiting_on")
+            if not (isinstance(held_back_by, str) and held_back_by
+                    and isinstance(waiting_on, str) and waiting_on
+                    and row["waiting_for"]):
+                raise ResidencyMapError(
+                    "a range the claim order holds back names the consumer "
+                    "ahead of it, the head and what it waits for")
+            row.update({
+                "held_back_by": held_back_by, "waiting_on": waiting_on,
+                "waiting_gib": _nonnegative(entry.get("waiting_gib"),
+                                            where="waiting_gib"),
+                "claim_rank": _nonnegative(entry.get("claim_rank"),
+                                           where="claim_rank"),
+                "expected_landing_basis": str(
+                    entry.get("expected_landing_basis") or "")})
         elif expected is not None or not row["waiting_for"]:
             raise ResidencyMapError(
                 "a range that is not queued carries no expected landing and "
