@@ -7311,7 +7311,11 @@ def _read_counts(receipts: ReceiptCache) -> dict[str, int]:
     census = getattr(receipts, "census", None)
     counts: dict[str, int] = {}
     for prefix, source in (("records", records), ("census", census)):
-        for field in ("listed", "kept", "parsed", "parses", "reuses"):
+        # stale_skipped/stale_censused: dead owners the stale-mention skip
+        # checkpoint passed over, and those censused (#1056); a skip files
+        # no receipt, so this line is where it is counted.
+        for field in ("listed", "kept", "parsed", "parses", "reuses",
+                      "stale_skipped", "stale_censused"):
             value = getattr(source, field, None)
             if isinstance(value, int):
                 counts[f"{prefix}_{field}"] = value
