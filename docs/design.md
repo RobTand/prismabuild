@@ -4672,7 +4672,15 @@ So does a remembered ending whose consumer or mover has a queue record again.
   the adoption proof before any copy. The receipt's `conflict` names the
   path, both owners and both digests. The mover exits 1 and marks its window
   superseded with the #708 record, so the tier loop stops republishing it.
-  The live copy is never touched.
+  The live copy is never touched. The marker carries the conflict itself,
+  structured (`conflict`: the refusal, the path and every owner with its
+  state), not only its reason. The stalled consumer sits READY until an
+  operator resubmits it, and both readers of that stall name the retirement
+  (#1004): its claim denial's `residency.plan_superseded` (read only once a
+  lead has finished, so a lead still coming costs the claim scan nothing
+  more) and the plan's `superseded` entry in `pbstatus --starvation`
+  (`residency_plan.supersession_summary`). An unreadable marker reads as
+  `unreadable`, never as no retirement.
 - An unproven ending: the retryable refusal it always was, now raised before
   any copy, and bounded (#1004). Some unproven endings settle by themselves:
   a queued, claimed or leased key, or a queue state that did not read. Those

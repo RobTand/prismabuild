@@ -1413,9 +1413,26 @@ def _starvation_plan_entry(queue: pool.PoolQueue, key: str, raw: object,
                        "stage_chunks": stage_chunks,
                        "ram_chunks": ram_chunks,
                        "stage_fragment": stage_fragment})
+    # A retired window (#708) is a stall no cycle ends: nothing republishes
+    # its movers until an operator resubmits the consumer.  When a mover's
+    # terminal refusal retired it (#966, #1004) the marker names why, the
+    # path and both owners, and so does this entry (#1004 item 3).
+    try:
+        superseded = residency_plan.supersession_summary(
+            residency_plan.superseded(queue, plan))
+    except (OSError, ValueError, pool.PoolContractError) as exc:
+        notes.append(f"starvation plan {prefix} supersession: {exc}")
+        unreadable.append(f"starvation plan {prefix} supersession: {exc}")
+        superseded = {"unreadable": True, "error": str(exc)}
+    if isinstance(superseded, Mapping) and superseded.get("unreadable"):
+        notes.append(f"starvation plan {prefix} supersession: "
+                     f"{superseded.get('error')}")
+        unreadable.append(f"starvation plan {prefix} supersession: "
+                          f"{superseded.get('error')}")
     entry = {"consumer_action_key_prefix": prefix, "valid": True,
              "tier_id": tier_id, "ram_tier_id": ram_tier_id,
-             "state": state, "accepted_phase": accepted,
+             "state": state, "superseded": superseded,
+             "accepted_phase": accepted,
              "accepted_index": accepted_index, "phases": phases,
              "cursor_gap": _starvation_cursor_gap(
                  names, accepted_index, phases, now=now)}

@@ -4723,6 +4723,9 @@ def retire_conflicted_window(queue: pool.PoolQueue, consumer: str,
 
     ``refusal`` is the terminal refusal the reason is filed under: the live
     owner's conflict, or an ending that stayed unprovable (#1004 item 2).
+    The marker also carries the conflict itself, structured, so the stalled
+    consumer's claim denial and ``pbstatus --starvation`` name the path and
+    both owners without parsing the reason (#1004 item 3).
 
     The existing retirement record (#708): ``residency_window`` stops
     publishing movers from a superseded plan, and a deliberate resubmission
@@ -4772,7 +4775,8 @@ def retire_conflicted_window(queue: pool.PoolQueue, consumer: str,
                        f"consecutive runs: {conflict.get('why')}")
         marker = residency_plan.mark_superseded(
             queue, consumer, plan=plan, filing=filing, reason=reason,
-            movers=[mover], by="stage-move")
+            movers=[mover], by="stage-move",
+            conflict={**conflict, "refusal": refusal})
     except (OSError, ValueError, pb.PrismaBuildError):
         return False
     return marker is not None

@@ -998,7 +998,9 @@ def mark_superseded(queue, consumer_action_key: str, *,
                     plan: Mapping[str, object] | None = None,
                     filing: tuple[int, int, int] | None = None,
                     reason: str = "", movers: Sequence[str] = (),
-                    by: str = "") -> dict[str, object] | None:
+                    by: str = "",
+                    conflict: Mapping[str, object] | None = None,
+                    ) -> dict[str, object] | None:
     """Mark one *filing* of a frozen plan superseded, under its own lock.
 
     A withdrawal is a decision about the *window* that minted the withdrawn
@@ -1016,6 +1018,12 @@ def mark_superseded(queue, consumer_action_key: str, *,
     after the caller decided is never marked -- a stale cancellation does not
     retire a concurrent replacement.  With neither given, the current filing
     is marked, which is what withdrawing an action by its own key means.
+
+    ``conflict`` is the structured cause of a mover's terminal refusal
+    (#966, #1004): the refusal, the staged path and every owner with its
+    state.  It rides on the marker so whoever reads the stall -- the
+    consumer's claim denial, ``pbstatus --starvation`` -- names the path and
+    both owners without parsing ``reason`` (:func:`supersession_summary`).
 
     Idempotent and first-writer; the marker names the filing it covers.
     """
@@ -1056,6 +1064,8 @@ def mark_superseded(queue, consumer_action_key: str, *,
             "marked_by": str(by),
             "movers": [str(mover) for mover in movers],
         }
+        if conflict is not None:
+            marker["conflict"] = _conflict_record(conflict)
         try:
             _pool._publish_immutable(
                 path, pb._canonical_bytes(marker),
@@ -1066,6 +1076,58 @@ def mark_superseded(queue, consumer_action_key: str, *,
             state, existing, _error = _read_marker(path)
             return existing if state == "ok" else None
         return marker
+
+
+def _conflict_record(conflict: Mapping[str, object]) -> dict[str, object]:
+    """The structured cause a supersession marker carries, JSON-safe."""
+
+    owners = []
+    for row in conflict.get("owners") or ():
+        if not isinstance(row, Mapping):
+            continue
+        owner = {name: str(row[name]) for name in
+                 ("consumer_action_key", "mover_action_key", "state", "why")
+                 if row.get(name) is not None}
+        owners.append(owner)
+    record: dict[str, object] = {"owners": owners}
+    for name in ("refusal", "stage_path", "consumer_action_key",
+                 "mover_action_key", "declared_sha256", "why"):
+        if conflict.get(name) is not None:
+            record[name] = str(conflict[name])
+    return record
+
+
+def supersession_summary(marker: Mapping[str, object] | None,
+                         ) -> dict[str, object] | None:
+    """What a stalled consumer's readers say about its retired window.
+
+    ``None`` for no marker.  Otherwise the marker's reason, who marked it and
+    which movers, and -- when a mover's terminal refusal retired it (#966,
+    #1004) -- the refusal, the staged path and every owner with its state,
+    lifted out of the marker's ``conflict``.  An unreadable marker says so;
+    it is never read as absent.
+    """
+
+    if marker is None:
+        return None
+    if marker.get("unreadable"):
+        return {"unreadable": True,
+                "error": str(marker.get("error") or "unreadable marker")}
+    summary: dict[str, object] = {
+        "reason": str(marker.get("reason") or ""),
+        "marked_by": str(marker.get("marked_by") or ""),
+        "marked_unix": marker.get("marked_unix"),
+        "movers": [str(mover) for mover in marker.get("movers") or ()
+                   if isinstance(mover, str)],
+    }
+    conflict = marker.get("conflict")
+    if isinstance(conflict, Mapping):
+        for name in ("refusal", "stage_path", "why"):
+            if conflict.get(name) is not None:
+                summary[name] = conflict[name]
+        summary["owners"] = [dict(row) for row in conflict.get("owners") or ()
+                             if isinstance(row, Mapping)]
+    return summary
 
 
 def child_keys(plan: Mapping[str, object]) -> list[str]:
