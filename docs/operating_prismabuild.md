@@ -1743,6 +1743,11 @@ retain their admission rules. Older workers may omit this optional detail.
 `deferred_for_preferred_cpu` and `deferred_for_cross_resource_placement` are
 bounded placement preferences, not refusals: they age nothing and expire on
 their own after 20 seconds, so treat neither as starvation.
+`deferred_for_ready_gpu_row` is not a refusal either: a CPU-only row was held
+back for one pass because it would not fit beside a ready GPU row that fits the
+box's free GPU and that another loop was deciding (#1169). It ages nothing and
+names the GPU row (`gpu_row`), its `room`, the free tokens and the row's own
+demand.
 Use measured aggregate peak memory when sizing an action; reducing a reservation
 to force a claim can exhaust its enforced memory budget.
 

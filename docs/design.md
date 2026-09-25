@@ -445,7 +445,28 @@ for `WITHHOLD_CEILING_S`, as it does not whenever a GPU refusal names processes
 the pool does not own. An item that needs a GPU on a box whose GPU is free is
 eligible on its first denial rather than at the floor, because every admission
 behind it takes CPU or memory it needs; "free" is the token and, where the box
-samples its GPU, a fresh sample naming no foreign process. Priority defaults to 0 and is queue
+samples its GPU, a fresh sample naming no foreign process. A withhold protects
+an item only from the rows behind it, and only after its own refusal, so while
+a box's GPU token is free the ready rows that demand a GPU and are placeable
+there are read in their band's order, and each whose reservation fits the free
+tokens is scanned ahead of the rows of its band that demand no GPU, until the
+first that does not fit (#1169, `PoolQueue._gpu_first_order`). Its own
+evaluation decides: it claims, it withholds as above, or it is refused and the
+rows behind it are scanned as before. GPU rows keep their order among
+themselves, so a big GPU row that does not fit yet keeps its place ahead of a
+smaller one (#1085), and bands are never crossed. Before #1169 a CPU-only shard
+that had aged ahead of a Stage B row, while the row's residency lead was not
+yet resident and counted no pass, took the room of a GPU released a second
+earlier, and the row's withhold came one claim too late. When the scan meets
+such a row's transition lock held (`transition_busy`), the row keeps its room
+for that pass (`gpu_room_kept`, `PoolQueue._ready_gpu_row_room`): the
+reservation its claim charges here, its producer's export allowance included,
+kept only while its images are present, its residency is not refused, the GPU
+sample is clean and the room fits the free tokens. A row behind it that
+demands no GPU is admitted only if the room still fits the free tokens
+afterwards, and is otherwise denied `deferred_for_ready_gpu_row`, naming the
+GPU row, the room, the free tokens and its own demand, with no pass. CPU work
+that fits beside the GPU row is admitted, and nothing claimed is evicted. Priority defaults to 0 and is queue
 metadata outside action identity; `pbtest --priority` forwards it to every
 shard. Agent self-validation uses -10 so queued campaign work at 0 is considered
 first. A denied foreground item may also preempt one admitted background holder
