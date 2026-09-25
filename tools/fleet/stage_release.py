@@ -92,6 +92,8 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Mapping
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 import contextvars
 import errno
@@ -783,7 +785,7 @@ class DirectoryRecords:
 
     def read(self, directory: Path, *, select, parse, thaw=None,
              keep=None, stat_parse: bool = False,
-             checkpoint=None) -> list[tuple[Path, object]]:
+             checkpoint=None, readers: int = 1) -> list[tuple[Path, object]]:
         """``(path, record)`` for each selected name, in name order.
 
         ``select(entry)`` takes an ``os.DirEntry`` and says whether the name
@@ -811,17 +813,32 @@ class DirectoryRecords:
         stat that costs milliseconds or more on a loaded pool, so each
         entry is its own batch.  What it raises reaches the caller as a
         parse's raise would.  Without it the read is as before.
+
+        ``readers`` above 1 stats and parses a changed directory's entries on
+        that many threads (#1153): a cold read costs one seek per entry, and
+        the pool serves many seeks at once, so the read costs (entries /
+        readers) x latency rather than entries x latency.  Only the ``stat``
+        and the ``parse`` run on the readers.  Everything else runs on the
+        calling thread, one entry at a time and in name order, exactly as a
+        serial read runs it: the version comparison, ``keep``, the #1045
+        fence, the counters, and ``checkpoint``, which is called before each
+        entry's result is taken.  At most ``2 x readers`` entries are in
+        flight, so a raise, first in name order as a serial read's is, stops
+        the read with at most that many reads wasted, and nothing a reader
+        did is kept.  ``parse`` must then be safe to call from several
+        threads at once; ``pool._read_json`` is.
         """
 
         out = self._read(directory, select=select, parse=parse, keep=keep,
-                         stat_parse=stat_parse, checkpoint=checkpoint)
+                         stat_parse=stat_parse, checkpoint=checkpoint,
+                         readers=readers)
         if thaw is None:
             return out
         return [(path, thaw(path, kept)) for path, kept in out]
 
     def _read(self, directory: Path, *, select, parse, keep,
               stat_parse: bool = False,
-              checkpoint=None) -> list[tuple[Path, object]]:
+              checkpoint=None, readers: int = 1) -> list[tuple[Path, object]]:
         name = str(directory)
         kept = self._directories.get(name)
         if (kept is not None and kept[0] is not None
@@ -861,28 +878,44 @@ class DirectoryRecords:
         out: list[tuple[Path, object]] = []
         complete = True
         changed = False
+
+        def entry_io(entry: os.DirEntry) -> tuple | None:
+            """One entry's ``stat`` and, when its version moved, its parse.
+
+            ``None`` for an entry gone since the listing; otherwise ``(info,
+            version, parsed, record)``.  The only part of an entry's read
+            that may run on a reader thread: it touches nothing but the file.
+            """
+
+            path = directory / entry.name
+            info = None
+            try:
+                # The listing's own string, not ``path``: converting a
+                # ``Path`` back to a string for every name was most of a
+                # 30,000-name listing's cost.
+                info = os.stat(entry.path)
+                version = _metadata_version(info)
+            except FileNotFoundError:
+                return None
+            except OSError:
+                version = None
+            hit = previous.get(entry.name)
+            if version is not None and hit is not None and hit[0] == version:
+                return info, version, False, hit[1]
+            record = parse(path, info) if stat_parse else parse(path)
+            return info, version, True, record
+
         try:
-            for entry in entries:
-                if checkpoint is not None:
-                    checkpoint()      # before each entry's stat and parse
-                path = directory / entry.name
-                info = None
-                try:
-                    # The listing's own string, not ``path``: converting a
-                    # ``Path`` back to a string for every name was most of a
-                    # 30,000-name listing's cost.
-                    info = os.stat(entry.path)
-                    version = _metadata_version(info)
-                except FileNotFoundError:
+            for entry, outcome in _entry_reads(entries, entry_io,
+                                               readers=readers,
+                                               checkpoint=checkpoint):
+                if outcome is None:
                     continue
-                except OSError:
-                    complete = False
-                    version = None
-                hit = previous.get(entry.name)
-                if version is not None and hit is not None and hit[0] == version:
-                    record = hit[1]
-                else:
-                    record = parse(path, info) if stat_parse else parse(path)
+                path = directory / entry.name
+                info, version, parsed, record = outcome
+                if version is None:
+                    complete = False      # the stat failed
+                if parsed:
                     self.parsed += 1
                     changed = True
                     if keep is not None and not keep(record):
@@ -910,6 +943,50 @@ class DirectoryRecords:
             stamp = None
         self._directories[name] = (stamp, records)
         return out
+
+
+def _entry_reads(entries, entry_io, *, readers: int, checkpoint):
+    """``(entry, entry_io(entry))`` in ``entries``' order, read by ``readers``.
+
+    ``checkpoint`` runs on the calling thread before each entry's result is
+    taken: serially that is before its ``stat``, as :meth:`DirectoryRecords.read`
+    promised (#1148); with readers it is before the wait for it, so a stretch
+    between two checkpoints is at most one entry's read.  A raise from
+    ``entry_io`` reaches the caller at that entry's turn, and the readers
+    still reading are not waited for: they touch nothing but their files.
+    """
+
+    readers = min(int(readers), len(entries))
+    if readers <= 1:
+        for entry in entries:
+            if checkpoint is not None:
+                checkpoint()      # before each entry's stat and parse
+            yield entry, entry_io(entry)
+        return
+    # A bounded read-ahead: enough entries in flight to keep every reader
+    # busy while the caller takes the one before, and no more, so a raise
+    # early in the directory does not wait on the rest of it.
+    window = 2 * readers
+    executor = ThreadPoolExecutor(max_workers=readers,
+                                  thread_name_prefix="directory-records")
+    pending: deque = deque()
+    upcoming = iter(entries)
+    try:
+        for entry in upcoming:
+            pending.append((entry, executor.submit(entry_io, entry)))
+            if len(pending) >= window:
+                break
+        while pending:
+            entry, future = pending.popleft()
+            if checkpoint is not None:
+                checkpoint()      # before each entry's result is taken
+            outcome = future.result()
+            following = next(upcoming, None)
+            if following is not None:
+                pending.append((following, executor.submit(entry_io, following)))
+            yield entry, outcome
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
 
 
 #: The tier loop's :class:`DirectoryRecords` while one of its cycles runs,

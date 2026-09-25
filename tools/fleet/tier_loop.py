@@ -334,6 +334,19 @@ def _receipt_name(entry: os.DirEntry) -> bool:
     return entry.name.endswith(".json") and not entry.name.startswith(".")
 
 
+#: How many receipts the tier loop reads at once while a receipt directory
+#: changed (#1153).  A cold receipt costs one seek on the HDD pool that
+#: ``pb-queue`` lives on, and serially a fresh loop read about 4 a second
+#: (12,295 receipts, 2026-09-25 11:29Z).  The pool serves many small reads at
+#: once: 64 parallel readers ahead of the loop took it through 4,300 receipts
+#: in 17 s the same morning, about 253 a second, 63x the serial rate with no
+#: sign of a ceiling.  64 is the deepest point measured, as
+#: ``prewarm_loop.MAX_READERS`` is for bulk reads.  The read is a burst at a
+#: cold start and a handful of stats otherwise, and each reader holds one
+#: small file at a time.
+RECEIPT_READERS = 64
+
+
 class ReceiptCache:
     """What the tier loop reads every cycle and keeps from one to the next (#992).
 
@@ -391,6 +404,13 @@ class ReceiptCache:
         them, so no part of the read can be left for the next cycle.  A
         hang inside one entry is a stretch longer than any measured, and
         gets no write.
+
+        A changed directory's entries are stat-ed and parsed by
+        :data:`RECEIPT_READERS` threads (#1153), in name order as seen by
+        this thread, which alone checkpoints and keeps what was read
+        (`stage_release.DirectoryRecords.read`).  A stretch between two
+        checkpoints is still at most one entry's read, and a hung entry
+        stops the checkpoints once this thread reaches it.
         """
 
         out: list[dict[str, object]] = []
@@ -404,6 +424,7 @@ class ReceiptCache:
             try:
                 kept = self.records.read(
                     directory, select=_receipt_name, parse=pool._read_json,
+                    readers=RECEIPT_READERS,
                     **({} if checkpoint is None
                        else {"checkpoint": checkpoint}))
             except OSError as exc:
@@ -8801,6 +8822,69 @@ class Liveness:
         self._records[str(minted.get("tier_id"))] = [
             queue, minted, stamp, stamp, 0, self._cycle]
 
+    def adopt(self, queue, *, host: str) -> list[str]:
+        """Take this host's live tier records on disk as minted, and re-announce them (#1153).
+
+        A loop that has just started has minted nothing, so until its first
+        cycle's mint no checkpoint has a record to re-announce, and that
+        cycle's first ``receipts`` step is the cold read of every receipt.
+        The records on disk were minted by the process this one replaced,
+        and they are that loop's word until this one's first mint, exactly
+        as a previous cycle's mint is during a warm read (#1148).
+
+        A record is adopted only when the readers would accept it now: it
+        parses, its ``tier_id`` is its file's name (`PoolQueue.tiers`) and
+        names this host (the suffix the retired-tier pass matches), its
+        schema is `storage_tiers.TIER_RECORD_SCHEMA_V1` (what PQ's reader
+        checks), and its ``announced_unix`` is no older than ``L``, the test
+        `PoolQueue._tier_loop_alive` and PQ's ``landing_verdict`` apply.  A
+        record older than that is a dead loop's word: a reader may already
+        have refused on it, and nothing here may bring it back.
+
+        Each adopted record is written at once, with a ``liveness_refresh``
+        note (``after: "adopted"``) that keeps the mint's own stamp, and is
+        kept as minted in the cycle before the first, so `end_cycle` drops it
+        after the first cycle: replaced by the first mint, or, if that cycle
+        failed before minting, never written again.  Returns the tier ids
+        adopted, in name order.
+        """
+
+        now = self._now()
+        suffix = f":{host}"
+        adopted: list[str] = []
+        for path in pool._glob(queue.root / pool.TIERS, "*.json"):
+            tier_id = path.stem
+            if not tier_id.endswith(suffix):
+                continue
+            try:
+                record = pool._read_json(path)
+            except (OSError, pool.PoolContractError, ValueError):
+                continue           # an unreadable record is a dead one
+            if (not isinstance(record, dict)
+                    or record.get("tier_id") != tier_id
+                    or record.get("schema") != storage_tiers.TIER_RECORD_SCHEMA_V1):
+                continue
+            age = pool.offer_timing(record.get("announced_unix"), now=now).age_s
+            if age is None or age > pool.OFFER_TIMEOUT_S:
+                continue
+            note = record.get("liveness_refresh")
+            note = note if isinstance(note, Mapping) else {}
+            minted_unix = note.get("minted_unix")
+            if type(minted_unix) not in (int, float):
+                minted_unix = record["announced_unix"]
+            refreshes = note.get("refreshes")
+            if type(refreshes) is not int:
+                refreshes = 0
+            minted = copy.deepcopy(record)
+            minted.pop("liveness_refresh", None)
+            self._records[tier_id] = [queue, minted, float(minted_unix),
+                                      float(record["announced_unix"]),
+                                      refreshes, self._cycle]
+            adopted.append(tier_id)
+        if adopted:
+            self._refresh("adopted")
+        return adopted
+
     def _age(self, now: float) -> float:
         if not self._records:
             return 0.0
@@ -9603,6 +9687,35 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _start(queue: pool.PoolQueue, *, host: str, interval_s: float,
+           ) -> tuple[ReceiptCache, Liveness]:
+    """What a freshly started loop holds before its first cycle.
+
+    Both are kept for the loop's life: the receipts it read (#992), and the
+    stretches and write times it measured last cycle, which are this cycle's
+    estimates (#1072).  Before anything else reads the queue, the loop
+    adopts the tier records the loop it replaced announced, while a reader
+    would still accept them (`Liveness.adopt`, #1153): its first cycle
+    reads every receipt cold, and those records must stay alive through it.
+    """
+
+    receipts = ReceiptCache()
+    liveness = Liveness(interval_s=float(interval_s))
+    try:
+        adopted = liveness.adopt(queue, host=host)
+    except OSError as exc:
+        # Adoption is a courtesy to the readers, never a reason not to
+        # start: without it the records age as they did before #1153.
+        print(json.dumps({"event": "tier-records-adopt-failed",
+                          "unix": time.time(), "host": host,
+                          "error": repr(exc)}), flush=True)
+    else:
+        print(json.dumps({"event": "tier-records-adopted",
+                          "unix": time.time(), "host": host,
+                          "tiers": adopted}), flush=True)
+    return receipts, liveness
+
+
 def _serve(args) -> int:
     global CYCLE_INTERVAL_S
     # The cadence this loop decides at is part of every horizon it prices
@@ -9611,10 +9724,8 @@ def _serve(args) -> int:
     queue = pool.PoolQueue(Path(args.pool_root))
     queue.ensure_layout()
     host = socket.gethostname()
-    receipts = ReceiptCache()
-    # Kept for the loop's life: the stretches and write times it measured
-    # last cycle are this cycle's estimates (#1072).
-    liveness = Liveness(interval_s=float(args.interval_s))
+    receipts, liveness = _start(queue, host=host,
+                                interval_s=float(args.interval_s))
     loaded_commit = runtime_gate.loaded_runtime_commit()
     loaded_generation = runtime_gate._generation_at(runtime_gate.GENERATION_VERSION)
 
