@@ -246,10 +246,12 @@ def main(argv: list[str] | None = None) -> int:
                         help="override tier_loop.RECEIPT_READERS")
     parser.add_argument("--warm-cycles", type=int, default=5,
                         help="later cycles timed after one new receipt each")
-    parser.add_argument("--profile-top", type=int, default=15)
+    parser.add_argument("--profile-top", type=int, default=15,
+                        help="cProfile rows printed, ranked by cumulative time")
     parser.add_argument("--profile-out", default=None,
                         help="write the raw cProfile stats here")
-    parser.add_argument("--keep", action="store_true")
+    parser.add_argument("--keep", action="store_true",
+                        help="keep the run's scratch subdirectory for inspection")
     args = parser.parse_args(argv)
     result = run(args)
     print("bench-1153 " + json.dumps(result, sort_keys=True, default=str),
