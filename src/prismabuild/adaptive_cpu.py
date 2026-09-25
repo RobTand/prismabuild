@@ -1041,10 +1041,17 @@ class Controller:
             predicted = self._predicted_cpus(declared)
             if predicted is None:
                 return refuse("host_pressure_unproven", fresh=fresh)
-            busy = [cpu for cpu in predicted
-                    if cpu in held or per_cpu[str(cpu)] > IDLE_BUSY_FRACTION]
+            # Held and foreign are recorded apart (#1160): a CPU a pool holder
+            # holds is cleared by that holder draining, which the claim path
+            # may withhold the box for; a busy CPU no holder holds is load the
+            # pool does not own, which no drain clears.
+            held_busy = sorted(cpu for cpu in predicted if cpu in held)
+            foreign_busy = sorted(cpu for cpu in predicted if cpu not in held
+                                  and per_cpu[str(cpu)] > IDLE_BUSY_FRACTION)
+            busy = sorted(held_busy + foreign_busy)
             if busy:
-                return refuse("host_pressure", fresh=fresh, cpus=sorted(busy)[:8])
+                return refuse("host_pressure", fresh=fresh, cpus=busy[:8],
+                              held_cpus=held_busy, foreign_cpus=foreign_busy)
             pressure_override = True
         # With holders present the sample measures them too: above the
         # host's idle history it refuses here, as the fixed line did, and

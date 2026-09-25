@@ -235,6 +235,10 @@ POOL_MOVE_SCHEMA_V1 = "prismaquant.prismabuild.pool_move.v1"
 #: returned for it.  Filed beside the move receipts so one directory answers
 #: "what is on the stage and who holds it".
 POOL_EGRESS_SCHEMA_V1 = "prismaquant.prismabuild.pool_egress.v1"
+#: The two receipts ``PoolQueue.record_move`` files, and keeps as filed
+#: (#1158): a receipt with no schema is a move receipt; any other schema is
+#: refused.
+POOL_MOVEMENT_RECEIPT_SCHEMAS = (POOL_MOVE_SCHEMA_V1, POOL_EGRESS_SCHEMA_V1)
 #: The move-receipt field naming the mover a range was taken over from (#598).
 #: A receipt carrying it copied nothing: the bytes were already on the tier and
 #: the tokens standing for them changed owner.  It is the only way to tell an
@@ -519,6 +523,20 @@ WITHHOLD_KINDS: dict[str, frozenset[str]] = {"gpu": frozenset({"gpu"})}
 DRAIN_TOKENS_CPU = frozenset({
     "borrow_evidence_unavailable", "pressure_override_no_borrow", "projected_cpu_cost",
 })
+#: *Held CPUs* (#1160): a ``host_pressure`` refusal of an item that needs CPUs,
+#: not a quiet host, whose busy CPUs are all held by the pool's own holders
+#: (``held_cpus`` in the decision, none in ``foreign_cpus``).  The CPUs the
+#: item's free tokens map to are named in another holder's allocation -- a
+#: borrow whose lender has since released -- and that holder draining is what
+#: clears the refusal.  It is not a token shortage: the tokens are free, which
+#: is how the controller could predict the CPUs at all.  So the verdict reads
+#: the exclusive rule over the holders whose allocation names those CPUs, and
+#: the withhold holds back the whole box: the ledger hands out the first free
+#: tokens in sorted order, so any CPU admission behind the item moves which
+#: CPUs it is predicted, and every admission takes CPU or memory it needs.  A
+#: busy CPU no holder holds is load the pool does not own, and no drain
+#: clears it.
+DRAIN_HELD_CPUS = "held_cpus"
 
 #: Passes-sidecar fields the withhold verdict keeps (#924): the last time the
 #: item was refused with one of the box's own holders in its way; the last
@@ -536,8 +554,9 @@ def _adaptive_refusal_drains(
 
     Returns ``(mode, foreign)``: ``mode`` is ``"exclusive"``, ``"tokens"``,
     ``"gpu"`` (the pool's GPU holders must drain, #1085; or, for an idle
-    SW-capped GB10, whichever drain :data:`DRAIN_SW_CAP_IDLE` names, #1125)
-    or ``None``
+    SW-capped GB10, whichever drain :data:`DRAIN_SW_CAP_IDLE` names, #1125),
+    ``"held_cpus"`` (the holders on the CPUs a ``host_pressure`` refusal
+    names must drain, :data:`DRAIN_HELD_CPUS`, #1160) or ``None``
     (draining does not resolve it, and the item is overtaken exactly as
     before), and ``foreign`` is true when the refusal's own evidence names
     processes the pool does not own -- draining the pool's holders cannot
@@ -574,6 +593,13 @@ def _adaptive_refusal_drains(
         # (``adaptive_cpu.decision``): this item needs the host quiet, which
         # is an exclusive need, not a CPU count.
         return "exclusive", False
+    if reason == "host_pressure":
+        held = decision.get("held_cpus") if isinstance(decision, Mapping) else None
+        foreign_cpus = decision.get("foreign_cpus") if isinstance(decision, Mapping) else None
+        if (isinstance(held, list) and held and isinstance(foreign_cpus, list)
+                and not foreign_cpus):
+            return DRAIN_HELD_CPUS, False
+        return None, False
     if reason in DRAIN_TOKENS_CPU:
         return "tokens", False
     return None, False
@@ -6517,7 +6543,12 @@ class PoolQueue:
         return self.root / MOVERS / f"{action_key}.json"
 
     def move_record(self, action_key: str) -> dict[str, object] | None:
-        """What one movement node staged, if it has finished and filed it.
+        """What one movement node staged or released, if it has filed it.
+
+        Either receipt :meth:`record_move` files: a mover's, or an egress's
+        under the egress's own key, which is how ``produced_output`` finds a
+        finished egress (#1158).  The keys differ, so a mover's key never
+        reads an egress receipt.
 
         Every caller is asking whether a mover on another box has filed yet,
         and most of them poll, so the read revalidates before answering no
@@ -6528,7 +6559,7 @@ class PoolQueue:
         record = _read_json_fresh(self.move_path(action_key))
         if not isinstance(record, dict):
             return None
-        if record.get("schema") != POOL_MOVE_SCHEMA_V1:
+        if record.get("schema") not in POOL_MOVEMENT_RECEIPT_SCHEMAS:
             return None
         return record
 
@@ -6731,6 +6762,12 @@ class PoolQueue:
         section cannot deadlock.  A receipt naming no tier files exactly as
         before (egress receipts are not move receipts and never count).
 
+        The receipt keeps the schema it was built with when it is one of
+        :data:`POOL_MOVEMENT_RECEIPT_SCHEMAS`; one with none files as a move
+        receipt, and any other schema is refused before anything is written.
+        Stamping the move schema over an egress receipt hid every egress
+        from the egress price (#1158).
+
         Then, outside the mint lock, the receipt's line is appended to the
         pricing log (#1044), after the receipt itself is in place, so a line
         never names a receipt that is not there yet.  A receipt re-filed
@@ -6741,6 +6778,12 @@ class PoolQueue:
         append does not fail the filing: a receipt the log does not cover is
         read by the next :meth:`move_records`.
         """
+
+        schema = record.get("schema") if isinstance(record, Mapping) else None
+        if schema is not None and schema not in POOL_MOVEMENT_RECEIPT_SCHEMAS:
+            raise PoolContractError(
+                f"movement receipt {action_key} has schema {schema!r}; "
+                f"record_move files only {', '.join(POOL_MOVEMENT_RECEIPT_SCHEMAS)}")
 
         tier_id = record.get("tier_id") if isinstance(record, Mapping) else None
         # A name the log's line format cannot carry is never logged; the
@@ -6783,7 +6826,8 @@ class PoolQueue:
 
         path = self.move_path(action_key)
         path.parent.mkdir(parents=True, exist_ok=True)
-        body = {**dict(record), "schema": POOL_MOVE_SCHEMA_V1,
+        body = {**dict(record),
+                "schema": record.get("schema") or POOL_MOVE_SCHEMA_V1,
                 "action_key": action_key}
         _write_json_atomic(path, body)
         return path, body
@@ -9050,14 +9094,16 @@ class PoolQueue:
         self, key: str, *, ledger: "ResourceLedger", need: Mapping[str, int],
         mode: str, adaptive: bool = False, foreign: bool = False,
         gpu_sample: Mapping[str, object] | None = None,
+        held_cpus: Sequence[int] | None = None, cpu_tiers: Mapping | None = None,
     ) -> dict[str, object]:
         """May this refused item hold its box shut while the box drains (#924)?
 
         Called after host admission is released and before the denial is
         counted.  ``mode`` says what the item needs from a drain: ``"tokens"``
         (the reservation ``need``, per kind), ``"exclusive"`` (no other
-        holder at all) or ``"gpu"`` (no other holder on the GPU, #1085: see
-        :data:`DRAIN_GPU_HOLDERS`).  The verdict never takes or returns tokens; it is
+        holder at all), ``"gpu"`` (no other holder on the GPU, #1085: see
+        :data:`DRAIN_GPU_HOLDERS`) or ``"held_cpus"`` (no other holder on
+        ``held_cpus``, #1160: see :data:`DRAIN_HELD_CPUS`).  The verdict never takes or returns tokens; it is
         fairness, not capacity authority, and a read it cannot make leaves the
         item to be overtaken, as every adaptive refusal was before #924.
 
@@ -9086,6 +9132,13 @@ class PoolQueue:
         With no GPU holder filed under an action, the holders the controller
         saw are between an acquisition and its rename, or have just left; as
         for a token shortage with no holder, the item's own clock bounds that.
+
+        A ``"held_cpus"`` need reads the same exclusive rule over the holders
+        whose CPU allocation (:meth:`ResourceLedger.cpu_allocation`, read
+        through ``cpu_tiers``) names one of ``held_cpus``, the CPUs the
+        refusal found held (#1160).  Its withhold holds back the whole box.
+        With no such holder filed, the holders the controller saw have just
+        left, and the item's own clock bounds that, as for a ``"gpu"`` need.
 
         Three things bound a veto that rests on transient holders:
 
@@ -9171,10 +9224,20 @@ class PoolQueue:
             in_way: list[dict[str, object]] = []
             draining: list[Mapping[str, object]] = []
             covered = {kind: 0 for kind in short}
+            if mode == DRAIN_HELD_CPUS:
+                if not held_cpus or cpu_tiers is None:
+                    raise ValueError("a held_cpus drain names no CPUs or no CPU tiers")
+                wanted_cpus = {int(cpu) for cpu in held_cpus}
+                verdict["held_cpus"] = sorted(wanted_cpus)
             for holder in ledger.held_keys():
                 counts: dict[str, int] = {}
                 if mode == "gpu" and not ledger.holds_gpu(holder):
                     continue
+                if mode == DRAIN_HELD_CPUS:
+                    allocation = ledger.cpu_allocation(holder, cpu_tiers)  # type: ignore[arg-type]
+                    if not wanted_cpus.intersection(
+                            allocation["preferred"] + allocation["fallback"]):
+                        continue
                 if mode == "tokens":
                     tokens = ledger.holder_tokens(holder)
                     counts = {kind: tokens.get(kind, 0) for kind in short if tokens.get(kind, 0)}
@@ -9210,7 +9273,7 @@ class PoolQueue:
                 verdict.update(withhold=unknown_drains,
                                why="in_flight" if unknown_drains else "unknown_past_ceiling")
                 return verdict
-            fits = (not in_way if mode in ("exclusive", "gpu") else
+            fits = (not in_way if mode in ("exclusive", "gpu", DRAIN_HELD_CPUS) else
                     all(covered[kind] >= amount for kind, amount in short.items()))
             if not fits:
                 notes.update(epoch_unix=None, expired_unix=None)
@@ -16859,7 +16922,10 @@ class PoolQueue:
                             verdict = (self._withhold_verdict(
                                 key, ledger=ledger, need=reservation_demand,
                                 mode=mode or "exclusive", adaptive=True, foreign=foreign,
-                                gpu_sample=_gpu_sample_for(gpu_controller, demand))
+                                gpu_sample=_gpu_sample_for(gpu_controller, demand),
+                                held_cpus=(decision.get("held_cpus")  # type: ignore[union-attr]
+                                           if mode == DRAIN_HELD_CPUS else None),
+                                cpu_tiers=cpu_tiers)
                                 if mode is not None or foreign else None)
                             if (verdict is not None and verdict["withhold"]
                                     and isinstance(decision, Mapping)
