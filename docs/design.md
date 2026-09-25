@@ -9884,10 +9884,18 @@ futile state starts or its head or victim changes, not every cycle it lasts
 event file on the tier, and at one line a minute the 256-line cap rotated
 real `window-gated` evidence out in about four hours.
 
-**Publication.** In `residency_window`, a ranked window publishes at most
-the one leg its standing is about: its free is capped at that leg's GiB
-(`publish_gib`, 0 when the leg is already queued), so a granted consumer
-cannot spend the head's room. A `granted` window or the `head` whose advance
+**Publication.** In `residency_window`, a ranked window's free is capped at
+`publish_gib`: the leg its standing is about (0 when that leg is already
+queued), so a granted consumer cannot spend the head's room. For a `granted`
+entry `publish_gib` can cover more than that one leg -- as many of the
+window's own already-decided legs as the tier's measured landing rate and
+free room, shared once across every granted entry, can still afford
+(`_granted_extra_legs_gib`, #1038; the Limits list above has the count and
+why the pool is shared rather than one budget per entry) -- but never past
+what `residency_plan.window` itself would publish given the room, and
+`min(free, publish_gib)` at the publish call still bounds it to the tier's
+real free besides. The head's `publish_gib` stays the one leg its standing
+is about. A `granted` window or the `head` whose advance
 fence does not fit is permitted without one (`advance: claim-order`): on an
 over-committed tier the rank, not a fence, keeps its room. A `granted`
 window or the `head` also takes no fresh fence when one would fit (#1022
@@ -10044,16 +10052,45 @@ and at most one candidate walk a cycle, and at most two censuses.
   cannot recall it.
 * One head is served a cycle, so N blocked consumers take N cycles to
   drain, whatever the room.
-* Every granted window publishes one leg a cycle (#1022 review, item 7).
-  Measured on two chunked R12 plans, 11 GiB (11.70 GB) chunks, with 3, 4
-  and 6 chunks of room over three cycles
+* A granted window's cap was fixed at one leg a cycle until #1038
+  (#1022 review, item 7). Measured on two chunked R12 plans, 11 GiB
+  (11.70 GB) chunks, with 3, 4 and 6 chunks of room over three cycles
   (`test_measure_the_legs_a_granted_chunked_window_publishes_a_cycle`):
-  every granted window published exactly one leg a cycle. That caps one
-  window's copy stream at chunk bytes per `CYCLE_INTERVAL_S`, 195 MB/s here,
-  above the fixture's slowest landing rate, 134 MB/s, so the cap costs
-  nothing at this chunk size. It binds for chunks below landing rate x
+  every granted window published exactly one leg a cycle. That capped one
+  window's copy stream at chunk bytes per `CYCLE_INTERVAL_S`, 195 MB/s
+  there, above the fixture's slowest landing rate, 134 MB/s, so the cap cost
+  nothing at that chunk size, but it bound below landing rate x
   `CYCLE_INTERVAL_S` (8.05 GB, 7.5 GiB, at 134 MB/s), where one window's
-  stream is capped at chunk bytes / 60 s.
+  stream was capped at chunk bytes / 60 s -- below what the tier could
+  land, and below what a small-chunk plan needs (#1038). `_rank_claims`
+  now grows a granted entry's `publish_gib` past its one priced leg once it
+  knows the tier's landing rate (`_granted_extra_legs_gib`): as many of the
+  window's already-decided legs (`residency_plan.window`'s own answer, read
+  in order from the one already priced) as a pool shared by every granted
+  entry can still afford. The rank still spends the tier's free on exactly
+  one leg per consumer, so who is granted, the head and the eviction target
+  are unaffected; only how much of its own room a granted window may
+  publish changes. No measured rate (cold start) leaves it at one leg, as
+  before. Measured on the same fixture at a 4 GiB chunk, 6 chunks of room
+  (`test_a_granted_chunked_window_publishes_enough_legs_to_reach_the_landing_rate`):
+  the achieved published rate, summed over every granted window that
+  cycle, reaches the fixture's landing rate, and every granted entry's
+  `publish_gib` never exceeds the tier's free at the rank that granted it.
+
+  The pool is one per tier, not one per entry: the landing rate and the
+  free room are both the tier's, so K granted windows each budgeted at the
+  tier's rate would together ask for K times what it can land, and a
+  granted window's extras bounded only by free room could spend the first
+  leg the rank walk guarantees another granted window.
+  `_granted_extra_legs_gib` therefore takes `free_gib` less every granted
+  entry's first-leg GiB, and `rate * CYCLE_INTERVAL_S` less every granted
+  entry's first-leg bytes, as one pool, and spends it once, in rank order,
+  one already-decided leg at a time, moving to the next entry when a leg
+  does not fit rather than skipping ahead within a window's sequential
+  legs. `test_the_shared_extra_leg_pool_is_spent_once_in_rank_order`: two
+  granted windows share 12 GiB of free room at an effectively unlimited
+  rate; both first legs publish, the one extra leg goes to the window
+  ranked first, and the cycle's total is exactly the tier's free.
 * A preempted chunk is copied twice.
 * Only claimed consumers are ranked. A ready consumer whose leads are
   published is bounded by the commitment it was admitted on (#907), not by

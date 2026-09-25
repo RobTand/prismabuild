@@ -4283,6 +4283,7 @@ def _claim_of(key: str, consumer: Mapping[str, object],
               horizon: Mapping[str, object] | None, *, reading: str | None,
               leg: tuple[str, int, str, int, int] | None,
               published: bool, blocked_since: float | None = None,
+              further: Sequence[tuple[str, int, str, int, int]] = (),
               ) -> dict[str, object]:
     """One claimed window's entry for :func:`window_credit.claim_order`.
 
@@ -4291,7 +4292,14 @@ def _claim_of(key: str, consumer: Mapping[str, object],
     ``published`` says that leg is already queued: it will take its tokens
     from free when it claims, but the window publishes nothing more for it.
     ``blocked_since`` (:func:`_blocked_since`) ranks a blocked window among
-    the blocked ones.
+    the blocked ones.  ``further`` is every leg beyond ``leg``, in read
+    order, that :func:`residency_plan.window` already decided this window
+    would publish given the room -- the same shape as ``leg``.  Kept on the
+    claim as ``further_legs`` for :func:`_rank_claims` to spend against the
+    tier's measured landing rate (#1038): a granted window's cap is one leg
+    only until the rank knows that rate, so nothing here decides how many of
+    them a cycle publishes.  Empty when ``leg`` is ``None`` or already
+    published -- a window with something queued asks for nothing new.
     """
 
     stamp = consumer.get("claimed_unix")
@@ -4310,7 +4318,72 @@ def _claim_of(key: str, consumer: Mapping[str, object],
             "need_start_bytes": int(start), "need_end_bytes": int(end)})
         if phase == reading and blocked_since is not None:
             claim["blocked_since_unix"] = float(blocked_since)
+        if not published and further:
+            claim["further_legs"] = [
+                {"gib": int(g), "start_bytes": int(s), "end_bytes": int(e)}
+                for _mover, g, _phase, s, e in further]
     return claim
+
+
+def _leg_bytes(claim: Mapping[str, object]) -> int:
+    """A claim's priced first leg, in bytes (``need_start_bytes``/``need_end_bytes``)."""
+
+    return (int(claim["need_end_bytes"])                          # type: ignore[arg-type]
+            - int(claim["need_start_bytes"]))                     # type: ignore[arg-type]
+
+
+def _granted_extra_legs_gib(
+        granted: Sequence[tuple[str, Mapping[str, object]]], *,
+        free_gib: int, rate: float, cycle_s: float) -> dict[str, int]:
+    """Extra GiB each granted entry may publish beyond its priced first leg (#1038).
+
+    Capping a granted window at its next leg's GiB (:func:`_claim_of`'s
+    ``publish_gib``) caps its copy stream at ``chunk_bytes /
+    CYCLE_INTERVAL_S`` however fast the tier can actually land it -- below
+    the landing rate whenever a leg lands inside a cycle (PB#1022 review
+    item 7). ``rate * cycle_s`` is the tier's whole cycle, though, not one
+    granted window's: giving each granted entry its own ``rate * cycle_s``
+    budget lets K granted windows together ask for K times what the tier can
+    land, and letting each entry's extra legs draw independently on
+    ``free_gib`` lets a window that publishes first spend the room the rank
+    walk reserved for a later window's own first leg -- which the walk
+    already granted and this must not take back.
+
+    So both budgets are one shared pool, spent once: ``free_gib`` less every
+    granted entry's first-leg GiB (what the walk already paid for; the rank
+    reserved it, and this only ever grows a window past it, never into it),
+    and ``rate * cycle_s`` less every granted entry's first-leg bytes (what
+    the cycle already prices to land regardless).  ``granted`` is every
+    ``granted`` claim's ``(consumer, claim)`` pair in rank order --
+    ``shared_with`` entries left out, since their first leg costs nothing
+    new and this does not grow them further.  The pool is spent in that same
+    rank order, one already-decided leg at a time
+    (:func:`_claim_of`'s ``further_legs``, in each window's own read order):
+    a window's legs are sequential, so a leg that does not fit stops that
+    window's share rather than skipping ahead to a smaller later one, and
+    moves on to the next window's turn at what is left.  Nothing here
+    invents a leg :func:`residency_plan.window` did not already decide a
+    window would publish given the room.
+    """
+
+    first_bytes = sum(_leg_bytes(claim) for _key, claim in granted)
+    first_gib = sum(int(claim.get("need_gib") or 0) for _key, claim in granted)
+    room_gib = max(0, int(free_gib) - first_gib)
+    budget_bytes = max(0.0, rate * cycle_s - first_bytes)
+    extra: dict[str, int] = {}
+    for key, claim in granted:
+        got = 0
+        for leg in claim.get("further_legs") or ():                # type: ignore[union-attr]
+            leg_bytes = int(leg["end_bytes"]) - int(leg["start_bytes"])
+            leg_gib = int(leg["gib"])
+            if leg_bytes > budget_bytes or leg_gib > room_gib:
+                break
+            budget_bytes -= leg_bytes
+            room_gib -= leg_gib
+            got += leg_gib
+        if got:
+            extra[key] = got
+    return extra
 
 
 def _blocked_since(queue: pool.PoolQueue, key: str,
@@ -4518,6 +4591,18 @@ def _rank_claims(queue: pool.PoolQueue, tier_id: str,
     not read: no rank is safer than a guessed one.  A consumer whose claim
     time does not read is left out of the rank; the window holds it back
     behind the whole rank (:func:`_protect_tier_advances`).
+
+    Every ``granted`` entry's ``publish_gib`` can grow past its one priced
+    leg once this rate is known (:func:`_granted_extra_legs_gib`, #1038):
+    the walk above still ranks and spends the tier's free on one leg per
+    consumer, so who is granted, the head and the eviction target are
+    unchanged.  The extra room -- the tier's free beyond every granted
+    entry's first leg, and the cycle's landing-rate budget beyond every
+    granted entry's first leg's bytes -- is one pool the granted entries
+    share in rank order, not one ``rate * CYCLE_INTERVAL_S`` budget each: see
+    that function for why.  No measured rate (cold start, or a tier nothing
+    has landed on yet) leaves every ``publish_gib`` at its one-leg default,
+    today's behavior.
     """
 
     moment = time.time() if now is None else float(now)
@@ -4555,6 +4640,22 @@ def _rank_claims(queue: pool.PoolQueue, tier_id: str,
         entry["expected_landing_unix"] = (
             moment + CYCLE_INTERVAL_S * (int(entry["rank"]) - head_rank)
             + pool.HEARTBEAT_S + through / rate)
+    if rate is not None and rate > 0:
+        # One shared pool of extra room, spent in rank order, never a
+        # per-entry budget (#1038, :func:`_granted_extra_legs_gib`): who is
+        # granted and the eviction target above are already settled on one
+        # leg per consumer, so this only ever grows a granted entry's own
+        # ``publish_gib`` past what the walk already reserved it.
+        granted = [(str(entry["consumer"]), by_key[str(entry["consumer"])])
+                   for entry in order["entries"]                  # type: ignore[union-attr]
+                   if entry["standing"] == window_credit.CLAIM_GRANTED
+                   and "shared_with" not in entry]
+        extra = _granted_extra_legs_gib(
+            granted, free_gib=free, rate=rate, cycle_s=CYCLE_INTERVAL_S)
+        for entry in order["entries"]:                            # type: ignore[union-attr]
+            more = extra.get(str(entry["consumer"]))
+            if more:
+                entry["publish_gib"] = int(entry.get("publish_gib") or 0) + more
     order.update({
         "tier_id": tier_id, "free_gib": free, "ranked_unix": moment,
         "landing_bytes_per_s": rate,
@@ -5049,7 +5150,10 @@ def window_pressure(
                       int(wanted[0]["start_bytes"]), int(wanted[0]["end_bytes"]))
                      if wanted else None),
                 published=False,
-                blocked_since=_blocked_since(queue, _key, consumer)))
+                blocked_since=_blocked_since(queue, _key, consumer),
+                further=[(str(row["mover_action_key"]), int(row["stage_gib"]),
+                          str(row["phase"]), int(row["start_bytes"]),
+                          int(row["end_bytes"])) for row in wanted[1:]]))
         if wanted:
             need[tier_id] = max(need.get(tier_id, 0), int(wanted[0]["stage_gib"]))
             if not stage_newcomer and str(wanted[0]["phase"]) != reading:
