@@ -120,9 +120,43 @@ def _closure_member(checkout: Path) -> None:
 _WORK = ("import math; "
          "print(sum(sum(math.sqrt(i) for i in range(20000)) for _ in range(160)))")
 
+#: A fixed chunk count is a race against py-spy's own startup, not a
+#: guaranteed sample: on a loaded box (#1071) the child can still exit
+#: between py-spy attaching to the process tree and its first 10 ms tick,
+#: whatever the chunk count -- ``_WORK``'s 160 was "long enough" on an
+#: unloaded box and still measured 0/15 samples for a *shorter* one here at
+#: no load at all (``print(1)``).  Through the profiled action's own exit
+#: status relay (``profile_exit_status_relay``, one more fork between
+#: py-spy and the sealed argv than a bare ``py-spy record -- bash -c
+#: ...``), discovering the actual pipeline member three process
+#: generations down measured up to ~30 s wall on this box's ordinary
+#: shared load, no synthetic stress needed -- an order of magnitude past
+#: the ~9.5 s worst case a bare two-generation tree measured under 32-way
+#: CPU oversubscription on 4 cores.  This member's lifetime is explicit
+#: instead of a duration guess at either shape: it redoes a small CPU
+#: chunk and re-checks ``TracerPid`` in its own ``/proc/self/status``
+#: until that check is nonzero, which is the event a sample actually
+#: landed -- py-spy attaches with ptrace per sample, so a nonzero
+#: ``TracerPid`` is a completed read, not a hint of one (confirmed here:
+#: it flips briefly and repeatedly while ``record`` runs, never once
+#: outside it).  The 90 s bound is a last-resort refusal if py-spy never
+#: attaches at all, well past every measured wait above; it is not the
+#: mechanism, and widening a fixed chunk count would not have fixed
+#: #1071 -- the box that flaked had headroom no chunk count would have
+#: used on its own.
+_SAMPLED_WORK = (
+    "import math, time, itertools; "
+    "deadline = time.monotonic() + 90.0; "
+    "any(("
+    "[math.sqrt(i) for i in range(20000)], "
+    "any(line.split()[1] != \"0\" for line in open(\"/proc/self/status\") "
+    "if line.startswith(\"TracerPid:\")) or time.monotonic() > deadline"
+    ")[1] for _ in itertools.count())"
+)
+
 
 def _action(checkout: Path, *, profile: str | None, result: str = "result.txt",
-            exit_code: int = 0):
+            exit_code: int = 0, work: str = _WORK):
     """A portable action that writes its result through the pipeline shape.
 
     ``| tee`` is not decoration: it is what ``pbrun`` seals, and bash forks a
@@ -139,7 +173,7 @@ def _action(checkout: Path, *, profile: str | None, result: str = "result.txt",
     ending = "exit ${PIPESTATUS[0]}" if not exit_code else f"exit {exit_code}"
     argv = [
         "/bin/bash", "--noprofile", "--norc", "-c",
-        f"{sys.executable} -c {_WORK!r} 2>&1 | tee {result}; " + ending,
+        f"{sys.executable} -c {work!r} 2>&1 | tee {result}; " + ending,
     ]
     params: dict[str, object] = {"command": ["work"]}
     if profile is not None:
@@ -901,11 +935,15 @@ def test_the_sampling_backend_profiles_the_pipeline_member(tmp_path: Path):
     Skipping when py-spy is absent would make the one test that proves the
     fleet can profile anything green on a box that cannot.  It fails instead:
     an unavailable backend is a fleet fact to fix, not a test to skip.
+
+    Uses ``_SAMPLED_WORK``, not ``_WORK``: the member's own lifetime is the
+    thing under test here, and racing a fixed chunk count against a loaded
+    box's py-spy startup is exactly #1071.
     """
 
     checkout = tmp_path / "checkout"
     checkout.mkdir()
-    action = _action(checkout, profile="sample")
+    action = _action(checkout, profile="sample", work=_SAMPLED_WORK)
     result = pb.run_local_action(
         action, cas_root=tmp_path / "cas", checkout_root=checkout
     )
