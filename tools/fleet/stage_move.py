@@ -1919,9 +1919,13 @@ class _StagedPublisher:
                     f"shared staged name is live-pinned by "
                     f"{pins}, not replacing: {destination}")
         if standing == "owned":
-            # A fragment vouches but no usable date exists: a crash between
-            # the fragment and its sidecar, a publisher still running, or a
-            # sidecar dating an incarnation this name no longer carries.
+            # A fragment vouches but no usable date exists: a vouch the
+            # same-key resume kept undated because its bytes no longer
+            # qualify, a sidecar dating an incarnation this name no longer
+            # carries, or a vouch filed before #1087, when a crash between
+            # the fragment and its sidecar could leave one.  Movers now
+            # write the sidecar first, so an interrupted publication leaves
+            # a date without a vouch, which reads as absence below.
             # Defer to the stall policy's retry; never replace what
             # another publication names -- including after the grace.
             if heal:
@@ -3883,10 +3887,15 @@ def _resume_own_coverage(queue, *, consumer_action_key: str,
     :func:`stat_identity`).  A readable sidecar with contradictory
     headers is conflicting state and refuses -- it must never be carried
     and republished under corrected headers -- while an absent or
-    unparseable sidecar is the documented crash window (a vouch without a
-    date): vouches are kept, no date is invented, and the rerun
-    overwrites both as it always has.  No payload is hashed; an undated
-    vouch is preserved as exactly that, never upgraded.
+    unparseable sidecar (a vouch without a date, which a crash between
+    the two writes left before #1087) keeps its vouches, invents no date,
+    and the rerun overwrites both as it always has.  No payload is hashed;
+    an undated vouch is preserved as exactly that, never upgraded.  The
+    crash window the movers leave since #1087 is the other one: the
+    sidecar lands first, so it may date entries the fragment does not yet
+    vouch.  Only the fragment's entries are walked here, so those dates
+    are neither carried nor contradicted; each such name reads as
+    positive absence at the gate, whose content proof adopts it.
 
     Returns ``(staged_seeds, sidecar_seeds, resumed_generation)``.  Empty
     seeds with a ``None`` generation mean "nothing resumable", which is
@@ -3987,9 +3996,11 @@ def _resume_own_coverage(queue, *, consumer_action_key: str,
                     f"headers")
             mentions = material["entries"]
             generation = str(material["generation"])
-        # An absent or unparseable sidecar is the documented crash window:
-        # the vouches stand, no date is invented, the rerun overwrites
-        # both as it always has.
+        # An absent or unparseable sidecar -- the crash window before
+        # #1087 wrote the sidecar first -- keeps the vouches and invents no
+        # date; the rerun overwrites both as it always has.  A sidecar
+        # ahead of the fragment (the crash window since) dates entries no
+        # vouch here names, and the walk below never reads those.
 
         for key, record in dict(fragment["entries"]).items():
             fact = facts.get(str(key))
@@ -4207,10 +4218,15 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
         shorter than the one a per-entry publish would have left, and the
         entries it omits are re-staged by the rerun.
 
-        The fragment goes first, then the material sidecar that dates it: a
-        crash between them leaves a vouch without a date, which strict
-        readers refuse (safe) and legacy readers use (today's behavior),
-        and the rerun overwrites both.
+        The material sidecar goes first, then the fragment it dates
+        (#1087): a crash between them leaves a date that no vouch cites,
+        which every reader ignores -- the gate walks fragments, so the name
+        reads as positive absence and the #1081 content proof adopts it,
+        and the strict reader pins only names both documents carry -- and
+        the rerun overwrites both.  The other order left a vouch without a
+        date, which the gate reads as another publisher's pending date for
+        every later mover of the name, this key's retry included, and
+        refuses after the grace forever.
         """
 
         with publish_lock:
@@ -4224,15 +4240,6 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
                 return
             last_published[0] = now
             last_generation[0] = max(last_generation[0], generation)
-            residency_map.write_fragment(residency_root, {
-                "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
-                "consumer_action_key": args.consumer_action_key,
-                "mover_action_key": args.action_key,
-                "tier_id": args.tier_id,
-                "stage_root": str(args.stage_root),
-                "manifest_sha256": manifest_sha256,
-                "entries": staged,
-            })
             if identities:
                 reader_lease.write_material(
                     residency_root,
@@ -4242,6 +4249,15 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
                     manifest_sha256=manifest_sha256,
                     generation=publisher.material_generation(),
                     entries=identities)
+            residency_map.write_fragment(residency_root, {
+                "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
+                "consumer_action_key": args.consumer_action_key,
+                "mover_action_key": args.action_key,
+                "tier_id": args.tier_id,
+                "stage_root": str(args.stage_root),
+                "manifest_sha256": manifest_sha256,
+                "entries": staged,
+            })
 
     served = served_for(args)
     if pacer is not None:

@@ -1859,6 +1859,15 @@ def covers_for_keys(root: str | Path, consumer_action_key: str,
     expected length/digest stays authoritative downstream: acquire
     proves it against this selection and refuses any gap.
 
+    A key is covered only where both documents name it: a vouch the
+    sidecar does not date and a date the fragment does not vouch each
+    cover nothing, and neither contradicts another mover's cover
+    (#1087).  The movers write the sidecar first, so an in-flight or
+    interrupted publication shows dates its fragment does not carry yet;
+    they read exactly as the undated vouches of the old order did.  A
+    key both documents name with different bytes is still a
+    contradiction.
+
     Returns ``{"ok": True, "covers":
     [{mover_action_key, manifest_sha256}], "manifest_sha256": ...,
     "expected": {key: {bytes, sha256}}}`` or ``{"ok": False,
@@ -1932,6 +1941,13 @@ def covers_for_keys(root: str | Path, consumer_action_key: str,
                         if str(key) in wanted]
         for key, mention in mentions:
             if not isinstance(mention, dict):
+                continue
+            if str(key) not in fragment_entries:
+                # A date no vouch cites is inert (#1087): the movers write
+                # the sidecar before the fragment, so an interrupted or
+                # in-flight publication dates names its fragment does not
+                # carry yet.  It neither covers the key nor contradicts
+                # another mover's cover of it.
                 continue
             vouched = fragment_entries.get(str(key))
             # The sidecar dates the fragment's vouching: same path,
@@ -2022,8 +2038,21 @@ def resolve_window_covers(queue, *, consumer_action_key: str,
                     != manifest_sha256):
                 continue
             material_entries = material.get("entries")
-            if isinstance(material_entries, dict):
-                all_keys.update(str(key) for key in material_entries)
+            if not isinstance(material_entries, dict):
+                continue
+            # Only what the mover's fragment also vouches is published: a
+            # date no vouch cites is inert (#1087), and a sidecar with no
+            # fragment at all dates nothing.  An unreadable fragment keeps
+            # every dated key, so the lookup below meets it as before.
+            fragment = _reused_cover_doc(root, consumer_action_key, mover,
+                                         "fragment")
+            if fragment is None:
+                continue
+            vouched = (fragment.get("entries")
+                       if isinstance(fragment, dict) else None)
+            all_keys.update(
+                str(key) for key in material_entries
+                if not isinstance(vouched, dict) or str(key) in vouched)
         keys = sorted(all_keys)
     result = covers_for_keys(
         root, consumer_action_key, keys, tier_id=tier_id,
@@ -2211,6 +2240,10 @@ def acquire(queue, *, consumer_action_key: str, attempt: Mapping[str, str],
         assert isinstance(fragment_entries, dict)
         for key, mention in material_entries.items():
             assert isinstance(mention, dict)
+            if str(key) not in fragment_entries:
+                # A date no vouch cites is inert (#1087), exactly as in
+                # :func:`covers_for_keys`: never pinned, never a refusal.
+                continue
             vouched = fragment_entries.get(str(key))
             # The sidecar dates the fragment's vouching: same path, length,
             # digest, or the sidecar is about different bytes.
@@ -2253,6 +2286,10 @@ def acquire(queue, *, consumer_action_key: str, attempt: Mapping[str, str],
         pinned_keys = [str(key) for key in expected]
     else:
         pinned_keys = sorted(union)
+        if not pinned_keys:
+            # Every date the covers carry is one no vouch cites (#1087):
+            # nothing both documents name is published yet.
+            return {"ok": False, "refusal": "unpublished"}
 
     if not stage_root:
         # Without the stage root there is no correct lock key: refuse

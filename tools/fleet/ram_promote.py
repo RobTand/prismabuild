@@ -24,10 +24,12 @@ Two things are deliberately *not* here, and both are the stage mover's:
   protected, and nothing is warmed: the bytes land in the tier the warm was
   a substitute for.
 * **No incremental fragment.**  A crashed promotion holds no tokens past its
-  reap (its receipt never landed), so its files are bytes no record names.
-  A retry of the range -- the same action key on a new attempt -- adopts
-  each one whose bytes hash to the declared digest, before any copy and
-  without the publication grace (#1081); anything else it copies again.
+  reap (its receipt never landed), so its files are bytes no fragment
+  names; a kill between its two end-of-range documents leaves at most the
+  sidecar, which vouches for nothing (#1087).  A retry of the range -- the
+  same action key on a new attempt -- adopts each one whose bytes hash to
+  the declared digest, before any copy and without the publication grace
+  (#1081); anything else it copies again.
   A prefix is the stage's purchase; the ram tier buys whole ranges or
   nothing.
 
@@ -295,8 +297,23 @@ def promote(args, *, stop=None) -> dict[str, object]:
             args.action_key).unlink(missing_ok=True)
     elif copier.staged:
         # Once, at the end, on purpose: see the module docstring.  The
-        # fragment carries the epoch so every reader of the map can tell a
-        # current promotion from one the reboot deleted.
+        # sidecar goes first, then the fragment it dates -- the stage
+        # mover's crash order (#1087).  A kill between them leaves dates no
+        # vouch cites, which every reader ignores, so the retry and any
+        # other promotion of these names adopt them by content.  The other
+        # order left a vouch without a date, which the publication gate
+        # reads as a pending date and refuses on forever.
+        if copier.sidecar:
+            reader_lease.write_material(
+                residence,
+                consumer_action_key=args.consumer_action_key,
+                mover_action_key=args.action_key,
+                tier_id=args.tier_id, stage_root=str(args.ram_root),
+                manifest_sha256=args.manifest_sha256,
+                generation=material_generation, entries=copier.sidecar,
+                epoch=str(epoch["epoch"]))
+        # The fragment carries the epoch so every reader of the map can
+        # tell a current promotion from one the reboot deleted.
         residency_map.write_fragment(args.residency_root, {
             "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
             "consumer_action_key": args.consumer_action_key,
@@ -307,18 +324,6 @@ def promote(args, *, stop=None) -> dict[str, object]:
             "manifest_sha256": args.manifest_sha256,
             "entries": copier.staged,
         })
-        # The fragment goes first, then the sidecar that dates it (same
-        # crash order as the stage mover: a vouch without a date is safe
-        # and healed by rerun).
-        if copier.sidecar:
-            reader_lease.write_material(
-                residence,
-                consumer_action_key=args.consumer_action_key,
-                mover_action_key=args.action_key,
-                tier_id=args.tier_id, stage_root=str(args.ram_root),
-                manifest_sha256=args.manifest_sha256,
-                generation=material_generation, entries=copier.sidecar,
-                epoch=str(epoch["epoch"]))
     receipt["material_generation"] = material_generation
     receipt["source_covers"] = proof.get("covers")
     if not copier.staged and not overran:

@@ -2133,7 +2133,9 @@ def adopt(queue: pool.PoolQueue, *, old_key: str, new_key: str,
        no material, no transfer (#755).  A donor with no sidecar, or one
        dating only some of the files its fragment names, is declined for the
        same reason: what it would hand on is a range the reader cannot prove.
-    2. **The successor vouches for the same files under its own name.**  Two
+    2. **The successor vouches for the same files under its own name.**  Its
+       sidecar is written before its fragment, so an interruption never
+       leaves a successor vouch without a date (#1087).  Two
        fragments then name one range, which every reader already tolerates:
        ``compose`` is per consumer, and the reconciliation unions them.
        Published under the ownership lock, never before it, so no egress
@@ -2316,9 +2318,14 @@ def adopt(queue: pool.PoolQueue, *, old_key: str, new_key: str,
                 if stale:
                     return {**outcome, "reason": "donor_file_changed",
                             "stale": stale}
-            residency_map.write_fragment(residency_root, residency_map.reissue(
+            successor = residency_map.reissue(
                 source, consumer_action_key=consumer_action_key,
-                mover_action_key=new_key))
+                mover_action_key=new_key)
+            # The sidecar before the fragment it dates, as the movers and
+            # the shared-range fan-out write them (#1087): an interruption
+            # leaves a date no vouch cites, which every reader ignores,
+            # never a successor vouch without a date, which the publication
+            # gate refuses on for as long as it stands.
             if isinstance(old_material, dict):
                 material_entries = old_material.get("entries")
                 assert isinstance(material_entries, dict)
@@ -2332,6 +2339,7 @@ def adopt(queue: pool.PoolQueue, *, old_key: str, new_key: str,
                     entries=material_entries,  # type: ignore[arg-type]
                     epoch=(str(source.get("epoch") or "")
                            if source.get("epoch") is not None else None))
+            residency_map.write_fragment(residency_root, successor)
             expected = sum(before.values())
             moved = queue.transfer_tier_reservation(tier_id, old_key, new_key)
             if moved != expected:

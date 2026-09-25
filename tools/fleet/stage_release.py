@@ -3631,10 +3631,11 @@ def prune_stale_mentions(queue: pool.PoolQueue, mover_action_key: str, *,
                     material_version_after, dirs_trusted, co_owner_fences)
                 return receipt(retained=total, cacheable=cacheable)
             # A crash between the fragment and material writes leaves the
-            # material a superset.  The strict reader walks every material
-            # entry, so the pair is complete only when the material dates
-            # exactly the fragment's validated keys: trim it before caching
-            # this otherwise-coherent owner, under the same generation.
+            # material a superset.  The strict reader ignores a date no
+            # vouch cites (#1087), but the pair is complete only when the
+            # material dates exactly the fragment's validated keys: trim it
+            # before caching this otherwise-coherent owner, under the same
+            # generation.
             material_final_version = material_version_after
             if not exact_material:
                 try:
