@@ -2787,11 +2787,17 @@ def _readahead_bytes(item: object) -> int | None:
 
     Its memory reservations: ``mem_gb`` of host memory plus the GPU memory
     its admission budgeted.  A consumer that keeps what it prefetches cannot
-    hold more than it reserved.  The two are summed even where they share
-    one physical pool (a GB10's unified memory), which over-states the
-    reach, so the horizon errs long, never short.  ``None`` when the item's
-    resources do not read.  The fallback of :func:`_readahead` for a plan
-    that declares no read-ahead (#909).
+    hold more than it reserved.  ``None`` when the item's resources do not
+    read.  The fallback of :func:`_readahead` for a plan that declares no
+    read-ahead (#909).
+
+    The two are one pool where the admitted device's memory is unified
+    (#959): admission measures the device's ``memory_domain`` and records it
+    on the claim, and on ``shared_system`` memory (a GB10) the GPU budget is
+    a subset of ``mem_gb`` (``pbrun --gpu-memory-gb``), so the reach is the
+    larger of the two, not their sum.  On a ``discrete`` device, and on a
+    claim whose admission did not measure the domain, the two are summed:
+    an unknown domain errs long, never short.
     """
 
     if not isinstance(item, Mapping):
@@ -2808,7 +2814,10 @@ def _readahead_bytes(item: object) -> int | None:
     if isinstance(admission, Mapping):
         budget = admission.get("gpu_memory_budget_bytes")
         if isinstance(budget, int) and not isinstance(budget, bool) and budget > 0:
-            total += budget
+            if admission.get("memory_domain") == "shared_system":
+                total = max(total, budget)
+            else:
+                total += budget
     return total
 
 

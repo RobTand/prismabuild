@@ -6421,7 +6421,12 @@ output-prefix lock and decides:
   attempt. An owner that is `done` by this attempt, still claimed by it,
   queued, being moved, or unreadable keeps the batch without a log line,
   because a consumer may still come. A read-back template's batch (#1034)
-  can have no consumer, so `done` by this attempt ends it too.
+  can have no consumer, so `done` by this attempt ends it too. The owner's
+  state is the tick's one read of its key (`_TickReads.generation`, #977),
+  taken before the output-prefix lock, whatever the number of due batches:
+  an attempt that ended, `dead` or `done` by itself, never runs again under
+  its nonce, so an older read can only defer a retirement to the next cycle,
+  never cause one.
 
 **The delete.** The tick first stats the instance's output prefix. If the
 prefix is not a directory on this host, it refuses
@@ -6779,7 +6784,16 @@ event's fields. `pb_blocked_origins` serves it too.
 
 **What one tick reads.** The owner key's generation is read once per owner
 for all its attempts (`_attempt_state` over one `_key_generation`), both for
-an instance's own state and for its siblings'. Per ended instance, the
+an instance's own state and for its siblings', and, since #977, for the
+#914 retirement of each of its due batches too: before #977 that asked
+`_producer_attempt_state` per batch, one owner-key read per batch per cycle
+for a running producer committing ahead of its consumers. The sweep and
+the retirement of one ended instance share the tick's one read of each
+sibling's commitments and prewrite records (`_TickReads.path_owners`).
+`tests/test_the_retirement_tick_reads_each_owner_once.py` pins both by
+read counts. The instance's own `commitments.json` is still read again
+under its lock by each batch's retirement: the decision it records is a
+read-modify-write that must see every write made before the lock. Per ended instance, the
 output prefix is statted once, and the other attempts' paths are read at
 most once, only when some planned path is present. Every scope costs one
 more directory listing than before (its `prewrites`). A scope with
@@ -8137,8 +8151,11 @@ start where the previous one ended). It has three spans:
 * The phase the consumer's accepted progress names, which it is reading.
 * The consumer's read-ahead: `mem_gb` plus its admission's
   `gpu_memory_budget_bytes`, the most it can hold ahead of what it reads.
-  The two are summed even where they share one physical pool (GB10 unified
-  memory), which over-states the reach, so the horizon errs long.
+  Where the admitted device's memory is unified (admission's measured
+  `memory_domain` is `shared_system`, a GB10), the GPU budget is a subset of
+  `mem_gb` and the two are one pool, so the read-ahead is the larger of them,
+  not their sum (#959). A `discrete` device, or a claim whose admission
+  recorded no domain, keeps the sum, which errs long.
 * The refill: ranges past that reach until they cover what the consumer
   reads while a copy published now lands, and never less than one range.
 
@@ -10284,7 +10301,8 @@ A checkpoint fences every input the classification read, each at the version
 the transaction verified, and nothing is re-sampled at installation:
 
 * this owner's fragment and material file versions, sampled before their
-  reads and again after the scan, and installed only when the two are equal;
+  reads and again after the scan, and installed only when the two are equal
+  and the version is trusted (#1070, below);
 * device/inode/mtime/ctime stamps of every unique immediate parent directory
   of the fragment's paths, sampled before the classification scan with
   `stage_move._trusted_directory_stamp` and again after it, and installed
@@ -10307,12 +10325,21 @@ one tick later and installs if nothing else changed. On ZFS and tmpfs, the
 stage and RAM tier filesystems, a steady cycle therefore caches after at most
 one extra uncached pass; on a filesystem the rule does not list, such as NFS,
 no checkpoint is installed, as no #992 listing is kept there. The file fences
-take no clock read. Every writer of a fragment or material sidecar replaces it
-by rename (`residency_map._write_atomic`, `reader_lease.write_material`), so
-the first change after the census read installs a new inode while the read
-one is still linked. Matching the recorded version again would take a second
-replacement that reuses the read inode's number with the same size, mtime and
-ctime. A co-owner fragment that is
+carry the same rule (#1045, #1070). Every writer of a fragment or material
+sidecar replaces it by rename (`residency_map._write_atomic`,
+`reader_lease.write_material`), so the first change after the census read
+normally installs a new inode, but two rename cycles in one clock tick can be
+given the freed inode number the census read, and at the same size all five
+fields of the version match. So the owner's own fragment and material are
+installed only at a version whose ctime is strictly before a clock read taken
+before their `lstat` (`stage_release._fenced_path_version`, applying
+`stage_move._keepable_version`), and a co-owner fragment only at the version
+the census memo kept, which the memo keeps under the same rule (#1045). Every
+later change to a file, a new file under its name included, is stamped at or
+after that clock read and so moves the ctime. A document changed in the tick
+of its read is scanned again next pass, like a refused directory; a material
+trim's own write is therefore installed only if a tick has passed since it,
+and otherwise the next pass installs it. A co-owner fragment that is
 removed or rewritten re-runs the census, where the path it protected
 may now prune, or the whole owner evict. A new co-owner needs no fence,
 because it can only add protection. A symlink or non-directory parent is
@@ -10336,7 +10363,10 @@ receipt; the tier cycle line counts skipped and censused owners instead, as
 A refused checkpoint says why (#1069). Whenever the receipt of an otherwise
 idle owner reads `cacheable: false`, its `cache_refused` names the first
 refusal found: `document-version-unknown` (this owner's fragment or material
-version, or a co-owner fragment's, could not be read),
+version, or a co-owner fragment's, could not be read, or the #1070 fence
+refused this owner's: changed in the tick it was read in, or on a
+filesystem the trusted rule does not list, which is therefore the reason an
+owner on NFS reports),
 `no-directory-stamp` (the owner names no path to fence),
 `directory-stamp-untrusted` (the trusted rule refused a parent directory's
 stamp, #1062), `outside-sweep-scope` (the latest sweep did not discover the

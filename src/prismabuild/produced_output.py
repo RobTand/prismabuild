@@ -7728,7 +7728,8 @@ def _retire_consumed_batch(queue, instance: Mapping[str, object],
       one holds it and is reported as a stall, once per change of the
       consumers' states, because a retry of that consumer needs the batch.
     * With none: the batch is an orphan once its producer attempt is dead
-      (`_producer_attempt_state`). Otherwise it waits, quietly, for a
+      (`_attempt_state` over the tick's one read of the owner key,
+      `_TickReads.generation`, #977). Otherwise it waits, quietly, for a
       consumer. A read-back template's batch (#1034) can have no consumer,
       so it is an orphan once its owner attempt has ended, dead or
       succeeded.
@@ -7817,6 +7818,7 @@ def _retire_consumed_batch_locked(
 
     from prismabuild import reader_lease as lease_mod
 
+    tick = reads if reads is not None else _TickReads(queue)
     commitments_path = _commitments_path(queue.root, instance)
     with queue.stage_ownership_lock(str(instance["output_prefix"])):
         try:
@@ -7903,9 +7905,19 @@ def _retire_consumed_batch_locked(
                 # lives or has succeeded. A read-back one (#1034) can have no
                 # consumer (`declare_origin_consumer` refuses it), so its
                 # owner attempt ending, by success too, ends it.
+                # The owner key's one read this tick (#977): every due
+                # batch of the instance asks, and a running producer that
+                # commits ahead of its consumers has many.  Read before the
+                # lock, which is safe because an attempt that ended, dead or
+                # succeeded, never runs again under its nonce; a stale
+                # ``live`` only waits for the next cycle.
                 ended = ({"dead"} if template.get("write_only")
                          else _ENDED_ATTEMPT_STATES)
-                if _producer_attempt_state(queue, instance) not in ended:
+                attempt = instance["owner_attempt"]
+                assert isinstance(attempt, dict)
+                if _attempt_state(tick.generation(
+                        str(instance["owner_action_key"])),
+                        str(attempt["nonce"])) not in ended:
                     quiet()
                     return None
                 reason, consumers = "orphan", []
@@ -7987,7 +7999,7 @@ def _retire_consumed_batch_locked(
         paths = sorted(str(desc["path"]) for desc in sealed)
         # Another attempt's claim on these paths, read under this lock.
         try:
-            owners = (reads or _TickReads(queue)).path_owners(instance, template)
+            owners = tick.path_owners(instance, template)
         except (ProducedOutputError, OSError, ValueError) as exc:
             return report({"event": ORIGIN_RETIREMENT_REFUSED_EVENT, **base,
                            "reason": f"unknown-retain: path owners: {exc}"})
