@@ -4674,7 +4674,21 @@ So does a remembered ending whose consumer or mover has a queue record again.
   superseded with the #708 record, so the tier loop stops republishing it.
   The live copy is never touched.
 - An unproven ending: the retryable refusal it always was, now raised before
-  any copy.
+  any copy, and bounded (#1004). Some unproven endings settle by themselves:
+  a queued, claimed or leased key, or a queue state that did not read. Those
+  are never counted. Others do not settle: no outcome record (#798), two
+  outcome records, an unparseable outcome or fragment, or a key that is not
+  an action key. Each run files the unprovable evidence it refused on
+  (`[consumer, mover, why]` per owner) in its receipt's `unproven` block.
+  The block also counts the consecutive runs of the same key that refused
+  on the same evidence. The count is read from the key's previous receipt
+  before the new one is filed. At `UNPROVEN_ENDING_RUNS` (3) runs spanning
+  at least `UNPROVEN_ENDING_MIN_SPAN_S` (60 s, twice the queue mount's
+  `acdirmin`, so a record that was only not yet visible cannot cause it),
+  the run refuses `staged_destination_unproven`. That refusal names the path
+  and the unproven owners in `conflict`, exits 1 and retires the window
+  with the #708 record, as the live-owner conflict does. Nothing is
+  replaced. RAM promotions arbitrate and bound the same way.
 
 An owner proven ended is remembered for the run, so a range whose names one
 dead owner holds costs one judgment per owner, not one per name. A judgment

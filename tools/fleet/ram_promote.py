@@ -64,8 +64,9 @@ from prismabuild import residency_map  # noqa: E402
 from prismabuild import storage_tiers  # noqa: E402
 
 from stage_move import (  # noqa: E402
-    _Copier, _StagedPublisher, _delta, cpu_seconds, load_manifest,
-    own_action_key, proc_io, retire_conflicted_window, stage_relative,
+    _Copier, _StagedPublisher, _delta, bound_unproven_endings, cpu_seconds,
+    load_manifest, own_action_key, prior_move_record, proc_io,
+    retire_conflicted_window, stage_relative,
 )
 
 
@@ -241,6 +242,9 @@ def promote(args, *, stop=None) -> dict[str, object]:
             tier_id=str(args.tier_id), cas_root=str(args.cas_root),
             consumer_action_key=str(args.consumer_action_key)))
 
+    # This key's last receipt, before this run files its own: the count an
+    # unprovable ending is bounded by lives there (#1004 item 2).
+    prior_receipt = prior_move_record(queue, str(args.action_key))
     before = proc_io()
     cpu_before = cpu_seconds()
     started = time.time()
@@ -311,6 +315,10 @@ def promote(args, *, stop=None) -> dict[str, object]:
         receipt["plan_superseded"] = retire_conflicted_window(
             queue, str(args.consumer_action_key), str(args.action_key),
             copier.conflict or {})
+    if publisher is not None:
+        bound_unproven_endings(receipt, queue, publisher, prior_receipt,
+                               consumer=str(args.consumer_action_key),
+                               mover=str(args.action_key))
     material_generation = reader_lease.mint_generation()
     if overran:
         receipt["refusal"] = "residency_overran_reservation"

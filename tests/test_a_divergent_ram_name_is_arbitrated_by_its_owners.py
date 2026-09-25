@@ -74,6 +74,22 @@ def _foreign_owner(tmp_path: Path, state: str):
     return queue, args, paths, consumer, mover
 
 
+def _argv(queue: pool.PoolQueue, args) -> list[str]:
+    """``ram_promote.main``'s argv for the fixture's promotion."""
+
+    return ["--pool-root", str(queue.root), "--cas-root", str(args.cas_root),
+            "--action-key", ram.RAM_MOVER,
+            "--consumer-action-key", ram.CONSUMER,
+            "--tier-id", ram.RAM_TIER, "--ram-root", str(args.ram_root),
+            "--source-stage-root", str(args.source_stage_root),
+            "--manifest-sha256", str(args.manifest_sha256),
+            "--range-start-bytes", "0",
+            "--range-end-bytes", str(ram.TOTAL),
+            "--manifest", str(args.manifest),
+            "--residency-root", str(args.residency_root),
+            "--block", "4096", "--readers", "1", "--max-readers", "1"]
+
+
 def test_an_ended_owners_ram_name_is_replaced_and_the_promotion_completes(
         tmp_path: Path, monkeypatch) -> None:
     """RED on the base source: a retryable refusal that never ends."""
@@ -110,19 +126,8 @@ def test_a_live_owners_ram_name_is_a_terminal_conflict(
     queue, args, paths, consumer, mover = _foreign_owner(tmp_path, "claimed")
     before = ram._identities(paths)
     monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", ram.GRACE)
-    argv = ["--pool-root", str(queue.root), "--cas-root", str(args.cas_root),
-            "--action-key", ram.RAM_MOVER,
-            "--consumer-action-key", ram.CONSUMER,
-            "--tier-id", ram.RAM_TIER, "--ram-root", str(args.ram_root),
-            "--source-stage-root", str(args.source_stage_root),
-            "--manifest-sha256", str(args.manifest_sha256),
-            "--range-start-bytes", "0",
-            "--range-end-bytes", str(ram.TOTAL),
-            "--manifest", str(args.manifest),
-            "--residency-root", str(args.residency_root),
-            "--block", "4096", "--readers", "1", "--max-readers", "1"]
 
-    rc = ram_promote.main(argv)
+    rc = ram_promote.main(_argv(queue, args))
     receipt = queue.move_record(ram.RAM_MOVER)
 
     assert isinstance(receipt, dict)
@@ -170,3 +175,29 @@ def test_an_unproven_ending_keeps_the_retryable_refusal(
     assert ram._identities(paths)[0] == before[0]
     assert any("different bytes" in str(error)
                for error in receipt["errors"]), receipt["errors"]
+
+
+def test_an_unprovable_ending_ends_the_promotion_at_the_bound(
+        tmp_path: Path, monkeypatch) -> None:
+    """#1004 item 2 on the ram leg: the count is filed, and it ends the loop."""
+
+    queue, args, paths, consumer, mover = _foreign_owner(tmp_path, "failed")
+    queue.item_path(pool.FAILED, consumer).unlink()
+    before = ram._identities(paths)
+    monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", ram.GRACE)
+    monkeypatch.setattr(stage_move, "UNPROVEN_ENDING_MIN_SPAN_S", 0.0)
+
+    for run in range(1, stage_move.UNPROVEN_ENDING_RUNS + 1):
+        rc = ram_promote.main(_argv(queue, args))
+        receipt = queue.move_record(ram.RAM_MOVER)
+        assert isinstance(receipt, dict)
+        assert receipt["unproven"]["runs"] == run, receipt["unproven"]
+
+    assert rc == 1, (receipt.get("refusal"), receipt.get("errors"))
+    assert receipt["refusal"] == stage_move.STAGED_DESTINATION_UNPROVEN
+    assert receipt["conflict"]["owners"] == [{
+        "consumer_action_key": consumer, "mover_action_key": mover,
+        "state": "uncertain",
+        "why": f"its consumer {consumer[:12]} has no outcome record",
+        "settles": False}]
+    assert ram._identities(paths)[0] == before[0]
