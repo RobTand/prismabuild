@@ -208,9 +208,10 @@ def test_a_mover_carries_its_own_retry_policy_not_the_consumers(tmp_path):
     row = staged["plan"]["phases"][0]["mover_row"]
     assert row["max_attempts"] == 3
     assert row["retry_safe"] is True
-    # The consumer's policy is untouched by the mover's, and the egress node
-    # reserves nothing and keeps the submission's.
-    assert staged["plan"]["phases"][0]["egress_row"]["max_attempts"] == 1
+    # The egress node reserves nothing, and its retry policy is a movement
+    # node's too, not the submission's single attempt (#950).
+    egress = staged["plan"]["phases"][0]["egress_row"]
+    assert (egress["max_attempts"], egress["retry_safe"]) == (3, True)
 
 
 def test_a_mover_prices_itself_from_receipts_once_any_exist(tmp_path):
