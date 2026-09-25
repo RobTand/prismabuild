@@ -408,11 +408,21 @@ goes on only for rows that may be a producer's export (the rows above): one
 admitted on its producer's allowance takes nothing the withholding item waits
 for. Any other row is left unevaluated, with no pass, as the withhold always
 left it; a real dependent among them is denied `deferred_behind_withholding`,
-naming `withheld_for` (#985). When a pass finds a row's transition lock
-held by another loop, the row still withholds for that pass if this host's
-latest verdict for it is a withhold whose episode is inside
-`WITHHOLD_CEILING_S` (#1085); the `transition_busy` it records carries that
-episode's start, so a run of busy passes never renews it. An item
+naming `withheld_for` (#985). When a pass cannot evaluate a row for a
+transient reason -- another loop holds its transition lock
+(`transition_busy`, #1085), the box's image inventory is unknown
+(`container_image_presence_unknown`), or its residency lead record does not
+read (`residency_lead_record_unreadable`), #1143 -- the row still withholds
+for that pass if this host's latest verdict for it is a withhold whose
+episode is inside `WITHHOLD_CEILING_S`; the denial it records carries that
+episode's start (`withhold_carried`), and the next such pass reads it back
+off any of those reasons, so a run of them never renews it. None of them is a
+verdict, and none releases the drain: without the carry, every pass that met
+an unknown inventory admitted the rows behind an image-pinned GPU row into
+the drain it was waiting on (#1143, the #1125 livelock again). The row is
+still not claimed on an unknown inventory (#714). A read that succeeded and
+says no -- `container_image_absent`, a lead that is not resident, a row the
+box cannot place -- is a verdict and carries nothing. An item
 whose holders do not drain soon keeps its passes and its place, is denied
 `..._starved` (or `..._past_ceiling` when its own clock ran out, or when the
 veto expired under refills), and is listed under `starved` by
@@ -2476,10 +2486,14 @@ Contract:
   record; that record answers the offer. A claim reads it with a short
   freshness bound (`CLAIM_FRESHNESS_S`), re-probing under the same lock while
   image-pinned work waits, and the probe runs outside every pool lock. A
-  missing reference denies (`container_image_absent`, digest named) and an
-  unreadable inventory denies (`container_image_presence_unknown`); neither
-  records a pass, spends an attempt or takes a token, so the item stays
-  `ready` for a box that has the image. An image removed between the
+  loop that finds a sibling mid-probe waits for the sibling's record, within
+  the same `INVENTORY_TIMEOUT_S` budget, instead of reading the record being
+  replaced as unknown (#1143). A missing reference denies
+  (`container_image_absent`, digest named) and an unreadable inventory denies
+  (`container_image_presence_unknown`); neither records a pass, spends an
+  attempt or takes a token, so the item stays `ready` for a box that has the
+  image. An unknown inventory is not a verdict, so it carries this host's
+  live withhold for the row, as a busy transition lock does (#1143). An image removed between the
   observation and the container start is the residual race; the action's own
   failure reports it.
 - **The probe is two bounded reads.** One `docker image ls` answers the ID

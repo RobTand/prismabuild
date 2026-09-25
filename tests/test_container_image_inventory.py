@@ -800,13 +800,68 @@ def test_a_world_writable_cache_directory_is_not_trusted(tmp_path):
     assert cache.get() is None
 
 
-def test_a_sibling_holding_the_refresh_lock_leaves_the_caller_unknown(tmp_path):
-    cache = _cache(tmp_path, probe=_Probe(_line(ID_A)))
-    cache.root.mkdir(parents=True)
+def _hold_refresh_lock(cache):
+    """A sibling loop's refresh in flight: ``refresh.lock`` held on its own
+    open file description, which ``flock`` excludes even within a process."""
+
+    import fcntl
+    cache.root.mkdir(parents=True, exist_ok=True)
     os.chmod(cache.root, 0o700)
-    with open(cache.root / "refresh.lock", "a+", encoding="utf-8") as lock:
-        import fcntl
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        # The sibling's refresh is in flight; this loop must not probe, and
-        # must not turn the absence into "no images".
-        assert cache.get() is None
+    lock = open(cache.root / "refresh.lock", "a+", encoding="utf-8")
+    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    return lock
+
+
+def test_a_sibling_that_never_finishes_leaves_the_caller_unknown_at_the_timeout(tmp_path):
+    probe = _Probe(_line(ID_A))
+    cache = ci.InventoryCache(root=tmp_path / "inventory", probe=probe,
+                              timeout_s=0.3, clock=lambda: 1000.0)
+    lock = _hold_refresh_lock(cache)
+    try:
+        started = time.monotonic()
+        # The sibling's refresh is in flight and overruns this loop's budget.
+        # This loop must not probe, must not turn the absence into "no
+        # images", and must not wait past its inventory timeout.
+        assert cache.get(max_age_s=ci.CLAIM_FRESHNESS_S) is None
+        waited = time.monotonic() - started
+    finally:
+        lock.close()
+    assert 0.3 <= waited < 0.3 + 2.0
+    assert probe.listings == 0
+
+
+def test_a_claim_waits_for_a_siblings_refresh_and_reads_its_record(tmp_path):
+    """#1143: five loops per box, one refreshing; the other four used to read
+    the record that loop was replacing, find it past ``CLAIM_FRESHNESS_S``,
+    and answer unknown."""
+
+    import threading
+    probe = _Probe(_line(REF_A))
+    cache = ci.InventoryCache(root=tmp_path / "inventory", probe=probe,
+                              timeout_s=5.0, clock=time.time)
+    # The record the refreshing sibling is replacing: inside the offer TTL,
+    # past the claim's freshness bound.
+    _write_record(cache, observed=time.time() - ci.CLAIM_FRESHNESS_S - 1.0,
+                  entries=[ID_B])
+    lock = _hold_refresh_lock(cache)
+    fresh = [ID_A, REF_A]
+
+    def sibling() -> None:
+        time.sleep(0.2)
+        payload = json.dumps({"schema": ci.INVENTORY_SCHEMA,
+                              "observed_unix": time.time(),
+                              "entries": fresh}).encode()
+        (cache.root / ".sibling.tmp").write_bytes(payload)
+        os.replace(cache.root / ".sibling.tmp", cache.root / cache.record_name)
+        lock.close()                                     # releases the flock
+
+    thread = threading.Thread(target=sibling)
+    thread.start()
+    try:
+        observed = cache.get(max_age_s=ci.CLAIM_FRESHNESS_S)
+    finally:
+        thread.join()
+    assert observed == frozenset(fresh), (
+        "a loop that found a sibling mid-refresh answered unknown instead of "
+        "reading the sibling's fresh record (#1143)")
+    assert probe.listings == 0, "the sibling's record answers; no second probe"
