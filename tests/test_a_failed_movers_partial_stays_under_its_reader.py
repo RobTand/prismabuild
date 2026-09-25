@@ -228,7 +228,10 @@ class _Row:
             manifest_sha256=self.digest, epoch="", context={})
         if not found.get("ok"):
             return found
-        lease = reader_lease.acquire(
+        # file_pin=False proves the window and files no pin, so nothing
+        # outlives the read: the state between two chunk leases, which is
+        # when the incident's reclaim ran.
+        return reader_lease.acquire(
             self.queue, consumer_action_key=self.consumer,
             attempt={"nonce": "f" * 32, "scope_id": "reader-fixture"},
             tier_id=TIER, epoch="",
@@ -237,12 +240,6 @@ class _Row:
             acquire_token=token, covers=found["covers"],
             expected=found["expected"], residency_root=residence,
             file_pin=False)
-        if lease.get("ok"):
-            released = reader_lease.release(
-                self.queue, str(lease["pin_id"]), str(lease["ref_id"]),
-                consumer_action_key=self.consumer, residency_root=residence)
-            assert released is True, released
-        return lease
 
     def reclaim(self) -> list[dict[str, object]]:
         """One pressured reclaim pass, then run any egress it published."""
@@ -291,15 +288,15 @@ def test_the_reader_keeps_reading_and_the_retry_resumes(
 
     events = row.reclaim()
 
+    after = row.read([0], "reader:after")
     published = [event for event in events
                  if event.get("event") == "failed-mover-egress-published"]
+    assert after.get("ok"), (
+        f"the consumer's next lease on a landed entry of the phase it is "
+        f"reading refused: {after}; the reclaim published: {published}")
     assert published == [], (
         f"the reclaim published an egress for the phase the consumer is "
         f"reading: {published}")
-    after = row.read([0], "reader:after")
-    assert after.get("ok"), (
-        f"the consumer's next lease on a landed entry of the phase it is "
-        f"reading refused: {after}")
     deferred = [event for event in events if event.get("event")
                 == "failed-mover-reclaim-deferred-for-reader"]
     assert [(event["mover"], event["readers"]) for event in deferred] == [
