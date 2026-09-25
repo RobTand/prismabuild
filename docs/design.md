@@ -10854,18 +10854,34 @@ A mover keeps only these of its consumer's fields:
 | `task.determinism` | Keeps every generation consumer's mover key. It matters only when one key publishes a second result: a deterministic mover whose log differs is then refused as a conflict. |
 | `inputs`, `code_closure`, `params.cwd`, `params.checkout_snapshot` | Preflight materializes and proves the consumer's snapshot before the mover runs. |
 | `params.data_manifest` | The mover copies the manifest's ranges and verifies each entry's digest against it. |
-| `environment.variables` | The runtime generation's shim `PATH`; the two container-owner variables are re-derived for the mover. |
 | Row `priority` | The consumer's urgency: a mover that ranked below its consumer would starve it. |
 | Row `checkout_snapshot` | The materialization the sealed snapshot names. |
 
 Its own, never the consumer's: the task class, artifact family and kind,
-execution scope, toolchain, `argv` and result, command, demand, placement
+execution scope, toolchain, environment variables, `argv` and result,
+command, demand, placement
 (`required_tags` is the tier's host, never the consumer's tags or
 `--host-class`), a mover's `retry_policy`, `max_attempts` and `retry_safe`
 (#603), and its container owner. It carries none of the consumer's
 `execution_timeout_s`, progress, profile, GPU or container-image
 parameters. An egress, which passes no retry policy, still inherits the
 consumer's retry policy and attempt limit.
+
+A mover's environment is a movement environment (#996,
+`movement_actions.movement_environment`): `PATH` is the directory of the
+tier interpreter the command starts with, then `/usr/local/bin:/usr/bin:/bin`;
+`LANG` and `LC_ALL` are `C.UTF-8`; and the two container-owner variables are
+derived for the mover. The pool and CAS roots it works on are on its command.
+It used to be the consumer's whole environment minus the owner pair, with the
+consumer's `PATH` head exported by the argv, so a Stage A row sealed on a GB10
+carried its venv `PATH` head, thread caps, spool root, pacing opt-ins and
+`PRISMAQUANT_*` reader settings into an x86 mover on dl380g10: inert while the
+interpreter comes off the tier record, wrong for any mover that shells out.
+The sealed `PATH` is now the launch `PATH` whole (`run_local_action` builds the
+child's environment from the sealed variables alone), so the argv exports
+nothing. A consumer's environment is no longer part of its movers' keys, so
+every mover and egress sealed after this change has a new key; a stage
+mover's command still names its consumer's key.
 
 ### Not built here
 

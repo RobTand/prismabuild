@@ -50,6 +50,41 @@ MOVEMENT_TASK = {"task_class": "generation", "artifact_family": "generic",
 MOVEMENT_EXECUTION_SCOPE = {"portability": "portable", "platform_key": None,
                             "host_class": None}
 
+#: The system directories a movement node's ``PATH`` searches after its own
+#: interpreter's (#996): pbrun's default ``PATH``, the one every fleet box has.
+MOVEMENT_SYSTEM_PATH = ("/usr/local/bin", "/usr/bin", "/bin")
+
+#: The locale a movement node runs in: pbrun's default, so a tool's output
+#: encoding never depends on the box.
+MOVEMENT_LOCALE = {"LANG": "C.UTF-8", "LC_ALL": "C.UTF-8"}
+
+
+def movement_environment(command: Sequence[str]) -> dict[str, str]:
+    """The environment a movement node is sealed with, before its owner (#996).
+
+    A mover's own, never its consumer's: the consumer's environment describes
+    the box that will compute (a GB10 venv at the head of its ``PATH``, its
+    thread caps, its spool root and pacing opt-ins, its ``PRISMAQUANT_*``
+    reader settings), and the mover runs on the box that owns the stage.  So
+    it is the tier interpreter's directory -- ``command[0]``, which every
+    caller takes off the tier record (`movement_tools`) or names absolutely --
+    ahead of :data:`MOVEMENT_SYSTEM_PATH`, and :data:`MOVEMENT_LOCALE`.  The
+    pool and CAS roots a mover works on are sealed on its command.  Nothing a
+    movement tool reads comes from its environment except what the worker
+    injects at launch (the action key, the progress and residency channels).
+
+    It is also why a consumer's environment is not in a mover's key.
+    """
+
+    interpreter = str(command[0]) if command else ""
+    head = [str(Path(interpreter).parent)] if interpreter.startswith("/") else []
+    path: list[str] = []
+    for directory in (*head, *MOVEMENT_SYSTEM_PATH):
+        if directory not in path:
+            path.append(directory)
+    return {"PATH": ":".join(path), **MOVEMENT_LOCALE}
+
+
 #: The progress phases a stage mover reports in (#1010), in the order it
 #: enters them: its start (launch to the first read: the manifest, the
 #: resume census and ``PoolQueue.ownership_start_gate``), the copy, then the
@@ -444,8 +479,9 @@ def seal_movement_action(
     """Seal one movement or egress node off the submission that needs it.
 
     The child keeps everything an action's identity is made of and a mover
-    does not vary: the same ``inputs`` (checkout snapshot, data manifest),
-    the same code closure, the same environment variables. Its command is a
+    does not vary: the same ``inputs`` (checkout snapshot, data manifest)
+    and the same code closure. Its environment variables are a mover's
+    (`movement_environment`, #996), never the consumer's. Its command is a
     fleet tool rather than the submitter's, its demand is tier tokens rather
     than CPU and GPU, and it is placed on the box that owns the stage rather
     than on the box that will compute. So its task class, artifact family,
@@ -489,9 +525,7 @@ def seal_movement_action(
         params["retry_policy"] = dict(retry_policy)
     if extra_params:
         params.update(dict(extra_params))
-    variables = dict(template["environment"]["variables"])  # type: ignore[index]
-    variables.pop(pool.CONTAINER_OWNER_ENV, None)
-    variables.pop(pool.CONTAINER_MARKER_ENV, None)
+    variables = movement_environment(params["command"])  # type: ignore[arg-type]
     marker_root = template["marker_root"]
     owner = container_owner_fn(
         params["command"], params["cwd"], params["demand"], variables,
@@ -510,8 +544,10 @@ def seal_movement_action(
         "task": {
             **{name: task[name] for name in _MOVEMENT_TASK_KEYS},  # type: ignore[index]
             **MOVEMENT_TASK,
+            # The sealed ``PATH`` is the launch environment's whole ``PATH``
+            # (``core.run_local_action`` builds the child's environment from
+            # the sealed variables alone), so the wrapper exports nothing.
             "argv": [SEALED_ARGV0, "--noprofile", "--norc", "-c",
-                     f"export PATH={shlex.quote(variables['PATH'].split(':', 1)[0])}:$PATH; "
                      f"{shlex.join(params['command'])} 2>&1 | tee {shlex.quote(log_name)}; "
                      f"exit ${{PIPESTATUS[0]}}"],
             "result_path": log_name,
