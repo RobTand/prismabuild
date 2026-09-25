@@ -102,6 +102,45 @@ class ReaderLeaseError(ValueError):
     """A pin, a retiring mark, material, or a pinned open that refuses."""
 
 
+class TierAnnouncementUnreadable(ReaderLeaseError):
+    """A RAM tier's announcement could not be read, so its epoch is unknown (#1146).
+
+    Raised by :func:`open_pinned` when ``tiers/<tier_id>.json`` still does
+    not read after the bounded retries of :func:`_announced_epoch`: a stale
+    NFS handle, an I/O error or timeout, or bytes that do not parse.  It is
+    *not* evidence that the epoch moved, and its message never says so; a
+    readable announcement with another epoch refuses with "epoch moved
+    during the hold" instead.
+
+    It subclasses :class:`ReaderLeaseError` on purpose: the open still
+    refuses, because an epoch that cannot be checked cannot be served
+    under, and every caller that already fails closed on a
+    ``ReaderLeaseError`` keeps doing so.  A consumer that must tell the
+    two apart tests for this type (or its name).  The pin and the opening
+    ref stay held; nothing is released, so the caller may retry the open
+    or release as it chooses.
+
+    ``path`` is the announcement, ``errno`` the last ``OSError``'s errno
+    (``None`` for a parse failure or a refusal without one), ``error`` the
+    last failure as ``"<type>: <message>"``, ``seconds`` the time spent
+    reading, and ``attempts`` the reads made.
+    """
+
+    def __init__(self, *, path: str, errno: int | None, error: str,
+                 seconds: float, attempts: int) -> None:
+        self.path = path
+        self.errno = errno
+        self.error = error
+        self.seconds = seconds
+        self.attempts = attempts
+        code = _errno_name(errno)
+        super().__init__(
+            f"tier announcement {path!r} unreadable after {attempts} "
+            f"read(s) in {seconds:.3f} s"
+            f"{f' ({code})' if code else ''}: {error}; the announced epoch "
+            f"is unknown, not moved: refusing")
+
+
 # --------------------------------------------------------------------------
 # Portable file identity
 # --------------------------------------------------------------------------
@@ -2210,7 +2249,14 @@ def acquire(queue, *, consumer_action_key: str, attempt: Mapping[str, str],
         if fragment_epoch != str(epoch or ""):
             return {"ok": False, "refusal": "stale-epoch"}
         if tier_id.startswith("ram:"):
-            live = _announced_epoch(queue, tier_id)
+            try:
+                live = _announced_epoch(queue, tier_id)
+            except TierAnnouncementUnreadable as exc:
+                # Unknown, not moved (#1146): the window is unavailable for
+                # now, which is what ``stale-epoch`` tells a caller; the
+                # detail after the colon says why, as with
+                # ``ownership-uncertain: ...``.
+                return {"ok": False, "refusal": f"stale-epoch: {exc}"}
             if live is None or fragment_epoch != live:
                 return {"ok": False, "refusal": "stale-epoch"}
         if material is None:
@@ -2470,18 +2516,82 @@ def acquire(queue, *, consumer_action_key: str, attempt: Mapping[str, str],
 
 
 def _announced_epoch(queue, tier_id: str) -> str | None:
-    """The epoch the fleet announces for a ram tier, or ``None`` when none."""
+    """The epoch the fleet announces for a ram tier, or ``None`` when none.
 
-    try:
-        record_path = Path(queue.root) / "tiers" / f"{tier_id}.json"
-        with open(record_path) as stream:
-            record = json.load(stream)
-    except (OSError, ValueError):
-        return None
-    if not isinstance(record, Mapping):
-        return None
-    epoch = record.get("epoch")
-    return str(epoch) if isinstance(epoch, str) and epoch else None
+    ``None`` means the tier announces no epoch: no announcement at all, or
+    one that reads and names none.  An announcement that cannot be read
+    raises :class:`TierAnnouncementUnreadable` instead (#1146): an unread
+    record says nothing about the epoch, so it must never pass for one that
+    moved or vanished.
+
+    The record is a whole-record file the tier loop replaces with
+    ``os.replace`` (``PoolQueue.announce_tier``), so it is read as a
+    replaced leaf through the #1017 helper: a read that races a replace
+    reads again from a fresh resolution.  That helper does not retry the
+    faults an NFS client returns while the server swaps the file or is
+    loaded (a stale handle, an I/O error, a timeout), nor bytes that do not
+    parse, so those are retried here on :data:`RELEASE_RETRY_DELAYS_S`, for
+    the errnos of :data:`RELEASE_RETRYABLE_ERRNOS`.  That is this module's
+    existing bound for the same faults on the same mount: four reads, about
+    a second in all.  The ``epoch`` it checks does not change until the tier
+    re-announces, so a longer wait would only delay the answer, and a
+    refusal after it still names what failed.  No lock is held while it
+    waits: :func:`acquire` reads the announcement before it takes the stage
+    ownership lock, and :func:`open_pinned` takes none.
+
+    A missing file is not retried: the writer replaces the name and never
+    removes it, so an absent announcement is the record's actual state.
+    Any other failure (another errno, a record that is not a regular file,
+    one past the byte bound) is not transient and raises at once.
+    """
+
+    from prismabuild import core as pb
+
+    record_path = Path(queue.root) / "tiers" / f"{tier_id}.json"
+    started = time.monotonic()
+    delays = (*RELEASE_RETRY_DELAYS_S, None)
+    for attempt, delay in enumerate(delays, start=1):
+        code: int | None = None
+        try:
+            # The bound the other replaced-leaf readers pass for small JSON
+            # records; a live announcement is under 2 KiB.
+            raw = pb._read_regular_file_nofollow(
+                record_path, where="tier announcement",
+                max_bytes=pb.MAX_ACTION_PROGRESS_BYTES, replaced_leaf=True)
+            record = json.loads(raw)
+            if not isinstance(record, Mapping):
+                raise ValueError("the announcement is not a JSON object")
+        except FileNotFoundError:
+            return None
+        except (OSError, pb.CASUnavailableError) as exc:
+            # The helper wraps an open or stat failure in
+            # CASUnavailableError; the errno is on its cause.
+            cause = exc if isinstance(exc, OSError) else exc.__cause__
+            code = cause.errno if isinstance(cause, OSError) else None
+            failure = exc
+            transient = code in RELEASE_RETRYABLE_ERRNOS
+        except pb.ReplacedRecordError as exc:
+            # Replaced under each of the helper's own rereads: still a
+            # writer racing the read, never tamper.
+            failure, transient = exc, True
+        except (pb.CASTamperError, pb.ActionContractError) as exc:
+            # Before ValueError: ActionContractError is one, and neither a
+            # planted link nor a refused path clears by itself.
+            failure, transient = exc, False
+        except (ValueError, RecursionError) as exc:
+            # Torn or partial bytes: the next read sees the whole record.
+            failure, transient = exc, True
+        else:
+            epoch = record.get("epoch")
+            return str(epoch) if isinstance(epoch, str) and epoch else None
+        if not transient or delay is None:
+            raise TierAnnouncementUnreadable(
+                path=str(record_path), errno=code,
+                error=f"{type(failure).__name__}: {failure}",
+                seconds=round(time.monotonic() - started, 3),
+                attempts=attempt) from failure
+        time.sleep(delay)
+    raise AssertionError("announcement read loop did not return or raise")
 
 
 def open_pinned(queue, pin: Mapping[str, object], ref_id: str, key: str,
@@ -2504,6 +2614,13 @@ def open_pinned(queue, pin: Mapping[str, object], ref_id: str, key: str,
     owns the descriptor and must close it; the pinning ref must outlive it
     (fork inherits via a registered ref; mmap holds it; async prefetch
     holds it).
+
+    A RAM pin's epoch is checked against the tier's announcement.  A
+    readable announcement with another epoch, or none, raises
+    :class:`ReaderLeaseError` "epoch moved during the hold".  One that is
+    still unreadable after the bounded retries raises
+    :class:`TierAnnouncementUnreadable` (a ``ReaderLeaseError``) instead:
+    the epoch is unknown, not moved, and the pin and ref stay held (#1146).
     """
 
     checked = validate_pin(pin)
@@ -2523,7 +2640,10 @@ def open_pinned(queue, pin: Mapping[str, object], ref_id: str, key: str,
         # A window open needs the lifetime's epoch, not the header's: if
         # the tier re-announced after this acquire, the material generation
         # this pin names is not current, and reporting the old header epoch
-        # must not make it so.
+        # must not make it so.  An announcement that does not read raises
+        # TierAnnouncementUnreadable from here (#1146): the open refuses,
+        # but never as a move nobody observed.  A tier that announces no
+        # epoch, or another one, no longer serves this pin's generation.
         current = _announced_epoch(queue, tier_id)
         if current is None or current != epoch:
             raise ReaderLeaseError(
@@ -3068,6 +3188,38 @@ def inspect_claim_context(queue, action_key: str) -> dict[str, object]:
     }}
 
 
+def launch_queue_root(env=None) -> "Path | None":
+    """The root of the queue that launched this action, or ``None`` (#961).
+
+    The supported way for an action to find its queue: the pool launcher
+    publishes the root as ``PRISMABUILD_QUEUE_ROOT`` (``core.QUEUE_ROOT_ENV``)
+    for every action it runs, so a consumer never re-derives it from where
+    the residency map happens to live.  A launch by a pool generation older
+    than #961 carries no such variable; for that launch only, the root is
+    read from the residency map's path (``<queue>/residency/<key>.json``),
+    the layout that generation wrote.  ``None`` when neither is set: this
+    process was not launched by a pool worker, and guessing a root from
+    topology would bind to the wrong queue.
+    """
+
+    source = dict(os.environ) if env is None else dict(env)
+    try:
+        from prismabuild.core import QUEUE_ROOT_ENV
+    except ImportError:
+        QUEUE_ROOT_ENV = "PRISMABUILD_QUEUE_ROOT"
+    try:
+        from prismabuild.residency_map import RESIDENCY_MAP_ENV
+    except ImportError:
+        RESIDENCY_MAP_ENV = "PRISMABUILD_RESIDENCY_MAP"
+    published = source.get(QUEUE_ROOT_ENV) or ""
+    if published:
+        return Path(published)
+    map_path = source.get(RESIDENCY_MAP_ENV) or ""
+    if map_path:
+        return Path(map_path).parent.parent
+    return None
+
+
 def injected_context(queue=None, *, env=None, residency_root=None):
     """Build this reader's identity from launch-bound sources, never guessed.
 
@@ -3115,8 +3267,7 @@ def injected_context(queue=None, *, env=None, residency_root=None):
     if not map_path:
         return {"ok": False, "refusal": "no-map-context"}
     if queue is None:
-        queue = pool_mod.PoolQueue(
-            Path(map_path).parent.parent)
+        queue = pool_mod.PoolQueue(launch_queue_root(source))
     try:
         claim = pool_mod._read_json(
             queue.item_path(pool_mod.CLAIMED, action_key))
@@ -3268,6 +3419,7 @@ __all__ = [
     "ATTESTATIONS_SUBDIR",
     "READER_LEASE_TAG",
     "ReaderLeaseError",
+    "TierAnnouncementUnreadable",
     "ReleaseFailure",
     "RELEASE_STEPS",
     "RELEASE_RETRYABLE_ERRNOS",
@@ -3281,6 +3433,7 @@ __all__ = [
     "clear_retiring",
     "containment_certificate_ok",
     "export_verdict_proves_empty",
+    "launch_queue_root",
     "leases_root",
     "live_for",
     "material_path",

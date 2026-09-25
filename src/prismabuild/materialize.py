@@ -62,10 +62,17 @@ def _now() -> float:
     return time.time()
 
 
-def _write_json_atomic(path: Path, payload: Mapping[str, object]) -> None:
-    """Publish a record by rename, so no reader ever sees a partial file."""
+def _write_json_atomic(path: Path, payload: Mapping[str, object], *,
+                       make_parent: bool = True) -> None:
+    """Publish a record by rename, so no reader ever sees a partial file.
 
-    path.parent.mkdir(parents=True, exist_ok=True)
+    ``make_parent=False`` skips the ``mkdir``: a caller that rewrites one
+    record every cycle creates its directory only when a write finds it
+    missing (``FileNotFoundError``), not on every call (#960).
+    """
+
+    if make_parent:
+        path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.parent / f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
     data = pb._canonical_bytes(dict(payload))
     descriptor = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)

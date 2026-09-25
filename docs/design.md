@@ -383,11 +383,21 @@ goes on only for rows that may be a producer's export (the rows above): one
 admitted on its producer's allowance takes nothing the withholding item waits
 for. Any other row is left unevaluated, with no pass, as the withhold always
 left it; a real dependent among them is denied `deferred_behind_withholding`,
-naming `withheld_for` (#985). When a pass finds a row's transition lock
-held by another loop, the row still withholds for that pass if this host's
-latest verdict for it is a withhold whose episode is inside
-`WITHHOLD_CEILING_S` (#1085); the `transition_busy` it records carries that
-episode's start, so a run of busy passes never renews it. An item
+naming `withheld_for` (#985). When a pass cannot evaluate a row for a
+transient reason -- another loop holds its transition lock
+(`transition_busy`, #1085), the box's image inventory is unknown
+(`container_image_presence_unknown`), or its residency lead record does not
+read (`residency_lead_record_unreadable`), #1143 -- the row still withholds
+for that pass if this host's latest verdict for it is a withhold whose
+episode is inside `WITHHOLD_CEILING_S`; the denial it records carries that
+episode's start (`withhold_carried`), and the next such pass reads it back
+off any of those reasons, so a run of them never renews it. None of them is a
+verdict, and none releases the drain: without the carry, every pass that met
+an unknown inventory admitted the rows behind an image-pinned GPU row into
+the drain it was waiting on (#1143, the #1125 livelock again). The row is
+still not claimed on an unknown inventory (#714). A read that succeeded and
+says no -- `container_image_absent`, a lead that is not resident, a row the
+box cannot place -- is a verdict and carries nothing. An item
 whose holders do not drain soon keeps its passes and its place, is denied
 `..._starved` (or `..._past_ceiling` when its own clock ran out, or when the
 veto expired under refills), and is listed under `starved` by
@@ -2435,10 +2445,14 @@ Contract:
   record; that record answers the offer. A claim reads it with a short
   freshness bound (`CLAIM_FRESHNESS_S`), re-probing under the same lock while
   image-pinned work waits, and the probe runs outside every pool lock. A
-  missing reference denies (`container_image_absent`, digest named) and an
-  unreadable inventory denies (`container_image_presence_unknown`); neither
-  records a pass, spends an attempt or takes a token, so the item stays
-  `ready` for a box that has the image. An image removed between the
+  loop that finds a sibling mid-probe waits for the sibling's record, within
+  the same `INVENTORY_TIMEOUT_S` budget, instead of reading the record being
+  replaced as unknown (#1143). A missing reference denies
+  (`container_image_absent`, digest named) and an unreadable inventory denies
+  (`container_image_presence_unknown`); neither records a pass, spends an
+  attempt or takes a token, so the item stays `ready` for a box that has the
+  image. An unknown inventory is not a verdict, so it carries this host's
+  live withhold for the row, as a busy transition lock does (#1143). An image removed between the
   observation and the container start is the residual race; the action's own
   failure reports it.
 - **The probe is two bounded reads.** One `docker image ls` answers the ID
@@ -5193,11 +5207,93 @@ each kind always starts, so every long step makes progress every cycle
 whatever `b` is. A refused unit waits for the next cycle, which starts that
 step from the first unit refused. The units are one consumer of the
 dead-owner census (`stage_release.DEAD_OWNER_UNIT`), one instance's ended
-prewrites, one staged batch's egress and one consumed batch's origin
-retirement (`produced_output.ORIGIN_RETIREMENT_UNITS`). At the live shape `b`
+prewrites, one staged batch's egress, one consumed batch's origin
+retirement (`produced_output.ORIGIN_RETIREMENT_UNITS`), and one eviction or
+reclaim of the per-range passes below (#1136). At the live shape `b`
 is about 80 s. `LAST_CYCLE["liveness"]`, on each `tier-cycle` line, reports
 every term, the units run and deferred per kind, the refreshes, and the
 oldest age any record reached.
+
+**Every per-range eviction in the cycle is a unit (#1136).** The first
+version budgeted only the dead-owner census inside the orphan sweep. The
+sweep's own evictions ran unbudgeted, so on 2026-09-25 one cycle on
+dl380g10 took 287.2 s, 227.5 s of it in `sweep_orphans`: 47 orphan
+evictions, each behind an owner census of 1.1 to 13.1 s while movers
+saturated the storage pool. Nothing re-announced the stage record between
+them, it reached 121 s, and a stage-fed GPU row died with
+`StagedRangeNotLanded`. Each pass that evicts, or reads and publishes, per
+range now asks the budget before each unit and reports its end, whatever the
+outcome:
+
+* `stage_release.sweep`, the orphan pass: one eviction, of a held orphan or
+  an uncharged dead owner (`stage_release.ORPHAN_EVICT_UNIT`). The pressure
+  check comes first, so a tier that has its room starts no unit. A refused
+  orphan stays resident, and the next cycle's pass starts from it and then
+  takes the rest oldest first. The budget remembers one refused key per
+  kind, so the resumption holds on the tier where the refusal happened;
+  another tier's first orphan can go ahead of it.
+* `tier_loop.evict_beyond_horizon`: one row's eviction, with the ram copies
+  it takes first, in the horizon pass (`BEYOND_HORIZON_UNIT`) and in the
+  claim-order pass (`CLAIM_ORDER_UNIT`). The futility check still weighs
+  every candidate, since it asks whether the room can be made at all.
+* `tier_loop.release_incomplete_ram_promotions`: one incomplete promotion's
+  eviction (`RAM_INCOMPLETE_UNIT`).
+* `tier_loop.reclaim_failed_mover_partials`: one pressured consumer's legs
+  (`FAILED_MOVER_RECLAIM_UNIT`). It deletes nothing itself, but each leg
+  reads a ledger holding, the queue state, a move receipt and a fragment.
+
+`tier_loop._budget_order` applies `Liveness.order`'s rotation to rows
+keyed by mover or consumer. Without a budget, every pass behaves as before.
+The other per-cycle loops are bounded otherwise: `deferred_release`
+stops at the cycle's interval, `origin_retirement_tick` already takes the
+budget, and `reconcile` is one walk per tier, not a loop of per-range units.
+`drop_prior_ram_epochs` is not bounded per holder: each ghost holder
+costs a funding read, non-blocking lock attempts and, for a blind grant, a
+scan of the residency plans. It runs only on the fragments and held keys of
+a prior ram epoch, which a reboot leaves, and it takes no owner census and
+deletes no staged data. `adopt_resident_ranges`,
+`withdraw_dead_consumer_movers` and `fan_out_shared_ranges` rewrite or
+remove bookkeeping records (fragments, material, plans, reservations), not
+staged ranges; they are not budgeted, and their per-range cost is not yet
+measured. The windows publish rows, and the
+egress those rows name runs as its own action, outside the cycle. The
+`receipts` step is not budgeted either, but it is checkpointed inside, per
+entry (#1148, below).
+
+**The receipts read is checkpointed inside (#1148).** `ReceiptCache.read`
+lists the prewarm and movement receipt directories and stats and parses
+every entry of a changed one. It had no checkpoint inside it, so the whole
+read was one stretch. On 2026-09-25 one cycle on dl380g10 took 153.6 s,
+113.7 s of it in `receipts`, while stage movers loaded the HDD pool that
+`pb-queue` lives on. The stage record reached 121 s, and a Stage B row died
+with `StagedRangeNotLanded`. `ReceiptCache.read` now takes the loop's
+`Liveness` and hands `Liveness.checkpoint` to
+`stage_release.DirectoryRecords.read`, which calls it after each entry the
+listing yields, once the listing is complete, and before each entry is
+stat-ed and parsed. `ReceiptCache.read` also checkpoints after each
+directory. The label is `receipts:<directory>`, so a refresh made there
+says `liveness_refresh.after: "receipts:movers"`, for example. Each entry
+is its own batch: a checkpoint is a clock read and a comparison, and a stat
+on a loaded pool costs milliseconds or more. A directory whose listing is
+unchanged is not listed, and costs no per-entry checkpoint.
+
+These are checkpoints, not budgeted units. A budget refusal leaves a unit
+for the next cycle, and no receipt can be left unread: the fill supply is a
+fold over every receipt, and a partial read changes its answer. The read's
+time counts in `T`, the time outside the budgeted units, as it did before,
+so a slow read still shortens the budget of the steps after it.
+
+`receipts` runs before the cycle's `mint_announce`, so what a checkpoint
+there re-announces is the record the previous cycle minted. `Liveness`
+already allows this, byte for byte as above: `end_cycle` keeps the records
+the cycle announced, `begin_cycle` does not clear them, and `_refresh`
+writes every record it keeps. That record is still the loop's word until
+this cycle's mint replaces it. Two cases have nothing to re-announce, and
+read as dead within `L + P` as before: the first cycle after the loop
+starts, whose records on disk were written by the process before it, and a
+cycle after one that failed before its mint. A hang inside one entry's
+stat or parse is a stretch longer than every one measured, and gets no
+write.
 
 **A dead producer's backlog writes its commitments once.** `retire_batch`
 reads the instance's `commitments.json` four times and writes it once, with
@@ -5726,6 +5822,23 @@ declaration-less rows taint. Commit-batch funding, movement/tick
 handoff, and the general funded-window primitive remain with their
 owning lanes.
 
+**Reading a batch record (#955).** `produced_output.batch_record(queue,
+instance, template, *, batch_id)` is the public, read-only reader of one
+committed batch, and `batch_records(queue, instance, template)` returns every
+batch the instance committed, in `batch_id` order, reclaimed and retiring
+ones included. Each answer carries `entries` (`path`, `bytes`, `sha256`,
+`artifact_class`), `lifetime` (`retain` or `consumed`), `commitment` (the
+batch's commitments entry as filed), `state` (`committed`; `retiring` once
+the retirement tick has decided to delete it; `reclaimed` once PB stopped
+charging it) and `record` (the filed batch record, `origin_identity`
+included). The record goes through the same loader as retirement and
+reclaim. They take no lock and mutate nothing. A foreign template raises
+`template-mismatch`, a batch never committed raises `unknown-batch`, and a
+commitments document or batch record that is missing, unreadable or does not
+validate raises `unknown-retain: ...`: under the census rule it is never read
+as empty. `_load_batch_record` and `_read_commitments` stay private; a caller
+outside PB (PQ's Stage A retirement, PQ #1073) uses these.
+
 ### The movement node
 
 `tools/fleet/stage_move.py` is the mover: an ordinary PB action, placed by tag
@@ -6171,7 +6284,29 @@ the record and the entry resumes from the filed record. `commit_batch`,
 `publish_prepaid_batch`, `refill_window`, `admit_funded_window` and
 `ensure_batch_materialized` refuse a write-only template
 (`template-is-write-only`), and `commit_origin_batch` refuses a read-back one
-(`template-reads-back`).
+(`template-reads-back`) unless the caller passes `landed` (#1034, below).
+
+A read-back owner that reads a group back from its own local spool (PQ
+#1118) never publishes it, so no `commit_batch` runs for it. Before #1034 its
+prewrite then stayed outstanding for the owner's whole life, charged at its
+ceiling in `_outstanding_sums`, and nothing retired it. Such an owner commits
+the group with `ProducedSpool.commit_origin_group` once its export is
+acknowledged: `commit_origin_batch` accepts a read-back template when `landed`
+carries the export receipt's identities, makes the same checks, files the same
+origin-only record and entry, consumes the prewrite, and charges the group its
+actual bytes. A read-back caller without `landed` still refuses
+`template-reads-back`, so no read-back owner commits a group whose export was
+never acknowledged. The batch is no handoff: `load_origin_batch` (and so
+`origin_batch_manifest`) and `declare_origin_consumer` refuse it
+(`origin-batch-not-write-only`), and `publish_prepaid_batch` and
+`ensure_batch_materialized` refuse to stage it (`batch-committed-at-origin`).
+It ends like any origin-only batch: a
+`retain` batch through `reclaim_origin` once its owner has removed the files;
+a `consumed` batch through `origin_retirement_tick`, which, because no
+consumer can declare it, retires it once its owner attempt has ended, whether
+dead or succeeded (a write-only batch with no consumer waits after success,
+and retires only when its producer is dead). This commit ends the accounting
+only; it does not make the owner's local read a leased staged read.
 
 Every reader that asks whether a stage copy is live hears no:
 `_active_materialization` answers `origin-only`, retired, with no mover, so
@@ -6285,11 +6420,13 @@ output-prefix lock and decides:
   generation ended `failed` or `withdrawn`, or it is `done` by another
   attempt. An owner that is `done` by this attempt, still claimed by it,
   queued, being moved, or unreadable keeps the batch without a log line,
-  because a consumer may still come. The owner's state is the tick's one
-  read of its key (`_TickReads.generation`, #977), taken before the
-  output-prefix lock, whatever the number of due batches: `dead` is final
-  for a nonce, so an older read can only defer a retirement to the next
-  cycle, never cause one.
+  because a consumer may still come. A read-back template's batch (#1034)
+  can have no consumer, so `done` by this attempt ends it too. The owner's
+  state is the tick's one read of its key (`_TickReads.generation`, #977),
+  taken before the output-prefix lock, whatever the number of due batches:
+  an attempt that ended, `dead` or `done` by itself, never runs again under
+  its nonce, so an older read can only defer a retirement to the next cycle,
+  never cause one.
 
 **The delete.** The tick first stats the instance's output prefix. If the
 prefix is not a directory on this host, it refuses
@@ -6306,7 +6443,9 @@ origin with the identity the commit recorded:
   whose template's prefix overlaps this one's, is that batch's whatever its
   identity, and is left as `superseded`; the event's `superseded_by` names
   the owner. A path another attempt that can still commit has prewritten
-  holds the batch, quietly, until it commits or ends (#1053).
+  holds the batch until it commits or ends (#1053). The hold is quiet only
+  while that attempt is `live`; a hold by an attempt whose state is
+  `unknown` is reported (#1065, "A hold by an unknown attempt" below).
 - The same inode changed in place, or a stat that fails, refuses
   (`origin-changed`, `origin-unstatable`) and keeps the batch. When only
   the timestamps moved, the tick reads the file outside the lock and
@@ -6442,6 +6581,13 @@ release is therefore enforced where live code always runs:
   publishes no phase of its frozen plan, not even its lead. Once the claim
   has failed the row, the dead-consumer sweep (#620) archives the plan. A
   claimed consumer is never left out: it was claimed before any release.
+- **The prewarm loop (#963).** `prewarm_loop.cycle` asks the same check,
+  `prewarm_loop.released_origin_consumer`, which `live_consumers` also
+  calls: a ready row whose key has a confirmed release, or one it cannot
+  read, is neither warmed nor staged (`--stage`), and is logged as skipped
+  with reason `origin consumer released` without spending the lookahead.
+  The row still counts as queued for the cycle's receipt prune and stage
+  sweep until the claim files it.
 
 The old consumer's own state answers first while it is queued, running or
 has succeeded. Since #945 a released key also cannot declare the batch
@@ -6586,7 +6732,8 @@ take:
   recorded the file's identity, so the file is that batch's and is charged
   once, there. A prewrite of an attempt that succeeded counts as its commit.
 - A present path that another attempt still plans, and that could still
-  commit, holds the record, silently, until that attempt commits or ends.
+  commit, holds the record until that attempt commits or ends: quietly while
+  it is `live`, and reported while its state is `unknown` (#1065, below).
 - Otherwise the files belong to no batch: `output-prewrite-orphaned`, once
   per change, with the orphaned `paths` and the `superseded` and `held`
   ones. PB never deletes a file whose identity no commit recorded. The
@@ -6598,6 +6745,42 @@ take:
 `class_bytes`, the three path lists and a `remedy`. It reads through
 `produced_output.blocked_origin_batches`, applies the same dispositions and
 takes no lock. The MCP tool `pb_blocked_origins` serves the same list.
+
+**A hold by an unknown attempt (#1065).** "Can still commit" is `live` or
+`unknown`, and `unknown` covers an attempt with no queue row at all, one
+whose key is queued in `ready`, one whose claim is being moved and one
+whose row cannot be read. Nothing ends an attempt with no row, so before
+#1065 its prewrite held every overlapping consumed batch and ended prewrite
+for ever, and the tick said nothing: the retirement's hold and the sweep's
+hold both dropped their report. Now a hold that any attempt of unknown state
+takes part in files `output-origin-held-by-unknown-attempt`, once per change
+(on the entry's `retirement_report` for a consumed batch, in the process for
+a prewrite), with the batch's `ref` and `bytes` or the prewrite's
+coordinates and `class_bytes`, and `holders`: for each such attempt and
+path, `owner_action_key`, `nonce`, `batch_id`, `foreign`, `state`, `why`
+(`no-queue-row`, `queued`, `moving`, `claim-names-no-nonce`,
+`done-names-no-nonce`, `done-status-<status>`,
+`cache-hit-by-another-attempt` or `queue-row-unreadable`), `orphaned`,
+`last_write_unix` and its `prewrite_record`. A hold only a live attempt
+takes stays quiet.
+
+An attempt with no queue row whose newest record (its commitments or a
+prewrite record) is older than the lease timeout (`pool.LEASE_TIMEOUT_S`) is
+`orphaned`: a running attempt holds a claimed row that its heartbeat renews
+within that timeout, so one with no row that has written nothing for as long
+is not running. The event's `reason` is then `held-by-orphaned-attempt`
+(otherwise `held-by-unknown-attempt`) and it carries
+`ORPHANED_HOLDER_REMEDY`: confirm no process of the attempt runs, then remove
+its prewrite record. The hold itself is kept, because PB never ends an
+attempt it cannot read; `orphaned` turning is a change, so it is reported
+once more, and it is part of `_PathOwners.fingerprint`, so a prewrite
+decision the tick kept is taken again when it turns.
+
+`pbstatus --blocked-origins` lists the same holds under `held_by_unknown`,
+read-only: a consumed batch the tick would retire now (every declared
+consumer resolved, or none declared and its producer attempt dead) and an
+ended prewrite it would reclaim, each held only by such an attempt, with the
+event's fields. `pb_blocked_origins` serves it too.
 
 **What one tick reads.** The owner key's generation is read once per owner
 for all its attempts (`_attempt_state` over one `_key_generation`), both for
@@ -6741,7 +6924,8 @@ present file at an ended attempt's prewrite path, or at a consumed batch's
 path, that another attempt of any key has committed is that batch's. The
 prewrite is reclaimed as `superseded` with each path's owner, and the
 consumed batch leaves the file as `superseded` with `superseded_by`. A path
-another attempt that can still commit has prewritten holds, quietly. Only a
+another attempt that can still commit has prewritten holds, quietly while
+that attempt is live and reported while its state is unknown (#1065). Only a
 present file nobody claims is `output-prewrite-orphaned`, reported once per
 change with the one remedy (`ORPHANED_PREWRITE_REMEDY`): remove the files,
 or let a successor commit the same paths, and the next tier cycle drops the
@@ -8573,7 +8757,21 @@ footprint, and every newcomer the pass refused on the tier (`waiting`), with
 its reason and, for a commitment refusal, the gate's terms. A newcomer gated
 behind another's wait (`higher-priority-window-waiting`) names that one and
 its reason under `waiting_on`. The record is a report: admission never reads
-it.
+it. Its directory is made only when a write finds it missing, not on every
+call; `announce_tier` writes the same way (#960).
+
+**A retired tier (#960).** In the cycle the loop retires a stage tier it no
+longer discovers, it replaces the tier's commitment record with
+`{"tier_id", "retired": true, "waiting": []}`: no totals, terms, holders or
+claim order, so a staged wait reads the tier's commitment as unknown rather
+than as the last live over-commitment. A record already marked retired is
+read and not rewritten.
+
+**The cycle line (#960).** Each stage tier's entry on the `tier-cycle`
+summary line carries the totals its record was filed with that cycle:
+`committed_gib` (null when the tier was not censused), `waiting` (how many
+newcomers the pass refused on it) and `waiting_need_gib` (the GiB they
+asked for), plus `retired` for a retired tier.
 
 A pass that asked no newcomer took no census. The report then takes one with
 `remember=False`, which prices each window as admission would at that moment
@@ -10162,6 +10360,20 @@ roots, so two roots can never share a checkpoint. A skip files no per-owner
 receipt; the tier cycle line counts skipped and censused owners instead, as
 `census_stale_skipped` and `census_stale_censused`.
 
+A refused checkpoint says why (#1069). Whenever the receipt of an otherwise
+idle owner reads `cacheable: false`, its `cache_refused` names the first
+refusal found: `document-version-unknown` (this owner's fragment or material
+version, or a co-owner fragment's, could not be read),
+`no-directory-stamp` (the owner names no path to fence),
+`directory-stamp-untrusted` (the trusted rule refused a parent directory's
+stamp, #1062), `outside-sweep-scope` (the latest sweep did not discover the
+owner) or `cache-full`. A receipt that cached, or whose owner was not idle
+(a stale or absent path, a changed document, a partial prune), carries an
+empty `cache_refused`. The tier cycle line counts the refusals per reason, as
+`census_stale_cache_refused.<reason>`, so an owner re-censused every cycle
+for a reason that does not end can be told from one re-censused once after a
+same-tick change.
+
 **An uncharged dead owner with material is room under pressure (#1061).** A
 failed consumer's executed `DONE` mover whose move receipt never completed
 holds no stage token: the ledger released it when the mover finished. Its
@@ -10854,11 +11066,52 @@ has read past. `reclaim_failed_mover_partials` treats that mover as an
 eviction candidate whenever the window has no room for the next phase and
 publishes its own egress row, which already handles "an earlier egress removed
 it" and returns no tokens when none are held. No pressure, no reclaim; never
-from under a queued recopy, a complete receipt, or a concluded egress (which
-refused rather than raced — republishing would only repeat it). While the
+from under a queued recopy, a complete receipt, a concluded egress (which
+refused rather than raced — republishing would only repeat it), or a claimed
+reader (#1151, below). While the
 egress is queued the window holds the recopy (`mover-publish-deferred-for-egress`):
 the egress frees device bytes, not ledger tokens, so republishing into a stage
 that is still full would ENOSPC into the very room being made.
+
+### A failed mover's partial stays under its reader; a held copy still vouches what it landed (#1151)
+
+On 2026-09-25 Stage B row 013 died in two steps. Spill-p0's mover ended
+`complete: false` at 436 of 512 entries, refused on a staged name that
+spill-p1's mover had renamed and not yet vouched. Then the reclaim above
+published spill-p0's egress while the consumer was reading spill-p0, and the
+consumer's next lease refused `unpublished`.
+
+**The reclaim asks whether a reader can still reach the bytes.** A claimed
+consumer reads a range as its entries land: the partial of the phase it is
+inside is what it reads now, and the partials of later phases are what it
+reads next. `tier_loop._legs_a_reader_can_reach` names those legs with the
+window's own rule, `residency_plan.remaining(plan, accepted_phase)`. A
+consumer that has not reported a phase, or reports one its plan does not
+carry, reads as at the beginning and protects its whole plan. A ready
+consumer reaches nothing, because no claim admits it over a range that has
+not landed. The map covers every consumer, so any sharer of a shared range
+(#1026) protects it. For a reachable leg the reclaim records
+`failed-mover-reclaim-deferred-for-reader` instead of publishing the egress.
+The window republishes the same mover key, and the retry resumes its own
+landed coverage (`entries_resumed`) and copies only what is missing. A range
+every reader has read past, and a range whose consumer is not claimed, are
+reclaimed as before.
+
+**The fragment rate limit has a trailing edge.** A stage mover republishes
+its fragment at most once per `FRAGMENT_PUBLISH_S`. A snapshot the limit
+declined used to wait for the next landing's publication, so a copy that
+stopped landing -- its queue drained behind one straggler, or its readers held
+by the pacer -- left its last renamed names unvouched until its range ended.
+Another mover of the same staged name read each one as a live publisher's
+pending name, waited out `_PUBLISH_GRACE_S` and refused, which stopped the rest
+of its range. Now `publish` keeps the newest declined snapshot as owed, and
+`stage_move._TrailingFragment` pays it through the same `publish` once the
+limit allows, so the limit, the generation fence and the sidecar-first order
+(#1087) hold for it unchanged. While nothing is owed it writes nothing. The
+waiting mover finds the vouch and adopts inside the grace. The receipt counts
+trailing writes as `phase_timings.thread_seconds.fragment_trailing_publication`.
+A live claim still defers a name whose bytes prove out:
+`test_a_live_claim_still_defers_and_never_replaces` keeps that rule.
 
 ### A stage root belongs to one queue (#628)
 
@@ -11025,6 +11278,17 @@ file only they name, and the loop composes them and recomposes after every
 eviction, because a rename cannot merge and a map naming an evicted range points
 at deleted files. The launcher puts the composed map's path in
 `PRISMABUILD_RESIDENCY_MAP`, and only when the file exists.
+
+**The queue root is published, not derived (#961).** The pool launcher also
+sets `PRISMABUILD_QUEUE_ROOT` (`core.QUEUE_ROOT_ENV`) for every action it runs,
+map or no map, to the queue's absolute root (`PoolQueue.launch_environment`).
+`core` forwards it unsealed beside the map and refuses an action that seals
+it. A consumer that needs its queue calls `reader_lease.launch_queue_root`,
+the SDK's one reader, and never derives the root from the map's path shape
+(`<queue>/residency/<key>.json`): that layout is the queue's to move. The
+function reads the map's path only for a launch by a pool generation older
+than #961, which published no root, and answers `None` for a process no pool
+worker launched. `reader_lease.injected_context` resolves its queue through it.
 
 **The map lives as long as its consumer runs (#908).** When a consumer has
 nothing staged, the loop's answer depends on whether it is running:
@@ -11309,8 +11573,8 @@ and the progress record's own timestamp for the accepted phase. Both keep
 the census's own completeness under its own name beside the envelope's,
 because "the mount answered" and "every record answered" are different
 facts. `pb_blocked_origins` serves `pbstatus --blocked-origins`'s reader the
-same way, with its completeness as `census_complete` (#926), and its
-`orphaned_prewrites` (#949).
+same way, with its completeness as `census_complete` (#926), its
+`orphaned_prewrites` (#949) and its `held_by_unknown` (#1065).
 
 `pb_actions` can match `snapshot_parent` and `snapshot_commit` exactly against
 the sealed `checkout_snapshot` Git fields, as well as live `checkout_root`.

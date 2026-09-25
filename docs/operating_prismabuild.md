@@ -253,11 +253,17 @@ What PB does with it:
   anything is queued, naming the reference.
 - **Refuse at claim, keep it portable.** At claim time the worker reads its
   shared inventory record freshly (re-probed at least every five seconds
-  while image-pinned work is waiting, outside every pool lock). A missing
-  reference is denied as `container_image_absent` with the digest named; an
-  unreadable inventory is `container_image_presence_unknown`. Either denial
-  records no pass, spends no attempt and takes no token, so the item stays
-  `ready` and the box that has the image claims it. The residual race -- an
+  while image-pinned work is waiting, outside every pool lock). A loop that
+  finds a sibling loop mid-probe waits for that probe's record, up to the
+  five-second inventory timeout, rather than reading the old record as
+  unknown (#1143). A missing reference is denied as `container_image_absent`
+  with the digest named; an unreadable inventory is
+  `container_image_presence_unknown`. Either denial records no pass, spends
+  no attempt and takes no token, so the item stays `ready` and the box that
+  has the image claims it. An unknown inventory does not release a drain:
+  if this box was withholding for the row, the rows behind it stay held for
+  that pass (`withhold_carried` in the denial), as they do when another loop
+  holds the row's lock (#1143). The residual race -- an
   image removed after the observation and before the container starts -- is
   reported by the action's own run time, not presented as impossible.
 
@@ -2222,7 +2228,8 @@ The tools:
     own reader; `census_complete` is false, and `unreadable` names the
     records, when a record could not be read. `orphaned_prewrites` lists
     each write-only prewrite whose attempt ended before committing and whose
-    files no committed batch owns (#949).
+    files no committed batch owns (#949). `held_by_unknown` lists what only
+    an attempt whose state cannot be read holds (#1065).
 
 Every response carries the same envelope, and two of its fields decide whether
 the rest of it can be believed. `complete` is false, and `timed_out` names the
@@ -3565,6 +3572,17 @@ stall yet. A batch held for an unreleased deferred consumer (#913) is not
 listed. When a record cannot be read, `complete` is false, `unreadable` names
 it, and the command exits 3. The MCP tool `pb_blocked_origins` serves the same
 listing.
+
+`held_by_unknown` lists a batch or an ended prewrite that would be freed now
+but for another attempt, whose state cannot be read, that has prewritten one
+of its paths (#1065). The tier log reports it as
+`output-origin-held-by-unknown-attempt`, once per change. Each holder says
+`why` it is unknown: `no-queue-row`, `queued` and `moving` usually resolve on
+their own. `orphaned: true` (reason `held-by-orphaned-attempt`) is an attempt
+with no queue row that has written nothing for longer than the lease timeout:
+nothing will end it. Confirm no process of it is running, then remove the
+`prewrite_record` the holder names, and the next tier cycle decides the batch
+again.
 
 `output-origin-retirement-refused` means the tick would not
 delete: the output prefix is not mounted on dl380g10, or a file is no longer
