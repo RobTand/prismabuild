@@ -571,9 +571,12 @@ def idle_judgement(state, sample, *, holders, identity, fields=IDLE_FIELDS, inte
       ongoing excursion: a run of consecutive idle samples each above the
       baseline's maximum.  The run is judged against the samples before it
       began, so a sustained foreign load is refused for as long as it runs,
-      not only on its first pass.  A run that has lasted as long as the
-      samples before it span has outlived what the window remembers of the
-      host's earlier state, and the host's idle state is taken to have
+      not only on its first pass.  Its span is measured from the *oldest*
+      remembered sample to the run's own start, not between the remembered
+      samples themselves -- that span is zero with only one of them, which
+      would let any run "outlive" the window at once (#1014).  A run that has
+      lasted as long as that span has outlived what the window remembers of
+      the host's earlier state, and the host's idle state is taken to have
       changed: the whole window becomes its baseline.
     * A sample **exceeds** when any of ``fields`` (default :data:`IDLE_FIELDS`)
       is above the
@@ -583,13 +586,25 @@ def idle_judgement(state, sample, *, holders, identity, fields=IDLE_FIELDS, inte
       the host's own variation.
     * With no idle history nothing about this host is measured, and
       ``prior_rule`` (the caller's pre-#997 fixed line) judges the sample,
-      labelled ``basis: unmeasured``; it seeds the window, so the next idle
-      pass is judged against it.  Without a prior rule it exceeds.
+      labelled ``basis: unmeasured``.  A sample the rule refuses is foreign
+      load, not idle evidence, and does not seed the window (#1014): the host
+      stays unmeasured, refused by the same fixed line, for as long as the
+      load runs, rather than becoming its own baseline maximum and being
+      admitted on the very next pass.  A sample the rule does not refuse
+      seeds the window, so the next idle pass is judged against it.  Without a
+      prior rule there is no rule to have refused the sample, so it exceeds
+      and still seeds -- the window has to start somewhere, and nothing here
+      can tell that sample apart from a genuinely idle one.
     * With holders present the sample is judged against the whole window
       (``state: holders_present``) but never joins it: it measures the
       holders too, so exceeding says the host is not idle, and not exceeding
       leaves the holders to refuse an exclusive claim themselves.
-    * Every idle sample joins the window, bounded by :data:`IDLE_WINDOW`.
+    * Every sample joins the window except one an empty baseline's
+      ``prior_rule`` refuses, bounded by :data:`IDLE_WINDOW`.  An excursion
+      sample joins even though it exceeds an established baseline, so it can
+      later become the baseline itself; only the seed of an unmeasured window
+      is held to the stricter rule, since nothing yet distinguishes it from
+      foreign load.
 
     ``interval_s`` is how far back the sample's reading reaches, when the
     sample does not say (the GPU broker's PSI fields are the kernel's 10 s
@@ -624,7 +639,11 @@ def idle_judgement(state, sample, *, holders, identity, fields=IDLE_FIELDS, inte
     reference = prior
     if run is not None:
         before = [s for s in prior if s['sampled_unix'] < run]
-        span = (before[-1]['sampled_unix'] - before[0]['sampled_unix']) if before else 0.
+        # From the oldest remembered sample to when the run started, not
+        # between the remembered samples themselves: that is zero with a
+        # single one of them, which read every run as having already
+        # outlived the window on its very first pass (#1014).
+        span = (run - before[0]['sampled_unix']) if before else 0.
         if before and now - run < span:
             reference = before
         else:
@@ -633,7 +652,15 @@ def idle_judgement(state, sample, *, holders, identity, fields=IDLE_FIELDS, inte
     exceeds = verdict['exceeds'] = _judge_idle(verdict, reference, current, fields, prior_rule)
     if run is not None and exceeds:
         verdict['excursion_s'] = round(now - run, 3)
-    if all(s['sampled_unix'] != now for s in samples):
+    # A sample an empty baseline's prior_rule refuses is foreign load, not
+    # idle evidence, and must not seed the window: seeding it becomes the
+    # window's only (and therefore maximum) sample, so the same load reads as
+    # its own baseline and is admitted on the very next pass (#1014). Without
+    # a prior_rule there was no rule to have refused it -- the unmeasured
+    # default always exceeds, and still seeds, since the window has to start
+    # somewhere.
+    refused_seed = verdict['basis'] == 'unmeasured' and exceeds and prior_rule is not None
+    if not refused_seed and all(s['sampled_unix'] != now for s in samples):
         samples.append({'sampled_unix': now, **current})
         state['samples'] = samples[-IDLE_WINDOW:]
         if exceeds and reference:

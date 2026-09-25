@@ -3606,18 +3606,26 @@ decision feeds it:
   compared afterwards on the baselines they ran against.
 * A run of samples above the baseline is an *excursion*, judged against the
   samples before it began, so a sustained foreign load is refused for as long
-  as it runs and not only on its first pass. A run that lasts as long as the
-  samples before it span has outlived what the window remembers, and the
-  host's idle state is taken to have changed. Every idle sample joins the
-  window, the excursion's included.
+  as it runs and not only on its first pass. Its span is measured from the
+  *oldest* remembered sample to the run's own start, not between the
+  remembered samples themselves: that span is zero with only one of them,
+  which read every run as having already outlived the window on its first
+  pass (#1014, fixed 2026-09-25). A run that lasts as long as that span has
+  outlived what the window remembers, and the host's idle state is taken to
+  have changed. An excursion sample joins the window as it runs, so it can
+  become the baseline once it outlives it.
 * With no idle history nothing about the host is measured yet, and the
   pre-#997 line judges the sample (`busy_cpus > .05 x CPUs` or `psi_some >=
-  .10`), labelled `basis: unmeasured` with the line it applied; the sample
-  seeds the window, so the next pass is judged against it. This is the same
-  rule as the unmeasured export slot count (#999): with no measurement, the
-  previous value applies and says so. Refusing an unmeasured host outright
-  would delay every first exclusive claim by one pass and protect nothing,
-  since the next pass would be judged against the sample it refused.
+  .10`), labelled `basis: unmeasured` with the line it applied. A sample the
+  line refuses is foreign load, not idle evidence, and does not seed the
+  window (#1014, fixed 2026-09-25): seeding it would make that load its own
+  baseline maximum, admitting the same load on the very next pass, which is
+  exactly what a cold host did before the fix. A sample the line does not
+  refuse seeds the window, so the next pass is judged against it — this is
+  the same rule as the unmeasured export slot count (#999): with no
+  measurement, the previous value applies and says so. A refusal reads
+  `basis: unmeasured` on every pass until a sample the line does not refuse
+  arrives, however many passes that takes.
 * With holders present the sample measures them too. It is judged against
   the whole window (`state: holders_present`) and never joins it: above the
   history it refuses the measurement `measurement_host_not_idle`, as the
@@ -3640,7 +3648,7 @@ one does:
 | Threshold | Source | Judged against |
 |---|---|---|
 | Measurement, unbounded and full-width idleness (busy CPUs, PSI `some`) | The host's own idle baseline, above | The largest idle sample; `1/(IDLE_WINDOW+1)` false refusal when stationary |
-| The same, on a host with no idle history (`busy_cpus > .05 x CPUs`, `psi_some >= .10`) | The pre-#997 lines, labelled `basis: unmeasured` | One pass, until the host's first idle sample exists |
+| The same, on a host with no idle history (`busy_cpus > .05 x CPUs`, `psi_some >= .10`) | The pre-#997 lines, labelled `basis: unmeasured` | Every pass the line refuses, until a sample it does not refuse seeds the window (#1014) |
 | Full-width reservation beside holders, `psi_some >= .10` | Constant, unchanged | The baseline cannot separate the holders' load from foreign load |
 | GPU measurement host pressure (memory PSI `some`/`full`, CPU PSI `some`) | The same baseline, in `gpu-state.json` | The same |
 | Host saturation, `busy_cpus >= .95 * cpus` | Constant, unchanged | Refuses every CPU claim; out of #997's scope |
