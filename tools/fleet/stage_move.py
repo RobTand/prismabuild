@@ -1404,6 +1404,28 @@ class _StagedPublisher:
         #: its prior run (:func:`unproven_streak`).  Appended under
         #: ``_arbitration_lock``.
         self.unproven: list[dict[str, object]] = []
+        # The claim census memo for this publisher's whole run (#1089).
+        # ``stage_release._claimed_paths`` derives a claimed range mover's
+        # staged paths from its sealed request and its data manifest, both
+        # immutable under their digests -- so once derived for a claim key
+        # the answer cannot go stale, and a memo may keep it for as long as
+        # this publisher runs, not just for one call.  What is *not*
+        # memoized, by the memo's own contract, is the claim listing and
+        # each claim record: ``_claimed_paths`` reads both fresh on every
+        # call, so a claim that appears, ends or changes since the last
+        # check is still seen at once -- the memo only skips re-deriving
+        # paths for a claim it has already seen unchanged.  Imported here,
+        # not at module scope, because ``stage_release`` imports from this
+        # module (see :meth:`_live_claim_cover`'s own deferred import).
+        # Every copy worker thread shares one publisher and can reach
+        # ``_live_claim_cover`` concurrently.  No lock is taken around the
+        # census: ``_claimed_paths`` touches this memo only through single
+        # ``memo.claims`` dict reads and writes of immutable frozensets, so
+        # two threads racing on one claim at worst derive it twice, and a
+        # lock held across the census's directory scans and record reads
+        # would serialize every worker's check behind them.
+        from stage_release import _CensusMemo
+        self._claim_memo = _CensusMemo()
 
     @contextmanager
     def _ownership(self):
@@ -2323,6 +2345,17 @@ class _StagedPublisher:
         fragment does.  This mover's own claim is excluded, so a mover
         never defers to itself.  ``None`` means unknowable (fail closed);
         the claim paths are stage-root-relative there, joined here.
+
+        Runs once per clean entry at content adoption, once per publish
+        poll while a name waits, and once per divergence invalidation
+        (#1089) -- so this passes ``self._claim_memo``, held for this
+        publisher's whole run, instead of deriving every claimed mover's
+        staged paths fresh on each check.  The memo does not weaken the
+        gate: it only remembers a claim's *derived* paths, which its own
+        sealed request and manifest fix forever; the claim listing and
+        each claim record are still read fresh inside ``_claimed_paths``
+        on every call, so a claim that appears, ends or changes is still
+        seen at once.  Unlocked across the census (see ``__init__``).
         """
 
         try:
@@ -2332,7 +2365,7 @@ class _StagedPublisher:
         try:
             paths, tainted = _claimed_paths(
                 self.queue, str(self.tier_id), self.cas_root,
-                exclude={str(self.mover)})
+                exclude={str(self.mover)}, memo=self._claim_memo)
         except Exception as exc:
             return None, str(exc)
         if tainted:

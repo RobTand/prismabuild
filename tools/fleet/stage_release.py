@@ -441,7 +441,9 @@ class _CensusMemo:
     are immutable under their digests; the claim listing and each claim
     record are still read fresh.  One memo lives for one call; nothing
     carries over between calls.  (:class:`CensusIndex`, the tier loop's
-    subclass, is the exception, and its docstring says what it keeps.)
+    subclass, is the exception, and its docstring says what it keeps.  So
+    is a staged publisher's claim-cover memo, which keeps only ``claims``
+    for the publisher's run: ``stage_move._StagedPublisher``, #1089.)
 
     It counts what it parses and what it reuses (fragments and material
     sidecars; for pins, what it parses), so a caller can record how much
