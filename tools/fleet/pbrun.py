@@ -8127,7 +8127,10 @@ def main() -> int:
               f"decision", file=sys.stderr, flush=True)
     masked = "" if demand.get("gpu") else "  [no GPU: CUDA_VISIBLE_DEVICES='']"
     verb = "queued" if queued_path is not None else "attached to"
-    print(f"pbrun: {verb} {key[:12]} tags={tags} demand={demand}{masked}",
+    # The one line that names the full key, so a caller can cite the action
+    # rather than a prefix of it; ``pbtest`` records it per shard (#1012).
+    # Every later line names it by prefix, which is what ``--withdraw`` takes.
+    print(f"pbrun: {verb} {key} tags={tags} demand={demand}{masked}",
           file=sys.stderr, flush=True)
 
     if args.detach:

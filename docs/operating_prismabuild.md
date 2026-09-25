@@ -1444,6 +1444,17 @@ Sparks' campaign ceiling and a hung test would hold its GPU for a day (#975).
 outlasting a stuck read. Pytest's own output stays in the shard's result
 (#1048).
 
+`pbrun`'s `queued` (or `attached to`) line names the full 64-character action
+key; later lines name it by its 12-character prefix, which is what
+`pbrun --withdraw` accepts. When that line arrives, `pbtest` prints
+`shard N action <key> (queued): <files>`, the shard's key and its test files.
+The shard's ending line repeats the key as `[action <key>]`, or says that
+`pbrun` printed none (a refused submission, or a SLURM shard, whose submission
+line names a prefix only). Each shard record in `--json` carries `action_key`
+and `receipt_path` beside `returncode`: the key's receipt in the fleet CAS when
+one is there, and `null` otherwise. The path is located, not verified (#1012).
+The key names the shard's `done/`, `failed/` or `withdrawn/` record.
+
 `--gpu` requests a GPU for **every shard**. A placement tag alone never grants
 CUDA visibility. With the published runtime, the default tag changes from
 `x86` to `gb10`; override `--tag` for another class with the named interpreter.

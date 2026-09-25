@@ -1044,6 +1044,15 @@ pass does not) and a test the summary counts in more than one phase (a pass
 whose teardown errors or skips). The report's totals line states the sum:
 outcomes equal tests, plus outcomes at collection, plus extra phases.
 
+`pbtest` names every shard's full action key (#1012). `pbrun`'s pool
+submission line (`queued` or `attached to`) carries the full key, and every
+later `pbrun` line keeps the 12-character prefix. `pbtest` prints each key with
+the shard's files when that line arrives, repeats it on the shard's ending
+line, and records `action_key` and `receipt_path` in the shard's `--json`
+entry. `receipt_path` is `PrismaBuildCAS.receipt_path` under the fleet CAS when
+a file is there and `null` otherwise, located and not verified. A SLURM
+submission line still names a prefix, so its shards record no key.
+
 `pbtest` resubmits a shard whose `pbrun` refused it with a worker-offer
 discovery timeout (#1102), by the rule `pbcampaign --max-inflight` applies to a
 row (#560). `pbtest` runs `pbrun` as a subprocess, so it recognizes the refusal
