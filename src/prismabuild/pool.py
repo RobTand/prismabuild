@@ -418,11 +418,31 @@ DRAIN_EXCLUSIVE_GPU = frozenset({
 #: them is its CPU and memory, which is the token verdict's to keep.
 #: ``host_or_device_congested`` and ``gpu_memory_budget`` stay out: they read
 #: the device's and the host's state, which a GPU holder leaving is not known
-#: to repair.
+#: to repair.  The one congested refusal a drain does repair is
+#: :data:`DRAIN_SW_CAP_IDLE`'s.
 DRAIN_GPU_HOLDERS = frozenset({
     "exclusive_holder", "sharing_probe_not_authorized",
     "holder_telemetry_unavailable", "max_actions",
 })
+#: *SW-cap idle* (#1125): a ``host_or_device_congested`` refusal with
+#: ``limited`` set, on a GB10 whose only limiter is the idle SW power cap.
+#: ``adaptive_gpu.sw_cap_idle_first_job`` (#719) admits a first job on that
+#: device only on an empty host, and names the occupancy that stopped it.
+#: When that occupancy is the one unmet condition
+#: (``adaptive_gpu.sw_cap_idle_after_drain``), draining it resolves the
+#: refusal, so it maps to the drain that clears it:
+#:
+#: * holders -- the pool's GPU holders must leave, which is the ``gpu`` drain;
+#: * broker jobs -- every job the broker runs must leave, CPU-only jobs
+#:   included, which is the ``exclusive`` drain: it counts every holder on the
+#:   box and holds the whole box back.
+#:
+#: Every other limited refusal -- thermal, power brake, HW slowdown, unknown
+#: mask bits, power or clocks above the idle gate, pressure -- is overtaken.
+DRAIN_SW_CAP_IDLE: dict[str, str] = {
+    "holders_present_no_sharing_exception": "gpu",
+    "broker_jobs_present": "exclusive",
+}
 #: What each withhold mode holds back from the rows behind the item: the
 #: resource kinds a later row must demand to be held back, or ``None`` for
 #: every row (the whole box), which is what every mode but ``gpu`` does.
@@ -452,7 +472,9 @@ def _adaptive_refusal_drains(
     """Classify one adaptive refusal for the withhold verdict (#924).
 
     Returns ``(mode, foreign)``: ``mode`` is ``"exclusive"``, ``"tokens"``,
-    ``"gpu"`` (the pool's GPU holders must drain, #1085) or ``None``
+    ``"gpu"`` (the pool's GPU holders must drain, #1085; or, for an idle
+    SW-capped GB10, whichever drain :data:`DRAIN_SW_CAP_IDLE` names, #1125)
+    or ``None``
     (draining does not resolve it, and the item is overtaken exactly as
     before), and ``foreign`` is true when the refusal's own evidence names
     processes the pool does not own -- draining the pool's holders cannot
@@ -466,7 +488,14 @@ def _adaptive_refusal_drains(
             return None, True
         if reason == "host_or_device_congested" and decision.get("limited") is True:
             # Thermal, power-brake and slowdown limiters are the device's own
-            # state; no holder leaving turns them off.
+            # state; no holder leaving turns them off.  The idle SW cap is the
+            # exception (#1125): the first-job exception admits it on an empty
+            # host, so when occupancy is all that stopped it, a drain does.
+            exception = decision.get("sw_cap_idle_exception")
+            if not measurement and gpu_admission.sw_cap_idle_after_drain(exception):
+                mode = DRAIN_SW_CAP_IDLE.get(str(exception["exception_reason"]))  # type: ignore[index]
+                if mode is not None:
+                    return mode, False
             return None, False
         if measurement:
             return ("exclusive" if reason in DRAIN_EXCLUSIVE_GPU else None), False
