@@ -479,6 +479,26 @@ the mutable rows for the same reason it follows a preemption successor: the
 waiter's generation is the one it submitted, and a newer generation's ending
 is never reported as this run's.
 
+**One key, one terminal record (#1117).** `done/` and `failed/` are one slot
+each, so a later generation that ends in the same state replaces the earlier
+row. One that ends in the *other* state -- a failed key resubmitted and
+executed, or the reverse -- used to leave the earlier row standing beside its
+own, and the key read as both: `done/` first said executed, a reader asking
+"is there a failed record" said dead, and `reclaim_terminal_reservation`
+refused the key for carrying two terminals. `finish` now retires it under the
+key's transition lock: the earlier generation's record (a different
+`published_unix`) is first copied whole to `withdrawn/superseded/` as
+`<key>.<unix>.<state>-terminal.json`, stamped `superseded_by_published_unix`
+and `superseded_by_state`; the new terminal carries `supersedes_terminal`
+(the earlier `state`, `status`, `published_unix`, `finished_unix`,
+`attempts`, `attempt_history` and the archive's `superseded_path`); and the
+earlier row is unlinked only after the new one is filed, so the key is never
+without an ending. A republish alone retires nothing: until the new
+generation ends, the earlier ending is the key's only one. If the archive
+cannot be written the earlier row stays, the pre-#1117 state, never a lost
+record. A waiter pinned to the earlier generation reads its ending from the
+immutable attempt archive, as above.
+
 The synchronous pull-queue path in `pbrun` reads one terminal snapshot at a
 time in an isolated child with a five-second read budget. That snapshot covers
 the three mutable terminal rows, immutable withdrawal decisions, the archived
