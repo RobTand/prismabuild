@@ -6734,9 +6734,12 @@ class PoolQueue:
         """
 
         tier_id = record.get("tier_id") if isinstance(record, Mapping) else None
+        # A name the log's line format cannot carry is never logged; the
+        # reader opens that receipt itself, as it does any unlogged name.
+        loggable = "\t" not in action_key and "\n" not in action_key
         try:
             existing = self.move_path(action_key)
-            if os.path.lexists(existing):
+            if loggable and os.path.lexists(existing):
                 self._append_move_pricing(
                     [(existing.name, _move_pricing_unknown_line(existing.name))],
                     since=None, blocking=True)
@@ -6753,6 +6756,8 @@ class PoolQueue:
                     path, body = self._file_move(action_key, record)
         if path is None:
             path, body = self._file_move(action_key, record)
+        if not loggable:
+            return path
         try:
             # The receipt as it now reads on disk, so the line prices exactly
             # what a read of the file would.

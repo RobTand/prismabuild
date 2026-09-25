@@ -5934,8 +5934,9 @@ that logs a name compares against lines appended since it read the log, so
 its older line never lands after a writer's newer one.
 
 Two limits remain. The listing and the log are still one entry per receipt,
-so a read is O(receipts) in names and log bytes (about 780 bytes a receipt),
-but no longer in file opens. And a receipt re-filed by a writer that predates
+so a read is O(receipts) in names and log bytes, but no longer in file opens.
+A line was about 780 bytes for the bench's receipts, and is longer for a
+receipt whose `pool_identity` lists more members. And a receipt re-filed by a writer that predates
 the log, under a name the log already covers, prices off the older line until
 that name is filed again. Retiring old receipts is a separate decision that
 this change does not make.
