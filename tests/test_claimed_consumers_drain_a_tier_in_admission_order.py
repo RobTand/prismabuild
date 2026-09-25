@@ -1318,7 +1318,9 @@ def test_the_head_stays_exempt_under_every_other_relief(
         tmp_path: Path, relief: str) -> None:
     """F3's guard: the deny-list names only ``refused`` and ``unknown``.
     ``short`` stays exempt (a reader pins a range only while it reads it, so
-    a decline clears), and ``futile`` keeps the one-victim rule
+    a decline clears; a record without its age, as here, never counts as
+    stalled -- #1037's tests cover the stall), and ``futile`` keeps the
+    one-victim rule
     (``test_a_stuck_order_ends_only_its_lowest_ranked_consumer``)."""
 
     queue, item, _row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=161)
