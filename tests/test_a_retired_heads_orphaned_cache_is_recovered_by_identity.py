@@ -310,6 +310,23 @@ def test_a_retired_heads_unprovable_copies_are_retired(fleet) -> None:
     assert all((originals / name).exists() for name in NAMES)
 
 
+def test_an_egress_receipt_filed_with_its_own_schema_is_evidence(
+        fleet) -> None:
+    """``stage_release`` files its receipt as ``POOL_EGRESS_SCHEMA_V1`` and
+    ``record_move`` keeps it (#1158); the fixture's ``pool_move.v1`` egress
+    is the shape filed before that.  Both are the egress's evidence."""
+
+    queue, stage, *_rest = fleet
+    _populate(stage)
+    key = fleet[7]
+    record = json.loads(queue.move_path(key).read_text())
+    queue.record_move(key, {**record, "schema": pool.POOL_EGRESS_SCHEMA_V1})
+    assert queue.move_record(key)["schema"] == pool.POOL_EGRESS_SCHEMA_V1
+
+    got = _recover(fleet, apply=True)
+    assert got["complete"] and got["entries_retired"] == len(NAMES)
+
+
 def test_the_recovery_is_idempotent(fleet) -> None:
     _queue, stage, *_rest = fleet
     _populate(stage)
