@@ -4214,6 +4214,59 @@ def announced_pool_identity(pool_root: str | Path,
     return None
 
 
+def _parse_own_document(path: Path, validate: Callable[[object], object],
+                        ) -> tuple[tuple[int, int, int, int, int], object] | None:
+    """One resume document, parsed before the stage ownership lock (#1008).
+
+    Read under the #761 fence (:func:`_metadata_version`), exactly as
+    :class:`stage_release._CensusMemo` reads its own hint pass, so the
+    version this parse saw can be compared again once the lock is held
+    (:func:`_reread_own_document`).  A same-key retry's own fragment can be
+    large, and this is the mover's *first* wait for the stage lock
+    (``resume_lock_wait_s``): parsing it while holding that lock pays, under
+    the very lock #988 moved the census out from under, for work the fence
+    lets happen outside it instead.
+
+    ``None`` for anything this pass could not use -- absent, unreadable or
+    invalid -- and that decides nothing: it is a hint, exactly as the
+    pre-lock census is, so the pass under the lock always re-reads a
+    document this one returns ``None`` for.
+    """
+
+    try:
+        with open(path, "rb") as stream:
+            version = _metadata_version(os.fstat(stream.fileno()))
+            document = validate(json.load(stream))
+    except (OSError, ValueError):
+        return None
+    return version, document
+
+
+def _reread_own_document(path: Path,
+                         prior: tuple[tuple[int, int, int, int, int], object]
+                         | None,
+                         validate: Callable[[object], object]) -> object:
+    """This mover's own document, reusing ``prior`` only at its own version.
+
+    Called under the stage ownership lock.  ``prior`` is
+    :func:`_parse_own_document`'s answer from before the lock was taken.
+    The file is opened and ``fstat``-ed again regardless -- a document
+    added, removed, replaced or rewritten since the pre-lock parse must be
+    seen here, the same promise :class:`stage_release._CensusMemo` keeps for
+    the egress's own census -- and the earlier parse is returned without a
+    second parse only when the version taken now equals the one ``prior``
+    was read at. Raises exactly what a direct open-and-parse would:
+    ``FileNotFoundError`` for an absent document, or ``OSError``/
+    ``ValueError`` for one that exists but cannot be read or validated.
+    """
+
+    with open(path, "rb") as stream:
+        version = _metadata_version(os.fstat(stream.fileno()))
+        if prior is not None and prior[0] == version:
+            return prior[1]
+        return validate(json.load(stream))
+
+
 def _resume_own_coverage(queue, *, consumer_action_key: str,
                          mover_action_key: str, tier_id: str,
                          stage_root: Path, manifest_sha256: str,
@@ -4276,6 +4329,15 @@ def _resume_own_coverage(queue, *, consumer_action_key: str,
     Returns ``(staged_seeds, sidecar_seeds, resumed_generation)``.  Empty
     seeds with a ``None`` generation mean "nothing resumable", which is
     today's behavior, not an error.
+
+    The fragment and the sidecar are parsed once before the stage ownership
+    lock is taken and once more under it (:func:`_parse_own_document`,
+    :func:`_reread_own_document`, #1008 item 1) -- the same #761 fence
+    :class:`stage_release._CensusMemo` reads its own hint pass under, so
+    this mover's first wait for the lock (``resume_lock_wait_s``) no longer
+    pays for opening and parsing its own fragment, and a document that
+    changed in the gap between the two parses is still read fresh under the
+    lock, never trusted from before it.
     """
 
     staged: dict[str, dict[str, object]] = {}
@@ -4298,6 +4360,17 @@ def _resume_own_coverage(queue, *, consumer_action_key: str,
 
     fragment_path = residency_map.fragment_path(
         residency_root, consumer_action_key, mover_action_key)
+    sidecar_path = reader_lease.material_path(
+        residency_root, consumer_action_key, mover_action_key)
+    # Parsed before the stage ownership lock (#1008 item 1): this is the
+    # mover's first wait for it, and a same-key retry's own fragment can be
+    # large.  Each parse is a hint, kept with the file version it was read
+    # at; the pass under the lock below re-checks that version and re-parses
+    # only when it changed, never trusting this one for the decision.
+    pre_fragment = _parse_own_document(
+        fragment_path, residency_map.validate_fragment)
+    pre_sidecar = _parse_own_document(
+        sidecar_path, reader_lease.validate_material)
     asked = time.perf_counter()
     # Named as this mover's own hold (#1110): the census runs in the mover's
     # first phase, where its worker looks at the start gate, and an
@@ -4311,8 +4384,8 @@ def _resume_own_coverage(queue, *, consumer_action_key: str,
             # To the grant, so the record's own write is not called a wait.
             timings["resume_lock_wait_s"] = granted - asked
         try:
-            with open(fragment_path, "rb") as stream:
-                fragment = residency_map.validate_fragment(json.load(stream))
+            fragment = _reread_own_document(
+                fragment_path, pre_fragment, residency_map.validate_fragment)
         except FileNotFoundError:
             # Confirmed absence: a first publication, or everything this
             # key ever staged was retired.  Not conflict -- there is no
@@ -4348,8 +4421,16 @@ def _resume_own_coverage(queue, *, consumer_action_key: str,
                 f"{', '.join(conflicts)}; refusing keeps the record rather "
                 f"than republishing around it")
 
-        material = reader_lease.read_material(
-            residency_root, consumer_action_key, mover_action_key)
+        try:
+            material = _reread_own_document(
+                sidecar_path, pre_sidecar, reader_lease.validate_material)
+        except FileNotFoundError:
+            material = None
+        except (OSError, ValueError) as exc:
+            # :func:`reader_lease.read_material`'s own answer for this case:
+            # a taint, not a raise -- the check below treats it exactly as
+            # an absent sidecar, per this function's own docstring.
+            material = exc
         mentions: Mapping[str, Mapping[str, object]] = {}
         generation: str | None = None
         if isinstance(material, Mapping):

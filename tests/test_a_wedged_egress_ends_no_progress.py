@@ -602,7 +602,52 @@ def test_an_egress_wedged_in_its_own_hold_is_not_credited_for_it(
 #: ``stage_move._resume_own_coverage``, reached with a prior fragment on
 #: disk, whose validation -- which runs under the stage's lock -- never
 #: returns.  The mover's key is the one its launcher sets, as in production.
+#:
+#: Since #1008 item 1 the census parses that fragment *before* the lock, and
+#: only re-parses under it when the file's version changed (or nothing
+#: reusable came out of the pre-lock parse).  The fragment here is `{}` --
+#: not a valid fragment -- so the pre-lock parse always fails to validate and
+#: yields nothing to reuse, and the pass under the lock always re-parses.
+#: Validation is left real on the first (pre-lock) call and only wedges from
+#: the second call on, so the hang still lands where #1110 protects it: under
+#: the stage's lock, in the mover's first phase.
 MOVER_RESUME_HOLD = textwrap.dedent('''
+    import os, sys, time
+    from pathlib import Path
+    sys.path.insert(0, {tools!r})
+    import stage_move
+    from prismabuild import core as pb
+    from prismabuild import pool
+    queue = pool.PoolQueue({queue!r})
+    key = os.environ[pb.ACTION_KEY_ENV]
+    residency_root = Path({residency!r})
+    fragment = stage_move.residency_map.fragment_path(
+        residency_root, {consumer!r}, key)
+    fragment.parent.mkdir(parents=True, exist_ok=True)
+    fragment.write_text("{{}}")
+    real_validate = stage_move.residency_map.validate_fragment
+    calls = []
+    def wedged(document):
+        calls.append(1)
+        if len(calls) == 1:
+            return real_validate(document)
+        with open({marker!r}, "w") as stream:
+            stream.write(str(os.getpid()))
+        time.sleep(3600)
+    stage_move.residency_map.validate_fragment = wedged
+    stage_move._resume_own_coverage(
+        queue, consumer_action_key={consumer!r}, mover_action_key=key,
+        tier_id={tier!r}, stage_root=Path({stage!r}),
+        manifest_sha256="0" * 64, residency_root=residency_root,
+        window=[], mount_prefix="/")
+''')
+
+#: A mover wedged in the resume census's *pre-lock* parse (#1008 item 1): the
+#: same real ``_resume_own_coverage``, but the very first validation --
+#: which now runs before the stage lock is even requested -- never returns.
+#: Nothing else is blocked by it, so no self-probe credit is needed; the
+#: mover still ends on the ordinary no-progress ceiling alone.
+MOVER_RESUME_PARSE_HOLD = textwrap.dedent('''
     import os, sys, time
     from pathlib import Path
     sys.path.insert(0, {tools!r})
@@ -638,7 +683,15 @@ def test_a_mover_wedged_in_its_own_resume_census_is_not_credited_for_it(
     unrecorded holder and credited it: a mover wedged there was kept alive
     to the worker's ceiling.  Now the census names the mover as its holder,
     the look counts it as a self probe, and the mover ends one grace after
-    launch."""
+    launch.
+
+    Since #1008 item 1 the parse itself runs before the lock is requested
+    (see :data:`MOVER_RESUME_HOLD` and
+    :func:`test_a_mover_wedged_in_its_own_resume_parse_needs_no_credit`
+    below, for that case) -- this test's fragment is deliberately invalid,
+    so the pre-lock parse always fails to validate and the pass under the
+    lock always re-parses, landing the wedge back under the lock, where
+    #1110's guarantee still has to hold."""
 
     monkeypatch.setattr(pool, "HEARTBEAT_S", HEARTBEAT)
     monkeypatch.setattr(pool, "POOL_MEMBER_STAT", _Disks(UNDER), raising=False)
@@ -689,5 +742,65 @@ def test_a_mover_wedged_in_its_own_resume_census_is_not_credited_for_it(
     # At most the two edges a look can land between the grant and the record.
     assert observed["start_gate_exempt_s"] <= 2 * HEARTBEAT + 1e-9
     # The kill ended the process, and its lock with it.
+    with queue.stage_ownership_lock(str(tmp_path / "stage"), blocking=False) as got:
+        assert got
+
+
+def test_a_mover_wedged_in_its_own_resume_parse_needs_no_credit(
+        tmp_path: Path, monkeypatch) -> None:
+    """#1008 item 1.  A wedge in the pre-lock parse blocks nobody, so it
+    needs no self-probe credit: the plain no-progress ceiling alone ends it.
+
+    Before item 1 this same hang ran under the stage's lock (the case
+    :func:`test_a_mover_wedged_in_its_own_resume_census_is_not_credited_for_it`
+    covers) and would have parked every other mover's start gate and every
+    reader's pin behind it for the run.  Now the parse that can be slow --
+    opening and validating a same-key retry's own, potentially large,
+    fragment -- runs before the lock is ever requested, so a hang there
+    holds nothing but its own worker.
+    """
+
+    monkeypatch.setattr(pool, "HEARTBEAT_S", HEARTBEAT)
+    monkeypatch.setattr(pool, "POOL_MEMBER_STAT", _Disks(UNDER), raising=False)
+    (tmp_path / "stage").mkdir()
+    queue = pool.PoolQueue(tmp_path / "queue")
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    source = MOVER_RESUME_PARSE_HOLD.format(
+        tools=str(ROOT / "tools" / "fleet"), queue=str(tmp_path / "queue"),
+        residency=str(tmp_path / "residency"), consumer=WAITING, tier=TIER,
+        stage=str(tmp_path / "stage"), marker=str(tmp_path / "held.txt"))
+    item = _claimed(queue, cas, tmp_path, "resume", source, {
+        pb.PROGRESS_PARAM: _policy(2),
+        "progress_pool_contention": _contention(tmp_path)})
+    ceiling = 20.0
+    ended: dict[str, dict] = {}
+
+    def run() -> None:
+        ended["outcome"] = queue.execute(item, timeout_s=ceiling,
+                                         heartbeat_s=HEARTBEAT,
+                                         timeout_grace_s=0.5)
+
+    runner = threading.Thread(target=run, daemon=True)
+    runner.start()
+    runner.join(ceiling + 10.0)
+    if runner.is_alive():
+        marker = tmp_path / "held.txt"
+        if marker.exists():
+            with contextlib.suppress(ProcessLookupError, ValueError):
+                os.kill(int(marker.read_text()), signal.SIGKILL)
+        runner.join(30.0)
+        pytest.fail("the worker never ended the mover wedged in its own "
+                    "pre-lock parse")
+    outcome = ended["outcome"]
+
+    assert (tmp_path / "held.txt").read_text().isdigit()
+    assert outcome.get("termination_reason") == "no_progress", _brief(outcome)
+    assert outcome["elapsed_s"] < ceiling / 2
+    # Nothing was blocked, so nothing needed a self-probe credit -- unlike
+    # the under-the-lock case above, whose ``start_gate_self_probes`` is
+    # positive for exactly this reason.
+    contention = outcome["progress_observation"]["pool_contention"]
+    assert contention["start_gate_self_probes"] == 0
+    # And the kill released no lock, because the wedge never took one.
     with queue.stage_ownership_lock(str(tmp_path / "stage"), blocking=False) as got:
         assert got

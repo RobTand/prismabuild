@@ -4970,6 +4970,16 @@ The other holders of the lock follow the same pattern where it applies:
   lock it checks the READY and CLAIMED rows and the movers again, takes the
   censuses through the memo, and classifies and unlinks. The prune runs
   after the hold.
+* A same-key retry's resume (`stage_move._resume_own_coverage`, #1008 item 1)
+  parses its own prior fragment and material sidecar before this same lock
+  is requested -- the mover's first wait for it, `resume_lock_wait_s`.
+  Each parse is kept with the `fstat` version it was read at
+  (`stage_move._parse_own_document`); once the lock is held, the file is
+  opened again and the parse is reused only while that version still holds,
+  and re-parsed otherwise (`stage_move._reread_own_document`). A prior
+  fragment or sidecar this pass could not use decides nothing -- it is a
+  hint, exactly as the egress's own pre-lock census is -- so the pass under
+  the lock always re-reads a document it returned nothing for.
 
 Range adoption also checks the donor's dated material against the current file
 identity under the ownership lock before publishing a successor or transferring
