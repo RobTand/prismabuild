@@ -12,15 +12,15 @@ This harness replays each step at incident proportions on a scratch queue,
 stage root and origin, with the real ``tier_loop`` window and reclaim, the real
 ``stage_move`` mover, the real ``stage_release`` egress and the real
 ``reader_lease`` reader path.  It counts what the steps cost, from the movers'
-own receipts:
+own receipts and their copy workers' own read counters:
 
 * ``reclaim`` -- phase 0 of one consumer lands ``--landed`` of ``--entries``
   and ends incomplete; the consumer is claimed and reading phase 0; one
   pressured reclaim pass runs, then any egress it published, then the window,
   then whatever mover the window republished.  Counted: egresses published,
   reader leases refused, and origin bytes read per staged byte to bring
-  phase 0 to complete (``landing_report.copied_bytes`` of both attempts over
-  the range's bytes).
+  phase 0 to complete (every copy worker's own ``bytes_read()`` across both
+  attempts, over the range's bytes).
 * ``collision`` -- two phase movers of ``--shared`` staged names run at once;
   the first is held on its last entry for longer than the publication grace,
   the shape of a pacer hold.  Counted: movers that end incomplete, the second
@@ -89,8 +89,32 @@ def _patched(target, name: str, value):
         setattr(target, name, original)
 
 
-def _copied(receipt: dict) -> int:
-    return int((receipt.get("landing_report") or {}).get("copied_bytes") or 0)
+class _OriginReads:
+    """Every byte the movers' copy workers read from origin, landed or not.
+
+    Summed from each ``_Copier``'s own ``bytes_read()`` (#1090), which counts
+    only source reads.  The receipt's ``landing_report.copied_bytes`` is not
+    this: it is ``max(landed, read)``, and landed counts adopted and resumed
+    entries, which read nothing from origin.
+    """
+
+    def __init__(self) -> None:
+        self.copiers: list = []
+
+    @contextlib.contextmanager
+    def installed(self):
+        real = stage_move._Copier.__init__
+        copiers = self.copiers
+
+        def init(copier, *args, **kwargs):
+            real(copier, *args, **kwargs)
+            copiers.append(copier)
+
+        with _patched(stage_move._Copier, "__init__", init):
+            yield self
+
+    def total(self) -> int:
+        return sum(int(copier.bytes_read()) for copier in self.copiers)
 
 
 # ---- defect 1: the reclaim under a reader ---------------------------------
@@ -291,9 +315,11 @@ def reclaim_scenario(root: Path, *, entries: int, landed: int,
                 f"grace, deferring to retry: {destination}")
         return real(copier, entry, destination, *args, **kwargs)
 
+    reads = _OriginReads()
     with _patched(adaptive_cpu, "action_identity",
                   lambda item: ("shape", False)), \
-            _patched(stage_move._Copier, "_copy_one", copy_one):
+            _patched(stage_move._Copier, "_copy_one", copy_one), \
+            reads.installed():
         if world.movers[0] not in world.published():
             raise SystemExit("the window did not publish phase 0's mover")
         world.refuse = {str(world.paths[landed])}
@@ -316,8 +342,7 @@ def reclaim_scenario(root: Path, *, entries: int, landed: int,
                 break
         if republished:
             retry = world.run_mover(0)
-        attempts = [first] + ([retry] if retry else [])
-        origin = sum(_copied(receipt) for receipt in attempts)
+        origin = reads.total()
         staged = entries * size
         whole = world.read(range(entries), "bench:whole") if (
             retry.get("complete")) else {"ok": False, "refusal": "no retry"}
@@ -436,10 +461,12 @@ def collision_scenario(root: Path, *, shared: int, size: int, grace: float,
         return real(copier, entry, destination, *args, **kwargs)
 
     first: dict = {}
+    reads = _OriginReads()
     with _patched(stage_move, "_PUBLISH_GRACE_S", grace), \
             _patched(stage_move, "_PUBLISH_POLL_S", 0.02), \
             _patched(stage_move, "FRAGMENT_PUBLISH_S", fragment_s), \
-            _patched(stage_move._Copier, "_copy_one", copy_one):
+            _patched(stage_move._Copier, "_copy_one", copy_one), \
+            reads.installed():
         seal(0)
         seal(1)
         began = time.monotonic()
@@ -453,7 +480,6 @@ def collision_scenario(root: Path, *, shared: int, size: int, grace: float,
         thread.join(120)
         if thread.is_alive():
             raise SystemExit("the first mover never finished")
-        attempts = [first["receipt"], second]
         retries = 0
         latest = [first["receipt"], second]
         # Whatever ended incomplete runs again under its own key, as the
@@ -462,12 +488,11 @@ def collision_scenario(root: Path, *, shared: int, size: int, grace: float,
             for ordinal in range(2):
                 if not latest[ordinal].get("complete"):
                     latest[ordinal] = move(ordinal)
-                    attempts.append(latest[ordinal])
                     retries += 1
         all_complete_s = time.monotonic() - began
         conclude(0)
         conclude(1)
-    origin_read = sum(_copied(receipt) for receipt in attempts)
+        origin_read = reads.total()
     return {
         "shared_names": shared, "entry_bytes": size,
         "grace_s": grace, "fragment_publish_s": fragment_s,
