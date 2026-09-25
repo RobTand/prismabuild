@@ -2669,11 +2669,20 @@ termination. A report is a whole-record file its writer replaces with
 reader's open and its final identity check is a benign replacement, not tamper
 (#1017): the reader opts into `replaced_leaf` and reads again from a fresh
 no-follow resolution, at most `_REPLACED_RECORD_READ_ATTEMPTS` (8) times, then
-refuses with `ReplacedRecordError` (a `CASTamperError`), recorded as
-`unreadable: ReplacedRecordError`. The staged-wait record and the tier loop's
-two mover reads (`mover_report`, `mover_landing`) read the same way. A name
-that moved to anything but a regular file is still tamper, and CAS objects,
-never replaced by design, keep the strict identity check. Missing reports
+refuses with `ReplacedRecordError` (a `CASTamperError`). `ProgressWatch` reads
+that refusal as a poll that observed nothing, not as a rejection (#1159): the
+writer is live, the next poll reads again, and the phase's allowance bounds it
+exactly as it bounds a report not yet written. The replace can also be seen
+before the name moves: ext4 drops the old target's link count and moves its
+ctime before the VFS moves the name to the new inode, so the reader can fstat
+its held inode at `st_nlink == 0` and still find the name on it. That read is
+returned as it stands, because its bytes did not change within the one inode
+and the name still named it (#1159); it no longer spends the stable reader's
+NFS link-visibility retries and ends as tamper. The staged-wait record and the
+tier loop's two mover reads (`mover_report`, `mover_landing`) read the same
+way. Bytes that change within the held inode, and a name that moved to anything
+but a regular file, are still tamper, and CAS objects, never replaced by
+design, keep the strict identity check. Missing reports
 retain the current grace; invalid reports count
 as rejections and do not extend it. These are byte and type bounds, not a hard
 deadline on NFS syscalls: like the existing lease and withdrawal checkpoints,

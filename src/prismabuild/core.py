@@ -517,7 +517,9 @@ class ReplacedRecordError(CASTamperError):
     Raised only by a reader that opted into ``replaced_leaf`` (#1017), after
     its bounded rereads: each attempt found the name on a newer regular
     file.  It stays a :class:`CASTamperError` so no caller treats it more
-    leniently than before, and its own name says what was seen.
+    leniently than it chooses to, and its own name says what was seen: a
+    live writer, not tamper.  ``ProgressWatch`` reads it as a poll that
+    observed nothing (#1159); the tier announcement reader retries it.
     """
 
 
@@ -3226,10 +3228,13 @@ def _read_regular_file_nofollow(
     ``os.replace`` (#1017): a name that moved to a newer regular file during
     the read is read again from a fresh resolution, at most
     ``_REPLACED_RECORD_READ_ATTEMPTS`` times, and then refused with
-    :class:`ReplacedRecordError`.  The no-follow, regular-file and size
-    checks are unchanged, and a name that moved to anything but a regular
-    file is still tamper.  CAS objects, never replaced by design, keep the
-    strict check (the default).
+    :class:`ReplacedRecordError`.  A held inode the replace unlinked while
+    the name still resolved to it (ext4 moves the name after it drops the old
+    target's link count, #1159) is returned as read: its bytes did not change
+    and the name named it at the final check.  The no-follow, regular-file,
+    size and substantive-identity checks are unchanged, and a name that moved
+    to anything but a regular file is still tamper.  CAS objects, never
+    replaced by design, keep the strict check (the default).
     """
 
     if max_bytes is not None and (type(max_bytes) is not int or max_bytes < 0):
@@ -3307,6 +3312,17 @@ def _read_stable_regular_file_nofollow(
                 _assert_directory_identity(
                     parent_fd, path.parent, where=f"{where} parent"
                 )
+                if replaced and after.st_nlink == 0:
+                    # The replace unlinked the held inode, and the name
+                    # still resolves to it: ext4 drops the old target's
+                    # link count and moves its ctime before the VFS moves
+                    # the name to the new inode (#1159).  Its bytes did not
+                    # change (the substantive identity held) and the name
+                    # named it at the final check, so they are the whole
+                    # record.  A fresh read could land in the same window
+                    # under a tight replace loop, and an unlinked inode
+                    # is not the NFS link-visibility case the retry is for.
+                    return b"".join(chunks)
                 if attempt + 1 < _STABLE_FILE_READ_ATTEMPTS:
                     continue
                 raise CASTamperError(
