@@ -457,19 +457,6 @@ def probe_fill_demand(ready: list[dict[str, object]], tier_id: str) -> int | Non
     return min(candidates)[1]
 
 
-def _released_origin_consumer(queue: pool.PoolQueue, key: str) -> bool:
-    """Whether a claim will refuse ``key`` as a released consumer (#954).
-
-    Unknown counts as released: the claim denies a row whose release it cannot
-    read, so staging it would copy bytes nothing reads.
-    """
-
-    try:
-        return produced_output.origin_consumer_release(queue, key) is not None
-    except produced_output.ProducedOutputError:
-        return True
-
-
 def live_consumers(queue: pool.PoolQueue) -> list[dict[str, object]]:
     """Every ready or claimed item that declares leads, with what it has accepted.
 
@@ -503,7 +490,7 @@ def live_consumers(queue: pool.PoolQueue) -> list[dict[str, object]]:
             if not isinstance(key, str):
                 continue
             if (state == pool.READY and key in released
-                    and _released_origin_consumer(queue, key)):
+                    and prewarm_loop.released_origin_consumer(queue, key)):
                 continue
             accepted = None
             claimed_unix = None

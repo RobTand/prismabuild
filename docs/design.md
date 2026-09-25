@@ -6331,6 +6331,13 @@ release is therefore enforced where live code always runs:
   publishes no phase of its frozen plan, not even its lead. Once the claim
   has failed the row, the dead-consumer sweep (#620) archives the plan. A
   claimed consumer is never left out: it was claimed before any release.
+- **The prewarm loop (#963).** `prewarm_loop.cycle` asks the same check,
+  `prewarm_loop.released_origin_consumer`, which `live_consumers` also
+  calls: a ready row whose key has a confirmed release, or one it cannot
+  read, is neither warmed nor staged (`--stage`), and is logged as skipped
+  with reason `origin consumer released` without spending the lookahead.
+  The row still counts as queued for the cycle's receipt prune and stage
+  sweep until the claim files it.
 
 The old consumer's own state answers first while it is queued, running or
 has succeeded. Since #945 a released key also cannot declare the batch
