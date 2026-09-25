@@ -522,24 +522,33 @@ def test_a_partially_pruned_owner_is_collected_from_its_rewritten_fragment(
 
 
 class _RefusingBudget:
-    """A cycle budget (#1077) that lets every dead-owner unit start but one."""
+    """A cycle budget (#1077) that lets every dead-owner unit start but one.
+
+    Orphan evictions are units too (#1136); every one of them starts.
+    ``started`` names the dead-owner units only.
+    """
+
+    KINDS = (stage_release.DEAD_OWNER_UNIT, stage_release.ORPHAN_EVICT_UNIT)
 
     def __init__(self, refused: str):
         self.refused = refused
         self.started: list[str] = []
 
     def order(self, kind, keys):
-        assert kind == stage_release.DEAD_OWNER_UNIT
+        assert kind in self.KINDS
         return list(keys)
 
     def start(self, kind, key):
+        assert kind in self.KINDS
+        if kind != stage_release.DEAD_OWNER_UNIT:
+            return True
         if key == self.refused:
             return False
         self.started.append(key)
         return True
 
     def done(self, kind):
-        assert kind == stage_release.DEAD_OWNER_UNIT
+        assert kind in self.KINDS
 
 
 def test_a_consumer_the_budget_did_not_reach_withholds_its_tiers_report(fleet):
