@@ -3018,6 +3018,29 @@ def _path_version(path: Path | str) -> tuple[int, int, int, int, int] | None:
     return _metadata_version(info)
 
 
+def _fenced_path_version(path: Path | str, fence: int | None,
+                         ) -> tuple[tuple[int, int, int, int, int] | None,
+                                    tuple[int, int, int, int, int] | None]:
+    """``(version, trusted)`` for one regular metadata file, from one ``lstat``.
+
+    ``version`` is :func:`_path_version`'s change evidence, which the prune
+    compares before and after its scan.  ``trusted`` is the same version
+    when a skip checkpoint may stand on it, else ``None``: the #1045 rule
+    (:func:`stage_move._keepable_version`) with ``fence`` read before this
+    ``lstat``.  A file whose ctime is not strictly before the fence changed
+    in the fence's clock tick, and a rename cycle later in that tick can be
+    given the freed inode number and reproduce all five fields (#1070).
+    """
+
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return None, None
+    if not statmod.S_ISREG(info.st_mode):
+        return None, None
+    return _metadata_version(info), _keepable_version(info, fence)
+
+
 def _directory_version(path: Path | str) -> tuple[int, int, int, int] | None:
     """Change evidence for one immediate parent directory, or ``None``.
 
@@ -3094,6 +3117,9 @@ def _install_skip_checkpoint(key: tuple, fragment_version, material_version,
     difference and re-scans.  Every stamp must be present: a directory the
     trusted rule refused, because it changed in the tick its stamp was taken
     in, is one a later rename might not move, so nothing is installed on it.
+    The fragment and material versions are the trusted ones
+    (:func:`_fenced_path_version`, #1070), ``None`` for a document changed in
+    the tick of its read, and ``None`` installs nothing either.
     Only an owner the latest sweep discovered is cached, one checkpoint each
     (:func:`_retain_skip_checkpoints`); when the cache is full the newcomer
     is refused and nothing is evicted.  A cache entry only ever skips a
@@ -3355,8 +3381,15 @@ def prune_stale_mentions(queue: pool.PoolQueue, mover_action_key: str, *,
     # Versions before the reads and again after the scan: metadata that
     # changed while this transaction classified it is not acted on, and the
     # versions a checkpoint installs are exactly the ones verified here.
-    fragment_version_before = _path_version(fragment_path)
-    material_version_before = _path_version(material_path)
+    # A checkpoint installs only the trusted ones (#1070): a document changed
+    # in the tick of the clock read before its ``lstat`` is one a same-tick
+    # rename given the freed inode could reproduce, so it is scanned again
+    # next pass, as a refused directory stamp is (#1062).
+    document_fence = _version_fence()
+    fragment_version_before, fragment_trusted = _fenced_path_version(
+        fragment_path, document_fence)
+    material_version_before, material_trusted = _fenced_path_version(
+        material_path, document_fence)
 
     # The censuses and the containment fences go first, as hints, without
     # the lock (#988): the pass under it re-reads only what changed, and the
@@ -3633,8 +3666,8 @@ def prune_stale_mentions(queue: pool.PoolQueue, mover_action_key: str, *,
             idle = (not prune and not absent
                     and (retained_paths > 0 or exact_material))
             cacheable = idle and _install_skip_checkpoint(
-                checkpoint_key, fragment_version_after,
-                material_version_after, dirs_trusted, co_owner_fences)
+                checkpoint_key, fragment_trusted,
+                material_trusted, dirs_trusted, co_owner_fences)
             return receipt(retained=total, cacheable=cacheable)
         if not prune and not absent:
             if retained_paths:
@@ -3642,8 +3675,8 @@ def prune_stale_mentions(queue: pool.PoolQueue, mover_action_key: str, *,
                 # changes until a document it read does (#1056).
                 retained_reason = "co-owner"
                 cacheable = _install_skip_checkpoint(
-                    checkpoint_key, fragment_version_after,
-                    material_version_after, dirs_trusted, co_owner_fences)
+                    checkpoint_key, fragment_trusted,
+                    material_trusted, dirs_trusted, co_owner_fences)
                 return receipt(retained=total, cacheable=cacheable)
             # A crash between the fragment and material writes leaves the
             # material a superset.  The strict reader ignores a date no
@@ -3651,7 +3684,7 @@ def prune_stale_mentions(queue: pool.PoolQueue, mover_action_key: str, *,
             # material dates exactly the fragment's validated keys: trim it
             # before caching this otherwise-coherent owner, under the same
             # generation.
-            material_final_version = material_version_after
+            material_final_version = material_trusted
             if not exact_material:
                 try:
                     reader_lease.write_material(
@@ -3665,9 +3698,12 @@ def prune_stale_mentions(queue: pool.PoolQueue, mover_action_key: str, *,
                 except (OSError, ValueError, pb.PrismaBuildError) as exc:
                     errors.append(f"material trim: {exc}")
                     return receipt(retained=total)
-                material_final_version = _path_version(material_path)
+                # The trim's own write is in the current tick, so this is
+                # trusted only once a tick has passed since it (#1070).
+                material_final_version = _fenced_path_version(
+                    material_path, _version_fence())[1]
             cacheable = _install_skip_checkpoint(
-                checkpoint_key, fragment_version_after,
+                checkpoint_key, fragment_trusted,
                 material_final_version, dirs_trusted, co_owner_fences)
             return receipt(retained=total, cacheable=cacheable)
         if not retained_paths and len(prune) + len(absent) == total:

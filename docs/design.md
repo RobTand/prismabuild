@@ -10103,7 +10103,8 @@ A checkpoint fences every input the classification read, each at the version
 the transaction verified, and nothing is re-sampled at installation:
 
 * this owner's fragment and material file versions, sampled before their
-  reads and again after the scan, and installed only when the two are equal;
+  reads and again after the scan, and installed only when the two are equal
+  and the version is trusted (#1070, below);
 * device/inode/mtime/ctime stamps of every unique immediate parent directory
   of the fragment's paths, sampled before the classification scan with
   `stage_move._trusted_directory_stamp` and again after it, and installed
@@ -10126,12 +10127,21 @@ one tick later and installs if nothing else changed. On ZFS and tmpfs, the
 stage and RAM tier filesystems, a steady cycle therefore caches after at most
 one extra uncached pass; on a filesystem the rule does not list, such as NFS,
 no checkpoint is installed, as no #992 listing is kept there. The file fences
-take no clock read. Every writer of a fragment or material sidecar replaces it
-by rename (`residency_map._write_atomic`, `reader_lease.write_material`), so
-the first change after the census read installs a new inode while the read
-one is still linked. Matching the recorded version again would take a second
-replacement that reuses the read inode's number with the same size, mtime and
-ctime. A co-owner fragment that is
+carry the same rule (#1045, #1070). Every writer of a fragment or material
+sidecar replaces it by rename (`residency_map._write_atomic`,
+`reader_lease.write_material`), so the first change after the census read
+normally installs a new inode, but two rename cycles in one clock tick can be
+given the freed inode number the census read, and at the same size all five
+fields of the version match. So the owner's own fragment and material are
+installed only at a version whose ctime is strictly before a clock read taken
+before their `lstat` (`stage_release._fenced_path_version`, applying
+`stage_move._keepable_version`), and a co-owner fragment only at the version
+the census memo kept, which the memo keeps under the same rule (#1045). Every
+later change to a file, a new file under its name included, is stamped at or
+after that clock read and so moves the ctime. A document changed in the tick
+of its read is scanned again next pass, like a refused directory; a material
+trim's own write is therefore installed only if a tick has passed since it,
+and otherwise the next pass installs it. A co-owner fragment that is
 removed or rewritten re-runs the census, where the path it protected
 may now prune, or the whole owner evict. A new co-owner needs no fence,
 because it can only add protection. A symlink or non-directory parent is
