@@ -101,6 +101,7 @@ and returns the exact SDK dependency instead of a stub.
 from __future__ import annotations
 
 from collections.abc import Collection, Mapping, Sequence
+import errno
 import hashlib
 import json
 import os
@@ -2354,12 +2355,16 @@ def _origin_identity_at_commit(sealed: list[dict[str, object]]
                                           dict[str, object] | None]:
     """Capture each sealed origin's identity, one lstat per path.
 
-    ONE stat answers both questions the commit asks -- is this file the length
-    the descriptor claims, and what exactly is this file -- so the size that is
+    Both commit paths call it under the output-prefix lock (#1064), so the
+    move aside and put-back of a retirement holding that lock, which move
+    the ctime, are either behind it or have not started. ONE stat answers
+    both questions the commit asks -- is this file the length the
+    descriptor claims, and what exactly is this file -- so the size that is
     checked and the identity that is recorded can never be two different
     moments. `os.lstat` (not `stat`) matches the check this path has always
-    made and is strictly stronger for the proof: replacing a regular file with
-    a symlink to identical bytes changes the recorded identity and refuses.
+    made and is strictly stronger for the proof: replacing a regular file
+    with a symlink to identical bytes changes the recorded identity and
+    refuses.
     Returns `(identity_map, None)` or `(None, refusal)`.
     """
 
@@ -2376,6 +2381,89 @@ def _origin_identity_at_commit(sealed: list[dict[str, object]]
                            "path": path})
         identity[path] = _portable_identity_of(info)
     return (identity, None)
+
+
+def _read_landed_origins(sealed: list[dict[str, object]],
+                         landed: Mapping[str, Mapping[str, object]],
+                         verified: dict[str, dict[str, object]]
+                         ) -> dict[str, object] | None:
+    """Read each landed origin whose timestamps alone moved, with no lock held.
+
+    ``landed`` is the identity each origin's writer recorded when it landed
+    (`commit_origin_batch`). An origin that is still that file, or the file
+    ``verified`` already read, costs one lstat. One with the landed inode and
+    size and other timestamps (an NFS delegation recall, #1111) is read and
+    hashed (`_verify_origin_content`), and its re-pin is kept in ``verified``
+    by path for `_landed_identity` to check under the lock. Everything else
+    is left to that check, which takes the identity the batch records: an
+    origin that cannot be stat'ed here may be at a retirement's private name
+    for a moment, and is back by the time the lock is granted (#1064).
+    Returns the refusal of a read whose digest is not the descriptor's, or
+    ``None``.
+    """
+
+    from prismabuild import reader_lease as lease_mod
+
+    for desc in sealed:
+        path = str(desc["path"])
+        try:
+            live = _portable_identity_of(os.lstat(path))
+        except OSError:
+            continue
+        got = verified.get(path)
+        if (lease_mod.file_id_matches(landed[path], live)
+                or (got is not None
+                    and lease_mod.file_id_matches(got["to"], live))
+                or not lease_mod.timestamp_only_mismatch(landed[path], live)):
+            continue
+        repin, why = _verify_origin_content(
+            path, landed[path], live, desc["sha256"], where="commit")
+        if repin is None:
+            return {"ok": False, "refusal": "origin-is-not-the-landed-copy",
+                    "detail": f"{path}: {why}"}
+        verified[path] = repin
+    return None
+
+
+def _landed_identity(sealed: list[dict[str, object]],
+                     landed: Mapping[str, Mapping[str, object]] | None,
+                     verified: Mapping[str, Mapping[str, object]],
+                     origin_identity: dict[str, dict[str, int]]
+                     ) -> tuple[list[dict[str, object]], list[str],
+                                dict[str, object] | None]:
+    """Is each origin, stat'ed under the lock, the copy that landed?
+
+    ``origin_identity`` is the identity `_origin_identity_at_commit` took
+    under the output-prefix lock. Each origin must be the landed file, or the
+    file a read outside the lock hashed (``verified``, from
+    `_read_landed_origins`); that re-pin is returned for the entry, and the
+    identity committed is the hashed one. An origin whose inode or size is
+    not the landed one refuses. One whose timestamps alone moved and that no
+    read has hashed at that identity is returned in ``moved``: the caller lets
+    the lock go and reads it. Returns ``(landed_repins, moved, refusal)``.
+    """
+
+    from prismabuild import reader_lease as lease_mod
+
+    repins: list[dict[str, object]] = []
+    moved: list[str] = []
+    if landed is None:
+        return (repins, moved, None)
+    for desc in sealed:
+        path = str(desc["path"])
+        live = origin_identity[path]
+        if lease_mod.file_id_matches(landed[path], live):
+            continue
+        got = verified.get(path)
+        if got is not None and lease_mod.file_id_matches(got["to"], live):
+            origin_identity[path] = dict(got["to"])
+            repins.append(dict(got))
+            continue
+        if not lease_mod.timestamp_only_mismatch(landed[path], live):
+            return (repins, moved,
+                    {"ok": False, "refusal": "origin-is-not-the-landed-copy"})
+        moved.append(path)
+    return (repins, moved, None)
 
 
 #: Why an origin identity was re-pinned; the only reason there is.
@@ -3396,18 +3484,6 @@ def commit_batch(queue, instance: Mapping[str, object],
         return {"ok": False, "refusal": "tier-not-permitted"}
     sealed = [validate_descriptor(d, checked_template, checked_instance)
               for d in descriptors]
-    # One lstat per origin, answering both questions at the same instant: the
-    # size the descriptor claims, and the exact file identity this commit is
-    # over. No payload reread -- digests ride the writer receipt and the mover
-    # verifies on copy. The identity tuple is what lets the SAME batch be
-    # materialized again later over provably the same bytes (see
-    # `ensure_batch_materialized`): for a DEV null-digest descriptor it is the
-    # only such proof, and a size check alone would bless a rewritten file of
-    # equal length.
-    origin_identity, identity_refusal = _origin_identity_at_commit(sealed)
-    if identity_refusal is not None:
-        return identity_refusal
-    assert origin_identity is not None
     class_bytes = {"payload": 0, "checkpoint": 0, "temp": 0}
     for desc in sealed:
         class_bytes[str(desc["artifact_class"])] += int(desc["bytes"])
@@ -3421,6 +3497,21 @@ def commit_batch(queue, instance: Mapping[str, object],
         return {"ok": False, "refusal": "batch-exceeds-window",
                 "batch_gib": batch_gib, "window_gib": window}
     with queue.stage_ownership_lock(str(checked_instance["output_prefix"])):
+        # One lstat per origin, answering both questions at the same instant:
+        # the size the descriptor claims, and the exact file identity this
+        # commit is over. No payload reread -- digests ride the writer receipt
+        # and the mover verifies on copy. The identity tuple is what lets the
+        # SAME batch be materialized again later over provably the same bytes
+        # (see `ensure_batch_materialized`): for a DEV null-digest descriptor
+        # it is the only such proof, and a size check alone would bless a
+        # rewritten file of equal length. Taken under this lock (#1064): a
+        # retirement's delete, which holds it, can move an origin aside and
+        # link it back (`_unlink_if_committed`), which moves its ctime, so an
+        # identity taken before the lock could be stale before it was filed.
+        origin_identity, identity_refusal = _origin_identity_at_commit(sealed)
+        if identity_refusal is not None:
+            return identity_refusal
+        assert origin_identity is not None
         try:
             commitments = _read_commitments(
                 _commitments_path(queue.root, checked_instance))
@@ -3736,9 +3827,10 @@ def commit_origin_batch(queue, instance: Mapping[str, object],
     owner under the output-prefix lock, the prewrite present and matched (its
     tier, owner and attempt, the paths a subset of the planned ones, each
     class within its ceiling), every planned path the batch omits absent, the
-    durable maxima, and one lstat per origin for size and identity. The
-    identity is recorded in the batch, and `origin_batch_manifest` rechecks it
-    before any consumer is told the bytes are there.
+    durable maxima, and one lstat per origin for size and identity, taken
+    under that lock (#1064). The identity is recorded in the batch, and
+    `origin_batch_manifest` rechecks it before any consumer is told the bytes
+    are there.
 
     Two checks are this commit's own:
 
@@ -3754,7 +3846,12 @@ def commit_origin_batch(queue, instance: Mapping[str, object],
       An origin whose timestamps alone moved since the receipt (an NFS
       delegation recall, #1111) is read and hashed before the lock is taken;
       when its digest is the descriptor's, the hashed identity is the one
-      committed, and the entry and the answer carry ``landed_repins``.
+      committed, and the entry and the answer carry ``landed_repins``. The
+      lstat under the lock must find the identity the read hashed; one whose
+      timestamps moved again meanwhile (a retirement's link-back that the
+      lock ordered, #1064) is read once more with the lock let go, and a
+      second move refuses rather than commit an identity the file no longer
+      has.
 
     The commitments entry carries ``origin_only: true`` and no mover. Its
     paths stay owned until `reclaim_origin` proves them absent, because a
@@ -3797,34 +3894,10 @@ def commit_origin_batch(queue, instance: Mapping[str, object],
               for d in descriptors]
     if any(desc["sha256"] is None for desc in sealed):
         return {"ok": False, "refusal": "origin-batch-needs-sha256"}
-    origin_identity, identity_refusal = _origin_identity_at_commit(sealed)
-    if identity_refusal is not None:
-        return identity_refusal
-    assert origin_identity is not None
-    landed_repins: list[dict[str, object]] = []
-    if landed is not None:
-        from prismabuild import reader_lease as lease_mod
-
-        if (not isinstance(landed, Mapping)
-                or set(landed) != set(origin_identity)):
-            return {"ok": False, "refusal": "origin-is-not-the-landed-copy"}
-        for desc in sealed:
-            path = str(desc["path"])
-            live = origin_identity[path]
-            if lease_mod.file_id_matches(landed[path], live):
-                continue
-            if not lease_mod.timestamp_only_mismatch(landed[path], live):
-                return {"ok": False, "refusal": "origin-is-not-the-landed-copy"}
-            # Only the timestamps moved since the receipt: a delegation
-            # recall (#1111). The landed copy is the committed one if its
-            # bytes are; read with no lock held, before the commit takes one.
-            repin, why = _verify_origin_content(
-                path, landed[path], live, desc["sha256"], where="commit")
-            if repin is None:
-                return {"ok": False, "refusal": "origin-is-not-the-landed-copy",
-                        "detail": f"{path}: {why}"}
-            origin_identity[path] = dict(repin["to"])
-            landed_repins.append(repin)
+    if landed is not None and (
+            not isinstance(landed, Mapping)
+            or set(landed) != {str(desc["path"]) for desc in sealed}):
+        return {"ok": False, "refusal": "origin-is-not-the-landed-copy"}
     class_bytes = {"payload": 0, "checkpoint": 0, "temp": 0}
     for desc in sealed:
         class_bytes[str(desc["artifact_class"])] += int(desc["bytes"])
@@ -3834,110 +3907,143 @@ def commit_origin_batch(queue, instance: Mapping[str, object],
                      / f"{batch_id}.prewrite.json")
     ref = origin_batch_ref(checked_instance, batch_id=batch_id,
                            manifest_digest=manifest_digest)
-    with queue.stage_ownership_lock(str(checked_instance["output_prefix"])):
-        commitments_path = _commitments_path(queue.root, checked_instance)
-        try:
-            commitments = _read_commitments(commitments_path)
-        except ProducedOutputError as exc:
-            return {"ok": False, "refusal": f"unknown-retain: {exc}"}
-        batches = commitments["batches"]
-        assert isinstance(batches, dict)
-        if batch_id in batches:
-            existing = batches[batch_id]
-            if (isinstance(existing, Mapping)
-                    and existing.get("origin_only") is True
-                    and existing.get("manifest_digest") == manifest_digest):
-                if _entry_lifetime(existing) != lifetime:
-                    return {"ok": False, "refusal": "batch-lifetime-mismatch"}
-                # The commit consumed the prewrite; a crash after the entry
-                # and before the unlink leaves it, and the replay finishes it.
-                prewrite_path.unlink(missing_ok=True)
-                return {"ok": True, "batch_id": batch_id, "duplicate": True,
-                        "batch_namespace": batch_ns,
-                        "manifest_digest": manifest_digest,
-                        "origin_only": True, "ref": ref}
-            return {"ok": False, "refusal": "batch-id-in-use"}
-        gated = _require_live_owner(queue, checked_instance)
-        if gated is not None:
-            return gated
-        try:
-            prewrite = _read_prewrite(prewrite_path)
-        except ProducedOutputError as exc:
-            return {"ok": False, "refusal": f"prewrite-unreadable: {exc}"}
-        if prewrite is None:
-            return {"ok": False, "refusal": "prewrite-reservation-missing"}
-        tier = str(prewrite.get("tier") or "")
-        if (tier not in checked_template["permitted_tiers"]
-                or not _actual_within_ceiling(prewrite, sealed)
-                or not set(str(d["path"]) for d in sealed)
-                <= set(prewrite.get("paths", []))
-                or prewrite.get("owner_action_key")
-                != checked_instance["owner_action_key"]
-                or dict(prewrite.get("owner_attempt", {})) != dict(
-                    checked_instance["owner_attempt"])):
-            return {"ok": False, "refusal": "prewrite-mismatch"}
-        if not _planned_omitted_absent(prewrite, sealed):
-            return {"ok": False, "refusal": "planned-path-present-retain"}
-        try:
-            sums = _class_sums(batches)
-        except ProducedOutputError as exc:
-            return {"ok": False, "refusal": f"unknown-retain: {exc}"}
-        maxima = checked_instance_maxima(checked_template)
-        for cls in sums:
-            if sums[cls] + class_bytes[cls] > maxima[f"{cls}_max_bytes"]:
-                return {"ok": False, "refusal": f"commit-exceeds-{cls}-maxima"}
-        body = _origin_record(
-            checked_template, checked_instance, batch_id=batch_id,
-            batch_ns=batch_ns, manifest_digest=manifest_digest, tier=tier,
-            class_bytes=class_bytes, sealed=sealed,
-            origin_identity=origin_identity, lifetime=lifetime)
-        batch_dir = (Path(queue.root) / "residency" / OUTPUT_BATCHES_SUBDIR
-                     / instance_namespace(checked_instance))
-        batch_dir.mkdir(parents=True, exist_ok=True)
-        batch_path = batch_dir / f"{batch_id}.json"
-        record = dict(body, unix=time.time())
-        try:
-            pool_mod._publish_immutable(
-                batch_path,
-                json.dumps(record, sort_keys=True,
-                           separators=(",", ":")).encode() + b"\n",
-                where="produced-output batch")
-        except pool_mod.PoolContractError as exc:
-            # A crash after this record and before the entry below: the same
-            # batch, over the same identities, resumes from what is filed.
-            # Anything else is a different batch under this id.
+    # Each landed origin whose timestamps alone moved, read and hashed with
+    # no lock held (#1111), by path; the lock's lstat must find the identity
+    # the read hashed. Two rounds: one more if it moved again in between.
+    commitments_path = _commitments_path(queue.root, checked_instance)
+    verified: dict[str, dict[str, object]] = {}
+    for _round in (1, 2):
+        if landed is not None:
+            refusal = _read_landed_origins(sealed, landed, verified)
+            if refusal is not None:
+                return refusal
+        with queue.stage_ownership_lock(str(checked_instance["output_prefix"])):
+            # The identity is taken under the lock (#1064): a retirement's
+            # delete, which holds it, can move an origin aside and link it
+            # back (`_unlink_if_committed`), which moves its ctime, so an
+            # identity taken before the lock could be stale before it was
+            # filed, and an lstat taken while the file was aside would refuse.
+            origin_identity, identity_refusal = _origin_identity_at_commit(sealed)
+            if identity_refusal is not None:
+                return identity_refusal
+            assert origin_identity is not None
+            landed_repins, moved, refusal = _landed_identity(
+                sealed, landed, verified, origin_identity)
+            if refusal is not None:
+                return refusal
+            if moved:
+                # Read again with the lock let go.
+                continue
             try:
-                filed = json.loads(batch_path.read_text())
-            except (OSError, ValueError):
-                filed = None
-            if (not isinstance(filed, Mapping)
-                    or {k: v for k, v in filed.items() if k != "unix"}
-                    != json.loads(json.dumps(body))):
-                return {"ok": False, "refusal": f"batch-conflict: {exc}"}
-        # `retired` stays false for the life of the entry: nothing was staged
-        # to retire, `_active_materialization` answers "no copy" from
-        # `origin_only`, and `_committed_restage_authority` reads this flag,
-        # so false is also what keeps the batch unfundable as a restage.
-        entry = {
-            "manifest_digest": manifest_digest,
-            "batch_namespace": batch_ns,
-            "tier": tier,
-            "mover_key": None,
-            "origin_only": True,
-            "class_bytes": class_bytes,
-            "paths": sorted(str(d["path"]) for d in sealed),
-            "retired": False,
-            "origin_reclaimed": False,
-        }
-        if lifetime != ORIGIN_LIFETIME_RETAIN:
-            entry["lifetime"] = lifetime
-        if landed_repins:
-            # What the commit read to accept the landed copy; the record's
-            # identity is already the hashed one, so nothing chains from it.
-            entry["landed_repins"] = landed_repins
-        batches[batch_id] = entry
-        _write_commitments(commitments_path, {"batches": batches})
-        prewrite_path.unlink(missing_ok=True)
+                commitments = _read_commitments(commitments_path)
+            except ProducedOutputError as exc:
+                return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+            batches = commitments["batches"]
+            assert isinstance(batches, dict)
+            if batch_id in batches:
+                existing = batches[batch_id]
+                if (isinstance(existing, Mapping)
+                        and existing.get("origin_only") is True
+                        and existing.get("manifest_digest") == manifest_digest):
+                    if _entry_lifetime(existing) != lifetime:
+                        return {"ok": False, "refusal": "batch-lifetime-mismatch"}
+                    # The commit consumed the prewrite; a crash after the entry
+                    # and before the unlink leaves it, and the replay finishes it.
+                    prewrite_path.unlink(missing_ok=True)
+                    return {"ok": True, "batch_id": batch_id, "duplicate": True,
+                            "batch_namespace": batch_ns,
+                            "manifest_digest": manifest_digest,
+                            "origin_only": True, "ref": ref}
+                return {"ok": False, "refusal": "batch-id-in-use"}
+            gated = _require_live_owner(queue, checked_instance)
+            if gated is not None:
+                return gated
+            try:
+                prewrite = _read_prewrite(prewrite_path)
+            except ProducedOutputError as exc:
+                return {"ok": False, "refusal": f"prewrite-unreadable: {exc}"}
+            if prewrite is None:
+                return {"ok": False, "refusal": "prewrite-reservation-missing"}
+            tier = str(prewrite.get("tier") or "")
+            if (tier not in checked_template["permitted_tiers"]
+                    or not _actual_within_ceiling(prewrite, sealed)
+                    or not set(str(d["path"]) for d in sealed)
+                    <= set(prewrite.get("paths", []))
+                    or prewrite.get("owner_action_key")
+                    != checked_instance["owner_action_key"]
+                    or dict(prewrite.get("owner_attempt", {})) != dict(
+                        checked_instance["owner_attempt"])):
+                return {"ok": False, "refusal": "prewrite-mismatch"}
+            if not _planned_omitted_absent(prewrite, sealed):
+                return {"ok": False, "refusal": "planned-path-present-retain"}
+            try:
+                sums = _class_sums(batches)
+            except ProducedOutputError as exc:
+                return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+            maxima = checked_instance_maxima(checked_template)
+            for cls in sums:
+                if sums[cls] + class_bytes[cls] > maxima[f"{cls}_max_bytes"]:
+                    return {"ok": False, "refusal": f"commit-exceeds-{cls}-maxima"}
+            body = _origin_record(
+                checked_template, checked_instance, batch_id=batch_id,
+                batch_ns=batch_ns, manifest_digest=manifest_digest, tier=tier,
+                class_bytes=class_bytes, sealed=sealed,
+                origin_identity=origin_identity, lifetime=lifetime)
+            batch_dir = (Path(queue.root) / "residency" / OUTPUT_BATCHES_SUBDIR
+                         / instance_namespace(checked_instance))
+            batch_dir.mkdir(parents=True, exist_ok=True)
+            batch_path = batch_dir / f"{batch_id}.json"
+            record = dict(body, unix=time.time())
+            try:
+                pool_mod._publish_immutable(
+                    batch_path,
+                    json.dumps(record, sort_keys=True,
+                               separators=(",", ":")).encode() + b"\n",
+                    where="produced-output batch")
+            except pool_mod.PoolContractError as exc:
+                # A crash after this record and before the entry below: the same
+                # batch, over the same identities, resumes from what is filed.
+                # Anything else is a different batch under this id.
+                try:
+                    filed = json.loads(batch_path.read_text())
+                except (OSError, ValueError):
+                    filed = None
+                if (not isinstance(filed, Mapping)
+                        or {k: v for k, v in filed.items() if k != "unix"}
+                        != json.loads(json.dumps(body))):
+                    return {"ok": False, "refusal": f"batch-conflict: {exc}"}
+            # `retired` stays false for the life of the entry: nothing was staged
+            # to retire, `_active_materialization` answers "no copy" from
+            # `origin_only`, and `_committed_restage_authority` reads this flag,
+            # so false is also what keeps the batch unfundable as a restage.
+            entry = {
+                "manifest_digest": manifest_digest,
+                "batch_namespace": batch_ns,
+                "tier": tier,
+                "mover_key": None,
+                "origin_only": True,
+                "class_bytes": class_bytes,
+                "paths": sorted(str(d["path"]) for d in sealed),
+                "retired": False,
+                "origin_reclaimed": False,
+            }
+            if lifetime != ORIGIN_LIFETIME_RETAIN:
+                entry["lifetime"] = lifetime
+            if landed_repins:
+                # What the commit read to accept the landed copy; the record's
+                # identity is already the hashed one, so nothing chains from it.
+                entry["landed_repins"] = landed_repins
+            batches[batch_id] = entry
+            _write_commitments(commitments_path, {"batches": batches})
+            prewrite_path.unlink(missing_ok=True)
+        break
+    else:
+        # Its timestamps moved after each read. The identity the lock found
+        # was never read, and committing it unread would bless bytes nobody
+        # checked (#1111).
+        return {"ok": False, "refusal": "origin-is-not-the-landed-copy",
+                "detail": f"{', '.join(moved)}: its timestamps moved again "
+                          f"after its content was verified"}
     result = {"ok": True, "batch_id": batch_id, "batch_namespace": batch_ns,
               "manifest_digest": manifest_digest, "class_bytes": class_bytes,
               "tier": tier, "entries": sealed, "origin_only": True, "ref": ref}
@@ -7715,16 +7821,81 @@ def _settle_retiring_leftover(path: str, recorded: Mapping[str, object],
         return ("refuse", f"origin-unlink: {private}: {exc}")
 
 
+#: `renameat2`'s flag: refuse with ``EEXIST`` instead of replacing the target.
+_RENAME_NOREPLACE = 1
+#: `renameat2`'s directory for a path that is not resolved through a descriptor.
+_AT_FDCWD = -100
+#: libc's ``renameat2``, looked up on first use; ``[None]`` when there is none.
+_RENAMEAT2: list[object] = []
+
+
+def _rename_noreplace(source: str, target: str, *,
+                      dir_fd: int | None = None) -> None:
+    """``rename(source, target)`` that never replaces a file at ``target`` (#1064).
+
+    Linux ``renameat2`` with ``RENAME_NOREPLACE``: one atomic step, which
+    fails with ``EEXIST`` when ``target`` exists. Unlike a hard link it needs
+    no ownership of the file, only write access to the directory, which the
+    move aside already used. With ``dir_fd`` both names resolve through that
+    descriptor. Raises ``FileExistsError`` when ``target`` exists, and
+    ``OSError`` when the file system does not offer it (``EINVAL``: NFS
+    rejects every ``renameat2`` flag) or libc has no ``renameat2``
+    (``ENOSYS``).
+    """
+
+    import ctypes
+
+    if not _RENAMEAT2:
+        try:
+            function = ctypes.CDLL(None, use_errno=True).renameat2
+        except (AttributeError, OSError):
+            function = None
+        else:
+            function.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int,
+                                 ctypes.c_char_p, ctypes.c_uint]
+            function.restype = ctypes.c_int
+        _RENAMEAT2.append(function)
+    function = _RENAMEAT2[0]
+    if function is None:
+        raise OSError(errno.ENOSYS, "libc has no renameat2", source)
+    directory = _AT_FDCWD if dir_fd is None else dir_fd
+    if function(directory, os.fsencode(source), directory, os.fsencode(target),
+                _RENAME_NOREPLACE) != 0:
+        code = ctypes.get_errno()
+        raise OSError(code, os.strerror(code), source, None, target)
+
+
 def _link_back(path: str, private: str, *, dir_fd: int | None = None
                ) -> tuple[str, str]:
-    """Put a writer's file moved to ``private`` back at ``path``, never over one."""
+    """Put a writer's file moved to ``private`` back at ``path``, never over one.
 
+    A hard link, then the private name is removed. The kernel refuses the
+    link with ``EPERM`` when ``fs.protected_hardlinks`` is 1 and the caller
+    neither owns the file nor can write it -- dl380g10 sets it, and its tier
+    loop runs as ``rob``, which need not own a producer's file -- and on a
+    file system without hard links. The file is then renamed back with
+    `_rename_noreplace`, which needs no ownership (#1064). Either way a file
+    already at ``path`` is never replaced: the writer's file is kept at
+    ``private`` and refused as ``origin-displaced``, and so is one that
+    neither can put back, with both errors named.
+    """
+
+    displaced = f"origin-displaced: another writer's file is kept at {private}"
     try:
         os.link(private, path, src_dir_fd=dir_fd, dst_dir_fd=dir_fd,
                 follow_symlinks=False)
     except FileExistsError:
-        return ("refuse", f"origin-displaced: another writer's file is kept "
-                          f"at {private}")
+        return ("refuse", displaced)
+    except PermissionError as link_refused:
+        try:
+            _rename_noreplace(private, path, dir_fd=dir_fd)
+        except FileExistsError:
+            return ("refuse", displaced)
+        except OSError as rename_refused:
+            return ("refuse", f"{displaced}: neither a link ({link_refused}) "
+                              f"nor a rename that never replaces "
+                              f"({rename_refused}) can put it back")
+        return ("superseded", "")
     os.unlink(private, dir_fd=dir_fd)
     return ("superseded", "")
 
@@ -7748,10 +7919,17 @@ def _unlink_if_committed(path: str, recorded: Mapping[str, object],
        ones (a rename changes only ctime), it is the committed file, and it
        is unlinked -- under the private name, which no writer uses;
     3. otherwise a writer's rename landed before step 1, and this moved its
-       file aside: it is linked back to ``path`` (the same inode, so its
-       bytes never moved) and the private name removed. If ``path`` is
-       taken again by then, the link fails: the private file is kept and
-       the refusal ``origin-displaced`` names it for an operator.
+       file aside: it is put back at ``path`` (`_link_back`: a hard link and
+       the private name removed, or, when the link is refused, a rename that
+       never replaces; the same inode either way, so its bytes never moved).
+       If ``path`` is taken again by then, the private file is kept and the
+       refusal ``origin-displaced`` names it for an operator.
+
+    Steps 1 and 3 move that writer's file's ctime, which
+    `reader_lease.file_id_matches` compares. `origin_retirement_tick` holds
+    the output-prefix lock across them, and a commit takes its identity
+    under the same lock (#1064), so a commit of that file under a template
+    with this prefix records the identity it has after the put-back.
 
     So a writer's file is never deleted, wherever its rename lands. A call
     interrupted between the steps leaves the private name, and the caller
@@ -7759,9 +7937,12 @@ def _unlink_if_committed(path: str, recorded: Mapping[str, object],
     this does not cover, and says so: a writer that rewrites the committed
     inode in place (``open`` and ``write`` with no rename) is outside the
     produced-output contract, which writes every origin file by rename;
-    between steps 1 and 3 a reader of ``path`` can find it absent; and a
-    file system without hard links refuses at step 3 and keeps the file at
-    the private name, named in the refusal.
+    between steps 1 and 3 a reader of ``path`` can find it absent; a commit
+    under a template whose prefix only overlaps this one takes another lock
+    and can record the ctime from before step 1 (#1063); and a file this
+    process may not link, on a file system without ``RENAME_NOREPLACE``
+    (NFS), refuses at step 3 and keeps the file at the private name, named
+    in the refusal.
 
     Returns ``(outcome, reason)``: ``unlinked``, ``absent`` (nothing was at
     the name), ``superseded`` (another file was, and is again) or
