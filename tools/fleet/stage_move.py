@@ -3427,7 +3427,20 @@ class _Copier:
                 raise OSError(f"not a regular file: {source}")
             if offset:
                 os.lseek(fd, offset, os.SEEK_SET)
-            with open(temporary, "wb") as sink:
+            try:
+                temporary_handle = open(temporary, "wb")
+            except FileNotFoundError:
+                # The directory made above is still empty until this file
+                # lands in it, so an egress's empty-directory prune
+                # (``stage_release._prune_empty``) can remove it in the gap
+                # (#1008 item 2).  One prune removes a directory once; a
+                # second would need a second sweep inside this window -- the
+                # same race and the same single retry
+                # ``residency_map._write_atomic`` already takes for its own
+                # directory.
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                temporary_handle = open(temporary, "wb")
+            with temporary_handle as sink:
                 buffer = bytearray(self.block)
                 view = memoryview(buffer)
                 while written < want and not stop.is_set():

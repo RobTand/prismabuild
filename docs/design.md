@@ -4888,7 +4888,13 @@ the lock. The memo lives for one call, holds only what that call parsed, and
 is dropped when it returns. The judgement and the unlinks stay in the hold.
 The empty-directory prune runs after it: a publisher renames into a
 directory that already holds its temporary, so `rmdir` cannot remove it, and
-the publisher's `mkdir` already runs outside the lock.
+the publisher's `mkdir` already runs outside the lock. That `mkdir` and the
+temporary's creation are not themselves atomic, though: the directory holds
+nothing between them, so this same prune can remove it in the gap. Since
+#1008 item 2, `stage_move._Copier._copy_one` retries the `mkdir` once, on the
+specific `FileNotFoundError` that race leaves, before opening the temporary
+again -- the same single retry `residency_map._write_atomic` already takes
+against the identical race for its own fragment directory.
 
 The unlinks stay under the lock because moving them out is not safe without
 new state. Unlinking outside the lock means dropping the ownership in one

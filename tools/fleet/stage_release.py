@@ -2232,8 +2232,12 @@ def _evict_locked(queue: pool.PoolQueue, mover_action_key: str, *,
     released = time.perf_counter()
     # Empty directories go after the lock.  A publisher's rename lands in a
     # directory that already holds its temporary, so ``rmdir`` cannot take
-    # it from under the rename; its ``mkdir`` runs outside the lock today,
-    # so the window between that and its temporary is no wider for this.
+    # it from under the rename; its ``mkdir`` runs outside the lock, before
+    # its temporary exists, so this prune can still remove that directory in
+    # the gap.  ``stage_move._copy_one`` retries the ``mkdir`` once, on
+    # ``FileNotFoundError``, when that race costs it its temporary's creation
+    # (#1008 item 2) -- the same single retry ``residency_map._write_atomic``
+    # already takes for its own directory.
     pruned_started = time.perf_counter()
     for parent in sorted(parents, key=lambda one: len(one.parts), reverse=True):
         _prune_empty(parent, stage)
