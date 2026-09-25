@@ -32,7 +32,7 @@ the rest from the measurement.
 from __future__ import annotations
 
 import argparse
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 import copy
 import functools
 import json
@@ -99,7 +99,7 @@ _STANDING_VERDICT_WORDS = ("stalled", "declined", "futile", "refused", "deferred
 #: different consumer, range, phase or reason is a different wait.
 _VERDICT_IDENTITY = ("event", "consumer", "tier_id", "holder", "mover", "stage_range",
                      "phase", "chunk_index", "blocked_phase", "reason", "refusal",
-                     "stage_root")
+                     "stage_root", "lock_key", "step")
 #: In-process: signature -> [first seen unix, last cycle seen].  A verdict
 #: missing from one cycle has ended; seen again, it is a new wait.
 _VERDICT_SINCE: dict[tuple, list] = {}
@@ -207,6 +207,51 @@ def _append_consumer_event(queue: pool.PoolQueue, host: str, consumer: str,
               file=sys.stderr, flush=True)
 
 
+#: The event a pass records when it skips a key whose transition lock another
+#: holder has (#1115).  "busy" is a standing-verdict word, so the emitted
+#: copy carries ``waited_s``: how long this loop has seen the key busy.
+LOCK_BUSY_EVENT = "transition-lock-busy"
+#: This cycle's ``transition-lock-busy`` events, counted in :func:`_emit`.
+_LOCK_BUSY_COUNT = [0]
+
+
+def _lock_busy_event(key: str, busy: Mapping[str, object], *,
+                     consumer: str | None, step: str,
+                     tried_s: float) -> dict[str, object]:
+    """One refused acquire, named: the key, the holder if known, the time tried."""
+
+    event: dict[str, object] = {
+        "event": LOCK_BUSY_EVENT, "lock_key": str(key), "consumer": consumer,
+        "step": step, "holder": busy.get("holder"),
+        "tried_s": round(tried_s, 6)}
+    if busy.get("holder_pid") is not None:
+        event["holder_pid"] = busy["holder_pid"]
+    return event
+
+
+@contextmanager
+def _locked_or_skipped(queue: pool.PoolQueue, key: str,
+                       events: list[dict[str, object]], *,
+                       consumer: str | None, step: str):
+    """Take ``key``'s transition lock without waiting; yield whether it was taken.
+
+    The loop runs every pass on one thread, so a pass that waited on one
+    key's holder would stop every other pass with it (#1115).  A busy key is
+    skipped for this cycle and a ``transition-lock-busy`` event naming it is
+    appended to ``events``; the caller leaves the key's state as it found
+    it, so the next cycle reads it again and retries.
+    """
+
+    busy: dict[str, object] = {}
+    started = time.monotonic()
+    with queue._transition_locked(str(key), blocking=False, busy=busy) as acquired:
+        if not acquired:
+            events.append(_lock_busy_event(
+                str(key), busy, consumer=consumer, step=step,
+                tried_s=time.monotonic() - started))
+        yield acquired
+
+
 def _emit(queue: pool.PoolQueue, host: str, event: Mapping[str, object], *,
           tier_consumers: Mapping[str, Sequence[str]] | None = None,
           stamp_unix: bool = True) -> None:
@@ -226,6 +271,8 @@ def _emit(queue: pool.PoolQueue, host: str, event: Mapping[str, object], *,
     """
 
     record = {"unix": time.time(), **event} if stamp_unix else dict(event)
+    if record.get("event") == LOCK_BUSY_EVENT:
+        _LOCK_BUSY_COUNT[0] += 1
     _stamp_standing(record)
     print(json.dumps(record, default=str), flush=True)
     record.setdefault("host", host)    # the file is merged across hosts
@@ -1010,9 +1057,17 @@ def release_incomplete_ram_promotions(
                 continue      # a clean landing: occupancy, not stranding
             consumer = str(receipt.get("consumer_action_key") or "")
             try:
-                outcome = stage_release.evict(
-                    queue, key, consumer_action_key=consumer,
-                    stage_root=ram_root, reason="ram-mover-incomplete")
+                # ``evict`` takes the mover's lock and waits for it; taken
+                # here first without waiting, so its acquire nests and a busy
+                # mover is retained for the next cycle (#1115).
+                with _locked_or_skipped(queue, key, events,
+                                        consumer=consumer or None,
+                                        step="ram-mover-incomplete") as owned:
+                    if not owned:
+                        continue
+                    outcome = stage_release.evict(
+                        queue, key, consumer_action_key=consumer,
+                        stage_root=ram_root, reason="ram-mover-incomplete")
             except (OSError, ValueError, pool.PoolContractError) as exc:
                 events.append({"event": "ram-mover-incomplete-retained",
                                "tier_id": tier_id, "mover": key,
@@ -1398,7 +1453,16 @@ def ram_residency_window(
                 # it: a promotion is never published after the plan that
                 # minted it was reaped or replaced, or after the consumer
                 # itself was withdrawn (#708 review).
-                with queue._transition_locked(key):
+                #
+                # Neither lock is waited on (#1115): the consumer's, and the
+                # mover's that ``publish`` takes, nested here first.  A busy
+                # one defers the rest of this window to the next cycle.
+                with ExitStack() as held:
+                    if not all(held.enter_context(_locked_or_skipped(
+                            queue, lock_key, events, consumer=key,
+                            step="ram-window-publish"))
+                            for lock_key in (key, str(row["action_key"]))):
+                        break
                     owned, why = residency_plan.window_owned(
                         queue, key, filing=incarnation, generation=generation)
                     if not owned:
@@ -1411,12 +1475,14 @@ def ram_residency_window(
                         break
                     queue.publish(**row, recompute=True, refuse_withdrawn=True)
             except pool.WithdrawnActionError as exc:
-                marked = residency_plan.mark_superseded(
-                    queue, key, plan=plan, filing=incarnation,
-                    reason="mover-withdrawn",
-                    movers=[str(entry.get("mover_action_key") or
-                                row.get("action_key") or "")],
-                    by="tier-loop")
+                with _locked_or_skipped(queue, key, events, consumer=key,
+                                        step="mark-superseded") as owned:
+                    marked = residency_plan.mark_superseded(
+                        queue, key, plan=plan, filing=incarnation,
+                        reason="mover-withdrawn",
+                        movers=[str(entry.get("mover_action_key") or
+                                    row.get("action_key") or "")],
+                        by="tier-loop") if owned else None
                 events.append({"event": "ram-mover-publish-refused-withdrawn",
                                "consumer": key, "phase": entry["phase"],
                                "chunk_index": entry.get("chunk_index"),
@@ -1984,100 +2050,133 @@ def _sweep_dead_consumer(queue: pool.PoolQueue, *, key: str, state: str,
     after it is renewed after the withdrawal.  A kept mover keeps the dead
     consumer's plan filed, because ``reap`` will not archive it under a live
     child, and a later pass reaps it once the mover has ended.
+
+    No lock here is waited on (#1115).  A busy consumer lock skips the
+    consumer for this cycle.  A busy mover lock skips that mover and keeps
+    the plan filed, because the next cycle finds the mover through it.  A
+    busy child lock defers the reap.  Each skip leaves a
+    ``transition-lock-busy`` event and changes nothing, so the next cycle
+    retries from what is there.
     """
 
-    with queue._transition_locked(key):
-        item = pool._read_json(path)
-        if not isinstance(item, dict):
-            return
-        live, _why = residency_plan.live_state(queue, key)
-        if live is not None or _why:
-            # Resubmitted under the same key: a new generation, live work.
-            # A queue that cannot be read is uncertainty, not absence, and
-            # defers the sweep exactly as it defers a handoff.
-            return
-        plan, incarnation = residency_plan.read_filed(queue, key)
-        if plan is None:
-            return      # not a staged consumer, or an unreadable plan
-        if (state == pool.DONE
-                and residency_plan.superseded(queue, plan) is None):
-            # A finished consumer that was never superseded keeps its
-            # frozen plan: a retry republishes the same children.
-            return
-        failed = False
-        for mover_key in residency_plan.mover_keys(plan):
-            receipt = queue.move_record(mover_key)
-            if (isinstance(receipt, Mapping)
-                    and receipt.get("complete") is True):
-                continue  # a resident range: adoption's, not withdrawal's
-            if queue.item_path(pool.READY, mover_key).exists():
-                origin = pool.READY
-            elif queue.item_path(pool.CLAIMED, mover_key).exists():
-                origin = pool.CLAIMED
-            else:
-                continue  # finished or never published: nothing to stop
-            # Withdrawal is per interest (#1026, #1114).  A mover key is a
-            # content hash and a shared range's mover is every sharer's, so
-            # the same key is often another consumer's work: a retry over the
-            # same manifest names exactly the movers this dead attempt left
-            # queued.  Asked of the filed plans under the mover's own lock,
-            # the lock a seal renews its children under, so a plan filed
-            # after this answer is renewed after the withdrawal below.
-            with queue._transition_locked(mover_key):
-                asked = time.monotonic()
-                others = residency_plan.plan_interest(
-                    queue, mover_key, exclude={key})
-                # The plans listing runs under the mover's lock (it must
-                # follow the lock to see a seal's plan); its cost is stamped.
-                interest_s = round(time.monotonic() - asked, 6)
-                if others["interested"] or others["unknown"]:
-                    # Told once per mover, not every cycle it stays kept.
-                    told = (str(queue.root), key, mover_key)
-                    if told not in _MOVER_KEPT_TOLD:
-                        _MOVER_KEPT_TOLD.add(told)
-                        events.append({
-                            "event": "dead-consumer-mover-kept",
-                            "consumer": key, "mover": mover_key,
-                            "state": origin,
-                            "interested": others["interested"],
-                            "unknown": others["unknown"],
-                            "interest_s": interest_s})
-                    continue
-                try:
-                    outcome = queue.withdraw(
-                        mover_key, reason=f"consumer-{state}", by="tier-loop")
-                except (pool.PoolContractError, OSError) as exc:
-                    events.append({
-                        "event": "dead-consumer-mover-withdraw-failed",
-                        "consumer": key, "mover": mover_key, "state": origin,
-                        "withdrawn": False, "error": repr(exc)})
-                    failed = True
-                    continue
-            done = outcome.get("status") in ("withdrawn", "already_withdrawn")
-            if not done:
+    with _locked_or_skipped(queue, key, events, consumer=key,
+                            step="dead-consumer") as owned:
+        if owned:
+            _sweep_dead_consumer_owned(queue, key=key, state=state, path=path,
+                                       events=events)
+
+
+def _sweep_dead_consumer_owned(queue: pool.PoolQueue, *, key: str, state: str,
+                               path: Path,
+                               events: list[dict[str, object]]) -> None:
+    """:func:`_sweep_dead_consumer`'s body, with the consumer's lock held."""
+
+    item = pool._read_json(path)
+    if not isinstance(item, dict):
+        return
+    live, _why = residency_plan.live_state(queue, key)
+    if live is not None or _why:
+        # Resubmitted under the same key: a new generation, live work.
+        # A queue that cannot be read is uncertainty, not absence, and
+        # defers the sweep exactly as it defers a handoff.
+        return
+    plan, incarnation = residency_plan.read_filed(queue, key)
+    if plan is None:
+        return      # not a staged consumer, or an unreadable plan
+    if (state == pool.DONE
+            and residency_plan.superseded(queue, plan) is None):
+        # A finished consumer that was never superseded keeps its
+        # frozen plan: a retry republishes the same children.
+        return
+    failed = False
+    for mover_key in residency_plan.mover_keys(plan):
+        receipt = queue.move_record(mover_key)
+        if (isinstance(receipt, Mapping)
+                and receipt.get("complete") is True):
+            continue  # a resident range: adoption's, not withdrawal's
+        if queue.item_path(pool.READY, mover_key).exists():
+            origin = pool.READY
+        elif queue.item_path(pool.CLAIMED, mover_key).exists():
+            origin = pool.CLAIMED
+        else:
+            continue  # finished or never published: nothing to stop
+        # Withdrawal is per interest (#1026, #1114).  A mover key is a
+        # content hash and a shared range's mover is every sharer's, so
+        # the same key is often another consumer's work: a retry over the
+        # same manifest names exactly the movers this dead attempt left
+        # queued.  Asked of the filed plans under the mover's own lock,
+        # the lock a seal renews its children under, so a plan filed
+        # after this answer is renewed after the withdrawal below.
+        with _locked_or_skipped(queue, mover_key, events, consumer=key,
+                                step="dead-consumer-mover") as owned:
+            if not owned:
+                # Neither withdrawn nor kept: the plan stays filed, and the
+                # next cycle finds this mover through it again.
                 failed = True
-            events.append({
-                "event": "dead-consumer-mover-withdrawn",
-                "consumer": key, "mover": mover_key, "state": origin,
-                "withdrawn": bool(done), "status": outcome.get("status"),
-                "interest_s": interest_s})
-        if failed:
-            return      # the plan is how the next cycle retries
+                continue
+            asked = time.monotonic()
+            others = residency_plan.plan_interest(
+                queue, mover_key, exclude={key})
+            # The plans listing runs under the mover's lock (it must
+            # follow the lock to see a seal's plan); its cost is stamped.
+            interest_s = round(time.monotonic() - asked, 6)
+            if others["interested"] or others["unknown"]:
+                # Told once per mover, not every cycle it stays kept.
+                told = (str(queue.root), key, mover_key)
+                if told not in _MOVER_KEPT_TOLD:
+                    _MOVER_KEPT_TOLD.add(told)
+                    events.append({
+                        "event": "dead-consumer-mover-kept",
+                        "consumer": key, "mover": mover_key,
+                        "state": origin,
+                        "interested": others["interested"],
+                        "unknown": others["unknown"],
+                        "interest_s": interest_s})
+                continue
+            try:
+                outcome = queue.withdraw(
+                    mover_key, reason=f"consumer-{state}", by="tier-loop")
+            except (pool.PoolContractError, OSError) as exc:
+                events.append({
+                    "event": "dead-consumer-mover-withdraw-failed",
+                    "consumer": key, "mover": mover_key, "state": origin,
+                    "withdrawn": False, "error": repr(exc)})
+                failed = True
+                continue
+        done = outcome.get("status") in ("withdrawn", "already_withdrawn")
+        if not done:
+            failed = True
+        events.append({
+            "event": "dead-consumer-mover-withdrawn",
+            "consumer": key, "mover": mover_key, "state": origin,
+            "withdrawn": bool(done), "status": outcome.get("status"),
+            "interest_s": interest_s})
+    if failed:
+        return      # the plan is how the next cycle retries
+    with ExitStack() as children:
+        # ``reap``'s handoff proof locks every child in turn, parent before
+        # child.  Taken here first without waiting, so its own acquires
+        # nest; a busy child defers the reap to the next cycle.
+        for child in residency_plan.child_keys(plan):
+            if not children.enter_context(_locked_or_skipped(
+                    queue, child, events, consumer=key,
+                    step="dead-consumer-reap")):
+                return
         reaped = residency_plan.reap(
             queue, key, reason=f"consumer-{state}",
             plan=plan, filing=incarnation)
-        if reaped is not None:
-            # The landing record describes a window nobody reads any more
-            # (#989); it goes with the plan, as the event file does.
-            residency_map.landing_path(
-                queue.residency_fragment_root(), key).unlink(missing_ok=True)
-            _LANDING_FINGERPRINTS.pop((str(queue.root), key), None)
-            events.append({
-                "event": "residency-plan-reaped", "consumer": key,
-                "tier_id": str(plan["tier_id"]),
-                "reason": f"consumer-{state}",
-                "phases": len(reaped.get("phases") or []),
-                "movers": len(residency_plan.mover_keys(reaped))})
+    if reaped is not None:
+        # The landing record describes a window nobody reads any more
+        # (#989); it goes with the plan, as the event file does.
+        residency_map.landing_path(
+            queue.residency_fragment_root(), key).unlink(missing_ok=True)
+        _LANDING_FINGERPRINTS.pop((str(queue.root), key), None)
+        events.append({
+            "event": "residency-plan-reaped", "consumer": key,
+            "tier_id": str(plan["tier_id"]),
+            "reason": f"consumer-{state}",
+            "phases": len(reaped.get("phases") or []),
+            "movers": len(residency_plan.mover_keys(reaped))})
 
 
 def adoptable_ranges(queue: pool.PoolQueue, *, tier_id: str,
@@ -7400,10 +7499,13 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
                 operator = [mover for mover in hits
                             if _operator_withdrawal(queue, mover)]
                 if operator:
-                    superseded = residency_plan.mark_superseded(
-                        queue, key, plan=plan, filing=incarnation,
-                        reason="mover-withdrawn",
-                        movers=operator, by="tier-loop")
+                    with _locked_or_skipped(queue, key, published,
+                                            consumer=key,
+                                            step="mark-superseded") as owned:
+                        superseded = residency_plan.mark_superseded(
+                            queue, key, plan=plan, filing=incarnation,
+                            reason="mover-withdrawn",
+                            movers=operator, by="tier-loop") if owned else None
                     if superseded is not None:
                         published.append({
                             "event": "residency-plan-superseded",
@@ -7598,7 +7700,16 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
                 # and generation cannot change in between: a child is never
                 # published after its parent's plan was reaped or replaced,
                 # or after the consumer itself was withdrawn (#708 review).
-                with queue._transition_locked(key):
+                #
+                # Neither lock is waited on (#1115): the consumer's, and the
+                # mover's that ``publish`` takes, nested here first.  A busy
+                # one defers the rest of this window to the next cycle.
+                with ExitStack() as held:
+                    if not all(held.enter_context(_locked_or_skipped(
+                            queue, lock_key, published, consumer=key,
+                            step="window-publish"))
+                            for lock_key in (key, str(row["action_key"]))):
+                        break
                     owned, why = residency_plan.window_owned(
                         queue, key, filing=incarnation, generation=generation)
                     if not owned:
@@ -7617,10 +7728,13 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
             except pool.ActionAlreadyLiveError:
                 continue      # published already, by a window it is shared with
             except pool.WithdrawnActionError as exc:
-                marked = residency_plan.mark_superseded(
-                    queue, key, plan=plan, filing=incarnation,
-                    reason="mover-withdrawn",
-                    movers=[str(entry["mover_action_key"])], by="tier-loop")
+                with _locked_or_skipped(queue, key, published, consumer=key,
+                                        step="mark-superseded") as owned:
+                    marked = residency_plan.mark_superseded(
+                        queue, key, plan=plan, filing=incarnation,
+                        reason="mover-withdrawn",
+                        movers=[str(entry["mover_action_key"])],
+                        by="tier-loop") if owned else None
                 published.append({
                     "event": "mover-publish-refused-withdrawn", "consumer": key,
                     "phase": entry["phase"],
@@ -7858,11 +7972,17 @@ def evict_beyond_horizon(queue: pool.PoolQueue,
                 ) -> tuple[bool, dict[str, object]]:
         # ``range_wide``: a shared range's row was nominated by every
         # reader still reading it (#1026), so it goes for all of them.
-        receipt = stage_release.evict(
-            queue, str(row["mover_action_key"]),
-            consumer_action_key=str(row["consumer_action_key"]),
-            stage_root=stage_root, reason=prefix, whole=True,
-            range_wide=True)
+        # ``evict`` waits for the mover's lock; taken here first without
+        # waiting, so a busy mover declines this cycle (#1115).
+        with _locked_or_skipped(queue, str(row["mover_action_key"]), events,
+                                consumer=str(row["consumer_action_key"]),
+                                step=prefix) as owned:
+            receipt = stage_release.evict(
+                queue, str(row["mover_action_key"]),
+                consumer_action_key=str(row["consumer_action_key"]),
+                stage_root=stage_root, reason=prefix, whole=True,
+                range_wide=True) if owned else {
+                    "complete": False, "declined": [LOCK_BUSY_EVENT]}
         done = bool(receipt.get("complete"))
         return done, {
             "event": (f"{prefix}-evicted" if done
@@ -8540,6 +8660,10 @@ class Liveness:
             "refreshes": self._refreshes,
             "refresh_errors": list(self._refresh_errors),
             "oldest_age_s": round(self._oldest_seen, 6),
+            # A record this cycle let reach ``H``: the cycle overran what
+            # the liveness bound allows it (#1115).  A cycle that never
+            # ends writes no line at all; its records age past ``L``.
+            "overran": self._oldest_seen >= self.horizon_s,
         }
 
 
@@ -8554,11 +8678,14 @@ class _Phases:
         self._mark = self.started
         self.seconds: dict[str, float] = {}
         self.liveness = liveness
+        #: The last step lapped: where a refused acquire happened (#1115).
+        self.last = "cycle-start"
 
     def lap(self, name: str) -> None:
         now = time.perf_counter()
         self.seconds[name] = self.seconds.get(name, 0.0) + (now - self._mark)
         self._mark = now
+        self.last = name
         if self.liveness is not None:
             self.liveness.checkpoint(name)
 
@@ -8617,11 +8744,25 @@ def cycle(
     steps when the cycle runs long, and budgets the long steps' units.  What
     it did is left in ``LAST_CYCLE["liveness"]``.  Without it the cycle
     announces each record once, as before.
+
+    No transition-lock acquire in the cycle waits for another holder
+    (#1115).  The passes take their keys without waiting and skip a busy one
+    by name; anything they reach that still asks to wait runs under
+    :func:`pool.transition_locks_never_wait`, which refuses it with an
+    ``OSError`` and emits a ``transition-lock-busy`` event naming the step it
+    followed.  ``LAST_CYCLE["transition_lock_busy"]`` counts both kinds.
     """
 
     if liveness is not None:
         liveness.begin_cycle()
     phases = _Phases(liveness)
+    _LOCK_BUSY_COUNT[0] = 0
+
+    def refused(record: dict[str, object]) -> None:
+        _emit(queue, host, {"event": LOCK_BUSY_EVENT,
+                            "step": f"after {phases.last}",
+                            "guard": "never-wait", **record})
+
     before = _read_counts(receipts)
     completed = False
     records = getattr(receipts, "records", None)
@@ -8631,15 +8772,16 @@ def cycle(
     # that names it (#1026).
     residency_plan._SHARE_NAMESPACE_MEMO[0] = {}
     try:
-        if isinstance(records, stage_release.DirectoryRecords):
-            with stage_release.queue_records_from(records):
+        with pool.transition_locks_never_wait(refused):
+            if isinstance(records, stage_release.DirectoryRecords):
+                with stage_release.queue_records_from(records):
+                    announced = _cycle(queue, host=host, source_pool=source_pool,
+                                       receipts=receipts, now=now,
+                                       discover=discover, phases=phases)
+            else:
                 announced = _cycle(queue, host=host, source_pool=source_pool,
-                                   receipts=receipts, now=now,
-                                   discover=discover, phases=phases)
-        else:
-            announced = _cycle(queue, host=host, source_pool=source_pool,
-                               receipts=receipts, now=now, discover=discover,
-                               phases=phases)
+                                   receipts=receipts, now=now, discover=discover,
+                                   phases=phases)
         completed = True
         return announced
     finally:
@@ -8656,6 +8798,7 @@ def cycle(
             "reads": {name: after[name] - before.get(name, 0)
                       for name in after},
             "receipts_unreadable": dict(getattr(receipts, "unreadable", {})),
+            "transition_lock_busy": _LOCK_BUSY_COUNT[0],
         }
         if liveness is not None:
             try:

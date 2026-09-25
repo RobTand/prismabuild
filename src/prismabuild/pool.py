@@ -891,6 +891,77 @@ class WithdrawnActionError(PoolContractError):
     """
 
 
+class TransitionLockBusy(BlockingIOError):
+    """A transition lock another holder has, refused instead of waited on (#1115).
+
+    Raised only inside :func:`transition_locks_never_wait`, by an acquire
+    that would otherwise block.  It is the ``EAGAIN`` a non-blocking
+    ``lockf`` reports, so every caller that already treats an acquisition's
+    ``OSError`` as "not this cycle" treats this one the same way.  ``busy``
+    is what the refusal learned: the key, and the holder's pid when the
+    kernel names it.
+    """
+
+    def __init__(self, action_key: str, busy: Mapping[str, object]) -> None:
+        pid = busy.get("holder_pid")
+        super().__init__(
+            errno.EAGAIN,
+            f"the transition lock for {str(action_key)[:12]} is held by "
+            + (f"pid {pid}" if pid is not None else "another holder"))
+        self.action_key = str(action_key)
+        self.busy = dict(busy)
+
+
+#: Set while a single-threaded control loop runs (#1115): the callable that
+#: records a refused acquire.  A ``ContextVar``, so it covers the thread that
+#: set it and nothing else; a new thread starts without it.
+_TRANSITION_LOCK_NO_WAIT: contextvars.ContextVar[
+    Callable[[dict[str, object]], None] | None] = contextvars.ContextVar(
+        "prismabuild_transition_lock_no_wait", default=None)
+
+
+@contextmanager
+def transition_locks_never_wait(on_busy: Callable[[dict[str, object]], None]):
+    """No transition-lock acquire on this thread waits for another holder (#1115).
+
+    The tier loop runs every pass on one thread, so one blocking acquire of
+    one key turns that key's stuck holder into a stall of every pass: on
+    2026-09-24 the loop sat in ``fcntl_setlk`` for 41 minutes while the
+    holder was stuck in the kernel.  Inside this scope an acquire that would
+    block is tried once without blocking instead.  If another holder has the
+    key, ``on_busy`` receives ``{"lock_key": ..., "holder": ...,
+    "holder_pid": ...}`` and the acquire raises :class:`TransitionLockBusy`,
+    before the caller has done anything under that lock.  Nested acquires of
+    a key this thread already holds are unaffected, and so are callers that
+    already pass ``blocking=False``.  The loop's own passes take their keys
+    non-blocking and skip a busy one by name; this scope bounds whatever
+    they reach that still asks to wait.
+    """
+
+    token = _TRANSITION_LOCK_NO_WAIT.set(on_busy)
+    try:
+        yield
+    finally:
+        _TRANSITION_LOCK_NO_WAIT.reset(token)
+
+
+@contextmanager
+def _never_wait(path: Path, action_key: str,
+                on_busy: Callable[[dict[str, object]], None],
+                busy: dict[str, object] | None):
+    """One non-blocking try of a blocking acquire; see :func:`transition_locks_never_wait`."""
+
+    seen: dict[str, object] = {}
+    with posix_lock.held(path, blocking=False, busy=seen) as acquired:
+        if not acquired:
+            record: dict[str, object] = {"lock_key": action_key, **seen}
+            if busy is not None:
+                busy.update(seen)
+            on_busy(record)
+            raise TransitionLockBusy(action_key, record)
+        yield True
+
+
 class ActionAlreadyLiveError(PoolContractError):
     """A ``refuse_if_live`` publication refused: the queue already has the key.
 
@@ -11525,7 +11596,8 @@ class PoolQueue:
                 "state": str(record.get("state"))}
 
     def mover_transition_lock(self, mover_action_key: str, *,
-                              blocking: bool = True):
+                              blocking: bool = True,
+                              busy: dict[str, object] | None = None):
         """Exclude two parties from deciding one staged range's ownership.
 
         An egress deletes a mover's files and then releases its key; an
@@ -11543,7 +11615,8 @@ class PoolQueue:
         the range is copied instead, which costs time and never correctness.
         """
 
-        return self._transition_locked(str(mover_action_key), blocking=blocking)
+        return self._transition_locked(str(mover_action_key), blocking=blocking,
+                                       busy=busy)
 
     def staged_range_of(self, mover_action_key: str) -> dict[str, object] | None:
         """The range one mover has on a tier now, or ``None`` if it has none.
@@ -13467,11 +13540,21 @@ class PoolQueue:
         return (isinstance(receipt, Mapping) and receipt.get("complete") is True
                 and not receipt.get("refusal") and receipt.get("tier_id") == tier_id)
 
-    def _transition_locked(self, action_key: str, *, blocking: bool = True):
-        """Serialize one key's ownership transitions, never independent keys."""
+    def _transition_locked(self, action_key: str, *, blocking: bool = True,
+                           busy: dict[str, object] | None = None):
+        """Serialize one key's ownership transitions, never independent keys.
+
+        ``busy`` is :func:`posix_lock.held`'s: filled with the holder when a
+        non-blocking acquire is refused.  Inside
+        :func:`transition_locks_never_wait` a blocking acquire does not wait:
+        it raises :class:`TransitionLockBusy` when another holder has the key.
+        """
         name = hashlib.sha256(str(action_key).encode()).hexdigest()
-        return posix_lock.held(self.root / "transition-locks" / f"{name}.lock",
-                               blocking=blocking)
+        path = self.root / "transition-locks" / f"{name}.lock"
+        on_busy = _TRANSITION_LOCK_NO_WAIT.get()
+        if not blocking or on_busy is None:
+            return posix_lock.held(path, blocking=blocking, busy=busy)
+        return _never_wait(path, str(action_key), on_busy, busy)
 
     def container_marker(self, owner: str) -> Path:
         """The durable signal that this action invoked the Docker shim."""

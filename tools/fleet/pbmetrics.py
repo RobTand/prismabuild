@@ -1272,8 +1272,18 @@ def _starvation_metrics(
         "Tier ledger tokens by kind and state; capacity kinds count GiB, the fill kind counts "
         "pool-side MB/s, and held is capacity less available.",
     )
+    announce_age = metrics.family(
+        "prismabuild_tier_announce_age_seconds",
+        "Seconds since the tier loop last announced this tier (announced_unix). A live loop, "
+        "idle or mid-cycle, keeps it below pool.OFFER_TIMEOUT_S; a loop stuck inside a cycle "
+        "stops writing and it grows past that (#1115). Absent where no record was announced.",
+    )
     for tier_id in sorted(set(tier_ids) | set(announced)):
         record = announced.get(tier_id)
+        if isinstance(record, Mapping):
+            stamped = _number(record.get("announced_unix"))
+            if stamped is not None:
+                announce_age.add(max(0.0, now - stamped), tier=tier_id)
         supply = record.get("fill_supply") if isinstance(record, Mapping) else None
         if isinstance(supply, Mapping):
             fill.add(supply.get("best_mb_s"), tier=tier_id, stat="best")

@@ -291,3 +291,104 @@ def test_a_busy_child_lock_defers_the_reap_to_the_next_pass(
     assert not _busy(events, child)
     assert any(event.get("event") == "residency-plan-reaped" for event in events)
     assert not queue.residency_plan_path(FIRST).exists()
+
+
+def test_inside_the_cycle_a_blocking_acquire_of_a_busy_key_is_refused_not_waited(
+        queue: pool.PoolQueue, holders) -> None:
+    """The cycle's guard: anything a pass reaches that still asks to wait."""
+
+    held, _passes = holders
+    key, mine = _hexkey("busykey"), _hexkey("mykey")
+    holder = _Holder(_lock_path(queue, key))
+    held.append(holder)
+    seen: list[dict[str, object]] = []
+    outcome: dict[str, object] = {}
+
+    def run() -> None:
+        with pool.transition_locks_never_wait(seen.append):
+            with queue._transition_locked(mine):
+                # Nested re-entry of a key this thread holds is unaffected.
+                with queue._transition_locked(mine):
+                    outcome["nested"] = True
+            try:
+                with queue._transition_locked(key):
+                    outcome["entered"] = True
+            except pool.TransitionLockBusy as exc:
+                outcome["refused"] = exc
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    thread.join(timeout=BOUND_S)
+    assert not thread.is_alive(), "a blocking acquire waited inside the guard"
+    assert outcome.get("nested") is True
+    assert "entered" not in outcome
+    refused = outcome["refused"]
+    assert isinstance(refused, BlockingIOError)       # an OSError, EAGAIN
+    assert refused.action_key == key
+    assert seen == [{"lock_key": key, "holder": "process",
+                     "holder_pid": holder.pid}]
+
+    # Outside the guard a blocking acquire still waits, and the holder's
+    # release lets it through.
+    done = threading.Event()
+
+    def wait_outside() -> None:
+        with queue._transition_locked(key):
+            done.set()
+
+    waiter = threading.Thread(target=wait_outside, daemon=True)
+    waiter.start()
+    assert not done.wait(timeout=0.5)
+    holder.release()
+    assert done.wait(timeout=BOUND_S)
+
+
+def test_a_cycle_that_lets_a_record_age_past_the_horizon_says_it_overran(
+        monkeypatch, queue: pool.PoolQueue) -> None:
+    """A completed long cycle is marked on its ``tier-cycle`` line."""
+
+    clock = [1_000_000.0]
+    monkeypatch.setattr(pool, "_now", lambda: clock[0])
+    liveness = tier_loop.Liveness(interval_s=5.0)
+    record = {"schema": storage_tiers.TIER_RECORD_SCHEMA_V1, "tier_id": TIER,
+              "tier": "stage", "host": "dl380g10", "sampled_unix": clock[0]}
+
+    liveness.begin_cycle()
+    liveness.announce(queue, record)
+    clock[0] += 1.0
+    liveness.checkpoint("quick")
+    assert liveness.end_cycle(completed=True)["overran"] is False
+
+    liveness.begin_cycle()
+    liveness.announce(queue, record)
+    clock[0] += liveness.horizon_s + 1.0      # one stretch past H
+    liveness.checkpoint("stuck-step")
+    assert liveness.end_cycle(completed=True)["overran"] is True
+
+
+def test_a_stuck_loop_is_visible_from_outside_as_an_aged_announcement(
+        queue: pool.PoolQueue) -> None:
+    """pbmcp's tier rows and pbmetrics both expose ``announced_unix``'s age."""
+
+    import pbmcp
+    import pbmetrics
+
+    now = 2_000_000.0
+    stuck_for = pool.OFFER_TIMEOUT_S + 300.0
+    queue.announce_tier({
+        "schema": storage_tiers.TIER_RECORD_SCHEMA_V1, "tier_id": TIER,
+        "tier": "stage", "host": "dl380g10", "sampled_unix": now - stuck_for,
+        "liveness_refresh": {"after": "sweep_orphans", "refreshes": 1,
+                             "minted_unix": now - stuck_for - 60}},
+        now=now - stuck_for)
+
+    text = pbmetrics.collect_metrics(queue.root, now=now)
+    assert (f'prismabuild_tier_announce_age_seconds{{tier="{TIER}"}} '
+            f'{stuck_for:g}' in text
+            or f'prismabuild_tier_announce_age_seconds{{tier="{TIER}"}} '
+            f'{int(stuck_for)}' in text), [
+        line for line in text.splitlines() if "announce_age" in line]
+
+    row = pbmcp._tier_row(json.loads(queue.tier_record_path(TIER).read_text()))
+    assert row["announced_age_s"] > pool.OFFER_TIMEOUT_S
+    assert row["liveness_refresh"]["after"] == "sweep_orphans"

@@ -4655,15 +4655,27 @@ def sweep(queue: pool.PoolQueue, *, stage_roots: dict[str, str],
                     break
                 if free + _tokens_for_newly_free_bytes(credit_bytes) >= needed:
                     break      # the window fits now; the rest stays resident
-            if not is_uncharged:
-                swept.append(evict(queue, key, consumer_action_key=consumer,
-                                   stage_root=stage_root,
-                                   residency_root=residency_root,
-                                   reason="orphan-sweep"))
+            try:
+                if not is_uncharged:
+                    swept.append(evict(queue, key, consumer_action_key=consumer,
+                                       stage_root=stage_root,
+                                       residency_root=residency_root,
+                                       reason="orphan-sweep"))
+                    continue
+                outcome = _evict_uncharged_owner(
+                    queue, key, consumer, tier_id=tier_id, stage_root=stage_root,
+                    residency_root=residency_root)
+            except pool.TransitionLockBusy:
+                # Inside the tier loop no transition lock is waited on
+                # (#1115): the refusal already named the key and its holder,
+                # and the orphan stays for the next cycle's sweep.
+                deferred = _refused_receipt(
+                    tier_id=tier_id, stage_root=stage_root,
+                    refusal="transition-lock-busy", mover_action_key=key,
+                    consumer_action_key=consumer, reason="orphan-sweep")
+                deferred["event"] = "stage-orphan-eviction-deferred"
+                swept.append(deferred)
                 continue
-            outcome = _evict_uncharged_owner(
-                queue, key, consumer, tier_id=tier_id, stage_root=stage_root,
-                residency_root=residency_root)
             if outcome is None:
                 continue       # revived or charged since discovery: not ours
             swept.append(outcome)
