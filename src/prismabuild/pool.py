@@ -308,8 +308,9 @@ TIMEOUT_GRACE_S = 2.0 * pb._PROCESS_GROUP_GRACE_SECONDS + 5.0
 # per host, is one of three kinds.  A refusal says the row cannot be placed
 # as it stands: its demand does not fit any tier or box, or does not parse.
 # A withhold says the pool holds the box for this row while the holders in
-# its way drain (#924), bounded by ``WITHHOLD_CEILING_S`` from the episode's
-# start: the row is next, so its consumer waits on it until that bound
+# its way drain (#924): the row is next, so its consumer waits on it while
+# the claim pass's latest counted denial is fresh (``WITHHOLD_STAMP_FRESH_S``,
+# #1052), or else until ``WITHHOLD_CEILING_S`` from the episode's start
 # (#1022 review round 3); it outranks another host's refusal.  Anything else
 # is transient.  ``placement_mismatch`` is none of them: it is the word of a
 # box the row is not for.  A row whose every host says refusal is not
@@ -758,6 +759,20 @@ MOVER_LANDING_SCHEMA_V1 = "prismabuild.mover_landing.v1"
 #: look dead, short enough that a box taken down does not keep vouching for
 #: work nobody can run.
 OFFER_TIMEOUT_S = 120.0
+#: How fresh the claim pass's latest counted denial of a withheld row must be
+#: for the consumer to read the withhold as live (#1052).  The pool bounds a
+#: withhold episode by ``WITHHOLD_CEILING_S`` only when it has refills; with
+#: none it withholds for as long as its holders drain soon, which can run to
+#: a transient holder's declared end, past the epoch's ceiling.  The claim
+#: pass re-judges the withhold on every pass and counts the denial
+#: (``record_pass`` rewrites the passes sidecar's ``updated_unix``), and the
+#: pass that stops withholding records a ``_past_ceiling`` or ``_starved``
+#: reason.  So a ``*_withholding`` reason with a stamp this fresh is the
+#: pool's own live answer.  The bound is the fleet's freshness for a claim
+#: loop, the one an offer is believed by: a loop re-announces every poll, and
+#: this is a dozen missed default polls, so a slow pass or an NFS stall does
+#: not read as the withhold ending.
+WITHHOLD_STAMP_FRESH_S = OFFER_TIMEOUT_S
 
 #: Offer discovery tolerates up to one minute of future skew. This bound stays
 #: finite even when a submitter reads retained capability with an infinite TTL.
@@ -5698,8 +5713,9 @@ class PoolQueue:
         ``WITHHOLD_CEILING_S``: the episode is the verdict's own
         (``episode_age_s`` back from when it was filed), or, for a withhold
         with none on file (``in_flight``, ``holder_tail``), the row's first
-        denial (``withhold_age_s``) -- the bound the pool puts on a stage
-        mover's withhold (:meth:`_withhold_epoch`).  A busy pass that carries
+        denial (``withhold_age_s``) -- the epoch bound a stage mover's
+        consumer falls back to when no fresh pass is on file
+        (:meth:`_withhold_epoch`, #1052).  A busy pass that carries
         a withhold files its ``transition_busy`` with the episode it carried,
         so the next busy pass reads the same start, and a run of them never
         renews it.  Returns ``{"reason", "mode", "epoch_unix"}``, or ``None``.
@@ -7023,9 +7039,11 @@ class PoolQueue:
             nothing copies it while that stands, and the hold accrues
             nothing.  A withhold (``MOVER_WITHHOLD_*``, named as
             ``withhold``) is the pool holding the box for this row (#924):
-            exempt (``withheld``) until ``WITHHOLD_CEILING_S`` past the
-            withhold's epoch, its ``evidence_unix``; past it, or with no
-            epoch on file, not (``withhold-lapsed``, #1022 review round 3).
+            exempt (``withheld``) while the claim pass counted a denial of
+            the row within ``WITHHOLD_STAMP_FRESH_S`` (the pool's live
+            answer, #1052), or else until ``WITHHOLD_CEILING_S`` past the
+            withhold's epoch, its ``evidence_unix``; otherwise not
+            (``withhold-lapsed``, #1022 review round 3).
             Otherwise it is exempt while a mover that was queued ahead of
             it when the wait first looked (``waiting_behind``, from the
             landing record's ``movers_ahead``) is claimed with a live lease
@@ -7591,31 +7609,41 @@ class PoolQueue:
                 return None
         return withheld or refused
 
-    def _withhold_epoch(self, mover: str) -> tuple[float | None, str | None]:
-        """``(epoch_unix, basis)``: when the pool's withhold for ``mover`` began.
+    def _withhold_epoch(self, mover: str) -> tuple[float | None, str | None, float | None]:
+        """``(epoch_unix, basis, stamp_unix)``: the pool's withhold for ``mover``.
 
         Read from the row's passes sidecar, which the claim pass rewrites at
         every denial it counts (:meth:`record_pass`).  The episode's start
         (``epoch_unix``, basis ``episode``) is what
-        :meth:`_withhold_verdict` bounds a veto by.  A withhold with no
-        episode on file (``in_flight``, ``holder_tail``) is bounded by the
+        :meth:`_withhold_verdict` bounds a refilled veto by.  A withhold with
+        no episode on file (``in_flight``, ``holder_tail``) is bounded by the
         row's first denial (``first_unix``, basis ``first-denial``), the
-        clock the pool bounds ``in_flight`` by.  ``(None, None)`` when the
-        sidecar does not read or carries neither.
+        clock the pool bounds ``in_flight`` by.  ``stamp_unix`` is the
+        sidecar's ``updated_unix``: when the claim pass last counted a
+        denial of the row, which on a withholding pass is the moment it
+        re-judged the withhold (#1052).  Each is ``None`` when the sidecar
+        does not read or does not carry it.
         """
 
         try:
             record = _read_json(self.passes_path(mover))
         except (OSError, ValueError, PoolContractError):
-            return None, None
+            return None, None, None
         if not isinstance(record, Mapping):
-            return None, None
-        for field, basis in (("epoch_unix", "episode"), ("first_unix", "first-denial")):
+            return None, None, None
+
+        def finite(field: str) -> float | None:
             value = record.get(field)
-            if (isinstance(value, (int, float)) and not isinstance(value, bool)
-                    and math.isfinite(float(value))):
-                return float(value), basis
-        return None, None
+            return (float(value) if isinstance(value, (int, float))
+                    and not isinstance(value, bool) and math.isfinite(float(value))
+                    else None)
+
+        stamp = finite("updated_unix")
+        for field, basis in (("epoch_unix", "episode"), ("first_unix", "first-denial")):
+            value = finite(field)
+            if value is not None:
+                return value, basis, stamp
+        return None, None, stamp
 
     def _ready_mover_evidence(self, mover: str, *, bytes_ahead: int | None,
                               prior: Mapping[str, object] | None, now: float,
@@ -7626,10 +7654,17 @@ class PoolQueue:
 
         The claim pass's word first.  A refusal: not coming.  A withhold:
         the pool is holding the stage host for this row while the holders in
-        its way drain (#924), so it is next (``withheld``), until
-        ``WITHHOLD_CEILING_S`` past the withhold's epoch
-        (:meth:`_withhold_epoch`); past it, or with no epoch on file, not
-        coming (``withhold-lapsed``, #1022 review round 3).  Then the
+        its way drain (#924), so it is next (``withheld``) while the pool
+        still says so (:meth:`_withhold_epoch`, #1052): the claim pass
+        counted a denial of the row within ``WITHHOLD_STAMP_FRESH_S``
+        (``withhold_live_by`` ``claim-pass``) -- it re-judges the withhold
+        every pass, and the pass that stops withholding records a reason
+        that is not a withhold -- or, with no such pass on file, until
+        ``WITHHOLD_CEILING_S`` past the withhold's epoch (``epoch``, #1022
+        review round 3).  Otherwise not coming (``withhold-lapsed``).  The
+        epoch alone undercut the pool: it expires an episode at the ceiling
+        only when the episode has refills, and withholds one without them
+        up to a transient holder's declared end.  Then the
         movers queued ahead of it when this staged wait first looked
         (``waiting_behind``, the landing record's ``movers_ahead`` at that
         look, carried on the verdict): while one of them is claimed and its
@@ -7658,12 +7693,25 @@ class PoolQueue:
             kind, reason, host = refusal
             if kind == "refusal":
                 return {kind: reason, "denied_by": host, "evidence": "refused"}
-            epoch, basis = self._withhold_epoch(mover)
-            live = epoch is not None and now - epoch <= WITHHOLD_CEILING_S
+            epoch, basis, stamp = self._withhold_epoch(mover)
+            # The pool's live answer first (#1052): the claim pass re-judges
+            # the withhold every pass, and the pass that stops it records a
+            # reason that is not a withhold.  Then the epoch's own ceiling,
+            # the bound when no fresh pass is on file.
+            # A sidecar with no start on file is not one ``record_pass``
+            # writes (it always keeps ``first_unix``), so its stamp is not
+            # read as the pool's word.
+            fresh = (basis is not None and stamp is not None
+                     and -OFFER_FUTURE_TOLERANCE_S <= now - stamp <= WITHHOLD_STAMP_FRESH_S)
+            by_epoch = epoch is not None and now - epoch <= WITHHOLD_CEILING_S
+            live_by = "claim-pass" if fresh else "epoch" if by_epoch else None
             return {kind: reason, "denied_by": host,
-                    "evidence": "withheld" if live else "withhold-lapsed",
+                    "evidence": "withheld" if live_by else "withhold-lapsed",
                     "evidence_unix": epoch, "withhold_basis": basis,
                     "withhold_ceiling_s": WITHHOLD_CEILING_S,
+                    "withhold_stamp_unix": stamp,
+                    "withhold_stamp_fresh_s": WITHHOLD_STAMP_FRESH_S,
+                    "withhold_live_by": live_by,
                     "waiting_behind": behind}
         out: dict[str, object] = {"bytes_ahead": bytes_ahead}
         carries = (isinstance(prior, Mapping) and prior.get("state") == READY
