@@ -171,6 +171,9 @@ prismabuild_terminal_timing_window_jobs{host="gx10-6b77",phase="execution"} 3
 prismabuild_terminal_timing_window_jobs{host="gx10-6b77",phase="queue_wait"} 3
 prismabuild_terminal_timing_window_jobs{host="sparky",phase="execution"} 3
 prismabuild_terminal_timing_window_jobs{host="sparky",phase="queue_wait"} 3
+# HELP prismabuild_tier_announce_age_seconds Seconds since the tier loop last announced this tier (announced_unix). A live loop, idle or mid-cycle, keeps it below pool.OFFER_TIMEOUT_S; a loop stuck inside a cycle stops writing and it grows past that (#1115). Absent where no record was announced.
+# TYPE prismabuild_tier_announce_age_seconds gauge
+prismabuild_tier_announce_age_seconds{tier="prismabuild-stage:dl380g10"} 0
 # HELP prismabuild_tier_fill_supply_mb_s Learned pool-side fill bandwidth per tier from the tier loop's latest announcement; best is the highest delivery since the last ceiling, ceiling the most recent measured shortfall, and probe_offer the live selected offer over a standing ceiling -- the larger of the fold's ceiling-plus-median reader and the ceiling plus the oldest ready mover's sealed demand. Absent, not zero, where the tier announced none.
 # TYPE prismabuild_tier_fill_supply_mb_s gauge
 prismabuild_tier_fill_supply_mb_s{stat="best",tier="prismabuild-stage:dl380g10"} 300
