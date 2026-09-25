@@ -798,6 +798,89 @@ PREWARM_RECEIPT_RETENTION_S = 7 * 24 * 3600.0
 #: mover's receipt is the pool-side rate the tier mints its fill tokens from.
 MOVERS = "movers"
 
+#: The pricing log beside ``movers/`` (#1044): one line per filed receipt,
+#: holding only the fields a next submission prices from, so
+#: :meth:`PoolQueue.move_records` opens one file instead of every receipt.
+#: A directory of its own, not a file in ``movers/``: the tier loop, pbmcp,
+#: pbmetrics and the visibility qualifier all list ``movers/*.json`` and
+#: parse what they find.
+MOVERS_PRICING = "movers-pricing"
+MOVERS_PRICING_LOG = "receipts.jsonl"
+MOVERS_PRICING_LOCK = "receipts.lock"
+#: The first field of every log line.  A line with any other tag is not
+#: read, so changing :data:`MOVE_PRICING_FIELDS` means changing this tag:
+#: every receipt is then read once more and logged in the new shape.
+MOVE_PRICING_LOG_TAG = b"pricing.v1"
+#: What a pricing read keeps of each receipt.  Every field the three
+#: pricing readers of :meth:`PoolQueue.move_records` consult, and nothing
+#: else: ``storage_tiers.usable_mover_receipts``,
+#: ``mover_demand_from_receipts`` and ``mover_fill_price`` (with
+#: ``_landing_mb_s``, ``_measured_the_pool``, ``_single_reader_share`` and
+#: ``_latest_window``), ``movement_actions.egress_price``, and pbrun's
+#: window-concurrency count.  ``disk_pacing`` keeps only
+#: :data:`MOVE_PRICING_PACING_FIELDS`.  A field is kept only when the
+#: receipt has it, so "absent" and "present" price exactly as before.
+MOVE_PRICING_FIELDS = (
+    "schema", "action_key", "unix", "tier_id", "pool_identity", "refusal",
+    "seconds", storage_tiers.MOVER_CPU_FIELD, storage_tiers.MOVER_RSS_FIELD,
+    "consumer_action_key", "manifest_sha256", "complete", "bytes_staged",
+    "mb_per_s_file_side", storage_tiers.MOVER_CONCURRENCY_FIELD,
+    "disk_pacing",
+    # An egress receipt's terms (``movement_actions._EGRESS_TIMINGS``).
+    "stage_root", "entries_judged", "census_s", "census_validate_s",
+    "lock_held_s", "unlink_s", "prune_s",
+)
+MOVE_PRICING_PACING_FIELDS = ("pool_read_bytes", storage_tiers.POOL_FILL_FIELD)
+
+
+def move_pricing_projection(record: Mapping[str, object]) -> dict[str, object]:
+    """The fields of one movement receipt that pricing reads (#1044).
+
+    Every pricing function reads a receipt through ``record.get``, so a
+    projection that keeps each listed field exactly when the receipt has it
+    prices the same as the whole receipt.  ``disk_pacing`` is read only as a
+    mapping (``storage_tiers._delivered``, ``_measured_the_pool``), so any
+    other value is dropped, which reads the same as absent.
+    """
+
+    out = {name: record[name] for name in MOVE_PRICING_FIELDS
+           if name in record and name != "disk_pacing"}
+    pacing = record.get("disk_pacing")
+    if isinstance(pacing, Mapping):
+        out["disk_pacing"] = {name: pacing[name]
+                              for name in MOVE_PRICING_PACING_FIELDS
+                              if name in pacing}
+    return out
+
+
+def _move_pricing_line(name: str, record: Mapping[str, object]) -> bytes:
+    body = pb._canonical_bytes(move_pricing_projection(record))
+    return b"\t".join((MOVE_PRICING_LOG_TAG, name.encode(), body)) + b"\n"
+
+
+def _move_pricing_unknown_line(name: str) -> bytes:
+    """A line that makes ``name`` unknown to the log until a later line.
+
+    Appended before a receipt is re-filed under its own name, so a log that
+    loses the new receipt's line -- a crash between the rename and the
+    append, a failed append -- reads that name from the receipt rather than
+    from its older line.
+    """
+
+    return b"\t".join((MOVE_PRICING_LOG_TAG, name.encode(), b"")) + b"\n"
+
+
+def _move_pricing_line_name(line: bytes) -> str | None:
+    """The receipt name a log line is about, even when its body is torn."""
+
+    parts = line.split(b"\t", 2)
+    if len(parts) < 2 or parts[0] != MOVE_PRICING_LOG_TAG:
+        return None
+    try:
+        return parts[1].decode()
+    except UnicodeDecodeError:
+        return None
+
 #: Who holds a stage's ownership lock, as the holder itself says (#1021).  A
 #: lock file must stay empty (``posix_lock``: only a retirement writes one),
 #: so the record lives in a directory of its own, named like the lock.  A
@@ -6474,16 +6557,114 @@ class PoolQueue:
             out.append(name[:-len(".json")] if name.endswith(".json") else name)
         return sorted(out)
 
+    def move_pricing_log_path(self) -> Path:
+        """The pricing log :meth:`move_records` reads (#1044)."""
+
+        return self.root / MOVERS_PRICING / MOVERS_PRICING_LOG
+
+    def _read_move_pricing_log(self) -> tuple[dict[str, dict[str, object]], int | None]:
+        """What the pricing log says about each receipt name, and its size.
+
+        One read of one file.  The last line about a name wins, because a
+        receipt re-filed under the same key replaces the file and appends a
+        new line.  A line whose body does not parse -- a write cut off by a
+        crash, or bytes an operator mangled -- makes its name *unknown*
+        rather than leaving an older line standing, so the reader reads that
+        receipt itself.  A missing log reads as empty; an unreadable one too,
+        with ``None`` as its size so nothing is appended to it.
+        """
+
+        path = self.move_pricing_log_path()
+        try:
+            raw = path.read_bytes()
+        except FileNotFoundError:
+            return {}, 0
+        except OSError:
+            return {}, None
+        kept: dict[str, dict[str, object]] = {}
+        lines = raw.split(b"\n")
+        # The last piece has no newline after it: empty when the log ends
+        # cleanly, a line still being written (or cut off) otherwise.
+        partial = lines.pop()
+        for line in lines:
+            name = _move_pricing_line_name(line)
+            if name is None:
+                continue
+            try:
+                record = json.loads(line.split(b"\t", 2)[2])
+            except (IndexError, ValueError):
+                record = None
+            if isinstance(record, dict):
+                kept[name] = record
+            else:
+                kept.pop(name, None)
+        name = _move_pricing_line_name(partial)
+        if name is not None:
+            kept.pop(name, None)
+        return kept, len(raw)
+
+    def _append_move_pricing(self, lines: Sequence[tuple[str, bytes]], *,
+                             since: int | None, blocking: bool) -> bool:
+        """Append pricing lines under the log's lock; ``False`` if nothing was.
+
+        ``since`` is the log size the caller read before it read the receipts
+        it is logging.  A line about one of those names appended after that
+        was appended by the writer of a newer receipt, so the caller's line
+        would be the older one landing last, and it is dropped.  A writer
+        passes ``None``: its line is about the receipt it just filed.  A log
+        whose last line was cut off gets a newline first, so a torn line
+        never swallows the next one.
+        """
+
+        path = self.move_pricing_log_path()
+        with posix_lock.held(path.with_name(MOVERS_PRICING_LOCK),
+                             blocking=blocking) as got:
+            if not got:
+                return False
+            descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_APPEND, 0o644)
+            try:
+                size = os.fstat(descriptor).st_size
+                skip: set[str] = set()
+                if since is not None:
+                    start = since if since <= size else 0
+                    tail = os.pread(descriptor, size - start, start)
+                    skip = {name for name in map(_move_pricing_line_name,
+                                                 tail.split(b"\n"))
+                            if name is not None}
+                data = b"".join(line for name, line in lines if name not in skip)
+                if not data:
+                    return False
+                if size and os.pread(descriptor, 1, size - 1) != b"\n":
+                    data = b"\n" + data
+                os.write(descriptor, data)
+            finally:
+                os.close(descriptor)
+        return True
+
     def move_records(self, *, schemas: Container[str] = (POOL_MOVE_SCHEMA_V1,),
                      ) -> list[dict[str, object]]:
-        """Every filed movement receipt, oldest first by the time it records.
+        """The pricing fields of every filed movement receipt, oldest first.
 
         The history a next submission prices itself from: ``mem_gb`` and
         ``cpu`` off ``peak_rss_bytes`` and ``cpu_seconds``, fill capacity off
-        the pool-side rate.  Append-only and small (one JSON per mover), so it
-        is read whole rather than indexed.  A record that is unreadable or not
-        a move receipt is skipped, never raised: a submission must not fail
-        because one older receipt was truncated.
+        the pool-side rate.  Each record is the receipt's
+        :func:`move_pricing_projection`, not the whole receipt: the fields
+        :data:`MOVE_PRICING_FIELDS` names, which are every field those
+        prices read.
+
+        The set of receipts is still every ``movers/*.json`` on disk: one
+        names-only listing decides it.  What is no longer paid per receipt is
+        the read (#1044).  Each name the pricing log covers is taken from the
+        log, which is one file; only a name it does not cover is read
+        itself -- a receipt filed by a writer that predates the log, or one
+        whose line was lost -- and its line is appended so the next read does
+        not read it again.  With no log at all this is the old full read,
+        once.  Appending is best effort under a non-blocking lock: a read
+        that cannot append still answers.
+
+        A record that is unreadable or not a move receipt is skipped, never
+        raised: a submission must not fail because one older receipt was
+        truncated.  The order is the old one: by name, then by ``unix``.
 
         ``schemas`` widens the read to other receipts filed in the same
         directory: pbrun asks for egress receipts too
@@ -6493,19 +6674,38 @@ class PoolQueue:
         directory = self.root / MOVERS
         out: list[dict[str, object]] = []
         try:
-            paths = sorted(directory.glob("*.json"))
+            # By name: the order sorting the paths gave, since they share a
+            # parent, at a string compare each instead of a path compare
+            # (1.3 s of a 2.6 s read over 50,000 receipts).
+            paths = sorted(directory.glob("*.json"), key=lambda path: path.name)
         except OSError:
             return out
+        logged, since = self._read_move_pricing_log()
+        missing: list[tuple[str, bytes]] = []
         for path in paths:
-            try:
-                record = _read_json(path, tolerate_stale=True)
-            except PoolContractError:
-                continue
-            if not isinstance(record, dict):
-                continue
+            name = path.name
+            record = logged.get(name)
+            if record is None:
+                try:
+                    full = _read_json(path, tolerate_stale=True)
+                except PoolContractError:
+                    continue
+                if not isinstance(full, dict):
+                    continue
+                record = move_pricing_projection(full)
+                if "\t" not in name and "\n" not in name:
+                    try:
+                        missing.append((name, _move_pricing_line(name, full)))
+                    except ValueError:
+                        pass      # not canonical JSON: read it again next time
             if record.get("schema") not in schemas:
                 continue
             out.append(record)
+        if missing and since is not None:
+            try:
+                self._append_move_pricing(missing, since=since, blocking=False)
+            except OSError:
+                pass
         out.sort(key=lambda r: float(r.get("unix", 0.0) or 0.0))
         return out
 
@@ -6530,9 +6730,31 @@ class PoolQueue:
         same-thread nesting is supported, so filing from inside a mint
         section cannot deadlock.  A receipt naming no tier files exactly as
         before (egress receipts are not move receipts and never count).
+
+        Then, outside the mint lock, the receipt's line is appended to the
+        pricing log (#1044), after the receipt itself is in place, so a line
+        never names a receipt that is not there yet.  A receipt re-filed
+        under a name the log may already cover first appends a line that
+        makes the name unknown, so losing the new line -- a crash between
+        the rename and the append, or a failed append -- leaves the name to
+        be read from the receipt, never from its older line.  A failed
+        append does not fail the filing: a receipt the log does not cover is
+        read by the next :meth:`move_records`.
         """
 
         tier_id = record.get("tier_id") if isinstance(record, Mapping) else None
+        # A name the log's line format cannot carry is never logged; the
+        # reader opens that receipt itself, as it does any unlogged name.
+        loggable = "\t" not in action_key and "\n" not in action_key
+        try:
+            existing = self.move_path(action_key)
+            if loggable and os.path.lexists(existing):
+                self._append_move_pricing(
+                    [(existing.name, _move_pricing_unknown_line(existing.name))],
+                    since=None, blocking=True)
+        except (OSError, PoolContractError):
+            pass
+        path: Path | None = None
         if isinstance(tier_id, str) and tier_id:
             try:
                 lock = self.tier_mint_lock(tier_id)
@@ -6540,20 +6762,31 @@ class PoolQueue:
                 lock = None
             if lock is not None:
                 with lock:
-                    return self._file_move(action_key, record)
-        return self._file_move(action_key, record)
+                    path, body = self._file_move(action_key, record)
+        if path is None:
+            path, body = self._file_move(action_key, record)
+        if not loggable:
+            return path
+        try:
+            # The receipt as it now reads on disk, so the line prices exactly
+            # what a read of the file would.
+            filed = json.loads(pb._canonical_bytes(body))
+            self._append_move_pricing([(path.name, _move_pricing_line(
+                path.name, filed))], since=None, blocking=True)
+        except (OSError, ValueError, TypeError):
+            pass
+        return path
 
-    def _file_move(self, action_key: str, record: Mapping[str, object]) -> Path:
+    def _file_move(self, action_key: str, record: Mapping[str, object],
+                   ) -> tuple[Path, dict[str, object]]:
         """The atomic receipt write behind :meth:`record_move`."""
 
         path = self.move_path(action_key)
         path.parent.mkdir(parents=True, exist_ok=True)
-        _write_json_atomic(
-            path,
-            {**dict(record), "schema": POOL_MOVE_SCHEMA_V1,
-             "action_key": action_key},
-        )
-        return path
+        body = {**dict(record), "schema": POOL_MOVE_SCHEMA_V1,
+                "action_key": action_key}
+        _write_json_atomic(path, body)
+        return path, body
 
     # -- residency: the map an action reads, and the plan it was cut from ---
 

@@ -6141,6 +6141,47 @@ generation) reads everything, exactly as before. Prewarm records carry no tier
 and no identity and are the pool's other measurement; the supply fold keeps
 reading them, and keying them is a separate change.
 
+### A submission prices its movers from one log, not every receipt (#1044)
+
+Every consumer-row submission prices its movers through
+`PoolQueue.move_records`: pbrun's `residency_stage_rows`, pbcampaign's frozen
+data plans, and the produced-output exporter. That call used to open every
+receipt in `movers/`. On 2026-09-23 there were 8,148, growing by about 3,800 a
+day, on an HDD pool at 60-83% util, and on 2026-09-25 py-spy caught a Stage B
+row submission 2 min 10 s into that read.
+
+`record_move` now also appends one line per filed receipt to
+`movers-pricing/receipts.jsonl`, after the receipt is in place. A line holds
+`pool.move_pricing_projection` of the receipt: the fields
+`pool.MOVE_PRICING_FIELDS` names, which are every field the prices read
+(`storage_tiers.mover_demand_from_receipts`, `mover_fill_price`,
+`movement_actions.egress_price` and pbrun's window-concurrency count). A field
+is kept only when the receipt has it, so the prices are the same as off the
+whole receipt. The log lives outside `movers/` because the tier loop, pbmcp,
+pbmetrics and the visibility qualifier all list `movers/*.json`.
+
+`move_records` still decides the receipt set by one names-only listing of
+`movers/*.json`. It takes each listed name from the log, and opens only the
+names the log does not cover. It appends lines for those names under a
+non-blocking lock, so the next read does not open them again. The last line
+about a name wins. A line whose body does not parse makes its name unknown, so
+the receipt is read itself. With no log, the first read is the old full read,
+once.
+
+A receipt re-filed under its own name first appends a line that makes the
+name unknown, then files, then appends its own line. A crash or a failed
+append between the two leaves the name to be read from the receipt. A reader
+that logs a name compares against lines appended since it read the log, so
+its older line never lands after a writer's newer one.
+
+Two limits remain. The listing and the log are still one entry per receipt,
+so a read is O(receipts) in names and log bytes, but no longer in file opens.
+A line was about 780 bytes for the bench's receipts, and is longer for a
+receipt whose `pool_identity` lists more members. And a receipt re-filed by a writer that predates
+the log, under a name the log already covers, prices off the older line until
+that name is filed again. Retiring old receipts is a separate decision that
+this change does not make.
+
 ### The residency map
 
 `prismabuild.residency_map` is what a consumer reads to find its staged bytes;
