@@ -222,7 +222,16 @@ def test_an_unreadable_residency_lead_record_keeps_the_drain(box, monkeypatch) -
     assert queue.item_path(pool.READY, behind).exists()
 
 
-@pytest.mark.parametrize("reason", sorted(pool.WITHHOLD_CARRYING_REASONS))
+#: The rows a pass could not evaluate for a transient reason (#1085, #1143).
+CARRYING = ("container_image_presence_unknown", "residency_lead_record_unreadable",
+            "transition_busy")
+
+
+def test_the_carrying_reasons_are_exactly_the_failed_reads() -> None:
+    assert pool.WITHHOLD_CARRYING_REASONS == frozenset(CARRYING)
+
+
+@pytest.mark.parametrize("reason", CARRYING)
 def test_every_carrying_reason_hands_its_episode_to_the_next_pass(reason: str) -> None:
     """A ``transition_busy`` after an unknown pass, or the reverse, reads the
     episode the earlier pass carried: the host record holds only the latest
