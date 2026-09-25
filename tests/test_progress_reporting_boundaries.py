@@ -156,10 +156,28 @@ def test_first_lease_delay_does_not_spend_startup_grace(tmp_path, monkeypatch):
 
 
 def test_checkpoint_before_an_accepted_report_is_refunded_only_once(tmp_path, monkeypatch):
+    """A checkpoint that accepts a report is credited once, not twice.
+
+    Every withdrawal poll here costs 10 s on the worker's clock.  The report
+    is sampled at the start of the checkpoint that polls, and the whole
+    checkpoint is then refunded, so as that checkpoint ends the action has
+    exactly its run phase's grace left.  Sampling after the poll and then
+    refunding the poll as well would leave it 10 s more.
+
+    The allowance is read on the watch's own clock as that checkpoint ends.
+    It used to be inferred from the run's wall-clock ``elapsed_s`` against
+    1.2 s, which a loaded box stretched to 1.43 s (#1094), and from a 1.5 s
+    action outliving the stall, which a loaded box can also arrange.  So the
+    action here replays for a minute and the startup grace covers a slow
+    interpreter start: the report is always accepted, and only the stall
+    ends the run.
+    """
+
     from test_progress_keeps_a_working_action_alive import _claimed
 
-    queue, item = _claimed(tmp_path, mode="replay", seconds=1.5,
-                           policy=_policy(0.3, 0.3, 0.3))
+    run_grace = 0.3
+    queue, item = _claimed(tmp_path, mode="replay", seconds=60,
+                           policy=_policy(30, run_grace, run_grace))
     offset = [0.0]
     monkeypatch.setattr(pool, "time", SimpleNamespace(
         monotonic=lambda: time.monotonic() + offset[0],
@@ -172,11 +190,24 @@ def test_checkpoint_before_an_accepted_report_is_refunded_only_once(tmp_path, mo
         return result
 
     monkeypatch.setattr(queue, "withdrawal_covers", withdrawal)
-    outcome = queue.execute(item, timeout_s=5, heartbeat_s=0.05,
+    # ``(reports accepted, allowance left)`` as each checkpoint's refund lands.
+    allowances: list[tuple[int, float]] = []
+
+    class Watch(pool.ProgressWatch):
+        def shift(self, seconds: float) -> None:
+            super().shift(seconds)
+            allowances.append(
+                (self.accepted, self.stall_deadline() - pool.time.monotonic()))
+
+    monkeypatch.setattr(pool, "ProgressWatch", Watch)
+    outcome = queue.execute(item, timeout_s=30, heartbeat_s=0.05,
                             timeout_grace_s=0.2)
-    assert outcome["status"] == "timeout"
+    assert outcome["status"] == "timeout", repr(outcome)
     assert outcome["termination_reason"] == "no_progress"
-    assert outcome["elapsed_s"] < 1.2
+    assert outcome["progress_observation"]["accepted_count"] == 1
+    # The checkpoint that accepted the report left the run grace, and no more.
+    after_accept = [left for accepted, left in allowances if accepted]
+    assert after_accept and after_accept[0] <= run_grace, allowances
 
 
 def test_documented_package_reporter_is_available():

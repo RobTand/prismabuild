@@ -21,8 +21,10 @@ namespaces, and one successor publisher replaces them all:
 * every name is replaced, and every owner judgement names the dead owner;
 * the forest is listed once for the whole range, not once per name, and
   nothing of it is listed while the stage ownership lock is held;
-* the ``ownership_lock_held`` the publisher records stays under
-  ``LOCK_HELD_BOUND_S`` (the derivation is at the constant).
+* while the lock is held, nothing of the forest is read either, and what is
+  touched of it per hold is at most its fingerprint: one ``lstat`` of the
+  root and of each directory and one ``stat`` of each fragment.  Those are
+  counted, not timed (the reason is at :data:`FINGERPRINT_OPS`).
 
 A fragment filed into the forest mid-range is still seen by the very next
 decision.  Nothing here touches the live queue or a real stage root.
@@ -30,8 +32,11 @@ decision.  Nothing here touches the live queue or a real stage root.
 
 from __future__ import annotations
 
+import builtins
+import collections
 import contextlib
 import hashlib
+import io
 import os
 from pathlib import Path
 import sys
@@ -57,23 +62,31 @@ NEW = b"n" * SIZE
 OLD_DIGEST = hashlib.sha256(OLD).hexdigest()
 NEW_DIGEST = hashlib.sha256(NEW).hexdigest()
 
-#: Total seconds the publisher may hold the stage ownership lock across all
-#: 2,000 replacements.  Derived from the after-fix hold measured at exactly
-#: this shape on sparky (GB10) through pbrun: MEASURED_LOCK_HELD_S (action
-#: 1e0a9b624335), against BASE_LOCK_HELD_S with this test on the tree before
-#: the fix (pbtest shard 7bcd96891b36), where every re-decision listed the
-#: 406-directory forest under the lock, 810,000 listings in all.  Both ran on
-#: a Cortex-X925 core.  What remains under the
-#: lock per name is one ``lstat`` per forest directory and one ``stat`` per
-#: fragment (#761), the pin, claim and in-flight censuses a replacement
-#: passes (#966), and the rename.  The bound is three times the measured
-#: hold, so a loaded box does not fail it, and below the base hold.  What
-#: tells the two trees apart is the listing count under the lock below; the
-#: seconds bound is there so a listing per name, or anything else that grows
-#: with the forest under the lock, cannot come back unnoticed.
-MEASURED_LOCK_HELD_S = 3.31
-BASE_LOCK_HELD_S = 13.23
-LOCK_HELD_BOUND_S = 3 * MEASURED_LOCK_HELD_S
+#: What the publisher may do to the forest while it holds the stage
+#: ownership lock, per hold: ``lstat`` the root and each directory, ``stat``
+#: each fragment -- the census's fingerprint (#761) -- and nothing else.  No
+#: listing and no read.  Around it the lock also covers the pin, claim and
+#: in-flight censuses a replacement passes (#966) and the rename; those read
+#: ``leases/``, ``claimed/`` and the destination's directory, not the forest.
+#:
+#: This used to be a wall-clock bound on ``ownership_lock_held``: three times
+#: the 3.31 s measured at this shape on sparky (action 1e0a9b624335), against
+#: 13.23 s before the fix (pbtest shard 7bcd96891b36), which listed the
+#: 406-directory forest 810,000 times under the lock.  The seconds measured
+#: the box as much as the lock: under full-suite load the same tree held it
+#: between 10.97 and 22.2 s with nothing listed under it, and passed alone
+#: (#1079, #1094, #1108).  The count is what the seconds stood in for: a
+#: listing per name (by ``scandir`` or ``listdir``), a read per name, or a
+#: second pass over the forest per name breaks it on any box, and load
+#: changes none of it.  What it does not see is work under the lock that
+#: touches no file; a bound at three times an idle sample could not tell
+#: that from load either.  The seconds are still printed, as the receipt's
+#: ``ownership_lock_held``.
+FINGERPRINT_OPS = ("lstat", "stat")
+
+#: Directories of the residency root that are not the forest: the pin census
+#: a replacement passes reads them per name by design (#966).
+_NOT_THE_FOREST = frozenset({"leases", "material"})
 
 
 def _filesystem_type(path: Path) -> str | None:
@@ -140,43 +153,99 @@ def _dead_owner(fleet, destinations: list[Path]) -> tuple[str, str]:
     return consumer, mover
 
 
-def _forest_listings(monkeypatch: pytest.MonkeyPatch, publisher,
-                     root: Path) -> list[tuple[str, bool]]:
-    """Every ``os.scandir`` of the residency root or a namespace in it.
+class _ForestTouches:
+    """What was done to the residency forest, and what of it under the lock.
 
-    Each call is recorded with whether the calling thread held the stage
-    ownership lock at the time.  Not ``leases/`` or ``material/``: the pin
-    census a replacement passes reads those per name by design (#966), and
-    they are not the forest.
+    ``listings`` is every ``os.scandir`` or ``os.listdir`` of the residency
+    root or a namespace in it, with whether the calling thread held the stage
+    ownership lock at the time.  ``locked`` counts, by call, what was done to
+    the forest -- the root, a namespace, or a file in one -- while the lock
+    was held, and ``holds`` how many times it was taken.  Not ``leases/`` or
+    ``material/``: the pin census a replacement passes reads those per name
+    by design (#966), and they are not the forest.
     """
 
-    calls: list[tuple[str, bool]] = []
-    holding = threading.local()
-    real_scandir = os.scandir
+    def __init__(self, root: Path) -> None:
+        self.prefix = str(root)
+        self.inside = self.prefix + os.sep
+        self.listings: list[tuple[str, bool]] = []
+        self.locked: collections.Counter[str] = collections.Counter()
+        self.holds = 0
+        self.holding = threading.local()
+
+    def under_lock(self) -> bool:
+        return getattr(self.holding, "depth", 0) > 0
+
+    def part(self, path: object) -> str | None:
+        """``"root"``, ``"namespace"`` or ``"file"`` of the forest, or ``None``.
+
+        String work only: under the lock this runs once per ``stat`` and
+        ``lstat``, 1.16 million times in the test below.
+        """
+
+        if type(path) is not str:
+            if not isinstance(path, os.PathLike):
+                return None     # a descriptor: nothing here passes one
+            path = os.fspath(path)
+            if not isinstance(path, str):
+                return None
+        if path == self.prefix:
+            return "root"
+        if not path.startswith(self.inside):
+            return None
+        head, _sep, rest = path[len(self.inside):].partition(os.sep)
+        if not head or head in _NOT_THE_FOREST:
+            return None
+        if not rest:
+            return "namespace"
+        return None if os.sep in rest else "file"
+
+
+def _forest_touches(monkeypatch: pytest.MonkeyPatch, publisher,
+                    root: Path) -> _ForestTouches:
+    """Record every listing of the forest, and what the lock covers of it."""
+
+    touches = _ForestTouches(root)
     real_lock = publisher.queue.stage_ownership_lock
-    prefix = str(root)
-    skipped = {os.path.join(prefix, name) for name in ("leases", "material")}
 
     @contextlib.contextmanager
     def lock(*args, **kwargs):  # type: ignore[no-untyped-def]
         with real_lock(*args, **kwargs):
-            holding.depth = getattr(holding, "depth", 0) + 1
+            touches.holding.depth = getattr(touches.holding, "depth", 0) + 1
+            touches.holds += 1
             try:
                 yield
             finally:
-                holding.depth -= 1
+                touches.holding.depth -= 1
 
-    def scandir(path=".", *args, **kwargs):  # type: ignore[no-untyped-def]
-        if isinstance(path, (str, os.PathLike)):
-            name = str(path)
-            if name == prefix or (os.path.dirname(name) == prefix
-                                  and name not in skipped):
-                calls.append((name, getattr(holding, "depth", 0) > 0))
-        return real_scandir(path, *args, **kwargs)
+    def listing(real):  # type: ignore[no-untyped-def]
+        def call(path=".", *args, **kwargs):  # type: ignore[no-untyped-def]
+            if touches.part(path) in ("root", "namespace"):
+                under = touches.under_lock()
+                touches.listings.append((os.fspath(path), under))
+                if under:
+                    touches.locked["list"] += 1
+            return real(path, *args, **kwargs)
+        return call
+
+    def counted(kind, real):  # type: ignore[no-untyped-def]
+        holding, part, locked = touches.holding, touches.part, touches.locked
+
+        def call(path, *args, **kwargs):  # type: ignore[no-untyped-def]
+            if getattr(holding, "depth", 0) and part(path) is not None:
+                locked[kind] += 1
+            return real(path, *args, **kwargs)
+        return call
 
     monkeypatch.setattr(publisher.queue, "stage_ownership_lock", lock)
-    monkeypatch.setattr(os, "scandir", scandir)
-    return calls
+    monkeypatch.setattr(os, "scandir", listing(os.scandir))
+    monkeypatch.setattr(os, "listdir", listing(os.listdir))
+    monkeypatch.setattr(os, "lstat", counted("lstat", os.lstat))
+    monkeypatch.setattr(os, "stat", counted("stat", os.stat))
+    monkeypatch.setattr(os, "open", counted("read", os.open))
+    monkeypatch.setattr(io, "open", counted("read", io.open))
+    monkeypatch.setattr(builtins, "open", counted("read", builtins.open))
+    return touches
 
 
 @pytest.fixture()
@@ -218,10 +287,13 @@ def test_2000_names_of_one_dead_owner_list_the_forest_once(
         world, monkeypatch: pytest.MonkeyPatch) -> None:
     publisher, destinations, consumer, mover, copier = world
     root = publisher.residency_root
-    listings = _forest_listings(monkeypatch, publisher, root)
+    touches = _forest_touches(monkeypatch, publisher, root)
     for destination in destinations:
         written, digest, _identity_ = _replace(publisher, destination, copier)
         assert (written, digest) == (SIZE, NEW_DIGEST)
+    listings = list(touches.listings)
+    locked = collections.Counter(touches.locked)
+    holds = touches.holds
     assert all(path.read_bytes() == NEW for path in destinations)
     assert len(publisher.invalidated) == NAMES
     assert {(row["consumer_action_key"], row["mover_action_key"], row["state"])
@@ -231,20 +303,32 @@ def test_2000_names_of_one_dead_owner_list_the_forest_once(
     assert report["outcomes"] == {"replaced_ended_owner": NAMES}, report
     held = report["thread_seconds"]["ownership_lock_held"]
     print(f"ownership_lock_held {held}")
+    directories = [entry.path for entry in os.scandir(root)
+                   if entry.is_dir() and entry.name not in _NOT_THE_FOREST]
+    fragments = sum(1 for directory in directories
+                    for entry in os.scandir(directory) if entry.is_file())
+    fingerprint = 1 + len(directories) + fragments
     # The forest did not change during the range, so the first census listed
     # it and every later one, locked or not, compared stamps: nothing of the
     # forest was listed under the lock.
-    locked = [name for name, under_lock in listings if under_lock]
+    listed_locked = [name for name, under_lock in listings if under_lock]
     roots = [name for name, _under_lock in listings if name == str(root)]
-    namespaces = [entry.name for entry in os.scandir(root) if entry.is_dir()]
     print(f"forest listings {len(listings)} (root {len(roots)}, under the "
-          f"lock {len(locked)}), namespaces {len(namespaces)}")
-    assert locked == [], (len(locked), locked[:3])
+          f"lock {len(listed_locked)}), directories {len(directories)}, "
+          f"fragments {fragments}; under the lock, {holds} holds touched "
+          f"the forest {dict(sorted(locked.items()))}, at most "
+          f"{fingerprint} per hold")
+    assert listed_locked == [], (len(listed_locked), listed_locked[:3])
     assert len(roots) == 1, len(roots)
-    assert len(listings) <= 1 + len(namespaces), (
-        len(listings), len(namespaces))
+    assert len(listings) <= 1 + len(directories), (
+        len(listings), len(directories))
     assert held["calls"] >= NAMES, held
-    assert held["seconds"] < LOCK_HELD_BOUND_S, held
+    assert holds == held["calls"], (holds, held)
+    # What the lock covered of the forest is its fingerprint, once per hold at
+    # most, and nothing more: no listing, no read, no second pass.
+    assert set(locked) <= set(FINGERPRINT_OPS), locked
+    assert sum(locked.values()) <= holds * fingerprint, (
+        locked, holds, fingerprint)
 
 
 def test_a_fragment_filed_mid_range_is_seen_by_the_next_decision(

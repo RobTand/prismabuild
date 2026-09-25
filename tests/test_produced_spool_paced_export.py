@@ -132,6 +132,7 @@ def test_a_paced_export_reserves_the_fill_and_holds_its_rate(tmp_path):
     pacing = ps._read(spool._group("b1") / "receipt.json")["pacing"]
     assert pacing["schema"] == ps.PACING_SCHEMA and pacing["tier_id"] == fx.TIER
     assert pacing["rate_mb_s"] == 1 and pacing["bytes"] == len(payload)
+    print("PACING", pacing)
     # 1 MB at 1 MB/s: the pace binds, measured on the file side.
     assert pacing["seconds"] >= 0.95 and pacing["held_seconds"] > 0.5
     assert pacing["flushes"] >= 1 and pacing["mb_per_s_file_side"] <= 1.1
@@ -152,22 +153,51 @@ def test_a_replay_keeps_the_price_it_was_sealed_at(tmp_path):
     assert row["resources"] == sealed(spool)["params"]["demand"]
 
 
+class PacerClock:
+    """``produced_spool``'s ``time`` for a pacer test: only a wait moves it.
+
+    The pacer subtracts the time the copy has taken from each wait.  On the
+    real clock a write or ``fdatasync`` that a loaded box slows shortens the
+    waits the pacer computes, so a test that asserts the waits measures the
+    box, not the pacer (#1047: under 16 shards the third wait came out 0.2 s,
+    not 0.3 s).  Here a write and a flush take no time and a wait takes
+    exactly what it asks for, so the waits are the pacer's schedule.
+    """
+
+    def __init__(self, events: list[tuple[str, float]]) -> None:
+        self.now = 1000.0
+        self.events = events
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.events.append(("sleep", seconds))
+        self.now += seconds
+
+
 def test_the_pacer_flushes_before_it_waits(tmp_path, monkeypatch):
     events: list[tuple[str, float]] = []
     real_sync = os.fdatasync
+    # The real flush, kept for the order only: on this clock it takes no time.
     monkeypatch.setattr(ps.os, "fdatasync",
                         lambda fd: (events.append(("sync", 0.0)), real_sync(fd))[1])
-    monkeypatch.setattr(ps.time, "sleep", lambda s: events.append(("sleep", s)))
+    monkeypatch.setattr(ps, "time", PacerClock(events))
     pacer = ps.ExportPacer(1)
+    block = 125_000     # 0.125 s at 1 MB/s: every sum below is exact in binary
     with (tmp_path / "out").open("wb") as handle:
         for _ in range(3):
-            handle.write(b"y" * 100_000)
-            pacer.wrote(100_000, handle)
+            handle.write(b"y" * block)
+            pacer.wrote(block, handle)
     kinds = [kind for kind, _ in events]
     assert kinds == ["sync", "sleep"] * 3
-    assert [round(s, 1) for kind, s in events if kind == "sleep"] == [0.1, 0.2, 0.3]
+    # Each block runs 0.125 s ahead of the rate the moment it is written, and
+    # the pacer waits out exactly that, block after block.
+    assert [s for kind, s in events if kind == "sleep"] == [0.125] * 3
     record = pacer.record(fx.TIER)
-    assert record["flushes"] == 3 and record["bytes"] == 300_000
+    assert record["flushes"] == 3 and record["bytes"] == 3 * block
+    assert record["seconds"] == record["held_seconds"] == 0.375
+    assert record["mb_per_s_file_side"] == 1.0
     ps._check_pacing(record)
 
 

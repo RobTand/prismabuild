@@ -58,6 +58,8 @@ class Readers:
         self.forked_at: list[float] = []
         self.reaped: set[int] = set()
         self.peak = 0
+        #: Every fork and reap, in the order this process made them.
+        self.events: list[tuple[str, int]] = []
         fork = pbrun.pbstatus.os.fork
         waitpid = pbrun.pbstatus.os.waitpid
 
@@ -66,6 +68,7 @@ class Readers:
             if pid:
                 self.forked.append(pid)
                 self.forked_at.append(time.monotonic())
+                self.events.append(("fork", pid))
                 self.peak = max(self.peak, len(self.alive()))
             return pid
 
@@ -73,6 +76,7 @@ class Readers:
             done, status = waitpid(pid, options)
             if done:
                 self.reaped.add(done)
+                self.events.append(("reap", done))
             return done, status
 
         monkeypatch.setattr(pbrun.pbstatus.os, "fork", tracked_fork)
@@ -286,7 +290,17 @@ def test_a_retained_verification_reader_is_waited_out_too(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """The ending has landed; its verification read is what gets stuck."""
+    """The ending has landed; its verification read is what gets stuck.
+
+    Nothing here depends on how fast the box forks or reaps a reader (#1094).
+    Only the read the "mount" blocks runs on a short budget; every read it
+    answers keeps the real ``OUTCOME_READ_TIMEOUT_S``, where a 0.05 s budget
+    for all of them let a loaded box time out the observation instead.  The
+    stuck reader is the one that verification forked, not the second fork,
+    and the "kernel" holds it for a number of reap attempts, not until a
+    wall-clock instant.  What the wait must show is an order: no reader
+    starts between that reader's fork and its reap.
+    """
 
     queue = Queue(tmp_path / "queue")
     queue.item_path("done", KEY).write_text(json.dumps(_ending()), encoding="utf-8")
@@ -303,18 +317,58 @@ def test_a_retained_verification_reader_is_waited_out_too(
         return real_render(q, outcome_path, outcome)
 
     monkeypatch.setattr(pbrun, "_outcome_render_value", render)
-    monkeypatch.setattr(pbrun, "OUTCOME_READ_TIMEOUT_S", 0.05)
     monkeypatch.setattr(pbrun, "POLL_S", 0.5)
+    # Every unavailable read is reported, so what the wait says does not
+    # depend on which read came first inside a notice interval.
+    monkeypatch.setattr(pbrun, "UNAVAILABLE_NOTICE_INTERVAL_S", 0.0)
     readers = Readers(monkeypatch)
-    _hold_one_reader(monkeypatch, readers, index=1,
-                     release_at=time.monotonic() + 1.0,
-                     on_release=readable.touch)
+    held = {"from": None, "pid": None, "reaps": 0}
+    # pbstatus's own reap after its kill, then the wait's first look: both
+    # find the reader still in the "kernel"; the wait's next look reaps it.
+    held_reaps = 2
+    real_verify = pbrun.bounded_outcome_render
+
+    def verify(q, outcome_path, outcome, *, budget_s, **kwargs):
+        if not readable.exists():
+            # This read cannot finish, whatever its budget; a short one only
+            # spares the test the real five seconds.
+            held["from"] = len(readers.forked)
+            budget_s = 0.05
+        return real_verify(q, outcome_path, outcome, budget_s=budget_s, **kwargs)
+
+    real_reap = pbrun.pbstatus._reap_within
+
+    def reap_within(pid, grace_s):
+        if (held["pid"] is None and held["from"] is not None
+                and pid in readers.forked[held["from"]:]):
+            held["pid"] = pid
+        if pid == held["pid"]:
+            held["reaps"] += 1
+            if held["reaps"] <= held_reaps:
+                return False
+            readable.touch()    # the "mount" recovers as the kernel lets go
+        return real_reap(pid, grace_s)
+
+    monkeypatch.setattr(pbrun, "bounded_outcome_render", verify)
+    monkeypatch.setattr(pbrun.pbstatus, "_reap_within", reap_within)
     try:
         assert pbrun.await_outcome(queue, KEY, wait_s=60) == 0
         out, err = capsys.readouterr()
         assert "7 passed" in out
         assert "pool outcome verification timed out" in err
-        assert readers.peak == 1
+        assert "reader has exited and was reaped" in err
+        # The verification's own reader was retained, and the wait looked at
+        # it again, still retained, before it was reaped.
+        stuck_pid = held["pid"]
+        assert stuck_pid is not None and held["reaps"] > held_reaps
+        assert ("reap", stuck_pid) in readers.events, readers.events
+        # Never two at once: nothing was forked beside the retained reader.
+        retained = readers.events[readers.events.index(("fork", stuck_pid)):
+                                  readers.events.index(("reap", stuck_pid))]
+        assert [event for event in retained if event[0] == "fork"] == [
+            ("fork", stuck_pid)], readers.events
+        # The observation before it, and the observation and verification
+        # after it that found the ending.
         assert len(readers.forked) >= 4
     finally:
         readers.cleanup()
