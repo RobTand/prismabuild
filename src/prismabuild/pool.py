@@ -849,6 +849,18 @@ def _move_pricing_line(name: str, record: Mapping[str, object]) -> bytes:
     return b"\t".join((MOVE_PRICING_LOG_TAG, name.encode(), body)) + b"\n"
 
 
+def _move_pricing_unknown_line(name: str) -> bytes:
+    """A line that makes ``name`` unknown to the log until a later line.
+
+    Appended before a receipt is re-filed under its own name, so a log that
+    loses the new receipt's line -- a crash between the rename and the
+    append, a failed append -- reads that name from the receipt rather than
+    from its older line.
+    """
+
+    return b"\t".join((MOVE_PRICING_LOG_TAG, name.encode(), b"")) + b"\n"
+
+
 def _move_pricing_line_name(line: bytes) -> str | None:
     """The receipt name a log line is about, even when its body is torn."""
 
@@ -6709,12 +6721,24 @@ class PoolQueue:
 
         Then, outside the mint lock, the receipt's line is appended to the
         pricing log (#1044), after the receipt itself is in place, so a line
-        never names a receipt that is not there yet.  A failed append does
-        not fail the filing: a receipt the log does not cover is read by the
-        next :meth:`move_records`.
+        never names a receipt that is not there yet.  A receipt re-filed
+        under a name the log may already cover first appends a line that
+        makes the name unknown, so losing the new line -- a crash between
+        the rename and the append, or a failed append -- leaves the name to
+        be read from the receipt, never from its older line.  A failed
+        append does not fail the filing: a receipt the log does not cover is
+        read by the next :meth:`move_records`.
         """
 
         tier_id = record.get("tier_id") if isinstance(record, Mapping) else None
+        try:
+            existing = self.move_path(action_key)
+            if os.path.lexists(existing):
+                self._append_move_pricing(
+                    [(existing.name, _move_pricing_unknown_line(existing.name))],
+                    since=None, blocking=True)
+        except (OSError, PoolContractError):
+            pass
         path: Path | None = None
         if isinstance(tier_id, str) and tier_id:
             try:

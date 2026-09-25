@@ -262,21 +262,37 @@ def test_a_cut_off_or_mangled_log_prices_alike(queue) -> None:
     log = queue.move_pricing_log_path()
     queue.move_records(schemas=BOTH)
     whole = log.read_bytes()
-    lines = whole.split(b"\n")
-    assert len(lines) > 20
-    # Cut off mid-line, including the re-filed receipt's newer line.
-    log.write_bytes(whole[: len(whole) // 2 + 7])
+    lines = whole.split(b"\n")[:-1]
+    # The re-filed receipt's lines: its first filing, the line that made it
+    # unknown before the re-filing, and the re-filing's own line.
+    unknown = [index for index, line in enumerate(lines) if line.endswith(b"\t")]
+    assert len(unknown) == 1
+    name = pool._move_pricing_line_name(lines[unknown[0]])
+    about = [index for index, line in enumerate(lines)
+             if pool._move_pricing_line_name(line) == name]
+    assert len(about) == 3 and about[1] == unknown[0]
+    final = about[2]
+
+    def write(kept: list[bytes], tail: bytes = b"") -> None:
+        log.write_bytes(b"".join(line + b"\n" for line in kept) + tail)
+
+    # A crash between the re-filing's rename and its line: the log's last
+    # word on the name is "unknown", so the receipt itself is read.
+    write(lines[:final] + lines[final + 1:])
+    _check(queue)
+    # The re-filing's line cut off mid-way, as the log's last bytes.
+    write(lines[:final], lines[final][: len(lines[final]) // 2])
     _check(queue)
     # Garbage, a torn body for a logged name, a line with a foreign tag, and
     # a body that is not an object.
-    name = pool._move_pricing_line_name(lines[3])
-    assert name is not None
+    other = pool._move_pricing_line_name(lines[3])
+    assert other is not None and other != name
     log.write_bytes(
         b"\x00\xffgarbage\n"
         + whole
-        + pool.MOVE_PRICING_LOG_TAG + b"\t" + name.encode() + b"\t{\"sch\n"
-        + b"pricing.v0\t" + name.encode() + b"\t{}\n"
-        + pool.MOVE_PRICING_LOG_TAG + b"\t" + name.encode() + b"\t[1]\n")
+        + pool.MOVE_PRICING_LOG_TAG + b"\t" + other.encode() + b"\t{\"sch\n"
+        + b"pricing.v0\t" + other.encode() + b"\t{}\n"
+        + pool.MOVE_PRICING_LOG_TAG + b"\t" + other.encode() + b"\t[1]\n")
     _check(queue)
     # A log that ends mid-line: the next line a writer appends still parses.
     log.write_bytes(whole + pool.MOVE_PRICING_LOG_TAG + b"\tpartial")
