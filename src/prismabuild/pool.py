@@ -13296,11 +13296,17 @@ class PoolQueue:
                 or record.get("action_key") != telemetry.get("action_key")):
             return False
         producer = _read_json(self.item_path(CLAIMED, str(owner)))
-        ref = producer.get("produced_output") if isinstance(producer, Mapping) else None
-        template = ref.get("template_sha256") if isinstance(ref, Mapping) else None
+        # The same reading of the producer's reference its allowance was
+        # sized from: its template, or the family the template declares
+        # (#1126).  A reference naming a malformed family teaches nothing.
+        names = cpu_admission.export_rate_names(
+            producer.get("produced_output") if isinstance(producer, Mapping) else None)
+        if names is None:
+            return False
+        template, family = names
         return cpu_admission.learn_export(
             self.ledger(), template, owner, record.get("published_unix"),
-            telemetry.get("wall_seconds"))
+            telemetry.get("wall_seconds"), family=family)
 
     def _producer_family(self, owner: str) -> tuple[set[str], int]:
         """``owner`` and the movement its frozen plan publishes (#999).
@@ -13641,6 +13647,11 @@ class PoolQueue:
             "template_id": str(validated["template_id"]),
             "template_sha256": produced_mod.template_sha256(validated),
         }
+        if "export_rate_family" in validated:
+            # Projected beside the digest that covers it, for the claim path
+            # to key the owner's export rates on (#1126) without reading the
+            # template body; absent, the reference is what it always was.
+            ref["export_rate_family"] = str(validated["export_rate_family"])
         return validated, ref
 
     @staticmethod

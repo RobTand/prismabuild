@@ -128,34 +128,88 @@ EXPORT_DEMAND = {'cpu': 1, 'mem_gb': 1}
 #: ``EXPORT_SLOTS_ENV=0`` opts out.
 DEFAULT_EXPORT_SLOTS = 1
 #: Measured export landings and group spacing per produced-output template
-#: (#999), host-local beside ``profiles.json`` and learned the same way.
+#: (#999), or per the family a template declares (#1126), host-local beside
+#: ``profiles.json`` and learned the same way.
 EXPORT_RATES = 'export-rates.json'
-#: How many landings and gaps a template keeps: the memory ``profiles`` keeps
-#: of completions.
+#: How many landings and gaps a key keeps: the memory ``profiles`` keeps of
+#: completions.
 EXPORT_RATE_MEMORY = 32
+#: The prefix of a declared family's key in :data:`EXPORT_RATES` (#1126).
+#: A template's key is its 64-hex digest, which cannot carry it, so no
+#: template's entry and no family's are ever the same entry.
+EXPORT_RATE_FAMILY_PREFIX = 'family:'
 
 
-def export_slots(rates, template_sha256):
-    """``(slots, basis)`` for a producer of ``template_sha256`` (#999).
+def export_rate_key(template_sha256, family=None):
+    """The :data:`EXPORT_RATES` key a producer's exports learn and read under.
+
+    ``family`` is the ``export_rate_family`` the producer's produced-output
+    template declares (#1126): every template of a family shares its entry,
+    ``family:<name>``, so a Stage B row -- its own template -- inherits what
+    the family's earlier rows measured.  ``None`` means none is declared, and
+    the key is the template's digest, as #999 keyed every producer.  A family
+    that is not an identifier (``produced_output.validate_export_rate_family``)
+    or, undeclared, a digest that is not a key has no key: nothing is learned
+    or read under it, so no malformed value lands on another producer's entry.
+    """
+    if family is None:
+        return template_sha256 if _is_key(template_sha256) else None
+    from . import produced_output
+    try:
+        return EXPORT_RATE_FAMILY_PREFIX + produced_output.validate_export_rate_family(family)
+    except produced_output.ProducedOutputError:
+        return None
+
+
+def export_rate_names(ref):
+    """``(template_sha256, family)`` a producer's ``produced_output`` reference
+    names, or ``None`` when it declares a family that is not an identifier.
+
+    ``PoolQueue.publish`` projects the reference from the validated template,
+    and carries ``export_rate_family`` only when the template declares it
+    (#1126); ``family`` is then ``None``.  A declared family the reader cannot
+    use is refused rather than read as undeclared: falling back to the
+    template would learn and size under a key the producer did not name.
+    """
+    if not isinstance(ref, dict):
+        return None, None
+    template = ref.get('template_sha256')
+    if 'export_rate_family' not in ref:
+        return template, None
+    family = ref['export_rate_family']
+    if not isinstance(family, str) or export_rate_key(template, family) is None:
+        return None
+    return template, family
+
+
+def export_slots(rates, template_sha256, family=None):
+    """``(slots, basis)`` for a producer of ``template_sha256`` (#999), or of
+    the ``family`` its template declares (#1126).
 
     Little's law with both sides taken at their worst: exports in flight are
     at most the longest landing over the shortest group spacing, so
     ``slots = ceil(max landing_s / min spacing_s)``, never below one.  Both
-    come from this host's own completed exports of the template (:func:`
-    learn_export`).  With either side unmeasured the count is
-    :data:`DEFAULT_EXPORT_SLOTS` and the basis says ``unmeasured``.
+    come from this host's own completed exports under the producer's
+    :func:`export_rate_key` (:func:`learn_export`): the family's, whichever of
+    its templates they were, or the template's own.  With either side
+    unmeasured the count is :data:`DEFAULT_EXPORT_SLOTS` and the basis says
+    ``unmeasured``; it names ``export_rate_family`` when one is declared.
     """
-    entry = rates.get(template_sha256) if isinstance(rates, dict) and template_sha256 else None
+    key = export_rate_key(template_sha256, family)
+    entry = rates.get(key) if isinstance(rates, dict) and key else None
     entry = entry if isinstance(entry, dict) else {}
     landings = [v for v in entry.get('landing_s', []) if type(v) in (int, float) and v > 0]
     gaps = [v for v in entry.get('spacing_s', []) if type(v) in (int, float) and v > 0]
+    names = {'template_sha256': template_sha256}
+    if family is not None:
+        names['export_rate_family'] = family
     if not landings or not gaps:
-        return DEFAULT_EXPORT_SLOTS, {'basis': 'unmeasured', 'template_sha256': template_sha256,
+        return DEFAULT_EXPORT_SLOTS, {'basis': 'unmeasured', **names,
                                       'landings': len(landings), 'spacings': len(gaps)}
     landing, spacing = max(landings), min(gaps)
     return max(1, math.ceil(landing / spacing)), {
         'basis': 'measured', 'rule': 'ceil(max landing_s / min spacing_s)',
-        'template_sha256': template_sha256, 'landing_s': round(landing, 3),
+        **names, 'landing_s': round(landing, 3),
         'spacing_s': round(spacing, 3), 'landings': len(landings), 'spacings': len(gaps)}
 
 
@@ -218,9 +272,10 @@ def producer_allowance(item, rates=None):
     ``{'slots': k, 'cpu': k, 'mem_gb': k, 'basis': {...}}`` for a producer
     whose sealed environment names a spool root (#985), ``None`` for
     everything else, for ``EXPORT_SLOTS_ENV=0`` and for anything unreadable or
-    malformed.  ``k`` is the sealed ``EXPORT_SLOTS_ENV`` when declared, else
-    :func:`export_slots` over ``rates`` (the host's ``EXPORT_RATES``) for the
-    row's produced-output template; ``basis`` says which (#999).
+    malformed, a malformed ``export_rate_family`` included (#1126).  ``k`` is
+    the sealed ``EXPORT_SLOTS_ENV`` when declared, else :func:`export_slots`
+    over ``rates`` (the host's ``EXPORT_RATES``) for the row's produced-output
+    template, or the family it declares; ``basis`` says which (#999).
     """
     action = _sealed_request(item)
     if action is None:
@@ -230,9 +285,12 @@ def producer_allowance(item, rates=None):
         return None
     raw = variables.get(EXPORT_SLOTS_ENV)
     if raw is None:
-        ref = item.get('produced_output') if isinstance(item, dict) else None
-        template = ref.get('template_sha256') if isinstance(ref, dict) else None
-        slots, basis = export_slots(rates, template if isinstance(template, str) else None)
+        names = export_rate_names(item.get('produced_output') if isinstance(item, dict) else None)
+        if names is None:
+            return None
+        template, family = names
+        slots, basis = export_slots(rates, template if isinstance(template, str) else None,
+                                    family)
     else:
         if not isinstance(raw, str) or not raw.isascii() or not raw.isdigit() or int(raw) <= 0:
             return None
@@ -1225,15 +1283,18 @@ class Controller:
         self.write_state('last-borrow.json', previous or {})
 
 
-def learn_export(ledger, template_sha256, owner, published_unix, landing_s):
-    """Remember one landed export of ``template_sha256`` (#999).
+def learn_export(ledger, template_sha256, owner, published_unix, landing_s, family=None):
+    """Remember one landed export of ``template_sha256`` (#999), under the
+    ``family`` its template declares when it declares one (#1126).
 
     ``landing_s`` is the export's own wall time; ``published_unix`` its row's
     publication, whose gap from the same producer's previous export is one
-    group spacing.  Kept per template, ``EXPORT_RATE_MEMORY`` of each, under
-    the admission lock and never waited for: a busy box learns it next time.
+    group spacing.  Kept per :func:`export_rate_key`, ``EXPORT_RATE_MEMORY``
+    of each, under the admission lock and never waited for: a busy box learns
+    it next time.  Nothing is learned without a key.
     """
-    if (not isinstance(template_sha256, str) or not _is_key(owner)
+    key = export_rate_key(template_sha256, family)
+    if (key is None or not _is_key(owner)
             or not all(type(v) in (int, float) and math.isfinite(v) and v > 0
                        for v in (published_unix, landing_s))):
         return False
@@ -1244,7 +1305,7 @@ def learn_export(ledger, template_sha256, owner, published_unix, landing_s):
     try:
         with controller.locked():
             rates = read_json(controller.base / EXPORT_RATES)
-            entry = dict(rates.get(template_sha256) or {})
+            entry = dict(rates.get(key) or {})
             last = dict(entry.get('last_published') or {})
             previous = last.get(owner)
             if type(previous) in (int, float) and published_unix <= previous:
@@ -1257,7 +1318,7 @@ def learn_export(ledger, template_sha256, owner, published_unix, landing_s):
             last[owner] = published_unix
             entry['last_published'] = dict(sorted(last.items(), key=lambda x: x[1])[-EXPORT_RATE_MEMORY:])
             entry['learned_unix'] = time.time()
-            rates[template_sha256] = entry
+            rates[key] = entry
             rates = dict(sorted(rates.items(), key=lambda x: x[1].get('learned_unix', 0))[-512:])
             controller.write_state(EXPORT_RATES, rates)
     except AdmissionBusy:

@@ -291,6 +291,7 @@ def validate_template(value: object) -> dict[str, object]:
     allowed = frozenset({
         "schema", "version", "template_id", "output_prefix", "slots",
         "durable_maxima", "working_demands", "permitted_tiers", "write_only",
+        "export_rate_family",
     })
     unknown = sorted(set(value) - allowed)
     if unknown:
@@ -409,7 +410,33 @@ def validate_template(value: object) -> dict[str, object]:
     # before #912 -- keeps its canonical bytes and its `template_sha256`.
     if write_only:
         checked["write_only"] = True
+    # Likewise present only when declared (#1126): the family is in the
+    # canonical bytes, so `template_sha256`, and through the sealed
+    # declaration the owner's action key, cover it.
+    if "export_rate_family" in value:
+        checked["export_rate_family"] = validate_export_rate_family(
+            value["export_rate_family"])
     return checked
+
+
+def validate_export_rate_family(value: object) -> str:
+    """Check a template's ``export_rate_family`` (#1126).
+
+    The family names the templates whose spool exports share one learned
+    export rate on a host (``adaptive_cpu.export_slots``): a GLM-5.3 Stage B
+    row is its own template, and a rate learned per template is never learned
+    at all.  It is an identifier by the action contract's own rule
+    (``core._ID_RE``, which input ids follow); anything else refuses, here
+    and wherever a reference carrying it is read.
+    """
+
+    from prismabuild.core import _ID_RE
+
+    if not isinstance(value, str) or _ID_RE.fullmatch(value) is None:
+        raise ProducedOutputError(
+            "template export_rate_family must be an identifier: 1 to 256 of "
+            "[a-z0-9._/-], starting with a letter or digit")
+    return value
 
 
 def is_write_only(template: Mapping[str, object]) -> bool:
@@ -10144,6 +10171,7 @@ __all__ = [
     "ProducedOutputError",
     "mint_generation",
     "validate_template",
+    "validate_export_rate_family",
     "template_sha256",
     "template_path",
     "declare_template",

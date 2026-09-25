@@ -3703,8 +3703,8 @@ the longest export landing over the shortest group spacing, which is the
 most exports one producer has in flight. Landing is an export's own wall
 time, and spacing the gap between one producer's successive exports, both
 learned at completion into the host-local `export-rates.json`, the last 32 of
-each per template. Where either side is unmeasured, as on a template's first
-claim, `k` is `DEFAULT_EXPORT_SLOTS` (1). The allowance metadata records which
+each per key. Where either side is unmeasured, as on a key's first claim, `k`
+is `DEFAULT_EXPORT_SLOTS` (1). The allowance metadata records which
 (`basis`: `declared`, `measured` with both numbers, or `unmeasured`). The allowance is derived from the sealed request, like the
 #747 `spool_gb` window, but at claim rather than at seal, so already sealed
 producers get it when a runtime carrying it claims them; a producer claimed
@@ -3714,6 +3714,34 @@ of the producer's own affinity and recorded in its holder metadata as
 producer, so nothing else is admitted onto them and the producer pays for the
 room while it is idle. A producer with unbounded CPU demand, or one that fits
 the box only without the allowance, is claimed without it, as before.
+
+**Export rates per declared family (#1126).** The key is the template's
+digest unless the template declares `export_rate_family`, an identifier by
+the action contract's input-id rule (`produced_output.validate_export_rate_family`).
+Then every template of the family shares one entry, `family:<name>`, which no
+64-hex template digest can equal (`adaptive_cpu.export_rate_key`). A GLM-5.3
+Stage B row is its own template, because its layer, chain and inputs differ,
+so a rate learned per template was never learned: every row ran its handoff
+exports on the unmeasured single slot, and they never overlapped (PQ #1225,
+row 029). With a family, the family's first row on a host starts
+`unmeasured` and every later row inherits what the earlier ones measured; the
+rule is unchanged, and only the key it learns under moves. The family is part
+of the template's canonical bytes, present only when declared, so a template
+without it keeps its `template_sha256`, and the sealed request's declaration,
+which carries the digest, covers it. `PoolQueue.publish` projects it into the
+row's `produced_output` reference beside the digest, and the allowance at
+claim and the learning at an export's completion (`PoolQueue._learn_export`)
+both read it there (`adaptive_cpu.export_rate_names`). A reference naming a
+family that is not an identifier gets no allowance and teaches nothing, rather
+than falling back to the template; a producer that declares none keys on its
+template, as before, and a family's rates are never read for it. The basis
+names `export_rate_family` when one is declared. Nothing seals a slot count:
+PB measures. The allowance is also what carries a producer's exports past a
+withhold on its host (the withholding rule, #985): a funded export takes
+nothing the withholding item waits for and is admitted, while one past the
+allowance would take free tokens and is deferred behind it. So the slots a
+family measures are also how many of a row's exports run while the next row
+waits for the box.
 
 `submit_group` publishes each export with `dependent_of` set to its producer.
 The row field is only a hint for which rows are worth a read: for a row that
@@ -5763,7 +5791,8 @@ batches (#912)".
 carried tier demand to exactly cover the derived window (plus the input range
 floor when an input residency range lands on the same tier; input leads carry
 none), files the template immutably, and projects
-`item["produced_output"] = {template_id, template_sha256}`. The #595 gate is
+`item["produced_output"] = {template_id, template_sha256}`, plus
+`export_rate_family` when the template declares one (#1126). The #595 gate is
 extended narrowly for this declared window only: tier demand with neither an
 input residency block nor a correct produced-output declaration still
 refuses, and underdeclared, mismatched, foreign, tampered, or extra tier
