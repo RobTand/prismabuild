@@ -240,4 +240,15 @@ Pass a root under `tmp_path` to anything that takes one.
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+Use, modify and redistribute PrismaBuild for any purpose, commercial included.
+Models and artifacts you build with it are yours: license them however you
+like and host them anywhere. The one condition is credit. A model or service
+you publish that was built with PrismaBuild must say, in its model card or
+README:
+
+> Made with PrismaBuild by Robert Tand - https://github.com/RobTand/prismabuild
+
+The terms are the MIT License with the Attribution Addendum in
+[LICENSE](LICENSE) (`LicenseRef-PrismaBuild-Attribution-1.0`). With the
+addendum, the license is not plain MIT. Commits made before the addendum
+remain under plain MIT.
