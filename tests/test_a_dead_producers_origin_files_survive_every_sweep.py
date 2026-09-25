@@ -9,13 +9,16 @@ The three hazards the #1053 fix must not open:
     has committed is ``superseded``: never reported ``orphaned``, never
     deleted.
 (c) A retirement racing a successor's ``rename(tmp, path)`` never deletes the
-    successor's file, wherever the rename lands.
+    successor's file, wherever the rename lands, and the successor commits
+    the file it wrote: the identity it records is the one the file keeps
+    (#1064).
 
 Everything runs on a synthetic stage and origin prefix under ``tmp_path``.
 """
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 from pathlib import Path
 import sys
@@ -27,7 +30,7 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tools" / "fleet"))
 sys.path.insert(0, str(ROOT / "tests"))
 
-from prismabuild import pool, residency_map  # noqa: E402
+from prismabuild import pool, reader_lease, residency_map  # noqa: E402
 import prismabuild.produced_output as po  # noqa: E402
 import stage_release  # noqa: E402
 
@@ -248,18 +251,52 @@ def test_a_retirement_racing_a_successors_rename_keeps_its_file(
     prewrite is under another template's lock (an overlapping prefix), or
     it landed after the owners were read. Its ``rename`` is interposed at
     the one moment that matters, the retirement's own call on the path.
+
+    Here it is the first: a template whose prefix contains this one's, its
+    prewrite filed just before its rename, after the retirement read the
+    owners. Once the retirement lets go, it commits what it wrote, and the
+    identity it records must be the file's (#1064): a file moved aside and
+    linked back has a new ctime, and a stale identity fails every strict
+    read. A commit that ran while the retirement held its lock would not be
+    ordered by it, since the successor's template takes another lock
+    (#1063).
     """
 
     template, queue, instance, path = _dead_consumed_batch(tmp_path)
-    successor = b"the successor's bytes"
-    fired = _interpose(monkeypatch, path, _successor_rename(path, successor),
-                       after=after)
+    overlapping = po.validate_template({
+        **template, "template_id": "write-only-overlapping-v1",
+        "output_prefix": str(tmp_path)})
+    successor = _bind_owner(queue, overlapping, fx._hexkey("successor"))
+    payload = b"the successor's bytes"
+    landed: dict[str, dict] = {}
+
+    def write() -> None:
+        assert wo._prewrite(queue, successor, overlapping, "b1", [path],
+                            len(payload))["ok"] is True
+        _successor_rename(path, payload)()
+        landed["identity"] = reader_lease.portable_identity(os.lstat(path))
+
+    fired = _interpose(monkeypatch, path, write, after=after)
 
     events = po.origin_retirement_tick(queue)
 
     assert fired, "the retirement never reached the path"
-    assert path.read_bytes() == successor, (
+    assert path.read_bytes() == payload, (
         "the retirement deleted the successor's file")
+    live = reader_lease.portable_identity(os.lstat(path))
+    assert all(live[key] == landed["identity"][key]
+               for key in ("ino", "size", "mtime_ns")), (
+        "the file at the path is not the one the successor wrote")
+    committed = po.commit_origin_batch(
+        queue, successor, overlapping,
+        [wo._descriptor(successor, overlapping, path, payload)], batch_id="b1")
+    assert committed["ok"] is True, committed
+    recorded = json.loads((Path(queue.root) / "residency"
+                           / po.OUTPUT_BATCHES_SUBDIR
+                           / po.instance_namespace(successor)
+                           / "b1.json").read_text())["origin_identity"]
+    assert reader_lease.file_id_matches(recorded[str(path)], live), (
+        f"the successor committed {recorded[str(path)]}, its file is {live}")
     retired = _events(events, po.ORIGIN_RETIRED_EVENT)
     assert len(retired) == 1, events
     if after:

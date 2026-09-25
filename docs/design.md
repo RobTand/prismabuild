@@ -6640,10 +6640,10 @@ only overlaps this one takes a different lock, so a check followed by
 2. `lstat`s the private name: if its inode, size and mtime are the recorded
    ones (a rename changes only ctime), it is the committed file and is
    unlinked under the private name, which no writer uses;
-3. otherwise a writer's rename landed before step 1: the file is linked
-   back to `path` and the private name removed. If `path` has been taken
-   again by then, the file is kept at the private name and the batch is
-   refused as `origin-displaced`, naming it.
+3. otherwise a writer's rename landed before step 1: the file is put back
+   at `path` (`_link_back`), and never over another file. If `path` has
+   been taken again by then, the file is kept at the private name and the
+   batch is refused as `origin-displaced`, naming it.
 
 A private name an interrupted call left is settled before anything else
 (`_settle_retiring_leftover`): the committed file is deleted; a writer's
@@ -6652,6 +6652,44 @@ a later file holds it. `tests/test_a_dead_producers_origin_files_survive_every_s
 interposes on the retirement's own `rename` of the path and lands the
 successor's `os.replace` just before and just after it; on the tree before
 this change the first deletes the successor's file.
+
+**The put-back needs no ownership (#1064).** It is a hard link to `path`
+and the private name removed. The kernel refuses the link with `EPERM`
+when `fs.protected_hardlinks` is 1 and the caller neither owns the file
+nor can write it. dl380g10 sets it, and its tier loop runs as `rob`, which
+need not own a producer's file; a file system without hard links refuses
+the link the same way. Before #1064 that `PermissionError` refused the
+delete as `origin-unlink` and left the writer's file at the private name,
+off its path. A refused link now falls back to `renameat2` with
+`RENAME_NOREPLACE` (`_rename_noreplace`): one atomic rename that fails with
+`EEXIST` rather than replace a file, and needs only the directory write
+access the move aside already used. When neither can put the file back
+(NFS rejects every `renameat2` flag with `EINVAL`), it is kept at the
+private name and refused as `origin-displaced`, naming it and both errors,
+and the next tick tries again.
+
+**A commit takes its identity under the lock (#1064).** Steps 1 and 3
+move the writer's file's ctime, and `reader_lease.file_id_matches` compares
+ctime. `commit_batch` and `commit_origin_batch` took each origin's identity
+before the output-prefix lock, so a commit that waited for a retirement
+holding it could record the ctime from before the move aside: a DEV
+null-digest staged batch could then never be restaged
+(`restage-origin-changed`), every other check paid #1111's content read to
+accept it, and an `lstat` made while the file was aside refused the commit
+as `descriptor-unstatable`. Both take the identity under the lock now.
+`origin_retirement_tick` holds that lock from its owner read through the
+put-back, so a commit of a template with the same prefix records the
+identity the file has after it. `commit_origin_batch` with `landed` still
+reads an origin whose timestamps alone moved outside the lock (#1111); the
+`lstat` under the lock must find the identity the read hashed, an origin
+that moved again meanwhile is read once more with the lock let go, and a
+second move refuses as `origin-is-not-the-landed-copy`.
+`tests/test_a_successors_committed_identity_survives_a_link_back.py` runs
+the delete step at the moment each commit path asks for the lock, with the
+file moved aside before the commit starts or while it waits, and makes
+`os.link` of a private name raise `EPERM`; on the tree before this change
+each commit records a stale identity or refuses, and the delete leaves the
+writer's file at the private name.
 
 **What the tier cycle reads.** Measured with
 `tools/fleet/bench_tier_cycle_r13.py`, which builds the #992 queue shape
@@ -6689,8 +6727,20 @@ Limits:
 - An attempt that wrote another attempt's committed path and then died is
   reported `superseded`, not orphaned: the other commit still claims the
   path. Nothing is deleted either way.
-- A file system without hard links refuses at the put-back, and the file
-  stays at the private name, named in the refusal.
+- A file the tier loop may not link, on a file system without
+  `RENAME_NOREPLACE` (NFS), refuses at the put-back, and the file stays at
+  the private name, named in the refusal, until a tick can put it back.
+- A commit under a template whose prefix only overlaps this one's takes its
+  own lock, which the retirement does not hold, so its identity can still
+  carry the ctime from before a move aside (#1063 is the lock question).
+  An origin-only batch, and a staged one with a digest, settle that by
+  content (#1111); a DEV null-digest staged batch stays strict and cannot
+  be restaged.
+- A spool export's retirement of a failed group's file (#1097) holds the
+  group's `.export.lock`, not the output-prefix lock. No commit it could
+  stale is in flight: only dead attempts' prewrites and the exporting
+  attempt's own prewrite name the path, and that attempt commits after its
+  export.
 
 #### Deferred consumers: action edges (#913)
 
@@ -7103,7 +7153,9 @@ their refusal. Refill adds no retry loop and changes no retirement authority.
   reading as ordinary staged state.
 * **Origin proof (PO-04).** `commit_batch` captures each origin's identity tuple in
   the immutable batch record (`origin_identity`, one `os.lstat` feeding both
-  the size check and the record, through `reader_lease.portable_identity`),
+  the size check and the record, through `reader_lease.portable_identity`,
+  taken under the output-prefix lock so a retirement's put-back cannot
+  leave it stale, #1064),
   and every re-materialization rechecks exactly that with
   `reader_lease.file_id_matches` BEFORE any funding. An lstat size is not the
   proof: a DEV null-digest descriptor carries no payload digest, so a
@@ -11118,7 +11170,7 @@ committed and prewritten paths (`_TickReads.owned`) and state
 - **Retired** means #1053's rename-aside delete, `_unlink_if_committed`,
   through the export's pinned directory descriptor: the file is deleted
   only when the private name still has the inode, size and mtime the export
-  observed, and a file renamed onto the name meanwhile is linked back and
+  observed, and a file renamed onto the name meanwhile is put back and
   refuses. Before the delete starts, the export records the path and that
   identity in its group's `retiring.json`. A later run of the same export
   settles those paths first (`_settle_retiring_leftover`), so an interrupted
@@ -11280,7 +11332,7 @@ the re-pin (`_apply_origin_repins`):
 
 | Check | Read | Filed |
 |---|---|---|
-| `commit_origin_batch`, landed identity against a fresh `lstat` | Before it takes the lock | The hashed identity is the one committed in the record; the entry and the answer carry `landed_repins` |
+| `commit_origin_batch`, landed identity against a fresh `lstat` | Before it takes the lock | The hashed identity is the one committed in the record, once the `lstat` under the lock finds it (#1064; a second move refuses); the entry and the answer carry `landed_repins` |
 | `load_origin_batch`, `load_origin_batches`, `origin_batch_manifest` (a declaration, `pbrun`'s check at submission, a deferred release) | Lockless | `origin_repins`, one lock and one commitments write per instance, whatever the number of batches |
 | `ensure_batch_materialized` (a staged batch's restage) | Outside Phase 1, after the locked pass answers `restage-origin-unverified` | `origin_repins`, in Phase 1 under the lock, before the intent |
 | `_committed_restage_authority` (restage funding) | Never | Reads the entry's re-pins |
