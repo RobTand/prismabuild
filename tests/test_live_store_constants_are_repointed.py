@@ -55,6 +55,10 @@ EXEMPT: dict[tuple[str, str], str] = {
         "classifier: the bench refuses a --work path under any of these "
         "roots; compared with startswith() and never opened"
     ),
+    ("bench_tier_cold_start", "FORBIDDEN_ROOTS"): (
+        "classifier: the bench refuses a --work path equal to or under any "
+        "of these roots; compared by path ancestry and never opened"
+    ),
     ("prismabuild.slurm_lane", "DEFAULT_LANE_ROOT"): (
         "fallback behind PRISMABUILD_SLURM_LANE_ROOT, which LIVE_ENV already "
         "repoints; its value is also asserted equal to the Epilog script's "
