@@ -347,3 +347,9 @@ def test_the_exception_itself_is_unchanged_by_the_drain_question() -> None:
         diagnosis = _exception(reason)
         assert adaptive_gpu.sw_cap_idle_after_drain(diagnosis) is True
         assert diagnosis["exception_reason"] == reason
+
+
+def test_the_drain_table_names_exactly_the_occupancy_reasons() -> None:
+    """The pool's drain table and the exception's occupancy reasons are one set:
+    a reason the helper accepts but the table lacks would drop to "overtaken"."""
+    assert set(pool.DRAIN_SW_CAP_IDLE) == set(adaptive_gpu.SW_CAP_OCCUPANCY_REASONS)

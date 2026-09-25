@@ -493,7 +493,9 @@ def _adaptive_refusal_drains(
             # host, so when occupancy is all that stopped it, a drain does.
             exception = decision.get("sw_cap_idle_exception")
             if not measurement and gpu_admission.sw_cap_idle_after_drain(exception):
-                return DRAIN_SW_CAP_IDLE[str(exception["exception_reason"])], False  # type: ignore[index]
+                mode = DRAIN_SW_CAP_IDLE.get(str(exception["exception_reason"]))  # type: ignore[index]
+                if mode is not None:
+                    return mode, False
             return None, False
         if measurement:
             return ("exclusive" if reason in DRAIN_EXCLUSIVE_GPU else None), False
