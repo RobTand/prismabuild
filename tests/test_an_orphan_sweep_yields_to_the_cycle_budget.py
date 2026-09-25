@@ -243,3 +243,55 @@ def test_without_a_budget_the_sweep_evicts_what_the_pressure_asks(
         evicted)
     assert [unc._owned(sweeps.queue, *owner) for owner in owners] == (
         [False] * (len(owners) - left) + [True] * left)
+
+
+def test_the_beyond_horizon_pass_yields_to_the_cycle_budget(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str]) -> None:
+    """The same bound on the pass after the sweep, through a whole cycle.
+
+    The fixture is #903's 23:03 capture: a reader holds 20 ranges past its
+    horizon and the capture's next range needs seven of them back.  Each
+    eviction costs ``EVICT_S`` on the fake clock, so the cycle's budget
+    lets two go, and the tier record stays younger than the horizon.
+    """
+
+    import test_a_consumer_stages_only_to_its_refill_horizon as hz
+
+    clock = FakeClock()
+    monkeypatch.setattr(pool, "_now", clock)
+    real_evict = stage_release.evict
+    ages: list[float] = []
+
+    def evict(queue, mover, *args, **kwargs):
+        if kwargs.get("reason") == "beyond-horizon":
+            record = json.loads(queue.tier_record_path(hz.TIER).read_text())
+            ages.append(clock() - float(record["announced_unix"]))
+            clock.now += EVICT_S
+        return real_evict(queue, mover, *args, **kwargs)
+
+    monkeypatch.setattr(stage_release, "evict", evict)
+    capacity = hz.PHASE_GIB * hz.WIDE + sum(hz.CAPTURE_SIZES[:4]) + 1
+    queue, stage = hz._fixture_queue(tmp_path, capacity)
+    hz._reader(queue, stage, landed=tuple(range(hz.WIDE)), phases=hz.WIDE)
+    hz._capture(queue, stage, landed=(0, 1, 2, 3))
+    liveness = tier_loop.Liveness(
+        interval_s=INTERVAL_S, bound_s=BOUND_S, poll_s=POLL_S)
+
+    tier_loop.cycle(queue, host="dl380g10", source_pool="storage_pool",
+                    receipts=tier_loop.ReceiptCache(),
+                    discover=lambda **_kw: {
+                        hz.TIER: hz._tier_record(stage, gib=capacity)},
+                    liveness=liveness)
+
+    line = tier_loop.LAST_CYCLE["liveness"]
+    printed = [json.loads(text) for text in capsys.readouterr().out.splitlines()
+               if text.startswith("{")]
+    evicted = [event for event in printed
+               if event.get("event") == "beyond-horizon-evicted"]
+    unit = getattr(tier_loop, "BEYOND_HORIZON_UNIT", "beyond-horizon")
+    assert len(evicted) == PER_CYCLE, (len(evicted), line)
+    assert line["units"].get(unit) == PER_CYCLE, line
+    assert line["deferred"].get(unit, 0) >= 1, line
+    assert ages and max(ages) < HORIZON_S, (ages, line)
+    assert line["oldest_age_s"] < HORIZON_S, line
