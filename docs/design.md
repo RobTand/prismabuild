@@ -1027,7 +1027,23 @@ submitter, not to the longest job a box accepts: derived from the announced
 ceilings alone, a GPU shard's bound followed the Sparks' 86,400 s campaign
 ceiling (86,370 s), so a hung test held its GPU for a day. `--test-timeout-s 0`
 is a declaration and is honoured. CPU shards still derive their bound from the
-ceilings they read when neither flag is given.
+ceilings they read when neither flag is given, but a non-`--gpu` shard's own
+sealed deadline caps an unrequested announcement at
+`pbtest.NON_GPU_UNREQUESTED_CEILING_CAP_S` (#1123), `2 * pool.WITHHOLD_CEILING_S`
+(1,800 s): a CPU-only shard never runs campaign work, so both Sparks' 86,400 s
+ceiling is not its own bound to inherit, and admission
+(`PoolQueue.holder_bound`) reads a bounded holder as draining soon only while
+its age is inside `WITHHOLD_CEILING_S` (900 s) of its claim or its declared
+end is inside that same ceiling of now -- so a holder sealed to more than
+twice `WITHHOLD_CEILING_S` reads as not draining for the entire middle of its
+life, whatever it actually seals. Capping at the published loop default
+(7,200 s) was tried first and rejected: it still leaves that gap open from
+900 s to 6,300 s of a shard's life, the same shape of starvation the original
+86,400 s seal gave, only shorter. `2 * WITHHOLD_CEILING_S` is the largest end
+for which admission reads `transient` across a holder's *entire* declared
+life, so a CPU shard sealed to it can never itself flip a starved GPU
+action's reservation off. An explicit `--timeout-s` is still honoured
+uncapped, exactly like an announced ceiling already tighter than the cap.
 
 Structured `--pytest-args` forwarding uses a closed population/report vocabulary
 and replaces environment/project `addopts` when supplied. Worker count, config

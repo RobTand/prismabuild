@@ -1443,6 +1443,21 @@ pass `--timeout-s` when a hung test should be named sooner. A `--gpu` run must
 pass `--timeout-s` or `--test-timeout-s`; with neither, `pbtest` refuses with
 exit 2 before submitting anything, because the bound would otherwise follow the
 Sparks' campaign ceiling and a hung test would hold its GPU for a day (#975).
+A CPU-only shard never asks for that refusal, and an *unrequested* campaign
+announcement is not its own bound to inherit either: with no `--timeout-s`,
+such a shard's sealed deadline caps at twice the pool's own withhold ceiling
+(1,800 s, `pbtest.NON_GPU_UNREQUESTED_CEILING_CAP_S`) rather than the box's
+day-long ceiling. That number is not a rounder, more generous guess (the
+published worker-loop default of 7,200 s was tried and rejected): admission
+reads a bounded holder as draining soon only while its age is within 900 s of
+its claim or its declared end is within 900 s of now, so any sealed end past
+twice that -- 7,200 s included -- still reads as *not* draining for a stretch
+in the middle of the shard's life, which is the same starvation the original
+86,400 s seal gave, only shorter. 1,800 s is the largest end that reads as
+draining soon for a holder's *entire* declared life, so a starved GPU action
+can never lose its reservation to a plain CPU shard sealed to it (#1123).
+Passing `--timeout-s` explicitly is still honoured whatever it says, capped
+only by the real announced ceiling, exactly as before.
 `pbtest` prints the deadline it sealed and the ceilings it read.
 
 `pbtest` reads every shard's output while the shard runs and prints each

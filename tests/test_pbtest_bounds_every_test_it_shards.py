@@ -176,11 +176,14 @@ def test_the_bound_follows_the_ceiling_the_boxes_announce() -> None:
 
     branch: dl380g10 announces 3600 s, so a bound sized against the published
     loop default of 7200 s would never have fired on the box whose shard hung.
-    Reading the announcement is what makes the default bite there.
+    Reading the announcement is what makes the default bite there.  ``gpu``
+    is explicit here: this is the shared announcement-vs-default derivation
+    a ``--gpu`` shard also uses, not the further, non-GPU-only cap #1123
+    added on top of it (covered separately, in the pbtest CPU-shard tests).
     """
 
     assert pbtest.per_test_bound(
-        timeout_s=None, override_s=None,
+        timeout_s=None, override_s=None, gpu=True,
         ceilings={"dl380g10": 3600.0, "sparky": 86400.0},
     ) == pytest.approx(3600.0 - pool.HEARTBEAT_S)
 
