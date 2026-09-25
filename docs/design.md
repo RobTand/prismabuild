@@ -380,7 +380,16 @@ full-width CPU demand on a pressured host, and the GPU refusals for a
 measurement) when every holder is transient, and the adaptive CPU refusals
 that stand for a CPU token shortage (`borrow_evidence_unavailable`,
 `pressure_override_no_borrow`, `projected_cpu_cost` with the tokens short)
-by the token rule. A GPU refusal of an item that is not a measurement
+by the token rule. A `host_pressure` refusal of an item that needs CPUs rather
+than a quiet host withholds when every busy CPU it names is held by one of the
+pool's own holders (#1160): the refusal records `held_cpus` and `foreign_cpus`
+apart, and with held CPUs and no foreign one it is judged by the exclusive rule
+over the holders whose CPU allocation names those CPUs -- typically a borrower
+still pinned on a CPU whose lender released it -- and holds back the whole
+box, since any CPU admission behind the item moves which free tokens it is
+predicted to get. It is not a token shortage: its tokens are free. A busy CPU
+that no holder holds is load the pool does not own, and that refusal is
+overtaken. A GPU refusal of an item that is not a measurement
 withholds too, when it is one the GPU controller gives only while the pool's
 own GPU holders are on the device (`exclusive_holder`,
 `sharing_probe_not_authorized`, `holder_telemetry_unavailable`,
