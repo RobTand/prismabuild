@@ -104,6 +104,10 @@ def test_an_unreadable_record_raises_and_is_never_empty(tmp_path: Path) -> None:
     queue, template, instance, _path, _committed_ = _committed(tmp_path)
     batch_file = (queue.root / "residency" / po.OUTPUT_BATCHES_SUBDIR
                   / po.instance_namespace(instance) / "b1.json")
+    # The record is published immutable (0444, `_publish_immutable`); only
+    # root writes through that, so a pbtest shard's user makes it writable
+    # first.
+    batch_file.chmod(0o644)
     batch_file.write_text("{ not json")
 
     with pytest.raises(po.ProducedOutputError, match="unknown-retain"):
