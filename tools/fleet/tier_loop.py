@@ -375,17 +375,43 @@ class ReceiptCache:
         #: Receipt directories the last :meth:`read` could not read, and why.
         self.unreadable: dict[str, str] = {}
 
-    def read(self, directories: list[Path]) -> list[dict[str, object]]:
+    def read(self, directories: list[Path], *,
+             liveness: "Liveness | None" = None) -> list[dict[str, object]]:
+        """Every receipt in ``directories``, re-read only where it changed.
+
+        ``liveness`` is the tier loop's `Liveness` (#1148).  The read
+        checkpoints it while each directory is listed, before each entry is
+        stat-ed and parsed, and after each directory: on a loaded pool this
+        read took 113.7 s in one cycle, and a record re-announced only
+        between steps aged past the bound.  The step runs before the cycle's
+        mint, so what a checkpoint re-announces is the record the previous
+        cycle minted, which is the loop's word until this cycle's mint
+        replaces it.  These are checkpoints, not budgeted units: every
+        receipt must be read, since the fill supply is a fold over all of
+        them, so no part of the read can be left for the next cycle.  A
+        hang inside one entry is a stretch longer than any measured, and
+        gets no write.
+        """
+
         out: list[dict[str, object]] = []
         read: list[Path] = []
         unreadable: dict[str, str] = {}
         for directory in directories:
+            checkpoint = None
+            if liveness is not None:
+                checkpoint = functools.partial(
+                    liveness.checkpoint, f"receipts:{directory.name}")
             try:
                 kept = self.records.read(
-                    directory, select=_receipt_name, parse=pool._read_json)
+                    directory, select=_receipt_name, parse=pool._read_json,
+                    **({} if checkpoint is None
+                       else {"checkpoint": checkpoint}))
             except OSError as exc:
                 unreadable[str(directory)] = f"{type(exc).__name__}: {exc}"
                 continue
+            finally:
+                if checkpoint is not None:
+                    checkpoint()      # this directory is read
             read.append(directory)
             for _path, record in kept:
                 if isinstance(record, dict):
@@ -9020,7 +9046,11 @@ def _cycle(
     for event in reclaim_idle_rates(queue):
         _emit(queue, host, event, tier_consumers=tier_consumers)
     phases.lap("reclaim_idle_rates")
-    fill_records = receipts.read([queue.root / pool.PREWARM, queue.root / MOVER_RECEIPTS])
+    # Checkpointed inside, per entry listed and read (#1148): the read can
+    # outlast the liveness bound on a loaded pool.
+    fill_records = receipts.read(
+        [queue.root / pool.PREWARM, queue.root / MOVER_RECEIPTS],
+        **({} if phases.liveness is None else {"liveness": phases.liveness}))
     phases.lap("receipts")
     # The ram tier's declared sizing, read fresh: a published policy change is
     # picked up between cycles without a remount, and a rare operator remount
