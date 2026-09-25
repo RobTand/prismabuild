@@ -1045,7 +1045,8 @@ class _StagedPublisher:
       be proven is refused retryably, as before; and a name every owner of
       which has provably ended is invalidated and restaged by this copy,
       after the same pin, claim and in-flight censuses a heal passes.  A
-      ram promotion, which names no consumer, refuses at once as before.
+      ram promotion arbitrates the same way, by its promoting consumer
+      (#1004 item 1); a publisher built with no consumer refuses at once.
       A record whose sidecar dates a superseded incarnation -- a different
       inode, the name replaced by a real publication -- is not this: it
       is deferred like an undated vouch while another record may still
@@ -1170,8 +1171,9 @@ class _StagedPublisher:
         self._listed_root: tuple[tuple, list[str]] | None = None
         self._listed_children: dict[str, tuple[tuple, tuple[tuple[str, Path], ...]]] = {}
         #: Whether a divergent name is settled by its owners' states (#966).
-        #: A stage mover names its consumer and does; a ram promotion names
-        #: none and keeps the retryable refusal it always had.
+        #: A stage mover and a ram promotion (#1004 item 1) name their
+        #: consumer and do; a publisher built with none keeps the retryable
+        #: refusal.
         self._arbitrates = bool(self.consumer)
         #: One divergence is arbitrated at a time per publisher: the owners'
         #: transition locks are taken without blocking, and a sibling copy

@@ -4646,7 +4646,8 @@ A divergent name is settled by the states of its owners, not refused forever
 (#966). Before this change, a name whose recorded owner held different bytes
 was a retryable refusal. The retry met the same owner, the tier loop
 republished a mover that was neither queued nor pinned, and a mover whose
-owner had long ended reran every cycle while holding fill. A stage mover now
+owner had long ended reran every cycle while holding fill. A stage mover, and
+a RAM promotion by its promoting consumer (#1004), now
 collects every other consumer and mover whose fragment names the divergent
 path, and judges each owner under its transition locks. The locks are taken
 without blocking, in the usual order: consumer, then mover, then the stage

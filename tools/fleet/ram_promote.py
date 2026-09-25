@@ -65,7 +65,7 @@ from prismabuild import storage_tiers  # noqa: E402
 
 from stage_move import (  # noqa: E402
     _Copier, _StagedPublisher, _delta, cpu_seconds, load_manifest,
-    own_action_key, proc_io, stage_relative,
+    own_action_key, proc_io, retire_conflicted_window, stage_relative,
 )
 
 
@@ -226,12 +226,20 @@ def promote(args, *, stop=None) -> dict[str, object]:
         # The source is the stage, not the pool: split ranges are read from
         # the staged names the stage mover wrote, from byte zero.
         source_stage_root=source,
+        # The promoting consumer is the owner a divergent ram name is
+        # arbitrated by (#1004 item 1), exactly as the stage mover's is
+        # (#966): a name whose every owner has ended is replaced, a live
+        # owner is the terminal conflict, and only an unproven ending stays
+        # retryable.  Without it a promotion whose destination held a dead
+        # owner's different bytes refused retryably and was republished
+        # into the same refusal every window cycle.
         publisher=_StagedPublisher(
             queue=queue, stage_root=Path(args.ram_root),
             residency_root=residence,
             mover_action_key=str(args.action_key),
             manifest_sha256=str(args.manifest_sha256),
-            tier_id=str(args.tier_id), cas_root=str(args.cas_root)))
+            tier_id=str(args.tier_id), cas_root=str(args.cas_root),
+            consumer_action_key=str(args.consumer_action_key)))
 
     before = proc_io()
     cpu_before = cpu_seconds()
@@ -285,6 +293,24 @@ def promote(args, *, stop=None) -> dict[str, object]:
         "phase_timings": copier.clock.report(),
         "unix": time.time(),
     }
+    publisher = copier.publisher
+    if publisher is not None and publisher.invalidated:
+        # Names this promotion took from owners that had all ended (#966,
+        # #1004 item 1), each with the owners it proved; capped like
+        # ``errors``.
+        receipt["entries_invalidated"] = len(publisher.invalidated)
+        receipt["invalidated"] = publisher.invalidated[:20]
+    if copier.refusal is not None:
+        # A live owner holds different bytes under one of this range's ram
+        # names.  No rerun clears that, so the promotion says so, exits
+        # nonzero and retires its own window, as the stage mover does:
+        # otherwise the window republishes it into the same refusal.
+        receipt["refusal"] = copier.refusal
+        receipt["complete"] = False
+        receipt["conflict"] = copier.conflict
+        receipt["plan_superseded"] = retire_conflicted_window(
+            queue, str(args.consumer_action_key), str(args.action_key),
+            copier.conflict or {})
     material_generation = reader_lease.mint_generation()
     if overran:
         receipt["refusal"] = "residency_overran_reservation"
