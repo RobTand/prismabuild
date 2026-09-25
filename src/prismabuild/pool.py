@@ -369,6 +369,12 @@ WITHHOLD_CARRYING_REASONS = frozenset({
     "transition_busy", "container_image_presence_unknown",
     "residency_lead_record_unreadable"})
 
+#: Residency states the claim pass refuses a row on before any token is taken
+#: (``residency_<state>``): its bytes are not there, or cannot be reached.  A
+#: ready GPU row in one of them keeps no room on a free GPU (#1169).
+RESIDENCY_REFUSAL_STATES = ("lead_not_resident", "lead_unpinned", "map_not_composed",
+                            "map_stale", "map_unreadable", "plan_unreadable")
+
 # Claim-order reliefs under which no standing exempts a wait (#1022 review
 # round 3).  ``refused`` (the stage root refused an eviction) and ``unknown``
 # (the tier ledger did not read) make no room and name no victim, so a wait
@@ -5987,6 +5993,205 @@ class PoolQueue:
         except (TypeError, ValueError):
             return True
         return any(int(host.get(kind, 0) or 0) > 0 for kind in kinds)
+
+    @staticmethod
+    def _reservation_demand(host_demand: Mapping[str, int], *,
+                            gpu_controller: object | None) -> dict[str, int]:
+        """The host tokens a claim reserves for ``host_demand``, before #985's allowance.
+
+        Under GPU admission a historical multi-slot GPU demand expressed
+        sharing, not a device count: the claim reserves this box's one
+        physical GPU.
+        """
+
+        reservation = dict(host_demand)
+        if gpu_controller is not None and reservation.get("gpu"):
+            reservation["gpu"] = 1
+        return reservation
+
+    @staticmethod
+    def _export_allowance(
+        item: Mapping[str, object], *, controller: object | None,
+        total: Mapping[str, int], sealed_host_demand: Mapping[str, int],
+        reservation_demand: Mapping[str, int],
+    ) -> dict[str, object] | None:
+        """The export allowance a producer's claim adds to its reservation (#985).
+
+        ``None`` unless the box admits adaptively and the row carries a
+        producer's ``produced_output`` reference.  An unbounded-CPU producer
+        gets none, and nor does one that fits this box only without it.  The
+        claim pass and the ready GPU row's room (#1169) read the same answer.
+        """
+
+        if controller is None or item.get("produced_output") is None:
+            return None
+        allowance = cpu_admission.producer_allowance(
+            item, cpu_admission.read_json(
+                controller.base / cpu_admission.EXPORT_RATES))  # type: ignore[attr-defined]
+        if allowance and not int(sealed_host_demand.get("cpu", 0)):
+            # An unbounded-CPU producer inherits the worker's whole affinity:
+            # there is no CPU set to carve an allowance out of, and adding one
+            # would turn its historical unbounded demand into a bounded one.
+            return None
+        if allowance and any(
+                total.get(kind, 0)
+                < reservation_demand.get(kind, 0) + int(allowance[kind])
+                for kind in cpu_admission.EXPORT_DEMAND):
+            # A producer that fits this box only without the allowance runs
+            # as it did before it existed.
+            return None
+        return allowance or None
+
+    def _gpu_first_order(
+        self, ready: list[dict[str, object]], *, ledger: "ResourceLedger",
+        total: Mapping[str, int], tags: frozenset[str], has_gpu: bool,
+        gpu_controller: object | None,
+    ) -> tuple[list[dict[str, object]], frozenset[str]]:
+        """Scan a ready GPU row that fits this box's free GPU first in its band (#1169).
+
+        A row this pass admits takes tokens a GPU row behind it in the ready
+        order may need.  A withhold protects the GPU row only from the rows
+        behind it, and only after its own refusal (#924, #1160), so a CPU-only
+        row ahead of it -- aged by denials while the GPU row's residency lead
+        was not yet resident, which counts none -- took the room of a GPU that
+        had just been released.  So while this box's GPU token is free, the
+        ready rows that demand a GPU and are placeable here are read in their
+        band's order, and each whose reservation fits the free tokens is
+        scanned ahead of the rows of its band that demand no GPU, until the
+        first that does not fit.  Its own evaluation then decides: it claims,
+        it withholds as before, or it is refused and the rows behind it are
+        scanned as they always were.  GPU rows keep their order among
+        themselves, so a big GPU row that does not fit yet keeps its place
+        ahead of a smaller one, and its own refusal and withhold govern that
+        wait (#1085).  Bands are never crossed.
+
+        Returns the scan order and the keys moved ahead.  Nothing is read
+        unless a placeable GPU row is ready: then one listing of the free
+        tokens.  A read that fails leaves the order as it was.
+        """
+
+        if total.get("gpu", 0) < 1:
+            return ready, frozenset()
+        #: Per band, its placeable GPU rows' reservations in the ready order.
+        bands: dict[int, list[tuple[str, dict[str, int]]]] = {}
+        for item in ready:
+            try:
+                host, _tiers = storage_tiers.split_demand(self.demand_of(item))
+                if not host.get("gpu"):
+                    continue
+                if not self._placement_matches(item, tags=tags, has_gpu=has_gpu):
+                    continue
+                band = int(item.get("priority", 0))  # type: ignore[call-overload]
+            except (TypeError, ValueError):   # PoolContractError included
+                continue
+            bands.setdefault(band, []).append((
+                str(item.get("action_key", "")),
+                self._reservation_demand(host, gpu_controller=gpu_controller)))
+        if not bands:
+            return ready, frozenset()
+        try:
+            available = ledger.available()
+        except OSError:
+            return ready, frozenset()
+        if available.get("gpu", 0) < 1:
+            return ready, frozenset()
+        moved: set[str] = set()
+        for rows in bands.values():
+            for key, reservation in rows:
+                if not all(available.get(kind, 0) >= int(need)
+                           for kind, need in reservation.items()):
+                    break
+                moved.add(key)
+        first = frozenset(moved)
+        if not first:
+            return ready, frozenset()
+        order = sorted(range(len(ready)), key=lambda index: (
+            -int(ready[index].get("priority", 0)),  # type: ignore[call-overload]
+            str(ready[index].get("action_key", "")) not in first, index))
+        return [ready[index] for index in order], first
+
+    def _ready_gpu_row_room(
+        self, item: Mapping[str, object], *, ledger: "ResourceLedger",
+        total: Mapping[str, int], controller: object | None,
+        gpu_controller: object | None, observed_images: Container[str] | None,
+    ) -> dict[str, object] | None:
+        """The room a GPU row this pass could not evaluate keeps (#1169).
+
+        Read for a row :meth:`_gpu_first_order` moved ahead whose transition
+        lock another loop holds: this box's sibling deciding the same row, or
+        another box deciding it for itself.  Neither says this box cannot run
+        it, so the rows behind it are not admitted into the room it needs.
+        The room is the reservation a claim of the row charges here, the
+        producer's export allowance included (#985), and it is kept only on
+        the facts the row's own claim would read first: a clean, fresh GPU
+        sample where the box samples its GPU (as ``gpu_first`` reads it), the
+        row's container images present, its residency not refused, and the
+        room inside the box's free tokens.  ``None`` otherwise.
+        """
+
+        try:
+            if gpu_controller is not None:
+                sample = _gpu_sample_for(gpu_controller, {"gpu": 1})  # type: ignore[arg-type]
+                processes = sample.get("foreign_processes") if sample else None
+                sampled = sample.get("sampled_unix") if sample else None
+                if not (isinstance(processes, list) and not processes
+                        and type(sampled) in (int, float)
+                        and 0 <= _now() - sampled <= gpu_admission.MAX_SAMPLE_AGE_S):
+                    return None
+            declared_images = item.get("container_images")
+            if declared_images:
+                if (observed_images is None or not isinstance(declared_images, list)
+                        or image_inventory.missing(
+                            declared_images, {str(entry) for entry in observed_images})):
+                    return None
+            elif pb.CONTAINER_IMAGE_TAG in (item.get("tags") or []):  # type: ignore[operator]
+                return None
+            if self.residency_verdict(item)["state"] in RESIDENCY_REFUSAL_STATES:
+                return None
+            host, _tiers = storage_tiers.split_demand(self.demand_of(item))
+            reservation = self._reservation_demand(host, gpu_controller=gpu_controller)
+            allowance = self._export_allowance(
+                item, controller=controller, total=total, sealed_host_demand=host,
+                reservation_demand=reservation)
+            if allowance:
+                for kind in cpu_admission.EXPORT_DEMAND:
+                    reservation[kind] = int(reservation.get(kind, 0)) + int(allowance[kind])
+            available = ledger.available()
+        except (OSError, TypeError, ValueError, pb.PrismaBuildError):
+            return None
+        if not all(available.get(kind, 0) >= need for kind, need in reservation.items()):
+            return None
+        return {"action_key": str(item.get("action_key", "")), "room": reservation}
+
+    @staticmethod
+    def _room_taken_by(ledger: "ResourceLedger", rooms: Sequence[Mapping[str, object]],
+                       demand: Mapping[str, int]) -> dict[str, object] | None:
+        """The first kept room ``demand`` would stop fitting in this box's free tokens.
+
+        Called under host admission, just before a row that demands no GPU
+        takes its tokens (#1169).  A room that no longer fits the free tokens
+        without the row -- the GPU row's own claim or a sibling's admission
+        has taken them since -- is left to that row's own verdict.  ``None``
+        when the row fits beside every kept room, and when the free tokens do
+        not list: fairness that cannot read leaves the row to be admitted as
+        before, and ``begin_acquire`` decides.
+        """
+
+        try:
+            available = ledger.available()
+        except OSError:
+            return None
+        for kept in rooms:
+            room = kept["room"]
+            if not all(available.get(kind, 0) >= int(need)          # type: ignore[union-attr]
+                       for kind, need in room.items()):              # type: ignore[union-attr]
+                continue
+            if all(available.get(kind, 0) - int(demand.get(kind, 0)) >= int(need)
+                   for kind, need in room.items()):                  # type: ignore[union-attr]
+                continue
+            return {"gpu_row": str(kept["action_key"])[:12], "room": dict(room),  # type: ignore[call-overload]
+                    "available": available, "demand": dict(demand)}
+        return None
 
     def _host_denial_records(self) -> Mapping[str, object]:
         """This host's latest verdict per ready row, as :meth:`record_denial`
@@ -16438,6 +16643,17 @@ class PoolQueue:
         self._retire_denial_memo({
             (str(item.get("action_key", "")), repr(float(item["published_unix"])))
             for item in ready if isinstance(item.get("published_unix"), (int, float))})
+        #: Ready GPU rows that fit this box's free GPU, scanned first in their
+        #: band (#1169, :meth:`_gpu_first_order`).
+        gpu_first: frozenset[str] = frozenset()
+        if ledger is not None:
+            ready, gpu_first = self._gpu_first_order(
+                ready, ledger=ledger, total=total, tags=tagset, has_gpu=has_gpu,
+                gpu_controller=gpu_controller)
+        #: The rooms of those rows this pass could not evaluate because another
+        #: loop held their transition lock (#1169, :meth:`_ready_gpu_row_room`).
+        #: A row behind one that demands no GPU is admitted only beside them.
+        gpu_rooms: list[dict[str, object]] = []
         preempted = False
         #: The item withholding this box, once one does (#924).  The scan used
         #: to end there; it now goes on for the rows that can run without
@@ -16540,9 +16756,21 @@ class PoolQueue:
                         # box deciding it for itself, and neither ends the
                         # drain this box is holding it for.
                         carried = carry_withhold(item, key)
-                        self.record_denial(item, "transition_busy", (
-                            {"withhold_carried": carried} if carried is not None
-                            else None))
+                        # A GPU row moved ahead for the free GPU keeps its
+                        # room for the rows behind it (#1169): the loop
+                        # deciding it may be about to claim it.
+                        room = (self._ready_gpu_row_room(
+                            item, ledger=ledger, total=total, controller=controller,
+                            gpu_controller=gpu_controller, observed_images=observed_images)
+                            if key in gpu_first and ledger is not None else None)
+                        if room is not None:
+                            gpu_rooms.append(room)
+                        busy_evidence: dict[str, object] = {}
+                        if carried is not None:
+                            busy_evidence["withhold_carried"] = carried
+                        if room is not None:
+                            busy_evidence["gpu_room_kept"] = room["room"]
+                        self.record_denial(item, "transition_busy", busy_evidence or None)
                     continue
                 if claimed_listed is None:
                     names = os.listdir(self.dir(CLAIMED))
@@ -16665,9 +16893,7 @@ class PoolQueue:
                         **({"withhold_carried": carried}
                            if carried is not None else {})})
                     continue
-                if residency["state"] in ("lead_not_resident", "lead_unpinned",
-                                          "map_not_composed", "map_stale",
-                                          "map_unreadable", "plan_unreadable"):
+                if residency["state"] in RESIDENCY_REFUSAL_STATES:
                     # Before any token is taken, and without ``record_pass``:
                     # the bytes are not there, so this box should go do other
                     # work rather than age an item nothing on this box can
@@ -16737,12 +16963,11 @@ class PoolQueue:
                     self.record_denial(item, "malformed_tier_demand", {
                         "demand": sealed_demand, "error": str(exc)})
                     continue
-                reservation_demand = dict(demand)
-                if gpu_controller is not None and demand.get("gpu"):
-                    # Historical slot counts expressed sharing, not device count.
-                    # Preserve the sealed demand but reserve this worker's single
-                    # physical GPU; the controller keeps multi-slot work exclusive.
-                    reservation_demand["gpu"] = 1
+                # Historical slot counts expressed sharing, not device count.
+                # Preserve the sealed demand but reserve this worker's single
+                # physical GPU; the controller keeps multi-slot work exclusive.
+                reservation_demand = self._reservation_demand(
+                    demand, gpu_controller=gpu_controller)
                 # The sealed host demand, before #985 adds a producer's export
                 # allowance to what this claim reserves (below).
                 sealed_host_demand = dict(demand)
@@ -16813,22 +17038,10 @@ class PoolQueue:
                         # ask, so no ordinary candidate pays for them.
                         if controller is not None:
                             if item.get("produced_output") is not None:
-                                allowance = cpu_admission.producer_allowance(
-                                    item, cpu_admission.read_json(
-                                        controller.base / cpu_admission.EXPORT_RATES))
-                                if allowance and not int(sealed_host_demand.get("cpu", 0)):
-                                    # An unbounded-CPU producer inherits the worker's
-                                    # whole affinity: there is no CPU set to carve an
-                                    # allowance out of, and adding one would turn its
-                                    # historical unbounded demand into a bounded one.
-                                    allowance = None
-                                if allowance and any(
-                                        total.get(kind, 0)
-                                        < reservation_demand.get(kind, 0) + int(allowance[kind])
-                                        for kind in cpu_admission.EXPORT_DEMAND):
-                                    # A producer that fits this box only without the
-                                    # allowance runs as it did before it existed.
-                                    allowance = None
+                                allowance = self._export_allowance(
+                                    item, controller=controller, total=total,
+                                    sealed_host_demand=sealed_host_demand,
+                                    reservation_demand=reservation_demand)
                                 if allowance:
                                     for kind in cpu_admission.EXPORT_DEMAND:
                                         demand[kind] = int(demand.get(kind, 0)) + int(allowance[kind])
@@ -16854,6 +17067,7 @@ class PoolQueue:
                         # population when the mount was slow (#351).
                         refused = False
                         refusal_source = None
+                        room_taken: dict[str, object] | None = None
                         cpu_decision = gpu_decision = token_shortage = None
                         with self._admission_lock(controller):
                             if controller is not None:
@@ -16887,6 +17101,17 @@ class PoolQueue:
                                 refused = True
                                 refusal_source = "deferred_behind_withholding"
                                 adaptive = None
+                            if (not refused and gpu_rooms and ledger is not None
+                                    and not int(reservation_demand.get("gpu", 0) or 0)):
+                                # A GPU row ahead of this one that fits the
+                                # free GPU could not be decided this pass
+                                # (#1169): admit this row only beside it.
+                                room_taken = self._room_taken_by(
+                                    ledger, gpu_rooms, reservation_demand)
+                                if room_taken is not None:
+                                    refused = True
+                                    refusal_source = "deferred_for_ready_gpu_row"
+                                    adaptive = None
                             if not refused and gpu_controller is not None and demand.get("gpu"):
                                 adaptive_gpu = gpu_controller.decision(item, sealed_host_demand, contract=contract)
                                 gpu_decision = getattr(gpu_controller, "last_decision", None)
@@ -16959,6 +17184,14 @@ class PoolQueue:
                                     if withheld_kinds is not None:
                                         evidence["withheld_kinds"] = sorted(withheld_kinds)
                                     self.record_denial(item, reason, evidence)
+                                continue
+                            if refusal_source == "deferred_for_ready_gpu_row":
+                                # Held back for a GPU row's room (#1169), not
+                                # refused on its own account: no pass, as for
+                                # a row behind a withhold.  Named, so a reader
+                                # of this host's denials sees what it waits on.
+                                evidence.update(room_taken or {})
+                                self.record_denial(item, reason, evidence)
                                 continue
                             self.record_pass(key)
                             if verdict is not None and verdict["eligible"]:
