@@ -1830,9 +1830,17 @@ class _StagedPublisher:
         caller holds both owners' transition locks, so no record appears
         while it acts.  An unreadable stat counts as a return: the owner is
         judged again in full.
+
+        A sibling's consumer is this copy's own, queued or claimed by
+        construction while its movers run, so only the sibling's mover is
+        re-checked, exactly as :meth:`_owner_state` judges it.  Checking the
+        consumer too read every remembered sibling ending as a return and
+        judged it again for every name, one publication poll each (#1004
+        item 5).
         """
 
-        for key in pair:
+        consumer, mover = pair
+        for key in ((mover,) if consumer == self.consumer else pair):
             for state in (pool.READY, pool.CLAIMED):
                 try:
                     self.queue.item_path(state, key).stat()

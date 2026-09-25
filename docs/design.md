@@ -4659,7 +4659,10 @@ another mover of the copy's own consumer, is judged by its mover alone. Anything
 else is uncertain: no outcome, a lease without its record, a queued mover, or
 an unreadable fragment. Under the ownership lock the name is decided again.
 An owner that was not judged sends the decision back for another judgment.
-So does a remembered ending whose consumer or mover has a queue record again.
+So does a remembered ending whose consumer or mover has a queue record again;
+for a sibling only its mover is re-checked, since its consumer is the copy's
+own and is queued by construction (#1004: re-checking it re-judged a
+remembered sibling for every name, one publication poll each).
 
 - Every owner has ended: the copy replaces the name by rename over the old
   file, once the pin, live-claim and partial-copy censuses read clean.
