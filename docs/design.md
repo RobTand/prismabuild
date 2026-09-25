@@ -4960,6 +4960,26 @@ same key files its receipt again, and a prewarm receipt is pruned and filed
 afresh) and a new file can reuse an unlinked file's inode number. Neither the
 name nor the inode number says a record is unchanged; the full version does.
 
+**A file version is kept only once its tick has passed (#1045).** The full
+version is not enough on its own: a file unlinked and another created under
+its name in one clock tick can be given the freed inode number, and with the
+same size all five fields match. So each kept file version carries the
+directory stamp's rule (`stage_move._keepable_version`): the coarse realtime
+clock is read before the listing (or before the open, for the census's
+`fstat` reads), and a version whose `ctime_ns` is not strictly before that
+read is not kept. The record is still returned; it is read again on the next
+pass, as a refused directory is listed again, and a listing holding such an
+entry is not kept either. Every later change to a file, a new file under its
+name included, is stamped at or after the clock read and so moves the ctime.
+The rule applies to `DirectoryRecords`, the census memo's fragment and
+material reads (`_read_fragment`, `_read_own_material`, and so the #1056
+co-owner fences, which read the kept version), and `pbmetrics`'s kept
+history entries. As with directory stamps, only a filesystem in
+`_LOCAL_CLOCK_FILESYSTEMS` qualifies: an NFS file's times come from the
+server's clock, so a reader over NFS keeps no file version and parses every
+record of a listed directory each pass. The tier loop and the metrics
+exporter read the queue and the stage on dl380g10's own ZFS.
+
 **The terminal directories are never listed.** A step that asks whether a
 key has ended looks the key up: `withdraw_dead_consumer_movers` does one
 `lstat` per filed plan key per terminal state, and the dead-owner sweep does

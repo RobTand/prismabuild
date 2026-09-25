@@ -122,9 +122,9 @@ from prismabuild import window_credit  # noqa: E402
 
 import prewarm_loop  # noqa: E402
 from stage_move import (  # noqa: E402
-    RANGE_SUFFIX, _current_directory_version, _metadata_version,
-    _trusted_directory_stamp, paths_named_once, pre_range_stage_relative,
-    stage_relative,
+    RANGE_SUFFIX, _current_directory_version, _keepable_version,
+    _metadata_version, _trusted_directory_stamp, _version_fence,
+    paths_named_once, pre_range_stage_relative, stage_relative,
 )
 
 #: The errnos that mean "this file has no such attribute", as opposed to "this
@@ -709,7 +709,9 @@ class DirectoryRecords:
     prewarm receipt is pruned and filed afresh -- and a file created after an
     unlink can be given the unlinked file's inode number, so neither the name
     nor the listing's inode number says a record is unchanged.  The #761
-    version, ctime included, does.
+    version, ctime included, does -- once its clock tick has passed: two
+    files in one tick can share all five fields, so a version is kept only
+    under :func:`stage_move._keepable_version`'s rule (#1045).
     """
 
     def __init__(self) -> None:
@@ -816,6 +818,10 @@ class DirectoryRecords:
                     for child, (_version, record) in sorted(kept[1].items())]
         previous = kept[1] if kept is not None else {}
         stamp = _trusted_directory_stamp(directory)
+        # Read before any entry is stat-ed: a version whose ctime is not
+        # strictly before it is not kept (#1045, :func:`_keepable_version`).
+        fence = _version_fence()
+        local: dict[int, bool] = {}
         try:
             entries = sorted((entry for entry in os.scandir(directory)
                               if select(entry)),
@@ -854,6 +860,14 @@ class DirectoryRecords:
                     if keep is not None and not keep(record):
                         complete = False
                         version = None
+                if version is not None:
+                    # A version changed in the fence's tick could be matched
+                    # by a new file under this name given the freed inode
+                    # (#1045): not kept, so it is read again next pass, and
+                    # neither is the listing, which would lack it.
+                    version = _keepable_version(info, fence, local=local)
+                    if version is None:
+                        complete = False
                 if version is not None:
                     records[entry.name] = (version, record)
                 out.append((path, record))
@@ -965,9 +979,11 @@ def _read_own_material(root: Path, consumer_action_key: str,
     path = reader_lease.material_path(root, consumer_action_key,
                                       mover_action_key)
     key = str(path)
+    fence = _version_fence()
     try:
         with open(path) as stream:
-            version = _metadata_version(os.fstat(stream.fileno()))
+            info = os.fstat(stream.fileno())
+            version = _metadata_version(info)
             hit = memo.materials.get(key)
             if hit is not None and hit[0] == version:
                 memo.reuses += 1
@@ -980,7 +996,12 @@ def _read_own_material(root: Path, consumer_action_key: str,
     except (OSError, ValueError) as exc:
         memo.materials.pop(key, None)
         return exc
-    memo.materials[key] = (version, material)
+    # Kept only at a version no later file can reproduce (#1045).
+    kept = _keepable_version(info, fence)
+    if kept is None:
+        memo.materials.pop(key, None)
+    else:
+        memo.materials[key] = (kept, material)
     return material
 
 
@@ -1011,11 +1032,13 @@ def _read_fragment(path: Path, memo: _CensusMemo | None = None,
     """
 
     key = str(path)
+    fence = _version_fence() if memo is not None else None
     try:
         with open(path) as stream:
-            version = None
+            info = None
             if memo is not None:
-                version = _metadata_version(os.fstat(stream.fileno()))
+                info = os.fstat(stream.fileno())
+                version = _metadata_version(info)
                 hit = memo.fragments.get(key)
                 if hit is not None and hit[0] == version:
                     memo.reuses += 1
@@ -1028,7 +1051,11 @@ def _read_fragment(path: Path, memo: _CensusMemo | None = None,
         return str(exc)
     if memo is not None:
         memo.forget(key)
-        memo.fragments[key] = (version, document)
+        # Kept only at a version no later file can reproduce (#1045).
+        kept = _keepable_version(info, fence)  # type: ignore[arg-type]
+        if kept is None:
+            return document
+        memo.fragments[key] = (kept, document)
         memo.paths[id(document)] = _fragment_stage_paths(document)
         memo.files[id(document)] = key
     return document
