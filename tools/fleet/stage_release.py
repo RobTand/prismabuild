@@ -1889,23 +1889,11 @@ def _stage_ownership(queue: pool.PoolQueue, stage: str | Path, *, role: str):
     run = _EGRESS_RUN.get()
     action_key = (run.action_key if run is not None
                   else os.environ.get(pb.ACTION_KEY_ENV) or None)
-    with queue.stage_ownership_lock(str(stage)):
-        granted = time.perf_counter()
-        try:
-            queue.write_stage_ownership_holder(stage, role=role,
-                                               action_key=action_key)
-        except OSError:
-            if pb_progress.channel() is not None:
-                raise
-        try:
-            yield granted
-        finally:
-            try:
-                queue.clear_stage_ownership_holder(stage)
-            except OSError:
-                # Left standing, the record names a holder whose claim or
-                # process ends with this run, and a reader checks both.
-                pass
+    # The one holder-record hold, shared with ``stage_move``'s (#1110).
+    with queue.recorded_stage_ownership(
+            stage, role=role, action_key=action_key,
+            require_record=pb_progress.channel() is not None) as granted:
+        yield granted
 
 
 def _evict_shared_locked(queue: pool.PoolQueue, mover_action_key: str, *,

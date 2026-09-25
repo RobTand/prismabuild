@@ -9165,7 +9165,10 @@ as a wait, that hold would keep an egress wedged in its census under the
 lock alive for as long as it stayed wedged.
 
 So every hold `stage_release` takes (`_stage_ownership`: the eviction,
-`prune_stale_mentions`, `reconcile` and `recover_orphaned_range`) files a
+`prune_stale_mentions`, `reconcile` and `recover_orphaned_range`), and a
+mover's resume census (`stage_move._resume_own_coverage`, role
+`mover-resume`, #1110), goes through one helper,
+`PoolQueue.recorded_stage_ownership`, which files a
 holder record once the lock is granted and removes it before letting go:
 `stage-ownership-holders/<name>.json` under the queue root, where `<name>`
 is the lock's own name (`PoolQueue.write_stage_ownership_holder`, schema
@@ -9180,10 +9183,21 @@ When a look finds the lock held, the worker reads the record
 holder's own host, its pid is still a process, and, for an action, its claim
 is still filed. A live record that names this action from this host is the
 action's own hold: the look counts it in `start_gate_self_probes` and treats
-the lock as free, so none of it is credited. An egress under a progress
+the lock as free, so none of it is credited. An egress or a mover under a progress
 contract whose record will not write raises and lets the lock go, because
 its own worker could not tell its hold from a wait. Anywhere else, the hold
 goes ahead without the record.
+
+A mover's other holds file no record, and need none. Its start gate
+(`PoolQueue.ownership_start_gate`) takes the lock and releases it at once,
+holding nothing; a record would only lengthen it. Its publisher's per-entry
+holds (`_StagedPublisher._ownership`) come after the gate, once the mover has
+reported entering `copy`, so the worker has stopped looking; a record per
+entry would add a write and an unlink on the queue mount to every
+publication under the lock (#981). A mover sealed without the `start` phase
+still looks during `copy` until its first accepted report, and there an
+unrecorded per-entry hold is still credited as a wait on an unrecorded
+holder, as before #1110.
 
 Between the grant and the record's write, a look can find the lock held with
 no record. That look grants an entry edge, as for any unrecorded holder, and

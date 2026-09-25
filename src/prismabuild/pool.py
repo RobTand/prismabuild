@@ -8534,6 +8534,49 @@ class PoolQueue:
         with suppress(FileNotFoundError):
             self.stage_ownership_holder_path(stage_root).unlink()
 
+    @contextmanager
+    def recorded_stage_ownership(self, stage_root, *, role: str,
+                                 action_key: str | None = None,
+                                 require_record: bool = False):
+        """Hold ``stage_root``'s ownership lock, named as its holder (#1021, #1110).
+
+        Takes :meth:`stage_ownership_lock`, files this process's holder record
+        (:meth:`write_stage_ownership_holder`) once the lock is granted, and
+        removes it before letting go, so a worker probing the lock from
+        another process can tell this action's own hold from a wait on
+        somebody else's (``start_gate_self_probes``).  ``action_key`` is the
+        action this process runs as, when it is one; ``role`` names the pass.
+
+        Yields the ``time.perf_counter()`` of the grant, so a caller's hold
+        timing counts the record's own write and removal as part of the hold
+        they are.
+
+        ``require_record`` is for an action under a progress contract: a
+        record that will not write lets the lock go at once and raises the
+        ``OSError``, because its own worker could not tell its hold from a
+        wait and would credit it for as long as the hold lasted.  Otherwise a
+        record that will not write is a gap in a diagnostic, and the hold
+        goes ahead without it.
+        """
+
+        with self.stage_ownership_lock(str(stage_root)):
+            granted = time.perf_counter()
+            try:
+                self.write_stage_ownership_holder(stage_root, role=role,
+                                                  action_key=action_key)
+            except OSError:
+                if require_record:
+                    raise
+            try:
+                yield granted
+            finally:
+                try:
+                    self.clear_stage_ownership_holder(stage_root)
+                except OSError:
+                    # Left standing, the record names a holder whose claim or
+                    # process ends with this run, and a reader checks both.
+                    pass
+
     def stage_ownership_holder(self, stage_root) -> dict[str, object]:
         """Who holds the stage's ownership lock, by its own record (#1021).
 

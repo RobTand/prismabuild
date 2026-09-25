@@ -3923,11 +3923,17 @@ def _resume_own_coverage(queue, *, consumer_action_key: str,
     fragment_path = residency_map.fragment_path(
         residency_root, consumer_action_key, mover_action_key)
     asked = time.perf_counter()
-    with queue.stage_ownership_lock(str(stage_root)):
+    # Named as this mover's own hold (#1110): the census runs in the mover's
+    # first phase, where its worker looks at the start gate, and an
+    # unrecorded hold there is credited as a wait on somebody else.
+    with queue.recorded_stage_ownership(
+            stage_root, role="mover-resume", action_key=mover_action_key,
+            require_record=pb_progress.channel() is not None) as granted:
         if timings is not None:
             # The first time a mover queues for the stage ownership lock:
             # an egress's hold is paid here before the start gate (#988).
-            timings["resume_lock_wait_s"] = time.perf_counter() - asked
+            # To the grant, so the record's own write is not called a wait.
+            timings["resume_lock_wait_s"] = granted - asked
         try:
             with open(fragment_path, "rb") as stream:
                 fragment = residency_map.validate_fragment(json.load(stream))
