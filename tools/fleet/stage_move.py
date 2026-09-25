@@ -571,6 +571,57 @@ def _trusted_directory_stamp(path: Path) -> tuple[int, int, int, int] | None:
     return (info.st_dev, info.st_ino, info.st_mtime_ns, ctime)
 
 
+def _version_fence() -> int | None:
+    """The coarse realtime clock, read before a listing or an open (#1045).
+
+    What :func:`_keepable_version` compares a file's ctime with.  ``None``
+    where the coarse clock is not the one this kernel stamps file times from
+    (off Linux), and then no file version is kept.
+    """
+
+    if _COARSE_REALTIME is None:
+        return None
+    return time.clock_gettime_ns(_COARSE_REALTIME)
+
+
+def _keepable_version(info: "os.stat_result", fence: int | None, *,
+                      local: dict[int, bool] | None = None,
+                      ) -> tuple[int, int, int, int, int] | None:
+    """A file's #761 version when a record read at it may be kept, else ``None``.
+
+    :func:`_trusted_directory_stamp`'s rule, applied to one file (#1045).
+    ``fence`` is :func:`_version_fence`, read before the ``stat`` or
+    ``fstat`` that gave ``info``.  A kept record is reused while a later
+    ``stat`` returns the same ``(dev, ino, size, mtime_ns, ctime_ns)``, and
+    that proves the file unchanged only if no change can reproduce it: a file
+    unlinked and another created under its name in one clock tick can be
+    given the freed inode number, and with the same size all five fields
+    match.  So the version is refused unless its ctime is strictly before
+    ``fence``: every later change to the file, a new file under its name
+    included, is stamped at or after the fence and so moves the ctime.  A
+    refused version is not kept, and the record is read again next pass, as
+    a refused directory is listed again.
+
+    Only on a filesystem in :data:`_LOCAL_CLOCK_FILESYSTEMS`, whose file
+    times come from the clock the fence reads; a network filesystem's come
+    from the server's, so none of its versions is kept.  ``local`` memoizes
+    that answer per device for one listing; without it each call asks
+    :func:`_filesystem_type`.
+    """
+
+    if fence is None or int(getattr(info, "st_ctime_ns", 0)) >= fence:
+        return None
+    device = info.st_dev
+    if local is None:
+        trusted = _filesystem_type(device) in _LOCAL_CLOCK_FILESYSTEMS
+    else:
+        trusted = local.get(device)  # type: ignore[assignment]
+        if trusted is None:
+            trusted = _filesystem_type(device) in _LOCAL_CLOCK_FILESYSTEMS
+            local[device] = trusted
+    return _metadata_version(info) if trusted else None
+
+
 def _current_directory_version(path: Path) -> tuple[int, int, int, int] | None:
     """The same four fields as :func:`_trusted_directory_stamp`, unguarded.
 

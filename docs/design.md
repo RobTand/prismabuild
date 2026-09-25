@@ -191,6 +191,22 @@ opens remain (actions 8c9e1d2bd5f4 and 8550ef5bc4ab). On the NFS export a
 listing is at least one READDIR, and a per-key lookup is a LOOKUP unless
 the client's dentry cache answers it.
 
+Each claim pass times its per-key transition-lock holds (#1029): every lock
+the pass acquires is timed on `time.monotonic()` from acquisition to the end
+of the block that held it, however the block ends, and a lock another loop
+held is not a hold. The pass's `transition_holds` (count),
+`transition_held_s` (total), `transition_held_max_s` and
+`transition_held_max_key` (the longest hold and the key it was held for) are
+`PoolQueue.last_claim_pass`, and a pass that held at least one lock files
+them, with `host`, `pid` and `passed_unix`, as its loop's entry under
+`claim_passes` in the host's latest-only `claim-denials.json`. That entry is
+keyed by pid, keeps the newest `MAX_CLAIM_PASS_LOOPS` (64) loops, is written
+under the same local diagnostics lock as the denials and is as best-effort:
+a contended lock drops it and never delays or changes a claim. The snapshot
+publisher copies it with the denials, and the denial readers ignore it. A
+slow NFS round trip under the lock is visible there instead of only as the
+`transition_busy` every loop that met the lock recorded.
+
 When the claimant supplies CPU tiers, validation of an existing `cpu-map.json`
 also runs before host admission. That map is immutable while workers run;
 changing it requires stopped workers and drained reservations. A missing map
@@ -2580,7 +2596,17 @@ Reports use the existing stable no-follow regular-file reader with a 64 KiB
 accepted-byte limit. Symlinks, FIFOs, oversized or changing files are rejected;
 strict UTF-8 JSON rejects duplicate keys, malformed data and non-finite values.
 Parser depth errors and unrepresentable timestamps cannot escape into action
-termination. Missing reports retain the current grace; invalid reports count
+termination. A report is a whole-record file its writer replaces with
+`os.replace`, so a name that moved to a newer *regular* file between the
+reader's open and its final identity check is a benign replacement, not tamper
+(#1017): the reader opts into `replaced_leaf` and reads again from a fresh
+no-follow resolution, at most `_REPLACED_RECORD_READ_ATTEMPTS` (8) times, then
+refuses with `ReplacedRecordError` (a `CASTamperError`), recorded as
+`unreadable: ReplacedRecordError`. The staged-wait record and the tier loop's
+two mover reads (`mover_report`, `mover_landing`) read the same way. A name
+that moved to anything but a regular file is still tamper, and CAS objects,
+never replaced by design, keep the strict identity check. Missing reports
+retain the current grace; invalid reports count
 as rejections and do not extend it. These are byte and type bounds, not a hard
 deadline on NFS syscalls: like the existing lease and withdrawal checkpoints,
 a regular-file operation can block in the kernel. Shared-filesystem recovery
@@ -5015,6 +5041,26 @@ because a receipt is replaced under its own name (a mover re-run under the
 same key files its receipt again, and a prewarm receipt is pruned and filed
 afresh) and a new file can reuse an unlinked file's inode number. Neither the
 name nor the inode number says a record is unchanged; the full version does.
+
+**A file version is kept only once its tick has passed (#1045).** The full
+version is not enough on its own: a file unlinked and another created under
+its name in one clock tick can be given the freed inode number, and with the
+same size all five fields match. So each kept file version carries the
+directory stamp's rule (`stage_move._keepable_version`): the coarse realtime
+clock is read before the listing (or before the open, for the census's
+`fstat` reads), and a version whose `ctime_ns` is not strictly before that
+read is not kept. The record is still returned; it is read again on the next
+pass, as a refused directory is listed again, and a listing holding such an
+entry is not kept either. Every later change to a file, a new file under its
+name included, is stamped at or after the clock read and so moves the ctime.
+The rule applies to `DirectoryRecords`, the census memo's fragment and
+material reads (`_read_fragment`, `_read_own_material`, and so the #1056
+co-owner fences, which read the kept version), and `pbmetrics`'s kept
+history entries. As with directory stamps, only a filesystem in
+`_LOCAL_CLOCK_FILESYSTEMS` qualifies: an NFS file's times come from the
+server's clock, so a reader over NFS keeps no file version and parses every
+record of a listed directory each pass. The tier loop and the metrics
+exporter read the queue and the stage on dl380g10's own ZFS.
 
 **The terminal directories are never listed.** A step that asks whether a
 key has ended looks the key up: `withdraw_dead_consumer_movers` does one
