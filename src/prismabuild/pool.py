@@ -6573,6 +6573,20 @@ class PoolQueue:
         return (self.root / RESIDENCY_PLANS
                 / f"{_residency_action_key(consumer_action_key)}.json")
 
+    def launch_environment(self, item: Mapping[str, object]) -> dict[str, str]:
+        """The queue's own launch context for ``item`` (#583, #961).
+
+        ``QUEUE_ROOT_ENV`` always, as this queue's absolute root: the published
+        answer to "which queue launched me" (``__init__`` already refuses a
+        relative root), so a consumer never derives it
+        from where the residency map happens to live.  Plus
+        :meth:`residency_map_environment`, which is empty for an action with
+        no map to read.
+        """
+
+        return {pb.QUEUE_ROOT_ENV: str(self.root),
+                **self.residency_map_environment(item)}
+
     def residency_map_environment(self, item: Mapping[str, object]) -> dict[str, str]:
         """``{RESIDENCY_MAP_ENV: path}`` for an action with a map to read.
 
@@ -12918,8 +12932,7 @@ class PoolQueue:
 
         tier_id = self._check_tier_id(str(record.get("tier_id", "")))
         path = self.tier_record_path(tier_id)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        _write_json_atomic(path, dict(record, announced_unix=(
+        self._write_cycle_record(path, dict(record, announced_unix=(
             _now() if now is None else float(now))))
         return path
 
@@ -12932,6 +12945,23 @@ class PoolQueue:
             if isinstance(record, dict) and record.get("tier_id") == path.stem:
                 records.append(record)
         return records
+
+    @staticmethod
+    def _write_cycle_record(path: Path, record: Mapping[str, object]) -> None:
+        """Publish a record a loop rewrites every cycle, making its directory once.
+
+        The directory is made only when the write finds it missing, so the
+        steady state costs no ``mkdir`` per call (#960): on a starved NFS
+        mount each one is an RPC, the reason ``ensure_layout`` runs once per
+        process (#595).  A directory an operator deletes comes back on the
+        next write.
+        """
+
+        try:
+            _write_json_atomic(path, record, make_parent=False)
+        except FileNotFoundError:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            _write_json_atomic(path, record, make_parent=False)
 
     def tier_commitment_path(self, tier_id: str) -> Path:
         return self.root / TIER_COMMITMENTS / f"{self._check_tier_id(tier_id)}.json"
@@ -12947,9 +12977,8 @@ class PoolQueue:
 
         tier_id = self._check_tier_id(str(record.get("tier_id", "")))
         path = self.tier_commitment_path(tier_id)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        _write_json_atomic(path, dict(record, schema=TIER_COMMITMENT_SCHEMA_V1,
-                                      filed_unix=_now()))
+        self._write_cycle_record(path, dict(
+            record, schema=TIER_COMMITMENT_SCHEMA_V1, filed_unix=_now()))
         return path
 
     def tier_commitment(self, tier_id: str) -> dict[str, object] | None:
@@ -21134,7 +21163,7 @@ class PoolQueue:
             # travel in a file because this process's exit status cannot
             # carry them.
             env={**os.environ, pb.ACTION_STATUS_PATH_ENV: str(status_path),
-                 **progress_environment, **self.residency_map_environment(item)},
+                 **progress_environment, **self.launch_environment(item)},
             # The launcher leads its own group so the timeout can signal the
             # group rather than the single pid.  ``kill()`` on the pid reaches
             # the launcher only, and leaves the action holding the GPU.

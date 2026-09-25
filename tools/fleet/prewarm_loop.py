@@ -219,6 +219,7 @@ sys.path.insert(0, str(generation_root(__file__) / "src"))
 
 import prismabuild.core as pb  # noqa: E402
 from prismabuild import pool  # noqa: E402
+from prismabuild import produced_output  # noqa: E402
 from prismabuild import progress as progress_v1  # noqa: E402
 from prismabuild import storage_tiers  # noqa: E402
 
@@ -3459,6 +3460,22 @@ def update_prewarm_stage(queue: pool.PoolQueue, action_key: str,
     return True
 
 
+def released_origin_consumer(queue: pool.PoolQueue, key: str) -> bool:
+    """Whether a claim will refuse ``key`` as a released consumer (#954).
+
+    The one release check both storage loops ask: ``tier_loop.live_consumers``
+    leaves such a ready row out of what it stages, and ``cycle`` leaves it out
+    of what it warms and stages (#963).  Unknown counts as released: the claim
+    denies a row whose release it cannot read, so warming or staging it would
+    read bytes nothing reads.
+    """
+
+    try:
+        return produced_output.origin_consumer_release(queue, key) is not None
+    except produced_output.ProducedOutputError:
+        return True
+
+
 def stage_requested(args) -> bool:
     """Is the stage tier asked for at all?
 
@@ -3939,12 +3956,26 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
             event["advanced"][-1]["stopped_by"] = record["stopped_by"]
 
     taken = 0
+    # Listed once per cycle, confirmed per listed key, exactly as
+    # ``tier_loop.live_consumers`` does (#963): the claim fails a released
+    # ready row with ``origin-consumer-released`` and never runs it, so a warm
+    # for it is a wasted lookahead read and a stage for it (``--stage``) is a
+    # copy for a consumer that can no longer run.  The row still counts as
+    # queued below -- it stays in ``ready/`` until a claim files it -- so its
+    # receipt and any band it already holds retire with the row, not here.
+    released_keys = queue.released_origin_consumer_keys()
     for item in ready:
         if taken >= args.lookahead or stop.is_set():
             break
         key = str(item.get("action_key", ""))
         root = Path(item.get("cas_root") or cas_root or "")
         if not key or not root.name:
+            continue
+        if key in released_keys and released_origin_consumer(queue, key):
+            # Does not spend the lookahead: a row nobody will run must not
+            # disable prewarm for the rows behind it.
+            event["skipped"].append({"action_key": key,
+                                     "reason": "origin consumer released"})
             continue
         request = sealed_request(root, key)
         entry = manifest_input_of(request)

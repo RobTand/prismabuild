@@ -5822,6 +5822,23 @@ declaration-less rows taint. Commit-batch funding, movement/tick
 handoff, and the general funded-window primitive remain with their
 owning lanes.
 
+**Reading a batch record (#955).** `produced_output.batch_record(queue,
+instance, template, *, batch_id)` is the public, read-only reader of one
+committed batch, and `batch_records(queue, instance, template)` returns every
+batch the instance committed, in `batch_id` order, reclaimed and retiring
+ones included. Each answer carries `entries` (`path`, `bytes`, `sha256`,
+`artifact_class`), `lifetime` (`retain` or `consumed`), `commitment` (the
+batch's commitments entry as filed), `state` (`committed`; `retiring` once
+the retirement tick has decided to delete it; `reclaimed` once PB stopped
+charging it) and `record` (the filed batch record, `origin_identity`
+included). The record goes through the same loader as retirement and
+reclaim. They take no lock and mutate nothing. A foreign template raises
+`template-mismatch`, a batch never committed raises `unknown-batch`, and a
+commitments document or batch record that is missing, unreadable or does not
+validate raises `unknown-retain: ...`: under the census rule it is never read
+as empty. `_load_batch_record` and `_read_commitments` stay private; a caller
+outside PB (PQ's Stage A retirement, PQ #1073) uses these.
+
 ### The movement node
 
 `tools/fleet/stage_move.py` is the mover: an ordinary PB action, placed by tag
@@ -6559,6 +6576,13 @@ release is therefore enforced where live code always runs:
   publishes no phase of its frozen plan, not even its lead. Once the claim
   has failed the row, the dead-consumer sweep (#620) archives the plan. A
   claimed consumer is never left out: it was claimed before any release.
+- **The prewarm loop (#963).** `prewarm_loop.cycle` asks the same check,
+  `prewarm_loop.released_origin_consumer`, which `live_consumers` also
+  calls: a ready row whose key has a confirmed release, or one it cannot
+  read, is neither warmed nor staged (`--stage`), and is logged as skipped
+  with reason `origin consumer released` without spending the lookahead.
+  The row still counts as queued for the cycle's receipt prune and stage
+  sweep until the claim files it.
 
 The old consumer's own state answers first while it is queued, running or
 has succeeded. Since #945 a released key also cannot declare the batch
@@ -8716,7 +8740,21 @@ footprint, and every newcomer the pass refused on the tier (`waiting`), with
 its reason and, for a commitment refusal, the gate's terms. A newcomer gated
 behind another's wait (`higher-priority-window-waiting`) names that one and
 its reason under `waiting_on`. The record is a report: admission never reads
-it.
+it. Its directory is made only when a write finds it missing, not on every
+call; `announce_tier` writes the same way (#960).
+
+**A retired tier (#960).** In the cycle the loop retires a stage tier it no
+longer discovers, it replaces the tier's commitment record with
+`{"tier_id", "retired": true, "waiting": []}`: no totals, terms, holders or
+claim order, so a staged wait reads the tier's commitment as unknown rather
+than as the last live over-commitment. A record already marked retired is
+read and not rewritten.
+
+**The cycle line (#960).** Each stage tier's entry on the `tier-cycle`
+summary line carries the totals its record was filed with that cycle:
+`committed_gib` (null when the tier was not censused), `waiting` (how many
+newcomers the pass refused on it) and `waiting_need_gib` (the GiB they
+asked for), plus `retired` for a retired tier.
 
 A pass that asked no newcomer took no census. The report then takes one with
 `remember=False`, which prices each window as admission would at that moment
@@ -11213,6 +11251,17 @@ file only they name, and the loop composes them and recomposes after every
 eviction, because a rename cannot merge and a map naming an evicted range points
 at deleted files. The launcher puts the composed map's path in
 `PRISMABUILD_RESIDENCY_MAP`, and only when the file exists.
+
+**The queue root is published, not derived (#961).** The pool launcher also
+sets `PRISMABUILD_QUEUE_ROOT` (`core.QUEUE_ROOT_ENV`) for every action it runs,
+map or no map, to the queue's absolute root (`PoolQueue.launch_environment`).
+`core` forwards it unsealed beside the map and refuses an action that seals
+it. A consumer that needs its queue calls `reader_lease.launch_queue_root`,
+the SDK's one reader, and never derives the root from the map's path shape
+(`<queue>/residency/<key>.json`): that layout is the queue's to move. The
+function reads the map's path only for a launch by a pool generation older
+than #961, which published no root, and answers `None` for a process no pool
+worker launched. `reader_lease.injected_context` resolves its queue through it.
 
 **The map lives as long as its consumer runs (#908).** When a consumer has
 nothing staged, the loop's answer depends on whether it is running:

@@ -483,19 +483,6 @@ def probe_fill_demand(ready: list[dict[str, object]], tier_id: str) -> int | Non
     return min(candidates)[1]
 
 
-def _released_origin_consumer(queue: pool.PoolQueue, key: str) -> bool:
-    """Whether a claim will refuse ``key`` as a released consumer (#954).
-
-    Unknown counts as released: the claim denies a row whose release it cannot
-    read, so staging it would copy bytes nothing reads.
-    """
-
-    try:
-        return produced_output.origin_consumer_release(queue, key) is not None
-    except produced_output.ProducedOutputError:
-        return True
-
-
 def live_consumers(queue: pool.PoolQueue) -> list[dict[str, object]]:
     """Every ready or claimed item that declares leads, with what it has accepted.
 
@@ -529,7 +516,7 @@ def live_consumers(queue: pool.PoolQueue) -> list[dict[str, object]]:
             if not isinstance(key, str):
                 continue
             if (state == pool.READY and key in released
-                    and _released_origin_consumer(queue, key)):
+                    and prewarm_loop.released_origin_consumer(queue, key)):
                 continue
             accepted = None
             claimed_unix = None
@@ -6953,6 +6940,101 @@ def _settle_protected(queue: pool.PoolQueue,
     return events
 
 
+#: Each stage tier's commitment totals as this cycle filed them (#960),
+#: cleared at the top of every :func:`cycle` and copied into
+#: ``LAST_CYCLE["commitments"]`` at its end, so the ``tier-cycle`` line can
+#: carry them per tier without reading the records back off the mount.
+_CYCLE_COMMITMENTS: dict[str, dict[str, object]] = {}
+
+
+def commitment_totals(record: Mapping[str, object]) -> dict[str, object]:
+    """A commitment record's per-tier totals for the ``tier-cycle`` line (#960).
+
+    ``committed_gib`` as the census priced it (``None`` when the tier was not
+    censused or its census failed), how many newcomers wait on the tier and
+    the GiB they asked for.  A retired tier reports ``retired``.
+    """
+
+    waiting = [entry for entry in record.get("waiting") or ()  # type: ignore[union-attr]
+               if isinstance(entry, Mapping)]
+    need = [entry.get("need_gib") for entry in waiting]
+    totals: dict[str, object] = {
+        "committed_gib": record.get("committed_gib"),
+        "waiting": len(waiting),
+        "waiting_need_gib": sum(int(value) for value in need
+                                if isinstance(value, int)
+                                and not isinstance(value, bool)),
+    }
+    if record.get("retired"):
+        totals["retired"] = True
+    return totals
+
+
+def _retire_commitment(queue: pool.PoolQueue, tier_id: str
+                       ) -> dict[str, object] | None:
+    """Mark a retired stage tier's commitment record retired (#960).
+
+    Its last record would otherwise keep naming holders, waits and a claim
+    order on a tier nothing censuses any more, and only age through
+    ``commitment_age_s``.  The record is replaced, not deleted, for the
+    reason the tier record is: it says why the tier is empty rather than
+    vanishing.  It carries no ``over_committed_gib``, so a staged wait reads
+    the tier's commitment as unknown, never as a stale over-commitment.
+    Rewritten only when the filed record is not already retired, so a tier
+    retired long ago costs a read per cycle, not a write.  Returns a
+    ``tier-commitment-unfiled`` event when the record cannot be read or
+    written, else ``None``.
+    """
+
+    try:
+        filed = queue.tier_commitment(tier_id)
+    except (OSError, ValueError, pool.PoolContractError):
+        filed = None
+    if isinstance(filed, Mapping) and filed.get("retired") is True:
+        _CYCLE_COMMITMENTS[tier_id] = commitment_totals(filed)
+        return None
+    record: dict[str, object] = {"tier_id": tier_id, "retired": True,
+                                 "waiting": []}
+    try:
+        queue.file_tier_commitment(record)
+    except (OSError, pool.PoolContractError, ValueError, TypeError) as exc:
+        return {"event": "tier-commitment-unfiled", "tier_id": tier_id,
+                "error": repr(exc)}
+    _CYCLE_COMMITMENTS[tier_id] = commitment_totals(record)
+    return None
+
+
+def tier_cycle_line(host: str, records: Sequence[Mapping[str, object]],
+                    last_cycle: Mapping[str, object], *,
+                    unix: float | None = None) -> dict[str, object]:
+    """The ``tier-cycle`` summary line: each tier, with its commitment totals.
+
+    A stage tier's entry carries the totals its commitment record was filed
+    with this cycle (#960): ``committed_gib``, ``waiting`` and
+    ``waiting_need_gib``.  A tier with no commitment record this cycle (not
+    a stage tier) carries none of them.
+    """
+
+    commitments = last_cycle.get("commitments")
+    commitments = commitments if isinstance(commitments, Mapping) else {}
+    tiers = []
+    for record in records:
+        entry = {k: record.get(k) for k in (
+            "tier_id", "tier", "capacity_bytes", storage_tiers.FILL_RECORD_FIELD,
+            "fill_source", "fill_supply", "tokens")}
+        totals = commitments.get(str(record.get("tier_id")))
+        if isinstance(totals, Mapping):
+            entry.update(totals)
+        tiers.append(entry)
+    return {
+        "event": "tier-cycle", "unix": time.time() if unix is None else unix,
+        "host": host, "tiers": tiers,
+        # ``cycle_seconds``, the seconds of every step, and what the cycle
+        # listed, parsed and reused (#992).  The commitments are on the tiers.
+        **{k: v for k, v in last_cycle.items() if k != "commitments"},
+    }
+
+
 def _report_commitments(queue: pool.PoolQueue,
                         tiers: Mapping[str, Mapping[str, object]],
                         protection: Mapping[str, object], *,
@@ -7002,6 +7084,7 @@ def _report_commitments(queue: pool.PoolQueue,
         record = _commitment_report(
             tier_id, census.get(tier_id) if isinstance(census, Mapping) else None,
             gated, claim_order=(claim_order or {}).get(tier_id))  # type: ignore[arg-type]
+        _CYCLE_COMMITMENTS[tier_id] = commitment_totals(record)
         if int(record.get("over_committed_gib") or 0) > 0:  # type: ignore[call-overload]
             events.append({
                 "event": "tier-over-committed", "tier_id": tier_id,
@@ -9050,6 +9133,7 @@ def cycle(
     records = getattr(receipts, "records", None)
     _STAGED_WAITS[0] = {}
     _SHARED_MOVERS[0] = {}
+    _CYCLE_COMMITMENTS.clear()
     # Each shared mover's index read once per cycle, not once per plan leg
     # that names it (#1026).
     residency_plan._SHARE_NAMESPACE_MEMO[0] = {}
@@ -9081,6 +9165,8 @@ def cycle(
                       for name in after},
             "receipts_unreadable": dict(getattr(receipts, "unreadable", {})),
             "transition_lock_busy": _LOCK_BUSY_COUNT[0],
+            "commitments": {tier_id: dict(totals) for tier_id, totals
+                            in sorted(_CYCLE_COMMITMENTS.items())},
         }
         if liveness is not None:
             try:
@@ -9577,6 +9663,13 @@ def _cycle(
             "capacity_bytes": 0, "retired": True, "ledger": ledger,
             "sampled_unix": time.time() if now is None else now,
         })
+        # Its commitment record too, in the same cycle (#960): only stage
+        # tiers file one.
+        if (storage_tiers.capacity_kind_of(tier_id)
+                == storage_tiers.STAGE_CAPACITY_KIND):
+            unfiled = _retire_commitment(queue, tier_id)
+            if unfiled is not None:
+                _emit(queue, host, unfiled)
     phases.lap("census_cost_and_retired_tiers")
     return announced
 
@@ -9657,16 +9750,8 @@ def _serve(args) -> int:
                               "unix": time.time(), **LAST_CYCLE}), flush=True)
             records = []
         else:
-            print(json.dumps({
-                "event": "tier-cycle", "unix": time.time(), "host": host,
-                "tiers": [{k: r.get(k) for k in ("tier_id", "tier", "capacity_bytes",
-                                                    storage_tiers.FILL_RECORD_FIELD, "fill_source",
-                                                    "fill_supply", "tokens")}
-                          for r in records],
-                # ``cycle_seconds``, the seconds of every step, and what the
-                # cycle listed, parsed and reused (#992).
-                **LAST_CYCLE,
-            }), flush=True)
+            print(json.dumps(tier_cycle_line(host, records, LAST_CYCLE)),
+                  flush=True)
         if args.once:
             print(json.dumps(records, indent=1, default=str))
             return 0
