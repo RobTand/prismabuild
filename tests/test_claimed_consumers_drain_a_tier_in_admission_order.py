@@ -917,8 +917,9 @@ CHUNKS = 2
 
 
 def _chunked_plan(queue: pool.PoolQueue, key: str, *, label: str,
-                  manifest: str, stage_root: str) -> dict[str, object]:
-    """R12's plan with every phase sealed as ``CHUNKS`` stage chunks (#675)."""
+                  manifest: str, stage_root: str,
+                  chunks: int = CHUNKS) -> dict[str, object]:
+    """R12's plan with every phase sealed as ``chunks`` stage chunks (#675)."""
 
     r12 = DATA["r12"]
     total = int(r12["phases"][-1]["end_bytes"])
@@ -926,13 +927,13 @@ def _chunked_plan(queue: pool.PoolQueue, key: str, *, label: str,
     for phase in r12["phases"]:
         name = str(phase["name"])
         start, end = int(phase["start_bytes"]), int(phase["end_bytes"])
-        cuts = [start + (end - start) * index // CHUNKS
-                for index in range(CHUNKS)] + [end]
-        chunks = []
-        for index in range(CHUNKS):
+        cuts = [start + (end - start) * index // chunks
+                for index in range(chunks)] + [end]
+        legs = []
+        for index in range(chunks):
             low, high = cuts[index], cuts[index + 1]
             gib = storage_tiers.stage_tokens_for_bytes(high - low)
-            chunks.append({
+            legs.append({
                 "chunk_index": index, "start_bytes": low, "end_bytes": high,
                 "stage_gib": gib,
                 "mover_row": {
@@ -946,8 +947,8 @@ def _chunked_plan(queue: pool.PoolQueue, key: str, *, label: str,
                 "egress_row": _row(queue, _hexkey(f"{label}egress{name}c{index}"),
                                    {"mem_gb": 1})})
         built.append({"name": name, "start_bytes": start, "end_bytes": end,
-                      "stage_gib": sum(int(chunk["stage_gib"]) for chunk in chunks),
-                      "stage_chunks": chunks})
+                      "stage_gib": sum(int(leg["stage_gib"]) for leg in legs),
+                      "stage_chunks": legs})
     return residency_plan.build_plan(
         consumer_action_key=key, tier_id=TIER, stage_root=stage_root,
         manifest_sha256=manifest, manifest_bytes=total, phases=built)
@@ -959,13 +960,14 @@ def _chunk_of(plan, name: str, index: int) -> dict[str, object]:
 
 
 def _chunked_blocked(queue: pool.PoolQueue, stage: Path, n: int, *, shift: float,
-                     holding: tuple[tuple[str, int], ...]) -> dict[str, object]:
+                     holding: tuple[tuple[str, int], ...],
+                     chunks: int = CHUNKS) -> dict[str, object]:
     """``_blocked`` on the chunked plan: ``holding`` names landed chunks."""
 
     r12 = DATA["r12"]
     key, manifest = _key(n), _manifest(n)
     plan = _chunked_plan(queue, key, label=f"order{n}", manifest=manifest,
-                         stage_root=str(stage))
+                         stage_root=str(stage), chunks=chunks)
     _consumer(queue, key, plan, manifest=manifest,
               mem_gb=r12["resources"]["mem_gb"])
     for name, index in holding:
@@ -976,7 +978,7 @@ def _chunked_blocked(queue: pool.PoolQueue, stage: Path, n: int, *, shift: float
               name=f"{name}c{index}", start=start, end=end,
               seconds=(end - start) / RATES[name])
     for name in PASSED:
-        for index in range(CHUNKS):
+        for index in range(chunks):
             egress = dict(_chunk_of(plan, name, index)["egress_row"])  # type: ignore[arg-type]
             path = queue.item_path(pool.DONE, str(egress["action_key"]))
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -990,11 +992,11 @@ def _chunked_blocked(queue: pool.PoolQueue, stage: Path, n: int, *, shift: float
 
 
 def _chunked_cycle(queue: pool.PoolQueue, stage: Path, *, gib: int,
-                   chunk_gib: int) -> None:
+                   chunk_gib: int, chunks: int = CHUNKS) -> None:
     """One cycle on a stage tier that announces its chunking."""
 
     record = {**_tier_record(stage, gib=gib), "promotion_chunk_gib": chunk_gib,
-              "window_gib": CHUNKS * chunk_gib}
+              "window_gib": chunks * chunk_gib}
     tier_loop.cycle(queue, host="dl380g10", source_pool="storage_pool",
                     receipts=tier_loop.ReceiptCache(),
                     discover=lambda **_kwargs: {TIER: record})
@@ -1399,4 +1401,199 @@ def test_measure_the_legs_a_granted_chunked_window_publishes_a_cycle(
                                          if landing > 0 else None),
             "cycles": cycles}, default=str))
     assert len(cycles) == 3
+
+
+# ------------------------------------------------ #1038: legs per cycle vs the rate
+
+
+def test_a_granted_chunked_window_publishes_enough_legs_to_reach_the_landing_rate(
+        tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """#1038: one leg a cycle caps a small-chunk window below the landing rate.
+
+    Item 7 found a granted chunked window publishes exactly one leg a cycle,
+    whatever the chunk size: ``chunk_bytes / CYCLE_INTERVAL_S``.  #1022's
+    11 GiB chunks (11.70 GB) cleared that cap anyway -- 194.9 MB/s, above the
+    fixture's 134.2 MB/s slowest landing rate -- so it cost nothing there.  A
+    4 GiB chunk does not clear it (65.0 MB/s < 134.2 MB/s), which is exactly
+    the small-chunk plan the issue is about.
+
+    Item 7's own fixture, at ``chunks=6`` (``chain-043``'s 22 GiB split six
+    ways, 4 GiB each) instead of its ``CHUNKS=2`` (11 GiB): two chunked R12
+    consumers, nothing landed, room for the whole reading phase and then
+    some (``room_chunks=6``, one consumer's worth) on a tier that is only
+    over-committed because of the *other* consumer's own footprint -- a
+    single claimed consumer's footprint is capped at the tier's own
+    capacity (:func:`residency_plan.read_footprint`), so it takes both to
+    be over-committed and rank at all.  With nothing landed, both start
+    blocked on ``chain-043`` and their one-leg needs both fit the room, so
+    both are ``granted`` every cycle -- there being no head to hold either
+    back.
+
+    The rate is one shared pool the granted windows split (#1038 review),
+    not one each, so what is checked against the landing rate is the tier's
+    achieved throughput -- every granted window's new legs, summed for the
+    cycle -- not either window alone: with two granted windows sharing one
+    rate, neither need reach it by itself.
+
+    Three cycles, each followed by ``_run_movers`` so every published leg
+    lands -- at ``chain-043``'s own historical rate, ``RATES`` -- before the
+    next cycle prices the window's landing rate off it: the same
+    ``landing_bytes_per_s`` :func:`tier_loop._rank_claims` already measures
+    for pricing a held-back consumer's wait, reused here rather than a new
+    constant, per the issue.
+    """
+
+    shift = time.time() - SAMPLE_UNIX
+    chunks = 6
+    queue, stage = _fixture_queue(tmp_path, DATA["tier"]["capacity_gib"])
+    plans = [_chunked_blocked(queue, stage, n, shift=shift, holding=(),
+                              chunks=chunks) for n in range(2)]
+    first = _chunk_of(plans[0], READING, 0)
+    chunk_gib = int(first["stage_gib"])
+    chunk_bytes = int(first["end_bytes"]) - int(first["start_bytes"])
+    assert chunk_gib == 4, chunk_gib          # #1038's 4 GiB case, not #1022's 11
+    room_chunks = chunks                       # one consumer's whole phase at once
+    movers = [[str(chunk["mover_row"]["action_key"])
+               for phase in plan["phases"] for chunk in phase["stage_chunks"]]  # type: ignore[index]
+              for plan in plans]
+    seen: set[str] = set()
+    cycle_totals: list[int] = []                # new legs, summed over the cycle
+    grants: list[tuple[int, int]] = []          # (publish_gib, free_gib), granted entries
+    for _cycle_number in range(3):
+        _chunked_cycle(queue, stage, gib=room_chunks * chunk_gib,
+                       chunk_gib=chunk_gib, chunks=chunks)
+        record = queue.tier_commitment(TIER) or {}
+        order = record.get("claim_order") or {}
+        entries = {entry["consumer"]: entry
+                   for entry in order.get("entries") or ()}
+        total_new = 0
+        for n in range(2):
+            new = [mover for mover in movers[n]
+                   if mover not in seen and _published(queue, mover)]
+            seen.update(new)
+            total_new += len(new)
+            entry = entries.get(_key(n))
+            if entry is not None and entry["standing"] == window_credit.CLAIM_GRANTED:
+                grants.append((int(entry.get("publish_gib") or 0),
+                              int(order.get("free_gib") or 0)))
+        cycle_totals.append(total_new)
+        _run_movers(queue, stage, 2)
+    capsys.readouterr()
+
+    landing = min(RATES.values())
+    most = max(cycle_totals)
+    achieved = most * chunk_bytes / tier_loop.CYCLE_INTERVAL_S
+    assert achieved >= landing, (achieved, landing, cycle_totals)
+
+    # The window's own byte grant -- what the rank found free for it -- is
+    # never exceeded: a granted window is never asked to publish more than
+    # the tier's free at the time it was ranked, however fast the rate wants.
+    assert grants, grants
+    for publish_gib, free_gib in grants:
+        assert publish_gib <= free_gib, (publish_gib, free_gib, grants)
+
+
+def test_the_shared_extra_leg_pool_is_spent_once_in_rank_order(
+        tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """#1038 review: the extra-leg pool is the tier's, not one each per window.
+
+    Giving every granted window its own ``rate * CYCLE_INTERVAL_S`` budget,
+    or letting its extra legs draw on the tier's free room independently of
+    the other granted windows, both let K granted windows together publish
+    up to K times what the tier can actually land or hold: the first
+    problem is a landing-rate budget spent K times over: the second is a
+    granted window's *first* leg -- reserved for it by the rank walk --
+    getting spent by another granted window's extras, which regresses the
+    one guarantee this order exists to give a claimed consumer on an
+    over-committed tier.
+
+    Two chunked R12 consumers (n=0 claimed first, so ranked ahead), each
+    with one chunk of ``chain-043`` already landed (at a fast, controlled
+    rate, so both price a "measured" landing rate immediately rather than
+    the fixture's own sealed fallback) so their *next* chunk is what they
+    are blocked on and ranked for.  The tier's free at rank time (12 GiB) is
+    exactly two first legs (8 GiB) plus one more chunk (4 GiB) -- room for
+    only one extra leg between the two of them, however fast the (here,
+    effectively unlimited) rate would allow.
+
+    Both rank as ``granted`` (their one-leg needs both fit the room) and
+    both publish their first leg.  The one available extra leg goes to n=0,
+    the entry ranked first, not to both -- and never to n=1 first, since a
+    window's legs are read in order and rank order is spent before free
+    room runs out.  The cycle's total published, first legs and the one
+    extra together, is exactly the tier's free -- not double it, which is
+    what publishing each granted window's whole ``further_legs`` list up to
+    its own independent rate budget did before this fix (24 GiB queued
+    against a 12 GiB tier, reproduced by checking out this test against
+    commit f3ca7d96, before the #1038 review).
+    """
+
+    shift = time.time() - SAMPLE_UNIX
+    chunks = 6
+    queue, stage = _fixture_queue(tmp_path, DATA["tier"]["capacity_gib"])
+    plans = [_chunked_blocked(queue, stage, n, shift=shift, holding=(),
+                              chunks=chunks) for n in range(2)]
+
+    # A fast, controlled landing rate for one chunk of each -- not the
+    # fixture's own (``RATES``), so the rate is a known, generous constant
+    # and free room, not the rate, is what the pool has to share.
+    fast_bytes_per_s = 10_000_000_000.0
+    for n, plan in enumerate(plans):
+        chunk = _chunk_of(plan, READING, 0)
+        start, end = int(chunk["start_bytes"]), int(chunk["end_bytes"])
+        _land(queue, stage, consumer=_key(n), manifest=_manifest(n),
+              mover=str(chunk["mover_row"]["action_key"]),  # type: ignore[index]
+              name=f"{READING}c0", start=start, end=end,
+              seconds=(end - start) / fast_bytes_per_s)
+
+    first = _chunk_of(plans[0], READING, 1)
+    chunk_gib = int(first["stage_gib"])
+    assert chunk_gib == 4, chunk_gib
+    already_landed = [{str(_chunk_of(plan, READING, 0)["mover_row"]["action_key"])}  # type: ignore[index]
+                      for plan in plans]
+    movers = [[str(chunk["mover_row"]["action_key"])
+               for phase in plan["phases"] for chunk in phase["stage_chunks"]]  # type: ignore[index]
+              for plan in plans]
+
+    room_chunks = 5                            # 2 landed + 2 first legs + 1 extra
+    _chunked_cycle(queue, stage, gib=room_chunks * chunk_gib,
+                   chunk_gib=chunk_gib, chunks=chunks)
+    capsys.readouterr()
+    record = queue.tier_commitment(TIER) or {}
+    order = record.get("claim_order") or {}
+    entries = {entry["consumer"]: entry for entry in order.get("entries") or ()}
+    rate = order.get("landing_bytes_per_s")
+    free_gib = int(order.get("free_gib") or 0)
+    assert free_gib == 12, (free_gib, order)   # room_chunks(5) - 2 landed chunks
+
+    e0, e1 = entries.get(_key(0)), entries.get(_key(1))
+    assert e0 is not None and e1 is not None, order
+    assert (e0["standing"], e1["standing"]) == (
+        window_credit.CLAIM_GRANTED, window_credit.CLAIM_GRANTED), order
+
+    new = [[mover for mover in movers[n]
+            if mover not in already_landed[n] and _published(queue, mover)]
+           for n in range(2)]
+
+    # Both first legs publish -- the guarantee the rank walk gives every
+    # granted entry, unaffected by what its extra legs can reach.
+    assert len(new[0]) >= 1 and len(new[1]) >= 1, new
+
+    # The one available extra leg goes to the entry ranked first (n=0), not
+    # to n=1: rank order, not an even split and not first-come in whatever
+    # order ``residency_window`` iterates consumers.
+    assert len(new[0]) == 2, new              # first leg + the one extra
+    assert len(new[1]) == 1, new              # first leg only
+    assert int(e0["publish_gib"]) == 2 * chunk_gib, e0
+    assert int(e1["publish_gib"]) == chunk_gib, e1
+
+    # The cycle's total is bounded by both shared pools: the tier's free
+    # room, and its landing-rate budget for the cycle -- never K times
+    # either just because K windows were granted.
+    total_new_gib = (len(new[0]) + len(new[1])) * chunk_gib
+    assert total_new_gib <= free_gib, (total_new_gib, free_gib)
+    assert total_new_gib == free_gib, (total_new_gib, free_gib)  # exact here
+    assert isinstance(rate, (int, float)) and rate > 0, order
+    assert total_new_gib * storage_tiers.GIB <= rate * tier_loop.CYCLE_INTERVAL_S, (
+        total_new_gib, rate, order)
 

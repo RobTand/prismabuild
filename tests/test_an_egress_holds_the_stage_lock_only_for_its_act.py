@@ -50,6 +50,13 @@ four CPUs reserved; keys in #1005):
 The hold that remains grows with the range and with the disk, because the
 unlinks stay under the lock; see ``docs/design.md``, "The egress holds the
 lock for its act, not its census".
+
+The 1.22 s number above is exactly the distortion #1008 item 4 names: this
+test's own two 20,000-entry egresses shared one box's disk-metadata
+throughput with each other, which neither ``cpu`` nor ``mem_gb`` demand
+prices.  Run through ``pbtest`` with the new ``disk_metadata`` reservation
+(``pbtest.py --disk-metadata --tag sparky ...``) so a re-measurement is not
+also distorted by whatever else is sharing the box.
 """
 from __future__ import annotations
 

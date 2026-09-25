@@ -759,6 +759,15 @@ RESIDENCY_EVENTS = "residency-events"
 MAX_CONSUMER_EVENT_LINES = 256
 #: The newest events a kill's ending record carries, across hosts.
 MAX_ENDING_EVENTS = MAX_DENIAL_VALUE_ITEMS
+#: Where a tier-loop verdict that names neither a consumer nor a tier with
+#: any planned consumer on it lands (#1006): the ARC ``primarycache``
+#: refusal, a ram-admission refusal, a ram epoch change, or a tier-level
+#: verdict for a tier planning nobody this cycle.  A directory rather than a
+#: bare filename so it sits beside ``residency-events/<consumer>/`` under the
+#: same root, one ``<host>.jsonl`` per writing host, bounded the same way.
+#: The leading underscore keeps it out of ``sweep_consumer_events``, which
+#: only reaps directories named by a 64-character action key.
+RESIDENCY_EVENTS_HOST_DIR = "_host"
 WORKERS = "workers"
 #: Where a storage-role loop files what it made resident for one action.
 #: A sidecar for the same reason ``passes`` is one: the only safe moment to
@@ -6826,21 +6835,40 @@ class PoolQueue:
         self, item: Mapping[str, object], *, host: str, reason: str,
         decision_reason: str | None,
     ) -> None:
-        """Append to the key's ring when this host's reason changed (#991).
+        """Append to the key's ring when this host's reason changed (#991),
+        damping a flap back to an already-seen reason onto its own entry
+        (#1006).
 
         What makes this free on the claim pass: an in-process memo of the
         reason this process last saw on file for its host, per key and
         generation.  A starved row's reason is the same for hours, so every
         pass but the first answers from the memo with no I/O at all.  On a
         change -- or the first sight of a key -- one small read and, only if
-        the file's newest entry for this host differs, one atomic write.
+        the file's newest entry for this host differs, one write.
 
         The memo is this process's view, and the file check is the newest
-        entry *for this host*.  So two loops on one host that disagree about
-        a key -- a GPU loop and a CPU loop can -- write each reason once and
-        then stay quiet, rather than rewriting the file every pass; the ring
-        then holds both reasons, and the latest-only record says which one
-        was said last.
+        entry *for this host*: the one with the greatest ``last_unix``, since
+        a damped repeat updates that field on its own entry without moving
+        it, so ring position no longer tracks recency once a reason has
+        flapped.  So two loops on one host that disagree about a key -- a
+        GPU loop and a CPU loop can -- write each reason once and then stay
+        quiet, rather than rewriting the file every pass; the ring then holds
+        both reasons, and the latest-only record says which one was said
+        last.
+
+        A reason that flips back and forth at a threshold (``host_pressure``
+        against ``admitted`` as PSI crosses the gate) used to push its own
+        first occurrence out of the ring once 16 flips had appended 16 new
+        entries -- exactly the transitions that diagnose where the
+        starvation began.  A reason already in this host's ring is instead
+        damped onto its own entry: ``count`` is incremented and
+        ``last_unix`` is bumped to now, in place, so the ring holds one entry
+        per distinct reason this host has shown rather than one per flip, and
+        the first transition of each survives however long the flapping
+        lasts.  A genuinely new reason still appends, and the ring is still
+        cut to the newest :data:`MAX_DENIAL_TRANSITIONS` entries -- unchanged
+        for a key whose reasons never repeat (the #991 acceptance: three
+        distinct reasons in three passes all still land, in order).
 
         Survives contention by construction.  It shares no lock with the
         latest-only file's ``flock``; pool callers hold the key's transition lock.
@@ -6858,8 +6886,7 @@ class PoolQueue:
         verdict = (reason, decision_reason)
         if _DENIAL_SEEN.get(memo) == verdict:
             return
-        entry = {"unix": _now(), "host": host, "reason": reason,
-                 "decision_reason": decision_reason, "published_unix": generation}
+        now = _now()
         path = self.denial_transitions_path(key)
         try:
             try:
@@ -6868,15 +6895,34 @@ class PoolQueue:
                 prior = {}    # an unparsable ring is replaced, not trusted
             ring = [dict(value) for value in prior.get("transitions", [])
                     if isinstance(value, Mapping)] if isinstance(prior, Mapping) else []
-            last = next((value for value in reversed(ring)
-                         if value.get("host") == host
-                         and value.get("published_unix") == generation), None)
-            if last is None or (last.get("reason"), last.get("decision_reason")) != verdict:
-                ring.append(entry)
-                path.parent.mkdir(parents=True, exist_ok=True)
-                _write_json_atomic(path, {
-                    "schema": DENIAL_TRANSITIONS_SCHEMA_V1, "action_key": key,
-                    "transitions": ring[-MAX_DENIAL_TRANSITIONS:]})
+            on_host = [value for value in ring
+                      if value.get("host") == host
+                      and value.get("published_unix") == generation]
+            last = max(
+                on_host,
+                key=lambda value: (value.get("last_unix", value.get("unix", 0.0))
+                                   if isinstance(value.get("last_unix", value.get("unix")),
+                                                 (int, float)) else 0.0),
+                default=None)
+            if last is not None and (last.get("reason"), last.get("decision_reason")) == verdict:
+                _DENIAL_SEEN[memo] = verdict
+                return  # unchanged from the newest transition on file
+            repeat = next((value for value in on_host
+                          if (value.get("reason"), value.get("decision_reason")) == verdict),
+                         None)
+            if repeat is not None:
+                repeat["count"] = int(repeat.get("count") or 1) + 1
+                repeat["last_unix"] = now
+            else:
+                ring.append({"unix": now, "host": host, "reason": reason,
+                            "decision_reason": decision_reason,
+                            "published_unix": generation, "count": 1,
+                            "last_unix": now})
+                ring = ring[-MAX_DENIAL_TRANSITIONS:]
+            path.parent.mkdir(parents=True, exist_ok=True)
+            _write_json_atomic(path, {
+                "schema": DENIAL_TRANSITIONS_SCHEMA_V1, "action_key": key,
+                "transitions": ring})
         except (OSError, PoolContractError, TypeError, ValueError):
             return
         _DENIAL_SEEN[memo] = verdict
@@ -7235,6 +7281,49 @@ class PoolQueue:
                 continue
             try:
                 text = (self.consumer_events_dir(action_key) / name).read_text()
+            except OSError:
+                continue
+            for line in text.splitlines():
+                try:
+                    value = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(value, dict):
+                    events.append(value)
+        events.sort(key=lambda value: float(value.get("unix", 0.0))
+                    if isinstance(value.get("unix"), (int, float)) else 0.0)
+        return events if limit is None else events[-limit:]
+
+    def host_events_dir(self) -> Path:
+        """``residency-events/_host/``: one ``<host>.jsonl`` per tier loop (#1006)."""
+
+        return self.root / RESIDENCY_EVENTS / RESIDENCY_EVENTS_HOST_DIR
+
+    def host_events(
+        self, host: str | None = None, *, limit: int | None = None,
+    ) -> list[dict[str, object]]:
+        """Tier-loop verdicts that name no consumer, oldest first (#1006).
+
+        ``host`` narrows the answer to one writer's file; omitted, every
+        host's file is merged, the same way :meth:`consumer_events` merges
+        its per-consumer writers.  Best-effort: a line that does not parse is
+        skipped, and a missing file or directory is no events.
+        """
+
+        events: list[dict[str, object]] = []
+        directory = self.host_events_dir()
+        if host is None:
+            try:
+                names = sorted(os.listdir(directory))
+            except OSError:
+                return events
+        else:
+            names = [f"{host}.jsonl"]
+        for name in names:
+            if not name.endswith(".jsonl"):
+                continue
+            try:
+                text = (directory / name).read_text()
             except OSError:
                 continue
             for line in text.splitlines():
@@ -9092,6 +9181,15 @@ class PoolQueue:
         lock while requesting another's.  ``reader_lease.release_refs`` takes
         the root each pin names, which is why the egress reclaims before
         taking this lock rather than under it (#780).
+
+        One exception, which keeps the rule's point: a produced-output step
+        that claims or deletes an origin path holds the locks of its output
+        prefix and of every filed template prefix that overlaps it
+        (``produced_output._output_prefix_locks``, #1063).  It asks for them
+        all at once, sorted by absolute path, and for no other lock of this
+        family while it holds them; every other caller holds one and asks
+        for no other.  A holder only ever waits for a lock that sorts after
+        every lock it holds, so no two holders can each wait for the other.
         """
 
         return posix_lock.held(
@@ -13247,11 +13345,17 @@ class PoolQueue:
                 or record.get("action_key") != telemetry.get("action_key")):
             return False
         producer = _read_json(self.item_path(CLAIMED, str(owner)))
-        ref = producer.get("produced_output") if isinstance(producer, Mapping) else None
-        template = ref.get("template_sha256") if isinstance(ref, Mapping) else None
+        # The same reading of the producer's reference its allowance was
+        # sized from: its template, or the family the template declares
+        # (#1126).  A reference naming a malformed family teaches nothing.
+        names = cpu_admission.export_rate_names(
+            producer.get("produced_output") if isinstance(producer, Mapping) else None)
+        if names is None:
+            return False
+        template, family = names
         return cpu_admission.learn_export(
             self.ledger(), template, owner, record.get("published_unix"),
-            telemetry.get("wall_seconds"))
+            telemetry.get("wall_seconds"), family=family)
 
     def _producer_family(self, owner: str) -> tuple[set[str], int]:
         """``owner`` and the movement its frozen plan publishes (#999).
@@ -13592,6 +13696,11 @@ class PoolQueue:
             "template_id": str(validated["template_id"]),
             "template_sha256": produced_mod.template_sha256(validated),
         }
+        if "export_rate_family" in validated:
+            # Projected beside the digest that covers it, for the claim path
+            # to key the owner's export rates on (#1126) without reading the
+            # template body; absent, the reference is what it always was.
+            ref["export_rate_family"] = str(validated["export_rate_family"])
         return validated, ref
 
     @staticmethod

@@ -30,9 +30,15 @@ file must be gone and every publication must have landed.
 Run it through PrismaBuild on a GB10, never on the tier host, and never
 against the live stage or queue::
 
-    pbrun.py --cwd <checkout> --tag sparky --cpus 6 --demand mem_gb=8 \\
+    pbrun.py --cwd <checkout> --tag sparky --cpus 6 \\
+        --demand mem_gb=8,disk_metadata=1 \\
         --priority -10 -- python3 tools/fleet/bench_stage_egress.py \\
         --work <scratch dir> --out <results dir> --py-spy <path to py-spy>
+
+The ``disk_metadata=1`` reservation (#1008 item 4) keeps another timing test's
+own directory/file metadata traffic off the same box for the run's duration --
+this is the exact scenario measured in #1005 (0.25 s alone, 1.22 s beside a
+second 20,000-entry egress on the same disk).
 """
 from __future__ import annotations
 

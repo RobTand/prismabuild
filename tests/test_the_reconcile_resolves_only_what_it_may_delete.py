@@ -80,6 +80,31 @@ def _old_unattributed_candidates(stage: Path, stage_resolved: Path,
     return candidates, errors
 
 
+def _as_candidates(walk):
+    """``walk``'s candidates in the shape ``reconcile`` reads since #1088.
+
+    The old walk decides every candidate; this only adds what the receipt
+    now sizes.  It had no mover kind, so a file it left carries the source
+    mark or an unanswerable one, and a file it may delete is a partial or
+    unmarked.
+    """
+
+    def lifted(stage, stage_resolved, attributed, named=None):
+        candidates, errors = walk(stage, stage_resolved, attributed)
+        out = []
+        for path, identity, partial in candidates:
+            if identity is None:
+                kind = ("source_mark_only"
+                        if stage_release._marked_by_the_prewarm_stage(path)
+                        else "mark_unanswerable")
+            else:
+                kind = "partial" if partial else "unmarked"
+            out.append((path, identity, kind, os.lstat(path).st_size, ""))
+        return out, errors
+
+    return lifted
+
+
 def _staged_file(stage: Path, relative: str, size: int = 4096) -> Path:
     path = stage / relative
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -206,7 +231,7 @@ def test_no_candidate_carries_an_identity_for_a_path_outside_the_stage(
     candidates, errors = stage_release._unattributed_candidates(
         stage, stage.resolve(strict=True), set())
     assert errors == []
-    assert not [path for path, identity, _partial in candidates
+    assert not [path for path, identity, *_rest in candidates
                 if identity is not None], candidates
 
 
@@ -222,10 +247,16 @@ def test_the_walk_returns_what_the_old_walk_returned(tmp_path: Path):
     new = stage_release._unattributed_candidates(stage, resolved, attributed)
     old = _old_unattributed_candidates(stage, resolved, attributed)
 
-    assert new == old
-    candidates, _errors = new
+    # Since #1088 a candidate also carries its kind, size and writer; on a
+    # tree no mover marked, the old three fields are exactly the old walk's.
+    candidates, errors = new
+    assert ([(path, identity, kind == "partial")
+             for path, identity, kind, _size, _mover in candidates],
+            errors) == old
     assert sum(1 for one in candidates if one[1] is None) == 5
     assert sum(1 for one in candidates if one[1] is not None) == 5
+    assert sorted(one[2] for one in candidates) == (
+        ["partial"] + ["source_mark_only"] * 5 + ["unmarked"] * 4)
 
 
 def test_reconcile_counts_and_deletes_what_the_old_code_did(
@@ -237,7 +268,7 @@ def test_reconcile_counts_and_deletes_what_the_old_code_did(
         with monkeypatch.context() as patch:
             if arm == "old":
                 patch.setattr(stage_release, "_unattributed_candidates",
-                              _old_unattributed_candidates)
+                              _as_candidates(_old_unattributed_candidates))
             receipts.append(stage_release.reconcile(
                 queue, tier_id=TIER, stage_root=str(stage), wanted={MOVER}))
         left_behind.append(_snapshot(stage))

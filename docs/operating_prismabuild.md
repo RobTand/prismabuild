@@ -202,6 +202,7 @@ its existing limits. This is not a whole-submission timeout.
 |---|---|---|
 | `--gpu` | Defaults to `gpu=1,mem_gb=16`; explicit demand overrides the defaults. Pool generation actions permit adaptive sharing. | `--gres=shard:1`, partition `gpu`. |
 | `--demand gpu=1,cpu=8,mem_gb=32` | Aggregate resource demand. Without `--gpu`, `mem_gb` defaults to 4; `cpu` defaults to `--cpus`. | `--gres=shard:1 --cpus-per-task=8 --mem=32768M`. |
+| `--demand disk_metadata=1` | Reserve the executing box's whole directory/file metadata throughput, so a timing-sensitive test does not share a box with another shard or a live egress contending for the same disk (#1008 item 4). A box offers one unit of it. Pool only: SLURM's translation has no GRES for it, so a `disk_metadata` demand refuses before sealing rather than being admitted and never enforced. `pbtest --disk-metadata` requests it for every shard of that invocation. | Refused: `require_disk_metadata_scope` rejects it before submission. |
 | `--gpu-memory-gb N` | GPU memory budget in GiB; requires GPU demand. Pool only. See the memory-domain rules below. | Refused: this lane does not enforce a separate VRAM budget. |
 | `--exclusive` | Reserve one box's whole GPU capacity; implies GPU demand and at least 16 GiB host memory. | `--gres=gpu:1` rather than a larger shard count. |
 | `--gpu-capacity N` | Explicit capacity override for `--exclusive`; normally leave it unset so worker offers supply the physical capacity. It does not set shared job concurrency. | Under SLURM, only `1` is accepted: `--gres=gpu:1` is the whole device, so a larger count would be read and discarded. |
@@ -213,12 +214,12 @@ its existing limits. This is not a whole-submission timeout.
 | `--priority N` | A queue hint. Higher runs sooner; a negative value yields to everything at 0, and aging never lifts it past them. Defaults to 0. | `--nice`, sent on every submission. SLURM subtracts the nice from the base priority its scheduler assigned. |
 | `--profile MODE` | Run a profiler around the action's child and store the profile as a CAS blob named on the ending. `sample` is py-spy over the whole process tree; `nsys` is Nsight Systems over CUDA and NVTX, optionally windowed (`nsys:600`); `torch` is a contract the action opts into. **Part of the action identity**, unlike `--priority`. | Carried unchanged; the worker resolves the backend on the box that runs it. |
 
-`pbrun` accepts only `cpu`, `gpu`, and `mem_gb` in `--demand`. It refuses an
-unknown resource before sealing, since the live pool offers and the SLURM lane
-can ledger only those names. `pbcampaign` performs the same client validation
-while loading the entire manifest, before it publishes even an earlier valid
-row. This is a command-client boundary: the generic `PoolQueue` API retains
-its producer-defined resource vocabulary.
+`pbrun` accepts only `cpu`, `gpu`, `mem_gb`, and `disk_metadata` in `--demand`.
+It refuses an unknown resource before sealing, since the live pool offers and
+the SLURM lane can ledger only those names. `pbcampaign` performs the same
+client validation while loading the entire manifest, before it publishes even
+an earlier valid row. This is a command-client boundary: the generic
+`PoolQueue` API retains its producer-defined resource vocabulary.
 
 ### Declared container images
 
@@ -1449,6 +1450,21 @@ pass `--timeout-s` when a hung test should be named sooner. A `--gpu` run must
 pass `--timeout-s` or `--test-timeout-s`; with neither, `pbtest` refuses with
 exit 2 before submitting anything, because the bound would otherwise follow the
 Sparks' campaign ceiling and a hung test would hold its GPU for a day (#975).
+A CPU-only shard never asks for that refusal, and an *unrequested* campaign
+announcement is not its own bound to inherit either: with no `--timeout-s`,
+such a shard's sealed deadline caps at twice the pool's own withhold ceiling
+(1,800 s, `pbtest.NON_GPU_UNREQUESTED_CEILING_CAP_S`) rather than the box's
+day-long ceiling. That number is not a rounder, more generous guess (the
+published worker-loop default of 7,200 s was tried and rejected): admission
+reads a bounded holder as draining soon only while its age is within 900 s of
+its claim or its declared end is within 900 s of now, so any sealed end past
+twice that -- 7,200 s included -- still reads as *not* draining for a stretch
+in the middle of the shard's life, which is the same starvation the original
+86,400 s seal gave, only shorter. 1,800 s is the largest end that reads as
+draining soon for a holder's *entire* declared life, so a starved GPU action
+can never lose its reservation to a plain CPU shard sealed to it (#1123).
+Passing `--timeout-s` explicitly is still honoured whatever it says, capped
+only by the real announced ceiling, exactly as before.
 `pbtest` prints the deadline it sealed and the ceilings it read.
 
 `pbtest` reads every shard's output while the shard runs and prints each
@@ -1477,6 +1493,14 @@ subset/VRAM budget, defaulting to the host budget when omitted. It requires
 `--gpu`, must represent a positive finite byte budget, and is refused with
 SLURM, which cannot enforce this separate budget. PB owns GPU placement and
 sharing; shard count supplies work and does not prescribe GPU concurrency.
+
+`--disk-metadata` requests `disk_metadata=1` for **every shard** of the
+invocation (#1008 item 4), so a timing-sensitive suite gets its box's whole
+directory/file metadata throughput rather than sharing it with another shard
+or a live egress on the same disk -- two 20,000-entry egresses on one disk
+distort each other's measured hold times (#1005). It is off by default, since
+most suites do not measure hold times and do not need a box to themselves.
+Refused with SLURM transport, which has no way to enforce it.
 
 Use `--pytest-args` with a JSON array to forward population and report options:
 
@@ -1959,7 +1983,10 @@ read what it waited on before reading any host's logs:
 3.  Read that row's `last_denial` for the current reason and its
     `denial_transitions` for the sequence, oldest first. For example,
     `measurement_holder` for 13 minutes and then `host_pressure` is two
-    different causes, and the first one is the one that held the row.
+    different causes, and the first one is the one that held the row. A
+    reason that flapped back to one already in the sequence does not get a
+    second entry: its `count` and `last_unix` grow in place instead (#1006),
+    so a flapping `host_pressure` still reads as one cause, not sixteen.
 4.  Read `tier_events` for the tier loops' verdicts about the action:
     `window-stalled`, `range-adoption-declined`, `beyond-horizon-eviction-*`
     and the deferrals. `waited_s` is how long the loop has seen that verdict
@@ -1968,6 +1995,13 @@ read what it waited on before reading any host's logs:
     own reader failing to release a pin (#1023). Its `step` and `errno_name`
     say where and why, `retryable` says whether the fault was transient, and
     the pin it names is still held.
+5.  Read `host_events` for verdicts about a host's own tier that name no
+    consumer at all -- the stage's ARC `primarycache` refusal, a
+    ram-admission refusal, a ram epoch change (#1006). Each row is one host
+    that has ever filed one, with the newest verdict and how many. A
+    metadata-only stage dataset silently serving every read off the SSD, or a
+    ram tier the box refuses to admit, shows up here even when no action is
+    stuck on it yet.
 
 A staged consumer that sits READY with a `residency_lead_terminal` denial may
 have had its window retired: a mover of its plan refused terminally, with
@@ -1984,7 +2018,9 @@ neither is the only copy any more. The ring is in
 `denial-transitions/<key>.json`, and the events are in
 `residency-events/<consumer>/<host>.jsonl`, both under the queue root. A
 reader's failed releases are beside them in
-`residency-events/<consumer>/<host>-reader-release.jsonl`.
+`residency-events/<consumer>/<host>-reader-release.jsonl`. A verdict about the
+host itself, naming no consumer, is in
+`residency-events/_host/<host>.jsonl` (#1006).
 
 ### File the endings nobody asked for
 

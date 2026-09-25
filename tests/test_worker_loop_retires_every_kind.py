@@ -65,6 +65,20 @@ def _run(tmp_path: Path, argv: list[str]):
     nothing else: what the box happens to be running while the suite runs must
     not be able to change the answer.  The live clamp has its own file,
     ``test_worker_loop_offers_what_is_free.py``.
+
+    ``trusted_gpu_sample`` is a ``side_effect``, not a ``return_value`` (#1030):
+    a ``return_value`` freezes ``_gpu_sample()``'s ``sampled_unix`` at the
+    moment this function is *entered*, and ``box_capacity._gpu_evidence``
+    refuses anything older than ``GPU_SAMPLE_MAX_AGE_S`` (5 s) once ``main()``
+    actually reads it.  On a loaded box that gap can exceed 5 s (reproduced by
+    aging a frozen sample by 6 s: the read then errors "stale ... snapshot",
+    ``capacity["gpu"]`` is forced to 0, the offer retires every gpu token this
+    file's ``_drifted`` minted, and ``capacity()`` then has no ``gpu`` key at
+    all for the assertion to index -- the exact ``KeyError: 'gpu'``).  A
+    ``side_effect`` calls ``_gpu_sample`` fresh at read time instead, so
+    ``sampled_unix`` is never older than this call, however long the box makes
+    the loop wait to get there (confirmed: a 6 s delay injected inside the
+    side effect no longer stales the sample).
     """
 
     wl = _worker_loop()
@@ -73,7 +87,7 @@ def _run(tmp_path: Path, argv: list[str]):
          mock.patch.object(wl, "loaded_runtime_commit", return_value="deadbeef"), \
          mock.patch.object(wl, "published_commit", return_value="deadbeef"), \
          mock.patch.object(wl.box_capacity, "trusted_gpu_sample",
-                           return_value=_gpu_sample()), \
+                           side_effect=_gpu_sample), \
          mock.patch.object(sys, "argv",
                            ["worker_loop.py", "--assume-idle", *argv]):
         assert wl.main() == 0

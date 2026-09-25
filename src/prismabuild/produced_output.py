@@ -108,6 +108,7 @@ and returns the exact SDK dependency instead of a stub.
 from __future__ import annotations
 
 from collections.abc import Collection, Mapping, Sequence
+import contextlib
 import errno
 import hashlib
 import json
@@ -297,6 +298,7 @@ def validate_template(value: object) -> dict[str, object]:
     allowed = frozenset({
         "schema", "version", "template_id", "output_prefix", "slots",
         "durable_maxima", "working_demands", "permitted_tiers", "write_only",
+        "export_rate_family",
     })
     unknown = sorted(set(value) - allowed)
     if unknown:
@@ -415,7 +417,33 @@ def validate_template(value: object) -> dict[str, object]:
     # before #912 -- keeps its canonical bytes and its `template_sha256`.
     if write_only:
         checked["write_only"] = True
+    # Likewise present only when declared (#1126): the family is in the
+    # canonical bytes, so `template_sha256`, and through the sealed
+    # declaration the owner's action key, cover it.
+    if "export_rate_family" in value:
+        checked["export_rate_family"] = validate_export_rate_family(
+            value["export_rate_family"])
     return checked
+
+
+def validate_export_rate_family(value: object) -> str:
+    """Check a template's ``export_rate_family`` (#1126).
+
+    The family names the templates whose spool exports share one learned
+    export rate on a host (``adaptive_cpu.export_slots``): a GLM-5.3 Stage B
+    row is its own template, and a rate learned per template is never learned
+    at all.  It is an identifier by the action contract's own rule
+    (``core._ID_RE``, which input ids follow); anything else refuses, here
+    and wherever a reference carrying it is read.
+    """
+
+    from prismabuild.core import _ID_RE
+
+    if not isinstance(value, str) or _ID_RE.fullmatch(value) is None:
+        raise ProducedOutputError(
+            "template export_rate_family must be an identifier: 1 to 256 of "
+            "[a-z0-9._/-], starting with a letter or digit")
+    return value
 
 
 def is_write_only(template: Mapping[str, object]) -> bool:
@@ -1010,6 +1038,71 @@ def _overlapping_template_ids(queue_root: str | Path,
     return sorted(ids)
 
 
+def _output_prefix_lock_order(own_prefix: str,
+                              templates: Mapping[str, Mapping[str, object]]
+                              ) -> list[str]:
+    """The prefixes whose locks guard ``own_prefix``'s paths, in order (#1063).
+
+    ``own_prefix`` and the prefix of each of ``templates`` that overlaps it
+    (`_prefixes_overlap`), once per lock -- a stage ownership lock is named
+    by the absolute path (`pool.PoolQueue.stage_ownership_lock`) -- sorted
+    by that path.
+    """
+
+    held = {str(Path(own_prefix).absolute()): own_prefix}
+    for body in templates.values():
+        other = str(body["output_prefix"])
+        if _prefixes_overlap(own_prefix, other):
+            held.setdefault(str(Path(other).absolute()), other)
+    return [held[name] for name in sorted(held)]
+
+
+def _output_prefix_locks(
+        queue, instance: Mapping[str, object], *,
+        templates: Mapping[str, Mapping[str, object]] | None = None):
+    """Every ownership lock that guards this instance's origin paths (#1063).
+
+    A path is named by each template whose output prefix contains it, and
+    any two such prefixes nest. Every step that files a claim on an origin
+    path (`require_prewrite`, `commit_batch`, `commit_origin_batch`) or
+    deletes one (`_retire_consumed_batch`) holds, across its check and its
+    act, the lock of this instance's prefix and the lock of every filed
+    template's prefix that overlaps it. Two such steps on one path always
+    share a lock: a template is filed before any attempt of it can bind
+    (`PoolQueue.publish`) and is never removed, so of two steps the one that
+    lists the templates later finds the other's template and takes its
+    lock, and the other takes its own. Each used to take its own lock only,
+    so a retirement could delete a file that a successor under a nested
+    prefix had committed between the retirement's owner read and its
+    delete.
+
+    The locks are taken in one order, sorted by absolute path, and a holder
+    asks for no other lock of the family while it holds them. Every other
+    holder of an ownership lock holds one and asks for no other
+    (`pool.PoolQueue.stage_ownership_lock`), so no two holders can each
+    hold a lock the other waits for.
+
+    ``templates`` is a listing the caller took after this instance's
+    template was filed (the retirement tick's, `_TickReads.templates`); by
+    default the templates are listed now. The listing is taken here, before
+    any lock: a failed one raises `ProducedOutputError`, since which locks
+    guard the paths is then unknown. Returns the context manager that holds
+    the locks.
+    """
+
+    listed = _filed_templates(queue.root) if templates is None else templates
+    return _held_in_order(queue, _output_prefix_lock_order(
+        str(instance["output_prefix"]), listed))
+
+
+@contextlib.contextmanager
+def _held_in_order(queue, prefixes: Sequence[str]):
+    with contextlib.ExitStack() as stack:
+        for prefix in prefixes:
+            stack.enter_context(queue.stage_ownership_lock(prefix))
+        yield
+
+
 def _template_attempts(queue_root: str | Path, template_ids: Collection[str]
                        ) -> list[tuple[str, str, str]]:
     """``(owner, template_id, nonce)`` for every attempt of these templates.
@@ -1297,17 +1390,26 @@ class _TickReads:
         return self._templates
 
     def path_owners(self, instance: Mapping[str, object],
-                    template: Mapping[str, object]) -> "_PathOwners":
+                    template: Mapping[str, object], *,
+                    relist: bool = False) -> "_PathOwners":
         """Every other attempt's claim on paths under this template's prefix.
 
         The attempts are those of every template whose output prefix
         overlaps this one's (`_template_attempts`), less this instance's
         own. Read now -- the index, and each attempt's commitments and
         prewrite records through this tick's versions -- so a caller under
-        the output-prefix lock sees every commit and prewrite filed under it
-        before the lock was taken.
+        the output-prefix locks sees every commit and prewrite filed under
+        them before they were taken.
+
+        ``relist`` lists the templates again first, and the tick keeps the
+        new listing. A caller that deletes on this answer passes it, under
+        its locks (#1063): a template filed after the tick first listed them
+        can have an attempt that committed one of these paths before the
+        locks were granted, and the tick's first listing does not name it.
         """
 
+        if relist:
+            self._templates = None
         own_template = str(template["template_id"])
         ids = {own_template}
         for template_id, body in self.templates().items():
@@ -3466,7 +3568,12 @@ def require_prewrite(queue, instance: Mapping[str, object],
     if len(set(planned_paths)) != len(planned_paths):
         return {"ok": False, "refusal": "prewrite-paths-must-be-distinct"}
     planned_paths.sort()
-    with queue.stage_ownership_lock(str(checked_instance["output_prefix"])):
+    try:
+        # This prefix's lock and every overlapping template's (#1063).
+        locks = _output_prefix_locks(queue, checked_instance)
+    except ProducedOutputError as exc:
+        return {"ok": False, "refusal": str(exc)}
+    with locks:
         # Write authorization lives here: a SUCCESS return is the producer's
         # permission to start writing HDD bytes, so a stale, superseded, or
         # absent owner refuses BEFORE the first payload byte -- not later at
@@ -3512,9 +3619,9 @@ def require_prewrite(queue, instance: Mapping[str, object],
                     "owner_batch_id": owner_batch_id}
         # The same rule across actions (#1053): a path another action's
         # live attempt has committed or prewritten is that attempt's. Under
-        # this lock for every template with this output prefix; a template
-        # whose prefix only overlaps takes its own lock, and the delete side
-        # (`_unlink_if_committed`) does not rely on this check alone.
+        # the locks of every template whose prefix overlaps this one's
+        # (#1063), which each of them takes to prewrite or commit, so none
+        # can claim a path between this check and the record filed below.
         try:
             foreign = _foreign_live_path_owner(
                 queue, checked_instance, checked_template, planned_paths)
@@ -3675,7 +3782,12 @@ def commit_batch(queue, instance: Mapping[str, object],
     if batch_gib > window:
         return {"ok": False, "refusal": "batch-exceeds-window",
                 "batch_gib": batch_gib, "window_gib": window}
-    with queue.stage_ownership_lock(str(checked_instance["output_prefix"])):
+    try:
+        # This prefix's lock and every overlapping template's (#1063).
+        locks = _output_prefix_locks(queue, checked_instance)
+    except ProducedOutputError as exc:
+        return {"ok": False, "refusal": str(exc)}
+    with locks:
         # One lstat per origin, answering both questions at the same instant:
         # the size the descriptor claims, and the exact file identity this
         # commit is over. No payload reread -- digests ride the writer receipt
@@ -3683,10 +3795,11 @@ def commit_batch(queue, instance: Mapping[str, object],
         # SAME batch be materialized again later over provably the same bytes
         # (see `ensure_batch_materialized`): for a DEV null-digest descriptor
         # it is the only such proof, and a size check alone would bless a
-        # rewritten file of equal length. Taken under this lock (#1064): a
-        # retirement's delete, which holds it, can move an origin aside and
-        # link it back (`_unlink_if_committed`), which moves its ctime, so an
-        # identity taken before the lock could be stale before it was filed.
+        # rewritten file of equal length. Taken under these locks (#1064): a
+        # retirement's delete, which holds one of them whatever its
+        # template's prefix (#1063), can move an origin aside and link it
+        # back (`_unlink_if_committed`), which moves its ctime, so an
+        # identity taken before the locks could be stale before it was filed.
         origin_identity, identity_refusal = _origin_identity_at_commit(sealed)
         if identity_refusal is not None:
             return identity_refusal
@@ -4003,13 +4116,14 @@ def commit_origin_batch(queue, instance: Mapping[str, object],
     other input.
 
     Checks are `commit_batch`'s, minus the window and the funding: the live
-    owner under the output-prefix lock, the prewrite present and matched (its
-    tier, owner and attempt, the paths a subset of the planned ones, each
-    class within its ceiling), every planned path the batch omits absent, the
-    durable maxima, and one lstat per origin for size and identity, taken
-    under that lock (#1064). The identity is recorded in the batch, and
-    `origin_batch_manifest` rechecks it before any consumer is told the bytes
-    are there.
+    owner under the output-prefix locks (this prefix's and every overlapping
+    template's, `_output_prefix_locks`, #1063), the prewrite present and
+    matched (its tier, owner and attempt, the paths a subset of the planned
+    ones, each class within its ceiling), every planned path the batch omits
+    absent, the durable maxima, and one lstat per origin for size and
+    identity, taken under those locks (#1064). The identity is recorded in
+    the batch, and `origin_batch_manifest` rechecks it before any consumer is
+    told the bytes are there.
 
     Two checks are this commit's own:
 
@@ -4109,12 +4223,18 @@ def commit_origin_batch(queue, instance: Mapping[str, object],
             refusal = _read_landed_origins(sealed, landed, verified)
             if refusal is not None:
                 return refusal
-        with queue.stage_ownership_lock(str(checked_instance["output_prefix"])):
-            # The identity is taken under the lock (#1064): a retirement's
-            # delete, which holds it, can move an origin aside and link it
-            # back (`_unlink_if_committed`), which moves its ctime, so an
-            # identity taken before the lock could be stale before it was
-            # filed, and an lstat taken while the file was aside would refuse.
+        try:
+            # This prefix's lock and every overlapping template's (#1063).
+            locks = _output_prefix_locks(queue, checked_instance)
+        except ProducedOutputError as exc:
+            return {"ok": False, "refusal": str(exc)}
+        with locks:
+            # The identity is taken under the locks (#1064): a retirement's
+            # delete, which holds one of them whatever its template's prefix
+            # (#1063), can move an origin aside and link it back
+            # (`_unlink_if_committed`), which moves its ctime, so an identity
+            # taken before the locks could be stale before it was filed, and
+            # an lstat taken while the file was aside would refuse.
             origin_identity, identity_refusal = _origin_identity_at_commit(sealed)
             if identity_refusal is not None:
                 return identity_refusal
@@ -7718,8 +7838,10 @@ def _retire_consumed_batch(queue, instance: Mapping[str, object],
 
     Every decision and every delete happens under the batch's output-prefix
     lock, the lock `declare_origin_consumer` takes, so no consumer can be
-    declared between the decision and the delete.  The one thing done
-    outside it is reading an origin whose timestamps alone moved (below).
+    declared between the decision and the delete, and under the lock of
+    every filed template whose prefix overlaps this one's
+    (`_output_prefix_locks`, #1063).  The one thing done outside them is
+    reading an origin whose timestamps alone moved (below).
 
     The decision, unless the batch is already ``retiring``:
 
@@ -7755,15 +7877,19 @@ def _retire_consumed_batch(queue, instance: Mapping[str, object],
       the lock again, re-stats it, files the re-pin on the entry
       (``origin_repins``) and deletes it as the committed file.
 
-    Another attempt's claim is read under the same lock first (#1053),
+    Another attempt's claim is read under the same locks first (#1053),
     over every attempt of every template whose prefix overlaps this one's
-    (`_TickReads.path_owners`): a path another attempt has committed is
-    that batch's, and is left alone as ``superseded`` even when its
-    identity is still the recorded one; a path a prewrite of an attempt
-    that can still commit names holds the batch until that attempt commits
-    or ends: quietly while it is live, and while any holder's state is
-    unknown with `ORIGIN_HELD_BY_UNKNOWN_EVENT`, once per change, naming
-    each such holder, why it is unknown and whether it is orphaned (#1065).
+    (`_TickReads.path_owners`, with the templates listed again under the
+    locks): a path another attempt has committed is that batch's, and is
+    left alone as ``superseded`` even when its identity is still the
+    recorded one -- a direct commit adopts the file it finds, inode and
+    all -- and a path a prewrite of an attempt that can still commit names
+    holds the batch until that attempt commits or ends: quietly while it is
+    live, and while any holder's state is unknown with
+    `ORIGIN_HELD_BY_UNKNOWN_EVENT`, once per change, naming each such
+    holder, why it is unknown and whether it is orphaned (#1065).  Every
+    prewrite and commit of those templates takes one of these locks, so
+    none can claim a path between this read and the delete (#1063).
 
     Before the first unlink the entry is marked ``retiring``: consumers can
     no longer declare it, and a crash resumes the delete rather than
@@ -7814,13 +7940,23 @@ def _retire_consumed_batch_locked(
         reads: _TickReads | None = None,
         verified: Mapping[str, Mapping[str, object]]
         ) -> dict[str, object] | None | _OriginsToVerify:
-    """One pass of `_retire_consumed_batch` under the output-prefix lock."""
+    """One pass of `_retire_consumed_batch` under the output-prefix locks."""
 
     from prismabuild import reader_lease as lease_mod
 
     tick = reads if reads is not None else _TickReads(queue)
     commitments_path = _commitments_path(queue.root, instance)
-    with queue.stage_ownership_lock(str(instance["output_prefix"])):
+    try:
+        # This prefix's lock and every overlapping template's (#1063), from
+        # the tick's listing: every scope the tick visits was declared, and
+        # so its template filed, before the tick listed the templates.
+        locks = _output_prefix_locks(
+            queue, instance,
+            templates=reads.templates() if reads is not None else None)
+    except ProducedOutputError as exc:
+        return _unfiled_report(instance, batch_id, {
+            "event": ORIGIN_RETIREMENT_REFUSED_EVENT, "reason": str(exc)})
+    with locks:
         try:
             commitments = _read_commitments(commitments_path)
         except ProducedOutputError as exc:
@@ -7997,9 +8133,10 @@ def _retire_consumed_batch_locked(
                 repinned.clear()
 
         paths = sorted(str(desc["path"]) for desc in sealed)
-        # Another attempt's claim on these paths, read under this lock.
+        # Another attempt's claim on these paths, read under these locks,
+        # over the templates as they are filed now (#1063).
         try:
-            owners = tick.path_owners(instance, template)
+            owners = tick.path_owners(instance, template, relist=True)
         except (ProducedOutputError, OSError, ValueError) as exc:
             return report({"event": ORIGIN_RETIREMENT_REFUSED_EVENT, **base,
                            "reason": f"unknown-retain: path owners: {exc}"})
@@ -8273,9 +8410,10 @@ def _unlink_if_committed(path: str, recorded: Mapping[str, object],
 
     Steps 1 and 3 move that writer's file's ctime, which
     `reader_lease.file_id_matches` compares. `origin_retirement_tick` holds
-    the output-prefix lock across them, and a commit takes its identity
-    under the same lock (#1064), so a commit of that file under a template
-    with this prefix records the identity it has after the put-back.
+    the output-prefix locks across them, and a commit takes its identity
+    under locks that share one with them (#1064, #1063), so a commit of that
+    file under any template whose prefix contains it records the identity
+    it has after the put-back.
 
     So a writer's file is never deleted, wherever its rename lands. A call
     interrupted between the steps leaves the private name, and the caller
@@ -8283,12 +8421,10 @@ def _unlink_if_committed(path: str, recorded: Mapping[str, object],
     this does not cover, and says so: a writer that rewrites the committed
     inode in place (``open`` and ``write`` with no rename) is outside the
     produced-output contract, which writes every origin file by rename;
-    between steps 1 and 3 a reader of ``path`` can find it absent; a commit
-    under a template whose prefix only overlaps this one takes another lock
-    and can record the ctime from before step 1 (#1063); and a file this
-    process may not link, on a file system without ``RENAME_NOREPLACE``
-    (NFS), refuses at step 3 and keeps the file at the private name, named
-    in the refusal.
+    between steps 1 and 3 a reader of ``path`` can find it absent; and a
+    file this process may not link, on a file system without
+    ``RENAME_NOREPLACE`` (NFS), refuses at step 3 and keeps the file at the
+    private name, named in the refusal.
 
     Returns ``(outcome, reason)``: ``unlinked``, ``absent`` (nothing was at
     the name), ``superseded`` (another file was, and is again) or
@@ -10442,6 +10578,7 @@ __all__ = [
     "ProducedOutputError",
     "mint_generation",
     "validate_template",
+    "validate_export_rate_family",
     "template_sha256",
     "template_path",
     "declare_template",

@@ -32,9 +32,12 @@ from prismabuild import adaptive_cpu, core as pb, pool  # noqa: E402
 import test_a_measurement_admits_its_own_spool_exports as fx  # noqa: E402
 
 #: A 0.9-CPU housekeeping load on a 20-CPU host, as its per-pass samples see
-#: it: busy CPUs scatter around 0.9 across the old 1.0 line, and one
-#: oversubscribed daemon holds system PSI "some" around 0.11.
-HOUSEKEEPING = [(1.10, .11), (0.70, .11), (1.05, .12), (0.75, .10), (0.90, .11)]
+#: it: busy CPUs scatter around 0.9 across the old 1.0 line, one oversubscribed
+#: daemon holds system PSI "some" around 0.11 most passes, and one pass
+#: catches it quiet. A sample the old fixed line itself would refuse no
+#: longer seeds the window (#1014), so the host's idle state can only be
+#: learned starting from a reading that line would also have let through.
+HOUSEKEEPING = [(1.10, .11), (0.70, .11), (1.05, .12), (0.75, .03), (0.90, .11)]
 
 
 def _sample(monkeypatch, busy: float, psi: float) -> None:
@@ -58,7 +61,16 @@ def _measurement(tmp_path: Path):
 def test_a_measurement_is_admitted_beside_housekeeping(tmp_path, monkeypatch) -> None:
     """The host's 0.9-CPU housekeeping is its idle state.  The measurement is
     admitted within the passes that observe it, and its claim record names
-    the baseline it was judged against."""
+    the baseline it was judged against.
+
+    On a cold host every reading the old fixed line refuses stays refused,
+    however many passes that takes (#1014): none of them may seed the window,
+    so each denial's baseline stays ``basis: unmeasured`` with zero samples
+    -- unlike before the fix, where the first refused reading became the
+    window's only (and so its own) baseline and let the same load through on
+    the very next pass.  The measurement is admitted on the first pass the
+    line itself would not have refused, judged the same way the line always
+    judged it."""
 
     queue, key = _measurement(tmp_path)
     claim = None
@@ -71,13 +83,16 @@ def test_a_measurement_is_admitted_beside_housekeeping(tmp_path, monkeypatch) ->
         assert "baseline" in decision, (
             "a measurement refused as not idle must say what idle was judged "
             f"against; it was refused {decision.get('reason')} with no baseline")
+        assert decision["baseline"]["basis"] == "unmeasured", decision["baseline"]
+        assert decision["baseline"]["samples"] == 0, (
+            "a sample the old fixed line refuses must not seed the window "
+            f"(#1014); the window already holds {decision['baseline']['samples']}")
     assert claim is not None and claim["action_key"] == key, (
         "a measurement must run beside the host's own housekeeping")
     baseline = claim["idle_baseline"]
     assert baseline["state"] == "idle" and baseline["exceeds"] is False
-    assert baseline["samples"] >= 1
-    for field in adaptive_cpu.IDLE_FIELDS:
-        assert baseline[field]["max"] >= baseline["current"][field]
+    assert baseline["basis"] == "unmeasured" and baseline["samples"] == 0
+    assert baseline["current"] == {"busy_cpus": 0.75, "psi_some": .03}
     meta = adaptive_cpu.read_json(queue.ledger().held_dir / key / adaptive_cpu.METADATA)
     assert meta["idle_baseline"] == baseline
 
@@ -105,6 +120,10 @@ def test_foreign_load_above_the_baseline_is_refused_with_the_baseline(
 
     for busy, psi in HOUSEKEEPING:
         decide(busy, psi)
+    # Only the one housekeeping pass the old fixed line would not have
+    # refused seeded the window (#1014); the two after it join too, so three
+    # samples -- not all five -- are the baseline a foreign load is judged
+    # against below.
     assert decide(0.8, .10) is not None, controller.last_decision
 
     for _ in range(3):
@@ -113,11 +132,11 @@ def test_foreign_load_above_the_baseline_is_refused_with_the_baseline(
         assert decision["reason"] == "measurement_host_not_idle", decision
         baseline = decision["baseline"]
         assert baseline["exceeds"] is True and baseline["state"] == "idle"
-        assert baseline["samples"] == len(HOUSEKEEPING) + 1
+        assert baseline["samples"] == 3, baseline
         assert baseline["window_bound"] == adaptive_cpu.IDLE_WINDOW
         assert baseline["current"] == {"busy_cpus": 3.9, "psi_some": .30}
         busy = baseline["busy_cpus"]
-        assert busy["max"] == 1.10 and abs(busy["margin"] - (1.10 - busy["mean"])) < 1e-6
+        assert busy["max"] == 0.90 and abs(busy["margin"] - (busy["max"] - busy["mean"])) < 1e-6
         assert busy["stdev"] > 0 and baseline["span_s"] >= 0
     # The load ends; the host is idle again.
     assert decide(0.9, .11) is not None, controller.last_decision
@@ -180,14 +199,86 @@ def test_a_sustained_change_becomes_the_hosts_idle_state() -> None:
         assert judge(0.4)["exceeds"] is False
     t += 10.
     start = t
-    assert judge(2.0)["exceeds"] is True       # span of the prior samples: 40 s
-    while t - start < 40.:
+    # The span the run must outlive is measured from the oldest remembered
+    # sample (t=1000) to the run's own start (t=1050), not between the five
+    # remembered samples themselves (which would give 40 s and let the run
+    # outlive them one pass early, #1014): 50 s.
+    assert judge(2.0)["exceeds"] is True
+    while t - start < 50.:
         t += 10.
         verdict = judge(2.0)
-        if t - start < 40.:
+        if t - start < 50.:
             assert verdict["exceeds"] is True and verdict["samples"] == 5, verdict
     assert verdict["exceeds"] is False, verdict
     assert "excursion_unix" not in state
+
+
+def _fixed_line(current):
+    # The pre-#997 line as ``Controller.idle`` builds it for a 20-CPU host:
+    # ``busy_cpus > .05 x CPUs or psi_some >= .10``.
+    return current["busy_cpus"] > 1.0 or current["psi_some"] >= .10
+
+
+_fixed_line.__doc__ = "busy_cpus > 1.0 (.05 x 20 CPUs) or psi_some >= .10"
+
+
+def test_a_cold_host_refuses_a_constant_foreign_load_on_every_pass() -> None:
+    """A cold host absorbed a sustained foreign load on its second pass
+    (#1014): a sample the old fixed line refused still joined the window, so
+    on the next pass that refused sample was the window's own maximum and the
+    same load no longer exceeded it.  A refused sample must not seed the
+    window, so an unchanging load above the line is refused on every pass it
+    runs -- not only the first."""
+
+    state: dict = {}
+    t = 1_000.
+
+    def judge():
+        nonlocal state, t
+        t += 10.
+        verdict, state = adaptive_cpu.idle_judgement(
+            state, {"sampled_unix": t, "interval_s": 1e-3, "busy_cpus": 3.9, "psi_some": .30},
+            holders=False, identity=20, prior_rule=_fixed_line)
+        return verdict
+
+    for pass_number in range(1, 4):
+        verdict = judge()
+        assert verdict["exceeds"] is True, (pass_number, verdict)
+        assert verdict["basis"] == "unmeasured", (pass_number, verdict)
+        assert verdict["samples"] == 0, (pass_number, verdict)
+    assert state["samples"] == [], "a refused sample must not seed the window"
+
+
+def test_a_foreign_load_is_refused_until_it_outlives_the_remembered_idle_span() -> None:
+    """After a clean idle sample seeds the window, the same load as above is
+    refused until it has lasted as long as the host's remembered idle span
+    (#1014) -- measured from that oldest remembered sample to the run's own
+    start, not between the remembered samples themselves (there is only one
+    of them here, which would make that span zero and admit the load at
+    once)."""
+
+    state: dict = {}
+    t = 1_000.
+
+    def judge(busy, psi):
+        nonlocal state
+        verdict, state = adaptive_cpu.idle_judgement(
+            state, {"sampled_unix": t, "interval_s": 1e-3, "busy_cpus": busy, "psi_some": psi},
+            holders=False, identity=20, prior_rule=_fixed_line)
+        return verdict
+
+    seed = judge(0.4, 0.)                      # the one clean sample; seeds
+    assert seed["exceeds"] is False and seed["basis"] == "unmeasured"
+    t += 30.
+    start = t
+    # The remembered idle span is measured to here, the run's start: 30 s.
+    assert judge(3.9, .30)["exceeds"] is True
+    while t - start < 30.:
+        t += 10.
+        verdict = judge(3.9, .30)
+        if t - start < 30.:
+            assert verdict["exceeds"] is True and verdict["samples"] == 1, verdict
+    assert verdict["exceeds"] is False, verdict
 
 
 def test_the_window_is_bounded() -> None:

@@ -34,9 +34,15 @@ receipt must be complete.
 Run it through PrismaBuild on a GB10, never on the tier host, and never
 against the live stage or queue::
 
-    pbrun.py --cwd <checkout> --tag sparky --cpus 8 --demand mem_gb=8 \\
+    pbrun.py --cwd <checkout> --tag sparky --cpus 8 \\
+        --demand mem_gb=8,disk_metadata=1 \\
         --priority -10 -- python3 tools/fleet/bench_stage_adopt.py \\
         --work <scratch dir> --out <results dir> --py-spy <path to py-spy>
+
+The ``disk_metadata=1`` reservation (#1008 item 4) keeps another timing test's
+own directory/file metadata traffic off the same box for the run's duration;
+without it, a concurrent stage test on that box can distort these hold-time
+measurements the way two 20,000-entry egresses distorted each other's (#1005).
 """
 from __future__ import annotations
 
