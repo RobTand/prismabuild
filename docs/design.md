@@ -191,6 +191,22 @@ opens remain (actions 8c9e1d2bd5f4 and 8550ef5bc4ab). On the NFS export a
 listing is at least one READDIR, and a per-key lookup is a LOOKUP unless
 the client's dentry cache answers it.
 
+Each claim pass times its per-key transition-lock holds (#1029): every lock
+the pass acquires is timed on `time.monotonic()` from acquisition to the end
+of the block that held it, however the block ends, and a lock another loop
+held is not a hold. The pass's `transition_holds` (count),
+`transition_held_s` (total), `transition_held_max_s` and
+`transition_held_max_key` (the longest hold and the key it was held for) are
+`PoolQueue.last_claim_pass`, and a pass that held at least one lock files
+them, with `host`, `pid` and `passed_unix`, as its loop's entry under
+`claim_passes` in the host's latest-only `claim-denials.json`. That entry is
+keyed by pid, keeps the newest `MAX_CLAIM_PASS_LOOPS` (64) loops, is written
+under the same local diagnostics lock as the denials and is as best-effort:
+a contended lock drops it and never delays or changes a claim. The snapshot
+publisher copies it with the denials, and the denial readers ignore it. A
+slow NFS round trip under the lock is visible there instead of only as the
+`transition_busy` every loop that met the lock recorded.
+
 When the claimant supplies CPU tiers, validation of an existing `cpu-map.json`
 also runs before host admission. That map is immutable while workers run;
 changing it requires stopped workers and drained reservations. A missing map

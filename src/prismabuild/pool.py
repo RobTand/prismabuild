@@ -4311,6 +4311,43 @@ def ready_placement(tags: Iterable[str], has_gpu: bool) -> Iterator[None]:
         _READY_PLACEMENT.reset(token)
 
 
+class _TransitionHolds:
+    """The per-key transition-lock holds of one claim pass, timed (#1029).
+
+    Each hold runs from the lock's acquisition to the end of the block that
+    held it, on ``time.monotonic()``.  A lock another loop held, which this
+    pass never acquired, is not a hold.
+    """
+
+    __slots__ = ("count", "held_s", "max_s", "max_key")
+
+    def __init__(self) -> None:
+        self.count = 0
+        self.held_s = 0.0
+        self.max_s = 0.0
+        self.max_key: str | None = None
+
+    def add(self, key: str, seconds: float) -> None:
+        seconds = max(0.0, float(seconds))
+        self.count += 1
+        self.held_s += seconds
+        if self.max_key is None or seconds > self.max_s:
+            self.max_s, self.max_key = seconds, key
+
+    def summary(self) -> dict[str, object]:
+        """The pass's ``transition_holds``, ``transition_held_s``,
+        ``transition_held_max_s`` and ``transition_held_max_key``."""
+
+        return {"transition_holds": self.count,
+                "transition_held_s": round(self.held_s, 6),
+                "transition_held_max_s": round(self.max_s, 6),
+                "transition_held_max_key": self.max_key}
+
+
+#: Loops per host whose last claim pass ``claim-denials.json`` keeps (#1029).
+MAX_CLAIM_PASS_LOOPS = 64
+
+
 class PoolQueue:
     """A directory on a shared filesystem that two or more boxes pull from."""
 
@@ -4323,6 +4360,9 @@ class PoolQueue:
         self._cpu_deferrals: dict[tuple[str, str], float] = {}
         self._cross_resource_deferrals: dict[tuple[str, str], float] = {}
         self._claim_denial_bases: dict[str, Path] = {}
+        #: The last claim pass's transition holds (#1029), or ``None`` before
+        #: the first pass: :meth:`_TransitionHolds.summary`.
+        self.last_claim_pass: dict[str, object] | None = None
         # Drain observations waiting for the next ``record_pass`` of their key
         # (#924); never read as admission authority on their own.
         self._drain_notes: dict[str, dict[str, float | None]] = {}
@@ -6515,7 +6555,8 @@ class PoolQueue:
             except BlockingIOError:
                 return
             path = base / CLAIM_DENIALS
-            records = cpu_admission.read_json(path).get("records", {})
+            existing = cpu_admission.read_json(path)
+            records = existing.get("records", {})
             if not isinstance(records, Mapping):
                 records = {}
             key = str(item.get("action_key", ""))
@@ -6537,11 +6578,67 @@ class PoolQueue:
                 float(entry[1].get("denied_unix", 0))
                 if isinstance(entry[1], Mapping) and isinstance(entry[1].get("denied_unix", 0), (int, float))
                 else 0.0), reverse=True)
-            cpu_admission.write_json(path, {"schema": CLAIM_DENIALS_SCHEMA_V1,
-                                            "records": dict(newest[:MAX_CLAIM_DENIALS])})
+            document: dict[str, object] = {
+                "schema": CLAIM_DENIALS_SCHEMA_V1,
+                "records": dict(newest[:MAX_CLAIM_DENIALS])}
+            passes = existing.get("claim_passes")
+            if isinstance(passes, Mapping):
+                document["claim_passes"] = dict(passes)
+            cpu_admission.write_json(path, document)
             # This starts only a local child and coalesces shared copies at 1 Hz.
             cpu_admission.adaptive_snapshot.publish(base, ledger.base / "adaptive")
         except (OSError, ValueError, TypeError):
+            return
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+
+    def _record_claim_pass(self, summary: Mapping[str, object]) -> None:
+        """File one claim pass's transition holds in ``claim-denials.json`` (#1029).
+
+        Under ``claim_passes``, keyed by this loop's pid, beside the denial
+        records and under the same local diagnostics lock: latest-only per
+        loop, the newest :data:`MAX_CLAIM_PASS_LOOPS` loops kept, and
+        best-effort exactly as :meth:`record_denial` is -- a contended lock
+        or an unwritable file drops the observation and never delays or
+        changes a claim.  The snapshot publisher copies it with the denials.
+        """
+
+        descriptor = None
+        try:
+            ledger = self.ledger()
+            ledger_name = str(ledger.base)
+            base = self._claim_denial_bases.get(ledger_name)
+            if base is None:
+                base = cpu_admission.local_state_base(ledger.base)
+                self._claim_denial_bases[ledger_name] = base
+            descriptor = os.open(base / "claim-denials.lock",
+                                 os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return
+            path = base / CLAIM_DENIALS
+            existing = cpu_admission.read_json(path)
+            records = existing.get("records", {})
+            passes = existing.get("claim_passes", {})
+            passes = dict(passes) if isinstance(passes, Mapping) else {}
+            passes[str(os.getpid())] = {
+                **dict(summary), "host": socket.gethostname(),
+                "pid": os.getpid(), "passed_unix": _now()}
+            newest = sorted(passes.items(), key=lambda entry: (
+                float(entry[1].get("passed_unix", 0))
+                if isinstance(entry[1], Mapping)
+                and isinstance(entry[1].get("passed_unix", 0), (int, float))
+                else 0.0), reverse=True)
+            cpu_admission.write_json(path, {
+                "schema": CLAIM_DENIALS_SCHEMA_V1,
+                "records": dict(records) if isinstance(records, Mapping) else {},
+                "claim_passes": dict(newest[:MAX_CLAIM_PASS_LOOPS])})
+            cpu_admission.adaptive_snapshot.publish(base, ledger.base / "adaptive")
+        except (OSError, ValueError, TypeError, PoolContractError):
+            # A diagnostic: it must not replace the pass's own answer or
+            # raise, which it would from the ``finally`` that files it.
             return
         finally:
             if descriptor is not None:
@@ -13558,6 +13655,26 @@ class PoolQueue:
         return (isinstance(receipt, Mapping) and receipt.get("complete") is True
                 and not receipt.get("refusal") and receipt.get("tier_id") == tier_id)
 
+    @contextmanager
+    def _timed_transition_hold(self, action_key: str,
+                               holds: "_TransitionHolds | None"):
+        """The claim pass's non-blocking transition lock, with its hold timed.
+
+        Yields what :meth:`_transition_locked` yields.  An acquired lock is
+        timed until the block ends, whether it ends by falling through,
+        ``continue``, ``return`` or a raise, and added to ``holds`` (#1029).
+        """
+
+        with self._transition_locked(action_key, blocking=False) as acquired:
+            if not acquired or holds is None:
+                yield acquired
+                return
+            started = time.monotonic()
+            try:
+                yield acquired
+            finally:
+                holds.add(str(action_key), time.monotonic() - started)
+
     def _transition_locked(self, action_key: str, *, blocking: bool = True,
                            busy: dict[str, object] | None = None):
         """Serialize one key's ownership transitions, never independent keys.
@@ -15132,9 +15249,32 @@ class PoolQueue:
                 )
             return holder
 
-    def _claim(
+    def _claim(self, **kwargs) -> dict[str, object] | None:
+        """One claim pass (:meth:`_claim_pass`), with its transition holds timed.
+
+        Every per-key transition lock the pass holds is timed from its
+        acquisition to its release (#1029): a slow NFS round trip under the
+        lock -- the fresh ``claimed/`` listing, a ready-record read, the
+        rename -- is otherwise invisible, and every sibling loop and box that
+        meets the lock meanwhile records only ``transition_busy``.  The pass's
+        count, total and longest hold, with the key it was held for, are
+        :attr:`last_claim_pass` and are filed, whichever way the pass ends
+        (a claim, ``None`` or a raise), as this loop's entry in the host's
+        latest-only ``claim-denials.json`` (:meth:`_record_claim_pass`).
+        """
+
+        holds = _TransitionHolds()
+        try:
+            return self._claim_pass(holds=holds, **kwargs)
+        finally:
+            self.last_claim_pass = holds.summary()
+            if holds.count:
+                self._record_claim_pass(self.last_claim_pass)
+
+    def _claim_pass(
         self,
         *,
+        holds: "_TransitionHolds | None" = None,
         tags: Iterable[str] = (),
         has_gpu: bool = False,
         owner: str | None = None,
@@ -15352,7 +15492,7 @@ class PoolQueue:
                     "withheld_for": withheld_for,
                     "withheld_kinds": sorted(withheld_kinds or ())})
                 continue
-            with self._transition_locked(key, blocking=False) as acquired:
+            with self._timed_transition_hold(key, holds) as acquired:
                 if not acquired:
                     if key:
                         # Another loop holds this key's lock, and may be
