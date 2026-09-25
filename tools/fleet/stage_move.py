@@ -343,6 +343,20 @@ def cpu_seconds(*, usage=resource.getrusage) -> float:
 _PUBLISH_GRACE_S = 30.0
 _PUBLISH_POLL_S = 0.25
 
+#: The four ways :meth:`_StagedPublisher._decide` can make a publication wait
+#: for another publisher, spelled exactly as :meth:`_StagedPublisher.publish`
+#: totals them onto the receipt's ``publish_waits`` (#994): a fragment vouches
+#: for the name without a usable date, a live mover claim covers it, a
+#: sibling copy is in flight, or nothing names it yet and it has not been
+#: re-verified absent.  Before #994 a mover could sit in these waits, refuse
+#: after the 30 s grace, and leave a receipt with no per-entry count, no
+#: seconds and no verdict -- only the free-text refusal, capped at 20 entries
+#: and easily buried by later, unrelated errors (#853).
+PUBLISH_WAIT_OWNED = "owned"
+PUBLISH_WAIT_LIVE_PUBLISHER = "live_publisher"
+PUBLISH_WAIT_IN_FLIGHT = "in_flight"
+PUBLISH_WAIT_UNATTRIBUTED = "unattributed"
+
 #: Residency subdirectories that never hold consumer fragments.
 _NON_FRAGMENT_DIRS = frozenset({"leases", "material"})
 
@@ -928,13 +942,25 @@ class _PublicationRefused(OSError):
     exits nonzero and retires its own window instead of being republished
     into the same refusal.  Every other refusal leaves them ``None`` and
     stays retryable.
+
+    ``wait_verdict`` (#994) is set only when this refusal is what a
+    :data:`PUBLISH_WAIT_OWNED`-family wait settled to after the grace: one of
+    ``owned``, ``live_publisher`` or ``in_flight``.  It is ``None`` for a
+    refusal that never waited -- an unstatable or non-regular destination, an
+    unreadable census, a live pin, a proven divergence -- and for
+    ``unattributed``, which the grace heals by replacement rather than
+    refusing.  The copier reads it to name the verdict on the per-entry error
+    it records (:meth:`_Copier.run`), so the obstruction the grace timed out
+    on is not left to the free-text message alone.
     """
 
     def __init__(self, *args: object, refusal: str | None = None,
-                 conflict: Mapping[str, object] | None = None) -> None:
+                 conflict: Mapping[str, object] | None = None,
+                 wait_verdict: str | None = None) -> None:
         super().__init__(*args)
         self.refusal = refusal
         self.conflict = dict(conflict) if conflict is not None else None
+        self.wait_verdict = wait_verdict
 
 
 #: The terminal refusal a mover files when a live owner holds different bytes
@@ -1118,12 +1144,22 @@ class _PhaseClock:
     ``adopted_at_publication`` after copying on a record's proof,
     ``adopted_by_content_at_publication`` after copying on its own bytes, or
     -- a name every owner of which had ended -- replaced at publication.
+
+    ``publish_waits`` (#994) totals, by :data:`PUBLISH_WAIT_OWNED`-family
+    kind, how many entries waited under it and the real elapsed seconds spent
+    waiting -- :meth:`_StagedPublisher.publish` credits an entry once, when
+    its own wait ends, not once per poll, so ``entries`` counts distinct
+    entries and ``seconds`` is the total time this mover spent parked in
+    that kind of wait.  Reported for the receipt's own ``publish_waits``
+    field, a sibling of ``phase_timings`` rather than a part of it, the way
+    ``start_gate_wait_s`` sits beside it rather than inside it.
     """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._phases: dict[str, list[float]] = {}
         self._outcomes: dict[str, int] = {}
+        self._waits: dict[str, list[float]] = {}
 
     def add(self, phase: str, seconds: float, calls: int = 1) -> None:
         with self._lock:
@@ -1145,6 +1181,14 @@ class _PhaseClock:
         with self._lock:
             self._outcomes[name] = self._outcomes.get(name, 0) + 1
 
+    def wait(self, kind: str, seconds: float) -> None:
+        """One entry's finished wait: ``kind`` is a ``PUBLISH_WAIT_*`` value."""
+
+        with self._lock:
+            row = self._waits.setdefault(kind, [0.0, 0])
+            row[0] += max(0.0, seconds)
+            row[1] += 1
+
     def report(self) -> dict[str, object]:
         with self._lock:
             return {
@@ -1153,6 +1197,13 @@ class _PhaseClock:
                             "max_s": round(row[2], 6)}
                     for phase, row in sorted(self._phases.items())},
                 "outcomes": dict(sorted(self._outcomes.items())),
+            }
+
+    def publish_waits_report(self) -> dict[str, object]:
+        with self._lock:
+            return {
+                kind: {"entries": int(row[1]), "seconds": round(row[0], 6)}
+                for kind, row in sorted(self._waits.items())
             }
 
 
@@ -1663,44 +1714,69 @@ class _StagedPublisher:
         owner of which has ended is replaced by this copy.  A divergence
         first seen under the stage lock is decided on the next poll, since
         the owners' transition locks come before that lock.
+
+        A ``"wait"`` verdict's third element names which of the four
+        :data:`PUBLISH_WAIT_OWNED`-family kinds it is (#994).  This entry's
+        time under each kind -- real elapsed seconds between the poll that
+        first saw it and the poll that saw something else -- is totalled
+        onto ``self.clock`` (:meth:`_PhaseClock.wait`) exactly once, when
+        this call returns or raises, for the receipt's ``publish_waits`` to
+        report and for the eventual refusal (:meth:`_act`) to name.  A wait
+        that changes kind mid-poll is flushed under its old kind and
+        restarted under its new one, so one entry can credit two kinds
+        rather than mislabel the second as the first.
         """
 
         want = int(entry["bytes"])
         declared = entry.get("sha256")
         norm = os.path.normpath(str(destination))
         deadline = time.monotonic() + _PUBLISH_GRACE_S
-        while True:
-            now = time.monotonic()
-            heal = now >= deadline
-            owners = _Owners() if self._arbitrates else None
-            with self.clock.timing("publish_decide"):
-                verdict = self._decide(destination, want, declared, computed,
-                                       source_id, heal=heal, owners=owners)
-            if verdict[0] == "divergent":
-                done = self._publish_divergent(
-                    destination, norm, temp_path, want, declared, computed,
-                    source_id, heal, owners, verdict[1])
-                if done is not None:
-                    return done
-            elif verdict[0] != "wait":
-                with self._ownership():
-                    if not (verdict[0] == "adopt"
-                            and reader_lease.file_id_matches(
-                                verdict[2], reader_lease.stat_identity(norm))):
-                        verdict = self._decide(
-                            destination, want, declared, computed, source_id,
-                            heal=heal,
-                            owners=_Owners() if self._arbitrates else None,
-                            content=False)
-                    done = self._act(verdict, destination, temp_path, want,
-                                     computed)
+        wait_kind: str | None = None
+        wait_started: float | None = None
+        try:
+            while True:
+                now = time.monotonic()
+                heal = now >= deadline
+                owners = _Owners() if self._arbitrates else None
+                with self.clock.timing("publish_decide"):
+                    verdict = self._decide(destination, want, declared, computed,
+                                           source_id, heal=heal, owners=owners)
+                if verdict[0] == "wait":
+                    kind = verdict[2]
+                    if wait_started is None:
+                        wait_started = now
+                    elif kind != wait_kind:
+                        self.clock.wait(wait_kind, now - wait_started)
+                        wait_started = now
+                    wait_kind = kind
+                if verdict[0] == "divergent":
+                    done = self._publish_divergent(
+                        destination, norm, temp_path, want, declared, computed,
+                        source_id, heal, owners, verdict[1])
                     if done is not None:
                         return done
-            if stop is not None and stop.is_set():
-                temp_path.unlink(missing_ok=True)
-                raise OSError(f"stopping before {destination} publishes")
-            with self.clock.timing("publish_poll_sleep"):
-                time.sleep(_PUBLISH_POLL_S)
+                elif verdict[0] != "wait":
+                    with self._ownership():
+                        if not (verdict[0] == "adopt"
+                                and reader_lease.file_id_matches(
+                                    verdict[2], reader_lease.stat_identity(norm))):
+                            verdict = self._decide(
+                                destination, want, declared, computed, source_id,
+                                heal=heal,
+                                owners=_Owners() if self._arbitrates else None,
+                                content=False)
+                        done = self._act(verdict, destination, temp_path, want,
+                                         computed)
+                        if done is not None:
+                            return done
+                if stop is not None and stop.is_set():
+                    temp_path.unlink(missing_ok=True)
+                    raise OSError(f"stopping before {destination} publishes")
+                with self.clock.timing("publish_poll_sleep"):
+                    time.sleep(_PUBLISH_POLL_S)
+        finally:
+            if wait_started is not None:
+                self.clock.wait(wait_kind, time.monotonic() - wait_started)
 
     def _act(self, verdict: tuple, destination: Path, temp_path: Path,
              want: int, computed: str,
@@ -1723,7 +1799,9 @@ class _StagedPublisher:
             return want, verdict[1], verdict[2]
         if verdict[0] == "refuse":
             temp_path.unlink(missing_ok=True)
-            raise _PublicationRefused(verdict[1])
+            raise _PublicationRefused(
+                verdict[1],
+                wait_verdict=verdict[2] if len(verdict) > 2 else None)
         return None
 
     def _publish_divergent(self, destination: Path, norm: str,
@@ -2107,6 +2185,16 @@ class _StagedPublisher:
         lock passes ``False``: the hash reads a whole file, and a verdict
         decided under a lock only confirms one decided before it.  Without
         it positive absence waits, then heals, as it always did.
+
+        A ``"wait"`` verdict, and the ``"refuse"`` a wait settles to after
+        the grace, each carry a third element naming which of the four
+        :data:`PUBLISH_WAIT_OWNED`-family kinds it is (#994), for
+        :meth:`publish` to total onto the receipt's ``publish_waits`` and
+        for the eventual refusal to name.  Every other verdict --
+        ``"replace"``, ``"adopt"``, ``"divergent"``, and a ``"refuse"`` that
+        never waited (an unstatable or non-regular destination, an
+        unreadable census, a live pin) -- stays the plain two-element tuple
+        it always was.
         """
 
         norm = os.path.normpath(str(destination))
@@ -2157,10 +2245,10 @@ class _StagedPublisher:
                              "deferring to retry")
                 return ("refuse",
                         f"shared staged name is published elsewhere, "
-                        f"{temp_note}: {destination}")
+                        f"{temp_note}: {destination}", PUBLISH_WAIT_OWNED)
             return ("wait",
                     f"shared staged name is published elsewhere, "
-                    f"deferring: {destination}")
+                    f"deferring: {destination}", PUBLISH_WAIT_OWNED)
         cover, cover_detail = self._live_claim_cover(norm)
         if cover is None:
             return ("refuse",
@@ -2174,10 +2262,10 @@ class _StagedPublisher:
                 return ("refuse",
                         f"shared staged name still has a live publisher "
                         f"after the grace, deferring to retry: "
-                        f"{destination}")
+                        f"{destination}", PUBLISH_WAIT_LIVE_PUBLISHER)
             return ("wait",
                     f"shared staged name has a live publisher, "
-                    f"deferring: {destination}")
+                    f"deferring: {destination}", PUBLISH_WAIT_LIVE_PUBLISHER)
         partials = self._inflight_partials(destination)
         if partials is None:
             return ("refuse",
@@ -2188,10 +2276,11 @@ class _StagedPublisher:
                 return ("refuse",
                         f"shared staged name still has a copy in flight "
                         f"({partials}) after the grace, deferring to "
-                        f"retry: {destination}")
+                        f"retry: {destination}", PUBLISH_WAIT_IN_FLIGHT)
             return ("wait",
                     f"shared staged name has a copy in flight "
-                    f"({partials}), deferring: {destination}")
+                    f"({partials}), deferring: {destination}",
+                    PUBLISH_WAIT_IN_FLIGHT)
         # Positive absence, re-verified: no fragment, no pin, no live
         # claim, no copy in flight, every census clean.  Bytes that hash to
         # the trusted digest -- the declared one, or the copy's own for a
@@ -2211,7 +2300,8 @@ class _StagedPublisher:
         if heal:
             return ("replace",)
         return ("wait",
-                f"shared staged name unattributed, deferring: {destination}")
+                f"shared staged name unattributed, deferring: {destination}",
+                PUBLISH_WAIT_UNATTRIBUTED)
 
     def _live_pins(self, norm: str) -> list[str] | None:
         """Pin ids live on one staged path, or None when unknowable."""
@@ -3436,10 +3526,19 @@ class _Copier:
         #: Never held while logging (which takes ``self.lock``) or copying.
         dispatch = threading.Lock()
 
-        def record_error(path: str, exc: object) -> None:
+        def record_error(path: str, exc: object,
+                        wait_verdict: str | None = None) -> None:
             with self.lock:
                 if len(self.errors) < 20:
-                    self.errors.append(f"{os.path.basename(path)}: {exc}")
+                    # ``wait_verdict`` (#994) names the grace's own verdict
+                    # ahead of the free-text message, so the entry this
+                    # refusal is about and the wait it settled from both
+                    # survive the 20-entry cap even if later, unrelated
+                    # errors bury the rest of the sentence (#853).
+                    prefix = (f"publish wait ({wait_verdict}) refused after "
+                             f"the grace: " if wait_verdict else "")
+                    self.errors.append(
+                        f"{os.path.basename(path)}: {prefix}{exc}")
 
         def take() -> dict[str, object] | None:
             """The next entry, or ``None`` once dispatch has ended."""
@@ -3489,7 +3588,7 @@ class _Copier:
                         if exc.refusal is not None and self.refusal is None:
                             self.refusal = exc.refusal
                             self.conflict = exc.conflict
-                    record_error(path, exc)
+                    record_error(path, exc, wait_verdict=exc.wait_verdict)
                     return
                 except (OSError, ValueError) as exc:
                     # An ordinary source read, digest or filesystem failure:
@@ -4608,6 +4707,14 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
         # single call, and how each entry ended (#981).  Totals alone could
         # not split chunk 0's 270 s tail; this can.
         "phase_timings": copier.clock.report(),
+        # How many entries waited for another publisher, under which of the
+        # four kinds (#994), and how many seconds -- a sibling of
+        # ``phase_timings`` rather than a phase inside it, and the field a
+        # post-grace refusal used to leave unrecorded: the mover looped on
+        # the wait, re-took the host-wide lock every ``_PUBLISH_POLL_S``,
+        # then refused with only a free-text message, capped at 20 entries
+        # and easily buried by later, unrelated errors (#853), to say why.
+        "publish_waits": copier.clock.publish_waits_report(),
         # How long this mover queued for the stage ownership lock before
         # its copy began (#988): at the start gate, and before it at the
         # read of its own prior coverage.  Either is an egress's hold, paid

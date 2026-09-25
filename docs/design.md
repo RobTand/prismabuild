@@ -10690,6 +10690,45 @@ the lookup to the frozen pre-#893 one over fleets whose fragments never
 omit a dated key, and holds it to that lookup over sidecars cut to their
 fragment's keys for fleets that do.
 
+### A publish wait is recorded and named by verdict (#994)
+
+Before this, a publication that waited for another publisher left no trace of
+having waited at all. `_StagedPublisher.publish` polls the ownership gate's
+four wait verdicts -- a fragment names the destination without a usable date
+(`owned`), a live mover claim covers it (`live_publisher`), a sibling copy is
+in flight (`in_flight`), or nothing names it and it has not been re-verified
+absent (`unattributed`) -- for the whole `_PUBLISH_GRACE_S` (30 s), re-taking
+the host-wide lock every `_PUBLISH_POLL_S`. The receipt carried
+`phase_timings`, `start_gate_wait_s` and `resume_lock_wait_s`, but nothing
+said an entry had waited, for how long, or under which verdict; the refusal
+that ended the range (#853) was a free-text sentence, capped among 20
+entries, naming the destination but never the verdict.
+
+Each wait verdict now carries its kind as a third tuple element
+(`PUBLISH_WAIT_OWNED`, `PUBLISH_WAIT_LIVE_PUBLISHER`, `PUBLISH_WAIT_IN_FLIGHT`,
+`PUBLISH_WAIT_UNATTRIBUTED`), and `publish` totals one entry's real elapsed
+time under each kind onto `_PhaseClock` when the entry's own call returns or
+raises -- once per entry, not once per poll, so a receipt's count is entries,
+not polls; an entry whose wait changes kind mid-poll is flushed under the old
+kind and credits the new one separately rather than mislabeling the second
+span as the first. The mover's receipt carries the total as `publish_waits`,
+a sibling of `phase_timings` (the way `start_gate_wait_s` sits beside it
+rather than inside it): `{kind: {entries, seconds}}`, present only for the
+kinds an entry actually waited under.
+
+The verdict a wait settles to after the grace (`owned`, `live_publisher` or
+`in_flight` refuse; `unattributed` heals by replacement instead of refusing,
+as before) now travels on `_PublicationRefused.wait_verdict`, and the
+copier's per-entry error record names it ahead of the free-text message, so
+the entry and the verdict both survive the 20-entry cap even when later,
+unrelated errors bury the rest of the sentence.
+
+`tests/test_a_publish_wait_is_recorded_by_verdict_and_seconds.py` drives the
+real `stage_move.move`: a destination staged and named by a fragment with no
+material sidecar (`owned`, undated, and never healed by elapsed time alone)
+waits out a shrunk grace and refuses, and the receipt's `publish_waits` and
+the recorded error both name the verdict.
+
 ### Consumers of one staged range share one copy, charged once (#1026)
 
 Before #1026, every consumer sealed its own mover for every range it reads. A
