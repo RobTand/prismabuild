@@ -247,7 +247,19 @@ row above.
   `--residency-ram auto` exists; the preference rule is target.)
 - INV-06 stale epoch, corrupt, or missing data never falls back to HDD:
   stale-epoch reads refuse; digest mismatch deletes temp and unpublishes;
-  missing ranges wait boundedly with reason or fail clearly.
+  missing ranges wait boundedly with reason or fail clearly. A stale epoch
+  is one the tier's announcement (`tiers/<tier>.json`) *reads* as another
+  epoch, or as none: `open_pinned` refuses it with `ReaderLeaseError`
+  "epoch moved during the hold". An announcement that does not read is
+  not a stale epoch (#1146). It is read as a replaced leaf (#1017) and
+  retried on the release path's schedule (`RELEASE_RETRY_DELAYS_S` for
+  `RELEASE_RETRYABLE_ERRNOS` and unparsable bytes, about a second); if it
+  still does not read, `open_pinned` raises `TierAnnouncementUnreadable`,
+  a `ReaderLeaseError` subclass whose message names the path, the errno
+  or parse error, and the time spent. The open refuses, the pin and ref
+  stay held, and the caller may retry the open. `acquire` answers the same
+  fault as `stale-epoch: <detail>`: the head is unchanged, so a consumer
+  still classifies it as availability, not integrity.
 - INV-07 copy/publish/lease/release serialize safely: rename-before-
   fragment (temp beside final name, atomic rename); claim handoff ordered;
   simultaneous egress serialized with shared-path ownership (the co-owner
