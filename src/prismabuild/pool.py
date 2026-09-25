@@ -9058,6 +9058,15 @@ class PoolQueue:
         lock while requesting another's.  ``reader_lease.release_refs`` takes
         the root each pin names, which is why the egress reclaims before
         taking this lock rather than under it (#780).
+
+        One exception, which keeps the rule's point: a produced-output step
+        that claims or deletes an origin path holds the locks of its output
+        prefix and of every filed template prefix that overlaps it
+        (``produced_output._output_prefix_locks``, #1063).  It asks for them
+        all at once, sorted by absolute path, and for no other lock of this
+        family while it holds them; every other caller holds one and asks
+        for no other.  A holder only ever waits for a lock that sorts after
+        every lock it holds, so no two holders can each wait for the other.
         """
 
         return posix_lock.held(

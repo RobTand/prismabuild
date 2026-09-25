@@ -30,7 +30,8 @@ uses, compares ctime.  Two faults followed:
 The retirement that holds the lock is modelled by running its delete step
 when the commit asks for the output-prefix lock, before the lock is
 granted: the one interleaving that lock orders.  A writer whose template's
-prefix only overlaps takes another lock and is not ordered by it (#1063).
+prefix only overlaps takes that lock too since #1063, so the same
+interleaving covers it.
 The refused link is simulated by making ``os.link`` of a private retiring
 name raise ``EPERM`` when the name is free, as the kernel does.
 """

@@ -6263,7 +6263,8 @@ that declares no consumed batch takes no lock.
 cycle, after it retires terminal output funding. The tick scans the
 produced-output scopes, as `unheld_window_gib` and `output_scope_tick` do.
 For each consumed batch that is not reclaimed, it takes the batch's
-output-prefix lock and decides:
+output-prefix lock, with the lock of every filed template prefix that
+overlaps it (#1063, below), and decides:
 
 - If consumers are declared, every one must have succeeded. A consumer's
   state is its action key's latest generation. A `claimed` or `ready` row,
@@ -6743,8 +6744,7 @@ ended prewrite is swept like a write-only one (#949 above), and held while
 a pool funding intent names its batch.
 
 **A delete never removes a successor's file.** A producer writes an origin
-file by `rename(tmp, path)` under no PB lock, and a template whose prefix
-only overlaps this one takes a different lock, so a check followed by
+file by `rename(tmp, path)` under no PB lock, so a check followed by
 `unlink(path)` can remove a file renamed onto the name between the two.
 `_unlink_if_committed` instead:
 
@@ -6792,9 +6792,10 @@ null-digest staged batch could then never be restaged
 accept it, and an `lstat` made while the file was aside refused the commit
 as `descriptor-unstatable`. Both take the identity under the lock now.
 `origin_retirement_tick` holds that lock from its owner read through the
-put-back, so a commit of a template with the same prefix records the
-identity the file has after it. `commit_origin_batch` with `landed` still
-reads an origin whose timestamps alone moved outside the lock (#1111); the
+put-back, so a commit of a template with the same prefix, or since #1063
+with any prefix that overlaps it, records the identity the file has after
+it. `commit_origin_batch` with `landed` still reads an origin whose
+timestamps alone moved outside the lock (#1111); the
 `lstat` under the lock must find the identity the read hashed, an origin
 that moved again meanwhile is read once more with the lock let go, and a
 second move refuses as `origin-is-not-the-landed-copy`.
@@ -6828,10 +6829,9 @@ Limits:
 
 - A successor inheriting the dead instance (the issue's option 1) was not
   built.
-- A template whose prefix only overlaps this one's takes its own lock, so
-  its prewrite and this one's are not serialized against each other; each
-  still refuses the other's committed or prewritten path, and the delete's
-  move-aside covers the delete side.
+- Until #1063 a template whose prefix only overlaps this one's took its
+  own lock, so its prewrite, its commit and this one's retirement were not
+  serialized against each other. They are now (below).
 - A scope created by code older than the index after the index is marked
   complete is not seen by the gate until the next tier cycle files its
   pointer.
@@ -6844,17 +6844,91 @@ Limits:
 - A file the tier loop may not link, on a file system without
   `RENAME_NOREPLACE` (NFS), refuses at the put-back, and the file stays at
   the private name, named in the refusal, until a tick can put it back.
-- A commit under a template whose prefix only overlaps this one's takes its
-  own lock, which the retirement does not hold, so its identity can still
-  carry the ctime from before a move aside (#1063 is the lock question).
-  An origin-only batch, and a staged one with a digest, settle that by
-  content (#1111); a DEV null-digest staged batch stays strict and cannot
-  be restaged.
 - A spool export's retirement of a failed group's file (#1097) holds the
   group's `.export.lock`, not the output-prefix lock. No commit it could
   stale is in flight: only dead attempts' prewrites and the exporting
   attempt's own prewrite name the path, and that attempt commits after its
   export.
+
+#### Nested prefixes share their locks (#1063)
+
+A path is named by every template whose output prefix contains it, and any
+two such prefixes nest. Each step that claims or deletes an origin path
+took the ownership lock of its own template's prefix only, so two templates
+whose prefixes nest took different locks and nothing ordered them. With a
+consumed origin-only batch under one and a successor under the other:
+
+1. the retirement read every other attempt's claim on the batch's paths
+   under its lock, and found none;
+2. the successor prewrote a path and committed the file already there,
+   under its own lock. A commit with no spool receipt records the identity
+   `lstat` finds (`_origin_identity_at_commit`), inode included, so it
+   adopted the batch's file;
+3. the retirement's identity check still matched, and its delete removed
+   the successor's committed file.
+
+Nothing live reached it (the census on the issue: no live template is
+write-only, and the 55 overlapping template pairs all have identical
+prefixes, which share one lock). A template over all of `a4/overlay`
+beside a layer's write-only handoff would.
+
+Every step that files a claim on an origin path (`require_prewrite`,
+`commit_batch`, `commit_origin_batch`) or deletes one (the consumed
+retirement) now holds, across its check and its act, the lock of its own
+prefix and of every filed template prefix that overlaps it
+(`_output_prefix_locks`). Two such steps on one path always share a lock:
+a template is filed when its row is published, before any attempt of it
+binds, and is never removed, so of two steps the one that lists the
+templates later finds the other's template and takes its lock, and the
+other takes its own. A successor's prewrite and commit wait for a
+retirement that holds it; a retirement that comes second finds the
+successor's commit and leaves the file as `superseded`.
+
+The locks are asked for together, sorted by absolute path, and no other
+lock of the family is asked for while they are held. Every other holder of
+an ownership lock holds one and asks for no other (the one-root rule of
+`PoolQueue.stage_ownership_lock`, which names this exception), so a holder
+only waits for a lock that sorts after every lock it holds, and no two can
+wait for each other. Transition-then-ownership is unchanged.
+
+The same read missed a template of the *same* prefix. The tick listed the
+templates once, at its first owner read, and a template filed after that,
+whose attempt committed a due batch's file before that batch's retirement
+took the lock, was not in the list. The retirement now lists the templates
+again under its locks (`_TickReads.path_owners(relist=True)`), and the tick
+keeps the new listing.
+
+Cost: the prewrite gate lists the templates once more, before its locks; a
+commit lists them once per round. The retirement takes its locks from the
+tick's listing, one per tick with a due batch, which is valid because every
+scope the tick visits was declared, and its template filed, before the tick
+first listed them; it lists again only for a batch that reaches its delete.
+A listing is one `scandir` of the templates directory; a template file is
+read once per process. The number of locks is the number of distinct
+overlapping prefixes, one on every live queue.
+
+`tests/test_a_nested_prefix_successors_adopted_file_survives_retirement.py`
+starts the successor in a thread at the retirement's owner read and at its
+delete, with its template both around and inside the batch's, write-only
+and read-back. The retirement goes on once the successor has finished or
+has been refused a lock the retirement holds. On the tree before this
+change all eight delete the successor's committed file, and so does a
+template filed in the middle of a tick; each step asked for its own
+prefix's lock only.
+
+Limits:
+
+- A direct commit still adopts a present file. The issue offered refusing
+  that as an alternative; it would change what a commit with no spool
+  receipt accepts, and with the locks shared the retirement no longer
+  deletes an adopted file, so it was not built.
+- The ended-prewrite sweep (#949), `abort_prewrite`, `reclaim_origin` and
+  consumer declaration and release keep their own prefix's lock. They file
+  or drop a reservation, a charge or a consumer declaration, never a file,
+  and every lock set above includes that lock.
+- Which templates overlap is read from a listing of the templates
+  directory. A template filed on another host counts once this host's
+  listing shows it, the assumption the #1053 attempt index already makes.
 
 #### Deferred consumers: action edges (#913)
 

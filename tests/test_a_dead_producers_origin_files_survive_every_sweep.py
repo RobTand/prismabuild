@@ -248,18 +248,18 @@ def test_a_retirement_racing_a_successors_rename_keeps_its_file(
     """The delete never removes a file the successor renamed onto the name.
 
     The successor here is a writer the retirement could not see: its
-    prewrite is under another template's lock (an overlapping prefix), or
-    it landed after the owners were read. Its ``rename`` is interposed at
-    the one moment that matters, the retirement's own call on the path.
+    rename landed after the owners were read. Its ``rename`` is interposed
+    at the one moment that matters, the retirement's own call on the path.
 
-    Here it is the first: a template whose prefix contains this one's, its
-    prewrite filed just before its rename, after the retirement read the
-    owners. Once the retirement lets go, it commits what it wrote, and the
-    identity it records must be the file's (#1064): a file moved aside and
-    linked back has a new ctime, and a stale identity fails every strict
-    read. A commit that ran while the retirement held its lock would not be
-    ordered by it, since the successor's template takes another lock
-    (#1063).
+    Here it is a template whose prefix contains this one's, its prewrite
+    filed just before its rename, after the retirement read the owners.
+    Since #1063 that prewrite takes the retirement's lock too, so it runs
+    here only because it runs in the retirement's own thread, where the
+    locks nest; the rename, which takes no PB lock, is what the move aside
+    must survive. Once the retirement lets go, it commits what it wrote, and
+    the identity it records must be the file's (#1064): a file moved aside
+    and linked back has a new ctime, and a stale identity fails every
+    strict read.
     """
 
     template, queue, instance, path = _dead_consumed_batch(tmp_path)
