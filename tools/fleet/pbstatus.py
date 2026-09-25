@@ -1804,6 +1804,39 @@ def _starvation_dependents(queue: pool.PoolQueue, *, notes: list[str],
     return out
 
 
+def _starvation_host_events(queue: pool.PoolQueue, *, notes: list[str],
+                            unreadable: list[str]) -> list[dict]:
+    """The newest tier-loop verdict every host filed about itself (#1006).
+
+    The ARC ``primarycache`` refusal, a ram-admission refusal, a ram epoch
+    change, and any tier-level verdict whose tier planned no consumer this
+    cycle name nobody's plan to be filed under, so ``_emit`` writes them to
+    ``residency-events/_host/<host>.jsonl`` instead of losing them to that
+    host's own stdout.  One row per host that has ever filed one, newest
+    verdict first read.
+    """
+
+    out: list[dict] = []
+    try:
+        names = sorted(os.listdir(queue.host_events_dir()))
+    except FileNotFoundError:
+        return out
+    except OSError as exc:
+        notes.append(f"starvation host events: {exc}")
+        unreadable.append(f"starvation host events: {exc}")
+        return out
+    for name in names:
+        if not name.endswith(".jsonl"):
+            continue
+        host = name[: -len(".jsonl")]
+        events = queue.host_events(host)
+        if not events:
+            continue
+        out.append({"host": host, "newest": events[-1],
+                    "events_total": len(events)})
+    return out
+
+
 def _starvation_gaps() -> list[dict]:
     """What this blob cannot derive, and what would have to be recorded.
 
@@ -2069,6 +2102,7 @@ def read_starvation(queue_root: str | Path, *, now: float | None = None) -> dict
             if isinstance(entry.get("action_key"), str) else [])
     dependents = _starvation_dependents(queue, notes=notes, unreadable=unreadable,
                                         now=moment)
+    host_events = _starvation_host_events(queue, notes=notes, unreadable=unreadable)
     census_unreadable = _starvation_census_unreadable(
         queue, notes=notes, unreadable=unreadable)
     return {"schema": STARVATION_SCHEMA_V1,
@@ -2084,6 +2118,7 @@ def read_starvation(queue_root: str | Path, *, now: float | None = None) -> dict
             "denial_top": denial_top,
             "starved": starved,
             "claimed_dependents": dependents,
+            "host_events": host_events,
             "census_unreadable": census_unreadable,
             "not_observable": _starvation_gaps()}
 

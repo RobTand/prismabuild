@@ -1977,6 +1977,13 @@ read what it waited on before reading any host's logs:
     own reader failing to release a pin (#1023). Its `step` and `errno_name`
     say where and why, `retryable` says whether the fault was transient, and
     the pin it names is still held.
+5.  Read `host_events` for verdicts about a host's own tier that name no
+    consumer at all -- the stage's ARC `primarycache` refusal, a
+    ram-admission refusal, a ram epoch change (#1006). Each row is one host
+    that has ever filed one, with the newest verdict and how many. A
+    metadata-only stage dataset silently serving every read off the SSD, or a
+    ram tier the box refuses to admit, shows up here even when no action is
+    stuck on it yet.
 
 A staged consumer that sits READY with a `residency_lead_terminal` denial may
 have had its window retired: a mover of its plan refused terminally, with
@@ -1993,7 +2000,9 @@ neither is the only copy any more. The ring is in
 `denial-transitions/<key>.json`, and the events are in
 `residency-events/<consumer>/<host>.jsonl`, both under the queue root. A
 reader's failed releases are beside them in
-`residency-events/<consumer>/<host>-reader-release.jsonl`.
+`residency-events/<consumer>/<host>-reader-release.jsonl`. A verdict about the
+host itself, naming no consumer, is in
+`residency-events/_host/<host>.jsonl` (#1006).
 
 ### File the endings nobody asked for
 

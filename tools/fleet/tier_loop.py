@@ -162,16 +162,47 @@ def _stamp_standing(record: dict[str, object]) -> None:
     record["waited_s"] = round(max(0.0, now - float(slot[0])), 3)
 
 
+def _append_bounded_event(path: Path, record: Mapping[str, object]) -> None:
+    """Append one line to ``path``, kept to the newest ``MAX_CONSUMER_EVENT_LINES``.
+
+    Shared by :func:`_append_consumer_event` and :func:`_append_host_event`:
+    the same one-writer-per-file idiom, whichever directory a verdict's
+    consumer or host names.  Once the file holds
+    ``2 * MAX_CONSUMER_EVENT_LINES`` lines it is rewritten to its newest
+    ``MAX_CONSUMER_EVENT_LINES`` by an atomic rename.  Raises ``OSError`` on
+    any failure; the caller reports it and clears its own line-count memo.
+    """
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    count = _EVENT_LINES.get(str(path))
+    if count is None:
+        try:
+            with open(path) as stream:
+                count = sum(1 for _line in stream)
+        except FileNotFoundError:
+            count = 0
+    with open(path, "a") as stream:
+        stream.write(json.dumps(record, default=str) + "\n")
+    count += 1
+    if count >= 2 * pool.MAX_CONSUMER_EVENT_LINES:
+        with open(path) as stream:
+            kept = stream.readlines()[-pool.MAX_CONSUMER_EVENT_LINES:]
+        temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        with open(temporary, "w") as stream:
+            stream.writelines(kept)
+        os.replace(temporary, path)
+        count = len(kept)
+    _EVENT_LINES[str(path)] = count
+
+
 def _append_consumer_event(queue: pool.PoolQueue, host: str, consumer: str,
                            record: Mapping[str, object]) -> None:
     """Append one verdict to ``residency-events/<consumer>/<host>.jsonl``.
 
     This host's tier loop is the file's only writer (the role singleton), so
-    an append needs no lock and never crosses the NFS client boundary.  Once
-    the file holds ``2 * MAX_CONSUMER_EVENT_LINES`` lines it is rewritten to
-    its newest ``MAX_CONSUMER_EVENT_LINES`` by an atomic rename.  Best-effort:
-    a write that fails is said on stderr and the cycle goes on; the same
-    verdict is still on stdout.
+    an append needs no lock and never crosses the NFS client boundary.
+    Best-effort: a write that fails is said on stderr and the cycle goes on;
+    the same verdict is still on stdout.
     """
 
     try:
@@ -180,30 +211,32 @@ def _append_consumer_event(queue: pool.PoolQueue, host: str, consumer: str,
         return
     path = directory / f"{host}.jsonl"
     try:
-        directory.mkdir(parents=True, exist_ok=True)
-        count = _EVENT_LINES.get(str(path))
-        if count is None:
-            try:
-                with open(path) as stream:
-                    count = sum(1 for _line in stream)
-            except FileNotFoundError:
-                count = 0
-        with open(path, "a") as stream:
-            stream.write(json.dumps(record, default=str) + "\n")
-        count += 1
-        if count >= 2 * pool.MAX_CONSUMER_EVENT_LINES:
-            with open(path) as stream:
-                kept = stream.readlines()[-pool.MAX_CONSUMER_EVENT_LINES:]
-            temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-            with open(temporary, "w") as stream:
-                stream.writelines(kept)
-            os.replace(temporary, path)
-            count = len(kept)
-        _EVENT_LINES[str(path)] = count
+        _append_bounded_event(path, record)
     except OSError as exc:
         _EVENT_LINES.pop(str(path), None)
         print(json.dumps({"unix": time.time(), "event": "consumer-event-unwritten",
                           "consumer": consumer, "error": repr(exc)}),
+              file=sys.stderr, flush=True)
+
+
+def _append_host_event(queue: pool.PoolQueue, host: str,
+                       record: Mapping[str, object]) -> None:
+    """Append one verdict naming no consumer to ``residency-events/_host/<host>.jsonl``.
+
+    A verdict about the host's own tier -- the stage's ARC ``primarycache``
+    refusal, a ram-admission refusal, a ram epoch change -- or a tier-level
+    verdict whose tier plans no consumer yet names nobody to blame it on, and
+    used to reach only this host's stdout (#1006).  Same one-writer-per-file
+    idiom and bound as :func:`_append_consumer_event`; best-effort the same way.
+    """
+
+    path = queue.host_events_dir() / f"{host}.jsonl"
+    try:
+        _append_bounded_event(path, record)
+    except OSError as exc:
+        _EVENT_LINES.pop(str(path), None)
+        print(json.dumps({"unix": time.time(), "event": "host-event-unwritten",
+                          "host": host, "error": repr(exc)}),
               file=sys.stderr, flush=True)
 
 
@@ -262,10 +295,15 @@ def _emit(queue: pool.PoolQueue, host: str, event: Mapping[str, object], *,
     ending record read.  A tier-level verdict that names no consumer (an
     eviction that was futile or refused) is filed for every consumer
     ``tier_consumers`` lists on its tier, marked ``attributed_by: tier_id``.
-    A standing verdict carries ``waited_s`` (:func:`_stamp_standing`).  The
-    filed copy adds ``host`` (the reader merges every host's file); stdout is
-    unchanged apart from that stamp.  The plan reaper's own event retires the
-    consumer's directory, and the prewarm sweep
+    An event that names neither a consumer nor a tier with any planned
+    consumer on it -- the ARC ``primarycache`` refusal, a ram-admission
+    refusal, a ram epoch change -- has nobody's plan to be filed under, and
+    lands instead in ``residency-events/_host/<host>.jsonl`` (#1006), read by
+    :meth:`pool.PoolQueue.host_events`. A standing verdict carries
+    ``waited_s`` (:func:`_stamp_standing`).  The filed copy adds ``host``
+    (the reader merges every host's file); stdout is unchanged apart from
+    that stamp.  The plan reaper's own event retires the consumer's
+    directory, and the prewarm sweep
     (:meth:`pool.PoolQueue.sweep_consumer_events`) retires any directory a
     late append recreated.
     """
@@ -293,10 +331,16 @@ def _emit(queue: pool.PoolQueue, host: str, event: Mapping[str, object], *,
         _append_consumer_event(queue, host, consumer, record)
         return
     tier_id = record.get("tier_id")
+    filed = False
     if consumer is None and tier_consumers and isinstance(tier_id, str):
         for key in tier_consumers.get(tier_id, ()):
             _append_consumer_event(queue, host, key,
                                    {**record, "attributed_by": "tier_id"})
+            filed = True
+    if not filed:
+        # Nobody's plan claims this verdict (#1006): a host-level tier fact,
+        # or a tier-level verdict for a tier planning no consumer this cycle.
+        _append_host_event(queue, host, record)
 
 
 def load_ram_policy() -> dict[str, object] | None:
@@ -9001,13 +9045,16 @@ def _cycle(
             verdict = storage_tiers.stage_arc_eligibility(record)
             record["arc_warm"] = verdict
             if verdict["primarycache"] is not None and not verdict["eligible"]:
-                print(json.dumps({
-                    "event": "stage-primarycache-refused",
-                    "unix": time.time(), "host": host, "tier_id": tier_id,
+                # A fact about this host's tier, not about any consumer's
+                # plan, so it is filed in the host sink rather than
+                # attributed to whoever the tier happens to be serving
+                # today (#1006).
+                _emit(queue, host, {
+                    "event": "stage-primarycache-refused", "tier_id": tier_id,
                     "dataset": record.get("dataset"),
                     "primarycache": verdict["primarycache"],
                     "reason": verdict["reason"],
-                }), flush=True)
+                })
             # One chunk family across tiers (#675): the stage announces the
             # same effective promotion chunk the ram tier on this host
             # announces, so the submitter cuts both legs at the same size.
@@ -9036,11 +9083,12 @@ def _cycle(
                                 "policy window")
             admission = record.get("ram_admission")
             if isinstance(admission, Mapping) and not admission.get("admissible"):
-                print(json.dumps({
-                    "event": "ram-admission-refused",
-                    "unix": time.time(), "host": host, "tier_id": tier_id,
+                # A host fact, not a consumer verdict (#1006): same host sink
+                # as the ARC refusal above.
+                _emit(queue, host, {
+                    "event": "ram-admission-refused", "tier_id": tier_id,
                     "ram_admission": admission,
-                }), flush=True)
+                })
             previous = earlier.get(tier_id)
             previous_epoch = (str(previous.get("epoch") or "")
                               if isinstance(previous, Mapping) else "")
@@ -9048,13 +9096,13 @@ def _cycle(
                     and previous_epoch != str(record.get("epoch") or "")):
                 # The one event an operator must never miss: every prior-epoch
                 # fragment is about to be dropped, and every ghost token is
-                # about to come back.
-                print(json.dumps({
-                    "event": "ram-epoch-changed",
-                    "unix": time.time(), "host": host, "tier_id": tier_id,
+                # about to come back.  A host fact (#1006): filed in the host
+                # sink alongside the other two.
+                _emit(queue, host, {
+                    "event": "ram-epoch-changed", "tier_id": tier_id,
                     "epoch": record.get("epoch"),
                     "previous_epoch": previous_epoch or None,
-                }), flush=True)
+                })
         record["fill_source"] = "measured" if storage_tiers.FILL_KIND in tokens else "none"
         record["fill_records"] = len(fill_records)
         # The probe rule, generalised from "nothing measured yet" to "nothing

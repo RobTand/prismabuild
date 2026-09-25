@@ -7670,6 +7670,20 @@ prewarm loop's sweep removes a directory that another host's late append
 recreated once its consumer is terminal and unplanned. A kill's ending record
 and `pbstatus --starvation` read these files.
 
+**A verdict about the host, not about anyone's plan, still gets a file
+(#1006).** The stage's ARC `primarycache` refusal, a ram-admission refusal, a
+ram epoch change, and a tier-level verdict whose tier plans no consumer this
+cycle name neither a consumer nor a tier with anyone on it, so `_emit`'s
+`tier_consumers` attribution has nowhere to put them. Rather than let them
+fall back to that host's stdout, `_emit` files them in
+`residency-events/_host/<host>.jsonl`, one file per writing host, same
+one-writer-per-file idiom and the same 256/512-line bound as the per-consumer
+files, read by `PoolQueue.host_events`. The leading underscore keeps the
+directory out of `sweep_consumer_events`, which only reaps directories named
+by a 64-character action key, so a host's file is never mistaken for a
+retired consumer's. `pbstatus --starvation` reads it too, one row per host
+that has ever filed one, with the newest verdict and how many it has filed.
+
 **It does not fight #598's deferred eviction.** `window_pressure` now asks the
 window what it *would publish given room*, rather than reading the first phase
 the consumer has not staged. A phase the run-ahead bound has declined is not
@@ -11797,6 +11811,7 @@ restaged.
 | Residency namespace `residency/<consumer>/` and its map `residency/<consumer>.map.json` | `residency_map.write_fragment`, on a mover's first fragment; the map by the tier loop's `compose_map` | The tier loop's `compose_map` unlinks the map of a consumer that is not running and has no stage fragment. The same `pb_gc` run removes the directory by `rmdir` and the map with it (#995) | Empty or gone, and its consumer terminal as above, re-read under the consumer's transition lock; a fragment that lands first makes the `rmdir` fail and keeps the map |
 | Landing record `residency/<consumer>.landing.json` | The tier loop's `publish_landing_expectations`, for a claimed consumer (#989) | `publish_landing_expectations` for a consumer it sees that is not claimed; the plan reaper (`_sweep_dead_consumer`) with a plan it reaps; `pb_gc --queue-root` for the rest, such as a finished consumer that was never superseded | Its consumer terminal as above, re-read under the consumer's transition lock, fragments or not |
 | Tier-loop events `residency-events/<consumer>/` | The tier loop's `_emit` (#990) | `sweep_consumer_events` in the tier loop | The consumer is terminal or withdrawn |
+| Host-level tier events `residency-events/_host/<host>.jsonl` | The tier loop's `_emit`, for a verdict naming no consumer and no tier with one planned on it (#1006) | Never by key: each writing host rewrites its own file to its newest 256 lines once it holds 512, the same bound as a consumer's file | Not applicable -- the file is the host's, not any one action's |
 | Spool retirement records `produced-spool-retirements/<host>.jsonl` and `<host>.tick.json` | The spool retirement tick (#1001) | Never: the lines are records, one per retired namespace, so they grow with producer attempts as `done/` does. The tick file is replaced by each tick | Not applicable |
 | Spool refusal records `produced-spool-refusals/<owner>/*.json` | A poll, a release or an export that makes an identity refusal (#1098) | Never: each is the evidence of one refusal, one per group, export, caller and code, so they grow with refused groups | Not applicable |
 | GC receipts `gc-receipts/<utc>-<host>-<pid>.json` | Each `pb_gc --queue-root` run | Never: one record per operator run | Not applicable |

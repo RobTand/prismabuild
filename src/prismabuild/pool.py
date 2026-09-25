@@ -742,6 +742,15 @@ RESIDENCY_EVENTS = "residency-events"
 MAX_CONSUMER_EVENT_LINES = 256
 #: The newest events a kill's ending record carries, across hosts.
 MAX_ENDING_EVENTS = MAX_DENIAL_VALUE_ITEMS
+#: Where a tier-loop verdict that names neither a consumer nor a tier with
+#: any planned consumer on it lands (#1006): the ARC ``primarycache``
+#: refusal, a ram-admission refusal, a ram epoch change, or a tier-level
+#: verdict for a tier planning nobody this cycle.  A directory rather than a
+#: bare filename so it sits beside ``residency-events/<consumer>/`` under the
+#: same root, one ``<host>.jsonl`` per writing host, bounded the same way.
+#: The leading underscore keeps it out of ``sweep_consumer_events``, which
+#: only reaps directories named by a 64-character action key.
+RESIDENCY_EVENTS_HOST_DIR = "_host"
 WORKERS = "workers"
 #: Where a storage-role loop files what it made resident for one action.
 #: A sidecar for the same reason ``passes`` is one: the only safe moment to
@@ -7201,6 +7210,49 @@ class PoolQueue:
                 continue
             try:
                 text = (self.consumer_events_dir(action_key) / name).read_text()
+            except OSError:
+                continue
+            for line in text.splitlines():
+                try:
+                    value = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(value, dict):
+                    events.append(value)
+        events.sort(key=lambda value: float(value.get("unix", 0.0))
+                    if isinstance(value.get("unix"), (int, float)) else 0.0)
+        return events if limit is None else events[-limit:]
+
+    def host_events_dir(self) -> Path:
+        """``residency-events/_host/``: one ``<host>.jsonl`` per tier loop (#1006)."""
+
+        return self.root / RESIDENCY_EVENTS / RESIDENCY_EVENTS_HOST_DIR
+
+    def host_events(
+        self, host: str | None = None, *, limit: int | None = None,
+    ) -> list[dict[str, object]]:
+        """Tier-loop verdicts that name no consumer, oldest first (#1006).
+
+        ``host`` narrows the answer to one writer's file; omitted, every
+        host's file is merged, the same way :meth:`consumer_events` merges
+        its per-consumer writers.  Best-effort: a line that does not parse is
+        skipped, and a missing file or directory is no events.
+        """
+
+        events: list[dict[str, object]] = []
+        directory = self.host_events_dir()
+        if host is None:
+            try:
+                names = sorted(os.listdir(directory))
+            except OSError:
+                return events
+        else:
+            names = [f"{host}.jsonl"]
+        for name in names:
+            if not name.endswith(".jsonl"):
+                continue
+            try:
+                text = (directory / name).read_text()
             except OSError:
                 continue
             for line in text.splitlines():
