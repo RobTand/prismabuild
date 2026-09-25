@@ -25,7 +25,14 @@ consumer declaration at submission (`declare_origin_consumer`), and
 `origin_retirement_tick`, run once per tier-loop cycle, deletes its origin
 files and frees its durable charge once every declared consumer has
 succeeded. It also sweeps a consumed batch that no consumer declared and
-whose producer attempt is dead. Every retirement checks each file against
+whose producer attempt is dead.
+
+READ-BACK ORIGIN COMMIT (#1034): a read-back owner that reads a group back
+from its own local spool publishes no stage copy, so it commits the group at
+its origin too, through `ProducedSpool.commit_origin_group` once the export is
+acknowledged (`commit_origin_batch` with ``landed``). That ends the prewrite
+and charges the actual bytes. No consumer can declare such a batch, so a
+``consumed`` one is swept once its owner attempt has ended, success included. Every retirement checks each file against
 the identity its commit recorded, and every unknown keeps the batch.
 
 R2 split (root review, defects 1-7):
@@ -3853,6 +3860,16 @@ def commit_origin_batch(queue, instance: Mapping[str, object],
       second move refuses rather than commit an identity the file no longer
       has.
 
+    A read-back template's batch commits here too (#1034), but only with
+    ``landed``: an owner that reads a group back from its own local spool
+    (PQ #1118) publishes no stage copy, so `commit_batch` never runs for it,
+    and without this commit its prewrite stayed outstanding at its ceiling
+    for the owner's whole life. The spool commits it once the export is
+    acknowledged; a caller with no export receipt still refuses
+    ``template-reads-back``. Such a batch is no handoff: `load_origin_batch`
+    and `declare_origin_consumer` refuse it, and a ``consumed`` one is
+    retired once its owner attempt has ended, success included.
+
     The commitments entry carries ``origin_only: true`` and no mover. Its
     paths stay owned until `reclaim_origin` proves them absent, because a
     consumer may have declared them; its durable class bytes stay charged
@@ -3884,9 +3901,12 @@ def commit_origin_batch(queue, instance: Mapping[str, object],
         raise ProducedOutputError(
             f"origin batch lifetime must be one of {sorted(ORIGIN_LIFETIMES)}, "
             f"not {lifetime!r}")
-    if not checked_template.get("write_only"):
-        # A read-back template's batches are staged for their owner to read
-        # again: `commit_batch`, through a mover and a funded window.
+    if not checked_template.get("write_only") and landed is None:
+        # A read-back template's batch commits here only when its owner reads
+        # it back from its own local spool (#1034): the spool's export
+        # receipt is what passes ``landed``.  Otherwise its batches are staged
+        # for their owner to read again: `commit_batch`, through a mover and a
+        # funded window.
         return {"ok": False, "refusal": "template-reads-back"}
     if not isinstance(descriptors, list) or not descriptors:
         return {"ok": False, "refusal": "batch-has-no-entries"}
@@ -4533,6 +4553,11 @@ def publish_prepaid_batch(queue, instance: Mapping[str, object],
                 "refusal": f"unknown-retain: {exc}"}
     existing = commitments["batches"].get(batch_id)
     if isinstance(existing, Mapping):
+        if existing.get("origin_only") is True:
+            # A read-back batch its owner committed at its origin (#1034) has
+            # no mover to replay; nothing stages it.
+            return {"ok": False, "step": "validate",
+                    "refusal": "batch-committed-at-origin"}
         if str(existing.get("manifest_digest")) != manifest_digest:
             return {"ok": False, "step": "validate",
                     "refusal": "batch-id-in-use"}
@@ -4960,6 +4985,11 @@ def _ensure_batch_materialized(queue, instance: Mapping[str, object],
         entry = batches.get(batch_id)
         if not isinstance(entry, Mapping):
             return {"ok": False, "step": "validate", "refusal": "unknown-batch"}
+        if entry.get("origin_only") is True:
+            # A read-back batch its owner committed at its origin (#1034) is
+            # read from the owner's local spool; nothing stages it.
+            return {"ok": False, "step": "validate",
+                    "refusal": "batch-committed-at-origin"}
         try:
             filed, sealed = _load_batch_record(
                 queue.root, checked_instance, checked_template, entry,
@@ -6927,7 +6957,12 @@ def release_origin_consumer(queue, ref: Mapping[str, object], *,
 
     checked_ref = _checked_origin_ref(ref)
     consumer = _hex64(consumer_action_key, where="consumer_action_key")
-    instance, _template = _origin_ref_scope(queue.root, checked_ref)
+    instance, template = _origin_ref_scope(queue.root, checked_ref)
+    if not template.get("write_only"):
+        # A read-back owner's origin batch (#1034) is its own; no other
+        # action reads it, so its retirement need not wait for one.
+        raise ProducedOutputError(
+            "origin-batch-not-write-only: its template reads its batches back")
     with queue._transition_locked(consumer, blocking=False) as owned:
         if not owned:
             raise ProducedOutputError(
@@ -7133,7 +7168,12 @@ def declare_origin_consumer(queue, ref: Mapping[str, object], *,
 
     checked_ref = _checked_origin_ref(ref)
     consumer = _hex64(consumer_action_key, where="consumer_action_key")
-    instance, _template = _origin_ref_scope(queue.root, checked_ref)
+    instance, template = _origin_ref_scope(queue.root, checked_ref)
+    if not template.get("write_only"):
+        # A read-back owner's origin batch (#1034) is its own; no other
+        # action reads it, so its retirement need not wait for one.
+        raise ProducedOutputError(
+            "origin-batch-not-write-only: its template reads its batches back")
     batch_id = checked_ref["batch_id"]
     with queue.stage_ownership_lock(str(instance["output_prefix"])):
         commitments = _read_commitments(_commitments_path(queue.root, instance))
@@ -7413,7 +7453,9 @@ def _retire_consumed_batch(queue, instance: Mapping[str, object],
       consumers' states, because a retry of that consumer needs the batch.
     * With none: the batch is an orphan once its producer attempt is dead
       (`_producer_attempt_state`). Otherwise it waits, quietly, for a
-      consumer.
+      consumer. A read-back template's batch (#1034) can have no consumer,
+      so it is an orphan once its owner attempt has ended, dead or
+      succeeded.
     * Either way, a consumer filed with ``pbrun --after`` and not yet
       released (#913) holds it, quietly: ``deferred_holds`` is
       `action_edges.held_producer_batches`, and a batch it names waits for
@@ -7579,7 +7621,13 @@ def _retire_consumed_batch_locked(
                     return None
                 reason = "consumed"
             else:
-                if _producer_attempt_state(queue, instance) != "dead":
+                # A write-only batch waits for a consumer while its producer
+                # lives or has succeeded. A read-back one (#1034) can have no
+                # consumer (`declare_origin_consumer` refuses it), so its
+                # owner attempt ending, by success too, ends it.
+                ended = ({"dead"} if template.get("write_only")
+                         else _ENDED_ATTEMPT_STATES)
+                if _producer_attempt_state(queue, instance) not in ended:
                     quiet()
                     return None
                 reason, consumers = "orphan", []
