@@ -39,6 +39,42 @@ if ! id "$user" >/dev/null 2>&1; then
     echo "no such user $user; refusing an incomplete installation" >&2
     exit 1
 fi
+# The box whose roster entry declares the `metrics` role already runs the
+# exporter under its supervisor (#1020). A unit there would contend for the
+# role's port, and with PrivateTmp=yes the role cannot see the unit's lock, so
+# the role would refuse on the port every supervisor tick (#1042). The roster
+# is the runtime's own, looked up by hostname or declared `_alias` exactly as
+# the supervisor looks it up; an unreadable roster is refused, not guessed at.
+roster=$runtime/tools/fleet/fleet_boxes.json
+host=$(hostname)
+if ! "$python" - "$roster" "$host" <<'PY'
+import json
+import sys
+
+roster, host = sys.argv[1:3]
+try:
+    boxes = json.loads(open(roster).read())["boxes"]
+    if not isinstance(boxes, dict):
+        raise ValueError("boxes is not an object")
+except (OSError, ValueError, KeyError, TypeError) as exc:
+    sys.exit(f"cannot read the fleet roster {roster} ({exc}); refusing to "
+             f"install without knowing whether {host} runs the metrics role")
+entries = [(name, shape) for name, shape in boxes.items()
+           if isinstance(shape, dict)
+           and (name == host or shape.get("_alias") == host)]
+for name, shape in entries:
+    roles = shape.get("roles") or {}
+    if not isinstance(roles, dict):
+        sys.exit(f"{roster} roles for {name} must be an object; not installing")
+    if "metrics" in roles:
+        sys.exit(f"{roster} declares the metrics role on {name} (this host, "
+                 f"{host}): its supervisor runs the exporter on the role's "
+                 f"port, so a prismabuild-metrics.service unit here would "
+                 f"contend for it; not installing (docs/pb_metrics.md)")
+PY
+then
+    exit 1
+fi
 # Prove the exporter runs against this queue before installing a unit that
 # would otherwise restart-loop in the background.
 if ! sudo -u "$user" "$python" "$exporter" --once --queue-root "$queue" >/dev/null; then

@@ -118,8 +118,13 @@ something runs it and something retains it. Install both on a box:
 sudo /mnt/shared/prismabuild-fleet/repo/tools/fleet/install_pbmetrics.sh
 ```
 
-On the queue host the supervisor runs the exporter (see above), so do not
-install the unit there. Elsewhere, that installs `prismabuild-metrics.service`,
+On the queue host the supervisor runs the exporter (see above), so the
+installer refuses there: before it writes anything it reads the runtime's
+`tools/fleet/fleet_boxes.json`, finds this box by hostname or declared
+`_alias` as the supervisor does, and exits non-zero naming the box when that
+entry declares the `metrics` role (#1042). An unreadable roster is refused
+too, rather than guessed at. The installer stays for a box that wants a local
+exporter outside the supervised role. Elsewhere, that installs `prismabuild-metrics.service`,
 bound to `127.0.0.1:9469` and running as the queue's owner, and adds one Netdata scrape job for it to the
 `jobs` sequence in `/etc/netdata/go.d/prometheus.conf`. Existing jobs and other
 settings are retained. Adding a job normalizes YAML formatting and comments;
