@@ -6421,7 +6421,9 @@ origin with the identity the commit recorded:
   whose template's prefix overlaps this one's, is that batch's whatever its
   identity, and is left as `superseded`; the event's `superseded_by` names
   the owner. A path another attempt that can still commit has prewritten
-  holds the batch, quietly, until it commits or ends (#1053).
+  holds the batch until it commits or ends (#1053). The hold is quiet only
+  while that attempt is `live`; a hold by an attempt whose state is
+  `unknown` is reported (#1065, "A hold by an unknown attempt" below).
 - The same inode changed in place, or a stat that fails, refuses
   (`origin-changed`, `origin-unstatable`) and keeps the batch. When only
   the timestamps moved, the tick reads the file outside the lock and
@@ -6701,7 +6703,8 @@ take:
   recorded the file's identity, so the file is that batch's and is charged
   once, there. A prewrite of an attempt that succeeded counts as its commit.
 - A present path that another attempt still plans, and that could still
-  commit, holds the record, silently, until that attempt commits or ends.
+  commit, holds the record until that attempt commits or ends: quietly while
+  it is `live`, and reported while its state is `unknown` (#1065, below).
 - Otherwise the files belong to no batch: `output-prewrite-orphaned`, once
   per change, with the orphaned `paths` and the `superseded` and `held`
   ones. PB never deletes a file whose identity no commit recorded. The
@@ -6713,6 +6716,42 @@ take:
 `class_bytes`, the three path lists and a `remedy`. It reads through
 `produced_output.blocked_origin_batches`, applies the same dispositions and
 takes no lock. The MCP tool `pb_blocked_origins` serves the same list.
+
+**A hold by an unknown attempt (#1065).** "Can still commit" is `live` or
+`unknown`, and `unknown` covers an attempt with no queue row at all, one
+whose key is queued in `ready`, one whose claim is being moved and one
+whose row cannot be read. Nothing ends an attempt with no row, so before
+#1065 its prewrite held every overlapping consumed batch and ended prewrite
+for ever, and the tick said nothing: the retirement's hold and the sweep's
+hold both dropped their report. Now a hold that any attempt of unknown state
+takes part in files `output-origin-held-by-unknown-attempt`, once per change
+(on the entry's `retirement_report` for a consumed batch, in the process for
+a prewrite), with the batch's `ref` and `bytes` or the prewrite's
+coordinates and `class_bytes`, and `holders`: for each such attempt and
+path, `owner_action_key`, `nonce`, `batch_id`, `foreign`, `state`, `why`
+(`no-queue-row`, `queued`, `moving`, `claim-names-no-nonce`,
+`done-names-no-nonce`, `done-status-<status>`,
+`cache-hit-by-another-attempt` or `queue-row-unreadable`), `orphaned`,
+`last_write_unix` and its `prewrite_record`. A hold only a live attempt
+takes stays quiet.
+
+An attempt with no queue row whose newest record (its commitments or a
+prewrite record) is older than the lease timeout (`pool.LEASE_TIMEOUT_S`) is
+`orphaned`: a running attempt holds a claimed row that its heartbeat renews
+within that timeout, so one with no row that has written nothing for as long
+is not running. The event's `reason` is then `held-by-orphaned-attempt`
+(otherwise `held-by-unknown-attempt`) and it carries
+`ORPHANED_HOLDER_REMEDY`: confirm no process of the attempt runs, then remove
+its prewrite record. The hold itself is kept, because PB never ends an
+attempt it cannot read; `orphaned` turning is a change, so it is reported
+once more, and it is part of `_PathOwners.fingerprint`, so a prewrite
+decision the tick kept is taken again when it turns.
+
+`pbstatus --blocked-origins` lists the same holds under `held_by_unknown`,
+read-only: a consumed batch the tick would retire now (every declared
+consumer resolved, or none declared and its producer attempt dead) and an
+ended prewrite it would reclaim, each held only by such an attempt, with the
+event's fields. `pb_blocked_origins` serves it too.
 
 **What one tick reads.** The owner key's generation is read once per owner
 for all its attempts (`_attempt_state` over one `_key_generation`), both for
@@ -6847,7 +6886,8 @@ present file at an ended attempt's prewrite path, or at a consumed batch's
 path, that another attempt of any key has committed is that batch's. The
 prewrite is reclaimed as `superseded` with each path's owner, and the
 consumed batch leaves the file as `superseded` with `superseded_by`. A path
-another attempt that can still commit has prewritten holds, quietly. Only a
+another attempt that can still commit has prewritten holds, quietly while
+that attempt is live and reported while its state is unknown (#1065). Only a
 present file nobody claims is `output-prewrite-orphaned`, reported once per
 change with the one remedy (`ORPHANED_PREWRITE_REMEDY`): remove the files,
 or let a successor commit the same paths, and the next tier cycle drops the
@@ -10255,6 +10295,20 @@ roots, so two roots can never share a checkpoint. A skip files no per-owner
 receipt; the tier cycle line counts skipped and censused owners instead, as
 `census_stale_skipped` and `census_stale_censused`.
 
+A refused checkpoint says why (#1069). Whenever the receipt of an otherwise
+idle owner reads `cacheable: false`, its `cache_refused` names the first
+refusal found: `document-version-unknown` (this owner's fragment or material
+version, or a co-owner fragment's, could not be read),
+`no-directory-stamp` (the owner names no path to fence),
+`directory-stamp-untrusted` (the trusted rule refused a parent directory's
+stamp, #1062), `outside-sweep-scope` (the latest sweep did not discover the
+owner) or `cache-full`. A receipt that cached, or whose owner was not idle
+(a stale or absent path, a changed document, a partial prune), carries an
+empty `cache_refused`. The tier cycle line counts the refusals per reason, as
+`census_stale_cache_refused.<reason>`, so an owner re-censused every cycle
+for a reason that does not end can be told from one re-censused once after a
+same-tick change.
+
 **An uncharged dead owner with material is room under pressure (#1061).** A
 failed consumer's executed `DONE` mover whose move receipt never completed
 holds no stage token: the ledger released it when the mover finished. Its
@@ -11443,8 +11497,8 @@ and the progress record's own timestamp for the accepted phase. Both keep
 the census's own completeness under its own name beside the envelope's,
 because "the mount answered" and "every record answered" are different
 facts. `pb_blocked_origins` serves `pbstatus --blocked-origins`'s reader the
-same way, with its completeness as `census_complete` (#926), and its
-`orphaned_prewrites` (#949).
+same way, with its completeness as `census_complete` (#926), its
+`orphaned_prewrites` (#949) and its `held_by_unknown` (#1065).
 
 `pb_actions` can match `snapshot_parent` and `snapshot_commit` exactly against
 the sealed `checkout_snapshot` Git fields, as well as live `checkout_root`.

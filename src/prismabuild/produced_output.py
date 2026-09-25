@@ -1329,11 +1329,22 @@ class _TickReads:
                 continue
             state = (_attempt_state(self.generation(owner), nonce)
                      if prewritten else "")
+            unknown = None
+            if state == "unknown":
+                # Why, for the report a hold by it files (#1065). Whether it
+                # is orphaned turns with the clock, so it is part of the
+                # fingerprint: a kept decision is taken again when it turns.
+                unknown = {**_unknown_attempt_detail(
+                    self.generation(owner), nonce,
+                    last_write_ns=_newest_write_ns(version),
+                    now=time.time()), "template_id": template_id}
             owners.add(owner, nonce, foreign=owner != mine[0],
                        committed=committed, prewritten=prewritten,
-                       state=state)
-            owners.fingerprint.append((owner, template_id, nonce, version,
-                                       state))
+                       state=state, unknown=unknown)
+            owners.fingerprint.append((
+                owner, template_id, nonce, version, state,
+                None if unknown is None
+                else (unknown["why"], unknown["orphaned"])))
         return owners
 
 
@@ -1350,6 +1361,10 @@ class _PathOwners:
     def __init__(self) -> None:
         self._attempts: list[tuple[str, str, bool, dict[str, str],
                                    dict[str, str], str]] = []
+        #: Why each attempt whose state is ``unknown`` reads so (#1065), by
+        #: ``(owner, nonce)``: ``{"why", "orphaned", "last_write_unix",
+        #: "template_id"}`` (`_unknown_attempt_detail`).
+        self._unknown: dict[tuple[str, str], dict[str, object]] = {}
         #: What the answers were read from: each attempt that names a path,
         #: its records' versions and its state. Equal fingerprints give
         #: equal answers.
@@ -1357,9 +1372,11 @@ class _PathOwners:
 
     def add(self, owner: str, nonce: str, *, foreign: bool,
             committed: dict[str, str], prewritten: dict[str, str],
-            state: str) -> None:
+            state: str, unknown: Mapping[str, object] | None = None) -> None:
         self._attempts.append((owner, nonce, foreign, committed, prewritten,
                                state))
+        if unknown is not None:
+            self._unknown[(owner, nonce)] = dict(unknown)
 
     @staticmethod
     def _note(owner: str, nonce: str, batch_id: str,
@@ -1387,6 +1404,161 @@ class _PathOwners:
             if batch_id is not None:
                 return self._note(owner, nonce, batch_id, foreign)
         return None
+
+    def unknown_holders(self, path: str) -> list[dict[str, object]]:
+        """Each attempt holding ``path`` whose state could not be read (#1065).
+
+        `pending` holds a path for an attempt that is ``live`` or
+        ``unknown``; a live one is a writer at work and holds quietly. An
+        unknown one -- no queue row, a row that is queued or being moved, a
+        row that cannot be read -- may never commit or end, so a hold it
+        causes is reported: who holds it (``owner_action_key``, ``nonce``,
+        ``batch_id``, ``foreign``), ``why`` its state is unknown and whether
+        it is ``orphaned`` (`_unknown_attempt_detail`).
+        """
+
+        found: list[dict[str, object]] = []
+        for owner, nonce, foreign, _committed, prewritten, state in self._attempts:
+            if state != "unknown":
+                continue
+            batch_id = prewritten.get(path)
+            if batch_id is None:
+                continue
+            detail = self._unknown.get((owner, nonce), {})
+            found.append({"path": path, "owner_action_key": owner,
+                          "nonce": nonce, "batch_id": batch_id,
+                          "foreign": foreign, "state": state, **detail})
+        return found
+
+
+#: The event a hold by an attempt whose state is unknown files (#1065), once
+#: per change. A live attempt's hold stays quiet: it will commit or end.
+ORIGIN_HELD_BY_UNKNOWN_EVENT = "output-origin-held-by-unknown-attempt"
+#: What frees a hold by an orphaned attempt (#1065). PB never ends an
+#: attempt it cannot read, so an operator does.
+ORPHANED_HOLDER_REMEDY = (
+    "no queue row names this attempt, so nothing will end it: confirm no "
+    "process of it is running, then remove its prewrite record "
+    "(`holders[].prewrite_record`); the next tier cycle decides the held "
+    "batch again from the files that are there")
+
+
+def _unknown_attempt_detail(generation: tuple[str, dict[str, object] | None],
+                            nonce: str, *, last_write_ns: int | None,
+                            now: float) -> dict[str, object]:
+    """Why `_attempt_state` reads ``unknown`` for this attempt (#1065).
+
+    ``why`` is one of ``no-queue-row`` (no record of the key in any queue
+    directory), ``queued`` (a ``ready`` row: the key waits for a claim),
+    ``moving`` (a claim being moved), ``claim-names-no-nonce``,
+    ``done-names-no-nonce``, ``done-status-<status>``,
+    ``cache-hit-by-another-attempt`` or ``queue-row-unreadable``.
+
+    ``orphaned`` is true for ``no-queue-row`` once the attempt's newest
+    record (its commitments or a prewrite record, ``last_write_ns``) is
+    older than the lease timeout (`pool.LEASE_TIMEOUT_S`). A running attempt
+    holds a claimed row that its heartbeat renews within that timeout, so
+    an attempt with no row that wrote nothing for as long cannot be one.
+    The hold it causes stays in place; only the report says so.
+    """
+
+    from prismabuild import pool as pool_mod
+
+    state, record = generation
+    if state == "absent":
+        why = "no-queue-row"
+    elif state == pool_mod.READY:
+        why = "queued"
+    elif state == "moving":
+        why = "moving"
+    elif state == pool_mod.CLAIMED:
+        why = "claim-names-no-nonce"
+    elif state == pool_mod.DONE and record is not None:
+        status = str(record.get("status"))
+        if status not in ("executed", "cache_hit"):
+            why = f"done-status-{status}"
+        elif not _record_nonce(record):
+            why = "done-names-no-nonce"
+        else:
+            why = "cache-hit-by-another-attempt"
+    else:
+        why = "queue-row-unreadable"
+    last_write = (None if last_write_ns is None
+                  else round(last_write_ns / 1e9, 3))
+    orphaned = (why == "no-queue-row" and last_write is not None
+                and now - last_write > pool_mod.LEASE_TIMEOUT_S)
+    return {"why": why, "orphaned": orphaned, "last_write_unix": last_write}
+
+
+def _newest_write_ns(version: object) -> int | None:
+    """The newest mtime in a `_TickReads.owned` fingerprint, or None."""
+
+    newest: int | None = None
+
+    def visit(item: object) -> None:
+        nonlocal newest
+        if (isinstance(item, tuple) and len(item) == 5
+                and all(isinstance(part, int) for part in item)):
+            newest = item[3] if newest is None else max(newest, item[3])
+            return
+        if isinstance(item, tuple):
+            for part in item:
+                visit(part)
+
+    visit(version)
+    return newest
+
+
+def _held_by_unknown_event(holders: Sequence[Mapping[str, object]],
+                           queue_root: str | Path) -> dict[str, object]:
+    """An `ORIGIN_HELD_BY_UNKNOWN_EVENT`'s body, without its subject (#1065).
+
+    One entry per holding attempt and path, each with the attempt's
+    ``prewrite_record`` (the record whose removal frees an orphaned hold),
+    and ``reason``: ``held-by-orphaned-attempt`` when any holder is
+    orphaned, else ``held-by-unknown-attempt``, and the ``remedy`` when one
+    is. ``last_write_unix`` moves only when the holder writes a record, so
+    the event, and the signature it is reported once per change by, stays
+    the same while nothing changes.
+    """
+
+    listed: list[dict[str, object]] = []
+    for holder in holders:
+        item = dict(holder)
+        template_id = str(item.pop("template_id", "") or "")
+        if template_id:
+            item["prewrite_record"] = str(
+                _attempt_scope(queue_root, str(item["owner_action_key"]),
+                               template_id, str(item["nonce"]))
+                / "prewrites" / f"{item['batch_id']}.prewrite.json")
+        listed.append(item)
+    listed.sort(key=lambda item: (str(item["path"]),
+                                  str(item["owner_action_key"]),
+                                  str(item["nonce"])))
+    orphaned = any(item.get("orphaned") for item in listed)
+    event: dict[str, object] = {
+        "reason": ("held-by-orphaned-attempt" if orphaned
+                   else "held-by-unknown-attempt"),
+        "holders": listed}
+    if orphaned:
+        event["remedy"] = ORPHANED_HOLDER_REMEDY
+    return event
+
+
+def _unknown_path_holders(owners: _PathOwners, paths: Sequence[object]
+                          ) -> list[dict[str, object]]:
+    """The retirement's hold test over ``paths``, for the listing (#1065).
+
+    Empty when no path another attempt can still commit holds is held by an
+    attempt whose state is unknown; a path already committed by another
+    attempt holds nothing, as in the retirement.
+    """
+
+    found: list[dict[str, object]] = []
+    for path in sorted(str(item) for item in paths):
+        if owners.committed(path) is None and owners.pending(path) is not None:
+            found.extend(owners.unknown_holders(path))
+    return found
 
 
 # --------------------------------------------------------------------------
@@ -7483,8 +7655,10 @@ def _retire_consumed_batch(queue, instance: Mapping[str, object],
     (`_TickReads.path_owners`): a path another attempt has committed is
     that batch's, and is left alone as ``superseded`` even when its
     identity is still the recorded one; a path a prewrite of an attempt
-    that can still commit names holds the batch, quietly, until that
-    attempt commits or ends.
+    that can still commit names holds the batch until that attempt commits
+    or ends: quietly while it is live, and while any holder's state is
+    unknown with `ORIGIN_HELD_BY_UNKNOWN_EVENT`, once per change, naming
+    each such holder, why it is unknown and whether it is orphaned (#1065).
 
     Before the first unlink the entry is marked ``retiring``: consumers can
     no longer declare it, and a crash resumes the delete rather than
@@ -7715,8 +7889,16 @@ def _retire_consumed_batch_locked(
                            "reason": f"unknown-retain: path owners: {exc}"})
         claimed = {path: note for path in paths
                    if (note := owners.committed(path)) is not None}
-        if any(path not in claimed and owners.pending(path) is not None
-               for path in paths):
+        held = [path for path in paths
+                if path not in claimed and owners.pending(path) is not None]
+        if held:
+            # A live writer's hold is quiet; one whose state is unknown is
+            # named, once per change, and so is an orphaned one (#1065).
+            unknown = [holder for path in held
+                       for holder in owners.unknown_holders(path)]
+            if unknown:
+                return report({"event": ORIGIN_HELD_BY_UNKNOWN_EVENT, **base,
+                               **_held_by_unknown_event(unknown, queue.root)})
             quiet()
             return None
         pending: list[str] = []
@@ -8084,7 +8266,8 @@ def _ended_prewrite_dispositions(
       that succeeded counts as its commit.
     * any present one is still planned by another attempt that can commit,
       and none belongs to nobody: ``hold``, until that attempt commits or
-      ends.
+      ends. Its ``unknown`` lists the holders whose state is unknown
+      (`_PathOwners.unknown_holders`), which the sweep reports (#1065).
     * otherwise ``orphaned``: files that belong to no batch. PB never
       deletes a file whose identity no commit recorded, so an operator
       removes them, and then the reservation is reclaimed as ``absent``.
@@ -8138,12 +8321,14 @@ def _ended_prewrite_dispositions(
         superseded: list[dict[str, str]] = []
         held: list[str] = []
         orphaned: list[str] = []
+        unknown: list[dict[str, object]] = []
         for path in present:
             note = owners.committed(path)
             if note is not None:
                 superseded.append({"path": path, **note})
             elif owners.pending(path) is not None:
                 held.append(path)
+                unknown.extend(owners.unknown_holders(path))
             else:
                 orphaned.append(path)
         if orphaned:
@@ -8151,7 +8336,10 @@ def _ended_prewrite_dispositions(
                                  "superseded": superseded, "held": held,
                                  "owners": owners.fingerprint}
         elif held:
-            decided[batch_id] = {"action": "hold", "owners": owners.fingerprint}
+            # ``unknown``: the holders whose state could not be read, which
+            # the sweep names (#1065); a live holder's hold is quiet.
+            decided[batch_id] = {"action": "hold", "owners": owners.fingerprint,
+                                 "unknown": unknown}
         else:
             decided[batch_id] = {"action": "reclaim", "reason": "superseded",
                                  "superseded": superseded}
@@ -8243,7 +8431,9 @@ def _sweep_ended_prewrites(queue, instance: Mapping[str, object],
     (`_outstanding_sums`), and returns ``output-prewrite-reclaimed``. An
     ``orphaned`` or ``refused`` prewrite is reported once per change
     (``output-prewrite-orphaned``, with its ``remedy``, and
-    ``output-origin-retirement-refused``).
+    ``output-origin-retirement-refused``), and so is a ``hold`` in which an
+    attempt whose state is unknown takes part (`ORIGIN_HELD_BY_UNKNOWN_EVENT`,
+    #1065); a hold only live attempts take stays quiet.
 
     A staged template's prewrite (#1053) is also the precommit authority of
     any pool funding intent filed for its batch: while one names it, the
@@ -8345,7 +8535,14 @@ def _sweep_ended_prewrites(queue, instance: Mapping[str, object],
                     action = "refused"
                 elif named:
                     action = "hold"
-            if action == "hold":
+            if action == "hold" and disposition.get("unknown"):
+                # Held by an attempt whose state is unknown (#1065): named,
+                # once per change, not held silently.
+                reports.append((batch_id, {
+                    "event": ORIGIN_HELD_BY_UNKNOWN_EVENT, **base,
+                    **_held_by_unknown_event(disposition["unknown"],
+                                             queue.root)}))
+            elif action == "hold":
                 _UNFILED_REPORTS.pop(keys[batch_id], None)
             elif action == "reclaim":
                 path = directory / f"{batch_id}.prewrite.json"
@@ -8387,12 +8584,15 @@ def _orphaned_prewrites(queue, instance: Mapping[str, object],
                         template: Mapping[str, object],
                         batch_ids: Sequence[str],
                         reads: _TickReads, *,
-                        unreadable: list[str], where: str
+                        unreadable: list[str], where: str,
+                        held: list[dict[str, object]] | None = None
                         ) -> list[dict[str, object]]:
     """The listing's side of the sweep: an ended attempt's orphaned prewrites.
 
     Read-only and lock-free, over the same `_ended_prewrite_dispositions` the
     tick applies. A record or state it cannot read goes to ``unreadable``.
+    A prewrite held by an attempt whose state is unknown (#1065) goes to
+    ``held``, as the tick reports it.
     """
 
     attempt = instance["owner_attempt"]
@@ -8421,6 +8621,12 @@ def _orphaned_prewrites(queue, instance: Mapping[str, object],
                 "superseded": disposition["superseded"],
                 "held": disposition["held"],
                 "remedy": ORPHANED_PREWRITE_REMEDY})
+        elif (disposition["action"] == "hold" and held is not None
+              and disposition.get("unknown")):
+            held.append({
+                "prewrite": _batch_report_key(instance, batch_id),
+                "class_bytes": dict(records[batch_id]["class_bytes"]),
+                **_held_by_unknown_event(disposition["unknown"], queue.root)})
         elif (disposition["action"] == "refused"
               and disposition["reason"] == "unknown-retain"):
             unreadable.append(
@@ -8444,26 +8650,38 @@ def blocked_origin_batches(queue) -> dict[str, list]:
     neither is one held for a deferred consumer's release (#913), which is
     waiting, not blocked. If those holds cannot be read, nothing is listed.
     Returns ``{"blocked": [...], "orphaned_prewrites": [...],
-    "unreadable": [...]}``. Each blocked entry carries the batch's ``ref``
-    and ``bytes``, every declared consumer's state as the tick resolves it
-    (`_resolved_consumers`), the ``holding`` ones, and ``reported``: whether
-    the entry carries the tick's report memo.
+    "held_by_unknown": [...], "unreadable": [...]}``. Each blocked entry
+    carries the batch's ``ref`` and ``bytes``, every declared consumer's
+    state as the tick resolves it (`_resolved_consumers`), the ``holding``
+    ones, and ``reported``: whether the entry carries the tick's report memo.
 
     ``orphaned_prewrites`` lists each prewrite, of any template (#1053),
     whose attempt ended before committing and whose files belong to no batch
     (#949, `_ended_prewrite_dispositions`): its ``prewrite`` coordinates
     (owner/template.nonce/batch), ``class_bytes``, the orphaned ``paths``,
     the ``superseded`` and ``held`` ones, and the ``remedy``.
+
+    ``held_by_unknown`` lists what the tick reports as
+    `ORIGIN_HELD_BY_UNKNOWN_EVENT` (#1065): a consumed batch the tick would
+    retire now (every declared consumer resolved, or none declared and its
+    producer attempt dead) and an ended attempt's prewrite it would reclaim,
+    each held only because another attempt whose state is unknown has
+    prewritten one of its paths. Each carries its ``ref`` and ``bytes`` (a
+    batch) or ``prewrite`` and ``class_bytes``, the ``holders`` with ``why``
+    each is unknown and whether it is ``orphaned``, the ``reason`` and, for
+    an orphaned holder, the ``remedy``.
     """
 
     from . import action_edges
 
     blocked: list[dict[str, object]] = []
     orphaned: list[dict[str, object]] = []
+    held_by_unknown: list[dict[str, object]] = []
     unreadable: list[str] = []
 
     def found() -> dict[str, list]:
         return {"blocked": blocked, "orphaned_prewrites": orphaned,
+                "held_by_unknown": held_by_unknown,
                 "unreadable": unreadable}
 
     scopes_root = Path(queue.root) / "residency" / OUTPUT_SCOPES_SUBDIR
@@ -8529,7 +8747,7 @@ def blocked_origin_batches(queue) -> dict[str, list]:
                 # Any template's, as the tick sweeps them (#1053).
                 orphaned.extend(_orphaned_prewrites(
                     queue, instance, template, outstanding, reads,
-                    unreadable=unreadable, where=where))
+                    unreadable=unreadable, where=where, held=held_by_unknown))
             if not due:
                 continue
             if holds is None:
@@ -8541,9 +8759,12 @@ def blocked_origin_batches(queue) -> dict[str, list]:
                     # all of them.
                     unreadable.append(f"deferred holds: {exc}")
                     blocked.clear()
+                    held_by_unknown[:] = [item for item in held_by_unknown
+                                          if "ref" not in item]
                     return found()
             if _held_for_deferred(instance, holds):
                 continue
+            scope_owners: _PathOwners | None = None
             for batch_id, entry in due:
                 try:
                     ref = origin_batch_ref(
@@ -8552,15 +8773,37 @@ def blocked_origin_batches(queue) -> dict[str, list]:
                     checked_ref = _checked_origin_ref(ref)
                     declared = _declared_consumers(
                         queue.root, instance, batch_id, checked_ref)
-                    if not declared:
-                        continue
-                    consumers = _resolved_consumers(
+                    consumers = (_resolved_consumers(
                         queue, instance, batch_id, checked_ref, declared)
+                        if declared else [])
                     total = sum(_check_class_bytes(
                         entry.get("class_bytes"),
                         where=f"committed batch {batch_id!r}").values())
                 except (ProducedOutputError, KeyError, ValueError) as exc:
                     unreadable.append(f"{where}/{batch_id}: {exc}")
+                    continue
+                # What the tick would retire now, but for a hold by an
+                # attempt whose state is unknown (#1065).
+                retirable = (all(item["state"] in _RESOLVED_CONSUMER_STATES
+                                 for item in consumers) if declared
+                             else _attempt_state(
+                                 reads.generation(owner),
+                                 str(instance["owner_attempt"]["nonce"]))
+                             == "dead")
+                if retirable:
+                    try:
+                        if scope_owners is None:
+                            scope_owners = reads.path_owners(instance, template)
+                        holders = _unknown_path_holders(
+                            scope_owners, entry.get("paths") or [])
+                    except (ProducedOutputError, OSError, ValueError) as exc:
+                        unreadable.append(f"{where}/{batch_id}: owners: {exc}")
+                        holders = []
+                    if holders:
+                        held_by_unknown.append({
+                            "ref": ref, "bytes": total,
+                            **_held_by_unknown_event(holders, queue.root)})
+                if not declared:
                     continue
                 holding = [item for item in consumers
                            if item["state"] not in _RESOLVED_CONSUMER_STATES]
@@ -10133,6 +10376,8 @@ __all__ = [
     "ORIGIN_CONSUMER_RELEASE_INDEX_SCHEMA_V1",
     "ORIGIN_RETIRED_EVENT",
     "ORIGIN_RETIREMENT_STALLED_EVENT",
+    "ORIGIN_HELD_BY_UNKNOWN_EVENT",
+    "ORPHANED_HOLDER_REMEDY",
     "ORIGIN_RETIREMENT_REFUSED_EVENT",
     "ORPHANED_PREWRITE_REMEDY",
     "DEAD_PRODUCER_BATCH_RETIRED_EVENT",

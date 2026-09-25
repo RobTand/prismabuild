@@ -8993,6 +8993,13 @@ def _read_counts(receipts: ReceiptCache) -> dict[str, int]:
             value = getattr(source, field, None)
             if isinstance(value, int):
                 counts[f"{prefix}_{field}"] = value
+        # Idle owners whose skip checkpoint was refused, one counter per
+        # reason (#1069), so the per-cycle delta says which reason recurs.
+        refused = getattr(source, "stale_cache_refused", None)
+        if isinstance(refused, dict):
+            for reason, value in refused.items():
+                if isinstance(value, int):
+                    counts[f"{prefix}_stale_cache_refused.{reason}"] = value
     return counts
 
 
