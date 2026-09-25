@@ -486,6 +486,26 @@ the mutable rows for the same reason it follows a preemption successor: the
 waiter's generation is the one it submitted, and a newer generation's ending
 is never reported as this run's.
 
+**One key, one terminal record (#1117).** `done/` and `failed/` are one slot
+each, so a later generation that ends in the same state replaces the earlier
+row. One that ends in the *other* state -- a failed key resubmitted and
+executed, or the reverse -- used to leave the earlier row standing beside its
+own, and the key read as both: `done/` first said executed, a reader asking
+"is there a failed record" said dead, and `reclaim_terminal_reservation`
+refused the key for carrying two terminals. `finish` now retires it under the
+key's transition lock: the earlier generation's record (a different
+`published_unix`) is first copied whole to `withdrawn/superseded/` as
+`<key>.<unix>.<state>-terminal.json`, stamped `superseded_by_published_unix`
+and `superseded_by_state`; the new terminal carries `supersedes_terminal`
+(the earlier `state`, `status`, `published_unix`, `finished_unix`,
+`attempts`, `attempt_history` and the archive's `superseded_path`); and the
+earlier row is unlinked only after the new one is filed, so the key is never
+without an ending. A republish alone retires nothing: until the new
+generation ends, the earlier ending is the key's only one. If the archive
+cannot be written the earlier row stays, the pre-#1117 state, never a lost
+record. A waiter pinned to the earlier generation reads its ending from the
+immutable attempt archive, as above.
+
 The synchronous pull-queue path in `pbrun` reads one terminal snapshot at a
 time in an isolated child with a five-second read budget. That snapshot covers
 the three mutable terminal rows, immutable withdrawal decisions, the archived
@@ -3059,6 +3079,19 @@ The guard exists because a role cannot depend on its launcher being single.
   kernel holds while the role is stopped.  Resuming is the operator's to
   undo (``kill -CONT``), and the stopped holder keeps the singleton lock
   while it is diagnosed.
+* **A role that refused is backed off, not respawned every tick (#1046).**
+  The lock probe cannot see every holder: a unit with ``PrivateTmp`` holds
+  its own copy of the lock, and a ``metrics`` role also refuses on a bound
+  port.  ``_reap_children`` therefore reads the exit status of every role
+  child this process image spawned (never a worker loop's), and a role that
+  exited ``ROLE_SINGLETON_HELD_EXIT`` is not spawned again until its backoff
+  elapses: ``BUSY_INTERVAL_S`` after the first refusal, doubling with each
+  consecutive one, capped at ``ROLE_REFUSAL_BACKOFF_MAX_S`` (300 s).  The
+  supervisor names the refusal once, with the next attempt, in its own log;
+  a role later seen live clears it (``role <name> refusal cleared``), and any
+  other exit status -- a crash, a signal -- ends the streak and keeps the
+  prompt respawn.  The backoff is in memory only, so a re-exec'd supervisor
+  pays at most one refusal to learn it again.
 
 The updater includes this storage reader in its drain observation using that
 same marker. These checks establish no cross-host quorum and do not enable
@@ -5287,8 +5320,10 @@ on the box exits `3`. If the port is already bound -- by an installed unit
 beside the role, whose lock the role cannot see -- the server also exits `3`
 and writes one JSON record naming the port and, where `/proc` lets it, the
 holder's pid and argv (`pbmetrics.REFUSAL_SCHEMA`), not a traceback. The
-supervisor still spawns a role that exited this way on its next tick, so the
-refusal repeats once a tick until the unit is stopped. `--once` writes nothing
+supervisor backs off a role that exited this way (#1046): it retries after
+5 s, doubling with each consecutive refusal up to 300 s, so the refusal
+repeats at most once every five minutes until the unit is stopped, and the
+supervisor's log names it once. `--once` writes nothing
 and keeps nothing, so it takes no lock. Deploying #1020 retires the three
 installed units in the order `docs/pb_metrics.md` gives.
 
@@ -9298,7 +9333,10 @@ as a wait, that hold would keep an egress wedged in its census under the
 lock alive for as long as it stayed wedged.
 
 So every hold `stage_release` takes (`_stage_ownership`: the eviction,
-`prune_stale_mentions`, `reconcile` and `recover_orphaned_range`) files a
+`prune_stale_mentions`, `reconcile` and `recover_orphaned_range`), and a
+mover's resume census (`stage_move._resume_own_coverage`, role
+`mover-resume`, #1110), goes through one helper,
+`PoolQueue.recorded_stage_ownership`, which files a
 holder record once the lock is granted and removes it before letting go:
 `stage-ownership-holders/<name>.json` under the queue root, where `<name>`
 is the lock's own name (`PoolQueue.write_stage_ownership_holder`, schema
@@ -9313,10 +9351,21 @@ When a look finds the lock held, the worker reads the record
 holder's own host, its pid is still a process, and, for an action, its claim
 is still filed. A live record that names this action from this host is the
 action's own hold: the look counts it in `start_gate_self_probes` and treats
-the lock as free, so none of it is credited. An egress under a progress
+the lock as free, so none of it is credited. An egress or a mover under a progress
 contract whose record will not write raises and lets the lock go, because
 its own worker could not tell its hold from a wait. Anywhere else, the hold
 goes ahead without the record.
+
+A mover's other holds file no record, and need none. Its start gate
+(`PoolQueue.ownership_start_gate`) takes the lock and releases it at once,
+holding nothing; a record would only lengthen it. Its publisher's per-entry
+holds (`_StagedPublisher._ownership`) come after the gate, once the mover has
+reported entering `copy`, so the worker has stopped looking; a record per
+entry would add a write and an unlink on the queue mount to every
+publication under the lock (#981). A mover sealed without the `start` phase
+still looks during `copy` until its first accepted report, and there an
+unrecorded per-entry hold is still credited as a wait on an unrecorded
+holder, as before #1110.
 
 Between the grant and the record's write, a look can find the lock held with
 no record. That look grants an entry edge, as for any unrecorded holder, and

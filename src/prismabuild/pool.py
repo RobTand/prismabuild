@@ -9005,6 +9005,49 @@ class PoolQueue:
         with suppress(FileNotFoundError):
             self.stage_ownership_holder_path(stage_root).unlink()
 
+    @contextmanager
+    def recorded_stage_ownership(self, stage_root, *, role: str,
+                                 action_key: str | None = None,
+                                 require_record: bool = False):
+        """Hold ``stage_root``'s ownership lock, named as its holder (#1021, #1110).
+
+        Takes :meth:`stage_ownership_lock`, files this process's holder record
+        (:meth:`write_stage_ownership_holder`) once the lock is granted, and
+        removes it before letting go, so a worker probing the lock from
+        another process can tell this action's own hold from a wait on
+        somebody else's (``start_gate_self_probes``).  ``action_key`` is the
+        action this process runs as, when it is one; ``role`` names the pass.
+
+        Yields the ``time.perf_counter()`` of the grant, so a caller's hold
+        timing counts the record's own write and removal as part of the hold
+        they are.
+
+        ``require_record`` is for an action under a progress contract: a
+        record that will not write lets the lock go at once and raises the
+        ``OSError``, because its own worker could not tell its hold from a
+        wait and would credit it for as long as the hold lasted.  Otherwise a
+        record that will not write is a gap in a diagnostic, and the hold
+        goes ahead without it.
+        """
+
+        with self.stage_ownership_lock(str(stage_root)):
+            granted = time.perf_counter()
+            try:
+                self.write_stage_ownership_holder(stage_root, role=role,
+                                                  action_key=action_key)
+            except OSError:
+                if require_record:
+                    raise
+            try:
+                yield granted
+            finally:
+                try:
+                    self.clear_stage_ownership_holder(stage_root)
+                except OSError:
+                    # Left standing, the record names a holder whose claim or
+                    # process ends with this run, and a reader checks both.
+                    pass
+
     def stage_ownership_holder(self, stage_root) -> dict[str, object]:
         """Who holds the stage's ownership lock, by its own record (#1021).
 
@@ -19542,12 +19585,75 @@ class PoolQueue:
         self._release_reservation(
             action_key, host=holder,
             keep_tier=self.pin_holds_tier_tokens(record, action_key))
+        # A republished key ends with one terminal record (#1117): an earlier
+        # generation's record in the other terminal state is archived first,
+        # named on the new record, and leaves its state directory only after
+        # the new record is filed, so the key is never without an ending.
+        retired = (self._archive_earlier_terminal(record, str(disposition))
+                   if disposition in {DONE, FAILED} else None)
+        if retired is not None:
+            record["supersedes_terminal"] = retired[1]
         _write_json_atomic(dst, record)
+        if retired is not None:
+            with suppress(FileNotFoundError):
+                retired[0].unlink()
         if tombstone is None:
             src.unlink(missing_ok=True)
         else:
             tombstone.unlink(missing_ok=True)
         return dst
+
+    def _archive_earlier_terminal(
+        self, record: Mapping[str, object], disposition: str,
+    ) -> tuple[Path, dict[str, object]] | None:
+        """Archive the other terminal record an earlier generation left.
+
+        A key is content-addressed, so resubmitting a concluded key publishes
+        a new generation of it.  When that generation ends in the *other*
+        terminal state -- a failed key republished and executed, or the
+        reverse -- the earlier record stayed beside the new one and the key
+        read as both (#1117).  Only a readable record of a different
+        generation (``published_unix``) is archived; a same-generation pair
+        is not this method's to judge.  Called under the key's transition
+        lock, before the new terminal is written.
+
+        The record is copied whole to ``withdrawn/superseded/``, a name no
+        terminal-state lookup reads.  Returns its live path, which the caller
+        unlinks once the new terminal is filed, and the summary the new
+        terminal carries as ``supersedes_terminal``.  An archive that cannot
+        be written, or a record that cannot be read, returns ``None`` and
+        leaves the record in place: the ambiguity is then the pre-#1117
+        state, never a lost record and never a failed conclusion.
+        """
+
+        key = str(record["action_key"])
+        other = FAILED if disposition == DONE else DONE
+        path = self.item_path(other, key)
+        try:
+            prior = _read_json(path)
+        except (OSError, PoolContractError):
+            # Unreadable is not this conclusion's to repair, and raising here
+            # would strand the claim this call has already entombed.
+            return None
+        if prior is None or prior.get("published_unix") == record.get(
+                "published_unix"):
+            return None
+        try:
+            archived = self._file_superseded(
+                prior, key=key, kind=f"{other}-terminal",
+                superseded_unix=_now(), superseded_host=socket.gethostname(),
+                superseded_by_published_unix=record.get("published_unix"),
+                superseded_by_state=disposition)
+        except OSError:
+            return None
+        summary: dict[str, object] = {"state": other}
+        for field in ("status", "published_unix", "published_by",
+                      "finished_unix", "finished_host", "attempts",
+                      "attempt_history"):
+            if field in prior:
+                summary[field] = prior[field]
+        summary["superseded_path"] = str(archived)
+        return path, summary
 
     @_serialized_key
     def reclaim_terminal_reservation(self, action_key: str, *,

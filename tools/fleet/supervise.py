@@ -130,6 +130,34 @@ ROLE_SCRIPTS = {"storage": "prewarm_loop.py", "tiers": "tier_loop.py",
                 # queue costs a scrape one ``lstat`` per directory.
                 "metrics": "pbmetrics.py"}
 
+#: A role child that exits ``ROLE_SINGLETON_HELD_EXIT`` refused to run: its
+#: singleton lock or, for ``metrics``, its port is held by something this
+#: supervisor's lock probe cannot see (a unit whose ``PrivateTmp`` hides its
+#: lock, #1046).  Nothing the supervisor observes tells it when that holder
+#: goes away, so it retries -- but not once a tick.  The first retry waits
+#: ``BUSY_INTERVAL_S``, each consecutive refusal doubles the wait, and the
+#: wait stops growing at this ceiling: one refusal record per five minutes
+#: instead of one per 5 s tick (720 an hour), and a role whose holder is
+#: stopped is back within five minutes without an operator touching the
+#: supervisor.  Held in memory only: a re-exec'd supervisor forgets it and
+#: pays at most one refusal to learn it again.
+ROLE_REFUSAL_BACKOFF_MAX_S = 300.0
+
+#: pid -> role for every role child this process image spawned, so a reaped
+#: exit status can be attributed to a role and never to a worker loop.
+_ROLE_CHILDREN: dict[int, str] = {}
+#: role -> the standing refusal: ``count`` consecutive refusals, the last
+#: ``pid`` and raw ``status``, ``retry_at`` on ``_monotonic``'s clock, and
+#: whether the supervisor has ``announced`` it.
+_ROLE_REFUSALS: dict[str, dict] = {}
+
+
+def _monotonic() -> float:
+    """The backoff clock; one name a test can repoint."""
+
+    return time.monotonic()
+
+
 #: The single-letter scheduler states ``/proc/<pid>/stat`` reports, named for
 #: the supervisor's health evidence.  ``T`` is what SIGSTOP or SIGTSTP leaves
 #: and ``t`` what a tracer leaves; a process in either is alive and serving
@@ -1347,7 +1375,33 @@ def _reap_children() -> int:
         if pid == 0:
             break
         reaped += 1
+        _note_role_exit(pid, _status)
     return reaped
+
+
+def _note_role_exit(pid: int, status: int) -> None:
+    """Record a reaped role child's refusal, so its respawn is backed off.
+
+    Only a pid this process image spawned as a role is read, and only the
+    refusal status backs off: any other exit -- a crash, a signal, a clean
+    return -- ends the refusal streak and keeps the prompt respawn every
+    other role exit gets.
+    """
+
+    role = _ROLE_CHILDREN.pop(pid, None)
+    if role is None:
+        return
+    if (os.WIFEXITED(status) and os.WEXITSTATUS(status)
+            == runtime_gate.ROLE_SINGLETON_HELD_EXIT):
+        previous = _ROLE_REFUSALS.get(role)
+        count = 1 if previous is None else int(previous["count"]) + 1
+        delay = min(BUSY_INTERVAL_S * 2 ** (count - 1),
+                    ROLE_REFUSAL_BACKOFF_MAX_S)
+        _ROLE_REFUSALS[role] = {"count": count, "pid": pid, "status": status,
+                                "retry_at": _monotonic() + delay,
+                                "announced": False}
+    else:
+        _ROLE_REFUSALS.pop(role, None)
 
 
 def _spawn(args: list[str], index: int) -> int:
@@ -1603,9 +1657,28 @@ def ensure_roles(host: str, stop_requested=lambda: False, *,
         else:
             live = known
         if live:
+            if _ROLE_REFUSALS.pop(role, None) is not None:
+                print(f"[{host}] role {role} refusal cleared: pid "
+                      f"{', '.join(str(pid) for pid in live)} is serving",
+                      flush=True)
             continue
         if stop_requested():
             break
+        # A role that exited refusing (#1046) is not spawned again until its
+        # backoff elapses; the refusal is named once, with the next attempt.
+        refusal = _ROLE_REFUSALS.get(role)
+        if refusal is not None:
+            wait = float(refusal["retry_at"]) - _monotonic()
+            if wait > 0:
+                if not refusal["announced"]:
+                    refusal["announced"] = True
+                    print(f"[{host}] role {role} refused: pid "
+                          f"{refusal['pid']} exit "
+                          f"{runtime_gate.ROLE_SINGLETON_HELD_EXIT} "
+                          f"({refusal['count']} consecutive; see "
+                          f"{LOG_DIR / f'pb-role-{role}.log'}); next attempt "
+                          f"in {wait:.0f}s", flush=True)
+                continue
         # No owned role is running.  The lock, not this census, is what keeps
         # two readers off the queue, so probe it before spawning: the refusal
         # belongs in the supervisor's own log rather than a role log nobody
@@ -1624,7 +1697,9 @@ def ensure_roles(host: str, stop_requested=lambda: False, *,
                      else " (holder pid unreadable)"), flush=True)
             continue
         try:
-            started.append((role, _spawn_role(role, role_args)))
+            pid = _spawn_role(role, role_args)
+            _ROLE_CHILDREN[pid] = role
+            started.append((role, pid))
         except (OSError, FileNotFoundError) as exc:
             # A generation published before this role existed has no script.
             # That is a missing capability, not a reason to stop supervising
