@@ -12,6 +12,7 @@ Nothing here installs anything, starts a service, or touches Netdata.
 from __future__ import annotations
 
 from pathlib import Path
+import json
 import os
 import re
 import subprocess
@@ -102,12 +103,17 @@ def install_fixture(tmp_path):
     runtime = tmp_path / "runtime"
     (runtime / "tools/fleet").mkdir(parents=True)
     (runtime / "tools/fleet/pbmetrics.py").write_text("raise SystemExit(0)\n")
+    # The runtime's own roster, as published beside the exporter: the
+    # installer reads it to refuse on the box that runs the metrics role.
+    (runtime / "tools/fleet/fleet_boxes.json").write_text(
+        (REPOSITORY / "tools/fleet/fleet_boxes.json").read_text())
     queue = tmp_path / "queue"
     queue.mkdir()
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     commands = {
         "id": '#!/bin/sh\necho 0\n',
+        "hostname": '#!/bin/sh\necho "${FIXTURE_HOST:-sparky}"\n',
         "sudo": '#!/bin/sh\nshift 2\nexec "$@"\n',
         "systemctl": '#!/bin/sh\necho "$*" >> "$CALLS"\n'
         'if [ "$*" = "restart netdata" ]; then exit "${RESTART_RC:-0}"; fi\n'
@@ -255,4 +261,66 @@ def test_symlink_config_refused(install_fixture, tmp_path):
     assert "symlink" in result.stderr
     assert target.read_text() == "jobs: []\n"
     assert config.is_symlink()
+    assert not calls.exists()
+
+
+def _metrics_role_hosts() -> list[str]:
+    """Every name (roster key and alias) of a box declaring the metrics role."""
+
+    boxes = json.loads((REPOSITORY / "tools/fleet/fleet_boxes.json").read_text())["boxes"]
+    names = []
+    for name, shape in boxes.items():
+        if "metrics" in (shape.get("roles") or {}):
+            names.append(name)
+            if shape.get("_alias"):
+                names.append(shape["_alias"])
+    return names
+
+
+def test_the_roster_declares_one_metrics_host() -> None:
+    """The refusal below is only meaningful while some box runs the role."""
+
+    assert _metrics_role_hosts() == ["dl380g10"]
+
+
+@pytest.mark.parametrize("host", _metrics_role_hosts())
+def test_install_refused_on_the_metrics_role_host(install_fixture, host):
+    """#1042: the queue host's supervisor runs the exporter on the same port.
+
+    A unit there would contend for 9469, and its PrivateTmp hides its lock
+    from the role, which would then keep refusing on the port. The
+    installer refuses before writing the unit, the collector or any service.
+    """
+
+    config, calls, run = install_fixture
+    config.write_text("jobs: []\n")
+    result = run(FIXTURE_HOST=host)
+    assert result.returncode != 0
+    assert "declares the metrics role on dl380g10" in result.stderr
+    assert config.read_text() == "jobs: []\n"
+    assert not calls.exists()
+    assert not list(config.parent.glob("prometheus.conf.pb-*"))
+    assert not (config.parents[2] / "systemd/system/prismabuild-metrics.service").exists()
+
+
+def test_install_refused_on_an_alias_of_the_metrics_role_host(install_fixture, tmp_path):
+    """The supervisor resolves a declared `_alias` to the same shape; so must this."""
+
+    config, calls, run = install_fixture
+    roster_path = config.parents[3] / "runtime/tools/fleet/fleet_boxes.json"
+    roster = json.loads(roster_path.read_text())
+    roster["boxes"]["dl380g10"]["_alias"] = "queue-host-renamed"
+    roster_path.write_text(json.dumps(roster))
+    result = run(FIXTURE_HOST="queue-host-renamed")
+    assert result.returncode != 0
+    assert "declares the metrics role on dl380g10" in result.stderr
+    assert not calls.exists()
+
+
+def test_install_refused_without_a_readable_roster(install_fixture):
+    config, calls, run = install_fixture
+    (config.parents[3] / "runtime/tools/fleet/fleet_boxes.json").unlink()
+    result = run()
+    assert result.returncode != 0
+    assert "cannot read the fleet roster" in result.stderr
     assert not calls.exists()

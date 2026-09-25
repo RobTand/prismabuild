@@ -14,6 +14,7 @@ in the sample for display and provenance and is never a denominator.
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
 import json
 import math
 import os
@@ -298,6 +299,46 @@ def sw_cap_idle_first_job(sample, device, reference, *, holders, measurement,
         return deny('mask_idle_bit_mismatches_reason')
     diagnosis['exception_reason'] = 'sw_cap_idle_first_job'
     return True, diagnosis
+
+
+#: The SW-cap exception's refusals that name only the pool's own occupancy
+#: (#1125): the host must be empty of holders and broker jobs, and draining
+#: them is the one thing that changes.
+SW_CAP_OCCUPANCY_REASONS = frozenset({
+    'holders_present_no_sharing_exception', 'broker_jobs_present'})
+
+
+def sw_cap_idle_after_drain(diagnosis):
+    """Whether draining the pool's own work lets the SW-cap exception admit.
+
+    ``diagnosis`` is the ``sw_cap_idle_exception`` a refusal recorded.
+    :func:`sw_cap_idle_first_job` denies on occupancy (holders, then broker
+    jobs) before it reads the device, so its ``exception_reason`` alone does
+    not say the device is SW-capped at idle: a thermally throttled device with
+    a holder on it reads ``holders_present_no_sharing_exception`` too.  This
+    re-runs the same predicate on the observations the refusal recorded, with
+    no holder and no broker job, and is true only when that admits.  It reads
+    nothing new and grants nothing: it answers whether a drain resolves the
+    refusal, and the next decision still judges its own fresh sample.  Any
+    missing or malformed observation answers false.
+    """
+    if not isinstance(diagnosis, Mapping):
+        return False
+    if diagnosis.get('exception_reason') not in SW_CAP_OCCUPANCY_REASONS:
+        return False
+    foreign = diagnosis.get('foreign_processes')
+    if not isinstance(foreign, list):
+        return False
+    device = {key: diagnosis.get(key) for key in (
+        'memory_domain', 'power_reference_scope', 'power_w', 'sm_clock_mhz',
+        'max_sm_clock_mhz', 'throttle_reasons', 'throttle_active_mask', 'limited')}
+    device['name'] = diagnosis.get('device_name')
+    eligible, _ = sw_cap_idle_first_job(
+        {'jobs': [], 'foreign_processes': foreign}, device,
+        diagnosis.get('power_reference_w'), holders=(),
+        measurement=diagnosis.get('measurement') is not False,
+        pressure=diagnosis.get('pressure') is not False)
+    return eligible
 
 
 def memory_budget_bytes(value):

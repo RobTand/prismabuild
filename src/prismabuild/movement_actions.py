@@ -24,16 +24,16 @@ from . import pool
 SEALED_ARGV0 = "/bin/bash"
 
 #: Parameters a movement action may restate off its submission template.
-_MOVEMENT_PARAM_KEYS = ("cwd", "checkout_snapshot", "retry_policy",
-                        "data_manifest")
+#: ``retry_policy`` is not one of them (#950): a mover's is its own.
+_MOVEMENT_PARAM_KEYS = ("cwd", "checkout_snapshot", "data_manifest")
 
 #: Task fields a movement action keeps off its submission template (#944).
 #: ``definition_id`` and ``definition_version`` name the sealing tool, and
 #: ``adaptive_cpu.action_identity`` reads its pbrun shape off them;
-#: ``working_directory`` is where the wrapper starts, relative to ``cwd``;
-#: ``determinism`` keeps every existing mover key (see the note in
-#: `seal_movement_action`).  Everything else in the task is the mover's own.
-_MOVEMENT_TASK_KEYS = ("definition_id", "definition_version", "determinism",
+#: ``working_directory`` is where the wrapper starts, relative to ``cwd``.
+#: Everything else in the task is the mover's own, ``determinism`` included
+#: (#950, `MOVEMENT_TASK`).
+_MOVEMENT_TASK_KEYS = ("definition_id", "definition_version",
                        "working_directory")
 
 #: What a movement action is, whatever its consumer is (#944).  A mover copies
@@ -44,11 +44,62 @@ _MOVEMENT_TASK_KEYS = ("definition_id", "definition_version", "determinism",
 #: admission demands an idle host for a measurement
 #: (``measurement_host_not_idle``), and preflight refuses a platform or
 #: toolchain the worker does not have.  For a ``generation`` consumer these are
-#: exactly the values it already had, so its movers keep their keys.
-MOVEMENT_TASK = {"task_class": "generation", "artifact_family": "generic",
-                 "artifact_kind": "generic"}
+#: exactly the values it already had.
+#:
+#: ``determinism`` is ``stochastic`` whatever the consumer's (#950).  A mover's
+#: result is the log of one copy, which differs from the next copy's, and the
+#: fleet re-runs a movement key on purpose: a re-stage after an eviction
+#: republishes the same key with ``recompute`` so that the bytes are copied
+#: again.  Sealed deterministic, that second log is refused as a CAS conflict
+#: after the copy has already landed (``CASConflictError``), so every staging
+#: must be a stochastic one to be a real copy.
+MOVEMENT_TASK = {"task_class": "generation", "determinism": "stochastic",
+                 "artifact_family": "generic", "artifact_kind": "generic"}
 MOVEMENT_EXECUTION_SCOPE = {"portability": "portable", "platform_key": None,
                             "host_class": None}
+
+#: The retry policy a movement node gets when its caller names none (#950).
+#: Its own, never its consumer's: a mover copies into a temporary, verifies
+#: and renames, and an egress unlinks what its fragment names and counts a
+#: file already gone as released, so a second attempt of either finds the
+#: work done or redoes what failed.  The bound matches pbrun's
+#: ``--residency-mover-max-attempts`` default and the produced-output lane's.
+MOVEMENT_RETRY_POLICY = {"max_attempts": 3, "retry_safe": True}
+
+#: The system directories a movement node's ``PATH`` searches after its own
+#: interpreter's (#996): pbrun's default ``PATH``, the one every fleet box has.
+MOVEMENT_SYSTEM_PATH = ("/usr/local/bin", "/usr/bin", "/bin")
+
+#: The locale a movement node runs in: pbrun's default, so a tool's output
+#: encoding never depends on the box.
+MOVEMENT_LOCALE = {"LANG": "C.UTF-8", "LC_ALL": "C.UTF-8"}
+
+
+def movement_environment(command: Sequence[str]) -> dict[str, str]:
+    """The environment a movement node is sealed with, before its owner (#996).
+
+    A mover's own, never its consumer's: the consumer's environment describes
+    the box that will compute (a GB10 venv at the head of its ``PATH``, its
+    thread caps, its spool root and pacing opt-ins, its ``PRISMAQUANT_*``
+    reader settings), and the mover runs on the box that owns the stage.  So
+    it is the tier interpreter's directory -- ``command[0]``, which every
+    caller takes off the tier record (`movement_tools`) or names absolutely --
+    ahead of :data:`MOVEMENT_SYSTEM_PATH`, and :data:`MOVEMENT_LOCALE`.  The
+    pool and CAS roots a mover works on are sealed on its command.  Nothing a
+    movement tool reads comes from its environment except what the worker
+    injects at launch (the action key, the progress and residency channels).
+
+    It is also why a consumer's environment is not in a mover's key.
+    """
+
+    interpreter = str(command[0]) if command else ""
+    head = [str(Path(interpreter).parent)] if interpreter.startswith("/") else []
+    path: list[str] = []
+    for directory in (*head, *MOVEMENT_SYSTEM_PATH):
+        if directory not in path:
+            path.append(directory)
+    return {"PATH": ":".join(path), **MOVEMENT_LOCALE}
+
 
 #: The progress phases a stage mover reports in (#1010), in the order it
 #: enters them: its start (launch to the first read: the manifest, the
@@ -444,8 +495,9 @@ def seal_movement_action(
     """Seal one movement or egress node off the submission that needs it.
 
     The child keeps everything an action's identity is made of and a mover
-    does not vary: the same ``inputs`` (checkout snapshot, data manifest),
-    the same code closure, the same environment variables. Its command is a
+    does not vary: the same ``inputs`` (checkout snapshot, data manifest)
+    and the same code closure. Its environment variables are a mover's
+    (`movement_environment`, #996), never the consumer's. Its command is a
     fleet tool rather than the submitter's, its demand is tier tokens rather
     than CPU and GPU, and it is placed on the box that owns the stage rather
     than on the box that will compute. So its task class, artifact family,
@@ -454,10 +506,12 @@ def seal_movement_action(
     a measurement consumer's isolation is its own host's, not the stage
     host's.
 
-    ``determinism`` is still the consumer's, so a generation consumer's
-    movers keep their keys. It only matters when a second result is
-    published under one key: a deterministic mover whose log differs would
-    then be refused as a conflict.
+    ``determinism`` and the retry policy are a mover's too (#950): every
+    movement node is ``stochastic``, so a re-stage under one key publishes
+    its own log instead of being refused as a conflicting recomputation, and
+    its ``retry_policy`` is ``retry_policy`` or, when the caller names none,
+    `MOVEMENT_RETRY_POLICY` -- never the template's. The caller's queue row
+    must carry the same ``max_attempts`` and ``retry_safe``.
 
     ``container_owner_fn`` defaults to this module's ``container_owner``
     with the template's ``checkout_identity``; pbrun passes its wrapper so
@@ -478,24 +532,24 @@ def seal_movement_action(
     params["command"] = list(command)
     params["demand"] = {str(key): int(value) for key, value in dict(demand).items()}
     params["placement"] = {"required_tags": list(tags)}
-    if retry_policy is not None:
-        # A mover's retry policy is its own, not the consumer's (#603).  The
-        # template's belongs to work that may not be safe to run twice; a mover
-        # copies into a temporary, verifies the digest against the manifest
-        # entry and then ``os.replace``s, so a second attempt either finds the
-        # bytes already right or redoes the copy that failed.  Inheriting a
-        # single-attempt policy makes one transient read error cost the whole
-        # staged range, and the window behind it.
-        params["retry_policy"] = dict(retry_policy)
+    # A mover's retry policy is its own, not the consumer's (#603, #950).  The
+    # template's belongs to work that may not be safe to run twice; a mover
+    # copies into a temporary, verifies the digest against the manifest entry
+    # and then ``os.replace``s, so a second attempt either finds the bytes
+    # already right or redoes the copy that failed, and an egress's second
+    # attempt finds released what the first released.  Inheriting a
+    # single-attempt policy makes one transient read error cost the whole
+    # staged range, and one transient unlink error leaves the range's bytes
+    # holding their tokens until pressure eviction.
+    params["retry_policy"] = dict(MOVEMENT_RETRY_POLICY if retry_policy is None
+                                  else retry_policy)
     if extra_params:
         params.update(dict(extra_params))
-    variables = dict(template["environment"]["variables"])  # type: ignore[index]
-    variables.pop(pool.CONTAINER_OWNER_ENV, None)
-    variables.pop(pool.CONTAINER_MARKER_ENV, None)
+    variables = movement_environment(params["command"])  # type: ignore[arg-type]
     marker_root = template["marker_root"]
     owner = container_owner_fn(
         params["command"], params["cwd"], params["demand"], variables,
-        determinism=template["task"]["determinism"],      # type: ignore[index]
+        determinism=MOVEMENT_TASK["determinism"],
         retry_policy=params["retry_policy"],
         marker_root=marker_root,
         identity=template["checkout_identity"],           # type: ignore[index]
@@ -510,8 +564,10 @@ def seal_movement_action(
         "task": {
             **{name: task[name] for name in _MOVEMENT_TASK_KEYS},  # type: ignore[index]
             **MOVEMENT_TASK,
+            # The sealed ``PATH`` is the launch environment's whole ``PATH``
+            # (``core.run_local_action`` builds the child's environment from
+            # the sealed variables alone), so the wrapper exports nothing.
             "argv": [SEALED_ARGV0, "--noprofile", "--norc", "-c",
-                     f"export PATH={shlex.quote(variables['PATH'].split(':', 1)[0])}:$PATH; "
                      f"{shlex.join(params['command'])} 2>&1 | tee {shlex.quote(log_name)}; "
                      f"exit ${{PIPESTATUS[0]}}"],
             "result_path": log_name,

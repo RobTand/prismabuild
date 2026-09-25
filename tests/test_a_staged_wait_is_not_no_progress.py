@@ -638,18 +638,21 @@ def test_a_copy_claimed_after_the_wait_began_does_not_renew_it(
 
 
 def _withheld(queue: pool.PoolQueue, row, reason: str, *,
-              epoch_unix: float | None, first_unix: float | None) -> None:
+              epoch_unix: float | None, first_unix: float | None,
+              stamp_unix: float | None = None) -> None:
     """The claim pass's word on the ready ``row``: ``reason`` in its denial
     ring, and the passes sidecar ``record_pass`` keeps for it, with the
     withhold episode's start (``epoch_unix``) and the first denial
-    (``first_unix``) where given."""
+    (``first_unix``) where given, and the last counted denial
+    (``updated_unix``) at ``stamp_unix``, or now."""
 
     key = str(row["action_key"])
     ready = json.loads(queue.item_path(pool.READY, key).read_text())
     queue._record_denial_transition(ready, host="dl380g10", reason=reason,
                                     decision_reason=None)
-    passes: dict[str, object] = {"action_key": key, "passes": pool.STARVATION_FLOOR,
-                                 "updated_unix": time.time()}
+    passes: dict[str, object] = {
+        "action_key": key, "passes": pool.STARVATION_FLOOR,
+        "updated_unix": time.time() if stamp_unix is None else stamp_unix}
     if first_unix is not None:
         passes["first_unix"] = first_unix
     if epoch_unix is not None:
@@ -737,22 +740,29 @@ def test_a_withhold_on_one_host_outranks_a_refusal_on_another(
 
 
 @pytest.mark.parametrize("epoch_age_s,first_age_s", [
-    # An episode past the ceiling: the pool has stopped withholding for it,
-    # so a ring that still says so is not a veto that is coming to an end.
+    # An episode past the ceiling whose last counted denial is older than a
+    # claim pass's freshness: no pass has said since that the pool still
+    # withholds, so a ring that still says so is not a veto coming to an end.
+    # Before #1052 this case had a fresh stamp and asserted the same ruling;
+    # a fresh stamp is now the pool's live answer (the next test).
     (pool.WITHHOLD_CEILING_S + 1.0, pool.WITHHOLD_CEILING_S + 60.0),
     # No sidecar at all: nothing bounds the withhold, so it is not waited on.
     (None, None),
 ], ids=["past-ceiling", "no-sidecar"])
 def test_a_withhold_past_its_ceiling_is_not_waited_on(
         tmp_path: Path, epoch_age_s: float | None, first_age_s: float | None) -> None:
-    """F1's bound: exempt only within ``WITHHOLD_CEILING_S`` of the epoch."""
+    """F1's bound: with no fresh pass on file, exempt only within
+    ``WITHHOLD_CEILING_S`` of the epoch."""
 
     queue, item, row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=0)
     queue.publish(**dict(row))
     now = time.time()
     _withheld(queue, row, "reservation_unavailable_withholding",
               epoch_unix=None if epoch_age_s is None else now - epoch_age_s,
-              first_unix=None if first_age_s is None else now - first_age_s)
+              first_unix=None if first_age_s is None else now - first_age_s,
+              stamp_unix=now - pool.WITHHOLD_STAMP_FRESH_S - 1.0)
+    if epoch_age_s is None:
+        queue.passes_path(str(row["action_key"])).unlink()
 
     verdict = _judge(queue, item, progress_path, prior=None, window_s=GRACE_S,
                      now=now)
@@ -761,6 +771,172 @@ def test_a_withhold_past_its_ceiling_is_not_waited_on(
     entry = verdict["movers"][0]
     assert entry["evidence"] == "withhold-lapsed", entry
     assert entry.get("withhold") == "reservation_unavailable_withholding", entry
+
+
+def test_a_withhold_past_its_ceiling_with_a_fresh_pass_is_waited_on(
+        tmp_path: Path) -> None:
+    """#1052 flips the old ``past-ceiling`` ruling: the episode is past
+    ``WITHHOLD_CEILING_S``, but the claim pass counted a withholding denial
+    of the row just now, so the pool still holds the box for it."""
+
+    queue, item, row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=0)
+    queue.publish(**dict(row))
+    now = time.time()
+    _withheld(queue, row, "reservation_unavailable_withholding",
+              epoch_unix=now - pool.WITHHOLD_CEILING_S - 1.0,
+              first_unix=now - pool.WITHHOLD_CEILING_S - 60.0, stamp_unix=now - 5.0)
+
+    verdict = _judge(queue, item, progress_path, prior=None, window_s=GRACE_S,
+                     now=now)
+
+    assert verdict["exempt"] is True, verdict
+    entry = verdict["movers"][0]
+    assert (entry["evidence"], entry.get("withhold_live_by")) == (
+        "withheld", "claim-pass"), entry
+
+
+# -- the pool's live answer is the withhold's bound (#1052)
+#
+# The pool expires a withhold episode at ``WITHHOLD_CEILING_S`` only when it
+# has refills.  With none, a ``drains_soon`` withhold runs for as long as a
+# holder stays ``transient``, which a bounded holder does up to its declared
+# end.  The consumer read the ceiling from the epoch alone, so it read
+# ``withhold-lapsed`` -- and its rung ended it for ``no_progress`` -- while
+# the claim pass was still stamping ``*_withholding`` every pass.
+
+
+class _OneHolderLedger:
+    """The stage host's ledger, as ``_withhold_verdict`` reads it: every
+    token held by one holder, and none free."""
+
+    def __init__(self, holder: str) -> None:
+        self.holder = holder
+
+    def available(self) -> dict[str, int]:
+        return {"cpu": 0, "mem_gb": 0}
+
+    def held_keys(self) -> list[str]:
+        return [self.holder]
+
+    def holder_tokens(self, holder: str) -> dict[str, int]:
+        return {"cpu": 4, "mem_gb": 8} if holder == self.holder else {}
+
+    def holds_gpu(self, holder: str) -> bool:
+        return False
+
+
+def _claim_pass(queue: pool.PoolQueue, row, ledger: _OneHolderLedger) -> dict:
+    """What one claim pass does for the mover on a token shortage: judge the
+    withhold, count the denial and record its reason (``PoolQueue.claim``)."""
+
+    key = str(row["action_key"])
+    ready = json.loads(queue.item_path(pool.READY, key).read_text())
+    verdict = queue._withhold_verdict(key, ledger=ledger, need={"cpu": 2, "mem_gb": 1},
+                                      mode="tokens")
+    queue.record_pass(key)
+    reason = ("reservation_unavailable_withholding" if verdict["withhold"]
+              else "reservation_unavailable" + pool._starved_suffix(verdict))
+    queue.record_denial(ready, reason, {"withhold": verdict})
+    return verdict
+
+
+def _transient_holder_past_the_ceiling(tmp_path: Path, queue: pool.PoolQueue, row,
+                                       monkeypatch, now: float):
+    """The issue's scenario at t=1060: a measurement claimed at t=0 with a
+    25 min timeout holds the stage host, and the mover's episode began at
+    t=60, 1000 s ago, with no refill since.  Returns the fake ledger."""
+
+    from test_a_ready_gpu_action_is_not_starved_by_cpu_shards import _sealed
+
+    holder, cas_root, _checkout = _sealed(tmp_path, "measurement", timeout_s=1500)
+    claimed = queue.item_path(pool.CLAIMED, holder)
+    claimed.parent.mkdir(parents=True, exist_ok=True)
+    claimed.write_text(json.dumps({"action_key": holder, "cas_root": cas_root,
+                                   "claimed_unix": now - 1060.0}))
+    key = str(row["action_key"])
+    path = queue.passes_path(key)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "action_key": key, "passes": pool.STARVATION_FLOOR,
+        "first_unix": now - 1060.0, "updated_unix": now - 5.0,
+        "epoch_unix": now - 1000.0}))
+    monkeypatch.setattr(pool, "_now", lambda: now)
+    assert queue.holder_bound(holder, now=now)["bound"] == "transient"
+    return _OneHolderLedger(holder)
+
+
+def test_a_withhold_the_pool_still_holds_past_the_ceiling_is_waited_on(
+        tmp_path: Path, monkeypatch) -> None:
+    """#1052: the episode is 1000 s old and has no refill, and the pool still
+    withholds ``drains_soon`` for the mover on this pass.  So the consumer
+    waits: its entry reads ``withheld`` on the claim pass's fresh stamp."""
+
+    queue, item, row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=0)
+    queue.publish(**dict(row))
+    now = time.time()
+    ledger = _transient_holder_past_the_ceiling(tmp_path, queue, row, monkeypatch, now)
+
+    pool_says = _claim_pass(queue, row, ledger)
+    verdict = _judge(queue, item, progress_path, prior=None, window_s=GRACE_S,
+                     now=now)
+
+    assert (pool_says["withhold"], pool_says["why"]) == (True, "drains_soon"), pool_says
+    assert pool_says["episode_age_s"] > pool.WITHHOLD_CEILING_S, pool_says
+    entry = verdict["movers"][0]
+    assert (verdict["exempt"], entry["evidence"]) == (True, "withheld"), entry
+    assert entry.get("withhold") == "reservation_unavailable_withholding", entry
+    assert entry.get("evidence_unix") == now - 1000.0, entry
+    assert entry.get("withhold_stamp_unix") == now, entry
+    assert entry.get("withhold_live_by") == "claim-pass", entry
+
+
+def test_a_withhold_whose_stamp_went_stale_past_the_ceiling_lapses(
+        tmp_path: Path, monkeypatch) -> None:
+    """#1052: the pool withheld for the mover, and then no claim pass
+    re-judged it for longer than a claim pass's freshness bound
+    (``WITHHOLD_STAMP_FRESH_S``).  Past the epoch's ceiling there is no
+    evidence the pool still holds the box: ``withhold-lapsed``."""
+
+    queue, item, row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=0)
+    queue.publish(**dict(row))
+    now = time.time()
+    ledger = _transient_holder_past_the_ceiling(tmp_path, queue, row, monkeypatch, now)
+    assert _claim_pass(queue, row, ledger)["withhold"] is True
+
+    later = now + pool.WITHHOLD_STAMP_FRESH_S + 1.0
+    verdict = _judge(queue, item, progress_path, prior=None, window_s=GRACE_S,
+                     now=later)
+
+    entry = verdict["movers"][0]
+    assert (verdict["exempt"], entry["evidence"]) == (False, "withhold-lapsed"), entry
+    assert entry.get("withhold_stamp_unix") == now, entry
+
+
+def test_a_withhold_the_pool_stops_is_not_waited_on_as_one(
+        tmp_path: Path, monkeypatch) -> None:
+    """#1052: the holder's declared end passes, so the claim pass stops
+    withholding and stamps ``_starved``.  The row's latest word is no longer
+    a withhold, so its fresh pass is not read as one: the withhold's epoch is
+    not carried, and the ready rule takes its own ``baseline``."""
+
+    queue, item, row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=0)
+    queue.publish(**dict(row))
+    _landing_ahead(queue, item, row, bytes_ahead=0, movers_ahead=[])
+    now = time.time()
+    ledger = _transient_holder_past_the_ceiling(tmp_path, queue, row, monkeypatch, now)
+    assert _claim_pass(queue, row, ledger)["withhold"] is True
+    later = now + 450.0          # the holder's end, t=1500, is behind us
+    monkeypatch.setattr(pool, "_now", lambda: later)
+
+    pool_says = _claim_pass(queue, row, ledger)
+    verdict = _judge(queue, item, progress_path, prior=None, window_s=GRACE_S,
+                     now=later)
+
+    assert (pool_says["withhold"], pool_says["why"]) == (
+        False, "holder_does_not_drain_soon"), pool_says
+    entry = verdict["movers"][0]
+    assert entry["evidence"] == "baseline", entry
+    assert "withhold" not in entry, entry
 
 
 def test_a_consumer_whose_mover_the_pool_stopped_withholding_gets_a_baseline(

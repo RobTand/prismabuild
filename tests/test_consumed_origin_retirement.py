@@ -214,7 +214,8 @@ def test_a_failed_consumer_holds_the_batch_until_its_resubmission_executes(
     assert path.exists() and not _entry(queue, instance).get("retiring")
 
     # The resubmission: same key, a new generation.  The failed record stays
-    # where it was, and the newer generation answers for the key.
+    # where it was until the newer generation ends, and the newer generation
+    # answers for the key.
     assert po.declare_origin_consumer(
         queue, committed["ref"], consumer_action_key=consumer)["declared"]
     _publish_consumer(queue, consumer)
@@ -222,7 +223,10 @@ def test_a_failed_consumer_holds_the_batch_until_its_resubmission_executes(
     assert po.origin_retirement_tick(queue) == []
     assert path.exists()
     _run_consumer(queue, consumer, "executed")
-    assert queue.item_path(pool.FAILED, consumer).exists()
+    # Its ending retires the earlier generation's failed record (#1117): one
+    # key, one terminal record.
+    assert queue.item_path(pool.DONE, consumer).exists()
+    assert not queue.item_path(pool.FAILED, consumer).exists()
 
     events = po.origin_retirement_tick(queue)
     assert [event["event"] for event in events] == [po.ORIGIN_RETIRED_EVENT]

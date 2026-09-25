@@ -220,13 +220,15 @@ def test_the_egress_row_is_admitted_beside_a_holder_and_the_old_row_is_not(
     assert queue.item_path(pool.READY, unbounded["action_key"]).exists()
 
 
-def test_the_egress_keeps_no_tier_demand_and_the_submission_retry_policy(
+def test_the_egress_keeps_no_tier_demand_and_its_own_retry_policy(
         tmp_path):
     """The fix adds a CPU, not a tier leg: an egress returns capacity.
 
-    Its attempt policy stays the submission's too -- #603's mover carve-out is
-    a mover's, and an egress made idempotent by ``os.replace``d fragments is a
-    matter for the release tool's own contract, not this row.
+    Its attempt policy is a movement node's, not the submission's (#950): a
+    single-attempt consumer's egress that met one transient unlink error
+    ended ``failed`` and left the range's bytes holding their tokens.  The
+    release tool counts a file already gone as released, so a second attempt
+    is safe.
     """
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
@@ -234,10 +236,11 @@ def test_the_egress_keeps_no_tier_demand_and_the_submission_retry_policy(
     staged = _seal(tmp_path, queue)
     row = staged["plan"]["phases"][0]["egress_row"]
     assert set(row["resources"]) == {"cpu", "mem_gb"}, row["resources"]
-    assert row["max_attempts"] == 1
+    assert (row["max_attempts"], row["retry_safe"]) == (3, True)
     key = str(row["action_key"])
     body = staged["cas"].actions[key]
     assert body["params"]["demand"] == {"cpu": 1, "mem_gb": 1}
+    assert body["params"]["retry_policy"] == {"max_attempts": 3, "retry_safe": True}
 
 
 def test_the_ram_egress_declares_one_cpu_too(tmp_path, monkeypatch):
@@ -253,6 +256,10 @@ def test_the_ram_egress_declares_one_cpu_too(tmp_path, monkeypatch):
     key = str(row["action_key"])
     assert staged["cas"].actions[key]["params"]["demand"] == {
         "cpu": 1, "mem_gb": 1}
+    # And the movement node's retry policy, on the row and the body (#950).
+    assert (row["max_attempts"], row["retry_safe"]) == (3, True)
+    assert staged["cas"].actions[key]["params"]["retry_policy"] == {
+        "max_attempts": 3, "retry_safe": True}
 
 
 def test_the_egress_row_carries_the_cpu_on_the_sealed_body(tmp_path):

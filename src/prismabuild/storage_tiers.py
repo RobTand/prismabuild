@@ -1518,12 +1518,31 @@ def _landing_mb_s(record: Mapping[str, object]) -> float | None:
     return float(staged) / MB / float(seconds)
 
 
+def _latest_window(records: Iterable[Mapping[str, object]]) -> str | None:
+    """The consumer whose newest receipt among ``records`` is the newest.
+
+    A window is one consumer's run of movers: the unit #909 prices a seal
+    over, so a statistic read from it moves with the tier's current load and
+    never with an older generation's.  Ties go to the larger key, so the same
+    receipts always name the same window.
+    """
+
+    newest: dict[str, float] = {}
+    for record in records:
+        consumer = str(record.get("consumer_action_key") or "")
+        when = float(record.get("unix", 0.0) or 0.0)
+        newest[consumer] = max(when, newest.get(consumer, when))
+    if not newest:
+        return None
+    return max(newest, key=lambda consumer: (newest[consumer], consumer))
+
+
 def mover_fill_price(
     records: Iterable[Mapping[str, object]], *, tier_id: str,
     pool_identity: Mapping[str, object] | None = None,
     manifest_sha256: str | None = None,
 ) -> dict[str, object]:
-    """The pool fill one next mover reserves, and what measured it (#909).
+    """The pool fill one next mover reserves, and what measured it (#909, #958).
 
     One copy's rate, never the tier's.  The seal is three things at once: the
     fill tokens the copy holds, so the offer over the seal is how many copies
@@ -1532,20 +1551,37 @@ def mover_fill_price(
     copy's worth; and the landing rate the tier loop assumes for the plan
     until its first copy lands (``tier_loop._sealed_fill_bytes_per_s``).  A
     seal at the whole offer made each copy the only one and was also the
-    rate every horizon assumed.  First of:
+    rate every horizon assumed.
+
+    Both statistics read the tier's *latest window* only -- one consumer's
+    run of movers, the consumer whose newest receipt is the newest -- never
+    every window.  Receipts are append-only, and a statistic over all of them
+    feeds itself: an underpriced seal admits more copies at once, each lands
+    slower, and the slower receipts price the next seal lower still (#958:
+    the median share over all 965 pool-reading receipts was 59 MB/s, over
+    the latest 200 it was 138).  First of:
 
     * ``landing``: the slowest landing among the copies of this manifest
-      onto this tier in its most recent window -- the consumer whose last
-      receipt is the newest -- each copy at its latest complete receipt.  The
-      slowest, because the horizon it stands in for errs long when landing
-      is slow.  The latest window and the latest receipt, never every
-      window: receipts are append-only, and the slowest copy ever measured
-      would ratchet the seal down across generations; a remembered first
-      rate would price a slower re-copy too fast (``tier_loop._landing_rate``
-      follows the same rule).  Only receipts that read the pool
+      onto this tier in the manifest's latest window, each copy at its
+      latest complete receipt.  The slowest, because the horizon it stands
+      in for errs long when landing is slow.  A remembered first rate would
+      price a slower re-copy too fast (``tier_loop._landing_rate`` follows
+      the same rule).  Only receipts that read the pool
       (``_measured_the_pool``): an adoption window staged from the stage.
-    * ``single-reader-share``: with no copy of this manifest measured, the
-      median over this tier's pool-reading receipts of one reader's share,
+
+      **A window of one copy prices no seal.**  The slowest landing is the
+      rate every copy of the window reached, which is a statement about the
+      window only when a copy other than the one that sets it stands beside
+      it.  Over one copy the minimum is that copy: it bounds nothing, and a
+      copy slowed by contention is indistinguishable from a slow manifest
+      (#958: manifest 2e607db1ebcc sealed at 47 MB/s off one copy).  Such a
+      window falls through to ``single-reader-share``, where that copy's own
+      receipt still counts through its share, which is bounded on both sides
+      -- its file-side rate and its window's delivery over the movers that
+      shared it -- where a landing is bounded by nothing.  No count is
+      chosen: two copies are the least a minimum can bound.
+    * ``single-reader-share``: the median, over the pool-reading receipts of
+      this tier's latest window that price one, of one reader's share,
       ``min(file-side rate, window delivery / sharers)`` -- the same "one
       reader's worth" :func:`fill_supply_from_records` probes the pool by.
       The median, not the maximum: the maximum was one window's best share
@@ -1556,12 +1592,21 @@ def mover_fill_price(
 
     A copy that landed under 1 MB/s prices nothing, and neither does a
     median share under it: the ledger counts whole MB/s, and a zero seal
-    reserves no fill at all.  Returns ``{"mb_s", "basis",
-    "receipts_priced", "window_consumer"}``.
+    reserves no fill at all.
+
+    Returns ``{"mb_s", "basis", "receipts_priced", "window_consumer",
+    "landing"}``: the seal, the statistic that priced it, the samples it
+    read and the window they came from, so a thin basis is visible on
+    ``demand_source.fill_measured``.  ``landing`` is this manifest's latest
+    window whatever priced the seal -- ``{"mb_s", "copies",
+    "window_consumer"}`` with ``mb_s`` its slowest copy, or ``None`` with no
+    copy measured -- because a stall grace (#1010) is priced off the slowest
+    landing and one copy is a landing of this manifest, bounded or not.
     """
 
     usable = usable_mover_receipts(records, tier_id=tier_id,
                                    pool_identity=pool_identity)
+    landing: dict[str, object] | None = None
     if manifest_sha256:
         latest: dict[str, Mapping[str, object]] = {}
         for record in usable:
@@ -1575,28 +1620,32 @@ def mover_fill_price(
             if held is None or (float(record.get("unix", 0.0) or 0.0)
                                 >= float(held.get("unix", 0.0) or 0.0)):
                 latest[key] = record
-        newest: dict[str, float] = {}
-        for record in latest.values():
-            consumer = str(record.get("consumer_action_key") or "")
-            when = float(record.get("unix", 0.0) or 0.0)
-            newest[consumer] = max(when, newest.get(consumer, when))
-        if newest:
-            window = max(newest, key=lambda consumer: (newest[consumer], consumer))
-            rates = [_landing_mb_s(record) for record in latest.values()
-                     if str(record.get("consumer_action_key") or "") == window]
-            return {"mb_s": int(min(rate for rate in rates if rate is not None)),
-                    "basis": "landing", "receipts_priced": len(rates),
-                    "window_consumer": window}
-    shares = [share for share in (_single_reader_share(record) for record in usable
-                                  if _measured_the_pool(record))
-              if share is not None]
+        window = _latest_window(latest.values())
+        if window is not None:
+            rates = [rate for rate in (
+                _landing_mb_s(record) for record in latest.values()
+                if str(record.get("consumer_action_key") or "") == window)
+                if rate is not None]
+            landing = {"mb_s": int(min(rates)), "copies": len(rates),
+                       "window_consumer": window}
+            if len(rates) >= 2:
+                return {"mb_s": landing["mb_s"], "basis": "landing",
+                        "receipts_priced": len(rates),
+                        "window_consumer": window, "landing": landing}
+    priced = [(record, share) for record, share in (
+        (record, _single_reader_share(record)) for record in usable
+        if _measured_the_pool(record)) if share is not None]
+    window = _latest_window(record for record, _share in priced)
+    shares = [share for record, share in priced
+              if str(record.get("consumer_action_key") or "") == window]
     if shares:
         median = int(statistics.median(shares))
         if median >= 1:
             return {"mb_s": median, "basis": "single-reader-share",
-                    "receipts_priced": len(shares), "window_consumer": None}
+                    "receipts_priced": len(shares), "window_consumer": window,
+                    "landing": landing}
     return {"mb_s": None, "basis": "none", "receipts_priced": 0,
-            "window_consumer": None}
+            "window_consumer": None, "landing": landing}
 
 
 def fill_supply_from_records(

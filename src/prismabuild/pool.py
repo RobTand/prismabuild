@@ -308,8 +308,9 @@ TIMEOUT_GRACE_S = 2.0 * pb._PROCESS_GROUP_GRACE_SECONDS + 5.0
 # per host, is one of three kinds.  A refusal says the row cannot be placed
 # as it stands: its demand does not fit any tier or box, or does not parse.
 # A withhold says the pool holds the box for this row while the holders in
-# its way drain (#924), bounded by ``WITHHOLD_CEILING_S`` from the episode's
-# start: the row is next, so its consumer waits on it until that bound
+# its way drain (#924): the row is next, so its consumer waits on it while
+# the claim pass's latest counted denial is fresh (``WITHHOLD_STAMP_FRESH_S``,
+# #1052), or else until ``WITHHOLD_CEILING_S`` from the episode's start
 # (#1022 review round 3); it outranks another host's refusal.  Anything else
 # is transient.  ``placement_mismatch`` is none of them: it is the word of a
 # box the row is not for.  A row whose every host says refusal is not
@@ -324,6 +325,13 @@ MOVER_REFUSAL_PREFIXES = ("container_image_",)
 MOVER_WITHHOLD_REASONS = frozenset({"deferred_behind_withholding"})
 MOVER_WITHHOLD_SUFFIX = "_withholding"
 MOVER_NEUTRAL_REASONS = frozenset({"placement_mismatch"})
+
+#: The evidence under which an owner's wait on one of its own exports is
+#: left out of its quiet (#1035, ``PoolQueue.export_wait_verdict``).  Every
+#: other reading -- ``refused``, ``withheld``, ``none``, ``unread``, a
+#: failed, withdrawn, unpublished or foreign export -- is not exempt.
+EXPORT_WAIT_LIVE_EVIDENCE = frozenset({
+    "progress-grew", "claimed", "baseline", "carried", "landed"})
 
 #: Denials the claim pass records without holding the key's transition lock,
 #: and so keeps out of the key's reason ring (#991), whose writers that lock
@@ -343,12 +351,50 @@ DENIAL_RING_EXEMPT_REASONS = frozenset({
 # Claim-order reliefs under which no standing exempts a wait (#1022 review
 # round 3).  ``refused`` (the stage root refused an eviction) and ``unknown``
 # (the tier ledger did not read) make no room and name no victim, so a wait
-# exempt by its standing would have no end on an infrastructure fault.  A
+# exempt by its standing would have no end on an infrastructure fault.  The
+# tier loop stamps either as the order's ``relief`` only once it persisted
+# onto a second consecutive record; a single failed read is carried as the
+# previous relief (``relief_observed``, ``relief_carried``, #1037).  A
 # deny-list: ``short`` stays exempt (a reader pins a range only while it
-# reads it, so a decline clears), and ``futile`` keeps the one-victim rule
-# (``window_credit.stuck_victim``), which ends one consumer a cycle rather
-# than every blocked one.  The ``short`` gap is #1037.
+# reads it, so a decline clears) until every candidate has declined for the
+# judged wait's own evidence window, when it is futile for the stuck rule
+# (``window_credit.relief_stalled_s``, #1037); ``futile`` keeps the
+# one-victim rule (``window_credit.stuck_victim``), which ends one consumer
+# a cycle rather than every blocked one.
 CLAIM_ORDER_RELIEF_ENDS_WAIT = frozenset({"refused", "unknown"})
+
+
+def _claim_order_relief_age(order: Mapping[str, object], *,
+                            now: float) -> dict[str, object]:
+    """The relief's age, and what this cycle observed, for a verdict (#1037).
+
+    ``relief_since_unix`` and ``relief_age_s``: how long the order's relief
+    has been what it is, for this head.  ``relief_observed``, only when it
+    differs: this cycle's pass saw something else that has not persisted
+    (a single failed read), and the record carried the previous relief
+    (``relief_carried``).  ``relief_evicted_gib``: what the pass evicted,
+    0 for a ``short`` in which every candidate declined.  Fields a loop
+    from before #1037 did not stamp are left out.
+    """
+
+    out: dict[str, object] = {}
+    since = order.get("relief_since_unix")
+    if (isinstance(since, (int, float)) and not isinstance(since, bool)
+            and math.isfinite(float(since))):
+        out["relief_since_unix"] = float(since)
+        out["relief_age_s"] = round(max(0.0, float(now) - float(since)), 1)
+    evicted = order.get("relief_evicted_gib")
+    if isinstance(evicted, int) and not isinstance(evicted, bool):
+        out["relief_evicted_gib"] = evicted
+    observed = order.get("relief_observed")
+    if isinstance(observed, str) and observed != order.get("relief"):
+        out["relief_observed"] = observed
+    if order.get("relief_carried") is True:
+        out["relief_carried"] = True
+    refusal = order.get("relief_refusal")
+    if isinstance(refusal, str):
+        out["relief_refusal"] = refusal
+    return out
 
 # The pool is also a lower-level transport for specialized producers whose
 # existing contract explicitly chooses its bound.  ``fleet/pbrun`` supplies a
@@ -418,11 +464,31 @@ DRAIN_EXCLUSIVE_GPU = frozenset({
 #: them is its CPU and memory, which is the token verdict's to keep.
 #: ``host_or_device_congested`` and ``gpu_memory_budget`` stay out: they read
 #: the device's and the host's state, which a GPU holder leaving is not known
-#: to repair.
+#: to repair.  The one congested refusal a drain does repair is
+#: :data:`DRAIN_SW_CAP_IDLE`'s.
 DRAIN_GPU_HOLDERS = frozenset({
     "exclusive_holder", "sharing_probe_not_authorized",
     "holder_telemetry_unavailable", "max_actions",
 })
+#: *SW-cap idle* (#1125): a ``host_or_device_congested`` refusal with
+#: ``limited`` set, on a GB10 whose only limiter is the idle SW power cap.
+#: ``adaptive_gpu.sw_cap_idle_first_job`` (#719) admits a first job on that
+#: device only on an empty host, and names the occupancy that stopped it.
+#: When that occupancy is the one unmet condition
+#: (``adaptive_gpu.sw_cap_idle_after_drain``), draining it resolves the
+#: refusal, so it maps to the drain that clears it:
+#:
+#: * holders -- the pool's GPU holders must leave, which is the ``gpu`` drain;
+#: * broker jobs -- every job the broker runs must leave, CPU-only jobs
+#:   included, which is the ``exclusive`` drain: it counts every holder on the
+#:   box and holds the whole box back.
+#:
+#: Every other limited refusal -- thermal, power brake, HW slowdown, unknown
+#: mask bits, power or clocks above the idle gate, pressure -- is overtaken.
+DRAIN_SW_CAP_IDLE: dict[str, str] = {
+    "holders_present_no_sharing_exception": "gpu",
+    "broker_jobs_present": "exclusive",
+}
 #: What each withhold mode holds back from the rows behind the item: the
 #: resource kinds a later row must demand to be held back, or ``None`` for
 #: every row (the whole box), which is what every mode but ``gpu`` does.
@@ -452,7 +518,9 @@ def _adaptive_refusal_drains(
     """Classify one adaptive refusal for the withhold verdict (#924).
 
     Returns ``(mode, foreign)``: ``mode`` is ``"exclusive"``, ``"tokens"``,
-    ``"gpu"`` (the pool's GPU holders must drain, #1085) or ``None``
+    ``"gpu"`` (the pool's GPU holders must drain, #1085; or, for an idle
+    SW-capped GB10, whichever drain :data:`DRAIN_SW_CAP_IDLE` names, #1125)
+    or ``None``
     (draining does not resolve it, and the item is overtaken exactly as
     before), and ``foreign`` is true when the refusal's own evidence names
     processes the pool does not own -- draining the pool's holders cannot
@@ -466,7 +534,14 @@ def _adaptive_refusal_drains(
             return None, True
         if reason == "host_or_device_congested" and decision.get("limited") is True:
             # Thermal, power-brake and slowdown limiters are the device's own
-            # state; no holder leaving turns them off.
+            # state; no holder leaving turns them off.  The idle SW cap is the
+            # exception (#1125): the first-job exception admits it on an empty
+            # host, so when occupancy is all that stopped it, a drain does.
+            exception = decision.get("sw_cap_idle_exception")
+            if not measurement and gpu_admission.sw_cap_idle_after_drain(exception):
+                mode = DRAIN_SW_CAP_IDLE.get(str(exception["exception_reason"]))  # type: ignore[index]
+                if mode is not None:
+                    return mode, False
             return None, False
         if measurement:
             return ("exclusive" if reason in DRAIN_EXCLUSIVE_GPU else None), False
@@ -758,6 +833,20 @@ MOVER_LANDING_SCHEMA_V1 = "prismabuild.mover_landing.v1"
 #: look dead, short enough that a box taken down does not keep vouching for
 #: work nobody can run.
 OFFER_TIMEOUT_S = 120.0
+#: How fresh the claim pass's latest counted denial of a withheld row must be
+#: for the consumer to read the withhold as live (#1052).  The pool bounds a
+#: withhold episode by ``WITHHOLD_CEILING_S`` only when it has refills; with
+#: none it withholds for as long as its holders drain soon, which can run to
+#: a transient holder's declared end, past the epoch's ceiling.  The claim
+#: pass re-judges the withhold on every pass and counts the denial
+#: (``record_pass`` rewrites the passes sidecar's ``updated_unix``), and the
+#: pass that stops withholding records a ``_past_ceiling`` or ``_starved``
+#: reason.  So a ``*_withholding`` reason with a stamp this fresh is the
+#: pool's own live answer.  The bound is the fleet's freshness for a claim
+#: loop, the one an offer is believed by: a loop re-announces every poll, and
+#: this is a dozen missed default polls, so a slow pass or an NFS stall does
+#: not read as the withhold ending.
+WITHHOLD_STAMP_FRESH_S = OFFER_TIMEOUT_S
 
 #: Offer discovery tolerates up to one minute of future skew. This bound stays
 #: finite even when a submitter reads retained capability with an infinite TTL.
@@ -1305,6 +1394,10 @@ class ProgressWatch:
         # through the same mark.
         self.reader_plan_exempt_s = 0.0
         self.reader_plan: dict[str, object] | None = None
+        # An owner blocked on its own produced-output exports (#1035),
+        # credited through the same mark.
+        self.export_wait_exempt_s = 0.0
+        self.export_wait: dict[str, object] | None = None
         self.first_advance_monotonic: float | None = None
 
     @property
@@ -1494,6 +1587,22 @@ class ProgressWatch:
         self.reader_plan_exempt_s += credit
         return credit
 
+    def exempt_export_wait(self, verdict: Mapping[str, object], *,
+                           now: float, since_monotonic: float) -> float:
+        """Leave a verified wait on the owner's own exports out of the quiet (#1035).
+
+        ``verdict`` is :meth:`PoolQueue.export_wait_verdict`'s answer, kept
+        for the record whatever it says.  Same arithmetic as
+        :meth:`exempt_staged_wait`.
+        """
+
+        self.export_wait = dict(verdict)
+        if not verdict.get("exempt"):
+            return 0.0
+        credit = self._credit(now=now, since_monotonic=since_monotonic)
+        self.export_wait_exempt_s += credit
+        return credit
+
     def exempt_start_gate(self, *, now: float, since_monotonic: float) -> float:
         """Leave a start-gate wait on a live egress out of the quiet (#1010).
 
@@ -1558,6 +1667,10 @@ class ProgressWatch:
             # blocked on, verified on the worker's side (#1091).
             "reader_plan_exempt_s": self.reader_plan_exempt_s,
             "reader_plan": self.reader_plan,
+            # An owner blocked on its own produced-output exports while one
+            # of them showed progress, verified on the worker's side (#1035).
+            "export_wait_exempt_s": self.export_wait_exempt_s,
+            "export_wait": self.export_wait,
             "delivered_units_per_s": self.delivered_units_per_s(now=now),
         }
 
@@ -1836,9 +1949,32 @@ def _read_staged_wait(path: Path, *, token: str | None
                       ) -> tuple[dict[str, object] | None, str]:
     """:func:`read_staged_wait`, with ``token=None`` skipping the token check."""
 
+    return _read_wait_record(path, token=token,
+                             schema=pb_progress.STAGED_WAIT_SCHEMA_V1,
+                             field="movers", where="staged wait record")
+
+
+def read_export_wait(path: Path, *, token: str
+                     ) -> tuple[dict[str, object] | None, str]:
+    """A launch's export-wait record, or ``None`` and why not (#1035).
+
+    Read under exactly the staged-wait record's rules
+    (:func:`read_staged_wait`), with ``exports`` in place of ``movers``.
+    """
+
+    return _read_wait_record(path, token=token,
+                             schema=pb_progress.EXPORT_WAIT_SCHEMA_V1,
+                             field="exports", where="export wait record")
+
+
+def _read_wait_record(path: Path, *, token: str | None, schema: str,
+                      field: str, where: str
+                      ) -> tuple[dict[str, object] | None, str]:
+    """One wait record: ``{field: [keys], "since_unix": t}``, or why not."""
+
     try:
         raw = pb._read_regular_file_nofollow(
-            path, where="staged wait record",
+            path, where=where,
             max_bytes=pb.MAX_ACTION_PROGRESS_BYTES, replaced_leaf=True)
     except FileNotFoundError:
         return None, ""
@@ -1846,23 +1982,23 @@ def _read_staged_wait(path: Path, *, token: str | None
             pb.CASUnavailableError) as exc:
         return None, f"unreadable: {type(exc).__name__}"
     try:
-        record = pb._decode_strict_json(raw, where="staged wait record")
+        record = pb._decode_strict_json(raw, where=where)
     except (pb.ActionContractError, RecursionError):
         return None, "unparsable"
     if not isinstance(record, dict):
         return None, "not an object"
-    if record.get("schema") != pb_progress.STAGED_WAIT_SCHEMA_V1:
+    if record.get("schema") != schema:
         return None, "wrong schema"
     if token is not None and record.get("token") != token:
         return None, "foreign token"
-    movers = record.get("movers")
+    keys = record.get(field)
     since = record.get("since_unix")
-    if (not isinstance(movers, list) or not movers
-            or not all(isinstance(mover, str) and mover for mover in movers)):
-        return None, "movers is not a list of action keys"
+    if (not isinstance(keys, list) or not keys
+            or not all(isinstance(key, str) and key for key in keys)):
+        return None, f"{field} is not a list of action keys"
     if type(since) not in (int, float) or not math.isfinite(float(since)):
         return None, "since_unix is not a time"
-    return {"movers": list(movers), "since_unix": float(since)}, ""
+    return {field: list(keys), "since_unix": float(since)}, ""
 
 
 def _execution_timeout(item: Mapping[str, object], ceiling: float | None) -> float | None:
@@ -5739,8 +5875,9 @@ class PoolQueue:
         ``WITHHOLD_CEILING_S``: the episode is the verdict's own
         (``episode_age_s`` back from when it was filed), or, for a withhold
         with none on file (``in_flight``, ``holder_tail``), the row's first
-        denial (``withhold_age_s``) -- the bound the pool puts on a stage
-        mover's withhold (:meth:`_withhold_epoch`).  A busy pass that carries
+        denial (``withhold_age_s``) -- the epoch bound a stage mover's
+        consumer falls back to when no fresh pass is on file
+        (:meth:`_withhold_epoch`, #1052).  A busy pass that carries
         a withhold files its ``transition_busy`` with the episode it carried,
         so the next busy pass reads the same start, and a run of them never
         renews it.  Returns ``{"reason", "mode", "epoch_unix"}``, or ``None``.
@@ -7121,9 +7258,11 @@ class PoolQueue:
             nothing copies it while that stands, and the hold accrues
             nothing.  A withhold (``MOVER_WITHHOLD_*``, named as
             ``withhold``) is the pool holding the box for this row (#924):
-            exempt (``withheld``) until ``WITHHOLD_CEILING_S`` past the
-            withhold's epoch, its ``evidence_unix``; past it, or with no
-            epoch on file, not (``withhold-lapsed``, #1022 review round 3).
+            exempt (``withheld``) while the claim pass counted a denial of
+            the row within ``WITHHOLD_STAMP_FRESH_S`` (the pool's live
+            answer, #1052), or else until ``WITHHOLD_CEILING_S`` past the
+            withhold's epoch, its ``evidence_unix``; otherwise not
+            (``withhold-lapsed``, #1022 review round 3).
             Otherwise it is exempt while a mover that was queued ahead of
             it when the wait first looked (``waiting_behind``, from the
             landing record's ``movers_ahead``) is claimed with a live lease
@@ -7195,12 +7334,19 @@ class PoolQueue:
           once a whole window passes with none of these, so the wait behind
           a stalled consumer ends as it did before #1011.
         * over-committed, and the order is stuck (``window_credit.
-          stuck_victim``): relief was futile, nobody is granted and every
-          ranked consumer is blocked.  Only the one consumer the rule names,
-          the lowest-ranked, is not exempt; the rest keep their standing's
-          answer.  One consumer ends a cycle, never all of them.
+          stuck_victim``): relief was futile, or ``short`` with every
+          candidate declining for at least ``window_s`` (#1037), nobody is
+          granted and every ranked consumer is blocked.  Only the one
+          consumer the rule names, the lowest-ranked, is not exempt; the
+          rest keep their standing's answer.  One consumer ends a cycle,
+          never all of them.
         * over-committed, with no claim order that ranks this consumer, or
           a missing or unreadable record: not exempt, as before #1011.
+
+        The claim names the relief's age (``relief_since_unix``,
+        ``relief_age_s``), what the pass evicted (``relief_evicted_gib``)
+        and, when the record carried a relief over a one-cycle fault, what
+        the pass observed (``relief_observed``, ``relief_carried``).
 
         The evidence window is ``window_s``, the consumer's own phase grace
         as the rung passes it (the allowance the wait is being judged
@@ -7339,6 +7485,284 @@ class PoolQueue:
         if not exempt:
             verdict["reason"] = "no named mover is still coming"
         return verdict
+
+    def export_wait_verdict(self, action_key: str, progress_path: Path, *,
+                            token: str, cas_root: object,
+                            now: float | None = None,
+                            prior: Mapping[str, object] | None = None,
+                            window_s: float | None = None,
+                            ) -> dict[str, object] | None:
+        """Whether a quiet owner is blocked on its own exports (#1035).
+
+        ``None`` when the launch filed no export-wait record
+        (``progress.declare_export_wait``).  Otherwise the verdict the
+        ``no_progress`` rung acts on, under the evidence rules a staged wait
+        is judged by (#989, #1016, #1022): every named export with the state
+        this read found it in and the evidence it went on (``evidence``,
+        ``evidence_unix``).  The wait is exempt while any named export shows
+        progress:
+
+        * the export must be the owner's own: its sealed request, in the
+          owner's CAS, names the owner in ``params.produced_spool.owner``
+          (the row's ``dependent_of`` is only a hint).  Else
+          ``not-own-export``, or ``unknown`` when the request does not read.
+        * ``claimed``: exempt while its landed bytes -- the sealed
+          manifest's destinations, or their temporaries, as this box stats
+          them -- grew since the previous check of the same claim
+          (``progress-grew``), or while its claim is at most
+          ``movement_actions.mover_report_latency_s()`` old (``claimed``).
+          The first reading of a claim is the ``baseline``, and ``carried``
+          holds while the last growth is within the evidence window.  An
+          export has no stall rung of its own, so a live lease is not
+          evidence here: a hung export keeps its lease until its execution
+          bound.  Landed bytes that do not read are ``unread``.
+        * ``ready``: not exempt while the claim pass refuses it
+          (``refused``, the refusals ``MOVER_REFUSAL_REASONS`` names) or
+          holds it back behind a withhold (``withheld``,
+          ``deferred_behind_withholding`` and every ``*_withholding``), or
+          while the spool filed an identity refusal for it (``refused``,
+          ``spool_refusal`` names the filing).  Otherwise it is queued:
+          ``baseline`` at the first check, ``carried`` within the window,
+          ``none`` after, as a ready stage mover with nothing ahead of it.
+        * ``done``: exempt only while it finished at most
+          ``mover_report_latency_s()`` ago (``landed``), the owner's own
+          latency to see it.  An owner still waiting after that is not
+          waiting on this export.
+        * ``failed``, ``withdrawn``, ``unpublished``: not exempt.
+
+        The evidence window is ``window_s``, the owner's phase grace as the
+        rung passes it.  ``prior`` is this launch's previous verdict; its
+        evidence carries only within one wait (the same ``since_unix``).
+        """
+
+        record, reason = read_export_wait(
+            Path(pb_progress.export_wait_path(str(progress_path))), token=token)
+        if record is None and not reason:
+            return None
+        moment = _now() if now is None else float(now)
+        if record is None:
+            return {"exempt": False, "reason": reason, "exports": [],
+                    "checked_unix": moment}
+        window = (float(window_s) if isinstance(window_s, (int, float))
+                  and not isinstance(window_s, bool) and window_s > 0 else 0.0)
+        if not isinstance(prior, Mapping) or prior.get("since_unix") != record["since_unix"]:
+            prior = None
+        prior_exports = {
+            str(entry.get("key")): entry
+            for entry in ((prior or {}).get("exports") or ())  # type: ignore[union-attr]
+            if isinstance(entry, Mapping)}
+        exports: list[dict[str, object]] = []
+        exempt = False
+        for export in record["exports"]:
+            entry = self._export_evidence(
+                str(action_key), str(export), cas_root=cas_root,
+                prior=prior_exports.get(str(export)), now=moment, window_s=window)
+            exempt = exempt or entry.get("evidence") in EXPORT_WAIT_LIVE_EVIDENCE
+            exports.append(entry)
+        verdict: dict[str, object] = {
+            "exempt": exempt, "exports": exports,
+            "since_unix": record["since_unix"], "checked_unix": moment,
+            "evidence_window_s": window}
+        if not exempt:
+            verdict["reason"] = "no named export shows progress"
+        return verdict
+
+    def _export_evidence(self, owner: str, export: str, *, cas_root: object,
+                         prior: Mapping[str, object] | None, now: float,
+                         window_s: float) -> dict[str, object]:
+        """One named export's state and evidence (:meth:`export_wait_verdict`)."""
+
+        from . import movement_actions
+
+        request, why = self._own_export_request(owner, export, cas_root)
+        if request is None:
+            return {"key": export, "state": why[0], "evidence": why[0],
+                    **({"detail": why[1]} if why[1] else {})}
+        try:
+            if self.item_path(WITHDRAWN, export).exists():
+                state = WITHDRAWN
+            elif self.item_path(READY, export).exists():
+                state = READY
+            elif self.item_path(CLAIMED, export).exists():
+                state = CLAIMED
+            elif self.item_path(DONE, export).exists():
+                state = DONE
+            elif self.item_path(FAILED, export).exists():
+                state = FAILED
+            else:
+                state = "unpublished"
+        except OSError as exc:
+            return {"key": export, "state": "unknown", "evidence": "unknown",
+                    "detail": repr(exc)}
+        entry: dict[str, object] = {"key": export, "state": state}
+        fresh_s = movement_actions.mover_report_latency_s()
+        carries = isinstance(prior, Mapping) and prior.get("state") == state
+        then = prior.get("evidence_unix") if carries else None  # type: ignore[union-attr]
+        then = (float(then) if isinstance(then, (int, float))
+                and not isinstance(then, bool) else None)
+        if state == READY:
+            refusal = self._mover_refusal(export)
+            filed = self._export_refusal_filed(owner, export)
+            if refusal is not None:
+                kind, reason, host = refusal
+                entry.update({kind: reason, "denied_by": host,
+                              "evidence": "refused" if kind == "refusal"
+                              else "withheld"})
+            elif filed is not None:
+                entry.update({"evidence": "refused", "spool_refusal": filed})
+            elif then is None or prior.get("evidence") not in (  # type: ignore[union-attr]
+                    "baseline", "carried", "none"):
+                # The first look, or the first after a refusal or withhold
+                # lifted: a new baseline.  A ``none`` carries its baseline's
+                # time, so it stays ended.
+                entry.update({"evidence": "baseline", "evidence_unix": now})
+            elif now - then <= window_s:
+                entry.update({"evidence": "carried", "evidence_unix": then})
+            else:
+                entry.update({"evidence": "none", "evidence_unix": then})
+        elif state == CLAIMED:
+            try:
+                claim = _read_json(self.item_path(CLAIMED, export))
+            except (OSError, ValueError, PoolContractError):
+                claim = None
+            claimed = claim.get("claimed_unix") if isinstance(claim, Mapping) else None
+            claimed = (float(claimed) if isinstance(claimed, (int, float))
+                       and not isinstance(claimed, bool) else None)
+            entry["claimed_unix"] = claimed
+            landed, total, detail = self._export_landed_bytes(request, cas_root)
+            entry.update({"landed_bytes": landed, "export_bytes": total})
+            if detail:
+                entry["detail"] = detail
+            same = carries and prior.get("claimed_unix") == claimed  # type: ignore[union-attr]
+            before = prior.get("landed_bytes") if same else None    # type: ignore[union-attr]
+            before = (before if isinstance(before, int)
+                      and not isinstance(before, bool) else None)
+            if landed is not None and before is not None and landed > before:
+                entry.update({"evidence": "progress-grew", "evidence_unix": now})
+            elif claimed is not None and now - claimed <= fresh_s:
+                entry.update({"evidence": "claimed", "evidence_unix": claimed})
+            elif landed is None:
+                entry["evidence"] = "unread"
+            elif before is None:
+                entry.update({"evidence": "baseline", "evidence_unix": now})
+            elif (then is not None and now - then <= window_s
+                    and prior.get("evidence") != "claimed"):  # type: ignore[union-attr]
+                entry.update({"evidence": "carried", "evidence_unix": then})
+            else:
+                entry.update({"evidence": "none", "evidence_unix": then})
+        elif state == DONE:
+            try:
+                row = _read_json(self.item_path(DONE, export))
+            except (OSError, ValueError, PoolContractError):
+                row = None
+            finished = row.get("finished_unix") if isinstance(row, Mapping) else None
+            if (isinstance(finished, (int, float)) and not isinstance(finished, bool)
+                    and now - float(finished) <= fresh_s):
+                entry.update({"evidence": "landed", "evidence_unix": float(finished)})
+            else:
+                entry.update({"evidence": "none", "evidence_unix": (
+                    float(finished) if isinstance(finished, (int, float))
+                    and not isinstance(finished, bool) else None)})
+        else:
+            entry["evidence"] = "none"
+        entry["evidence_fresh_s"] = fresh_s
+        return entry
+
+    def _export_refusal_filed(self, owner: str, export: str) -> str | None:
+        """The name of a spool identity refusal filed for ``export``, or ``None``.
+
+        ``ProducedSpool`` files one per refused attempt under
+        ``produced-spool-refusals/<owner>/`` (#1098), named
+        ``<batch>.<export[:16]>.<where>.<code>.json``.  One directory
+        listing, by the owner's own name.
+        """
+
+        from . import produced_spool
+
+        directory = self.root / produced_spool.REFUSALS_SUBDIR / owner
+        marker = f".{export[:16]}."
+        try:
+            names = sorted(entry.name for entry in os.scandir(directory)
+                           if marker in entry.name and entry.name.endswith(".json"))
+        except OSError:
+            return None
+        return names[0] if names else None
+
+    def _own_export_request(self, owner: str, export: str, cas_root: object
+                            ) -> tuple[dict[str, object] | None, tuple[str, str]]:
+        """The export's sealed request when it is ``owner``'s own export.
+
+        Read from the owner's CAS, bounded and without following links, the
+        way :func:`_execution_timeout` reads a request.  Otherwise ``None``
+        and ``(state, detail)``: ``not-own-export`` for a request that names
+        another owner or none, ``unknown`` for one that does not read.
+        """
+
+        if (len(export) != 64
+                or any(ch not in "0123456789abcdef" for ch in export)):
+            return None, ("not-own-export", "not an action key")
+        if not isinstance(cas_root, (str, Path)) or not str(cas_root):
+            return None, ("unknown", "the owner's claim names no CAS")
+        path = Path(str(cas_root)) / "requests" / export[:2] / f"{export}.json"
+        try:
+            raw = pb._read_regular_file_nofollow(path, where="export action request")
+            request = pb.validate_action(
+                pb._decode_strict_json(raw, where="export action request"))
+        except FileNotFoundError:
+            return None, ("not-own-export", "no sealed request in the owner's CAS")
+        except (OSError, ValueError, RecursionError, pb.ActionContractError,
+                pb.CASTamperError, pb.CASUnavailableError) as exc:
+            return None, ("unknown", f"request unreadable: {type(exc).__name__}")
+        spool = (request.get("params") or {}).get("produced_spool")  # type: ignore[union-attr]
+        if (request.get("action_key") != export or not isinstance(spool, Mapping)
+                or spool.get("owner") != owner):
+            return None, ("not-own-export",
+                          "its sealed params.produced_spool.owner is not this action")
+        return request, ("", "")
+
+    def _export_landed_bytes(self, request: Mapping[str, object], cas_root: object
+                             ) -> tuple[int | None, int | None, str]:
+        """``(landed, total, detail)``: what an export has written so far.
+
+        From its sealed manifest (the ``produced-spool-manifest`` input), each
+        entry's destination, or while it is being written its temporary, as
+        this box stats it, capped at the entry's bytes.  The owner runs on
+        the export's host (``submit_group`` pins it there), so it sees the
+        writes the export makes.  ``(None, None, why)`` when the manifest
+        does not read.
+        """
+
+        from . import produced_spool
+
+        inputs = [item for item in request.get("inputs") or ()   # type: ignore[union-attr]
+                  if isinstance(item, Mapping)
+                  and item.get("id") == "produced-spool-manifest"]
+        try:
+            if len(inputs) != 1:
+                raise ValueError("no single sealed manifest input")
+            spool = request["params"]["produced_spool"]            # type: ignore[index]
+            manifest = produced_spool._read(
+                pb.PrismaBuildCAS(Path(str(cas_root))).input_path(inputs[0]),
+                expected_sha256=spool["manifest_sha256"])
+            entries = manifest["entries"]                           # type: ignore[index]
+            landed = total = 0
+            for entry in entries:
+                size = int(entry["bytes"])
+                total += size
+                destination = str(entry["destination_path"])
+                for candidate in (destination, destination + ".tmp"):
+                    try:
+                        found = os.lstat(candidate)
+                    except FileNotFoundError:
+                        continue
+                    if stat.S_ISREG(found.st_mode):
+                        landed += min(int(found.st_size), size)
+                        break
+        except (OSError, ValueError, KeyError, TypeError, AttributeError,
+                produced_spool.SpoolError, pb.ActionContractError,
+                pb.CASTamperError, pb.CASUnavailableError) as exc:
+            return None, None, f"manifest unreadable: {exc!r}"[:512]
+        return landed, total, ""
 
     def mover_report(self, mover: str) -> dict[str, object] | None:
         """A stage mover's last landed-bytes report, or ``None`` (#1010).
@@ -7689,31 +8113,41 @@ class PoolQueue:
                 return None
         return withheld or refused
 
-    def _withhold_epoch(self, mover: str) -> tuple[float | None, str | None]:
-        """``(epoch_unix, basis)``: when the pool's withhold for ``mover`` began.
+    def _withhold_epoch(self, mover: str) -> tuple[float | None, str | None, float | None]:
+        """``(epoch_unix, basis, stamp_unix)``: the pool's withhold for ``mover``.
 
         Read from the row's passes sidecar, which the claim pass rewrites at
         every denial it counts (:meth:`record_pass`).  The episode's start
         (``epoch_unix``, basis ``episode``) is what
-        :meth:`_withhold_verdict` bounds a veto by.  A withhold with no
-        episode on file (``in_flight``, ``holder_tail``) is bounded by the
+        :meth:`_withhold_verdict` bounds a refilled veto by.  A withhold with
+        no episode on file (``in_flight``, ``holder_tail``) is bounded by the
         row's first denial (``first_unix``, basis ``first-denial``), the
-        clock the pool bounds ``in_flight`` by.  ``(None, None)`` when the
-        sidecar does not read or carries neither.
+        clock the pool bounds ``in_flight`` by.  ``stamp_unix`` is the
+        sidecar's ``updated_unix``: when the claim pass last counted a
+        denial of the row, which on a withholding pass is the moment it
+        re-judged the withhold (#1052).  Each is ``None`` when the sidecar
+        does not read or does not carry it.
         """
 
         try:
             record = _read_json(self.passes_path(mover))
         except (OSError, ValueError, PoolContractError):
-            return None, None
+            return None, None, None
         if not isinstance(record, Mapping):
-            return None, None
-        for field, basis in (("epoch_unix", "episode"), ("first_unix", "first-denial")):
+            return None, None, None
+
+        def finite(field: str) -> float | None:
             value = record.get(field)
-            if (isinstance(value, (int, float)) and not isinstance(value, bool)
-                    and math.isfinite(float(value))):
-                return float(value), basis
-        return None, None
+            return (float(value) if isinstance(value, (int, float))
+                    and not isinstance(value, bool) and math.isfinite(float(value))
+                    else None)
+
+        stamp = finite("updated_unix")
+        for field, basis in (("epoch_unix", "episode"), ("first_unix", "first-denial")):
+            value = finite(field)
+            if value is not None:
+                return value, basis, stamp
+        return None, None, stamp
 
     def _ready_mover_evidence(self, mover: str, *, bytes_ahead: int | None,
                               prior: Mapping[str, object] | None, now: float,
@@ -7724,10 +8158,17 @@ class PoolQueue:
 
         The claim pass's word first.  A refusal: not coming.  A withhold:
         the pool is holding the stage host for this row while the holders in
-        its way drain (#924), so it is next (``withheld``), until
-        ``WITHHOLD_CEILING_S`` past the withhold's epoch
-        (:meth:`_withhold_epoch`); past it, or with no epoch on file, not
-        coming (``withhold-lapsed``, #1022 review round 3).  Then the
+        its way drain (#924), so it is next (``withheld``) while the pool
+        still says so (:meth:`_withhold_epoch`, #1052): the claim pass
+        counted a denial of the row within ``WITHHOLD_STAMP_FRESH_S``
+        (``withhold_live_by`` ``claim-pass``) -- it re-judges the withhold
+        every pass, and the pass that stops withholding records a reason
+        that is not a withhold -- or, with no such pass on file, until
+        ``WITHHOLD_CEILING_S`` past the withhold's epoch (``epoch``, #1022
+        review round 3).  Otherwise not coming (``withhold-lapsed``).  The
+        epoch alone undercut the pool: it expires an episode at the ceiling
+        only when the episode has refills, and withholds one without them
+        up to a transient holder's declared end.  Then the
         movers queued ahead of it when this staged wait first looked
         (``waiting_behind``, the landing record's ``movers_ahead`` at that
         look, carried on the verdict): while one of them is claimed and its
@@ -7756,12 +8197,25 @@ class PoolQueue:
             kind, reason, host = refusal
             if kind == "refusal":
                 return {kind: reason, "denied_by": host, "evidence": "refused"}
-            epoch, basis = self._withhold_epoch(mover)
-            live = epoch is not None and now - epoch <= WITHHOLD_CEILING_S
+            epoch, basis, stamp = self._withhold_epoch(mover)
+            # The pool's live answer first (#1052): the claim pass re-judges
+            # the withhold every pass, and the pass that stops it records a
+            # reason that is not a withhold.  Then the epoch's own ceiling,
+            # the bound when no fresh pass is on file.
+            # A sidecar with no start on file is not one ``record_pass``
+            # writes (it always keeps ``first_unix``), so its stamp is not
+            # read as the pool's word.
+            fresh = (basis is not None and stamp is not None
+                     and -OFFER_FUTURE_TOLERANCE_S <= now - stamp <= WITHHOLD_STAMP_FRESH_S)
+            by_epoch = epoch is not None and now - epoch <= WITHHOLD_CEILING_S
+            live_by = "claim-pass" if fresh else "epoch" if by_epoch else None
             return {kind: reason, "denied_by": host,
-                    "evidence": "withheld" if live else "withhold-lapsed",
+                    "evidence": "withheld" if live_by else "withhold-lapsed",
                     "evidence_unix": epoch, "withhold_basis": basis,
                     "withhold_ceiling_s": WITHHOLD_CEILING_S,
+                    "withhold_stamp_unix": stamp,
+                    "withhold_stamp_fresh_s": WITHHOLD_STAMP_FRESH_S,
+                    "withhold_live_by": live_by,
                     "waiting_behind": behind}
         out: dict[str, object] = {"bytes_ahead": bytes_ahead}
         carries = (isinstance(prior, Mapping) and prior.get("state") == READY
@@ -7923,8 +8377,11 @@ class PoolQueue:
         order's last ``relief``, whether that standing exempts its wait, the
         stuck rule's victim when the order is stuck, and for a held-back
         consumer the one ahead of it (``held_back_by``) with the evidence it
-        showed (``ahead_evidence``).  Under a relief in
-        ``CLAIM_ORDER_RELIEF_ENDS_WAIT`` no standing is exempt.
+        showed (``ahead_evidence``), and the relief's age
+        (:func:`_claim_order_relief_age`).  Under a relief in
+        ``CLAIM_ORDER_RELIEF_ENDS_WAIT`` no standing is exempt; a ``short``
+        relief in which every candidate declined for ``window_s`` is stuck
+        (#1037).
         """
 
         try:
@@ -7948,15 +8405,25 @@ class PoolQueue:
         relief = order.get("relief")                        # type: ignore[union-attr]
         if isinstance(relief, str):
             claim["relief"] = relief
-        victim = window_credit.stuck_victim(order)
+        claim.update(_claim_order_relief_age(order, now=now))  # type: ignore[arg-type]
+        stalled = window_credit.relief_stalled_s(order, now=now)
+        victim = window_credit.stuck_victim(order, now=now, stall_bound_s=window_s)
         if victim is not None:
             # Stuck: no candidate can make the head's room, nobody is
             # granted and nobody is reading.  The rule ends one consumer, the
             # lowest-ranked; everyone else keeps their standing's answer.
-            claim.update({"relief": "futile", "stuck_victim": victim})
+            # ``short`` with every candidate declining is stuck once it has
+            # lasted this wait's own evidence window (#1037).
+            claim["stuck_victim"] = victim
+            if relief != "futile":
+                claim["stuck_basis"] = "relief-short-stalled"
             if victim == key:
+                why = ("relief futile" if relief == "futile" else
+                       f"relief short with every candidate declined for "
+                       f"{round(float(stalled or 0.0), 1)} s, past the "
+                       f"{round(float(window_s), 1)} s window")
                 claim.update({"exempt": False,
-                              "reason": "claim order stuck: relief futile, "
+                              "reason": f"claim order stuck: {why}, "
                                         "nobody granted and every ranked "
                                         "consumer blocked; the lowest-ranked "
                                         "is ended"})
@@ -7966,10 +8433,15 @@ class PoolQueue:
             # standing, the wait is not the order's (round 3, F3).  Every
             # consumer on the tier waiting on an unpublished range reads
             # this, as every one did before #1011 on an over-committed tier.
+            # The tier loop stamps it only once it persisted onto a second
+            # record; a single failed read is carried (#1037).
+            refusal = order.get("relief_refusal")           # type: ignore[union-attr]
             claim.update({"exempt": False,
-                          "reason": f"claim order relief {relief}: it made no "
-                                    "room and names no victim, so no standing "
-                                    "exempts the wait"})
+                          "reason": f"claim order relief {relief}"
+                                    + (f" ({refusal})" if isinstance(refusal, str)
+                                       and relief == "refused" else "")
+                                    + ": it made no room and names no victim, "
+                                    "so no standing exempts the wait"})
             return value, claim
         if standing != "held-back":
             claim["exempt"] = standing in ("granted", "head", "satisfied")
@@ -8631,6 +9103,49 @@ class PoolQueue:
 
         with suppress(FileNotFoundError):
             self.stage_ownership_holder_path(stage_root).unlink()
+
+    @contextmanager
+    def recorded_stage_ownership(self, stage_root, *, role: str,
+                                 action_key: str | None = None,
+                                 require_record: bool = False):
+        """Hold ``stage_root``'s ownership lock, named as its holder (#1021, #1110).
+
+        Takes :meth:`stage_ownership_lock`, files this process's holder record
+        (:meth:`write_stage_ownership_holder`) once the lock is granted, and
+        removes it before letting go, so a worker probing the lock from
+        another process can tell this action's own hold from a wait on
+        somebody else's (``start_gate_self_probes``).  ``action_key`` is the
+        action this process runs as, when it is one; ``role`` names the pass.
+
+        Yields the ``time.perf_counter()`` of the grant, so a caller's hold
+        timing counts the record's own write and removal as part of the hold
+        they are.
+
+        ``require_record`` is for an action under a progress contract: a
+        record that will not write lets the lock go at once and raises the
+        ``OSError``, because its own worker could not tell its hold from a
+        wait and would credit it for as long as the hold lasted.  Otherwise a
+        record that will not write is a gap in a diagnostic, and the hold
+        goes ahead without it.
+        """
+
+        with self.stage_ownership_lock(str(stage_root)):
+            granted = time.perf_counter()
+            try:
+                self.write_stage_ownership_holder(stage_root, role=role,
+                                                  action_key=action_key)
+            except OSError:
+                if require_record:
+                    raise
+            try:
+                yield granted
+            finally:
+                try:
+                    self.clear_stage_ownership_holder(stage_root)
+                except OSError:
+                    # Left standing, the record names a holder whose claim or
+                    # process ends with this run, and a reader checks both.
+                    pass
 
     def stage_ownership_holder(self, stage_root) -> dict[str, object]:
         """Who holds the stage's ownership lock, by its own record (#1021).
@@ -13380,6 +13895,27 @@ class PoolQueue:
                 newest = (stamp, str(status) if status is not None else "superseded")
         return None if newest is None else newest[1]
 
+    def _residency_supersession(self, action_key: object) -> dict[str, object] | None:
+        """The retirement of this consumer's filed plan, summarized, or ``None``.
+
+        ``residency_plan.supersession_summary`` of the marker covering the
+        filed plan: ``None`` when no plan is filed or none retired it.  An
+        unreadable plan or marker answers ``unreadable`` with the error,
+        never ``None``: a denial that cannot say whether the window was
+        retired must not read as one that was not.
+        """
+
+        from . import residency_plan as plan_mod
+
+        try:
+            key = _residency_action_key(action_key)
+            plan = plan_mod.read(self, key)
+            if plan is None:
+                return None
+            return plan_mod.supersession_summary(plan_mod.superseded(self, plan))
+        except (OSError, ValueError, TypeError, PoolContractError) as exc:
+            return {"unreadable": True, "error": str(exc)}
+
     def residency_verdict(self, item: Mapping[str, object]) -> dict[str, object]:
         """Whether this item's declared bytes are resident, and why not.
 
@@ -13458,9 +13994,27 @@ class PoolQueue:
             # that finished holding nothing will never become resident without
             # being republished.
             unpinned = all(entry.get("status") == "unpinned" for entry in pending)
-            return {"state": "lead_unpinned" if unpinned else "lead_not_resident",
-                    "pending": pending,
-                    "leads": [str(lead) for lead in leads]}
+            verdict: dict[str, object] = {
+                "state": "lead_unpinned" if unpinned else "lead_not_resident",
+                "pending": pending,
+                "leads": [str(lead) for lead in leads]}
+            if any(entry.get("status") != "absent" for entry in pending):
+                # A lead that finished -- failed, withdrawn, dropped, or
+                # executed holding no tokens -- is republished only by the
+                # window, and not when a mover's terminal refusal (#966's
+                # live-owner conflict, #1004's unproven ending) retired the
+                # window: the item then sits ready until an operator
+                # resubmits it.  So the denial names the retirement -- its
+                # reason, the path and both owners -- instead of a bare
+                # finished lead (#1004 item 3).  A refused lead that ran
+                # before reads ``unpinned``, from its earlier ``done/``
+                # record.  Read only once a lead has finished, so a lead
+                # that is still coming (``absent``) costs the scan nothing
+                # more.
+                supersession = self._residency_supersession(item.get("action_key"))
+                if supersession is not None:
+                    verdict["plan_superseded"] = supersession
+            return verdict
         # Pinned bytes the consumer cannot find are bytes it does not read.
         # The launcher passes ``RESIDENCY_MAP_ENV`` only when the composed map
         # is on disk, and the loop composes it from the fragments a mover
@@ -19173,12 +19727,75 @@ class PoolQueue:
         self._release_reservation(
             action_key, host=holder,
             keep_tier=self.pin_holds_tier_tokens(record, action_key))
+        # A republished key ends with one terminal record (#1117): an earlier
+        # generation's record in the other terminal state is archived first,
+        # named on the new record, and leaves its state directory only after
+        # the new record is filed, so the key is never without an ending.
+        retired = (self._archive_earlier_terminal(record, str(disposition))
+                   if disposition in {DONE, FAILED} else None)
+        if retired is not None:
+            record["supersedes_terminal"] = retired[1]
         _write_json_atomic(dst, record)
+        if retired is not None:
+            with suppress(FileNotFoundError):
+                retired[0].unlink()
         if tombstone is None:
             src.unlink(missing_ok=True)
         else:
             tombstone.unlink(missing_ok=True)
         return dst
+
+    def _archive_earlier_terminal(
+        self, record: Mapping[str, object], disposition: str,
+    ) -> tuple[Path, dict[str, object]] | None:
+        """Archive the other terminal record an earlier generation left.
+
+        A key is content-addressed, so resubmitting a concluded key publishes
+        a new generation of it.  When that generation ends in the *other*
+        terminal state -- a failed key republished and executed, or the
+        reverse -- the earlier record stayed beside the new one and the key
+        read as both (#1117).  Only a readable record of a different
+        generation (``published_unix``) is archived; a same-generation pair
+        is not this method's to judge.  Called under the key's transition
+        lock, before the new terminal is written.
+
+        The record is copied whole to ``withdrawn/superseded/``, a name no
+        terminal-state lookup reads.  Returns its live path, which the caller
+        unlinks once the new terminal is filed, and the summary the new
+        terminal carries as ``supersedes_terminal``.  An archive that cannot
+        be written, or a record that cannot be read, returns ``None`` and
+        leaves the record in place: the ambiguity is then the pre-#1117
+        state, never a lost record and never a failed conclusion.
+        """
+
+        key = str(record["action_key"])
+        other = FAILED if disposition == DONE else DONE
+        path = self.item_path(other, key)
+        try:
+            prior = _read_json(path)
+        except (OSError, PoolContractError):
+            # Unreadable is not this conclusion's to repair, and raising here
+            # would strand the claim this call has already entombed.
+            return None
+        if prior is None or prior.get("published_unix") == record.get(
+                "published_unix"):
+            return None
+        try:
+            archived = self._file_superseded(
+                prior, key=key, kind=f"{other}-terminal",
+                superseded_unix=_now(), superseded_host=socket.gethostname(),
+                superseded_by_published_unix=record.get("published_unix"),
+                superseded_by_state=disposition)
+        except OSError:
+            return None
+        summary: dict[str, object] = {"state": other}
+        for field in ("status", "published_unix", "published_by",
+                      "finished_unix", "finished_host", "attempts",
+                      "attempt_history"):
+            if field in prior:
+                summary[field] = prior[field]
+        summary["superseded_path"] = str(archived)
+        return path, summary
 
     @_serialized_key
     def reclaim_terminal_reservation(self, action_key: str, *,
@@ -20441,6 +21058,8 @@ class PoolQueue:
             progress_path.unlink()
         with suppress(OSError):
             Path(pb_progress.staged_wait_path(str(progress_path))).unlink()
+        with suppress(OSError):
+            Path(pb_progress.export_wait_path(str(progress_path))).unlink()
         progress_environment = (
             {} if progress is None else {
                 pb.ACTION_PROGRESS_PATH_ENV: str(progress_path),
@@ -20626,7 +21245,8 @@ class PoolQueue:
                                 "staged_wait": watch.staged_wait_exempt_s,
                                 "pool_contention": watch.pool_contention_exempt_s,
                                 "start_gate": watch.start_gate_exempt_s,
-                                "reader_plan": watch.reader_plan_exempt_s},
+                                "reader_plan": watch.reader_plan_exempt_s,
+                                "export_wait": watch.export_wait_exempt_s},
                             "delivered_units_per_s": delivered,
                             "delivered_bytes_per_s": (
                                 delivered if contention is not None else None),
@@ -20668,6 +21288,8 @@ class PoolQueue:
                     progress_path.unlink()
                 with suppress(OSError):
                     Path(pb_progress.staged_wait_path(str(progress_path))).unlink()
+                with suppress(OSError):
+                    Path(pb_progress.export_wait_path(str(progress_path))).unlink()
                 return self._merge_action_status(outcome, status_path)
             self.write_lease(
                 key,
@@ -20867,6 +21489,34 @@ class PoolQueue:
                                 deadline += spent
                         if (not advanced
                                 and time.monotonic() >= watch.stall_deadline()):
+                            # An owner blocked on its own produced-output
+                            # exports, one of which shows progress, is
+                            # waiting on its own work rather than stuck
+                            # (#1035).  At the rung only, like the staged
+                            # wait, and credited through the same mark.
+                            export_checkpoint = time.monotonic()
+                            try:
+                                exports = self.export_wait_verdict(
+                                    key, progress_path, token=progress_token,
+                                    cas_root=item.get("cas_root"),
+                                    prior=watch.export_wait,
+                                    window_s=watch.grace_s)
+                            except (OSError, ValueError, PoolContractError) as exc:
+                                exports = {"exempt": False, "exports": [],
+                                           "reason": f"unreadable: {exc!r}"}
+                            if exports is not None:
+                                now_unix = _now()
+                                since = float(exports.get("since_unix") or now_unix)
+                                watch.exempt_export_wait(
+                                    exports, now=export_checkpoint,
+                                    since_monotonic=export_checkpoint
+                                    - max(0.0, now_unix - since))
+                            spent = time.monotonic() - export_checkpoint
+                            watch.shift(spent)
+                            if deadline is not None:
+                                deadline += spent
+                        if (not advanced
+                                and time.monotonic() >= watch.stall_deadline()):
                             # A stage mover standing aside for a copy a
                             # claimed consumer is blocked on lands nothing on
                             # purpose (#1091 review 1).  Judged from the tier
@@ -20940,6 +21590,8 @@ class PoolQueue:
                 progress_path.unlink()
             with suppress(OSError):
                 Path(pb_progress.staged_wait_path(str(progress_path))).unlink()
+            with suppress(OSError):
+                Path(pb_progress.export_wait_path(str(progress_path))).unlink()
             raise
         status = "executed" if process.returncode == 0 else "failed"
         if watch is not None:

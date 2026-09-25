@@ -18,11 +18,13 @@ Everything runs on ``tmp_path`` queues, stages and sources (#628).
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import math
 import os
 from pathlib import Path
+import signal
 import subprocess
 import sys
 import textwrap
@@ -591,3 +593,101 @@ def test_an_egress_wedged_in_its_own_hold_is_not_credited_for_it(
                for entry in contention["start_gate_holders"])
     # At most the two edges a look can land between the grant and the record.
     assert observed["start_gate_exempt_s"] <= 2 * HEARTBEAT + 1e-9
+
+
+# ------------------------------------------------------------ a mover's own hold
+
+
+#: A mover wedged inside its own resume census (#1110): the real
+#: ``stage_move._resume_own_coverage``, reached with a prior fragment on
+#: disk, whose validation -- which runs under the stage's lock -- never
+#: returns.  The mover's key is the one its launcher sets, as in production.
+MOVER_RESUME_HOLD = textwrap.dedent('''
+    import os, sys, time
+    from pathlib import Path
+    sys.path.insert(0, {tools!r})
+    import stage_move
+    from prismabuild import core as pb
+    from prismabuild import pool
+    queue = pool.PoolQueue({queue!r})
+    key = os.environ[pb.ACTION_KEY_ENV]
+    residency_root = Path({residency!r})
+    fragment = stage_move.residency_map.fragment_path(
+        residency_root, {consumer!r}, key)
+    fragment.parent.mkdir(parents=True, exist_ok=True)
+    fragment.write_text("{{}}")
+    def wedged(document):
+        with open({marker!r}, "w") as stream:
+            stream.write(str(os.getpid()))
+        time.sleep(3600)
+    stage_move.residency_map.validate_fragment = wedged
+    stage_move._resume_own_coverage(
+        queue, consumer_action_key={consumer!r}, mover_action_key=key,
+        tier_id={tier!r}, stage_root=Path({stage!r}),
+        manifest_sha256="0" * 64, residency_root=residency_root,
+        window=[], mount_prefix="/")
+''')
+
+
+def test_a_mover_wedged_in_its_own_resume_census_is_not_credited_for_it(
+        tmp_path: Path, monkeypatch) -> None:
+    """#1110, red on main.  The resume census reads the mover's own prior
+    coverage under the stage's lock, in the mover's first phase, where its
+    worker looks at the start gate.  On main the census filed no holder
+    record, so the look read the mover's own hold as a wait on an
+    unrecorded holder and credited it: a mover wedged there was kept alive
+    to the worker's ceiling.  Now the census names the mover as its holder,
+    the look counts it as a self probe, and the mover ends one grace after
+    launch."""
+
+    monkeypatch.setattr(pool, "HEARTBEAT_S", HEARTBEAT)
+    monkeypatch.setattr(pool, "POOL_MEMBER_STAT", _Disks(UNDER), raising=False)
+    (tmp_path / "stage").mkdir()
+    queue = pool.PoolQueue(tmp_path / "queue")
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    source = MOVER_RESUME_HOLD.format(
+        tools=str(ROOT / "tools" / "fleet"), queue=str(tmp_path / "queue"),
+        residency=str(tmp_path / "residency"), consumer=WAITING, tier=TIER,
+        stage=str(tmp_path / "stage"), marker=str(tmp_path / "held.txt"))
+    item = _claimed(queue, cas, tmp_path, "resume", source, {
+        pb.PROGRESS_PARAM: _policy(2),
+        "progress_pool_contention": _contention(tmp_path)})
+    key = str(item["action_key"])
+    ceiling = 20.0
+    ended: dict[str, dict] = {}
+
+    def run() -> None:
+        ended["outcome"] = queue.execute(item, timeout_s=ceiling,
+                                         heartbeat_s=HEARTBEAT,
+                                         timeout_grace_s=0.5)
+
+    runner = threading.Thread(target=run, daemon=True)
+    runner.start()
+    # On main the credited hold also outlived the worker's ceiling: the
+    # action was never ended at all.  Bound the wait, and end the wedged
+    # process ourselves if the worker does not, so a regression fails here
+    # instead of hanging the suite.
+    runner.join(ceiling + 10.0)
+    if runner.is_alive():
+        marker = tmp_path / "held.txt"
+        if marker.exists():
+            with contextlib.suppress(ProcessLookupError, ValueError):
+                os.kill(int(marker.read_text()), signal.SIGKILL)
+        runner.join(30.0)
+        pytest.fail("the worker credited the mover's own resume-census hold "
+                    "and never ended it")
+    outcome = ended["outcome"]
+
+    assert (tmp_path / "held.txt").read_text().isdigit()
+    assert outcome.get("termination_reason") == "no_progress", _brief(outcome)
+    assert outcome["elapsed_s"] < ceiling / 2
+    observed = outcome["progress_observation"]
+    contention = observed["pool_contention"]
+    assert contention["start_gate_self_probes"] > 0
+    assert all(entry["action_key"] != key
+               for entry in contention["start_gate_holders"])
+    # At most the two edges a look can land between the grant and the record.
+    assert observed["start_gate_exempt_s"] <= 2 * HEARTBEAT + 1e-9
+    # The kill ended the process, and its lock with it.
+    with queue.stage_ownership_lock(str(tmp_path / "stage"), blocking=False) as got:
+        assert got

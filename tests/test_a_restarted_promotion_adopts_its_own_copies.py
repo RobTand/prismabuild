@@ -390,6 +390,14 @@ def test_a_record_dating_other_bytes_still_refuses_at_once(
         stage_root=str(tmp_path / "ram"), manifest_sha256=manifest_sha,
         generation=reader_lease.mint_generation(), entries=entries,
         epoch=epoch)
+    # ... and that promotion is still queued, so it protects someone.  Since
+    # #1004 item 1 a promotion arbitrates a divergent name by its owners'
+    # states: an owner provably ended would be replaced (covered in
+    # ``test_a_divergent_ram_name_is_arbitrated_by_its_owners``); a queued
+    # mover's ending is unproven, which keeps the immediate refusal.
+    queue.publish(action_key=FOREIGN_RAM_MOVER, cas_root="/cas",
+                  checkout_root="/co", worker_script="/w.py",
+                  resources={"cpu": 1}, max_attempts=1)
     monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", GRACE)
 
     started = time.monotonic()
