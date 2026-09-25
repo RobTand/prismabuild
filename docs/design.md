@@ -9924,6 +9924,20 @@ roots, so two roots can never share a checkpoint. A skip files no per-owner
 receipt; the tier cycle line counts skipped and censused owners instead, as
 `census_stale_skipped` and `census_stale_censused`.
 
+A refused checkpoint says why (#1069). Whenever the receipt of an otherwise
+idle owner reads `cacheable: false`, its `cache_refused` names the first
+refusal found: `document-version-unknown` (this owner's fragment or material
+version, or a co-owner fragment's, could not be read),
+`no-directory-stamp` (the owner names no path to fence),
+`directory-stamp-untrusted` (the trusted rule refused a parent directory's
+stamp, #1062), `outside-sweep-scope` (the latest sweep did not discover the
+owner) or `cache-full`. A receipt that cached, or whose owner was not idle
+(a stale or absent path, a changed document, a partial prune), carries an
+empty `cache_refused`. The tier cycle line counts the refusals per reason, as
+`census_stale_cache_refused.<reason>`, so an owner re-censused every cycle
+for a reason that does not end can be told from one re-censused once after a
+same-tick change.
+
 **An uncharged dead owner with material is room under pressure (#1061).** A
 failed consumer's executed `DONE` mover whose move receipt never completed
 holds no stage token: the ledger released it when the mover finished. Its

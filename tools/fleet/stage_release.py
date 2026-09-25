@@ -584,6 +584,11 @@ class CensusIndex(_CensusMemo):
         #: because a skip emits no per-owner receipt.
         self.stale_skipped = 0
         self.stale_censused = 0
+        #: Censused owners that were idle but whose skip checkpoint was
+        #: refused, by reason (#1069): the receipt names the reason, and the
+        #: cycle line counts them so a cycle that keeps re-censusing an
+        #: owner shows why.
+        self.stale_cache_refused: dict[str, int] = {}
 
     def fresh_pins(self) -> _PinMemo:
         """A pin memo for one call (see the class docstring)."""
@@ -3064,10 +3069,46 @@ def _co_owner_fences(memo: _CensusMemo,
     return fences
 
 
+class _CheckpointVerdict:
+    """What :func:`_install_skip_checkpoint` did: installed, or why not (#1069).
+
+    Truthy exactly when the checkpoint was installed, so it reads as the
+    boolean it always was; ``refused`` names the reason when it was not:
+
+    * ``document-version-unknown`` -- this owner's fragment or material
+      version, or a co-owner fragment's, could not be read;
+    * ``no-directory-stamp`` -- the owner names no path, so there is no
+      directory to fence;
+    * ``directory-stamp-untrusted`` -- a parent directory's stamp was refused
+      by the trusted rule (#1062): changed in the tick it was read in, or on
+      a filesystem the rule does not list;
+    * ``outside-sweep-scope`` -- the latest sweep did not discover this owner;
+    * ``cache-full`` -- the cache holds as many checkpoints as the sweep
+      allows, and a newcomer is refused rather than evicting one.
+    """
+
+    __slots__ = ("refused",)
+
+    def __init__(self, refused: str = "") -> None:
+        self.refused = refused
+
+    def __bool__(self) -> bool:
+        return not self.refused
+
+    def __repr__(self) -> str:
+        return f"_CheckpointVerdict(refused={self.refused!r})"
+
+
+#: Every reason a skip checkpoint can be refused, in the order they are tested.
+SKIP_CHECKPOINT_REFUSALS = (
+    "document-version-unknown", "no-directory-stamp",
+    "directory-stamp-untrusted", "outside-sweep-scope", "cache-full")
+
+
 def _install_skip_checkpoint(key: tuple, fragment_version, material_version,
                              stamps: dict[str, tuple[int, int, int, int]],
                              documents: dict[str, tuple] | None = None,
-                             ) -> bool:
+                             ) -> _CheckpointVerdict:
     """Install the EXACT verified versions of one owner with nothing to act on.
 
     The caller passes the trusted stamps it sampled before its scan
@@ -3083,24 +3124,29 @@ def _install_skip_checkpoint(key: tuple, fragment_version, material_version,
     (:func:`_retain_skip_checkpoints`); when the cache is full the newcomer
     is refused and nothing is evicted.  A cache entry only ever skips a
     cleanup scan: it holds no deletion or adoption authority.
+
+    Returns a :class:`_CheckpointVerdict`: truthy when installed, else it
+    names the refusal, which the stale-mention receipt carries (#1069).
     """
 
-    if fragment_version is None or material_version is None or not stamps:
-        return False
-    if documents is None:
-        return False
+    if fragment_version is None or material_version is None:
+        return _CheckpointVerdict("document-version-unknown")
+    if documents is None or any(version is None
+                                for version in documents.values()):
+        return _CheckpointVerdict("document-version-unknown")
+    if not stamps:
+        return _CheckpointVerdict("no-directory-stamp")
     if any(version is None for version in stamps.values()):
-        return False
-    if any(version is None for version in documents.values()):
-        return False
+        return _CheckpointVerdict("directory-stamp-untrusted")
     fences = len(stamps) + len(documents)
     chars = sum(len(name) for name in stamps) + sum(len(name) for name in documents)
     with _skip_checkpoints_lock:
         _forget_checkpoint_locked(key)
-        if (key not in _skip_checkpoint_scope["keys"]  # type: ignore[operator]
-                or len(_skip_checkpoints)
+        if key not in _skip_checkpoint_scope["keys"]:  # type: ignore[operator]
+            return _CheckpointVerdict("outside-sweep-scope")
+        if (len(_skip_checkpoints)
                 >= int(_skip_checkpoint_scope["capacity"])):  # type: ignore[arg-type]
-            return False
+            return _CheckpointVerdict("cache-full")
         _skip_checkpoints[key] = {
             "fragment": fragment_version, "material": material_version,
             "dirs": dict(stamps), "documents": dict(documents),
@@ -3108,7 +3154,7 @@ def _install_skip_checkpoint(key: tuple, fragment_version, material_version,
         }
         _skip_checkpoint_usage["fences"] += fences
         _skip_checkpoint_usage["bytes"] += chars
-    return True
+    return _CheckpointVerdict()
 
 
 def _skip_checkpoint_hit(key: tuple, fragment_path: Path,
@@ -3313,8 +3359,12 @@ def prune_stale_mentions(queue: pool.PoolQueue, mover_action_key: str, *,
     def receipt(*, pruned: int = 0, absent: int = 0, retained: int = 0,
                 unlinked: int = 0, unlinked_bytes: int = 0,
                 pair_complete: bool = True, partial: bool = False,
-                complete: bool = False, cacheable: bool = False,
+                complete: bool = False, cacheable=False,
                 charge_retained: bool = True) -> dict[str, object]:
+        # ``cacheable`` may be a checkpoint verdict: an idle owner whose
+        # checkpoint was refused says why (#1069); every other receipt,
+        # cached or not idle, carries an empty reason.
+        refused = getattr(cacheable, "refused", "")
         return {
             "schema": pool.POOL_EGRESS_SCHEMA_V1, "event": STALE_MENTION_EVENT,
             "action_key": mover_action_key,
@@ -3326,7 +3376,8 @@ def prune_stale_mentions(queue: pool.PoolQueue, mover_action_key: str, *,
             "bytes_unlinked": unlinked_bytes,
             "document_pair_complete": pair_complete,
             "charge_retained": charge_retained, "partial": partial,
-            "cacheable": cacheable, "retained_reason": retained_reason,
+            "cacheable": bool(cacheable), "cache_refused": refused,
+            "retained_reason": retained_reason,
             "complete": complete, "errors": errors,
             "host": socket.gethostname(), "unix": time.time(),
         }
@@ -4178,7 +4229,9 @@ def sweep_dead_owner_fragments(
     once it completes, only the owners it found keep a checkpoint, one
     each, and ``index`` counts the owners a checkpoint skipped
     (``stale_skipped``) and the owners censused (``stale_censused``) for
-    the cycle line, since a skip files no receipt.
+    the cycle line, since a skip files no receipt, and, by reason, the
+    censused owners that were idle but whose checkpoint was refused
+    (``stale_cache_refused``, #1069).
 
     ``budget``, when the tier loop passes one (#1072), is asked before each
     candidate consumer whether its unit still fits this cycle
@@ -4398,6 +4451,11 @@ def _dead_owner_unit(queue: pool.PoolQueue, consumer: str,
                                     stage=Path(stage_roots[tier]), tier_id=tier,
                                     root=root, observed=observed)
                                 receipts.append(pruned)
+                                refused = pruned.get("cache_refused")
+                                if index is not None and refused:
+                                    counts = index.stale_cache_refused
+                                    counts[str(refused)] = counts.get(
+                                        str(refused), 0) + 1
                                 coherent = _left_coherent(pruned)
                             # #1061: an owner with no token whose paths the
                             # transaction found whole is room under pressure.
