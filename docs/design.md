@@ -8756,6 +8756,77 @@ them the tier serves first.
   announced ceiling, and the reader waits that long. Every mover of a plan
   whose manifest has landed once on the tier is bounded (next section).
 
+### An owner's wait on its own export is not quiet (#1035)
+
+Since PrismaQuant #1118 a Stage A owner waits on its own produced-output
+exports (`ProducedSpool.submit_group`) at its ordering barriers (a
+checkpoint's seal, the handoff record, progress, the capture's end) and when
+its local window is full. The wait has no clock of its own and commits
+nothing, so its `no_progress` allowance depended on the export's admission:
+a congested export queue ended a healthy owner. `declare_staged_wait` could
+not name it, because an export is not a mover in any residency plan.
+
+**The record.** An owner that waits writes `<progress path>.export-wait`
+(`prismabuild.export_wait.v1`, `progress.declare_export_wait`): its progress
+token, when the wait began and the export action keys it waits on (the
+`export_key` `submit_group` returns); `clear_export_wait` ends it. It is a
+record of its own, beside the staged-wait record, so an owner can declare
+both, and the tier loop's claim order, which ranks consumers by their staged
+waits (#1011), does not read it. It is read under the staged-wait record's
+rules (`pool.read_export_wait`: the stable reader, the same byte bound, the
+exact schema and this launch's token), and removed with the progress file.
+
+**The verdict.** When the `no_progress` rung finds the owner quiet after the
+staged-wait check, it asks `PoolQueue.export_wait_verdict`, and credits an
+exempt verdict through the same mark as every other exemption
+(`ProgressWatch._credit`), so an interval is credited once. The wait is
+exempt while any named export shows progress. Each export is first checked
+to be the owner's own: its sealed request, read from the owner's CAS, names
+the owner in `params.produced_spool.owner` (`dependent_of` on the row is a
+hint only); otherwise it is `not-own-export`, or `unknown` when the request
+does not read. Then, per state:
+
+| Export | Evidence | Exempt |
+|---|---|---|
+| `claimed` | `progress-grew` when its landed bytes grew since the previous check of the same claim; `claimed` while its claim is at most `mover_report_latency_s()` (two heartbeats) old; `baseline` at the first reading of a claim; `carried` while the last growth is within the evidence window; `unread` when the landed bytes do not read; `none` otherwise | yes, except `none` and `unread` |
+| `ready`, and every host's latest claim-pass reason on it is a refusal (`MOVER_REFUSAL_REASONS`) | `refused`, naming the reason and host | no |
+| `ready`, and a host withholds or defers it behind a withhold (`deferred_behind_withholding`, `*_withholding`) | `withheld`, naming the reason and host | no |
+| `ready`, and the spool filed an identity refusal for it (`produced-spool-refusals/<owner>/`, #1098) | `refused`, naming the filing as `spool_refusal` | no |
+| `ready`, otherwise | `baseline` at the first check, and at the first after a refusal or withhold lifts; `carried` within the evidence window; `none` after | yes, except `none` |
+| `done` | `landed` while it finished at most `mover_report_latency_s()` ago; `none` after | `landed` only |
+| `failed`, `withdrawn`, `unpublished` | `none` | no |
+
+The landed bytes are read off the export's sealed manifest (its
+`produced-spool-manifest` input): for each entry, the destination, or while
+it is being written its temporary, as the owner's box stats it, capped at
+the entry's bytes. The export runs on the owner's host (`submit_group` pins
+it there), so the owner's worker sees the writes. An export seals no
+progress contract and has no stall rung of its own, so its lease is not
+evidence here, unlike a stage mover's (#1022 review round 2): a hung export
+keeps its lease until its execution bound. A withheld export is not exempt,
+unlike a withheld stage mover, by #1035's ruling. The evidence window is the
+owner's own phase grace, as the rung passes it, and the rung passes the
+launch's previous verdict so evidence carries within one wait (the same
+`since_unix`).
+
+**Records.** The progress observation carries `export_wait_exempt_s` and
+`export_wait`: every named export with its state, evidence and
+`evidence_unix`, and for a claimed one `claimed_unix`, `landed_bytes` and
+`export_bytes`. A `no_progress` ending's `stall.credited_s` carries
+`export_wait`. A verdict that is not exempt says `no named export shows
+progress`.
+
+**Bounds.** A claimed export that writes nothing ends the owner after about
+two graces of quiet, one more than without the wait: the first look is the
+baseline, and the rung looks again one grace later. A queued export that is
+neither refused nor withheld extends the owner by one evidence window from
+its first look. A retried
+export returns to `ready` and takes a new baseline; a requeued and reclaimed
+one takes a new baseline on its new claim. PrismaQuant does not declare the
+wait yet: the owner's barrier and window waits must call
+`declare_export_wait` with their outstanding export keys and
+`clear_export_wait` when they end (owed on the PrismaQuant side).
+
 ### Every leg has a row, and a blocked reader moves its horizon (#1018)
 
 Until #1018 the landing record listed an unpublished leg only inside its
