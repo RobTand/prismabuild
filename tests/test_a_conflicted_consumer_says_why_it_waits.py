@@ -144,7 +144,10 @@ def test_an_unreadable_marker_is_named_not_absent(
                          stage_move.STAGED_DESTINATION_CONFLICT)
     path = residency_plan._superseded_path(
         queue, world.successor, residency_plan.plan_sha256(world.plan))
+    mode = path.stat().st_mode
+    path.chmod(0o644)          # the marker is published read-only
     path.write_text("{torn")
+    path.chmod(mode)
 
     verdict = queue.residency_verdict(_successor_row(world))
 
