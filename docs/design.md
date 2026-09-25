@@ -380,7 +380,16 @@ full-width CPU demand on a pressured host, and the GPU refusals for a
 measurement) when every holder is transient, and the adaptive CPU refusals
 that stand for a CPU token shortage (`borrow_evidence_unavailable`,
 `pressure_override_no_borrow`, `projected_cpu_cost` with the tokens short)
-by the token rule. A GPU refusal of an item that is not a measurement
+by the token rule. A `host_pressure` refusal of an item that needs CPUs rather
+than a quiet host withholds when every busy CPU it names is held by one of the
+pool's own holders (#1160): the refusal records `held_cpus` and `foreign_cpus`
+apart, and with held CPUs and no foreign one it is judged by the exclusive rule
+over the holders whose CPU allocation names those CPUs -- typically a borrower
+still pinned on a CPU whose lender released it -- and holds back the whole
+box, since any CPU admission behind the item moves which free tokens it is
+predicted to get. It is not a token shortage: its tokens are free. A busy CPU
+that no holder holds is load the pool does not own, and that refusal is
+overtaken. A GPU refusal of an item that is not a measurement
 withholds too, when it is one the GPU controller gives only while the pool's
 own GPU holders are on the device (`exclusive_holder`,
 `sharing_probe_not_authorized`, `holder_telemetry_unavailable`,
@@ -9922,6 +9931,16 @@ grace_s            = ceil(priced_s + 2 * pool.HEARTBEAT_S)
   which is a part of that whole, fits in one grace. The drain reports as it
   goes, so a range larger than any receipted one is charged for its quiet,
   not its size.
+* An egress receipt is one whose `schema` is `pool.POOL_EGRESS_SCHEMA_V1`.
+  `PoolQueue.record_move` keeps that schema as `stage_release` built it,
+  stamps `pool.POOL_MOVE_SCHEMA_V1` only on a receipt with no schema, and
+  refuses any other (#1158). Before #1158 it stamped the move schema over
+  every receipt, so no egress was ever priced. Pricing starts from the fix
+  forward: a receipt filed before it reads `pool_move.v1` and prices neither
+  an egress nor a mover (it has no `seconds` and no `disk_pacing`). The
+  first egress after the fix is sealed unmeasured and files the receipt
+  that prices the next one. `PoolQueue.move_record` and the orphan
+  recovery's egress evidence read either schema.
 * A receipt that names another stage root, judged no entry, or is missing a
   timing prices nothing. With no egress receipt on the stage, or no source
   pool members on the tier record (`source_members`), the egress is sealed
