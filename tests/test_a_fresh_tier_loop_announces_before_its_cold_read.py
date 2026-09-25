@@ -225,6 +225,9 @@ def _assert_never_refused(consumer: _Consumer, line: dict[str, object],
         f"a consumer's staged wait was refused during the fresh loop's first "
         f"cycle ({label}): first refusal {refused[0]}; {line}")
     assert max(ages) < BOUND_S, (max(ages), line)
+    # What ``Liveness`` promises, on the clock the writes are stamped with:
+    # no record older than ``H`` = ``L - P``, as #1148 holds a warm read to.
+    assert float(line["liveness"]["oldest_age_s"]) < BOUND_S - POLL_S, line
 
 
 def test_a_fresh_loop_keeps_the_consumer_waiting_through_a_cold_read(
