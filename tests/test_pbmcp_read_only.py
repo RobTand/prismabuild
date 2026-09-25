@@ -26,6 +26,7 @@ import io
 import os
 from pathlib import Path
 import stat
+import subprocess
 import sys
 
 import pytest
@@ -37,6 +38,7 @@ sys.path.insert(0, str(REPOSITORY / "tests"))
 
 import pbmcp  # noqa: E402
 import pbmcp_fixture as fx  # noqa: E402
+from prismabuild import adaptive_cpu, adaptive_snapshot  # noqa: E402
 
 SOURCE = REPOSITORY / "tools" / "fleet" / "pbmcp.py"
 
@@ -311,3 +313,86 @@ def _listing(root: Path) -> set[tuple[str, int, int]]:
             found.add((str(path.relative_to(root)), info.st_size,
                        info.st_mtime_ns))
     return found
+
+
+#: How long the stand-in publisher sleeps before it copies.  Longer than any
+#: fixture build takes, so an unwaited copy lands after ``build`` returns on
+#: every box, whatever its speed (#1175).
+SLOW_COPY_S = 1.0
+
+
+@pytest.fixture
+def slow_publisher(monkeypatch: pytest.MonkeyPatch):
+    """The real snapshot copy, started late enough to lose any race.
+
+    ``adaptive_snapshot.publish`` runs its own module as a detached child.  The
+    stand-in runs that same entry point with the same arguments and the same
+    inherited lock descriptor, after a sleep, so what it writes and where are
+    the real publisher's and only the timing is chosen.
+    """
+
+    real_popen = subprocess.Popen
+
+    def delayed(argv, *args, **kwargs):
+        prefix = ("import runpy, sys, time; "
+                  f"time.sleep({SLOW_COPY_S!r}); sys.argv = sys.argv[1:]; "
+                  "runpy.run_path(sys.argv[0], run_name='__main__')")
+        return real_popen([argv[0], "-c", prefix, *argv[1:]], *args, **kwargs)
+
+    monkeypatch.setattr(adaptive_snapshot.subprocess, "Popen", delayed)
+    try:
+        yield
+    finally:
+        # Leave nothing writing into this test's directory after it ends.
+        for child in adaptive_snapshot._children:
+            child.wait(timeout=30)
+        adaptive_snapshot._children.clear()
+
+
+def test_the_fixture_hands_over_a_queue_at_rest(
+    tmp_path: Path, slow_publisher: None,
+) -> None:
+    """``build`` returns only after the snapshot copies its claims started.
+
+    The fixture's two ``claim`` calls each file a claim pass and start the
+    snapshot publisher, which copies ``claim-denials.json`` into
+    ``reservations/<this host>/adaptive/`` of the fixture's own queue after
+    ``claim`` has returned.  Unwaited, that copy raced the first listing of
+    the byte-identity test above and was blamed on ``pbmcp`` on the boxes
+    where it lost (#1175).
+    """
+
+    fleet = fx.build(tmp_path)
+    assert [child.pid for child in adaptive_snapshot._children
+            if child.poll() is None] == []
+    handed_over = _listing(fleet.queue_root) | _listing(fleet.cas_root)
+    for child in adaptive_snapshot._children:
+        child.wait(timeout=30)
+    assert _listing(fleet.queue_root) | _listing(fleet.cas_root) == handed_over
+    # The copy did happen, and before the hand-over: the race is settled by
+    # waiting for the writer, never by losing the write.
+    shared = fleet.queue.ledger().base / "adaptive" / "claim-denials.json"
+    assert str(shared.relative_to(fleet.queue_root)) in {
+        name for name, _size, _mtime in handed_over}
+
+
+def test_no_tool_touches_the_host_local_admission_diagnostics(
+    tmp_path: Path,
+) -> None:
+    """The claim-pass and denial record every withhold is carried from.
+
+    ``_host_denial_records`` reads this host's local ``claim-denials.json``,
+    and ``carry_withhold`` decides from it.  A read-only tool that wrote it,
+    or started the publisher that stamps ``publisher-*.json`` beside it, would
+    change what a later claim pass carries.  Listed with the queue's own
+    listing so that a copy into ``reservations/`` is caught too.
+    """
+
+    fleet = fx.build(tmp_path)
+    local = adaptive_cpu.local_state_base(fleet.queue.ledger().base)
+    before = _listing(local) | _listing(fleet.queue_root)
+    session = pbmcp.Session(queue_root=fleet.queue_root,
+                            cas_root=fleet.cas_root, repo_link=fleet.repo_link)
+    _every_tool(session, fleet)
+    fx.settle_publishers()
+    assert _listing(local) | _listing(fleet.queue_root) == before
