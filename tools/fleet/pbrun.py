@@ -5854,8 +5854,9 @@ def residency_stage_rows(
     # tier mints what the disks delivered plus one probe mover's worth, and a
     # mover that reserves nothing can never be rationed against another.  One
     # copy's measured rate (#909): the slowest landing of this manifest's
-    # latest window onto this tier, else the median single-reader share, never
-    # the tier's whole offer.  The tier's *current* offer caps it: a fresh seal
+    # latest window onto this tier when that window holds two copies or more,
+    # else the median single-reader share of the tier's latest window (#958),
+    # never the tier's whole offer.  The tier's *current* offer caps it: a fresh seal
     # asks no more than admission will honour on this cycle (#708), and with
     # nothing measured the offer is the stated bound, named in demand_source.
     fill_price = storage_tiers.mover_fill_price(
@@ -5874,16 +5875,20 @@ def residency_stage_rows(
     # (``movement_actions.mover_progress_policy``): its next landing at the
     # slowest measured landing of this manifest on this tier, capped by the
     # fill it reserves, plus the time a report takes to reach the stall
-    # check.  Measured means the ``landing`` basis only: a median share of
-    # other manifests' copies is not a landing of this one.  Time the pool is
+    # check.  Measured means a landing of this manifest only (``landing`` on
+    # the price, whatever basis sealed the fill): a median share of other
+    # manifests' copies is not a landing of this one, while one copy is --
+    # a window of one prices no fill seal (#958) but still bounds how long a
+    # copy of this manifest has gone between landings.  Time the pool is
     # the bottleneck is not priced here: the worker credits it on its own
     # sample of the pool's members (``core.POOL_CONTENTION_PARAM``), so a
     # policy is sealed only with the members the storage role announced.
     # With either unmeasured the mover is sealed as before, with no stall
     # grace, and ``demand_source.mover_progress`` says which was missing.
     landing_bytes_per_s: float | None = None
-    if fill_price.get("basis") == "landing" and fill_price.get("mb_s"):
-        slowest = int(fill_price["mb_s"])                  # type: ignore[arg-type]
+    landing = fill_price.get("landing")
+    if isinstance(landing, Mapping) and landing.get("mb_s"):
+        slowest = int(landing["mb_s"])                     # type: ignore[arg-type]
         if fill is not None:
             slowest = min(slowest, int(fill))
         landing_bytes_per_s = float(slowest * storage_tiers.MB)
@@ -5895,13 +5900,13 @@ def residency_stage_rows(
     # landed, at most: the rate above was measured under that load, and a
     # reviewer comparing it with the load now needs both numbers.
     window_concurrency = None
-    if fill_price.get("basis") == "landing":
+    if isinstance(landing, Mapping):
         counts = [record.get(storage_tiers.MOVER_CONCURRENCY_FIELD)
                   for record in receipts
                   if isinstance(record, Mapping)
                   and str(record.get("manifest_sha256") or "") == digest
                   and str(record.get("consumer_action_key") or "")
-                  == str(fill_price.get("window_consumer") or "")]
+                  == str(landing.get("window_consumer") or "")]
         counts = [int(count) for count in counts
                   if isinstance(count, int) and not isinstance(count, bool)]
         window_concurrency = max(counts) if counts else None
