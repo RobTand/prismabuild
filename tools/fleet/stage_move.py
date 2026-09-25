@@ -87,6 +87,16 @@ RANGE_SUFFIX = ".pbrange"
 #: was measured at 75 KB/s against 466 MB/s.
 FRAGMENT_PUBLISH_S = 5.0
 
+#: Whose copy a staged file is (#1088): the action key of the mover that
+#: wrote it, set on the temporary before the rename, beside the prewarm
+#: loop's ``user.pbstage.source``.  That mark alone cannot tell a mover's copy
+#: from a prewarm object, so a copy renamed into place after the mover's last
+#: fragment -- a stage mover's last interval, a RAM promotion's whole range --
+#: read as the prewarm loop's and nothing reclaimed it.
+#: ``stage_release.reconcile`` reads this one; a file without it is judged
+#: exactly as before.
+STAGE_MOVER_XATTR = "user.pbstage.mover"
+
 
 def stage_relative(path: str, offset: int, size: int, *, mount_prefix: str,
                    namespace: str | None = None,
@@ -3492,6 +3502,16 @@ class _Copier:
             temporary.unlink(missing_ok=True)
             raise OSError(f"digest mismatch on {source}: manifest says "
                           f"{declared[:12]}, the copy is {computed[:12]}")
+        if self.owner:
+            # Name this mover as the copy's writer (#1088), before the
+            # rename, so what this copy publishes carries it from its first
+            # instant under the final name.
+            # Best-effort like the mark below: a copy the filesystem would
+            # not mark is judged by the rules that held before this one.
+            try:
+                os.setxattr(temporary, STAGE_MOVER_XATTR, self.owner.encode())
+            except OSError:
+                pass
         if source_id is not None:
             # File the origin change-detection the prewarm loop defined
             # (same name, same format), best-effort: a filesystem that

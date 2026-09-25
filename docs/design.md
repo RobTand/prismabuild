@@ -4844,9 +4844,11 @@ The unlinks stay under the lock because moving them out is not safe without
 new state. Unlinking outside the lock means dropping the ownership in one
 hold and unlinking in a later one. Two co-owners' egresses can then each
 judge a shared path against the other's fragment, which is still present,
-and both drop their ownership. The file is left with no owner, and because
-the mover marked it published, `reconcile` counts it in `unowned_left` and
-does not reclaim it. Closing that gap needs a durable egress-intent record
+and both drop their ownership. The file is left with no owner. A copy
+published before #1088 carries only the source mark, so `reconcile` counts
+it in `unowned_left` and does not reclaim it; a later copy is reclaimed only
+once its writer has ended, which says nothing about the egresses that
+dropped it. Closing that gap needs a durable egress-intent record
 and a resumer that finishes the unlinks after a crash. A `fable-high`
 consult on the split design (drop in one hold, then unlink in bounded holds)
 judged it sound with seven fixes, among them liveness for publishers past
@@ -10784,6 +10786,99 @@ material sidecar (`owned`, undated, and never healed by elapsed time alone)
 waits out a shrunk grace and refuses, and the receipt's `publish_waits` and
 the recorded error both name the verdict.
 
+### A killed mover's copies that no fragment names are reclaimed, and sized (#1088)
+
+Both movers set the prewarm loop's `user.pbstage.source` on every copy before
+its rename, and `stage_release.reconcile` read that mark as a prewarm object:
+counted in `unowned_left`, never deleted. A copy a mover renamed after its
+last fragment is named by nothing: at most one `FRAGMENT_PUBLISH_S` interval
+of a stage mover's range per kill, and every copy of a RAM promotion's range,
+which files its only fragment at the end. The dead-owner sweep deletes by
+fragment names and the prewarm loop by its own records, so once no retry of
+the same key adopted the copies (#1081) -- the consumer moved on, the plan
+was superseded -- they stayed until an operator removed them, or on the tmpfs
+until its epoch ended. The receipt counted them without their bytes, mixed
+in with the prewarm loop's objects, and the `reconcile` docstring claimed to
+take them back.
+
+**Each copy names its writer.** `stage_move._Copier` sets
+`user.pbstage.mover` (`stage_move.STAGE_MOVER_XATTR`) to its mover's action
+key on the temporary, beside the source mark and before the rename, so a
+copy carries it from its first instant under the final name. Both movers
+copy through it. An adoption writes nothing, so an adopted name keeps the
+mark of the mover that wrote it: a copy a later mover adopted and was killed
+before naming is judged by its writer, and the adopter's retry may copy it
+again. That costs a copy, never a byte a reader holds, since a reader reads
+only what a fragment names, and pins it. The mark is best-effort like the
+source mark: a filesystem that refuses it leaves the copy to the rules that
+held before.
+
+**`reconcile` deletes such a copy once nothing can still own it.** The copy
+must be named by no fragment at all, wanted or not: a copy some fragment
+names has an owner, and the egress, the dead-owner sweep (#839) and the
+uncharged-owner pass (#1061) retire it together with the fragment and
+material that name it. Deleting it from under them would leave a vouch for a
+missing file, and would turn #1061's pressure-gated cache into a per-cycle
+deletion. No live pin may name it. Its writer must have ended, which is read
+from the queue and never from a clock:
+
+- the writer is not in the pass's `wanted` set -- a live consumer's leads or
+  plan, a live item, a held key -- because a live plan may retry that key,
+  and the retry adopts the copy by content (#1081);
+- nothing under the writer's key is in `ready/` or `claimed/`, a lease that
+  outlived its record included (`residency_plan.live_state`, the ending
+  proof the publication gate's owner arbitration reads). A mover ready or
+  claimed on the tier already skips the whole pass, so a live mover's copies
+  that no fragment names yet are never judged.
+
+No live RAM promotion may read it as a source leg
+(`_claimed_source_paths`). A queue state or a promotion census that cannot
+be read keeps the copy and names the reason in `errors`. The stage ownership
+lock, the containment check and the identity-since-walk check gate the
+unlink as they gate every other one.
+
+**Marks from before #1088 are kept.** A copy published before this change
+carries the source mark alone, exactly as a prewarm object does, and nothing
+on the file tells the two apart, so both are left and reported as
+`source_mark_only`. The tmpfs's epoch ends the RAM tier's; on a stage,
+`recover_orphaned_range` (below) is the bounded operator repair for a
+retired head's. On a filesystem without user extended attributes neither
+mark exists, and every such file is left as `mark_unanswerable`.
+
+**The receipt sizes what it found, by kind.** `stage-unattributed-evicted`
+carries `deleted_by_kind` (`partial`, `unmarked`, `mover_residue`) and
+`unowned_left_by_kind` (`mover_residue`, `source_mark_only`,
+`mark_unanswerable`), each as `{"entries", "bytes"}`; `unowned_left_bytes`
+beside `unowned_left`, which now totals every left kind; and
+`mover_residue_left_reasons`, the count of left residue per reason
+(`mover_wanted`, `mover_ready`, `mover_claimed`, `mover_state_unreadable`,
+`promotion_source`, `promotion_census_unreadable`). A copy with the mover
+mark that some fragment names is in none of them, since it is owned; a
+legacy copy a withdrawn fragment names is still counted as before.
+
+Two limits. The ledger side is unchanged: a promotion whose receipt never
+landed returned its tokens at its reap, before this reclaim, which is the
+order the staged-read contract's failed-copy transition (SM-02) forbids.
+The stage's supply is minted from its dataset's `available_bytes` and the
+RAM tier's from `statvfs`, so nothing is admitted onto the residue
+meanwhile. And the reclaim runs on the tier loop's cycle, so residue stays
+until the first pass after its writer has ended and nothing wants it.
+
+The cost is one more `getxattr` per file the walk judges that is not a
+mover's copy (the mover mark is read first; a copy carrying it needs one
+read). `bench_stage_reconcile.py` at 20,000 files with 14,000 source-marked,
+run in a cloud container rather than on the fleet, measured a steady census
+of 0.69 to 0.82 s before and 0.80 to 0.82 s after.
+
+`tests/test_a_killed_movers_unnamed_copies_are_reclaimed.py` drives the real
+stage mover, RAM promotion and sweep: a promotion killed after renaming its
+whole range, never retried and superseded, leaves copies the next sweep
+deletes and sizes; a stage mover's copy renamed after its last fragment goes
+while the copies that fragment names stay; a ready mover's, a wanted
+writer's and a leased writer's copies stay, and a live promotion's source
+leg stays; a genuine prewarm object and a copy marked before the fix stay,
+sized as `source_mark_only`; and an unanswerable mark stays, sized.
+
 ### Consumers of one staged range share one copy, charged once (#1026)
 
 Before #1026, every consumer sealed its own mover for every range it reads. A
@@ -11006,7 +11101,8 @@ that is still full would ENOSPC into the very room being made.
 
 Every rule above decides *what* the sweep deletes: a held key no live plan
 names, a `.partial` no live copy is producing, an unmarked file no wanted
-fragment names. None of them asked *whose* stage was being walked. On
+fragment names (and, since #1088, a mover's copy no fragment names whose
+writer has ended). None of them asked *whose* stage was being walked. On
 2026-09-18 at 16:05Z a test on the storage box announced `/stage/prewarm` to a
 queue under `tmp_path` and ran one tier cycle; that queue's fragments attributed
 nothing, the prewarm xattr marked nothing, and `stage_release.reconcile` deleted
@@ -11111,9 +11207,12 @@ it is not this gate.
 
 Routine `reconcile` structurally cannot free one specific history: a head
 whose fragment and material a later egress retired while shared files
-survived. Every surviving copy carries the same `user.pbstage.source` mark
-`stage_move` stamps, so `reconcile` reads each as prewarm-owned and leaves it
-in `unowned_left` for the life of the fleet -- and every later head pays the
+survived. Every surviving copy published before #1088 carries only the
+`user.pbstage.source` mark `stage_move` stamps, so `reconcile` reads each as
+a prewarm object and leaves it in `unowned_left` for the life of the fleet
+(a copy published since carries its writer's mark too, and `reconcile`
+reclaims it once no fragment names it and that writer has ended; see
+#1088 above) -- and every later head pays the
 publisher's 30 s grace once per orphaned entry (measured on the incident
 that motivated this: 36439 entries, 10895318814 bytes, ~0.53 files/s).
 `stage_release.recover_orphaned_range` is the operator-scoped repair for
