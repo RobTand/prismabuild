@@ -475,7 +475,8 @@ def test_the_parallel_reader_returns_what_the_serial_reader_returns(
     clean, broken = _receipt_tree(tmp_path / "tree")
     directories = [clean, broken]
     seen = {}
-    for readers in (1, 8):
+    # Two readers take runs of seven entries; eight take one entry each.
+    for readers in (1, 2, 8):
         monkeypatch.setattr(tier_loop, "RECEIPT_READERS", readers, raising=False)
         cache = tier_loop.ReceiptCache()
         first = _snapshot(cache, cache.read(directories), directories)
@@ -496,13 +497,15 @@ def test_the_parallel_reader_returns_what_the_serial_reader_returns(
         (clean / "r-100.json").unlink()
         _past_the_tick()
 
-    serial, parallel = seen[1], seen[8]
-    for label, one, other in (("first", serial[0], parallel[0]),
-                              ("second", serial[1], parallel[1])):
-        # ``again`` differs by design; everything else must match.
-        for record in one["read"] + other["read"]:
-            record.pop("again", None)
-        assert one == other, label
+    serial = seen[1]
+    for readers in (2, 8):
+        parallel = seen[readers]
+        for label, one, other in (("first", serial[0], parallel[0]),
+                                  ("second", serial[1], parallel[1])):
+            # ``again`` differs by design; everything else must match.
+            for record in one["read"] + other["read"]:
+                record.pop("again", None)
+            assert one == other, (readers, label)
     first = serial[0]
     assert [record["index"] for record in first["read"]] == [
         index for index in range(30) if index != 10]
@@ -517,7 +520,9 @@ def test_a_bad_record_raises_first_in_name_order_either_way(tmp_path):
     (directory / "r-012.json").write_text("{\"schema\": ")   # a partial write
     (directory / "r-030-dir.json").mkdir()                   # unreadable
     raised = {}
-    for readers in (1, 8):
+    # Two readers take runs of ten entries, so the raise is mid-run; eight
+    # take runs of two.
+    for readers in (1, 2, 8):
         records = stage_release.DirectoryRecords()
         with pytest.raises(Exception) as caught:
             records.read(directory, select=tier_loop._receipt_name,
@@ -530,7 +535,7 @@ def test_a_bad_record_raises_first_in_name_order_either_way(tmp_path):
             records.read(directory, select=tier_loop._receipt_name,
                          parse=pool._read_json, readers=readers)
         (directory / "r-012.json").write_text("{\"schema\": ")
-    assert raised[1] == raised[8], raised
+    assert raised[1] == raised[2] == raised[8], raised
     assert raised[1][0] is pool.PoolContractError
 
 

@@ -822,7 +822,8 @@ class DirectoryRecords:
         calling thread, one entry at a time and in name order, exactly as a
         serial read runs it: the version comparison, ``keep``, the #1045
         fence, the counters, and ``checkpoint``, which is called before each
-        entry's result is taken.  At most ``2 x readers`` entries are in
+        entry's result is taken.  A reader takes a run of consecutive entries
+        (:data:`READ_RUN_MAX` at most) and at most ``2 x readers`` runs are in
         flight, so a raise, first in name order as a serial read's is, stops
         the read with at most that many reads wasted, and nothing a reader
         did is kept.  ``parse`` must then be safe to call from several
@@ -945,15 +946,32 @@ class DirectoryRecords:
         return out
 
 
+#: The most entries one reader takes at a time (#1153).  Handing an entry to
+#: a reader thread and taking its result back cost about as much as a warm
+#: ``stat`` (``tools/fleet/bench_tier_cold_start.py``: 12,000 entries of a
+#: changed directory took 0.26 to 0.28 s one entry per handoff, 0.12 to
+#: 0.17 s serially, on sparky), so a reader takes a run of consecutive
+#: entries and hands back the run.  16 makes the handoff a sixteenth of the
+#: warm cost.  It also bounds the longest wait between two checkpoints: 16
+#: cold reads, about 4 s at the 4 reads a second dl380g10's loaded pool
+#: gave a serial reader on 2026-09-25, against the 90 s horizon.
+READ_RUN_MAX = 16
+
+
 def _entry_reads(entries, entry_io, *, readers: int, checkpoint):
     """``(entry, entry_io(entry))`` in ``entries``' order, read by ``readers``.
 
     ``checkpoint`` runs on the calling thread before each entry's result is
     taken: serially that is before its ``stat``, as :meth:`DirectoryRecords.read`
-    promised (#1148); with readers it is before the wait for it, so a stretch
-    between two checkpoints is at most one entry's read.  A raise from
-    ``entry_io`` reaches the caller at that entry's turn, and the readers
-    still reading are not waited for: they touch nothing but their files.
+    promised (#1148).  With readers, each reader takes a run of consecutive
+    entries (:data:`READ_RUN_MAX` at most, fewer when there are too few
+    entries to give every reader two runs) and reads them in order; the
+    calling thread waits for a run before its first entry and takes the
+    rest of it without waiting.  A stretch between two checkpoints is
+    therefore at most one run's read.  A raise from ``entry_io`` ends its
+    run there, and reaches the caller at that entry's turn, after the
+    entries before it; the runs still being read are not waited for: they
+    touch nothing but their files.
     """
 
     readers = min(int(readers), len(entries))
@@ -963,28 +981,45 @@ def _entry_reads(entries, entry_io, *, readers: int, checkpoint):
                 checkpoint()      # before each entry's stat and parse
             yield entry, entry_io(entry)
         return
-    # A bounded read-ahead: enough entries in flight to keep every reader
-    # busy while the caller takes the one before, and no more, so a raise
-    # early in the directory does not wait on the rest of it.
+    size = max(1, min(READ_RUN_MAX, len(entries) // (2 * readers)))
+
+    def read_run(run):
+        done = []
+        for entry in run:
+            try:
+                done.append((entry, entry_io(entry), None))
+            except BaseException as exc:  # noqa: BLE001 -- raised in order
+                done.append((entry, None, exc))
+                break
+        return done
+
+    runs = iter([entries[at:at + size] for at in range(0, len(entries), size)])
+    # A bounded read-ahead: two runs per reader in flight, enough to keep
+    # every reader busy while the caller takes the run before, and no more,
+    # so a raise early in the directory does not wait on the rest of it.
     window = 2 * readers
     executor = ThreadPoolExecutor(max_workers=readers,
                                   thread_name_prefix="directory-records")
     pending: deque = deque()
-    upcoming = iter(entries)
     try:
-        for entry in upcoming:
-            pending.append((entry, executor.submit(entry_io, entry)))
+        for run in runs:
+            pending.append(executor.submit(read_run, run))
             if len(pending) >= window:
                 break
         while pending:
-            entry, future = pending.popleft()
+            future = pending.popleft()
             if checkpoint is not None:
-                checkpoint()      # before each entry's result is taken
-            outcome = future.result()
-            following = next(upcoming, None)
+                checkpoint()      # before the run's first result is taken
+            done = future.result()
+            following = next(runs, None)
             if following is not None:
-                pending.append((following, executor.submit(entry_io, following)))
-            yield entry, outcome
+                pending.append(executor.submit(read_run, following))
+            for at, (entry, outcome, raised) in enumerate(done):
+                if at and checkpoint is not None:
+                    checkpoint()  # before each later entry's result is taken
+                if raised is not None:
+                    raise raised
+                yield entry, outcome
     finally:
         executor.shutdown(wait=False, cancel_futures=True)
 
