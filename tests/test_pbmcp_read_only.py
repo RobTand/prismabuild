@@ -394,5 +394,7 @@ def test_no_tool_touches_the_host_local_admission_diagnostics(
     session = pbmcp.Session(queue_root=fleet.queue_root,
                             cas_root=fleet.cas_root, repo_link=fleet.repo_link)
     _every_tool(session, fleet)
-    fx.settle_publishers()
+    # Anything a tool started must have landed before the second listing.
+    for child in adaptive_snapshot._children:
+        child.wait(timeout=30)
     assert _listing(local) | _listing(fleet.queue_root) == before
