@@ -376,7 +376,30 @@ def _waited_from(claim) -> float:
     return float(claim["claimed_unix"])
 
 
-def stuck_victim(order) -> str | None:
+def relief_stalled_s(order, *, now: float) -> float | None:
+    """How long the order's relief has made no room by declines alone (#1037).
+
+    ``short`` with nothing evicted (``relief_evicted_gib`` 0): every
+    candidate the pass tried declined -- a pinned copy, the head's own copy,
+    a copy still being copied -- so the pass made no room and freed none.
+    The age is ``now`` less the ``relief_since_unix`` the tier loop carries
+    from record to record while that state lasts.  ``None`` for any other
+    relief, or a record from a loop that did not stamp both fields.
+    """
+
+    if not isinstance(order, Mapping) or order.get("relief") != "short":
+        return None
+    evicted = order.get("relief_evicted_gib")
+    since = order.get("relief_since_unix")
+    if (isinstance(evicted, bool) or not isinstance(evicted, int) or evicted != 0
+            or isinstance(since, bool) or not isinstance(since, (int, float))
+            or not math.isfinite(float(since))):
+        return None
+    return max(0.0, float(now) - float(since))
+
+
+def stuck_victim(order, *, now: float | None = None,
+                 stall_bound_s: float | None = None) -> str | None:
     """The one consumer a stuck claim order ends this cycle, or ``None`` (#1011).
 
     Stuck: the order's last relief pass was ``futile`` -- every candidate
@@ -384,6 +407,13 @@ def stuck_victim(order) -> str | None:
     not make the head's room -- no ranked consumer is granted, and every
     ranked consumer is blocked.  Nobody is reading, so no egress will make
     the room either, and without an ending the wait has no end.
+
+    A relief that is ``short`` with nothing evicted is futile for this rule
+    once it has lasted ``stall_bound_s`` (:func:`relief_stalled_s`, #1037):
+    every candidate declined, record after record, for as long as the wait
+    being judged is allowed.  A decline that clears (a pin its reader
+    drops, a copy that lands) lets the next pass evict and restarts the
+    age.  Without ``now`` and ``stall_bound_s`` only ``futile`` is stuck.
 
     A granted consumer means the order is moving: its range lands, it reads
     it, and its egress returns room.  A consumer that is not blocked is
@@ -398,8 +428,13 @@ def stuck_victim(order) -> str | None:
     at most one consumer a cycle.
     """
 
-    if not isinstance(order, Mapping) or order.get("relief") != "futile":
+    if not isinstance(order, Mapping):
         return None
+    if order.get("relief") != "futile":
+        stalled = (relief_stalled_s(order, now=now)
+                   if now is not None and stall_bound_s is not None else None)
+        if stalled is None or stalled < float(stall_bound_s):  # type: ignore[arg-type]
+            return None
     entries = [entry for entry in order.get("entries") or ()
                if isinstance(entry, Mapping)]
     if not entries:

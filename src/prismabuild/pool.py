@@ -343,12 +343,50 @@ DENIAL_RING_EXEMPT_REASONS = frozenset({
 # Claim-order reliefs under which no standing exempts a wait (#1022 review
 # round 3).  ``refused`` (the stage root refused an eviction) and ``unknown``
 # (the tier ledger did not read) make no room and name no victim, so a wait
-# exempt by its standing would have no end on an infrastructure fault.  A
+# exempt by its standing would have no end on an infrastructure fault.  The
+# tier loop stamps either as the order's ``relief`` only once it persisted
+# onto a second consecutive record; a single failed read is carried as the
+# previous relief (``relief_observed``, ``relief_carried``, #1037).  A
 # deny-list: ``short`` stays exempt (a reader pins a range only while it
-# reads it, so a decline clears), and ``futile`` keeps the one-victim rule
-# (``window_credit.stuck_victim``), which ends one consumer a cycle rather
-# than every blocked one.  The ``short`` gap is #1037.
+# reads it, so a decline clears) until every candidate has declined for the
+# judged wait's own evidence window, when it is futile for the stuck rule
+# (``window_credit.relief_stalled_s``, #1037); ``futile`` keeps the
+# one-victim rule (``window_credit.stuck_victim``), which ends one consumer
+# a cycle rather than every blocked one.
 CLAIM_ORDER_RELIEF_ENDS_WAIT = frozenset({"refused", "unknown"})
+
+
+def _claim_order_relief_age(order: Mapping[str, object], *,
+                            now: float) -> dict[str, object]:
+    """The relief's age, and what this cycle observed, for a verdict (#1037).
+
+    ``relief_since_unix`` and ``relief_age_s``: how long the order's relief
+    has been what it is, for this head.  ``relief_observed``, only when it
+    differs: this cycle's pass saw something else that has not persisted
+    (a single failed read), and the record carried the previous relief
+    (``relief_carried``).  ``relief_evicted_gib``: what the pass evicted,
+    0 for a ``short`` in which every candidate declined.  Fields a loop
+    from before #1037 did not stamp are left out.
+    """
+
+    out: dict[str, object] = {}
+    since = order.get("relief_since_unix")
+    if (isinstance(since, (int, float)) and not isinstance(since, bool)
+            and math.isfinite(float(since))):
+        out["relief_since_unix"] = float(since)
+        out["relief_age_s"] = round(max(0.0, float(now) - float(since)), 1)
+    evicted = order.get("relief_evicted_gib")
+    if isinstance(evicted, int) and not isinstance(evicted, bool):
+        out["relief_evicted_gib"] = evicted
+    observed = order.get("relief_observed")
+    if isinstance(observed, str) and observed != order.get("relief"):
+        out["relief_observed"] = observed
+    if order.get("relief_carried") is True:
+        out["relief_carried"] = True
+    refusal = order.get("relief_refusal")
+    if isinstance(refusal, str):
+        out["relief_refusal"] = refusal
+    return out
 
 # The pool is also a lower-level transport for specialized producers whose
 # existing contract explicitly chooses its bound.  ``fleet/pbrun`` supplies a
@@ -7126,12 +7164,19 @@ class PoolQueue:
           once a whole window passes with none of these, so the wait behind
           a stalled consumer ends as it did before #1011.
         * over-committed, and the order is stuck (``window_credit.
-          stuck_victim``): relief was futile, nobody is granted and every
-          ranked consumer is blocked.  Only the one consumer the rule names,
-          the lowest-ranked, is not exempt; the rest keep their standing's
-          answer.  One consumer ends a cycle, never all of them.
+          stuck_victim``): relief was futile, or ``short`` with every
+          candidate declining for at least ``window_s`` (#1037), nobody is
+          granted and every ranked consumer is blocked.  Only the one
+          consumer the rule names, the lowest-ranked, is not exempt; the
+          rest keep their standing's answer.  One consumer ends a cycle,
+          never all of them.
         * over-committed, with no claim order that ranks this consumer, or
           a missing or unreadable record: not exempt, as before #1011.
+
+        The claim names the relief's age (``relief_since_unix``,
+        ``relief_age_s``), what the pass evicted (``relief_evicted_gib``)
+        and, when the record carried a relief over a one-cycle fault, what
+        the pass observed (``relief_observed``, ``relief_carried``).
 
         The evidence window is ``window_s``, the consumer's own phase grace
         as the rung passes it (the allowance the wait is being judged
@@ -7854,8 +7899,11 @@ class PoolQueue:
         order's last ``relief``, whether that standing exempts its wait, the
         stuck rule's victim when the order is stuck, and for a held-back
         consumer the one ahead of it (``held_back_by``) with the evidence it
-        showed (``ahead_evidence``).  Under a relief in
-        ``CLAIM_ORDER_RELIEF_ENDS_WAIT`` no standing is exempt.
+        showed (``ahead_evidence``), and the relief's age
+        (:func:`_claim_order_relief_age`).  Under a relief in
+        ``CLAIM_ORDER_RELIEF_ENDS_WAIT`` no standing is exempt; a ``short``
+        relief in which every candidate declined for ``window_s`` is stuck
+        (#1037).
         """
 
         try:
@@ -7879,15 +7927,25 @@ class PoolQueue:
         relief = order.get("relief")                        # type: ignore[union-attr]
         if isinstance(relief, str):
             claim["relief"] = relief
-        victim = window_credit.stuck_victim(order)
+        claim.update(_claim_order_relief_age(order, now=now))  # type: ignore[arg-type]
+        stalled = window_credit.relief_stalled_s(order, now=now)
+        victim = window_credit.stuck_victim(order, now=now, stall_bound_s=window_s)
         if victim is not None:
             # Stuck: no candidate can make the head's room, nobody is
             # granted and nobody is reading.  The rule ends one consumer, the
             # lowest-ranked; everyone else keeps their standing's answer.
-            claim.update({"relief": "futile", "stuck_victim": victim})
+            # ``short`` with every candidate declining is stuck once it has
+            # lasted this wait's own evidence window (#1037).
+            claim["stuck_victim"] = victim
+            if relief != "futile":
+                claim["stuck_basis"] = "relief-short-stalled"
             if victim == key:
+                why = ("relief futile" if relief == "futile" else
+                       f"relief short with every candidate declined for "
+                       f"{round(float(stalled or 0.0), 1)} s, past the "
+                       f"{round(float(window_s), 1)} s window")
                 claim.update({"exempt": False,
-                              "reason": "claim order stuck: relief futile, "
+                              "reason": f"claim order stuck: {why}, "
                                         "nobody granted and every ranked "
                                         "consumer blocked; the lowest-ranked "
                                         "is ended"})
@@ -7897,10 +7955,15 @@ class PoolQueue:
             # standing, the wait is not the order's (round 3, F3).  Every
             # consumer on the tier waiting on an unpublished range reads
             # this, as every one did before #1011 on an over-committed tier.
+            # The tier loop stamps it only once it persisted onto a second
+            # record; a single failed read is carried (#1037).
+            refusal = order.get("relief_refusal")           # type: ignore[union-attr]
             claim.update({"exempt": False,
-                          "reason": f"claim order relief {relief}: it made no "
-                                    "room and names no victim, so no standing "
-                                    "exempts the wait"})
+                          "reason": f"claim order relief {relief}"
+                                    + (f" ({refusal})" if isinstance(refusal, str)
+                                       and relief == "refused" else "")
+                                    + ": it made no room and names no victim, "
+                                    "so no standing exempts the wait"})
             return value, claim
         if standing != "held-back":
             claim["exempt"] = standing in ("granted", "head", "satisfied")

@@ -8678,10 +8678,10 @@ in admission order" below), and the verdict reads that order off the record:
 
 | Standing in `claim_order` | Exempt |
 |---|---|
-| any standing, when the order's last `relief` is `refused` or `unknown` (`CLAIM_ORDER_RELIEF_ENDS_WAIT`) | no: that relief made no room and names no victim, so an exemption by standing would be a wait with no end on an infrastructure fault |
+| any standing, when the order's last `relief` is `refused` or `unknown` (`CLAIM_ORDER_RELIEF_ENDS_WAIT`) | no: that relief made no room and names no victim, so an exemption by standing would be a wait with no end on an infrastructure fault. The tier loop stamps either as `relief` only once it persisted onto a second consecutive record (#1037); a single failed read is carried |
 | `granted`, `head`, `satisfied` | yes: the order is serving it |
 | `held-back` | while the consumer ranked just ahead of it shows evidence (`ahead_evidence`, next list) |
-| the stuck rule's victim (`stuck_victim`): the last relief was `futile`, nobody is granted and every ranked consumer is blocked | no, as before #1011. Only the one consumer the rule names, the lowest ranked; the rest keep their standing's answer |
+| the stuck rule's victim (`stuck_victim`): the last relief was `futile`, or `short` with every candidate declining (`relief_evicted_gib` 0) for at least this wait's evidence window (#1037), nobody is granted and every ranked consumer is blocked | no, as before #1011. Only the one consumer the rule names, the lowest ranked; the rest keep their standing's answer |
 | not ranked (no claim time, or a loop from before #1011) | no, as before #1011 |
 
 The ahead evidence is growth, not a clock (#1022 review, item 5). It is read
@@ -8717,7 +8717,10 @@ past a whole window. A stalled consumer ahead reports a quiet past its
 grace, shows nothing for a window, and its own rung ends it; a dead one
 stops its heartbeat, and the reaper ends its claim at `LEASE_TIMEOUT_S`,
 after which it reads `ahead-ended`. The verdict records the standing
-(`claim_order`, with the order's last `relief`) and, for a held-back
+(`claim_order`, with the order's last `relief`, its age `relief_since_unix`
+and `relief_age_s`, `relief_evicted_gib`, and, when the record carried a
+relief over a one-cycle fault, `relief_observed` and `relief_carried`;
+#1037) and, for a held-back
 consumer, `held_back_by`, `ahead_evidence`, `ahead_quiet_s` and
 `ahead_grace_s`.
 
@@ -9380,9 +9383,19 @@ cannot reach the target evicts nothing (`claim-order-eviction-futile`, the
 `claim-order-eviction-declined`, `claim-order-eviction-futile` and
 `claim-order-eviction-refused`, and each names the head (`for_consumer`)
 and, for an eviction, why that range went (`basis`). The pass stamps its
-outcome on the order (`relief`: `not-needed`, `evicted`, `preempted`,
-`short`, `futile`, `refused` or `unknown`) and the stuck rule's victim
-(`stuck_victim`, below). `claim-order-eviction-futile` is told when the
+outcome on the order (`relief_observed`: `not-needed`, `evicted`,
+`preempted`, `short`, `futile`, `refused` or `unknown`, with
+`relief_evicted_gib`, the GiB the pass evicted, and for `refused` the
+refusal, `relief_refusal`) and the stuck rule's victim (`stuck_victim`,
+below). `relief` is the outcome the consumers' rungs read, and
+`relief_since_unix` when it began for this head: the previous record
+carries it while the same relief lasts, and a `short` that evicted
+something and one that evicted nothing are different states (#1037). A
+`refused` or `unknown` becomes `relief` only when the previous record
+observed one of them too; on its first cycle the previous record's
+`relief`, age and `relief_evicted_gib` are carried (`relief_carried`), so a
+single failed read ends nobody's wait, and a persistent one ends it one
+cycle later with its age dating from the first failed record. `claim-order-eviction-futile` is told when the
 futile state starts or its head or victim changes, not every cycle it lasts
 (#1022 review item 6): `_emit` files a tier-level event into every consumer's
 event file on the tier, and at one line a minute the 256-line cap rotated
@@ -9399,13 +9412,14 @@ review, item 2): the rank's walk over free is its reservation. A fence for
 the window's next phase took from free the room the walk gave its current
 range, which then could not claim (a 22 GiB grant held for `chain-042` on a
 30 GiB tier left 8 GiB for `chain-043`). A grant it already holds still
-binds. The head publishes only once relief has made its room (`relief` in
-`RELIEF_MADE_ROOM`: `not-needed`, `evicted` or `preempted`). A head row
+binds. The head publishes only once relief has made its room (this
+cycle's `relief_observed`, never a carried `relief`, in `RELIEF_MADE_ROOM`:
+`not-needed`, `evicted` or `preempted`). A head row
 published before its room exists sits unfit in `ready/`, and when the claim
 pass reaches it first it takes the room the walk gave a granted leg: in the
 starvation fixture, A's head row claimed B's granted 22 GiB every cycle.
 Otherwise the head is gated `held-by-claim-order` with `waiting_reason`
-`claim-order-relief-<relief>`; a head whose leg is already queued is left
+`claim-order-relief-<relief_observed>`; a head whose leg is already queued is left
 as it is. With both rules the walk is the reservation: every row the order
 publishes has its room in free. The window's other gates, including the
 retired-prior check, still apply. A `held-back` window, or a claimed window
@@ -9469,7 +9483,8 @@ in one place:
 * I5. Each cycle on a ranked tier either serves the head (relief reaches
   the target: `not-needed`, `evicted` or `preempted`, and the head's leg
   publishes), or frees room (a `short` pass evicted what it could), or
-  nobody is granted, every ranked consumer is blocked and relief is futile,
+  nobody is granted, every ranked consumer is blocked and relief is futile
+  (or `short` with every candidate declining for a whole window, #1037),
   and the stuck rule ends one consumer, whose room returns.
 
 From I3 and I5 a blocked consumer reaches the head within one cycle per
@@ -9485,23 +9500,45 @@ and is ended too; and when a pin is held forever (a reader that hangs
 holding its lease), I2 declines the eviction and relief stays short. The
 second is bounded by the reader's own `no_progress` rung.
 
-I5 does not cover three relief outcomes: `short` with nothing evicted,
-`refused` and `unknown`. Under `refused` (the stage root refused the
-eviction) and `unknown` (the tier ledger did not read), no standing is
-exempt (`CLAIM_ORDER_RELIEF_ENDS_WAIT`, read by
-`PoolQueue._tier_commitment_standing`): every consumer on the tier that
-waits on an unpublished, evicted or failed range waits as it did before
-#1011 on an over-committed tier, and its own rung ends it within one grace.
-A consumer whose mover is ready or claimed is judged on its mover's
-evidence, not its standing. That is the fail-closed answer to an
-infrastructure fault. The tier loop stamps either relief on a single failed
-read, and the record carries it for that cycle, so a consumer whose rung
-checks inside that cycle is ended on a one-cycle fault. Round 1 of #1022 exempted `granted`, `head` and
-`satisfied` whatever the relief; before #1011 none of them was exempt on an
-over-committed tier. `short` with nothing evicted keeps the standing's
-answer, because a reader pins a range only while it reads it, so a decline
-clears; `futile` keeps the one-victim rule (I4), because every consumer's
-rung reads the same record. The `short` gap is tracked in #1037.
+I5 as first written did not cover three relief outcomes: `short` with
+nothing evicted, `refused` and `unknown` (#1037). Each is now bounded:
+
+* `refused` (the stage root refused the eviction) and `unknown` (the tier
+  ledger did not read): no standing is exempt (`CLAIM_ORDER_RELIEF_ENDS_WAIT`,
+  read by `PoolQueue._tier_commitment_standing`), and the verdict's reason
+  names the relief and, for `refused`, the refusal. Every consumer on the
+  tier that waits on an unpublished, evicted or failed range waits as it did
+  before #1011 on an over-committed tier, and its own rung ends it within
+  one grace. A consumer whose mover is ready or claimed is judged on its
+  mover's evidence, not its standing. That is the fail-closed answer to an
+  infrastructure fault. The tier loop stamps either as `relief` only when
+  the previous record observed one too (`_stamp_relief`): a single failed
+  read (`ledger.available()` raising, `stage_root_marker_unreadable`) is
+  carried as the previous relief for that cycle, so a consumer whose rung
+  checks inside it keeps its answer, and a fault that persists ends the wait
+  one cycle later (5 s at the fleet's `--interval-s 5`). Round 3 of #1022
+  stamped either on a single failed read and so ended a healthy consumer on
+  a one-cycle fault. Round 1 exempted `granted`, `head` and `satisfied`
+  whatever the relief; before #1011 none of them was exempt on an
+  over-committed tier.
+* `short` with nothing evicted (every candidate declined: a pinned copy,
+  the head's own copy, a copy still being copied): the standing's answer
+  holds while the decline is young, because a reader pins a range only
+  while it reads it and a copy lands, so a decline clears. Once the same
+  state has lasted the judged wait's own evidence window (`window_s`, the
+  consumer's phase grace floored at `OFFER_TIMEOUT_S`;
+  `window_credit.relief_stalled_s`), it is futile for the stuck rule (I4):
+  if nobody is granted and every ranked consumer is blocked, the one
+  lowest-ranked consumer is ended, one a cycle, and the verdict names
+  `stuck_basis: relief-short-stalled`, the relief and its age. The bound is
+  the grace the wait is judged against rather than a count of records, so
+  it does not change with the loop's cadence (5 s deployed, 60 s default),
+  and no new constant is introduced. A `short` pass that evicts something
+  frees room and restarts the age; a carried fault cycle does not, so an
+  alternation of faults and declines still ages. The stuck victim the tier
+  loop stamps on the record (`stuck_victim`, for `pbstatus`) is `futile`'s
+  alone: the stalled `short` rule is judged by each rung against its own
+  window, from the age on the record.
 
 A tier that stays over-committed once no consumer is blocked also reports
 `futile`, with one `claim-order-eviction-futile` event when it becomes so:

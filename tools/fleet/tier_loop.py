@@ -4126,7 +4126,10 @@ def _commitment_report(tier_id: str, census: Mapping[str, object] | None,
             field: claim_order.get(field) for field in (
                 "head", "target_free_gib", "free_gib", "ranked_unix",
                 "landing_bytes_per_s", "expected_landing_basis", "unranked",
-                "relief", "stuck_victim", "preempt_protected")}
+                "relief", "relief_since_unix", "relief_evicted_gib",
+                "relief_observed", "relief_observed_since_unix",
+                "relief_carried", "relief_refusal", "stuck_victim",
+                "preempt_protected")}
         record["claim_order"]["entries"] = [                # type: ignore[index]
             dict(entry) for entry in claim_order.get("entries") or ()  # type: ignore[union-attr]
             if isinstance(entry, Mapping)]
@@ -5492,7 +5495,7 @@ def _claim_order_gate(order: Mapping[str, object],
             "reason": window_credit.REASON_CLAIM_ORDER, "permanent": False,
             "need_gib": entry.get("need_gib", need_gib), "tier_id": tier_id,
             "output_note": output_note, "waiting_consumer": None,
-            "waiting_reason": f"claim-order-relief-{order.get('relief')}",
+            "waiting_reason": f"claim-order-relief-{_relief_observed(order)}",
             "ahead": entry.get("ahead"), "rank": entry.get("rank"),
             "need_phase": entry.get("need_phase"),
             "expected_landing_unix": entry.get("expected_landing_unix"),
@@ -5831,7 +5834,7 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                             else None)
                 head_waits = (
                     standing == window_credit.CLAIM_HEAD
-                    and ranked_order.get("relief") not in RELIEF_MADE_ROOM
+                    and _relief_observed(ranked_order) not in RELIEF_MADE_ROOM
                     and int(ranked.get("publish_gib") or 0) > 0)  # type: ignore[union-attr]
                 if standing in (window_credit.CLAIM_GRANTED,
                                 window_credit.CLAIM_HEAD) and not head_waits:
@@ -8100,21 +8103,26 @@ def evict_beyond_horizon(queue: pool.PoolQueue,
     # the head take this cycle, from what is ranked after the head.
     for tier_id, order in sorted(ranked.items()):
         target = int(order["target_free_gib"])                # type: ignore[arg-type]
+        # What the last record said the relief was, so this cycle's outcome
+        # carries its age and a one-cycle fault is carried (#1037).
+        stamp = functools.partial(
+            _stamp_relief, order, previous=_previous_claim_order(queue, tier_id),
+            now=time.time())
         stage_root = str(tiers[tier_id].get("mountpoint") or "")
         kind = storage_tiers.capacity_kind_of(tier_id)
         ledger = queue.tier_ledger(tier_id)
         try:
             free = int(ledger.available().get(kind, 0))
         except (OSError, pool.PoolContractError, ValueError):
-            _stamp_relief(order, "unknown")
+            stamp("unknown")
             continue
         if free >= target:
-            _stamp_relief(order, "not-needed")
+            stamp("not-needed")
             continue
         refusal = (stage_release.stage_root_refusal(queue, stage_root)
                    if stage_root else "no stage root announced")
         if refusal is not None:
-            _stamp_relief(order, "refused")
+            stamp("refused", refusal=refusal)
             events.append({"event": "claim-order-eviction-refused",
                            "tier_id": tier_id, "stage_root": stage_root,
                            "refusal": refusal})
@@ -8136,7 +8144,7 @@ def evict_beyond_horizon(queue: pool.PoolQueue,
             consumers=consumers, order=order, taken=taken))
         offered = sum(int(row["stage_gib"]) for row in rows)  # type: ignore[arg-type]
         if free + offered < target:
-            _stamp_relief(order, "futile")
+            stamp("futile")
             if _futile_is_news(queue, tier_id, order):
                 # Told on the transition only (#1022 review, item 6): the
                 # event is filed into every consumer's event file on the
@@ -8149,6 +8157,7 @@ def evict_beyond_horizon(queue: pool.PoolQueue,
                                "preempt_protected": order.get("preempt_protected")})
             continue
         preempted = False
+        evicted_gib = 0
         for row in rows:
             if free >= target:
                 break
@@ -8157,13 +8166,14 @@ def evict_beyond_horizon(queue: pool.PoolQueue,
             done, event = evicted(row, tier_id, stage_root, target,
                                   prefix="claim-order")
             events.append(event)
+            evicted_gib += int(row["stage_gib"]) if done else 0  # type: ignore[call-overload]
             preempted = preempted or (done and row.get("basis") == PREEMPT_READING_PHASE)
             try:
                 free = int(ledger.available().get(kind, 0))
             except (OSError, pool.PoolContractError, ValueError):
                 break
-        _stamp_relief(order, ("preempted" if preempted else "evicted")
-                      if free >= target else "short")
+        stamp(("preempted" if preempted else "evicted")
+              if free >= target else "short", evicted_gib=evicted_gib)
     return events
 
 
@@ -8189,15 +8199,69 @@ def _futile_is_news(queue: pool.PoolQueue, tier_id: str,
             or before.get("stuck_victim") != order.get("stuck_victim"))
 
 
-def _stamp_relief(order: Mapping[str, object], outcome: str) -> None:
+def _previous_claim_order(queue: pool.PoolQueue,
+                          tier_id: str) -> Mapping[str, object] | None:
+    """The claim order on the tier's last commitment record, or ``None``.
+
+    Filed by the previous cycle's window, after its relief pass, so it is
+    what the consumers' rungs have been reading since.  A record that does
+    not read is ``None``: the relief then starts its age afresh.
+    """
+
+    try:
+        record = queue.tier_commitment(tier_id)
+    except (OSError, pool.PoolContractError, ValueError):
+        return None
+    order = (record or {}).get("claim_order")
+    return order if isinstance(order, Mapping) else None
+
+
+def _finite_unix(value: object) -> float | None:
+    if (isinstance(value, bool) or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))):
+        return None
+    return float(value)
+
+
+def _relief_observed(order: Mapping[str, object]) -> object:
+    """What this cycle's relief pass came to, carried or not (#1037)."""
+
+    return order.get("relief_observed", order.get("relief"))
+
+
+def _stamp_relief(order: Mapping[str, object], outcome: str, *,
+                  previous: Mapping[str, object] | None = None,
+                  now: float | None = None, evicted_gib: int = 0,
+                  refusal: str | None = None) -> None:
     """Say on the cycle's claim order what the head's relief came to (#1011).
 
-    ``not-needed`` (free already covered the target), ``evicted`` (the
-    pass reached it), ``preempted`` (it reached it and took a blocked
-    consumer's reading-phase chunks to do so), ``short`` (declines left it
-    below), ``futile`` (every candidate together could not reach it, so
-    nothing went), ``refused`` (the stage root refused) or ``unknown`` (the
-    ledger did not read).  Also stamps the stuck rule's one victim
+    ``outcome`` is what this cycle's pass observed: ``not-needed`` (free
+    already covered the target), ``evicted`` (the pass reached it),
+    ``preempted`` (it reached it and took a blocked consumer's reading-phase
+    chunks to do so), ``short`` (declines left it below; ``evicted_gib``
+    says whether anything went), ``futile`` (every candidate together could
+    not reach it, so nothing went), ``refused`` (the stage root refused,
+    ``refusal`` says why) or ``unknown`` (the ledger did not read).  It is
+    stamped as ``relief_observed``, and it is what decides whether the head
+    publishes (``RELIEF_MADE_ROOM``).
+
+    ``relief`` is the outcome the consumers' ``no_progress`` rungs read,
+    with its age (#1037):
+
+    * ``relief_since_unix``: when this relief, for this head, began.  The
+      previous record (``previous``) carries it while the same relief lasts;
+      ``short`` with nothing evicted and ``short`` that evicted something
+      are different states, so a pass that frees room restarts the age.
+    * A relief in ``pool.CLAIM_ORDER_RELIEF_ENDS_WAIT`` (``refused``,
+      ``unknown``) ends every standing's exemption, so it is stamped as
+      ``relief`` only once it persisted: the previous record observed one
+      of them too (either, so an alternation of two faults persists).  On
+      its first cycle the previous record's ``relief``, age and
+      ``relief_evicted_gib`` are carried (``relief_carried``), so a single
+      failed read ends nobody's wait.  ``relief_observed_since_unix`` says
+      when the observed outcome began.
+
+    Also stamps the stuck rule's one victim
     (:func:`window_credit.stuck_victim`, ``None`` unless the order is
     stuck), so the record every consumer's rung reads names it.  Carried
     onto the tier's commitment record, where ``pbstatus`` reads it, with
@@ -8205,9 +8269,48 @@ def _stamp_relief(order: Mapping[str, object], outcome: str) -> None:
     (``preempt_protected``, from :func:`_claim_order_candidates`).
     """
 
-    if isinstance(order, dict):
+    if not isinstance(order, dict):
+        return
+    now = time.time() if now is None else float(now)
+    before: Mapping[str, object] = (
+        previous if isinstance(previous, Mapping)
+        and previous.get("head") == order.get("head") else {})
+    order["relief_observed"] = outcome
+    if refusal is not None:
+        order["relief_refusal"] = refusal
+    ends = pool.CLAIM_ORDER_RELIEF_ENDS_WAIT
+    prior_observed = _relief_observed(before)
+    # Two faults in a row persist whichever each was, so an alternation
+    # between them is not carried for ever.
+    observed_since = (_finite_unix(before.get("relief_observed_since_unix"))
+                      if prior_observed == outcome
+                      or (outcome in ends and prior_observed in ends) else None)
+    if outcome in ends and observed_since is None:
+        # Its first cycle: carry what the rungs have been reading.
+        order["relief_observed_since_unix"] = now
+        order["relief_carried"] = True
+        order["relief"] = before.get("relief")
+        order["relief_since_unix"] = _finite_unix(before.get("relief_since_unix"))
+        carried = before.get("relief_evicted_gib")
+        order["relief_evicted_gib"] = (carried if isinstance(carried, int)
+                                       and not isinstance(carried, bool) else None)
+    else:
+        evicted = int(evicted_gib)
+        prior_evicted = before.get("relief_evicted_gib")
+        continues = before.get("relief") == outcome and (
+            outcome != "short"
+            or (isinstance(prior_evicted, int) and not isinstance(prior_evicted, bool)
+                and (prior_evicted > 0) == (evicted > 0)))
+        since = (_finite_unix(before.get("relief_since_unix")) if continues else None)
+        if outcome in ends:
+            # Persisted: its age is the fault's, from its first record.
+            since = observed_since
         order["relief"] = outcome
-        order["stuck_victim"] = window_credit.stuck_victim(order)
+        order["relief_since_unix"] = now if since is None else since
+        order["relief_observed_since_unix"] = order["relief_since_unix"]
+        order["relief_evicted_gib"] = evicted
+        order.pop("relief_carried", None)
+    order["stuck_victim"] = window_credit.stuck_victim(order)
 
 
 def landed_and_in_flight(queue: pool.PoolQueue, tier_id: str, kind: str) -> tuple[int, int]:
