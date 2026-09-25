@@ -9543,6 +9543,16 @@ grace_s            = ceil(priced_s + 2 * pool.HEARTBEAT_S)
   which is a part of that whole, fits in one grace. The drain reports as it
   goes, so a range larger than any receipted one is charged for its quiet,
   not its size.
+* An egress receipt is one whose `schema` is `pool.POOL_EGRESS_SCHEMA_V1`.
+  `PoolQueue.record_move` keeps that schema as `stage_release` built it,
+  stamps `pool.POOL_MOVE_SCHEMA_V1` only on a receipt with no schema, and
+  refuses any other (#1158). Before #1158 it stamped the move schema over
+  every receipt, so no egress was ever priced. Pricing starts from the fix
+  forward: a receipt filed before it reads `pool_move.v1` and prices neither
+  an egress nor a mover (it has no `seconds` and no `disk_pacing`). The
+  first egress after the fix is sealed unmeasured and files the receipt
+  that prices the next one. `PoolQueue.move_record` and the orphan
+  recovery's egress evidence read either schema.
 * A receipt that names another stage root, judged no entry, or is missing a
   timing prices nothing. With no egress receipt on the stage, or no source
   pool members on the tier record (`source_members`), the egress is sealed

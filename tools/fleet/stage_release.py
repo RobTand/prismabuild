@@ -5620,9 +5620,15 @@ def _bounded_int(value: object) -> int | None:
     return value
 
 
-def _move_receipt(queue: pool.PoolQueue, action_key: str,
+def _move_receipt(queue: pool.PoolQueue, action_key: str, *,
+                  schemas: tuple[str, ...] = (pool.POOL_MOVE_SCHEMA_V1,),
                   ) -> tuple[dict[str, object] | None, str]:
     """One filed move receipt, or why it cannot be evidence.
+
+    ``schemas`` names the receipts that count.  An egress's receipt is
+    filed as ``pool.POOL_EGRESS_SCHEMA_V1`` since #1158 and as
+    ``pool.POOL_MOVE_SCHEMA_V1`` before it, so the egress evidence reads
+    either.
 
     The receipt is the positive terminal evidence this repair turns on.  An
     absent one is not "finished": it is no answer, and no answer refuses.
@@ -5637,7 +5643,7 @@ def _move_receipt(queue: pool.PoolQueue, action_key: str,
     if str(record.get("action_key") or "") != action_key:
         return None, f"{action_key[:12]}: receipt is filed under another " \
                      f"action's key"
-    if record.get("schema") != pool.POOL_MOVE_SCHEMA_V1:
+    if record.get("schema") not in schemas:
         return None, f"{action_key[:12]}: receipt is not a pool move record"
     if record.get("complete") is not True:
         return None, f"{action_key[:12]}: receipt does not report complete"
@@ -5816,7 +5822,8 @@ def recover_orphaned_range(
     head, why = _move_receipt(queue, head_action_key)
     if head is None:
         return refuse(f"head evidence refused: {why}")
-    egress, why = _move_receipt(queue, egress_action_key)
+    egress, why = _move_receipt(queue, egress_action_key,
+                                schemas=pool.POOL_MOVEMENT_RECEIPT_SCHEMAS)
     if egress is None:
         return refuse(f"egress evidence refused: {why}")
     if egress.get("reason") != "egress":
