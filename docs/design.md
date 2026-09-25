@@ -5256,7 +5256,44 @@ deletes no staged data. `adopt_resident_ranges`,
 remove bookkeeping records (fragments, material, plans, reservations), not
 staged ranges; they are not budgeted, and their per-range cost is not yet
 measured. The windows publish rows, and the
-egress those rows name runs as its own action, outside the cycle.
+egress those rows name runs as its own action, outside the cycle. The
+`receipts` step is not budgeted either, but it is checkpointed inside, per
+entry (#1148, below).
+
+**The receipts read is checkpointed inside (#1148).** `ReceiptCache.read`
+lists the prewarm and movement receipt directories and stats and parses
+every entry of a changed one. It had no checkpoint inside it, so the whole
+read was one stretch. On 2026-09-25 one cycle on dl380g10 took 153.6 s,
+113.7 s of it in `receipts`, while stage movers loaded the HDD pool that
+`pb-queue` lives on. The stage record reached 121 s, and a Stage B row died
+with `StagedRangeNotLanded`. `ReceiptCache.read` now takes the loop's
+`Liveness` and hands `Liveness.checkpoint` to
+`stage_release.DirectoryRecords.read`, which calls it after each entry the
+listing yields, once the listing is complete, and before each entry is
+stat-ed and parsed. `ReceiptCache.read` also checkpoints after each
+directory. The label is `receipts:<directory>`, so a refresh made there
+says `liveness_refresh.after: "receipts:movers"`, for example. Each entry
+is its own batch: a checkpoint is a clock read and a comparison, and a stat
+on a loaded pool costs milliseconds or more. A directory whose listing is
+unchanged is not listed, and costs no per-entry checkpoint.
+
+These are checkpoints, not budgeted units. A budget refusal leaves a unit
+for the next cycle, and no receipt can be left unread: the fill supply is a
+fold over every receipt, and a partial read changes its answer. The read's
+time counts in `T`, the time outside the budgeted units, as it did before,
+so a slow read still shortens the budget of the steps after it.
+
+`receipts` runs before the cycle's `mint_announce`, so what a checkpoint
+there re-announces is the record the previous cycle minted. `Liveness`
+already allows this, byte for byte as above: `end_cycle` keeps the records
+the cycle announced, `begin_cycle` does not clear them, and `_refresh`
+writes every record it keeps. That record is still the loop's word until
+this cycle's mint replaces it. Two cases have nothing to re-announce, and
+read as dead within `L + P` as before: the first cycle after the loop
+starts, whose records on disk were written by the process before it, and a
+cycle after one that failed before its mint. A hang inside one entry's
+stat or parse is a stretch longer than every one measured, and gets no
+write.
 
 **A dead producer's backlog writes its commitments once.** `retire_batch`
 reads the instance's `commitments.json` four times and writes it once, with

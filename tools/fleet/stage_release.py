@@ -782,7 +782,8 @@ class DirectoryRecords:
         return self._generations.get(str(directory), 0)
 
     def read(self, directory: Path, *, select, parse, thaw=None,
-             keep=None, stat_parse: bool = False) -> list[tuple[Path, object]]:
+             keep=None, stat_parse: bool = False,
+             checkpoint=None) -> list[tuple[Path, object]]:
         """``(path, record)`` for each selected name, in name order.
 
         ``select(entry)`` takes an ``os.DirEntry`` and says whether the name
@@ -799,16 +800,28 @@ class DirectoryRecords:
         ``info`` is the ``os.stat`` its version was taken from (``None`` when
         that failed), so a parse that wants the file's metadata does not
         stat the file a second time.
+
+        ``checkpoint``, when given, is called with no arguments after each
+        entry the listing yields, once the listing is complete, and before
+        each entry is stat-ed and, if it changed, parsed (#1148).  It is the
+        tier loop's liveness checkpoint (`tier_loop.Liveness.checkpoint`):
+        a directory on a loaded pool can take minutes to list and stat, and
+        the tier records must be re-announced inside that read, not only
+        after it.  A checkpoint is a clock read and a comparison, against a
+        stat that costs milliseconds or more on a loaded pool, so each
+        entry is its own batch.  What it raises reaches the caller as a
+        parse's raise would.  Without it the read is as before.
         """
 
         out = self._read(directory, select=select, parse=parse, keep=keep,
-                         stat_parse=stat_parse)
+                         stat_parse=stat_parse, checkpoint=checkpoint)
         if thaw is None:
             return out
         return [(path, thaw(path, kept)) for path, kept in out]
 
     def _read(self, directory: Path, *, select, parse, keep,
-              stat_parse: bool = False) -> list[tuple[Path, object]]:
+              stat_parse: bool = False,
+              checkpoint=None) -> list[tuple[Path, object]]:
         name = str(directory)
         kept = self._directories.get(name)
         if (kept is not None and kept[0] is not None
@@ -823,20 +836,35 @@ class DirectoryRecords:
         fence = _version_fence()
         local: dict[int, bool] = {}
         try:
-            entries = sorted((entry for entry in os.scandir(directory)
-                              if select(entry)),
-                             key=lambda entry: entry.name)
+            if checkpoint is None:
+                entries = sorted((entry for entry in os.scandir(directory)
+                                  if select(entry)),
+                                 key=lambda entry: entry.name)
+            else:
+                # A listing is one stretch too, and on a loaded pool a long
+                # one (#1148): checkpoint after every entry it yields.
+                selected = []
+                with os.scandir(directory) as listing:
+                    for entry in listing:
+                        if select(entry):
+                            selected.append(entry)
+                        checkpoint()
+                entries = sorted(selected, key=lambda entry: entry.name)
         except (FileNotFoundError, NotADirectoryError):
             if self._directories.pop(name, None) is not None:
                 self._generations[name] = self._generations.get(name, 0) + 1
             return []
         self.listed += 1
+        if checkpoint is not None:
+            checkpoint()      # the directory is listed
         records: dict[str, tuple[tuple, object]] = {}
         out: list[tuple[Path, object]] = []
         complete = True
         changed = False
         try:
             for entry in entries:
+                if checkpoint is not None:
+                    checkpoint()      # before each entry's stat and parse
                 path = directory / entry.name
                 info = None
                 try:
