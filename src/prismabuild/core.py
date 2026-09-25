@@ -466,6 +466,12 @@ _INITIAL_MISS_RENDEZVOUS_POLL_SECONDS = 0.01
 # no-follow path and replay the entire read from byte zero, at most this many
 # times, until one attempt is internally stable.
 _STABLE_FILE_READ_ATTEMPTS = 3
+# A whole-record file its writer replaces with ``os.replace`` (a progress
+# record, a staged-wait record, a mover's landing report) can be replaced
+# between a reader's open and its final identity check (#1017).  Such a
+# reader reads again through a fresh resolution, at most this many times;
+# a name that moves under every one of them is still refused.
+_REPLACED_RECORD_READ_ATTEMPTS = 8
 _ATTESTABLE_TOOLCHAIN_KEYS = frozenset(
     {
         "argv0.sha256",
@@ -496,6 +502,16 @@ class ActionContractError(PrismaBuildError, ValueError):
 
 class CASTamperError(PrismaBuildError):
     """An existing content-addressed entry failed verification."""
+
+
+class ReplacedRecordError(CASTamperError):
+    """A replace-only record kept moving to newer inodes while it was read.
+
+    Raised only by a reader that opted into ``replaced_leaf`` (#1017), after
+    its bounded rereads: each attempt found the name on a newer regular
+    file.  It stays a :class:`CASTamperError` so no caller treats it more
+    leniently than before, and its own name says what was seen.
+    """
 
 
 class CASUnavailableError(PrismaBuildError):
@@ -3131,9 +3147,15 @@ def _open_regular_nofollow(path: Path, *, where: str) -> tuple[int, int]:
 
 
 def _assert_regular_identity(
-    descriptor: int, parent_fd: int, path: Path, *, where: str
+    descriptor: int, parent_fd: int, path: Path, *, where: str,
+    replaced: bool = False,
 ) -> None:
-    """Fail if a held regular inode is no longer its canonical leaf name."""
+    """Fail if a held regular inode is no longer its canonical leaf name.
+
+    With ``replaced`` (a replace-only record, #1017), a name that now
+    resolves to a different *regular* file raises :class:`ReplacedRecordError`
+    so the reader can read again; anything else stays tamper.
+    """
 
     try:
         observed = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
@@ -3145,10 +3167,12 @@ def _assert_regular_identity(
         # an NFS or permission fault prevents this final identity check.
         raise CASUnavailableError(f"cannot inspect {where}: {path}: {exc}") from exc
     held = os.fstat(descriptor)
-    if (
-        not stat.S_ISREG(observed.st_mode)
-        or (held.st_dev, held.st_ino) != (observed.st_dev, observed.st_ino)
-    ):
+    if not stat.S_ISREG(observed.st_mode):
+        raise CASTamperError(f"{where} changed during operation: {path}")
+    if (held.st_dev, held.st_ino) != (observed.st_dev, observed.st_ino):
+        if replaced:
+            raise ReplacedRecordError(
+                f"{where} was replaced during the read: {path}")
         raise CASTamperError(f"{where} changed during operation: {path}")
 
 
@@ -3182,6 +3206,7 @@ def _read_regular_file_nofollow(
     require_readonly: bool = False,
     require_single_link: bool = False,
     max_bytes: int | None = None,
+    replaced_leaf: bool = False,
 ) -> bytes:
     """Read one stable inode without following any pathname component.
 
@@ -3189,10 +3214,51 @@ def _read_regular_file_nofollow(
     resolution and FD.  No bytes from an unstable attempt are returned. When
     ``max_bytes`` is set, both the opening size and streamed byte count are
     bounded so a dishonest or racing size cannot cause unbounded allocation.
+
+    ``replaced_leaf`` is for whole-record files their writer replaces with
+    ``os.replace`` (#1017): a name that moved to a newer regular file during
+    the read is read again from a fresh resolution, at most
+    ``_REPLACED_RECORD_READ_ATTEMPTS`` times, and then refused with
+    :class:`ReplacedRecordError`.  The no-follow, regular-file and size
+    checks are unchanged, and a name that moved to anything but a regular
+    file is still tamper.  CAS objects, never replaced by design, keep the
+    strict check (the default).
     """
 
     if max_bytes is not None and (type(max_bytes) is not int or max_bytes < 0):
         raise ActionContractError("stable regular-file read max_bytes is invalid")
+    if not replaced_leaf:
+        return _read_stable_regular_file_nofollow(
+            path, where=where, require_readonly=require_readonly,
+            require_single_link=require_single_link, max_bytes=max_bytes,
+            replaced=False)
+    for reread in range(_REPLACED_RECORD_READ_ATTEMPTS):
+        try:
+            return _read_stable_regular_file_nofollow(
+                path, where=where, require_readonly=require_readonly,
+                require_single_link=require_single_link, max_bytes=max_bytes,
+                replaced=True)
+        except ReplacedRecordError:
+            if reread + 1 < _REPLACED_RECORD_READ_ATTEMPTS:
+                continue
+            raise ReplacedRecordError(
+                f"{where} was replaced during each of "
+                f"{_REPLACED_RECORD_READ_ATTEMPTS} fresh reads: {path}"
+            ) from None
+    raise AssertionError("replaced-record read loop did not return or raise")
+
+
+def _read_stable_regular_file_nofollow(
+    path: Path,
+    *,
+    where: str,
+    require_readonly: bool,
+    require_single_link: bool,
+    max_bytes: int | None,
+    replaced: bool,
+) -> bytes:
+    """One :func:`_read_regular_file_nofollow` pass over its stable-read retries."""
+
     for attempt in range(_STABLE_FILE_READ_ATTEMPTS):
         descriptor, parent_fd = _open_regular_nofollow(path, where=where)
         try:
@@ -3229,7 +3295,8 @@ def _read_regular_file_nofollow(
                     raise CASTamperError(
                         f"{where} changed substantively while it was read: {path}"
                     )
-                _assert_regular_identity(descriptor, parent_fd, path, where=where)
+                _assert_regular_identity(
+                    descriptor, parent_fd, path, where=where, replaced=replaced)
                 _assert_directory_identity(
                     parent_fd, path.parent, where=f"{where} parent"
                 )
@@ -3239,7 +3306,8 @@ def _read_regular_file_nofollow(
                     f"{where} did not stabilize after "
                     f"{_STABLE_FILE_READ_ATTEMPTS} fresh reads: {path}"
                 )
-            _assert_regular_identity(descriptor, parent_fd, path, where=where)
+            _assert_regular_identity(
+                descriptor, parent_fd, path, where=where, replaced=replaced)
             _assert_directory_identity(
                 parent_fd, path.parent, where=f"{where} parent"
             )

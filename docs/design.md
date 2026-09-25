@@ -2553,7 +2553,17 @@ Reports use the existing stable no-follow regular-file reader with a 64 KiB
 accepted-byte limit. Symlinks, FIFOs, oversized or changing files are rejected;
 strict UTF-8 JSON rejects duplicate keys, malformed data and non-finite values.
 Parser depth errors and unrepresentable timestamps cannot escape into action
-termination. Missing reports retain the current grace; invalid reports count
+termination. A report is a whole-record file its writer replaces with
+`os.replace`, so a name that moved to a newer *regular* file between the
+reader's open and its final identity check is a benign replacement, not tamper
+(#1017): the reader opts into `replaced_leaf` and reads again from a fresh
+no-follow resolution, at most `_REPLACED_RECORD_READ_ATTEMPTS` (8) times, then
+refuses with `ReplacedRecordError` (a `CASTamperError`), recorded as
+`unreadable: ReplacedRecordError`. The staged-wait record and the tier loop's
+two mover reads (`mover_report`, `mover_landing`) read the same way. A name
+that moved to anything but a regular file is still tamper, and CAS objects,
+never replaced by design, keep the strict identity check. Missing reports
+retain the current grace; invalid reports count
 as rejections and do not extend it. These are byte and type bounds, not a hard
 deadline on NFS syscalls: like the existing lease and withdrawal checkpoints,
 a regular-file operation can block in the kernel. Shared-filesystem recovery

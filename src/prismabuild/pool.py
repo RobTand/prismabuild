@@ -1337,6 +1337,7 @@ class ProgressWatch:
             raw = pb._read_regular_file_nofollow(
                 self.path, where="action progress report",
                 max_bytes=pb.MAX_ACTION_PROGRESS_BYTES,
+                replaced_leaf=True,
             )
         except FileNotFoundError:
             # Before the first report, and after a reporter that never came.
@@ -1838,7 +1839,7 @@ def _read_staged_wait(path: Path, *, token: str | None
     try:
         raw = pb._read_regular_file_nofollow(
             path, where="staged wait record",
-            max_bytes=pb.MAX_ACTION_PROGRESS_BYTES)
+            max_bytes=pb.MAX_ACTION_PROGRESS_BYTES, replaced_leaf=True)
     except FileNotFoundError:
         return None, ""
     except (OSError, pb.ActionContractError, pb.CASTamperError,
@@ -7261,7 +7262,7 @@ class PoolQueue:
         try:
             raw = pb._read_regular_file_nofollow(
                 self.action_progress_path(mover), where="mover progress report",
-                max_bytes=pb.MAX_ACTION_PROGRESS_BYTES)
+                max_bytes=pb.MAX_ACTION_PROGRESS_BYTES, replaced_leaf=True)
             record = json.loads(raw)
         except FileNotFoundError:
             return None
@@ -7303,7 +7304,7 @@ class PoolQueue:
         try:
             raw = pb._read_regular_file_nofollow(
                 self.mover_landing_path(mover), where="mover landing report",
-                max_bytes=pb.MAX_ACTION_PROGRESS_BYTES)
+                max_bytes=pb.MAX_ACTION_PROGRESS_BYTES, replaced_leaf=True)
             record = json.loads(raw)
         except FileNotFoundError:
             return None
