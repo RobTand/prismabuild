@@ -4007,6 +4007,11 @@ class _TerminalNames:
 #: The unit `sweep_dead_owner_fragments` asks a cycle budget for: one dead
 #: consumer's validation and every census and egress of its movers (#1072).
 DEAD_OWNER_UNIT = "dead-owner"
+#: The unit `sweep` asks a cycle budget for: one orphan's eviction, a held
+#: orphan's or an uncharged dead owner's, with the owner census it takes
+#: (#1136).  A saturated pool made each one take 1-13 s, and 47 of them in
+#: one cycle took 227.5 s.
+ORPHAN_EVICT_UNIT = "orphan-evict"
 
 
 class _UnchargedOwners:
@@ -4574,9 +4579,19 @@ def sweep(queue: pool.PoolQueue, *, stage_roots: dict[str, str],
     namespace or document that has not changed since the last cycle is not
     read again.  Without it each census reads from nothing, as before.
 
-    ``budget`` is the tier loop's cycle budget (#1072), handed to
-    `sweep_dead_owner_fragments`, whose per-consumer units are the pass's
-    long ones.
+    ``budget`` is the tier loop's cycle budget (#1072).  The pass has two
+    kinds of long unit.  `sweep_dead_owner_fragments` asks it for each dead
+    consumer (``DEAD_OWNER_UNIT``), and the orphan pass below asks it for
+    each eviction, held orphan and uncharged dead owner alike
+    (``ORPHAN_EVICT_UNIT``, #1136): ``budget.start`` after the pressure check
+    and before the eviction, ``budget.done`` after it, whatever its outcome.
+    So the tier record can be re-announced between evictions, and the pass
+    stops at the cycle's budget.  An orphan the budget refuses stays resident
+    for the next cycle, whose pass starts from it (``budget.order``) and then
+    takes the rest oldest first; since the budget remembers one refused key
+    per kind, the resumption holds on the tier it was refused on.  Without a
+    budget, the pass evicts in age order until the pressure is met, as
+    before.
     """
 
     wanted, owners = live_claims(queue)
@@ -4686,7 +4701,14 @@ def sweep(queue: pool.PoolQueue, *, stage_roots: dict[str, str],
         # frees them, so the pass stops once the room is covered.
         credit_bytes = 0
         evicted_uncharged: dict[str, int] = {}
-        for _, key, consumer, is_uncharged in orphans:
+        # Each eviction is a unit of the cycle's budget (#1136), taken from
+        # the orphan the budget refused first last cycle, then oldest first.
+        by_key = {key: (consumer, is_uncharged)
+                  for _, key, consumer, is_uncharged in orphans}
+        order = (list(by_key) if budget is None
+                 else budget.order(ORPHAN_EVICT_UNIT, list(by_key)))
+        for key in order:
+            consumer, is_uncharged = by_key[key]
             if needed is not None:
                 if needed <= 0:
                     break      # nothing on this tier is waiting for the room
@@ -4696,33 +4718,39 @@ def sweep(queue: pool.PoolQueue, *, stage_roots: dict[str, str],
                     break
                 if free + _tokens_for_newly_free_bytes(credit_bytes) >= needed:
                     break      # the window fits now; the rest stays resident
+            if budget is not None and not budget.start(ORPHAN_EVICT_UNIT, key):
+                continue       # past this cycle's budget: resident until the next
             try:
-                if not is_uncharged:
-                    swept.append(evict(queue, key, consumer_action_key=consumer,
-                                       stage_root=stage_root,
-                                       residency_root=residency_root,
-                                       reason="orphan-sweep"))
+                try:
+                    if not is_uncharged:
+                        swept.append(evict(queue, key, consumer_action_key=consumer,
+                                           stage_root=stage_root,
+                                           residency_root=residency_root,
+                                           reason="orphan-sweep"))
+                        continue
+                    outcome = _evict_uncharged_owner(
+                        queue, key, consumer, tier_id=tier_id,
+                        stage_root=stage_root, residency_root=residency_root)
+                except pool.TransitionLockBusy:
+                    # Inside the tier loop no transition lock is waited on
+                    # (#1115): the refusal already named the key and its
+                    # holder, and the orphan stays for the next cycle's sweep.
+                    deferred = _refused_receipt(
+                        tier_id=tier_id, stage_root=stage_root,
+                        refusal="transition-lock-busy", mover_action_key=key,
+                        consumer_action_key=consumer, reason="orphan-sweep")
+                    deferred["event"] = "stage-orphan-eviction-deferred"
+                    swept.append(deferred)
                     continue
-                outcome = _evict_uncharged_owner(
-                    queue, key, consumer, tier_id=tier_id, stage_root=stage_root,
-                    residency_root=residency_root)
-            except pool.TransitionLockBusy:
-                # Inside the tier loop no transition lock is waited on
-                # (#1115): the refusal already named the key and its holder,
-                # and the orphan stays for the next cycle's sweep.
-                deferred = _refused_receipt(
-                    tier_id=tier_id, stage_root=stage_root,
-                    refusal="transition-lock-busy", mover_action_key=key,
-                    consumer_action_key=consumer, reason="orphan-sweep")
-                deferred["event"] = "stage-orphan-eviction-deferred"
-                swept.append(deferred)
-                continue
-            if outcome is None:
-                continue       # revived or charged since discovery: not ours
-            swept.append(outcome)
-            credit_bytes += int(outcome.get("bytes_deleted") or 0)
-            if outcome.get("complete"):
-                evicted_uncharged[key] = int(outcome.get("bytes_deleted") or 0)
+                if outcome is None:
+                    continue   # revived or charged since discovery: not ours
+                swept.append(outcome)
+                credit_bytes += int(outcome.get("bytes_deleted") or 0)
+                if outcome.get("complete"):
+                    evicted_uncharged[key] = int(outcome.get("bytes_deleted") or 0)
+            finally:
+                if budget is not None:
+                    budget.done(ORPHAN_EVICT_UNIT)
         if needed is not None:
             needed_after_credit: int | None = (
                 needed - _tokens_for_newly_free_bytes(credit_bytes))

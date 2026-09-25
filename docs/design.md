@@ -5236,11 +5236,56 @@ each kind always starts, so every long step makes progress every cycle
 whatever `b` is. A refused unit waits for the next cycle, which starts that
 step from the first unit refused. The units are one consumer of the
 dead-owner census (`stage_release.DEAD_OWNER_UNIT`), one instance's ended
-prewrites, one staged batch's egress and one consumed batch's origin
-retirement (`produced_output.ORIGIN_RETIREMENT_UNITS`). At the live shape `b`
+prewrites, one staged batch's egress, one consumed batch's origin
+retirement (`produced_output.ORIGIN_RETIREMENT_UNITS`), and one eviction or
+reclaim of the per-range passes below (#1136). At the live shape `b`
 is about 80 s. `LAST_CYCLE["liveness"]`, on each `tier-cycle` line, reports
 every term, the units run and deferred per kind, the refreshes, and the
 oldest age any record reached.
+
+**Every per-range eviction in the cycle is a unit (#1136).** The first
+version budgeted only the dead-owner census inside the orphan sweep. The
+sweep's own evictions ran unbudgeted, so on 2026-09-25 one cycle on
+dl380g10 took 287.2 s, 227.5 s of it in `sweep_orphans`: 47 orphan
+evictions, each behind an owner census of 1.1 to 13.1 s while movers
+saturated the storage pool. Nothing re-announced the stage record between
+them, it reached 121 s, and a stage-fed GPU row died with
+`StagedRangeNotLanded`. Each pass that evicts, or reads and publishes, per
+range now asks the budget before each unit and reports its end, whatever the
+outcome:
+
+* `stage_release.sweep`, the orphan pass: one eviction, of a held orphan or
+  an uncharged dead owner (`stage_release.ORPHAN_EVICT_UNIT`). The pressure
+  check comes first, so a tier that has its room starts no unit. A refused
+  orphan stays resident, and the next cycle's pass starts from it and then
+  takes the rest oldest first. The budget remembers one refused key per
+  kind, so the resumption holds on the tier where the refusal happened;
+  another tier's first orphan can go ahead of it.
+* `tier_loop.evict_beyond_horizon`: one row's eviction, with the ram copies
+  it takes first, in the horizon pass (`BEYOND_HORIZON_UNIT`) and in the
+  claim-order pass (`CLAIM_ORDER_UNIT`). The futility check still weighs
+  every candidate, since it asks whether the room can be made at all.
+* `tier_loop.release_incomplete_ram_promotions`: one incomplete promotion's
+  eviction (`RAM_INCOMPLETE_UNIT`).
+* `tier_loop.reclaim_failed_mover_partials`: one pressured consumer's legs
+  (`FAILED_MOVER_RECLAIM_UNIT`). It deletes nothing itself, but each leg
+  reads a ledger holding, the queue state, a move receipt and a fragment.
+
+`tier_loop._budget_order` applies `Liveness.order`'s rotation to rows
+keyed by mover or consumer. Without a budget, every pass behaves as before.
+The other per-cycle loops are bounded otherwise: `deferred_release`
+stops at the cycle's interval, `origin_retirement_tick` already takes the
+budget, and `reconcile` is one walk per tier, not a loop of per-range units.
+`drop_prior_ram_epochs` is not bounded per holder: each ghost holder
+costs a funding read, non-blocking lock attempts and, for a blind grant, a
+scan of the residency plans. It runs only on the fragments and held keys of
+a prior ram epoch, which a reboot leaves, and it takes no owner census and
+deletes no staged data. `adopt_resident_ranges`,
+`withdraw_dead_consumer_movers` and `fan_out_shared_ranges` rewrite or
+remove bookkeeping records (fragments, material, plans, reservations), not
+staged ranges; they are not budgeted, and their per-range cost is not yet
+measured. The windows publish rows, and the
+egress those rows name runs as its own action, outside the cycle.
 
 **A dead producer's backlog writes its commitments once.** `retire_batch`
 reads the instance's `commitments.json` four times and writes it once, with

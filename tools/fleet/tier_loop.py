@@ -1032,7 +1032,8 @@ def drop_prior_ram_epochs(
 
 def release_incomplete_ram_promotions(
         queue: pool.PoolQueue,
-        tiers: Mapping[str, Mapping[str, object]]) -> list[dict[str, object]]:
+        tiers: Mapping[str, Mapping[str, object]], *,
+        budget: Liveness | None = None) -> list[dict[str, object]]:
     """Evict ram promotions whose terminal receipt says they did not land (#644).
 
     A promotion that lands partially files a fragment for the landed subset
@@ -1062,6 +1063,10 @@ def release_incomplete_ram_promotions(
     cannot date, so its tokens stay held; an evict that refuses or errors
     retains them too, and says so on a ``ram-mover-incomplete-retained``
     event the next cycle retries.
+
+    ``budget`` is the tier loop's cycle budget (#1136): each eviction is one
+    ``RAM_INCOMPLETE_UNIT``.  A promotion the budget refuses keeps its
+    tokens until the next cycle, which starts from it.
     """
 
     events: list[dict[str, object]] = []
@@ -1077,7 +1082,7 @@ def release_incomplete_ram_promotions(
             held = sorted(queue.tier_ledger(tier_id).held_keys())
         except (OSError, pool.PoolContractError):
             continue
-        for key in held:
+        for key in _budget_order(budget, RAM_INCOMPLETE_UNIT, held, str):
             if (queue.item_path(pool.READY, key).exists()
                     or queue.item_path(pool.CLAIMED, key).exists()):
                 # Queued or running: the window or the copy owns this key, and
@@ -1100,6 +1105,8 @@ def release_incomplete_ram_promotions(
                     and not receipt_errors):
                 continue      # a clean landing: occupancy, not stranding
             consumer = str(receipt.get("consumer_action_key") or "")
+            if budget is not None and not budget.start(RAM_INCOMPLETE_UNIT, key):
+                continue      # past this cycle's budget: the next cycle's
             try:
                 # ``evict`` takes the mover's lock and waits for it; taken
                 # here first without waiting, so its acquire nests and a busy
@@ -1118,6 +1125,9 @@ def release_incomplete_ram_promotions(
                                "consumer": consumer or None,
                                "error": repr(exc)})
                 continue
+            finally:
+                if budget is not None:
+                    budget.done(RAM_INCOMPLETE_UNIT)
             assert isinstance(outcome, dict)
             evict_errors = outcome.get("errors")
             base = {"tier_id": tier_id, "mover": key,
@@ -5256,7 +5266,8 @@ def window_pressure(
 
 def reclaim_failed_mover_partials(
         queue: pool.PoolQueue, consumers: list,
-        pressure: Mapping[str, int]) -> list[dict[str, object]]:
+        pressure: Mapping[str, int], *,
+        budget: Liveness | None = None) -> list[dict[str, object]]:
     """Publish the egress row of a failed mover whose partials block the window (#627).
 
     A mover that ends without a complete receipt releases its tokens at
@@ -5283,19 +5294,30 @@ def reclaim_failed_mover_partials(
     names it, and one egress frees them all, because the eviction of a range
     that did not land is range-wide; so once one sharer's egress is asked
     this cycle, the others are not.
+
+    ``budget`` is the tier loop's cycle budget (#1136): each pressured
+    consumer's legs are one ``FAILED_MOVER_RECLAIM_UNIT``, since each leg
+    reads its ledger holding, its queue state, its move receipt and its
+    fragment.  A consumer the budget refuses is read on the next cycle,
+    which starts from it.
     """
 
     events: list[dict[str, object]] = []
     root = queue.residency_fragment_root()
     shared = _shared_movers(queue) or frozenset()
     asked: set[str] = set()
-    for consumer_key, _consumer, plan, tier_id in consumers:
+    for consumer_key, _consumer, plan, tier_id in _budget_order(
+            budget, FAILED_MOVER_RECLAIM_UNIT, consumers,
+            lambda consumer: str(consumer[0])):
         if int((pressure or {}).get(tier_id, 0) or 0) <= 0:
             continue
         try:
             ledger = queue.tier_ledger(tier_id)
         except (OSError, pool.PoolContractError):
             continue
+        if budget is not None and not budget.start(
+                FAILED_MOVER_RECLAIM_UNIT, str(consumer_key)):
+            continue      # past this cycle's budget: the next cycle's
         for phase in plan["phases"]:
             # One reclaim candidate per leg: a chunked phase's chunks fail
             # and free independently (#675), each through its own egress
@@ -5382,6 +5404,8 @@ def reclaim_failed_mover_partials(
                     "chunk_index": chunk_index,
                     "mover": mover_key, "action_key": egress_key,
                     "tier_id": tier_id})
+        if budget is not None:
+            budget.done(FAILED_MOVER_RECLAIM_UNIT)
     return events
 
 
@@ -7940,10 +7964,41 @@ def sweep_orphans(queue: pool.PoolQueue,
     }
     if not stage_roots:
         return []
-    # ``budget`` bounds the dead-owner census's units per cycle (#1072).
+    # ``budget`` bounds the dead-owner census's units (#1072) and the
+    # orphan evictions (#1136) per cycle.
     return stage_release.sweep(queue, stage_roots=stage_roots, pressure=pressure,
                                index=index,
                                **({} if budget is None else {"budget": budget}))
+
+
+#: The units the in-cycle eviction and reclaim passes ask a cycle budget for
+#: (#1136), beside ``stage_release.DEAD_OWNER_UNIT`` and
+#: ``stage_release.ORPHAN_EVICT_UNIT``.  One row's eviction, with the ram
+#: copies it takes first, in :func:`evict_beyond_horizon`'s horizon pass and
+#: its claim-order pass; one incomplete ram promotion's eviction; one
+#: pressured consumer's failed-mover legs.
+BEYOND_HORIZON_UNIT = "beyond-horizon"
+CLAIM_ORDER_UNIT = "claim-order"
+RAM_INCOMPLETE_UNIT = "ram-mover-incomplete"
+FAILED_MOVER_RECLAIM_UNIT = "failed-mover-reclaim"
+
+
+def _budget_order(budget, kind: str, items: Sequence, key) -> list:
+    """``items`` in ``budget.order``'s order: from the one refused first last cycle.
+
+    ``budget.order`` rotates a list of keys to start from the key a unit of
+    ``kind`` was refused for; this applies the same rotation to the items
+    those keys name, duplicates included.  Without a budget, or with nothing
+    refused, the order is unchanged.
+    """
+
+    items = list(items)
+    if budget is None or not items:
+        return items
+    keys = [key(item) for item in items]
+    ordered = budget.order(kind, keys)
+    at = keys.index(ordered[0]) if ordered and ordered[0] in keys else 0
+    return items[at:] + items[:at]
 
 
 def evict_beyond_horizon(queue: pool.PoolQueue,
@@ -7952,6 +8007,7 @@ def evict_beyond_horizon(queue: pool.PoolQueue,
                          pressure: Mapping[str, int] | None,
                          withdrawn: frozenset[str] | None = None,
                          claim_order: Mapping[str, Mapping[str, object]] | None = None,
+                         budget: Liveness | None = None,
                          ) -> list[dict[str, object]]:
     """Give back landed ranges past their readers' refill horizons (#903, #906).
 
@@ -7994,6 +8050,14 @@ def evict_beyond_horizon(queue: pool.PoolQueue,
     ``-futile``, and each names the head it was for.  ``-futile`` is told
     when the futile state starts or changes head or victim, not every cycle
     it lasts (:func:`_futile_is_news`).
+
+    ``budget`` is the tier loop's cycle budget (#1072, #1136).  Each row's
+    eviction, with the ram copies it takes first, is one unit:
+    ``BEYOND_HORIZON_UNIT`` in the first pass and ``CLAIM_ORDER_UNIT`` in
+    the second.  A row the budget refuses stays resident, and the next
+    cycle's pass starts from it.  The futility check still weighs every
+    candidate: it asks whether the room can be made at all, not whether it
+    can be made this cycle.
     """
 
     events: list[dict[str, object]] = []
@@ -8126,7 +8190,8 @@ def evict_beyond_horizon(queue: pool.PoolQueue,
                            "tier_id": tier_id, "needed_gib": needed,
                            "free_gib": free, "beyond_horizon_gib": offered})
             continue
-        for row in rows:
+        for row in _budget_order(budget, BEYOND_HORIZON_UNIT, rows,
+                                 lambda row: str(row["mover_action_key"])):
             if free >= needed:
                 break
             try:
@@ -8135,14 +8200,21 @@ def evict_beyond_horizon(queue: pool.PoolQueue,
                     continue      # given back since the candidates were read
             except (OSError, pool.PoolContractError, ValueError):
                 continue
-            if not ram_first(row, needed):
-                continue
-            _done, event = evicted(row, tier_id, stage_root, needed)
-            events.append(event)
+            if budget is not None and not budget.start(
+                    BEYOND_HORIZON_UNIT, str(row["mover_action_key"])):
+                continue          # past this cycle's budget: the next cycle's
             try:
-                free = int(ledger.available().get(kind, 0))
-            except (OSError, pool.PoolContractError, ValueError):
-                break
+                if not ram_first(row, needed):
+                    continue
+                _done, event = evicted(row, tier_id, stage_root, needed)
+                events.append(event)
+                try:
+                    free = int(ledger.available().get(kind, 0))
+                except (OSError, pool.PoolContractError, ValueError):
+                    break
+            finally:
+                if budget is not None:
+                    budget.done(BEYOND_HORIZON_UNIT)
     # The claim order's head (#1011): the room every granted consumer and
     # the head take this cycle, from what is ranked after the head.
     for tier_id, order in sorted(ranked.items()):
@@ -8202,20 +8274,28 @@ def evict_beyond_horizon(queue: pool.PoolQueue,
             continue
         preempted = False
         evicted_gib = 0
-        for row in rows:
+        for row in _budget_order(budget, CLAIM_ORDER_UNIT, rows,
+                                 lambda row: str(row["mover_action_key"])):
             if free >= target:
                 break
-            if row.get("ram_first") and not ram_first(row, target):
-                continue
-            done, event = evicted(row, tier_id, stage_root, target,
-                                  prefix="claim-order")
-            events.append(event)
-            evicted_gib += int(row["stage_gib"]) if done else 0  # type: ignore[call-overload]
-            preempted = preempted or (done and row.get("basis") == PREEMPT_READING_PHASE)
+            if budget is not None and not budget.start(
+                    CLAIM_ORDER_UNIT, str(row["mover_action_key"])):
+                continue          # past this cycle's budget: the next cycle's
             try:
-                free = int(ledger.available().get(kind, 0))
-            except (OSError, pool.PoolContractError, ValueError):
-                break
+                if row.get("ram_first") and not ram_first(row, target):
+                    continue
+                done, event = evicted(row, tier_id, stage_root, target,
+                                      prefix="claim-order")
+                events.append(event)
+                evicted_gib += int(row["stage_gib"]) if done else 0  # type: ignore[call-overload]
+                preempted = preempted or (done and row.get("basis") == PREEMPT_READING_PHASE)
+                try:
+                    free = int(ledger.available().get(kind, 0))
+                except (OSError, pool.PoolContractError, ValueError):
+                    break
+            finally:
+                if budget is not None:
+                    budget.done(CLAIM_ORDER_UNIT)
         stamp(("preempted" if preempted else "evicted")
               if free >= target else "short", evicted_gib=evicted_gib)
     return events
@@ -9310,7 +9390,8 @@ def _cycle(
     # through the egress's own read-delete-release -- and the adoption, the
     # pressure, the sweep and both windows below see the room and republish
     # the whole range through the ordinary publish path.
-    for event in release_incomplete_ram_promotions(queue, announced_tiers):
+    for event in release_incomplete_ram_promotions(queue, announced_tiers,
+                                                   **phases.budgeted()):
         _emit(queue, host, event, tier_consumers=tier_consumers)
     phases.lap("release_incomplete_ram_promotions")
     # Adopt, then evict under pressure, then publish.  The order is the policy
@@ -9365,7 +9446,8 @@ def _cycle(
     # names bytes is an eviction candidate when the window has no room (#627).
     # Its egress rows land in ``ready/`` before the sweep runs, so the window
     # below sees both the room being made and the recopy it must hold back.
-    for event in reclaim_failed_mover_partials(queue, planned, pressure):
+    for event in reclaim_failed_mover_partials(queue, planned, pressure,
+                                               **phases.budgeted()):
         _emit(queue, host, event, tier_consumers=tier_consumers)
     phases.lap("reclaim_failed_mover_partials")
     for event in sweep_orphans(queue, announced_tiers, pressure=pressure,
@@ -9380,7 +9462,8 @@ def _cycle(
     for event in evict_beyond_horizon(queue, announced_tiers,
                                       consumers=planned, pressure=pressure,
                                       withdrawn=withdrawn,
-                                      claim_order=claim_order):
+                                      claim_order=claim_order,
+                                      **phases.budgeted()):
         _emit(queue, host, event, tier_consumers=tier_consumers)
     phases.lap("evict_beyond_horizon")
     # Each consumer still reading a shared range gets its own copy of the
