@@ -64,12 +64,10 @@ Two staleness bounds, deliberately different:
   one per worker loop per poll.
 * A **claim** reads it with :data:`CLAIM_FRESHNESS_S`: while image-pinned
   work is waiting, the record is re-probed (once for the box, under the same
-  local lock) at least that often before a claim uses it.  A loop that finds
-  a sibling loop's refresh in flight waits for it, bounded by its own probe
-  budget, and reads what it wrote (#1143).  The probe runs in the worker's
-  poll, outside every pool lock.  A claim can still race an image removal
-  that happens after the observation and before the container starts; that
-  interval is small and documented rather than claimed closed.
+  local lock) at least that often before a claim uses it.  The probe runs in
+  the worker's poll, outside every pool lock.  A claim can still race an
+  image removal that happens after the observation and before the container
+  starts; that interval is small and documented rather than claimed closed.
 
 The record lives in this uid's private directory (``0700``, checked on open,
 no symlinks followed) and is read as a stable, size-capped regular file whose
@@ -108,16 +106,7 @@ INVENTORY_TTL_S = 30.0
 CLAIM_FRESHNESS_S = 5.0
 
 #: One Docker metadata read's ceiling.  A probe that overruns is unknown.
-#: It is also how long a loop waits for a sibling loop's refresh (#1143): the
-#: budget that refresh's probe runs under, and the one this loop would have
-#: spent probing itself.
 INVENTORY_TIMEOUT_S = 5.0
-
-#: How often a bounded wait on a probe looks again: the probe's own exit
-#: (:func:`_probe_exit_status`) and a sibling loop's refresh
-#: (:meth:`InventoryCache._refresh`).  Each wait ends at its deadline; this
-#: only sets how late after the event the waiter sees it.
-PROBE_POLL_S = 0.01
 
 #: The local system daemon, the same endpoint the action Docker shim pins.
 #: ``DOCKER_HOST`` and ``DOCKER_CONTEXT`` are scrubbed from the probe's
@@ -578,7 +567,7 @@ def _probe_exit_status(process, deadline: float):
             return ("exited", code)
         if time.monotonic() >= deadline:
             return None
-        time.sleep(PROBE_POLL_S)
+        time.sleep(0.01)
 
 
 def _run_bounded(argv, *, env, timeout_s: float, limit: int) -> bytes | None:
@@ -834,13 +823,12 @@ class InventoryCache:
 
     The record lives on host-local disk because the loops are separate
     processes and the daemon is box-wide: one loop refreshes after the
-    requested freshness under a local lock, and the rest wait for it and read
-    the same small record, so a box with sixteen loops pays one Docker listing
+    requested freshness under a nonblocking local lock and the rest read the
+    same small record, so a box with sixteen loops pays one Docker listing
     per interval rather than sixteen per poll.  Every failure -- an unsafe
-    directory, a malformed or stale record, a lock held past the caller's
-    ``timeout_s``, a failed probe -- leaves the caller with ``None``:
-    unknown, which refuses every requirement and lets ordinary work through
-    untouched.
+    directory, a malformed or stale record, a held lock, a failed probe --
+    leaves the caller with ``None``: unknown, which refuses every requirement
+    and lets ordinary work through untouched.
     """
 
     def __init__(
@@ -906,31 +894,6 @@ class InventoryCache:
         return observed, frozenset(normalized)
 
     def _refresh(self, directory: int) -> None:
-        """Probe and write the record, or wait out a sibling loop's refresh.
-
-        The loop that takes ``refresh.lock`` probes and writes.  A loop that
-        finds it held waits for the holder to let go and then leaves the
-        record to be read as the holder wrote it, rather than returning at
-        once and reading the stale record it came to refresh (#1143: sparky's
-        five loops read "unknown" on most passes after a refresh boundary,
-        while the probe answered in 0.23 s).  The wait is bounded by this
-        loop's own ``timeout_s``: the most it would have spent probing
-        itself, so a sibling costs a caller no more than a refresh does.  A
-        sibling's probe runs under the same budget and took the lock before
-        this loop arrived, so a probe that answers ends inside this wait (bar
-        the record write after it), and one that used its whole budget
-        answered unknown anyway.  A lock held past the wait leaves this loop
-        unknown.  The lock is polled, non-blocking, at :data:`PROBE_POLL_S`:
-        a blocking ``flock`` has no deadline, and one left blocking in a
-        helper thread would carry the lock's open file description into every
-        child this process forks.
-
-        Neither caller of :meth:`get` holds anything this refresh takes: the
-        worker loop calls it in its poll, outside every pool lock, and the
-        membership probe holds no lock at all.  The holder takes only
-        ``refresh.lock``, and a waiter holds no lock while it waits.
-        """
-
         try:
             lock = os.open(
                 "refresh.lock",
@@ -943,23 +906,10 @@ class InventoryCache:
             if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
                     or info.st_nlink != 1):
                 return
-            deadline = time.monotonic() + self.timeout_s
-            waited = False
-            while True:
-                try:
-                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    break
-                except BlockingIOError:
-                    pass                    # a sibling loop is refreshing
-                except OSError:
-                    return
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    return
-                waited = True
-                time.sleep(min(PROBE_POLL_S, remaining))
-            if waited:
-                return                      # the sibling's record answers
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                return                      # a sibling loop is refreshing
             entries = observe(probe=self.probe, timeout_s=self.timeout_s,
                               docker=self.docker)
             record = {
@@ -982,8 +932,7 @@ class InventoryCache:
         it defaults to the offer TTL.  A claim passes
         :data:`CLAIM_FRESHNESS_S`, which re-probes while image-pinned work is
         waiting -- once for the box, under the local lock, outside every pool
-        lock.  A caller that meets a sibling's refresh waits for it, at most
-        ``timeout_s``, and reads its record (:meth:`_refresh`).
+        lock.
         """
 
         limit = self.ttl_s if max_age_s is None else min(self.ttl_s, max_age_s)
