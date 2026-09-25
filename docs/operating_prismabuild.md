@@ -1963,6 +1963,16 @@ read what it waited on before reading any host's logs:
     say where and why, `retryable` says whether the fault was transient, and
     the pin it names is still held.
 
+A staged consumer that sits READY with a `residency_lead_terminal` denial may
+have had its window retired: a mover of its plan refused terminally, with
+`staged_destination_conflict` (a live owner holds other bytes under a staged
+name) or `staged_destination_unproven` (an owner's ending stayed unprovable),
+and marked the plan superseded. Nothing republishes its movers until the
+consumer is resubmitted. The denial's `residency.plan_superseded` and the
+plan's `superseded` entry under `residency_plans` in `pbstatus --starvation`
+name the refusal, the `stage_path` and the `owners`, each with its state
+(#1004). Resolve the owner, then resubmit the consumer.
+
 The latest-only denial record and the tier loop's stdout still exist, but
 neither is the only copy any more. The ring is in
 `denial-transitions/<key>.json`, and the events are in

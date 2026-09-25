@@ -4653,7 +4653,8 @@ A divergent name is settled by the states of its owners, not refused forever
 (#966). Before this change, a name whose recorded owner held different bytes
 was a retryable refusal. The retry met the same owner, the tier loop
 republished a mover that was neither queued nor pinned, and a mover whose
-owner had long ended reran every cycle while holding fill. A stage mover now
+owner had long ended reran every cycle while holding fill. A stage mover, and
+a RAM promotion by its promoting consumer (#1004), now
 collects every other consumer and mover whose fragment names the divergent
 path, and judges each owner under its transition locks. The locks are taken
 without blocking, in the usual order: consumer, then mover, then the stage
@@ -4665,7 +4666,10 @@ another mover of the copy's own consumer, is judged by its mover alone. Anything
 else is uncertain: no outcome, a lease without its record, a queued mover, or
 an unreadable fragment. Under the ownership lock the name is decided again.
 An owner that was not judged sends the decision back for another judgment.
-So does a remembered ending whose consumer or mover has a queue record again.
+So does a remembered ending whose consumer or mover has a queue record again;
+for a sibling only its mover is re-checked, since its consumer is the copy's
+own and is queued by construction (#1004: re-checking it re-judged a
+remembered sibling for every name, one publication poll each).
 
 - Every owner has ended: the copy replaces the name by rename over the old
   file, once the pin, live-claim and partial-copy censuses read clean.
@@ -4678,9 +4682,31 @@ So does a remembered ending whose consumer or mover has a queue record again.
   the adoption proof before any copy. The receipt's `conflict` names the
   path, both owners and both digests. The mover exits 1 and marks its window
   superseded with the #708 record, so the tier loop stops republishing it.
-  The live copy is never touched.
+  The live copy is never touched. The marker carries the conflict itself,
+  structured (`conflict`: the refusal, the path and every owner with its
+  state), not only its reason. The stalled consumer sits READY until an
+  operator resubmits it, and both readers of that stall name the retirement
+  (#1004): its claim denial's `residency.plan_superseded` (read only once a
+  lead has finished, so a lead still coming costs the claim scan nothing
+  more) and the plan's `superseded` entry in `pbstatus --starvation`
+  (`residency_plan.supersession_summary`). An unreadable marker reads as
+  `unreadable`, never as no retirement.
 - An unproven ending: the retryable refusal it always was, now raised before
-  any copy.
+  any copy, and bounded (#1004). Some unproven endings settle by themselves:
+  a queued, claimed or leased key, or a queue state that did not read. Those
+  are never counted. Others do not settle: no outcome record (#798), two
+  outcome records, an unparseable outcome or fragment, or a key that is not
+  an action key. Each run files the unprovable evidence it refused on
+  (`[consumer, mover, why]` per owner) in its receipt's `unproven` block.
+  The block also counts the consecutive runs of the same key that refused
+  on the same evidence. The count is read from the key's previous receipt
+  before the new one is filed. At `UNPROVEN_ENDING_RUNS` (3) runs spanning
+  at least `UNPROVEN_ENDING_MIN_SPAN_S` (60 s, twice the queue mount's
+  `acdirmin`, so a record that was only not yet visible cannot cause it),
+  the run refuses `staged_destination_unproven`. That refusal names the path
+  and the unproven owners in `conflict`, exits 1 and retires the window
+  with the #708 record, as the live-owner conflict does. Nothing is
+  replaced. RAM promotions arbitrate and bound the same way.
 
 An owner proven ended is remembered for the run, so a range whose names one
 dead owner holds costs one judgment per owner, not one per name. A judgment

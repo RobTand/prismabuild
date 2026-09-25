@@ -13753,6 +13753,27 @@ class PoolQueue:
                 newest = (stamp, str(status) if status is not None else "superseded")
         return None if newest is None else newest[1]
 
+    def _residency_supersession(self, action_key: object) -> dict[str, object] | None:
+        """The retirement of this consumer's filed plan, summarized, or ``None``.
+
+        ``residency_plan.supersession_summary`` of the marker covering the
+        filed plan: ``None`` when no plan is filed or none retired it.  An
+        unreadable plan or marker answers ``unreadable`` with the error,
+        never ``None``: a denial that cannot say whether the window was
+        retired must not read as one that was not.
+        """
+
+        from . import residency_plan as plan_mod
+
+        try:
+            key = _residency_action_key(action_key)
+            plan = plan_mod.read(self, key)
+            if plan is None:
+                return None
+            return plan_mod.supersession_summary(plan_mod.superseded(self, plan))
+        except (OSError, ValueError, TypeError, PoolContractError) as exc:
+            return {"unreadable": True, "error": str(exc)}
+
     def residency_verdict(self, item: Mapping[str, object]) -> dict[str, object]:
         """Whether this item's declared bytes are resident, and why not.
 
@@ -13831,9 +13852,27 @@ class PoolQueue:
             # that finished holding nothing will never become resident without
             # being republished.
             unpinned = all(entry.get("status") == "unpinned" for entry in pending)
-            return {"state": "lead_unpinned" if unpinned else "lead_not_resident",
-                    "pending": pending,
-                    "leads": [str(lead) for lead in leads]}
+            verdict: dict[str, object] = {
+                "state": "lead_unpinned" if unpinned else "lead_not_resident",
+                "pending": pending,
+                "leads": [str(lead) for lead in leads]}
+            if any(entry.get("status") != "absent" for entry in pending):
+                # A lead that finished -- failed, withdrawn, dropped, or
+                # executed holding no tokens -- is republished only by the
+                # window, and not when a mover's terminal refusal (#966's
+                # live-owner conflict, #1004's unproven ending) retired the
+                # window: the item then sits ready until an operator
+                # resubmits it.  So the denial names the retirement -- its
+                # reason, the path and both owners -- instead of a bare
+                # finished lead (#1004 item 3).  A refused lead that ran
+                # before reads ``unpinned``, from its earlier ``done/``
+                # record.  Read only once a lead has finished, so a lead
+                # that is still coming (``absent``) costs the scan nothing
+                # more.
+                supersession = self._residency_supersession(item.get("action_key"))
+                if supersession is not None:
+                    verdict["plan_superseded"] = supersession
+            return verdict
         # Pinned bytes the consumer cannot find are bytes it does not read.
         # The launcher passes ``RESIDENCY_MAP_ENV`` only when the composed map
         # is on disk, and the loop composes it from the fragments a mover

@@ -890,6 +890,113 @@ class _PublicationRefused(OSError):
 #: under one of its staged names (#966).
 STAGED_DESTINATION_CONFLICT = "staged_destination_conflict"
 
+#: The terminal refusal a mover files when a divergent name's owner's ending
+#: stayed unprovable across :data:`UNPROVEN_ENDING_RUNS` runs (#1004 item 2).
+STAGED_DESTINATION_UNPROVEN = "staged_destination_unproven"
+
+#: How many consecutive runs of one mover may refuse on the same unprovable
+#: ending before the refusal is terminal (#1004 item 2).  An unprovable
+#: ending is one no amount of waiting settles by itself: a consumer with no
+#: outcome record (#798's legacy shape), two outcomes, an outcome or a
+#: fragment that does not parse, a key that is not an action key.  The only
+#: benign reason to see one is a record the shared mount has not shown this
+#: host yet (``stage_release._unended_owner``).  The span below is what
+#: excludes that lag; the count makes the terminal verdict rest on three
+#: separate claims of the mover, each with its own reads, rather than on one
+#: unlucky pass (a choice, recorded in #1004).  A queued, claimed or leased
+#: key, an I/O error and a busy lock settle by themselves and are never
+#: counted, however long they last.
+UNPROVEN_ENDING_RUNS = 3
+
+#: The least time the counted runs must span before the refusal is terminal:
+#: twice the queue mount's ``acdirmin`` (30 s, ``pool._read_json_fresh``), so
+#: a record that was only not yet visible to the first refusal is visible to
+#: the last.  Runs republished faster than this keep counting and wait.
+UNPROVEN_ENDING_MIN_SPAN_S = 60.0
+
+
+def _unproven_evidence(unproven: Sequence[Mapping[str, object]],
+                       ) -> list[list[str]] | None:
+    """The fingerprint a run's unproven refusals are counted by, or ``None``.
+
+    One ``[consumer, mover, why]`` per owner whose ending was not proven, or
+    ``["", "", why]`` for a divergence whose owners all ended but whose
+    census could not read a fragment.  The staged path is left out: a copy
+    stops dispatch at its first refusal, and which name a multi-reader copy
+    meets first is not evidence about the owner.  ``None`` when the run
+    refused on nothing unproven, or when any of its causes settles by itself
+    (:data:`UNPROVEN_ENDING_RUNS`): such a run is never counted.
+    """
+
+    if not unproven:
+        return None
+    evidence: set[tuple[str, str, str]] = set()
+    for record in unproven:
+        if record.get("settles"):
+            return None
+        owners = [row for row in record.get("owners") or ()
+                  if isinstance(row, Mapping)]
+        if not owners:
+            evidence.add(("", "", str(record.get("why") or "")))
+        for row in owners:
+            evidence.add((str(row.get("consumer_action_key") or ""),
+                          str(row.get("mover_action_key") or ""),
+                          str(row.get("why") or record.get("why") or "")))
+    return [list(item) for item in sorted(evidence)]
+
+
+def unproven_streak(prior: object, unproven: Sequence[Mapping[str, object]],
+                    *, now: float) -> dict[str, object] | None:
+    """This run's ``unproven`` receipt block, counted against its prior run.
+
+    ``prior`` is the receipt this mover's key filed last (``move_record``,
+    read before this run files its own).  A run whose unprovable evidence
+    equals the prior run's continues its count; anything else starts again,
+    and a run with a cause that settles by itself counts zero.  ``terminal``
+    is true once the count reaches :data:`UNPROVEN_ENDING_RUNS` across at
+    least :data:`UNPROVEN_ENDING_MIN_SPAN_S`.  ``None`` when this run refused
+    on no unproven ending at all.
+    """
+
+    if not unproven:
+        return None
+    evidence = _unproven_evidence(unproven)
+    runs, first = 0, float(now)
+    if evidence is not None:
+        runs = 1
+        before = (prior.get("unproven") if isinstance(prior, Mapping)
+                  else None)
+        if (isinstance(before, Mapping) and before.get("evidence") == evidence
+                and isinstance(before.get("runs"), int)
+                and not isinstance(before.get("runs"), bool)
+                and int(before["runs"]) > 0
+                and isinstance(before.get("first_unix"), (int, float))):
+            runs = int(before["runs"]) + 1
+            first = float(before["first_unix"])
+    owners: dict[tuple[str, str], dict[str, object]] = {}
+    for record in unproven:
+        for row in record.get("owners") or ():
+            if isinstance(row, Mapping):
+                owners.setdefault((str(row.get("consumer_action_key")),
+                                   str(row.get("mover_action_key"))),
+                                  dict(row))
+    head = unproven[0]
+    return {
+        "evidence": evidence,
+        "settles": evidence is None,
+        "runs": runs,
+        "bound": UNPROVEN_ENDING_RUNS,
+        "first_unix": first,
+        "terminal": (runs >= UNPROVEN_ENDING_RUNS
+                     and now - first >= UNPROVEN_ENDING_MIN_SPAN_S),
+        "stage_path": head.get("stage_path"),
+        "stage_paths": sorted({str(record.get("stage_path"))
+                               for record in unproven})[:20],
+        "declared_sha256": head.get("declared_sha256"),
+        "why": head.get("why"),
+        "owners": [owners[key] for key in sorted(owners)],
+    }
+
 
 class _Owners:
     """Who a proof search found naming one staged path it found divergent.
@@ -1042,10 +1149,13 @@ class _StagedPublisher:
       overwrite.  On a stage mover the owners decide it (#966,
       :meth:`_arbitration`): a live owner is a conflict for an owner to
       resolve, refused terminally and named; an owner whose ending cannot
-      be proven is refused retryably, as before; and a name every owner of
+      be proven is refused retryably, as before, until the same unprovable
+      evidence has refused :data:`UNPROVEN_ENDING_RUNS` runs of the mover
+      (#1004 item 2); and a name every owner of
       which has provably ended is invalidated and restaged by this copy,
       after the same pin, claim and in-flight censuses a heal passes.  A
-      ram promotion, which names no consumer, refuses at once as before.
+      ram promotion arbitrates the same way, by its promoting consumer
+      (#1004 item 1); a publisher built with no consumer refuses at once.
       A record whose sidecar dates a superseded incarnation -- a different
       inode, the name replaced by a real publication -- is not this: it
       is deferred like an undated vouch while another record may still
@@ -1170,8 +1280,9 @@ class _StagedPublisher:
         self._listed_root: tuple[tuple, list[str]] | None = None
         self._listed_children: dict[str, tuple[tuple, tuple[tuple[str, Path], ...]]] = {}
         #: Whether a divergent name is settled by its owners' states (#966).
-        #: A stage mover names its consumer and does; a ram promotion names
-        #: none and keeps the retryable refusal it always had.
+        #: A stage mover and a ram promotion (#1004 item 1) name their
+        #: consumer and do; a publisher built with none keeps the retryable
+        #: refusal.
         self._arbitrates = bool(self.consumer)
         #: One divergence is arbitrated at a time per publisher: the owners'
         #: transition locks are taken without blocking, and a sibling copy
@@ -1185,6 +1296,12 @@ class _StagedPublisher:
         #: with the owners it proved, for the receipt.  Appended under
         #: ``_arbitration_lock``.
         self.invalidated: list[dict[str, object]] = []
+        #: The divergent names this run refused because an owner's ending
+        #: was not proven, each with those owners and whether the cause
+        #: settles by itself (#1004 item 2); the mover counts them against
+        #: its prior run (:func:`unproven_streak`).  Appended under
+        #: ``_arbitration_lock``.
+        self.unproven: list[dict[str, object]] = []
 
     @contextmanager
     def _ownership(self):
@@ -1465,6 +1582,7 @@ class _StagedPublisher:
             if state == "live":
                 raise self._conflict(norm, declared, detail, rows)
             if state == "uncertain":
+                self._unproven_seen(norm, declared, rows, why)
                 raise _PublicationRefused(f"{detail}; {why}")
             # ``ended``: the publication replaces it.  ``busy`` or ``moved``:
             # nothing was decided, and the publication arbitrates again.
@@ -1584,6 +1702,7 @@ class _StagedPublisher:
                 raise self._conflict(norm, declared, detail, rows)
             if state == "uncertain":
                 temp_path.unlink(missing_ok=True)
+                self._unproven_seen(norm, declared, rows, why)
                 raise _PublicationRefused(f"{detail}; {why}")
             blocked = self._invalidation_blocked(norm, destination)
             if blocked:
@@ -1637,7 +1756,9 @@ class _StagedPublisher:
         * ``live``: an owner's consumer is still queued or claimed -- a real
           conflict, refused terminally and never destroyed;
         * ``uncertain``: an ending could not be proven, or a fragment could
-          not be read; the refusal stays retryable, as it always was;
+          not be read; the refusal stays retryable, as it always was, and
+          the mover bounds its reruns (#1004 item 2,
+          :func:`bound_unproven_endings`);
         * ``ended``: every owner that names it now has provably ended.
 
         ``rows`` are the owners that name it now, each with its state.
@@ -1709,9 +1830,17 @@ class _StagedPublisher:
         caller holds both owners' transition locks, so no record appears
         while it acts.  An unreadable stat counts as a return: the owner is
         judged again in full.
+
+        A sibling's consumer is this copy's own, queued or claimed by
+        construction while its movers run, so only the sibling's mover is
+        re-checked, exactly as :meth:`_owner_state` judges it.  Checking the
+        consumer too read every remembered sibling ending as a return and
+        judged it again for every name, one publication poll each (#1004
+        item 5).
         """
 
-        for key in pair:
+        consumer, mover = pair
+        for key in ((mover,) if consumer == self.consumer else pair):
             for state in (pool.READY, pool.CLAIMED):
                 try:
                     self.queue.item_path(state, key).stat()
@@ -1742,8 +1871,33 @@ class _StagedPublisher:
                                       "state": state}
             if why:
                 row["why"] = why
+            if state == "uncertain":
+                # Whether the uncertainty ends by itself (#1004 item 2).
+                row["settles"] = self._ending_settles(consumer, mover)
             rows.append(row)
         return rows
+
+    def _ending_settles(self, consumer: str, mover: str) -> bool:
+        """Whether an unproven ending is one that settles by itself.
+
+        It settles when either key is queued, claimed or leased, or when its
+        queue state could not be read: the claim ends, the lease is reaped
+        within ``LEASE_TIMEOUT_S``, the mount answers.  It does not when both
+        keys are out of the queue and the proof still fails -- no outcome
+        record, two of them, one that does not parse, a key that is not an
+        action key: nothing will change that but an operator.  Read only for
+        an owner already judged uncertain, so an ended owner pays nothing;
+        the caller holds both keys' transition locks.
+        """
+
+        if not (_is_action_key(consumer) and _is_action_key(mover)):
+            return False
+        for key in ((mover,) if consumer == self.consumer
+                    else (consumer, mover)):
+            live, error = residency_plan.live_state(self.queue, key)
+            if error or live is not None:
+                return True
+        return False
 
     def _owner_state(self, consumer: str, mover: str,
                      unended) -> tuple[str, str]:
@@ -1834,6 +1988,25 @@ class _StagedPublisher:
         """Record one replaced name; the caller holds the arbitration lock."""
 
         self.invalidated.append({"stage_path": norm, "owners": list(rows)})
+
+    def _unproven_seen(self, norm: str, declared: object,
+                       rows: list[dict[str, object]], why: str) -> None:
+        """Record one name refused on an unproven ending (#1004 item 2).
+
+        The owners are those not proven ended; none when every owner ended
+        but a fragment could not be read, which never settles by itself
+        either.  The caller holds the arbitration lock.
+        """
+
+        held = [dict(row) for row in rows if row.get("state") != "ended"]
+        self.unproven.append({
+            "stage_path": norm,
+            "declared_sha256": (declared if isinstance(declared, str)
+                                and declared else None),
+            "why": why,
+            "owners": held,
+            "settles": any(bool(row.get("settles")) for row in held),
+        })
 
     def _conflict(self, norm: str, declared: object, detail: str | None,
                   rows: list[dict[str, object]]) -> _PublicationRefused:
@@ -4163,6 +4336,9 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
         hold_s=float(getattr(pacer, "hold_s", 0.25) or 0.25))
 
     manifest_sha256 = args.manifest_sha256
+    # This key's last receipt, read before this run files its own: the count
+    # an unprovable ending is bounded by lives there (#1004 item 2).
+    prior_receipt = prior_move_record(queue, str(args.action_key))
 
     # A same-key retry inherits its own qualified coverage before it
     # publishes anything: without this, the first incremental publication
@@ -4420,6 +4596,9 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
         receipt["plan_superseded"] = retire_conflicted_window(
             queue, str(args.consumer_action_key), str(args.action_key),
             copier.conflict or {})
+    bound_unproven_endings(receipt, queue, publisher, prior_receipt,
+                           consumer=str(args.consumer_action_key),
+                           mover=str(args.action_key))
     if overran:
         # The tokens bound what the tier can hold.  Staging past them is the
         # one failure that cannot be left to the consumer to notice, so the
@@ -4487,10 +4666,74 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
     return receipt
 
 
+def prior_move_record(queue: pool.PoolQueue,
+                      mover: str) -> dict[str, object] | None:
+    """The receipt this mover's key filed on its last run, or ``None``.
+
+    Read before the run files its own.  An unreadable receipt is no prior:
+    the count of an unprovable ending starts again, which only delays the
+    terminal refusal, never hastens it.
+    """
+
+    try:
+        return queue.move_record(mover)
+    except (OSError, ValueError, pool.PoolContractError):
+        return None
+
+
+def bound_unproven_endings(receipt: dict[str, object], queue: pool.PoolQueue,
+                           publisher: "_StagedPublisher", prior: object, *,
+                           consumer: str, mover: str) -> None:
+    """Count this run's unproven refusals; refuse terminally at the bound.
+
+    An owner whose ending can never be proven -- a legacy consumer with no
+    outcome record (#798), a fragment that stays unreadable -- left the
+    mover refusing retryably, exiting incomplete, and the window
+    republishing it every cycle, forever (#1004 item 2).  Each run now
+    files the evidence it refused on and how many consecutive runs refused
+    on the same evidence (:func:`unproven_streak`).  At the bound the run
+    refuses ``staged_destination_unproven``, naming the path and the
+    unproven owners, exits nonzero and retires its own window with the
+    #708 record, exactly as the live owner's conflict does.  A live
+    conflict in the same run outranks it.  Nothing is replaced either way.
+    """
+
+    block = unproven_streak(prior, publisher.unproven, now=time.time())
+    if block is None:
+        return
+    receipt["unproven"] = block
+    if not block["terminal"] or receipt.get("refusal") is not None:
+        return
+    receipt["refusal"] = STAGED_DESTINATION_UNPROVEN
+    receipt["complete"] = False
+    conflict = {
+        "stage_path": block["stage_path"],
+        "consumer_action_key": consumer,
+        "mover_action_key": mover,
+        "manifest_sha256": publisher.manifest_sha256,
+        "declared_sha256": block["declared_sha256"],
+        "owners": block["owners"],
+        "why": block["why"],
+        "runs": block["runs"],
+    }
+    receipt["conflict"] = conflict
+    receipt["plan_superseded"] = retire_conflicted_window(
+        queue, consumer, mover, conflict,
+        refusal=STAGED_DESTINATION_UNPROVEN)
+
+
 def retire_conflicted_window(queue: pool.PoolQueue, consumer: str,
                              mover: str,
-                             conflict: Mapping[str, object]) -> bool:
+                             conflict: Mapping[str, object], *,
+                             refusal: str = STAGED_DESTINATION_CONFLICT,
+                             ) -> bool:
     """Mark the window that sealed ``mover`` superseded, naming the conflict.
+
+    ``refusal`` is the terminal refusal the reason is filed under: the live
+    owner's conflict, or an ending that stayed unprovable (#1004 item 2).
+    The marker also carries the conflict itself, structured, so the stalled
+    consumer's claim denial and ``pbstatus --starvation`` name the path and
+    both owners without parsing the reason (#1004 item 3).
 
     The existing retirement record (#708): ``residency_window`` stops
     publishing movers from a superseded plan, and a deliberate resubmission
@@ -4513,7 +4756,8 @@ def retire_conflicted_window(queue: pool.PoolQueue, consumer: str,
             sharers = shared_interest(queue, mover)
         except (ImportError, OSError, ValueError, pb.PrismaBuildError):
             return False
-        marked = [retire_conflicted_window(queue, sharer, mover, conflict)
+        marked = [retire_conflicted_window(queue, sharer, mover, conflict,
+                                           refusal=refusal)
                   for sharer in sharers["interested"]]
         return any(marked)
     try:
@@ -4525,16 +4769,22 @@ def retire_conflicted_window(queue: pool.PoolQueue, consumer: str,
             return False
         owners = "; ".join(
             f"consumer {row.get('consumer_action_key')} mover "
-            f"{row.get('mover_action_key')} ({row.get('state')})"
+            f"{row.get('mover_action_key')} ({row.get('state')}"
+            + (f": {row.get('why')}" if row.get("why") else "") + ")"
             for row in conflict.get("owners") or ()
             if isinstance(row, Mapping))
-        reason = (f"{STAGED_DESTINATION_CONFLICT}: "
+        reason = (f"{refusal}: "
                   f"{conflict.get('stage_path')} holds the bytes of "
-                  f"{owners}; consumer {consumer} mover {mover} wants "
+                  f"{owners or 'an owner a fragment it could not read may name'}"
+                  f"; consumer {consumer} mover {mover} wants "
                   f"{conflict.get('declared_sha256')}")
+        if refusal == STAGED_DESTINATION_UNPROVEN:
+            reason += (f"; the ending was unproven on {conflict.get('runs')} "
+                       f"consecutive runs: {conflict.get('why')}")
         marker = residency_plan.mark_superseded(
             queue, consumer, plan=plan, filing=filing, reason=reason,
-            movers=[mover], by="stage-move")
+            movers=[mover], by="stage-move",
+            conflict={**conflict, "refusal": refusal})
     except (OSError, ValueError, pb.PrismaBuildError):
         return False
     return marker is not None
