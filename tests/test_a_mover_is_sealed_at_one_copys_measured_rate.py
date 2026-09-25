@@ -9,9 +9,12 @@ capped by the offer (428), so every seal was the whole offer and each copy
 ran alone.
 
 The seal is now, first of: the slowest landing among the copies of the same
-manifest in its latest window (``landing``); the median single-reader share
-over the tier's pool-reading receipts (``single-reader-share``); nothing,
-when the offer is the stated bound and ``demand_source`` names it.
+manifest in its latest window, when that window holds two copies or more
+(``landing``); the median single-reader share over the pool-reading receipts
+of the tier's latest window (``single-reader-share``); nothing, when the
+offer is the stated bound and ``demand_source`` names it.  Both statistics
+read the latest window only, and a window of one copy prices no seal (#958):
+over one copy the minimum bounds nothing.
 
 Everything runs on ``tmp_path`` queues and stage roots (#628).
 """
@@ -90,7 +93,9 @@ def test_the_seal_is_the_slowest_copy_of_the_latest_window() -> None:
 
     price = _price(WINDOWS)
     assert price == {"mb_s": 116, "basis": "landing", "receipts_priced": 2,
-                     "window_consumer": NEWER}
+                     "window_consumer": NEWER,
+                     "landing": {"mb_s": 116, "copies": 2,
+                                 "window_consumer": NEWER}}
 
 
 def test_a_recopied_range_is_priced_at_its_latest_copy() -> None:
@@ -126,9 +131,100 @@ def test_with_no_copy_of_the_manifest_the_median_share_prices_it() -> None:
         shares, tier_id=TIER) == 100
 
 
+# ------------------------------------------ the window, and a window of one (#958)
+
+
+FLEET_OLD, FLEET_NEW = "5" * 64, "6" * 64
+
+
+def _fleet(consumer: str, share: float, *, unix: float, count: int
+           ) -> list[dict[str, object]]:
+    """``count`` single-reader receipts of other manifests in one window.
+
+    Each ran alone (one sharer) with its file side the binding term, so its
+    share is exactly ``share``.
+    """
+
+    return [{**_share(f"{consumer[:1]}{index:063d}", share, 10 * share, 1),
+             "consumer_action_key": consumer, "unix": unix + index}
+            for index in range(count)]
+
+
+def test_a_window_of_one_copy_prices_no_seal() -> None:
+    """One slow copy is not a bound; the latest window's median share is.
+
+    Live, manifest 2e607db1ebcc was sealed at 47 MB/s off one copy.  The
+    minimum over a window is the rate every copy of it reached, which says
+    something only when a copy other than the one that sets it stands beside
+    it.  The seal names its basis, its n and its window; the lone landing
+    stays on the price for the stall grace.
+    """
+
+    lone = _landed("1" * 64, NEWER, 47.0, unix=500.0)
+    fleet = _fleet(FLEET_NEW, 138.0, unix=400.0, count=3)
+    price = _price([lone, *fleet])
+    assert price == {"mb_s": 138, "basis": "single-reader-share",
+                     "receipts_priced": 3, "window_consumer": FLEET_NEW,
+                     "landing": {"mb_s": 47, "copies": 1,
+                                 "window_consumer": NEWER}}
+
+
+def test_a_window_of_one_copy_is_not_rescued_by_an_older_window() -> None:
+    """An older window of two copies is history, not this window's bound."""
+
+    older = [_landed("1" * 64, OLDER, 40.0, unix=100.0),
+             _landed("2" * 64, OLDER, 45.0, unix=110.0)]
+    lone = _landed("3" * 64, NEWER, 47.0, unix=500.0)
+    price = _price([*older, lone, *_fleet(FLEET_NEW, 138.0, unix=400.0,
+                                          count=3)])
+    assert (price["mb_s"], price["basis"]) == (138, "single-reader-share")
+
+
+def test_with_no_copy_the_share_reads_only_the_latest_window() -> None:
+    """An old, slow history does not lower the seal.
+
+    Live: 59 MB/s over all 965 pool-reading receipts, 138 over the latest.
+    """
+
+    history = _fleet(FLEET_OLD, 59.0, unix=100.0, count=9)
+    current = _fleet(FLEET_NEW, 138.0, unix=1000.0, count=3)
+    price = _price([*history, *current], manifest="c" * 64)
+    assert price == {"mb_s": 138, "basis": "single-reader-share",
+                     "receipts_priced": 3, "window_consumer": FLEET_NEW,
+                     "landing": None}
+    assert storage_tiers.mover_fill_demand_from_receipts(
+        [*history, *current], tier_id=TIER) == 138
+
+
+@pytest.mark.parametrize("manifest", [MANIFEST, "c" * 64],
+                         ids=["landing", "single-reader-share"])
+def test_at_a_steady_rate_the_seal_does_not_fall_across_generations(
+        manifest: str) -> None:
+    """Two generations at one real rate seal at that rate, twice.
+
+    An older, contended generation sits under both.  Read over all history,
+    its slow receipts would keep pricing each new generation's seal, and a
+    lower seal admits more copies, each slower: the ratchet.
+    """
+
+    def generation(consumer: str, index: int, rate: float, unix: float,
+                   count: int) -> list[dict[str, object]]:
+        copies = [_landed(f"{index}{copy:063d}", consumer, rate,
+                          unix=unix + copy)
+                  for copy in range(2)]
+        return [*copies, *_fleet(consumer, rate, unix=unix, count=count)]
+
+    contended = generation("7" * 64, 1, 59.0, 100.0, 9)
+    first = generation("8" * 64, 2, 138.0, 1000.0, 3)
+    second = generation("9" * 64, 3, 138.0, 2000.0, 3)
+    sealed = [_price([*contended, *first], manifest)["mb_s"],
+              _price([*contended, *first, *second], manifest)["mb_s"]]
+    assert sealed == [138, 138]
+
+
 def test_with_nothing_measured_nothing_is_priced() -> None:
     assert _price([]) == {"mb_s": None, "basis": "none", "receipts_priced": 0,
-                          "window_consumer": None}
+                          "window_consumer": None, "landing": None}
 
 
 # ------------------------------------------------------------- the sealed rows
@@ -200,6 +296,21 @@ def test_a_fresh_mover_is_sealed_at_the_measured_copy_not_the_offer(
     assert source["fill"] == "receipts-under-offer"
     assert source["fill_measured"]["basis"] == "landing"
     assert source["tier_offer_mb_s"] == offer
+
+
+def test_a_one_copy_window_is_sealed_at_the_named_share(
+        tmp_path: Path) -> None:
+    """The plan names what priced the seal, how many, and from which window."""
+
+    lone = _landed("1" * 64, NEWER, 47.0, unix=500.0)
+    fleet = _fleet(FLEET_NEW, 138.0, unix=400.0, count=3)
+    staged = _seal(tmp_path, _queue(tmp_path), offer=428,
+                   receipts=[lone, *fleet])
+    assert _fills(staged) == {138}
+    measured = staged["plan"]["demand_source"]["fill_measured"]  # type: ignore[index]
+    assert (measured["basis"], measured["receipts_priced"],
+            measured["window_consumer"]) == ("single-reader-share", 3, FLEET_NEW)
+    assert measured["landing"]["copies"] == 1
 
 
 def test_the_offer_still_caps_a_seal_admission_could_not_honour(

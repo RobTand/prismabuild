@@ -8340,23 +8340,42 @@ the landing rate the horizon assumes until the plan's first copy lands.
 * `landing`: the slowest landing (`bytes_staged / seconds`) among the copies
   of the same manifest onto the tier in its latest window -- the consumer
   whose last receipt is newest -- each copy at its latest complete receipt
-  that read the pool. The latest window, never every window: receipts are
-  append-only, and the slowest copy ever measured would ratchet each
-  generation's seal below the last (R11's slowest copy of R12's manifest was
-  77 MB/s, R12's 116);
-* `single-reader-share`: the median over the tier's pool-reading receipts of
-  one reader's share, the same "one reader's worth" the fold's probe grows
-  by. The median, not the maximum the seal used before;
+  that read the pool, when that window holds two copies or more. The latest
+  window, never every window: receipts are append-only, and the slowest copy
+  ever measured would ratchet each generation's seal below the last (R11's
+  slowest copy of R12's manifest was 77 MB/s, R12's 116);
+* `single-reader-share`: the median, over the pool-reading receipts of the
+  tier's latest window that price one, of one reader's share, the same "one
+  reader's worth" the fold's probe grows by. The median, not the maximum the
+  seal used before, and the latest window for the same reason as `landing`
+  (#958): over all history the statistic feeds itself -- an underpriced seal
+  admits more copies at once, each lands slower, and the slower receipts
+  price the next seal lower still;
 * `none`: the tier's offer is then the stated bound (`tier-offer`), and one
   copy runs at a time.
 
+**A window of one copy prices no seal (#958).** The slowest landing is the
+rate every copy of the window reached, which says something about the window
+only when a copy other than the one that sets it stands beside it. Over one
+copy the minimum is that copy: it bounds nothing, and a copy slowed by
+contention looks exactly like a slow manifest (manifest 2e607db1ebcc was
+sealed at 47 MB/s off one copy). Such a window falls through to
+`single-reader-share`, where the copy's own receipt still counts through its
+share, which is bounded on both sides (its file-side rate, and its window's
+delivery over the movers that shared it). No minimum count is chosen: two
+copies are the least a minimum can bound.
+
 `current_fill_offer` still caps the seal at the tier's current offer (#708).
 pbrun and the produced-output restage seal through the same rule, and the plan's
-`demand_source.fill_measured` names the statistic, its basis and the window
-it read. On the live receipts of 2026-09-23 an R13 on R12's manifest is
-sealed at 116 MB/s where it was sealed at 428, and a first submission of an
-unseen manifest at 59 (the median over 965 pool-reading receipts; the
-latest 200 have a median of 138). The fold bounds the concurrency a smaller
+`demand_source.fill_measured` names the statistic (`basis`), the samples it
+read (`receipts_priced`) and the window they came from (`window_consumer`),
+so a thin basis is visible, plus the manifest's latest `landing` (`mb_s`,
+`copies`, `window_consumer`) whatever priced the seal, which the stall grace
+reads (#1010). On the live receipts of 2026-09-23 an R13 on R12's manifest is
+sealed at 116 MB/s where it was sealed at 428. A first submission of an
+unseen manifest was sealed at 59, the median over all 965 pool-reading
+receipts; the latest 200 have a median of 138, and since #958 the seal reads
+the latest window only (target; no live window has been re-priced since). The fold bounds the concurrency a smaller
 seal buys: a copy that falls short of its seal sets a ceiling, and the tier
 mints no more than the ceiling plus one reader's worth.
 
@@ -8871,9 +8890,11 @@ grace_s = ceil(unit / landing_bytes_per_s + 2 * pool.HEARTBEAT_S)
 ```
 
 * `landing_bytes_per_s` is the plan's measured landing rate on the tier:
-  `storage_tiers.mover_fill_price` with basis `landing`, capped by the
-  tier's sealed fill, the same term that prices the mover's seal. It is the
-  slowest complete copy of the manifest that the tier has receipted.
+  the `landing` entry of `storage_tiers.mover_fill_price`, capped by the
+  tier's sealed fill. It is the slowest complete copy of the manifest in its
+  latest window on the tier. It is read whatever basis sealed the fill: a
+  window of one copy prices no seal (#958) but is still a landing of this
+  manifest, and a slow one only lengthens the grace.
 * `copy_depth` is `MOVER_MAX_READERS` (16), the mover's `--max-readers`.
   Each copy worker holds one entry in flight and they share the rate, so a
   healthy copy may land none of the 16 until it has read all of them. The
@@ -8889,8 +8910,8 @@ grace_s = ceil(unit / landing_bytes_per_s + 2 * pool.HEARTBEAT_S)
 * `start` runs from launch to the copy's first read: the manifest, the
   resume census and the start gate. The reporter commits phase `copy` when
   the copy starts, so the copy's grace is measured from its first read.
-* A plan whose manifest has no landing receipt on the tier (basis
-  `single-reader-share` or `none`), or whose tier record names no source
+* A plan whose manifest has no landing receipt on the tier (`landing` is
+  `null` on the price), or whose tier record names no source
   pool members (`source_members`), is sealed with no policy, which is what
   every mover had before. The plan's `demand_source.mover_progress` records
   each chunk's derivation (`basis`, `landing_bytes_per_s`, `copy_depth`,
