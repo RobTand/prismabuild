@@ -904,10 +904,15 @@ class ShapeGate:
             finally:
                 released = reader_lease.release(
                     self.queue, str(acquired["pin_id"]), str(acquired["ref_id"]),
-                    consumer_action_key=self.consumer)
+                    consumer_action_key=self.consumer,
+                    stage_root=str(acquired["pin"]["stage_root"]))  # type: ignore[index]
             if not released:
-                raise ShapeGateFailure("release_refused",
-                                       f"phase {self.phases[phase_index]['name']!r}")
+                why = released.record()   # its step and errno (#1023)
+                raise ShapeGateFailure(
+                    "release_refused",
+                    f"phase {self.phases[phase_index]['name']!r}: "
+                    f"{why['step']} {why['errno_name']}: {why['error']}",
+                    evidence={"release": why})
 
     # -- the run ----------------------------------------------------------
 

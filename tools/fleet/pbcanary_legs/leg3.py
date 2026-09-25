@@ -575,11 +575,17 @@ class _StagedWindow:
                 self.queue, pin_id, ref_id,
                 consumer_action_key=self.consumer, residency_root=self.root)
             raise
-        if not self.reader_lease.release(
-                self.queue, pin_id, ref_id,
-                consumer_action_key=self.consumer, residency_root=self.root):
+        # No ``stage_root=``: the reader comes from the admitted helper tree,
+        # which may predate that argument; its answer's repr names the failed
+        # step and errno once the helper carries #1023, and is ``False``
+        # before.
+        released = self.reader_lease.release(
+            self.queue, pin_id, ref_id,
+            consumer_action_key=self.consumer, residency_root=self.root)
+        if not released:
             raise _StagedReadRefusal(
-                "leg3 staged-read refusal: reader lease release refused")
+                "leg3 staged-read refusal: reader lease release refused: "
+                f"{released!r}")
         stage_path = ""
         for pin_entry in acquired["pin"]["entries"]:
             if pin_entry.get("key") == key:
