@@ -6285,7 +6285,11 @@ output-prefix lock and decides:
   generation ended `failed` or `withdrawn`, or it is `done` by another
   attempt. An owner that is `done` by this attempt, still claimed by it,
   queued, being moved, or unreadable keeps the batch without a log line,
-  because a consumer may still come.
+  because a consumer may still come. The owner's state is the tick's one
+  read of its key (`_TickReads.generation`, #977), taken before the
+  output-prefix lock, whatever the number of due batches: `dead` is final
+  for a nonce, so an older read can only defer a retirement to the next
+  cycle, never cause one.
 
 **The delete.** The tick first stats the instance's output prefix. If the
 prefix is not a directory on this host, it refuses
@@ -6597,7 +6601,16 @@ takes no lock. The MCP tool `pb_blocked_origins` serves the same list.
 
 **What one tick reads.** The owner key's generation is read once per owner
 for all its attempts (`_attempt_state` over one `_key_generation`), both for
-an instance's own state and for its siblings'. Per ended instance, the
+an instance's own state and for its siblings', and, since #977, for the
+#914 retirement of each of its due batches too: before #977 that asked
+`_producer_attempt_state` per batch, one owner-key read per batch per cycle
+for a running producer committing ahead of its consumers. The sweep and
+the retirement of one ended instance share the tick's one read of each
+sibling's commitments and prewrite records (`_TickReads.path_owners`).
+`tests/test_the_retirement_tick_reads_each_owner_once.py` pins both by
+read counts. The instance's own `commitments.json` is still read again
+under its lock by each batch's retirement: the decision it records is a
+read-modify-write that must see every write made before the lock. Per ended instance, the
 output prefix is statted once, and the other attempts' paths are read at
 most once, only when some planned path is present. Every scope costs one
 more directory listing than before (its `prewrites`). A scope with

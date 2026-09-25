@@ -7412,7 +7412,8 @@ def _retire_consumed_batch(queue, instance: Mapping[str, object],
       one holds it and is reported as a stall, once per change of the
       consumers' states, because a retry of that consumer needs the batch.
     * With none: the batch is an orphan once its producer attempt is dead
-      (`_producer_attempt_state`). Otherwise it waits, quietly, for a
+      (`_attempt_state` over the tick's one read of the owner key,
+      `_TickReads.generation`, #977). Otherwise it waits, quietly, for a
       consumer.
     * Either way, a consumer filed with ``pbrun --after`` and not yet
       released (#913) holds it, quietly: ``deferred_holds`` is
@@ -7497,6 +7498,7 @@ def _retire_consumed_batch_locked(
 
     from prismabuild import reader_lease as lease_mod
 
+    tick = reads if reads is not None else _TickReads(queue)
     commitments_path = _commitments_path(queue.root, instance)
     with queue.stage_ownership_lock(str(instance["output_prefix"])):
         try:
@@ -7579,7 +7581,16 @@ def _retire_consumed_batch_locked(
                     return None
                 reason = "consumed"
             else:
-                if _producer_attempt_state(queue, instance) != "dead":
+                # The owner key's one read this tick (#977): every due
+                # batch of the instance asks, and a running producer that
+                # commits ahead of its consumers has many.  Read before the
+                # lock, which is safe because ``dead`` is final for a nonce;
+                # a stale ``live`` only waits for the next cycle.
+                attempt = instance["owner_attempt"]
+                assert isinstance(attempt, dict)
+                if _attempt_state(tick.generation(
+                        str(instance["owner_action_key"])),
+                        str(attempt["nonce"])) != "dead":
                     quiet()
                     return None
                 reason, consumers = "orphan", []
@@ -7661,7 +7672,7 @@ def _retire_consumed_batch_locked(
         paths = sorted(str(desc["path"]) for desc in sealed)
         # Another attempt's claim on these paths, read under this lock.
         try:
-            owners = (reads or _TickReads(queue)).path_owners(instance, template)
+            owners = tick.path_owners(instance, template)
         except (ProducedOutputError, OSError, ValueError) as exc:
             return report({"event": ORIGIN_RETIREMENT_REFUSED_EVENT, **base,
                            "reason": f"unknown-retain: path owners: {exc}"})
