@@ -325,6 +325,13 @@ MOVER_WITHHOLD_REASONS = frozenset({"deferred_behind_withholding"})
 MOVER_WITHHOLD_SUFFIX = "_withholding"
 MOVER_NEUTRAL_REASONS = frozenset({"placement_mismatch"})
 
+#: The evidence under which an owner's wait on one of its own exports is
+#: left out of its quiet (#1035, ``PoolQueue.export_wait_verdict``).  Every
+#: other reading -- ``refused``, ``withheld``, ``none``, ``unread``, a
+#: failed, withdrawn, unpublished or foreign export -- is not exempt.
+EXPORT_WAIT_LIVE_EVIDENCE = frozenset({
+    "progress-grew", "claimed", "baseline", "carried", "landed"})
+
 #: Denials the claim pass records without holding the key's transition lock,
 #: and so keeps out of the key's reason ring (#991), whose writers that lock
 #: serializes: an unlocked read-modify-write of the ring could drop the entry
@@ -1305,6 +1312,10 @@ class ProgressWatch:
         # through the same mark.
         self.reader_plan_exempt_s = 0.0
         self.reader_plan: dict[str, object] | None = None
+        # An owner blocked on its own produced-output exports (#1035),
+        # credited through the same mark.
+        self.export_wait_exempt_s = 0.0
+        self.export_wait: dict[str, object] | None = None
         self.first_advance_monotonic: float | None = None
 
     @property
@@ -1493,6 +1504,22 @@ class ProgressWatch:
         self.reader_plan_exempt_s += credit
         return credit
 
+    def exempt_export_wait(self, verdict: Mapping[str, object], *,
+                           now: float, since_monotonic: float) -> float:
+        """Leave a verified wait on the owner's own exports out of the quiet (#1035).
+
+        ``verdict`` is :meth:`PoolQueue.export_wait_verdict`'s answer, kept
+        for the record whatever it says.  Same arithmetic as
+        :meth:`exempt_staged_wait`.
+        """
+
+        self.export_wait = dict(verdict)
+        if not verdict.get("exempt"):
+            return 0.0
+        credit = self._credit(now=now, since_monotonic=since_monotonic)
+        self.export_wait_exempt_s += credit
+        return credit
+
     def exempt_start_gate(self, *, now: float, since_monotonic: float) -> float:
         """Leave a start-gate wait on a live egress out of the quiet (#1010).
 
@@ -1557,6 +1584,10 @@ class ProgressWatch:
             # blocked on, verified on the worker's side (#1091).
             "reader_plan_exempt_s": self.reader_plan_exempt_s,
             "reader_plan": self.reader_plan,
+            # An owner blocked on its own produced-output exports while one
+            # of them showed progress, verified on the worker's side (#1035).
+            "export_wait_exempt_s": self.export_wait_exempt_s,
+            "export_wait": self.export_wait,
             "delivered_units_per_s": self.delivered_units_per_s(now=now),
         }
 
@@ -1835,33 +1866,55 @@ def _read_staged_wait(path: Path, *, token: str | None
                       ) -> tuple[dict[str, object] | None, str]:
     """:func:`read_staged_wait`, with ``token=None`` skipping the token check."""
 
+    return _read_wait_record(path, token=token,
+                             schema=pb_progress.STAGED_WAIT_SCHEMA_V1,
+                             field="movers", where="staged wait record")
+
+
+def read_export_wait(path: Path, *, token: str
+                     ) -> tuple[dict[str, object] | None, str]:
+    """A launch's export-wait record, or ``None`` and why not (#1035).
+
+    Read under exactly the staged-wait record's rules
+    (:func:`read_staged_wait`), with ``exports`` in place of ``movers``.
+    """
+
+    return _read_wait_record(path, token=token,
+                             schema=pb_progress.EXPORT_WAIT_SCHEMA_V1,
+                             field="exports", where="export wait record")
+
+
+def _read_wait_record(path: Path, *, token: str | None, schema: str,
+                      field: str, where: str
+                      ) -> tuple[dict[str, object] | None, str]:
+    """One wait record: ``{field: [keys], "since_unix": t}``, or why not."""
+
     try:
         raw = pb._read_regular_file_nofollow(
-            path, where="staged wait record",
-            max_bytes=pb.MAX_ACTION_PROGRESS_BYTES)
+            path, where=where, max_bytes=pb.MAX_ACTION_PROGRESS_BYTES)
     except FileNotFoundError:
         return None, ""
     except (OSError, pb.ActionContractError, pb.CASTamperError,
             pb.CASUnavailableError) as exc:
         return None, f"unreadable: {type(exc).__name__}"
     try:
-        record = pb._decode_strict_json(raw, where="staged wait record")
+        record = pb._decode_strict_json(raw, where=where)
     except (pb.ActionContractError, RecursionError):
         return None, "unparsable"
     if not isinstance(record, dict):
         return None, "not an object"
-    if record.get("schema") != pb_progress.STAGED_WAIT_SCHEMA_V1:
+    if record.get("schema") != schema:
         return None, "wrong schema"
     if token is not None and record.get("token") != token:
         return None, "foreign token"
-    movers = record.get("movers")
+    keys = record.get(field)
     since = record.get("since_unix")
-    if (not isinstance(movers, list) or not movers
-            or not all(isinstance(mover, str) and mover for mover in movers)):
-        return None, "movers is not a list of action keys"
+    if (not isinstance(keys, list) or not keys
+            or not all(isinstance(key, str) and key for key in keys)):
+        return None, f"{field} is not a list of action keys"
     if type(since) not in (int, float) or not math.isfinite(float(since)):
         return None, "since_unix is not a time"
-    return {"movers": list(movers), "since_unix": float(since)}, ""
+    return {field: list(keys), "since_unix": float(since)}, ""
 
 
 def _execution_timeout(item: Mapping[str, object], ceiling: float | None) -> float | None:
@@ -7241,6 +7294,284 @@ class PoolQueue:
         if not exempt:
             verdict["reason"] = "no named mover is still coming"
         return verdict
+
+    def export_wait_verdict(self, action_key: str, progress_path: Path, *,
+                            token: str, cas_root: object,
+                            now: float | None = None,
+                            prior: Mapping[str, object] | None = None,
+                            window_s: float | None = None,
+                            ) -> dict[str, object] | None:
+        """Whether a quiet owner is blocked on its own exports (#1035).
+
+        ``None`` when the launch filed no export-wait record
+        (``progress.declare_export_wait``).  Otherwise the verdict the
+        ``no_progress`` rung acts on, under the evidence rules a staged wait
+        is judged by (#989, #1016, #1022): every named export with the state
+        this read found it in and the evidence it went on (``evidence``,
+        ``evidence_unix``).  The wait is exempt while any named export shows
+        progress:
+
+        * the export must be the owner's own: its sealed request, in the
+          owner's CAS, names the owner in ``params.produced_spool.owner``
+          (the row's ``dependent_of`` is only a hint).  Else
+          ``not-own-export``, or ``unknown`` when the request does not read.
+        * ``claimed``: exempt while its landed bytes -- the sealed
+          manifest's destinations, or their temporaries, as this box stats
+          them -- grew since the previous check of the same claim
+          (``progress-grew``), or while its claim is at most
+          ``movement_actions.mover_report_latency_s()`` old (``claimed``).
+          The first reading of a claim is the ``baseline``, and ``carried``
+          holds while the last growth is within the evidence window.  An
+          export has no stall rung of its own, so a live lease is not
+          evidence here: a hung export keeps its lease until its execution
+          bound.  Landed bytes that do not read are ``unread``.
+        * ``ready``: not exempt while the claim pass refuses it
+          (``refused``, the refusals ``MOVER_REFUSAL_REASONS`` names) or
+          holds it back behind a withhold (``withheld``,
+          ``deferred_behind_withholding`` and every ``*_withholding``), or
+          while the spool filed an identity refusal for it (``refused``,
+          ``spool_refusal`` names the filing).  Otherwise it is queued:
+          ``baseline`` at the first check, ``carried`` within the window,
+          ``none`` after, as a ready stage mover with nothing ahead of it.
+        * ``done``: exempt only while it finished at most
+          ``mover_report_latency_s()`` ago (``landed``), the owner's own
+          latency to see it.  An owner still waiting after that is not
+          waiting on this export.
+        * ``failed``, ``withdrawn``, ``unpublished``: not exempt.
+
+        The evidence window is ``window_s``, the owner's phase grace as the
+        rung passes it.  ``prior`` is this launch's previous verdict; its
+        evidence carries only within one wait (the same ``since_unix``).
+        """
+
+        record, reason = read_export_wait(
+            Path(pb_progress.export_wait_path(str(progress_path))), token=token)
+        if record is None and not reason:
+            return None
+        moment = _now() if now is None else float(now)
+        if record is None:
+            return {"exempt": False, "reason": reason, "exports": [],
+                    "checked_unix": moment}
+        window = (float(window_s) if isinstance(window_s, (int, float))
+                  and not isinstance(window_s, bool) and window_s > 0 else 0.0)
+        if not isinstance(prior, Mapping) or prior.get("since_unix") != record["since_unix"]:
+            prior = None
+        prior_exports = {
+            str(entry.get("key")): entry
+            for entry in ((prior or {}).get("exports") or ())  # type: ignore[union-attr]
+            if isinstance(entry, Mapping)}
+        exports: list[dict[str, object]] = []
+        exempt = False
+        for export in record["exports"]:
+            entry = self._export_evidence(
+                str(action_key), str(export), cas_root=cas_root,
+                prior=prior_exports.get(str(export)), now=moment, window_s=window)
+            exempt = exempt or entry.get("evidence") in EXPORT_WAIT_LIVE_EVIDENCE
+            exports.append(entry)
+        verdict: dict[str, object] = {
+            "exempt": exempt, "exports": exports,
+            "since_unix": record["since_unix"], "checked_unix": moment,
+            "evidence_window_s": window}
+        if not exempt:
+            verdict["reason"] = "no named export shows progress"
+        return verdict
+
+    def _export_evidence(self, owner: str, export: str, *, cas_root: object,
+                         prior: Mapping[str, object] | None, now: float,
+                         window_s: float) -> dict[str, object]:
+        """One named export's state and evidence (:meth:`export_wait_verdict`)."""
+
+        from . import movement_actions
+
+        request, why = self._own_export_request(owner, export, cas_root)
+        if request is None:
+            return {"key": export, "state": why[0], "evidence": why[0],
+                    **({"detail": why[1]} if why[1] else {})}
+        try:
+            if self.item_path(WITHDRAWN, export).exists():
+                state = WITHDRAWN
+            elif self.item_path(READY, export).exists():
+                state = READY
+            elif self.item_path(CLAIMED, export).exists():
+                state = CLAIMED
+            elif self.item_path(DONE, export).exists():
+                state = DONE
+            elif self.item_path(FAILED, export).exists():
+                state = FAILED
+            else:
+                state = "unpublished"
+        except OSError as exc:
+            return {"key": export, "state": "unknown", "evidence": "unknown",
+                    "detail": repr(exc)}
+        entry: dict[str, object] = {"key": export, "state": state}
+        fresh_s = movement_actions.mover_report_latency_s()
+        carries = isinstance(prior, Mapping) and prior.get("state") == state
+        then = prior.get("evidence_unix") if carries else None  # type: ignore[union-attr]
+        then = (float(then) if isinstance(then, (int, float))
+                and not isinstance(then, bool) else None)
+        if state == READY:
+            refusal = self._mover_refusal(export)
+            filed = self._export_refusal_filed(owner, export)
+            if refusal is not None:
+                kind, reason, host = refusal
+                entry.update({kind: reason, "denied_by": host,
+                              "evidence": "refused" if kind == "refusal"
+                              else "withheld"})
+            elif filed is not None:
+                entry.update({"evidence": "refused", "spool_refusal": filed})
+            elif then is None or prior.get("evidence") not in (  # type: ignore[union-attr]
+                    "baseline", "carried", "none"):
+                # The first look, or the first after a refusal or withhold
+                # lifted: a new baseline.  A ``none`` carries its baseline's
+                # time, so it stays ended.
+                entry.update({"evidence": "baseline", "evidence_unix": now})
+            elif now - then <= window_s:
+                entry.update({"evidence": "carried", "evidence_unix": then})
+            else:
+                entry.update({"evidence": "none", "evidence_unix": then})
+        elif state == CLAIMED:
+            try:
+                claim = _read_json(self.item_path(CLAIMED, export))
+            except (OSError, ValueError, PoolContractError):
+                claim = None
+            claimed = claim.get("claimed_unix") if isinstance(claim, Mapping) else None
+            claimed = (float(claimed) if isinstance(claimed, (int, float))
+                       and not isinstance(claimed, bool) else None)
+            entry["claimed_unix"] = claimed
+            landed, total, detail = self._export_landed_bytes(request, cas_root)
+            entry.update({"landed_bytes": landed, "export_bytes": total})
+            if detail:
+                entry["detail"] = detail
+            same = carries and prior.get("claimed_unix") == claimed  # type: ignore[union-attr]
+            before = prior.get("landed_bytes") if same else None    # type: ignore[union-attr]
+            before = (before if isinstance(before, int)
+                      and not isinstance(before, bool) else None)
+            if landed is not None and before is not None and landed > before:
+                entry.update({"evidence": "progress-grew", "evidence_unix": now})
+            elif claimed is not None and now - claimed <= fresh_s:
+                entry.update({"evidence": "claimed", "evidence_unix": claimed})
+            elif landed is None:
+                entry["evidence"] = "unread"
+            elif before is None:
+                entry.update({"evidence": "baseline", "evidence_unix": now})
+            elif (then is not None and now - then <= window_s
+                    and prior.get("evidence") != "claimed"):  # type: ignore[union-attr]
+                entry.update({"evidence": "carried", "evidence_unix": then})
+            else:
+                entry.update({"evidence": "none", "evidence_unix": then})
+        elif state == DONE:
+            try:
+                row = _read_json(self.item_path(DONE, export))
+            except (OSError, ValueError, PoolContractError):
+                row = None
+            finished = row.get("finished_unix") if isinstance(row, Mapping) else None
+            if (isinstance(finished, (int, float)) and not isinstance(finished, bool)
+                    and now - float(finished) <= fresh_s):
+                entry.update({"evidence": "landed", "evidence_unix": float(finished)})
+            else:
+                entry.update({"evidence": "none", "evidence_unix": (
+                    float(finished) if isinstance(finished, (int, float))
+                    and not isinstance(finished, bool) else None)})
+        else:
+            entry["evidence"] = "none"
+        entry["evidence_fresh_s"] = fresh_s
+        return entry
+
+    def _export_refusal_filed(self, owner: str, export: str) -> str | None:
+        """The name of a spool identity refusal filed for ``export``, or ``None``.
+
+        ``ProducedSpool`` files one per refused attempt under
+        ``produced-spool-refusals/<owner>/`` (#1098), named
+        ``<batch>.<export[:16]>.<where>.<code>.json``.  One directory
+        listing, by the owner's own name.
+        """
+
+        from . import produced_spool
+
+        directory = self.root / produced_spool.REFUSALS_SUBDIR / owner
+        marker = f".{export[:16]}."
+        try:
+            names = sorted(entry.name for entry in os.scandir(directory)
+                           if marker in entry.name and entry.name.endswith(".json"))
+        except OSError:
+            return None
+        return names[0] if names else None
+
+    def _own_export_request(self, owner: str, export: str, cas_root: object
+                            ) -> tuple[dict[str, object] | None, tuple[str, str]]:
+        """The export's sealed request when it is ``owner``'s own export.
+
+        Read from the owner's CAS, bounded and without following links, the
+        way :func:`_execution_timeout` reads a request.  Otherwise ``None``
+        and ``(state, detail)``: ``not-own-export`` for a request that names
+        another owner or none, ``unknown`` for one that does not read.
+        """
+
+        if (len(export) != 64
+                or any(ch not in "0123456789abcdef" for ch in export)):
+            return None, ("not-own-export", "not an action key")
+        if not isinstance(cas_root, (str, Path)) or not str(cas_root):
+            return None, ("unknown", "the owner's claim names no CAS")
+        path = Path(str(cas_root)) / "requests" / export[:2] / f"{export}.json"
+        try:
+            raw = pb._read_regular_file_nofollow(path, where="export action request")
+            request = pb.validate_action(
+                pb._decode_strict_json(raw, where="export action request"))
+        except FileNotFoundError:
+            return None, ("not-own-export", "no sealed request in the owner's CAS")
+        except (OSError, ValueError, RecursionError, pb.ActionContractError,
+                pb.CASTamperError, pb.CASUnavailableError) as exc:
+            return None, ("unknown", f"request unreadable: {type(exc).__name__}")
+        spool = (request.get("params") or {}).get("produced_spool")  # type: ignore[union-attr]
+        if (request.get("action_key") != export or not isinstance(spool, Mapping)
+                or spool.get("owner") != owner):
+            return None, ("not-own-export",
+                          "its sealed params.produced_spool.owner is not this action")
+        return request, ("", "")
+
+    def _export_landed_bytes(self, request: Mapping[str, object], cas_root: object
+                             ) -> tuple[int | None, int | None, str]:
+        """``(landed, total, detail)``: what an export has written so far.
+
+        From its sealed manifest (the ``produced-spool-manifest`` input), each
+        entry's destination, or while it is being written its temporary, as
+        this box stats it, capped at the entry's bytes.  The owner runs on
+        the export's host (``submit_group`` pins it there), so it sees the
+        writes the export makes.  ``(None, None, why)`` when the manifest
+        does not read.
+        """
+
+        from . import produced_spool
+
+        inputs = [item for item in request.get("inputs") or ()   # type: ignore[union-attr]
+                  if isinstance(item, Mapping)
+                  and item.get("id") == "produced-spool-manifest"]
+        try:
+            if len(inputs) != 1:
+                raise ValueError("no single sealed manifest input")
+            spool = request["params"]["produced_spool"]            # type: ignore[index]
+            manifest = produced_spool._read(
+                pb.PrismaBuildCAS(Path(str(cas_root))).input_path(inputs[0]),
+                expected_sha256=spool["manifest_sha256"])
+            entries = manifest["entries"]                           # type: ignore[index]
+            landed = total = 0
+            for entry in entries:
+                size = int(entry["bytes"])
+                total += size
+                destination = str(entry["destination_path"])
+                for candidate in (destination, destination + ".tmp"):
+                    try:
+                        found = os.lstat(candidate)
+                    except FileNotFoundError:
+                        continue
+                    if stat.S_ISREG(found.st_mode):
+                        landed += min(int(found.st_size), size)
+                        break
+        except (OSError, ValueError, KeyError, TypeError, AttributeError,
+                produced_spool.SpoolError, pb.ActionContractError,
+                pb.CASTamperError, pb.CASUnavailableError) as exc:
+            return None, None, f"manifest unreadable: {exc!r}"[:512]
+        return landed, total, ""
 
     def mover_report(self, mover: str) -> dict[str, object] | None:
         """A stage mover's last landed-bytes report, or ``None`` (#1010).
@@ -20300,6 +20631,8 @@ class PoolQueue:
             progress_path.unlink()
         with suppress(OSError):
             Path(pb_progress.staged_wait_path(str(progress_path))).unlink()
+        with suppress(OSError):
+            Path(pb_progress.export_wait_path(str(progress_path))).unlink()
         progress_environment = (
             {} if progress is None else {
                 pb.ACTION_PROGRESS_PATH_ENV: str(progress_path),
@@ -20485,7 +20818,8 @@ class PoolQueue:
                                 "staged_wait": watch.staged_wait_exempt_s,
                                 "pool_contention": watch.pool_contention_exempt_s,
                                 "start_gate": watch.start_gate_exempt_s,
-                                "reader_plan": watch.reader_plan_exempt_s},
+                                "reader_plan": watch.reader_plan_exempt_s,
+                                "export_wait": watch.export_wait_exempt_s},
                             "delivered_units_per_s": delivered,
                             "delivered_bytes_per_s": (
                                 delivered if contention is not None else None),
@@ -20527,6 +20861,8 @@ class PoolQueue:
                     progress_path.unlink()
                 with suppress(OSError):
                     Path(pb_progress.staged_wait_path(str(progress_path))).unlink()
+                with suppress(OSError):
+                    Path(pb_progress.export_wait_path(str(progress_path))).unlink()
                 return self._merge_action_status(outcome, status_path)
             self.write_lease(
                 key,
@@ -20726,6 +21062,34 @@ class PoolQueue:
                                 deadline += spent
                         if (not advanced
                                 and time.monotonic() >= watch.stall_deadline()):
+                            # An owner blocked on its own produced-output
+                            # exports, one of which shows progress, is
+                            # waiting on its own work rather than stuck
+                            # (#1035).  At the rung only, like the staged
+                            # wait, and credited through the same mark.
+                            export_checkpoint = time.monotonic()
+                            try:
+                                exports = self.export_wait_verdict(
+                                    key, progress_path, token=progress_token,
+                                    cas_root=item.get("cas_root"),
+                                    prior=watch.export_wait,
+                                    window_s=watch.grace_s)
+                            except (OSError, ValueError, PoolContractError) as exc:
+                                exports = {"exempt": False, "exports": [],
+                                           "reason": f"unreadable: {exc!r}"}
+                            if exports is not None:
+                                now_unix = _now()
+                                since = float(exports.get("since_unix") or now_unix)
+                                watch.exempt_export_wait(
+                                    exports, now=export_checkpoint,
+                                    since_monotonic=export_checkpoint
+                                    - max(0.0, now_unix - since))
+                            spent = time.monotonic() - export_checkpoint
+                            watch.shift(spent)
+                            if deadline is not None:
+                                deadline += spent
+                        if (not advanced
+                                and time.monotonic() >= watch.stall_deadline()):
                             # A stage mover standing aside for a copy a
                             # claimed consumer is blocked on lands nothing on
                             # purpose (#1091 review 1).  Judged from the tier
@@ -20799,6 +21163,8 @@ class PoolQueue:
                 progress_path.unlink()
             with suppress(OSError):
                 Path(pb_progress.staged_wait_path(str(progress_path))).unlink()
+            with suppress(OSError):
+                Path(pb_progress.export_wait_path(str(progress_path))).unlink()
             raise
         status = "executed" if process.returncode == 0 else "failed"
         if watch is not None:

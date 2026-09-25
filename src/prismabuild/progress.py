@@ -247,6 +247,65 @@ def clear_staged_wait() -> bool:
     return True
 
 
+#: What an owner writes while it is blocked on its own produced-output
+#: exports (#1035): at an ordering barrier, or with its local window full.
+#: Not advancement either.  The ``no_progress`` rung checks every named
+#: export against the owner's own sealed exports and leaves the time out of
+#: the quiet only while one of them shows progress.
+EXPORT_WAIT_SCHEMA_V1 = "prismabuild.export_wait.v1"
+#: Beside the progress report, under the same launch token, and apart from
+#: the staged-wait record: an owner can wait on both at once, and the tier
+#: loop ranks consumers by their staged waits only.
+EXPORT_WAIT_SUFFIX = ".export-wait"
+
+
+def export_wait_path(progress_path: str) -> str:
+    """Where a launch's export-wait record lives, beside its progress report."""
+
+    return str(progress_path) + EXPORT_WAIT_SUFFIX
+
+
+def declare_export_wait(exports: list[str], *, since_unix: float | None = None
+                        ) -> bool:
+    """Say that this action is blocked until one of its own ``exports`` lands.
+
+    ``exports`` are the action keys of this action's produced-output exports
+    (``ProducedSpool.submit_group``'s ``export_key``) whose ending the owner
+    waits on.  ``since_unix`` is when the wait began.  Replaces any earlier
+    record, so an owner with several outstanding exports writes their union.
+    Returns ``False`` when this action has no progress channel or the record
+    could not be written; the worker then counts the wait as quiet.
+    """
+
+    open_channel = channel()
+    if open_channel is None:
+        return False
+    destination, token = open_channel
+    names = [str(export) for export in exports]
+    if not names:
+        raise ValueError("an export wait names at least one export")
+    record = {"schema": EXPORT_WAIT_SCHEMA_V1, "token": token,
+              "since_unix": float(time.time() if since_unix is None
+                                  else since_unix),
+              "exports": names}
+    return _write(Path(export_wait_path(destination)), record)
+
+
+def clear_export_wait() -> bool:
+    """End the export wait: the exports landed, or the owner stopped waiting."""
+
+    open_channel = channel()
+    if open_channel is None:
+        return False
+    try:
+        os.unlink(export_wait_path(open_channel[0]))
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
 def _resolve_phase(phase: str | None) -> str:
     declared = declared_phases()
     if phase is None:

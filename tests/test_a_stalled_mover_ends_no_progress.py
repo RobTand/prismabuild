@@ -668,7 +668,8 @@ def test_the_same_slow_copy_on_a_pool_under_its_caps_ends_at_its_allowance(
     stall = outcome["stall"]
     assert stall["allowance_s"] == grace
     assert stall["credited_s"] == {"staged_wait": 0.0, "pool_contention": 0.0,
-                                   "start_gate": 0.0, "reader_plan": 0.0}
+                                   "start_gate": 0.0, "reader_plan": 0.0,
+                                   "export_wait": 0.0}
     # The copy phase was entered when the copy started; nothing landed.
     assert stall["last_landing"]["phase"] == "copy"
     assert stall["last_landing"]["units_completed"] == 0
