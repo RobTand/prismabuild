@@ -16,11 +16,13 @@ could never be claimed by the other box.
 """
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
 from pathlib import Path
 import sys
+import threading
 import time
 import tracemalloc
 
@@ -140,9 +142,10 @@ def _fixture_row(box: str, tag: str) -> dict:
     raise AssertionError(f"{tag} is not in the {box} fixture")
 
 
-def _cache(tmp_path, *, probe=None, ttl_s=30.0, clock=None):
+def _cache(tmp_path, *, probe=None, ttl_s=30.0, clock=None,
+           timeout_s=ci.INVENTORY_TIMEOUT_S):
     return ci.InventoryCache(
-        root=tmp_path / "inventory", ttl_s=ttl_s,
+        root=tmp_path / "inventory", ttl_s=ttl_s, timeout_s=timeout_s,
         probe=probe if probe is not None else _Probe(),
         clock=clock or (lambda: 1000.0),
     )
@@ -800,13 +803,92 @@ def test_a_world_writable_cache_directory_is_not_trusted(tmp_path):
     assert cache.get() is None
 
 
-def test_a_sibling_holding_the_refresh_lock_leaves_the_caller_unknown(tmp_path):
-    cache = _cache(tmp_path, probe=_Probe(_line(ID_A)))
+def test_a_sibling_holding_the_refresh_lock_past_the_budget_leaves_the_caller_unknown(
+        tmp_path):
+    probe = _Probe(_line(ID_A))
+    cache = _cache(tmp_path, probe=probe, timeout_s=0.2)
     cache.root.mkdir(parents=True)
     os.chmod(cache.root, 0o700)
     with open(cache.root / "refresh.lock", "a+", encoding="utf-8") as lock:
-        import fcntl
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        # The sibling's refresh is in flight; this loop must not probe, and
-        # must not turn the absence into "no images".
+        # The sibling's refresh is in flight and outlasts this loop's own
+        # probe budget; this loop must not probe, and must not turn the
+        # absence into "no images".
+        started = time.monotonic()
         assert cache.get() is None
+        waited = time.monotonic() - started
+    assert waited >= cache.timeout_s, "the caller gave up before its own budget (#1143)"
+    assert probe.listings == 0
+
+
+def _sibling_refresh(cache, *, entries, probe_s: float) -> threading.Thread:
+    """A sibling loop's refresh, in a real second thread (#1143).
+
+    The thread opens ``refresh.lock`` itself -- its own open file
+    description, so ``flock`` excludes it from this loop exactly as it
+    excludes another process -- takes it, spends ``probe_s`` in its Docker
+    read, then writes the record through the module's own writer and lets
+    go.  Returns once the sibling holds the lock.
+    """
+
+    cache.root.mkdir(parents=True, exist_ok=True)
+    os.chmod(cache.root, 0o700)
+    held = threading.Event()
+
+    def refresh():
+        lock = os.open(cache.root / "refresh.lock",
+                       os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            held.set()
+            time.sleep(probe_s)
+            directory = os.open(cache.root, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                ci._write_record(directory, cache.record_name, json.dumps({
+                    "schema": ci.INVENTORY_SCHEMA,
+                    "observed_unix": cache.clock(),
+                    "entries": entries}).encode())
+            finally:
+                os.close(directory)
+        finally:
+            os.close(lock)
+
+    thread = threading.Thread(target=refresh, name="sibling-refresh")
+    thread.start()
+    assert held.wait(5.0), "the sibling never took the refresh lock"
+    return thread
+
+
+def _no_probe(*args, **kwargs):
+    pytest.fail("a loop that met a sibling's refresh probed Docker itself")
+
+
+def test_a_loop_that_meets_a_siblings_refresh_reads_its_record(tmp_path):
+    """The 2026-09-25 sparky incident: five loops, one refreshing.
+
+    A claim's record was older than ``CLAIM_FRESHNESS_S``, a sibling held
+    ``refresh.lock`` for its Docker read, and every other loop answered
+    ``None`` at once -- so the image-pinned row was denied
+    ``container_image_presence_unknown`` on most passes while the probe
+    itself answered in a quarter of a second.
+    """
+
+    cache = _cache(tmp_path, probe=_no_probe)
+    _write_record(cache, observed=1000.0 - ci.CLAIM_FRESHNESS_S - 1.0,
+                  entries=[ID_B])
+    # 0.25 s: the containerd store's listing, measured on sparky (#805).
+    thread = _sibling_refresh(cache, entries=[ID_A], probe_s=0.25)
+    try:
+        assert cache.get(max_age_s=ci.CLAIM_FRESHNESS_S) == frozenset({ID_A}), (
+            "a sibling's refresh in flight left this loop unknown (#1143)")
+    finally:
+        thread.join()
+
+
+def test_a_siblings_failed_refresh_is_read_as_unknown_not_empty(tmp_path):
+    cache = _cache(tmp_path, probe=_no_probe)
+    thread = _sibling_refresh(cache, entries=None, probe_s=0.25)
+    try:
+        assert cache.get(max_age_s=ci.CLAIM_FRESHNESS_S) is None
+    finally:
+        thread.join()

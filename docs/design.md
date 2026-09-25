@@ -2488,7 +2488,15 @@ Contract:
   Docker once per box per TTL through a shared, private, no-follow local
   record; that record answers the offer. A claim reads it with a short
   freshness bound (`CLAIM_FRESHNESS_S`), re-probing under the same lock while
-  image-pinned work waits, and the probe runs outside every pool lock. A
+  image-pinned work waits, and the probe runs outside every pool lock. A loop
+  that finds a sibling loop's refresh in flight waits for that refresh, at
+  most its own probe budget (`timeout_s`, default `INVENTORY_TIMEOUT_S`), and
+  reads the record it wrote (#1143). It used to answer unknown at once, so on
+  sparky's five loops most passes after a refresh boundary read unknown while
+  the probe itself answered in 0.23 s. The lock is polled non-blocking at
+  `PROBE_POLL_S` against that deadline: a blocking `flock` has none, and one
+  parked in a helper thread would carry its open file description into every
+  fork. A lock held past the budget still leaves the caller unknown. A
   missing reference denies (`container_image_absent`, digest named) and an
   unreadable inventory denies (`container_image_presence_unknown`); neither
   records a pass, spends an attempt or takes a token, so the item stays
