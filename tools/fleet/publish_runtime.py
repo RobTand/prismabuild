@@ -218,6 +218,12 @@ EXCLUDED: tuple[tuple[str, str], ...] = (
      "pbrun over a scratch stage, RAM root and queue root; it is a record "
      "of one measurement rather than an operator command, and it must never "
      "be pointed at the live stage, the live RAM tier or the live queue"),
+    ("bench_failed_mover_reclaim.py",
+     "a standalone count of what a failed mover's reclaim under a reader "
+     "and two phase movers of one staged name cost (#1151), run from a "
+     "checkout through pbrun over a scratch stage, origin and queue root; it "
+     "is a record of one measurement rather than an operator command, and "
+     "it must never be pointed at the live stage or the live queue"),
     ("qualify_record_visibility.py",
      "a standalone timing of how late an NFS client of the queue sees a "
      "record another box files, run from a checkout through pbrun against "

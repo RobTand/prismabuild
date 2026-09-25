@@ -10924,11 +10924,52 @@ has read past. `reclaim_failed_mover_partials` treats that mover as an
 eviction candidate whenever the window has no room for the next phase and
 publishes its own egress row, which already handles "an earlier egress removed
 it" and returns no tokens when none are held. No pressure, no reclaim; never
-from under a queued recopy, a complete receipt, or a concluded egress (which
-refused rather than raced — republishing would only repeat it). While the
+from under a queued recopy, a complete receipt, a concluded egress (which
+refused rather than raced — republishing would only repeat it), or a claimed
+reader (#1151, below). While the
 egress is queued the window holds the recopy (`mover-publish-deferred-for-egress`):
 the egress frees device bytes, not ledger tokens, so republishing into a stage
 that is still full would ENOSPC into the very room being made.
+
+### A failed mover's partial stays under its reader; a held copy still vouches what it landed (#1151)
+
+On 2026-09-25 Stage B row 013 died in two steps. Spill-p0's mover ended
+`complete: false` at 436 of 512 entries, refused on a staged name that
+spill-p1's mover had renamed and not yet vouched. Then the reclaim above
+published spill-p0's egress while the consumer was reading spill-p0, and the
+consumer's next lease refused `unpublished`.
+
+**The reclaim asks whether a reader can still reach the bytes.** A claimed
+consumer reads a range as its entries land: the partial of the phase it is
+inside is what it reads now, and the partials of later phases are what it
+reads next. `tier_loop._legs_a_reader_can_reach` names those legs with the
+window's own rule, `residency_plan.remaining(plan, accepted_phase)`. A
+consumer that has not reported a phase, or reports one its plan does not
+carry, reads as at the beginning and protects its whole plan. A ready
+consumer reaches nothing, because no claim admits it over a range that has
+not landed. The map covers every consumer, so any sharer of a shared range
+(#1026) protects it. For a reachable leg the reclaim records
+`failed-mover-reclaim-deferred-for-reader` instead of publishing the egress.
+The window republishes the same mover key, and the retry resumes its own
+landed coverage (`entries_resumed`) and copies only what is missing. A range
+every reader has read past, and a range whose consumer is not claimed, are
+reclaimed as before.
+
+**The fragment rate limit has a trailing edge.** A stage mover republishes
+its fragment at most once per `FRAGMENT_PUBLISH_S`. A snapshot the limit
+declined used to wait for the next landing's publication, so a copy that
+stopped landing -- its queue drained behind one straggler, or its readers held
+by the pacer -- left its last renamed names unvouched until its range ended.
+Another mover of the same staged name read each one as a live publisher's
+pending name, waited out `_PUBLISH_GRACE_S` and refused, which stopped the rest
+of its range. Now `publish` keeps the newest declined snapshot as owed, and
+`stage_move._TrailingFragment` pays it through the same `publish` once the
+limit allows, so the limit, the generation fence and the sidecar-first order
+(#1087) hold for it unchanged. While nothing is owed it writes nothing. The
+waiting mover finds the vouch and adopts inside the grace. The receipt counts
+trailing writes as `phase_timings.thread_seconds.fragment_trailing_publication`.
+A live claim still defers a name whose bytes prove out:
+`test_a_live_claim_still_defers_and_never_replaces` keeps that rule.
 
 ### A stage root belongs to one queue (#628)
 

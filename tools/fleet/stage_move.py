@@ -3688,6 +3688,58 @@ class _ProgressReporter:
                 "unwritten": self.unwritten, "refusal": self.refusal}
 
 
+class _TrailingFragment:
+    """The trailing edge of the fragment's rate limit (#1151).
+
+    ``move`` republishes its fragment as entries land, at most once per
+    ``FRAGMENT_PUBLISH_S``.  A landing inside that interval is owed to the
+    next publication, and before #1151 only another landing paid it.  A copy
+    whose landings stopped -- its queue drained behind one straggler, or its
+    readers held by the pacer -- therefore kept its last renamed names
+    unvouched until its whole range ended.  Another mover of the same staged
+    name reads such a name as a live publisher's pending one and waits for
+    its vouch; when that mover's own last names are owed the same way, each
+    waits on the other until the publication grace refuses both.  On
+    2026-09-25 two Stage B phase movers of one boundary file set ended
+    ``complete: false`` like this, at 436 and 511 of 512 entries, each
+    refusing a name the other had renamed.
+
+    Every ``interval_s`` a thread of its own calls ``pay``, which publishes
+    the owed snapshot through the ordinary publication: the same rate limit,
+    the same generation fence, the same sidecar-first order.  So a name is
+    vouched within about ``FRAGMENT_PUBLISH_S`` of its rename whatever the
+    copy does next, a snapshot is never written early or over a newer one,
+    and nothing owed means nothing written.  The waiting mover then adopts
+    the name through the publication gate's proof, as it always could once
+    the vouch landed.
+    """
+
+    def __init__(self, pay, *, interval_s: float) -> None:
+        self.pay = pay
+        self.interval_s = max(0.001, float(interval_s))
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        if self._thread is not None:
+            return
+
+        def loop() -> None:
+            while not self._stop.wait(self.interval_s):
+                self.pay()
+
+        self._thread = threading.Thread(target=loop, daemon=True,
+                                        name="stage-move-trailing-fragment")
+        self._thread.start()
+
+    def stop(self) -> None:
+        """The copy is over: the final publication carries what is owed."""
+
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join()
+
+
 class _LandingReport:
     """This copy's own report of the bytes it has copied, on every launch (#1090).
 
@@ -4425,6 +4477,10 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
 
     last_published = [0.0]
     last_generation = [0]
+    # The newest snapshot the rate limit declined: owed to the next
+    # publication, which the trailing flush makes when no landing does
+    # (#1151).  ``None`` when nothing is owed.
+    owed: list[tuple | None] = [None]
     publish_lock = threading.Lock()
     # One publish run, one materialization generation -- unless the run
     # resumed one: unchanged bytes keep their prior generation (stable
@@ -4436,7 +4492,7 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
     def publish(staged: dict[str, dict[str, object]],
                 identities: dict[str, dict[str, object]] | None = None,
                 generation: int = 0,
-                *, force: bool = False) -> None:
+                *, force: bool = False) -> bool:
         """Republish the fragment as entries land, so a crash leaves a prefix.
 
         Rate-limited, and that limit is the difference between a mover that
@@ -4460,6 +4516,15 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
         date, which the gate reads as another publisher's pending date for
         every later mover of the name, this key's retry included, and
         refuses after the grace forever.
+
+        A snapshot the limit declines is owed, not dropped (#1151).  Only a
+        later landing used to pay it, so a copy whose landings stopped -- its
+        queue drained behind one straggler, its readers held by the pacer --
+        kept its last renamed names unvouched until the whole range ended,
+        and another mover of the same staged name waited on them as a live
+        publisher's.  :class:`_TrailingFragment` pays the debt once the
+        limit allows, through this same function, so the limit and the
+        generation fence below hold for it exactly as for a landing.
         """
 
         with publish_lock:
@@ -4468,11 +4533,18 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
                 # A snapshot older than the one already on disk.  Writing it
                 # would take entries back out of a published fragment, which
                 # is the one thing a fragment may never do.
-                return
+                return False
             if not force and now - last_published[0] < FRAGMENT_PUBLISH_S:
-                return
+                # Owed, newest first: a delayed older snapshot never
+                # displaces a newer one the limit already declined.
+                if owed[0] is None or generation > owed[0][2]:
+                    owed[0] = (staged, identities, generation)
+                return False
             last_published[0] = now
             last_generation[0] = max(last_generation[0], generation)
+            if owed[0] is not None and (not generation
+                                        or owed[0][2] <= generation):
+                owed[0] = None      # this write carries what was owed
             if identities:
                 reader_lease.write_material(
                     residency_root,
@@ -4491,6 +4563,7 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
                 "manifest_sha256": manifest_sha256,
                 "entries": staged,
             })
+            return True
 
     served = served_for(args)
     if pacer is not None:
@@ -4542,9 +4615,44 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
                          or pool.HEARTBEAT_S),
         range_bytes=declared)
     landing.start()
-    copier.run(window, stop=stop,
-               on_entry=None if args.no_incremental_fragment else publish,
-               named_once=named_once)
+
+    def pay_owed() -> None:
+        """Publish what the rate limit declined, once it allows (#1151)."""
+
+        with publish_lock:
+            snapshot = owed[0]
+        if snapshot is None:
+            return
+        began = time.perf_counter()
+        try:
+            wrote = publish(*snapshot)
+        except (OSError, ValueError) as exc:
+            # The same degradation a landing's publication records: the
+            # entries stay staged, and the final publish names them or
+            # fails loudly.
+            with copier.lock:
+                if len(copier.errors) < 20:
+                    copier.errors.append(f"fragment publication: {exc}")
+            return
+        if wrote:
+            # Counted only when it wrote: the receipt says how often a
+            # landing's debt was paid by the trailing edge, not how often
+            # the thread looked.
+            copier.clock.add("fragment_trailing_publication",
+                             time.perf_counter() - began)
+
+    trailing = (None if args.no_incremental_fragment
+                else _TrailingFragment(pay_owed,
+                                       interval_s=FRAGMENT_PUBLISH_S / 4))
+    if trailing is not None:
+        trailing.start()
+    try:
+        copier.run(window, stop=stop,
+                   on_entry=None if args.no_incremental_fragment else publish,
+                   named_once=named_once)
+    finally:
+        if trailing is not None:
+            trailing.stop()
     landing.stop()
     elapsed = max(1e-9, time.time() - started)
     after = proc_io()
