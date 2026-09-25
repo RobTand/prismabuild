@@ -4871,6 +4871,110 @@ def _publish_output_mover_row(queue, *, mover_key: str, cas_root: str,
     return {"ok": True, "published": True, "state": "ready"}
 
 
+#: A committed batch's lifecycle as :func:`batch_record` reports it (#955).
+BATCH_STATE_COMMITTED = "committed"
+BATCH_STATE_RETIRING = "retiring"
+BATCH_STATE_RECLAIMED = "reclaimed"
+
+
+def _batch_state(entry: Mapping[str, object]) -> str:
+    if entry.get("origin_reclaimed"):
+        return BATCH_STATE_RECLAIMED
+    if entry.get("retiring"):
+        return BATCH_STATE_RETIRING
+    return BATCH_STATE_COMMITTED
+
+
+def _public_batch_record(queue_root: str | Path,
+                         checked_instance: Mapping[str, object],
+                         checked_template: Mapping[str, object],
+                         entry: object, batch_id: str) -> dict[str, object]:
+    if not isinstance(entry, Mapping):
+        raise ProducedOutputError(
+            f"unknown-retain: commitments entry for {batch_id!r} is not a record")
+    filed, sealed = _load_batch_record(
+        queue_root, checked_instance, checked_template, entry, batch_id)
+    return {
+        "batch_id": batch_id,
+        "state": _batch_state(entry),
+        "lifetime": _entry_lifetime(entry),
+        "entries": [{"path": str(desc["path"]), "bytes": int(desc["bytes"]),
+                     "sha256": desc["sha256"],
+                     "artifact_class": str(desc["artifact_class"])}
+                    for desc in sealed],
+        "total_bytes": int(filed["total_bytes"]),
+        "manifest_digest": str(filed["manifest_digest"]),
+        "commitment": json.loads(json.dumps(entry)),
+        "record": filed,
+    }
+
+
+def batch_records(queue, instance: Mapping[str, object],
+                  template: Mapping[str, object]) -> list[dict[str, object]]:
+    """Every batch this instance committed, as :func:`batch_record` reads it.
+
+    In ``batch_id`` order, reclaimed and retiring batches included: the
+    caller filters on ``state``.  An instance that committed nothing answers
+    ``[]``; an unreadable commitments document, or any batch whose record
+    does not read and validate, raises `ProducedOutputError` -- the census
+    rule: unknown is never read as empty, so no batch is silently dropped
+    from the list.
+    """
+
+    checked_template, checked_instance = _require_bound_contract(
+        template, instance)
+    commitments = _read_commitments(
+        _commitments_path(queue.root, checked_instance))
+    batches = commitments["batches"]
+    assert isinstance(batches, Mapping)
+    return [_public_batch_record(queue.root, checked_instance,
+                                 checked_template, batches[batch_id],
+                                 str(batch_id))
+            for batch_id in sorted(batches)]
+
+
+def batch_record(queue, instance: Mapping[str, object],
+                 template: Mapping[str, object], *, batch_id: str
+                 ) -> dict[str, object]:
+    """Read-only: one committed batch's record, validated (#955).
+
+    The public reader for a produced-output batch, so a caller outside PB
+    never imports `_load_batch_record` or `_read_commitments`.  Returns:
+
+    - ``entries``: every committed descriptor, ``path``, ``bytes``,
+      ``sha256`` and ``artifact_class``, in the record's order;
+    - ``lifetime``: ``retain`` or ``consumed`` (``ORIGIN_LIFETIME_*``);
+    - ``commitment``: the batch's entry in the instance's commitments
+      document, as filed (class bytes, manifest digest, materializations,
+      a ``retiring`` decision, ``origin_reclaimed``);
+    - ``state``: ``committed``, ``retiring`` (the retirement tick decided to
+      delete its origin files) or ``reclaimed`` (PB stopped charging it);
+    - ``record``: the filed batch record itself (``origin_identity``
+      included), plus ``total_bytes`` and ``manifest_digest`` off it.
+
+    Mutates nothing and takes no lock.  The record is validated exactly as
+    retirement and reclaim validate it: bound to this instance, attempt and
+    template, every descriptor re-checked, the manifest digest recomputed.
+    Raises `ProducedOutputError` for a template the instance is not bound
+    to (``template-mismatch``), a batch the instance never committed
+    (``unknown-batch``), and a commitments document or batch record that is
+    missing, unreadable or does not validate (``unknown-retain: ...``):
+    unknown is never read as empty.
+    """
+
+    checked_template, checked_instance = _require_bound_contract(
+        template, instance)
+    _name(batch_id, where="batch_id")
+    commitments = _read_commitments(
+        _commitments_path(queue.root, checked_instance))
+    batches = commitments["batches"]
+    assert isinstance(batches, Mapping)
+    if batch_id not in batches:
+        raise ProducedOutputError(f"unknown-batch: {batch_id}")
+    return _public_batch_record(queue.root, checked_instance,
+                                checked_template, batches[batch_id], batch_id)
+
+
 def materialization_state(queue, instance: Mapping[str, object],
                           template: Mapping[str, object], *, batch_id: str
                           ) -> dict[str, object]:
@@ -10364,6 +10468,11 @@ __all__ = [
     "build_stage_manifest",
     "retire_batch",
     "reclaim_origin",
+    "batch_record",
+    "batch_records",
+    "BATCH_STATE_COMMITTED",
+    "BATCH_STATE_RETIRING",
+    "BATCH_STATE_RECLAIMED",
     "declare_origin_consumer",
     "release_origin_consumer",
     "origin_consumer_release",
