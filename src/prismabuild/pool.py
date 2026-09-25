@@ -12391,8 +12391,7 @@ class PoolQueue:
 
         tier_id = self._check_tier_id(str(record.get("tier_id", "")))
         path = self.tier_record_path(tier_id)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        _write_json_atomic(path, dict(record, announced_unix=(
+        self._write_cycle_record(path, dict(record, announced_unix=(
             _now() if now is None else float(now))))
         return path
 
@@ -12405,6 +12404,23 @@ class PoolQueue:
             if isinstance(record, dict) and record.get("tier_id") == path.stem:
                 records.append(record)
         return records
+
+    @staticmethod
+    def _write_cycle_record(path: Path, record: Mapping[str, object]) -> None:
+        """Publish a record a loop rewrites every cycle, making its directory once.
+
+        The directory is made only when the write finds it missing, so the
+        steady state costs no ``mkdir`` per call (#960): on a starved NFS
+        mount each one is an RPC, the reason ``ensure_layout`` runs once per
+        process (#595).  A directory an operator deletes comes back on the
+        next write.
+        """
+
+        try:
+            _write_json_atomic(path, record, make_parent=False)
+        except FileNotFoundError:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            _write_json_atomic(path, record, make_parent=False)
 
     def tier_commitment_path(self, tier_id: str) -> Path:
         return self.root / TIER_COMMITMENTS / f"{self._check_tier_id(tier_id)}.json"
@@ -12420,9 +12436,8 @@ class PoolQueue:
 
         tier_id = self._check_tier_id(str(record.get("tier_id", "")))
         path = self.tier_commitment_path(tier_id)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        _write_json_atomic(path, dict(record, schema=TIER_COMMITMENT_SCHEMA_V1,
-                                      filed_unix=_now()))
+        self._write_cycle_record(path, dict(
+            record, schema=TIER_COMMITMENT_SCHEMA_V1, filed_unix=_now()))
         return path
 
     def tier_commitment(self, tier_id: str) -> dict[str, object] | None:

@@ -8457,7 +8457,21 @@ footprint, and every newcomer the pass refused on the tier (`waiting`), with
 its reason and, for a commitment refusal, the gate's terms. A newcomer gated
 behind another's wait (`higher-priority-window-waiting`) names that one and
 its reason under `waiting_on`. The record is a report: admission never reads
-it.
+it. Its directory is made only when a write finds it missing, not on every
+call; `announce_tier` writes the same way (#960).
+
+**A retired tier (#960).** In the cycle the loop retires a stage tier it no
+longer discovers, it replaces the tier's commitment record with
+`{"tier_id", "retired": true, "waiting": []}`: no totals, terms, holders or
+claim order, so a staged wait reads the tier's commitment as unknown rather
+than as the last live over-commitment. A record already marked retired is
+read and not rewritten.
+
+**The cycle line (#960).** Each stage tier's entry on the `tier-cycle`
+summary line carries the totals its record was filed with that cycle:
+`committed_gib` (null when the tier was not censused), `waiting` (how many
+newcomers the pass refused on it) and `waiting_need_gib` (the GiB they
+asked for), plus `retired` for a retired tier.
 
 A pass that asked no newcomer took no census. The report then takes one with
 `remember=False`, which prices each window as admission would at that moment
