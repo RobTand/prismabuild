@@ -51,6 +51,7 @@ import fcntl
 import os
 from pathlib import Path
 import stat
+import struct
 import threading
 
 
@@ -78,6 +79,36 @@ def _lockf(descriptor: int, blocking: bool) -> None:
     """Take the exclusive lock; the one call the retirement tests intercept."""
 
     fcntl.lockf(descriptor, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+
+
+#: ``struct flock`` on Linux: ``l_type``, ``l_whence``, ``l_start``,
+#: ``l_len``, ``l_pid``, padded to the kernel's size on 64-bit targets.
+_FLOCK = "hhqqi"
+_FLOCK_SIZE = -(-struct.calcsize(_FLOCK) // 8) * 8
+
+
+def _conflicting_pid(descriptor: int) -> int | None:
+    """The pid ``F_GETLK`` names as holding a lock that refuses this descriptor.
+
+    Asked on the descriptor whose ``lockf`` was just refused, never on a
+    second descriptor: opening and closing another descriptor for an inode
+    this process holds would release this process's lock (see :func:`held`).
+    ``None`` when the kernel names nobody: the holder let go meanwhile, or
+    the lock is an NFS server's and the client reports no pid (``0``).
+    ``struct flock`` has no host field, so the holder's host is never known
+    from here.
+    """
+
+    query = struct.pack(_FLOCK, fcntl.F_WRLCK, os.SEEK_SET, 0, 0, 0)
+    query += b"\0" * (_FLOCK_SIZE - len(query))
+    try:
+        answer = fcntl.fcntl(descriptor, fcntl.F_GETLK, query)
+    except OSError:
+        return None
+    kind, _whence, _start, _length, pid = struct.unpack_from(_FLOCK, answer)
+    if kind == fcntl.F_UNLCK or pid <= 0:
+        return None
+    return int(pid)
 
 
 def _unsafe(observed: os.stat_result, path: Path) -> None:
@@ -133,7 +164,8 @@ def _finish_retirement(descriptor: int, path: Path) -> None:
 
 
 @contextmanager
-def held(path: Path, *, blocking: bool = True):
+def held(path: Path, *, blocking: bool = True,
+         busy: dict[str, object] | None = None):
     """Yield acquisition status, with same-thread nesting and crash release.
 
     POSIX locks are process-scoped: serialize threads before opening the inode
@@ -148,6 +180,13 @@ def held(path: Path, *, blocking: bool = True):
     names is the residue of a retirement cut off before its unlink; the
     caller finishes that unlink under the lock before it lets go
     (:func:`_finish_retirement`).
+
+    ``busy``, when given, is filled when a non-blocking caller is refused:
+    ``holder`` says whether another thread of this process or another
+    process holds the lock, and ``holder_pid`` is the holder's pid when it is
+    known (always for a thread of this process; for another process only
+    when ``F_GETLK`` names one, see :func:`_conflicting_pid`).  It stays
+    empty when the lock was taken (#1115).
     """
     path = Path(path)
     path = path.parent.resolve() / path.name
@@ -155,6 +194,8 @@ def held(path: Path, *, blocking: bool = True):
     with _registry:
         mutex = _threads.setdefault(key, threading.RLock())
     if not mutex.acquire(blocking=blocking):
+        if busy is not None:
+            busy.update(holder="thread", holder_pid=os.getpid())
         yield False
         return
     descriptor = None
@@ -175,6 +216,11 @@ def held(path: Path, *, blocking: bool = True):
                 _lockf(descriptor, blocking)
             except OSError as exc:
                 if not blocking and exc.errno in (errno.EACCES, errno.EAGAIN):
+                    if busy is not None:
+                        busy["holder"] = "process"
+                        pid = _conflicting_pid(descriptor)
+                        if pid is not None:
+                            busy["holder_pid"] = pid
                     yield False
                     return
                 raise

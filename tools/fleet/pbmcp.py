@@ -1070,6 +1070,7 @@ def _tier_row(record: Mapping[str, object]) -> dict:
 
     now = time.time()
     sampled = record.get("sampled_unix")
+    announced = record.get("announced_unix")
     return {
         "tier_id": record.get("tier_id"),
         "tier": record.get("tier"),
@@ -1086,6 +1087,15 @@ def _tier_row(record: Mapping[str, object]) -> dict:
         "age_s": (now - float(sampled)
                   if type(sampled) in (int, float) and math.isfinite(sampled)
                   else None),
+        # The loop's liveness, apart from its content's age (#1115): a loop
+        # that is idle or busy re-announces within ``OFFER_TIMEOUT_S``; one
+        # stuck mid-cycle stops writing, and this age grows past it.
+        # ``liveness_refresh.after`` names the last step the loop finished.
+        "announced_unix": announced,
+        "announced_age_s": (now - float(announced)
+                            if type(announced) in (int, float)
+                            and math.isfinite(announced) else None),
+        "liveness_refresh": record.get("liveness_refresh"),
     }
 
 

@@ -5144,6 +5144,82 @@ so the absolute times differ by box; the call counts do not. The cold census
 (`sweep_orphans`, about 64 s in the bench) is unchanged and is now 96% of the
 cold cycle; the budget, not a speedup, keeps it inside `H`.
 
+### No tier-loop pass waits on a transition lock (#1115)
+
+On 2026-09-24 the tier loop sat in `fcntl_setlk` for 41 minutes. The holder
+of one key's transition lock, the dl380g10 worker, was stuck in the kernel
+(`rename` -> `__break_lease` on an NFS directory delegation the server never
+recalled, #1096). The loop runs every pass on one thread, so for those 41
+minutes no window was published, no mover was withdrawn, the dead-consumer
+pass did not run (#1114's window), and the tier log was silent.
+
+**The rule: a tier-loop cycle never waits for another holder of a
+transition lock.** A busy key is skipped for this cycle, left as it was, and
+retried by the next cycle, which reads the queue again. No wait is bounded
+by a timeout instead, because skipping is correct at every site below and a
+timeout would need a constant nothing measures.
+
+* **The passes take their keys without waiting**
+  (`tier_loop._locked_or_skipped`). The dead-consumer pass skips a consumer
+  whose lock is busy. It skips a mover whose lock is busy and keeps the plan
+  filed, because the next cycle finds the mover through it. It takes every
+  child's lock before `reap`, so `handoff_safe`'s per-child acquires nest,
+  and a busy child defers the reap. Both windows take the consumer's lock
+  and the mover's lock that `publish` takes, and a busy one defers the rest
+  of that window. `mark_superseded` from the loop runs under the consumer's
+  lock taken the same way, and an unmarked plan is marked by the next cycle
+  that meets the withdrawn mover. The ram-promotion release and the
+  beyond-horizon eviction take the mover's lock before `stage_release.evict`,
+  and a busy mover is retained or declined.
+* **Everything else in the cycle runs under
+  `pool.transition_locks_never_wait`.** Inside it, an acquire that asks to
+  wait is tried once without waiting and, if another holder has the key,
+  raises `pool.TransitionLockBusy`, a `BlockingIOError` (`EAGAIN`), before
+  the caller does anything under that lock. An acquisition could already
+  raise `OSError` (an `ESTALE` open, an `EDEADLK` lock), so every pass that
+  survives one survives this. The orphan sweep defers the eviction
+  (`stage-orphan-eviction-deferred`), the deferred release reports a
+  refusal and retries next tick, and a publish is reported failed and
+  republished next cycle. A key this thread already holds nests as before,
+  and the scope is a `ContextVar`, so it covers the loop's thread only.
+  `pbrun`, the workers and every other caller still wait.
+
+Each skip emits one `transition-lock-busy` event: `lock_key`, `consumer`
+when the pass knows it, `step`, `holder` (`process` or `thread`),
+`holder_pid` when `F_GETLK` names one, and `tried_s`, the seconds the try
+took. `busy` is a standing-verdict word, so the emitted line also carries
+`waited_s`, how long this loop has seen that key busy. `F_GETLK` is asked
+on the descriptor whose lock was just refused, never on a second one, which
+would release this process's own lock on the inode. It gives no host, and on
+NFS it may give no pid. `LAST_CYCLE["transition_lock_busy"]` counts a
+cycle's events.
+
+The call sites #1115 named:
+
+| Site | On the loop's path | What it does now |
+|---|---|---|
+| `residency_plan.freeze` | No (`pbrun`, `seal_window`) | Waits. A submission holds the consumer's lock across its seal. |
+| `residency_plan.mark_superseded` | Yes (both windows) | The loop takes the consumer's lock first without waiting. |
+| `residency_plan.handoff_safe` | Yes, through `reap` | The loop takes each child's lock first; a busy one defers the reap. |
+| `residency_plan.reap` | Yes (dead-consumer pass) | Nested inside the consumer's lock the pass took without waiting. |
+| `residency_plan.retire_predecessor_cancellations` | Only through a deferred release | Waits outside the loop; inside it, refused by the guard, and `seal_window` archives the plan it filed. |
+| `pool._release_reservation` | Only nested | Every conclusion the loop reaches (`withdraw`) holds the key already. |
+
+**A stuck cycle is visible from outside the loop.** A live loop, idle or
+busy, re-announces its tier records within `L` (#1072). A loop stuck inside
+a cycle writes nothing, so its records' `announced_unix` ages past `L`.
+`pbmetrics` exports that age as `prismabuild_tier_announce_age_seconds`, a
+gauge a Netdata alarm can hold under `pool.OFFER_TIMEOUT_S`, and `pbmcp`'s
+tier rows carry `announced_age_s` and `liveness_refresh`, whose `after` names
+the last step the loop finished. A cycle that ends after letting a record
+reach `H` says `"overran": true` in the `liveness` block of its `tier-cycle`
+line.
+
+Two waits on the loop's path are not transition locks and still block: the
+ledger mutation guard (`ResourceLedger`'s `_guarded_mutation(blocking=True)`)
+and the stage root's ownership lock. The same holder failure would stall the
+loop there.
+
 ### The metrics exporter: one per fleet, on the queue's host (#1020)
 
 `tools/fleet/pbmetrics.py` reports the whole fleet's queue. Until #1020 it ran
