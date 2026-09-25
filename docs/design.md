@@ -5128,9 +5128,15 @@ keyed by mover or consumer. Without a budget, every pass behaves as before.
 The other per-cycle loops are bounded otherwise: `deferred_release`
 stops at the cycle's interval, `origin_retirement_tick` already takes the
 budget, and `reconcile` is one walk per tier, not a loop of per-range units.
-`drop_prior_ram_epochs` acts only on the fragments and held keys of a
-prior ram epoch, which exist after a reboot; it unlinks fragments and
-releases ghost tokens, and takes no owner census and deletes no staged data. The windows publish rows, and the
+`drop_prior_ram_epochs` is not bounded per holder: each ghost holder
+costs a funding read, non-blocking lock attempts and, for a blind grant, a
+scan of the residency plans. It runs only on the fragments and held keys of
+a prior ram epoch, which a reboot leaves, and it takes no owner census and
+deletes no staged data. `adopt_resident_ranges`,
+`withdraw_dead_consumer_movers` and `fan_out_shared_ranges` rewrite or
+remove bookkeeping records (fragments, material, plans, reservations), not
+staged ranges; they are not budgeted, and their per-range cost is not yet
+measured. The windows publish rows, and the
 egress those rows name runs as its own action, outside the cycle.
 
 **A dead producer's backlog writes its commitments once.** `retire_batch`
