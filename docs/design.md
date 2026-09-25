@@ -5619,6 +5619,23 @@ declaration-less rows taint. Commit-batch funding, movement/tick
 handoff, and the general funded-window primitive remain with their
 owning lanes.
 
+**Reading a batch record (#955).** `produced_output.batch_record(queue,
+instance, template, *, batch_id)` is the public, read-only reader of one
+committed batch, and `batch_records(queue, instance, template)` returns every
+batch the instance committed, in `batch_id` order, reclaimed and retiring
+ones included. Each answer carries `entries` (`path`, `bytes`, `sha256`,
+`artifact_class`), `lifetime` (`retain` or `consumed`), `commitment` (the
+batch's commitments entry as filed), `state` (`committed`; `retiring` once
+the retirement tick has decided to delete it; `reclaimed` once PB stopped
+charging it) and `record` (the filed batch record, `origin_identity`
+included). The record goes through the same loader as retirement and
+reclaim. They take no lock and mutate nothing. A foreign template raises
+`template-mismatch`, a batch never committed raises `unknown-batch`, and a
+commitments document or batch record that is missing, unreadable or does not
+validate raises `unknown-retain: ...`: under the census rule it is never read
+as empty. `_load_batch_record` and `_read_commitments` stay private; a caller
+outside PB (PQ's Stage A retirement, PQ #1073) uses these.
+
 ### The movement node
 
 `tools/fleet/stage_move.py` is the mover: an ordinary PB action, placed by tag
