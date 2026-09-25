@@ -5411,12 +5411,112 @@ there re-announces is the record the previous cycle minted. `Liveness`
 already allows this, byte for byte as above: `end_cycle` keeps the records
 the cycle announced, `begin_cycle` does not clear them, and `_refresh`
 writes every record it keeps. That record is still the loop's word until
-this cycle's mint replaces it. Two cases have nothing to re-announce, and
-read as dead within `L + P` as before: the first cycle after the loop
-starts, whose records on disk were written by the process before it, and a
-cycle after one that failed before its mint. A hang inside one entry's
-stat or parse is a stretch longer than every one measured, and gets no
-write.
+this cycle's mint replaces it. A cycle after one that failed before its
+mint has nothing to re-announce, and reads as dead within `L + P` as
+before. The first cycle after the loop starts re-announces the records it
+adopted from the process before it (#1153, below). A hang inside one
+entry's stat or parse is a stretch longer than every one measured, and gets
+no write.
+
+**A fresh loop adopts the live records before its first read (#1153).** A
+runtime publish re-executes the tier loop (`tier-runtime-moved`). The new
+process starts with an empty `ReceiptCache`, so its first `receipts` step
+reads every prewarm and movement receipt cold, and it had minted nothing
+for a checkpoint to re-announce. On 2026-09-25 the publish of
+`9ea9dc9ac4cd` re-executed the loop at 11:29:03Z; the new process read
+12,295 receipts serially at about 4 a second on the loaded HDD pool, logged
+nothing for over 8 minutes, and Stage B row 020 died in its staged wait at
+11:30:55Z (`the tier loop last announced prismabuild-stage:dl380g10 120 s
+ago`).
+
+`tier_loop._start` builds the loop's `ReceiptCache` and `Liveness`, and
+before anything else reads the queue calls `Liveness.adopt`. It takes each
+tier record on disk that the readers would accept now, re-announces it at
+once, and keeps it as minted, so the first cycle's checkpoints refresh it
+through the cold read exactly as a warm read refreshes the previous mint.
+A record is adopted only when all of these hold:
+
+* It parses, and its `tier_id` is its file's name (`PoolQueue.tiers`).
+* Its `tier_id` names this host (the `:<host>` suffix the retired-tier pass
+  matches).
+* Its schema is `storage_tiers.TIER_RECORD_SCHEMA_V1`, which PQ's reader
+  checks.
+* Its `announced_unix` is no older than `L`: the test
+  `PoolQueue._tier_loop_alive` and PQ's `landing_verdict` apply.
+
+A record older than `L` is a dead loop's word. A reader may already have
+refused on it, and adopting it would bring back a loop the readers had
+called dead, so it is left to age. The adoption write carries a
+`liveness_refresh` note with `after: "adopted"` and the mint's own
+`minted_unix`, and the role logs a `tier-records-adopted` line naming the
+tiers; the time from `tier-runtime-moved` to that line is the live gap. An
+adopted record is kept in the cycle before the first, so `end_cycle` drops
+it after the first cycle: the first mint has replaced it, or the cycle
+failed before minting and the record is never written again. What an
+adopted record says (mountpoint, epoch, fill offer, ledger) is the previous
+process's mint, as a warm read's refresh carries the previous cycle's, and
+`sampled_unix` still ages it for readers of the content.
+
+**A changed receipt directory is read by 64 readers (#1153).**
+`ReceiptCache.read` passes `readers=tier_loop.RECEIPT_READERS` to
+`DirectoryRecords.read`, which stats and parses a changed directory's
+entries on a bounded pool of threads. A cold receipt costs one seek, and
+the pool serves many at once: the same morning, 64 parallel readers ahead
+of the loop took it through 4,300 receipts in 17 s, about 253 a second, 63
+times the serial rate with no sign of a ceiling. 64 is the deepest point
+measured, as `prewarm_loop.MAX_READERS` is for bulk reads. The cold read
+now costs (receipts / readers) × latency.
+
+Only the `stat` and the parse run on a reader. A reader takes a run of
+consecutive entries, at most `stage_release.READ_RUN_MAX` (16) and fewer
+when there are too few entries to give every reader two runs, and at most
+`2 × readers` runs are in flight. Handing an entry to a thread and taking
+its result back costs about as much as a warm `stat`, so one entry per
+handoff made the steady-state read slower (below); a run of 16 amortizes
+that. The calling thread takes the results one entry at a time, in name
+order, and does everything a serial read does with them: the #761 version
+comparison, `keep`, the #1045 fence, the `parsed` counter and the
+checkpoint, which runs before each entry's result is taken. So the records
+returned, their order, what is kept, the generation counter and the
+counters are those of a serial read. A raise ends its run and reaches the
+caller at its entry's turn, after the entries before it, first in name
+order as a serial read's is; the runs still being read are not waited for,
+and nothing they read is kept. An unreadable receipt makes its directory
+unreadable for the cycle, as before. A stretch between two checkpoints is at
+most one run's read: 16 cold reads, about 4 s at the serial rate dl380g10's
+loaded pool gave on 2026-09-25, against the 90 s horizon. So the #1148
+arithmetic holds, and a hung entry stops the checkpoints once the calling
+thread reaches it: the record reads as dead within `L + P`. Every other
+`DirectoryRecords` caller reads serially, as before.
+
+The fake-clock test of #1148 charges each read in full, one after another,
+which models a serial read, so its per-read case pins `RECEIPT_READERS` to
+1. `tests/test_a_fresh_tier_loop_announces_before_its_cold_read.py` tests
+the parallel read, the adoption and each fix alone on a real clock with the
+bound scaled to 8 s. On `origin/main` its three liveness cases fail as the
+live row did: `the tier loop is silent` at 8.0 s.
+
+**Measured.** `tools/fleet/bench_tier_cold_start.py` builds 12,000 movement
+receipts, runs the replaced loop's last cycle, then starts a fresh loop the
+way the role does and times its first cycle, with every receipt read
+sleeping 20 ms first. Through pbrun on the GB10s:
+
+| Tree | First cycle | First tier write | Oldest record | Polls past `L` |
+|---|---|---|---|---|
+| `origin/main` (sparklina) | 247.5 s | 247.5 s | 248.0 s | 2,538 of 4,907 |
+| Adoption only, 1 reader (sparky) | 245.3 s | 0.008 s | 89.97 s | 0 |
+| Both, 64 readers (sparky) | 4.0 to 4.4 s | under 0.01 s | 3.9 to 4.4 s | 0 |
+
+The cProfile of the `origin/main` first cycle puts 191.4 s of the loop
+thread's own time in the injected reads (12,000 sleeps), and `receipts` is
+247.4 s of the 247.5 s cycle: the step is the serial read. With adoption
+alone the record is refreshed twice through the same read and peaks just
+under `H` (90 s), which is what `Liveness` promises. In the steady state,
+one new receipt per cycle over the same 12,000, the `receipts` step
+alternated in one process took a median 0.182 s with 64 readers and 0.136 s
+with one (10 pairs, sparky): the readers cost about 46 ms per cycle when
+every `stat` is served from memory. Before runs, one entry per handoff, it
+was 0.26 to 0.28 s.
 
 **A dead producer's backlog writes its commitments once.** `retire_batch`
 reads the instance's `commitments.json` four times and writes it once, with
