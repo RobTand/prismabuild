@@ -6267,7 +6267,29 @@ the record and the entry resumes from the filed record. `commit_batch`,
 `publish_prepaid_batch`, `refill_window`, `admit_funded_window` and
 `ensure_batch_materialized` refuse a write-only template
 (`template-is-write-only`), and `commit_origin_batch` refuses a read-back one
-(`template-reads-back`).
+(`template-reads-back`) unless the caller passes `landed` (#1034, below).
+
+A read-back owner that reads a group back from its own local spool (PQ
+#1118) never publishes it, so no `commit_batch` runs for it. Before #1034 its
+prewrite then stayed outstanding for the owner's whole life, charged at its
+ceiling in `_outstanding_sums`, and nothing retired it. Such an owner commits
+the group with `ProducedSpool.commit_origin_group` once its export is
+acknowledged: `commit_origin_batch` accepts a read-back template when `landed`
+carries the export receipt's identities, makes the same checks, files the same
+origin-only record and entry, consumes the prewrite, and charges the group its
+actual bytes. A read-back caller without `landed` still refuses
+`template-reads-back`, so no read-back owner commits a group whose export was
+never acknowledged. The batch is no handoff: `load_origin_batch` (and so
+`origin_batch_manifest`) and `declare_origin_consumer` refuse it
+(`origin-batch-not-write-only`), and `publish_prepaid_batch` and
+`ensure_batch_materialized` refuse to stage it (`batch-committed-at-origin`).
+It ends like any origin-only batch: a
+`retain` batch through `reclaim_origin` once its owner has removed the files;
+a `consumed` batch through `origin_retirement_tick`, which, because no
+consumer can declare it, retires it once its owner attempt has ended, whether
+dead or succeeded (a write-only batch with no consumer waits after success,
+and retires only when its producer is dead). This commit ends the accounting
+only; it does not make the owner's local read a leased staged read.
 
 Every reader that asks whether a stage copy is live hears no:
 `_active_materialization` answers `origin-only`, retired, with no mover, so
@@ -6381,7 +6403,8 @@ output-prefix lock and decides:
   generation ended `failed` or `withdrawn`, or it is `done` by another
   attempt. An owner that is `done` by this attempt, still claimed by it,
   queued, being moved, or unreadable keeps the batch without a log line,
-  because a consumer may still come.
+  because a consumer may still come. A read-back template's batch (#1034)
+  can have no consumer, so `done` by this attempt ends it too.
 
 **The delete.** The tick first stats the instance's output prefix. If the
 prefix is not a directory on this host, it refuses
