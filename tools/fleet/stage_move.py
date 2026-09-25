@@ -1256,9 +1256,19 @@ class _StagedPublisher:
       needed on this path;
     * present and provably different -- a record that dates the current
       incarnation names a digest that matches neither the declared nor
-      the computed digest, or the very inode a record dates was modified
-      in place (no legitimate publication writes in place): never a blind
-      overwrite.  On a stage mover the owners decide it (#966,
+      the computed digest, or a same-inode record whose size also
+      disagrees (no legitimate publication writes in place): never a blind
+      overwrite.  A same-inode record whose size still agrees but whose
+      ``mtime_ns``/``ctime_ns`` drifted is not decided from stat alone --
+      an allocator handing a freed inode straight back to the very next
+      create in the directory reads exactly like an in-place write, so
+      whether it is genuine divergence is settled by the file's own bytes
+      against the record's own digest first (:meth:`_content_proof`,
+      #1078), the same tie-break #1096 uses for an NFS delegation recall;
+      a confirmed match is not itself proof of an unbroken lineage, so it
+      is treated like a record dating a superseded incarnation below,
+      never adopted on this record alone.  On a stage mover the owners
+      decide an actual divergence (#966,
       :meth:`_arbitration`): a live owner is a conflict for an owner to
       resolve, refused terminally and named; an owner whose ending cannot
       be proven is refused retryably, as before, until the same unprovable
@@ -2754,17 +2764,28 @@ class _StagedPublisher:
           identity) with the sidecar digest riding along;
         * ``"divergent"`` -- a record that dates the *current* incarnation
           names the path but the bytes are provably not these: a digest
-          mismatch, or the very inode the record dates was modified in
-          place (same ``ino``, drifted mtime/ctime/size -- no legitimate
-          publication writes in place).  Immediate refuse, never wait.
+          mismatch, a different size on the same inode (no legitimate
+          publication writes in place), or -- when only ``mtime_ns``/
+          ``ctime_ns`` drifted on a same-inode, same-size record -- a
+          content check (:meth:`_content_proof`) against the record's own
+          digest that failed or could not run.  Immediate refuse, never
+          wait.  Same inode and size with drifted timestamps is not itself
+          divergence: it is also what a freed inode number reused for the
+          very next create in the same directory looks like (#1078), and
+          what an NFS delegation recall looks like (#1096), so whether it
+          diverges is settled by content first, exactly as #1096 settles a
+          recall -- and a confirmed match falls to ``"owned"`` below, not
+          to a proof, since matching bytes on a reused inode say nothing
+          about an unbroken lineage the way an exact stat match does;
           A record whose ``file_id`` names a *different inode* -- the name
           was replaced by a real publication, exactly what the pre-fix
           unconditional rename did -- says nothing about the bytes that
           are there now, so it is skipped and the search keeps looking
           for one that dates the current incarnation (#755);
         * ``"owned"`` -- a fragment names the path without proving it
-          (sidecar missing, undated, or dating a superseded incarnation):
-          defer, a rerun may date it;
+          (sidecar missing, undated, dating a superseded incarnation, or a
+          reused-inode record whose content settled clean, #1078): defer,
+          a rerun may date it;
         * ``"clean"`` -- no fragment names the path at all;
         * ``"unknown"`` -- unreadable proof state: fail closed even over
           an otherwise valid proof, since an unreadable fragment might
@@ -3083,11 +3104,32 @@ class _StagedPublisher:
             # record may still date the incarnation that is there (#755).
             return "stale"
         if not reader_lease.file_id_matches(published, file_id):
-            # Same inode, changed since the record dated it: an in-place
-            # write, which no legitimate publication performs.  The dated
-            # bytes are provably not the bytes that are there -- the one
-            # shape of stat mismatch that is immediate divergence.
-            return "divergent"
+            if not reader_lease.timestamp_only_mismatch(published, file_id):
+                # Same inode, different size (or an unreadable identity):
+                # an in-place write, which no legitimate publication
+                # performs.  The dated bytes are provably not the bytes
+                # that are there -- immediate divergence.
+                return "divergent"
+            # Inode and size still agree; only mtime/ctime moved.  #1096's
+            # NFS delegation recall is one cause; a freed inode number the
+            # allocator hands straight back to the very next create in the
+            # same directory is another (#1078: a stale donor's dated inode
+            # can coincide with the live file's purely by reuse, with no
+            # writer ever touching that inode in place).  Neither a live
+            # rewrite nor a coincidental reuse can be told apart by stat
+            # alone, so genuine divergence is settled the same way #1096
+            # settles a recall: by the file's own bytes, against this
+            # record's own digest -- never the caller's declared or
+            # computed one, which is judged after this returns.
+            if self._content_proof(norm, want, digest) is None:
+                return "divergent"
+            # The bytes are provably what this record dated, but a
+            # coincidental reuse proves nothing about an unbroken lineage
+            # the way an exact stat match does -- it is exactly what a
+            # record dating a superseded incarnation is: not proof, not
+            # divergence, not permission to overwrite.  Skip it; another
+            # record, or a live pin, may still settle the name.
+            return "stale"
         if isinstance(declared, str) and declared:
             if digest != declared:
                 return "divergent"

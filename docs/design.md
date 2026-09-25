@@ -5005,8 +5005,23 @@ identity under the ownership lock before publishing a successor or transferring
 credit (#755/#756). A superseded donor is skipped in favor of another current
 donor for the same range. Path-level publication likewise searches past records
 for an older inode; those records do not describe the current file's bytes.
-An in-place modification of a dated inode remains a conflict. These checks use
-metadata and preserve valid zero-copy reuse; they do not rehash staged payloads.
+An in-place modification of a dated inode remains a conflict once its size also
+disagrees. These checks use metadata first and preserve valid zero-copy reuse;
+only a same-inode, same-size record whose `mtime_ns`/`ctime_ns` alone drifted
+rehashes the destination, against that record's own digest, to tell an
+in-place write from a coincidence neither side can settle from stat alone
+(`_content_proof`, #1078) -- the allocator handing a just-freed inode straight
+back to the very next create in the same directory reads exactly like an
+in-place write, and reused it in `test_a_live_pinned_file_with_only_stale_records_is_never_replaced`
+after only two replacements on plain ext4, no concurrency required. A settled
+match is not treated as proof of an unbroken lineage either: it falls back to
+the same "skip it, another record (or a live pin) may still date the current
+incarnation" handling as a record naming a different inode, never an adoption
+on its own. This is the same content tie-break #1096 uses for an NFS
+delegation recall, applied here for the first time; `stage_release.py`'s
+independent `#853` stale-mention prune does not take it and keeps the
+stricter "same-inode size/time change is divergence" rule verbatim, since
+that prune path must not cost a rehash on its own hot path.
 
 **The proof-lookup index is a bounded, exact projection.** A mover runs
 `_proof_search` once per destination and again on every publish poll, so the
@@ -10277,9 +10292,13 @@ path, matching bytes, and matching digest where the fragment declares one --
 before any path state is classified, so a by-path, first-mention or
 partially-known sidecar can never authorize a deletion; extra material keys
 are the crash superset and are never ownership. Positive staleness for an
-existing regular file is **inode difference**, exactly as
-`_StagedPublisher._proof_candidate` reads it (#755); a same-inode size/time
-change is divergence, not permission. Absent paths prune as absent.
+existing regular file is **inode difference**, the same rule
+`_StagedPublisher._proof_candidate` reads (#755); a same-inode size/time
+change is divergence, not permission -- this prune path does not take
+`_proof_candidate`'s #1078 content tie-break for a same-inode, same-size
+timestamp drift, since a stale-mention prune must not cost a rehash on its
+own hot path, so it stays the stricter of the two on that one case. Absent
+paths prune as absent.
 Everything else retains the whole owner: an unreadable, malformed or foreign
 fragment/material, any binding mismatch, an epoch that is not the shape the
 strict reader requires (absent or empty off the ram tier, the same non-empty
