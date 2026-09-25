@@ -164,3 +164,107 @@ def test_ten_thousand_polls_against_a_tight_replace_loop_reject_nothing(
     assert reasons == [], (len(reasons), reasons[:5])
     assert watch.accepted > 0
     assert watch.units_high_water > 0
+
+
+def _replace_before_the_name_moves(monkeypatch, path: Path, times: int):
+    """Replace ``path`` during the read, while the name still resolves to the
+    inode just unlinked, ``times`` times (#1159).
+
+    ext4's rename drops the old target's link count and moves its ctime
+    before the VFS moves the name to the new inode, so a reader can fstat
+    its held inode at ``st_nlink == 0`` and still stat the name onto it.
+    Only the kernel's name lookup is simulated; every PrismaBuild check runs
+    for real against the real files.
+    """
+
+    real_read, real_stat = os.read, os.stat
+    state = {"left": times, "window": None, "replaced": 0}
+
+    def read(descriptor, count):
+        if state["left"] > 0 and state["window"] is None:
+            held, named = os.fstat(descriptor), real_stat(path)
+            if (held.st_dev, held.st_ino) == (named.st_dev, named.st_ino):
+                state["left"] -= 1
+                chunk = real_read(descriptor, count)
+                state["replaced"] += 1
+                _replace(path, _record(100 + state["replaced"]))
+                state["window"] = descriptor
+                return chunk
+        return real_read(descriptor, count)
+
+    def stat_(name, *, dir_fd=None, follow_symlinks=True):
+        if (state["window"] is not None and dir_fd is not None
+                and name == path.name):
+            descriptor, state["window"] = state["window"], None
+            return os.fstat(descriptor)
+        return real_stat(name, dir_fd=dir_fd, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(pb.os, "read", read)
+    monkeypatch.setattr(pb.os, "stat", stat_)
+    return state
+
+
+def test_a_replace_seen_before_the_name_moves_is_read_not_tamper(
+        tmp_path, monkeypatch):
+    """#1159: the held inode is unlinked by the replace but the name still
+    resolves to it, on every fresh read the stable reader makes.  Its bytes
+    never changed and the name still named it, so it is the record."""
+
+    path = tmp_path / "action.progress"
+    _replace(path, _record(1))
+    state = _replace_before_the_name_moves(
+        monkeypatch, path, times=pb._STABLE_FILE_READ_ATTEMPTS)
+    watch = _watch(path)
+
+    advanced = watch.sample(now=1)
+    assert state["replaced"] >= 1
+    assert watch.rejected == 0, watch.last_rejection
+    assert advanced is True
+    assert watch.units_high_water == 1
+
+
+def test_a_replaced_leaf_rewritten_in_place_is_still_tamper(
+        tmp_path, monkeypatch):
+    """Bytes that change within one held inode are tamper, whatever the
+    name does meanwhile: the #1159 acceptance is for the replace's own
+    unlink, never for a changed record."""
+
+    path = tmp_path / "action.progress"
+    _replace(path, _record(1))
+    state = _replace_before_the_name_moves(monkeypatch, path, times=1)
+    windowed_read = pb.os.read
+    rewritten = []
+
+    def read_then_rewrite(descriptor, count):
+        chunk = windowed_read(descriptor, count)
+        if chunk and not rewritten:
+            # The held inode itself grows: a write into the very inode the
+            # reader holds, not a replace.
+            with open(f"/proc/self/fd/{descriptor}", "ab") as held:
+                held.write(b" ")
+            rewritten.append(descriptor)
+        return chunk
+
+    monkeypatch.setattr(pb.os, "read", read_then_rewrite)
+    with pytest.raises(pb.CASTamperError, match="changed substantively"):
+        pb._read_regular_file_nofollow(
+            path, where="action progress report", replaced_leaf=True)
+    assert state["replaced"] == 1
+    assert len(rewritten) == 1
+
+
+def test_a_record_replaced_under_every_reread_is_not_a_rejection(
+        tmp_path, monkeypatch):
+    """#1159: a writer that replaces the record under each of the reader's
+    bounded rereads is a live writer, not tamper.  The sample reads nothing
+    this poll and the next poll reads again; the phase allowance bounds it,
+    as it bounds a report that has not appeared yet."""
+
+    path = tmp_path / "action.progress"
+    _replace(path, _record(1))
+    _replace_after_open(monkeypatch, path, _record(2), times=1000)
+    watch = _watch(path)
+
+    assert watch.sample(now=1) is False
+    assert watch.rejected == 0, watch.last_rejection
+    assert watch.last_rejection is None
