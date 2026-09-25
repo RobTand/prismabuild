@@ -111,6 +111,13 @@ ACTION_PROGRESS_ENV = (
 #: and a key inside the argv the key is computed from does not converge.
 ACTION_KEY_ENV = "PRISMABUILD_ACTION_KEY"
 RESIDENCY_MAP_ENV = "PRISMABUILD_RESIDENCY_MAP"
+#: The absolute root of the pool queue that launched this action (#961), set
+#: by the pool launcher for every action it runs and forwarded unsealed like
+#: the map.  It is the published answer to "which queue am I on": a consumer
+#: reads it instead of deriving the root from the map's path shape, which is
+#: a layout the queue is free to move.  A launch outside the pool (a local
+#: ``run-action``) carries none.
+QUEUE_ROOT_ENV = "PRISMABUILD_QUEUE_ROOT"
 #: The payload's public attempt identity, set by the resource_exec proxy
 #: from the exact launch identity (never the broker token) and protected
 #: here the same way as the action key: a sealed variable of any of these
@@ -127,7 +134,7 @@ ACTION_SCOPE_ENV = "PRISMABUILD_ACTION_SCOPE"
 #: ``prismabuild.reader_lease`` from sealed bytes.  Protected exactly like
 #: the action key below.
 READER_HELPER_ROOT_ENV = "PRISMABUILD_READER_HELPER_ROOT"
-ACTION_RESIDENCY_ENV = (ACTION_KEY_ENV, RESIDENCY_MAP_ENV,
+ACTION_RESIDENCY_ENV = (ACTION_KEY_ENV, RESIDENCY_MAP_ENV, QUEUE_ROOT_ENV,
                         ACTION_NONCE_ENV, ACTION_SCOPE_ENV,
                         READER_HELPER_ROOT_ENV)
 
@@ -8123,7 +8130,9 @@ def _residency_environment(
     under its own key -- cannot take it as an argument without hashing the key
     into the argv the key is computed from.  ``RESIDENCY_MAP_ENV`` is
     forwarded only when the launcher set it, which it does for an item whose
-    residency block names leads that have staged something.  The broker-owned
+    residency block names leads that have staged something.  ``QUEUE_ROOT_ENV``
+    is forwarded the same way; the pool launcher sets it for every action it
+    runs (#961).  The broker-owned
     attempt tuple plus helper root travel the same way, through
     :func:`_reader_identity_environment`: complete, shaped, and bound to
     this action, or not at all.
@@ -8141,9 +8150,10 @@ def _residency_environment(
             "contract must set"
         )
     environment = {ACTION_KEY_ENV: str(action["action_key"])}
-    forwarded = os.environ.get(RESIDENCY_MAP_ENV)
-    if forwarded:
-        environment[RESIDENCY_MAP_ENV] = forwarded
+    for name in (RESIDENCY_MAP_ENV, QUEUE_ROOT_ENV):
+        forwarded = os.environ.get(name)
+        if forwarded:
+            environment[name] = forwarded
     environment.update(
         _reader_identity_environment(str(action["action_key"])))
     return environment
@@ -8442,6 +8452,7 @@ __all__ = [
     "ACTION_PROGRESS_PATH_ENV",
     "ACTION_PROGRESS_TOKEN_ENV",
     "RESIDENCY_MAP_ENV",
+    "QUEUE_ROOT_ENV",
     "ACTION_STATUS_PATH_ENV",
     "PROGRESS_PARAM",
     "PROGRESS_POLICY_SCHEMA_V1",

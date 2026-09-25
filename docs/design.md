@@ -10795,6 +10795,17 @@ eviction, because a rename cannot merge and a map naming an evicted range points
 at deleted files. The launcher puts the composed map's path in
 `PRISMABUILD_RESIDENCY_MAP`, and only when the file exists.
 
+**The queue root is published, not derived (#961).** The pool launcher also
+sets `PRISMABUILD_QUEUE_ROOT` (`core.QUEUE_ROOT_ENV`) for every action it runs,
+map or no map, to the queue's absolute root (`PoolQueue.launch_environment`).
+`core` forwards it unsealed beside the map and refuses an action that seals
+it. A consumer that needs its queue calls `reader_lease.launch_queue_root`,
+the SDK's one reader, and never derives the root from the map's path shape
+(`<queue>/residency/<key>.json`): that layout is the queue's to move. The
+function reads the map's path only for a launch by a pool generation older
+than #961, which published no root, and answers `None` for a process no pool
+worker launched. `reader_lease.injected_context` resolves its queue through it.
+
 **The map lives as long as its consumer runs (#908).** When a consumer has
 nothing staged, the loop's answer depends on whether it is running:
 

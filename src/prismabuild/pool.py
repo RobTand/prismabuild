@@ -6442,6 +6442,20 @@ class PoolQueue:
         return (self.root / RESIDENCY_PLANS
                 / f"{_residency_action_key(consumer_action_key)}.json")
 
+    def launch_environment(self, item: Mapping[str, object]) -> dict[str, str]:
+        """The queue's own launch context for ``item`` (#583, #961).
+
+        ``QUEUE_ROOT_ENV`` always, as this queue's absolute root: the published
+        answer to "which queue launched me" (``__init__`` already refuses a
+        relative root), so a consumer never derives it
+        from where the residency map happens to live.  Plus
+        :meth:`residency_map_environment`, which is empty for an action with
+        no map to read.
+        """
+
+        return {pb.QUEUE_ROOT_ENV: str(self.root),
+                **self.residency_map_environment(item)}
+
     def residency_map_environment(self, item: Mapping[str, object]) -> dict[str, str]:
         """``{RESIDENCY_MAP_ENV: path}`` for an action with a map to read.
 
@@ -20420,7 +20434,7 @@ class PoolQueue:
             # travel in a file because this process's exit status cannot
             # carry them.
             env={**os.environ, pb.ACTION_STATUS_PATH_ENV: str(status_path),
-                 **progress_environment, **self.residency_map_environment(item)},
+                 **progress_environment, **self.launch_environment(item)},
             # The launcher leads its own group so the timeout can signal the
             # group rather than the single pid.  ``kill()`` on the pid reaches
             # the launcher only, and leaves the action holding the GPU.
