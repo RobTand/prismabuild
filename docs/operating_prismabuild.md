@@ -253,11 +253,17 @@ What PB does with it:
   anything is queued, naming the reference.
 - **Refuse at claim, keep it portable.** At claim time the worker reads its
   shared inventory record freshly (re-probed at least every five seconds
-  while image-pinned work is waiting, outside every pool lock). A missing
-  reference is denied as `container_image_absent` with the digest named; an
-  unreadable inventory is `container_image_presence_unknown`. Either denial
-  records no pass, spends no attempt and takes no token, so the item stays
-  `ready` and the box that has the image claims it. The residual race -- an
+  while image-pinned work is waiting, outside every pool lock). A loop that
+  finds a sibling loop mid-probe waits for that probe's record, up to the
+  five-second inventory timeout, rather than reading the old record as
+  unknown (#1143). A missing reference is denied as `container_image_absent`
+  with the digest named; an unreadable inventory is
+  `container_image_presence_unknown`. Either denial records no pass, spends
+  no attempt and takes no token, so the item stays `ready` and the box that
+  has the image claims it. An unknown inventory does not release a drain:
+  if this box was withholding for the row, the rows behind it stay held for
+  that pass (`withhold_carried` in the denial), as they do when another loop
+  holds the row's lock (#1143). The residual race -- an
   image removed after the observation and before the container starts -- is
   reported by the action's own run time, not presented as impossible.
 

@@ -64,8 +64,11 @@ Two staleness bounds, deliberately different:
   one per worker loop per poll.
 * A **claim** reads it with :data:`CLAIM_FRESHNESS_S`: while image-pinned
   work is waiting, the record is re-probed (once for the box, under the same
-  local lock) at least that often before a claim uses it.  The probe runs in
-  the worker's poll, outside every pool lock.  A claim can still race an
+  local lock) at least that often before a claim uses it.  A loop that finds
+  a sibling mid-probe waits for that sibling's record, within the same
+  :data:`INVENTORY_TIMEOUT_S` budget, rather than reading the stale one as
+  unknown (#1143).  The probe and the wait run in the worker's poll, outside
+  every pool lock.  A claim can still race an
   image removal that happens after the observation and before the container
   starts; that interval is small and documented rather than claimed closed.
 
@@ -105,8 +108,14 @@ INVENTORY_TTL_S = 30.0
 #: box pays one listing per interval, not one per loop.
 CLAIM_FRESHNESS_S = 5.0
 
-#: One Docker metadata read's ceiling.  A probe that overruns is unknown.
+#: One Docker metadata read's ceiling.  A probe that overruns is unknown.  A
+#: loop waiting on a sibling's refresh spends the same budget (#1143).
 INVENTORY_TIMEOUT_S = 5.0
+
+#: How often a loop waiting on a sibling's refresh retries the local lock.
+#: A nonblocking ``flock`` of a host-local file, so the poll costs nothing
+#: next to the listing it waits for (0.23 s on sparky, 2026-09-25).
+REFRESH_LOCK_POLL_S = 0.02
 
 #: The local system daemon, the same endpoint the action Docker shim pins.
 #: ``DOCKER_HOST`` and ``DOCKER_CONTEXT`` are scrubbed from the probe's
@@ -823,12 +832,14 @@ class InventoryCache:
 
     The record lives on host-local disk because the loops are separate
     processes and the daemon is box-wide: one loop refreshes after the
-    requested freshness under a nonblocking local lock and the rest read the
-    same small record, so a box with sixteen loops pays one Docker listing
-    per interval rather than sixteen per poll.  Every failure -- an unsafe
-    directory, a malformed or stale record, a held lock, a failed probe --
-    leaves the caller with ``None``: unknown, which refuses every requirement
-    and lets ordinary work through untouched.
+    requested freshness under a local lock and the rest read the same small
+    record, so a box with sixteen loops pays one Docker listing per interval
+    rather than sixteen per poll.  A loop that finds the lock held waits for
+    the sibling's record, bounded by :attr:`timeout_s`, instead of reading
+    the stale one (#1143).  Every failure -- an unsafe directory, a malformed
+    or stale record, a sibling refresh that overruns the timeout, a failed
+    probe -- leaves the caller with ``None``: unknown, which refuses every
+    requirement and lets ordinary work through untouched.
     """
 
     def __init__(
@@ -893,7 +904,20 @@ class InventoryCache:
                 return None
         return observed, frozenset(normalized)
 
-    def _refresh(self, directory: int) -> None:
+    def _refresh(self, directory: int, *, limit: float) -> None:
+        """Re-probe the shared record, or wait for the sibling that is.
+
+        One loop probes under ``refresh.lock``; a loop that finds it held
+        waits for that probe, polling the lock until :attr:`timeout_s` runs
+        out, and then reads the sibling's record rather than probing again
+        (#1143).  Returning at once made every sibling's claim read a stale
+        record as unknown after each refresh boundary.  The wait and any
+        probe spend one :attr:`timeout_s` budget, so a claim pass is never
+        held past the inventory timeout; a sibling that overruns it leaves
+        this caller unknown, exactly as before.
+        """
+
+        deadline = time.monotonic() + self.timeout_s
         try:
             lock = os.open(
                 "refresh.lock",
@@ -906,11 +930,30 @@ class InventoryCache:
             if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
                     or info.st_nlink != 1):
                 return
-            try:
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except OSError:
-                return                      # a sibling loop is refreshing
-            entries = observe(probe=self.probe, timeout_s=self.timeout_s,
+            while True:
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    pass                    # a sibling loop is refreshing
+                except OSError:
+                    return
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return                  # the sibling overran our budget
+                time.sleep(min(REFRESH_LOCK_POLL_S, remaining))
+            # Under the lock.  A sibling that held it has just written its
+            # record, and one may also have finished between the caller's read
+            # and this lock: either way, that record answers, and the box
+            # pays one listing, not one per loop.
+            cached = self._record(directory, now=self.clock())
+            if cached is not None and self.clock() - cached[0] <= limit:
+                return
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            entries = observe(probe=self.probe,
+                              timeout_s=min(self.timeout_s, remaining),
                               docker=self.docker)
             record = {
                 "schema": INVENTORY_SCHEMA,
@@ -943,7 +986,7 @@ class InventoryCache:
             cached = self._record(directory, now=self.clock())
             if cached is not None and self.clock() - cached[0] <= limit:
                 return cached[1]
-            self._refresh(directory)
+            self._refresh(directory, limit=limit)
             cached = self._record(directory, now=self.clock())
             if cached is not None and self.clock() - cached[0] <= limit:
                 return cached[1]
