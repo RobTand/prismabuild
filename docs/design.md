@@ -7954,8 +7954,11 @@ start where the previous one ended). It has three spans:
 * The phase the consumer's accepted progress names, which it is reading.
 * The consumer's read-ahead: `mem_gb` plus its admission's
   `gpu_memory_budget_bytes`, the most it can hold ahead of what it reads.
-  The two are summed even where they share one physical pool (GB10 unified
-  memory), which over-states the reach, so the horizon errs long.
+  Where the admitted device's memory is unified (admission's measured
+  `memory_domain` is `shared_system`, a GB10), the GPU budget is a subset of
+  `mem_gb` and the two are one pool, so the read-ahead is the larger of them,
+  not their sum (#959). A `discrete` device, or a claim whose admission
+  recorded no domain, keeps the sum, which errs long.
 * The refill: ranges past that reach until they cover what the consumer
   reads while a copy published now lands, and never less than one range.
 
