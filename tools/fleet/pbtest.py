@@ -294,9 +294,10 @@ def announced_ceilings(tags: list[str]) -> dict[str, float | None]:
     The queue read is the one every shard is submitted to, ``pbrun.SH /
     "pb-queue"``, the root ``pbwait`` and ``pbstatus`` read too.  This used to
     ask a bare ``pool.PoolQueue()``, whose default root
-    (``pool.DEFAULT_POOL_ROOT``, ``/mnt/shared/pb-queue``) is a directory no
-    box has, so it found no offers and every bound fell back to the published
-    default: 7170 s on dl380g10, whose loop announces 3600 s (#939).
+    (``pool.DEFAULT_POOL_ROOT``, then ``/mnt/shared/pb-queue``) was a directory
+    no box has, so it found no offers and every bound fell back to the
+    published default: 7170 s on dl380g10, whose loop announces 3600 s (#939).
+    That default now names this same queue and refuses a missing one (#976).
     """
 
     try:

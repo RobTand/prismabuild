@@ -1074,7 +1074,12 @@ partitions/reservations, or attested any machine through a SLURM allocation.
 | — | M5 Mac mini | below the value line; not a tier |
 
 The live data plane is `/mnt/shared` (NFS from dl380), including the deployed
-PrismaBuild CAS and pull queue under `/mnt/shared/prismabuild-fleet`. Workers
+PrismaBuild CAS and pull queue under `/mnt/shared/prismabuild-fleet`. The
+queue is `/mnt/shared/prismabuild-fleet/pb-queue`, which is also
+`pool.DEFAULT_POOL_ROOT` (unless `PRISMABUILD_POOL_ROOT` names another), the
+root a bare `PoolQueue()` opens. A bare `PoolQueue()` refuses that default,
+naming the path, when it is not a directory: a missing queue is not an empty
+one (#976). A caller that names its root still owns creating it. Workers
 load immutable published runtime generations and use per-architecture venvs
 (envs cannot be shared across aarch64-CUDA / x86). A future
 munge-authenticated SLURM installation remains the proposed trust plane for a

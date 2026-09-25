@@ -803,8 +803,15 @@ def offer_timing(announced: object, *, now: float) -> OfferTiming:
     skew = max(0.0, -age)
     return OfferTiming(max(0.0, age) if skew <= OFFER_FUTURE_TOLERANCE_S else None, skew)
 
+#: The queue a bare ``PoolQueue()`` opens: the fleet's own, the root
+#: ``pbrun.SH / "pb-queue"`` names.  It was ``/mnt/shared/pb-queue`` until
+#: #976, a directory no box has, and a queue over a missing directory reads
+#: as an empty one: ``retire_worker`` said ``no worker record`` and pbtest's
+#: ceilings fell back to 7200 s for weeks (#939).  ``PoolQueue`` now refuses
+#: this default when it is not a directory, by name.
 DEFAULT_POOL_ROOT = Path(
-    os.environ.get("PRISMABUILD_POOL_ROOT", "/mnt/shared/pb-queue")
+    os.environ.get("PRISMABUILD_POOL_ROOT",
+                   "/mnt/shared/prismabuild-fleet/pb-queue")
 )
 
 #: Every box mounts this at the same path.  A checkout underneath it is
@@ -4239,7 +4246,8 @@ class PoolQueue:
         # Read the module attribute at call time, not at definition time, so
         # a caller (or the test guard) that re-points ``DEFAULT_POOL_ROOT``
         # after import gets the root it named rather than the live store.
-        self.root = Path(DEFAULT_POOL_ROOT if root is None else root)
+        defaulted = root is None
+        self.root = Path(DEFAULT_POOL_ROOT if defaulted else root)
         self._cpu_deferrals: dict[tuple[str, str], float] = {}
         self._cross_resource_deferrals: dict[tuple[str, str], float] = {}
         self._claim_denial_bases: dict[str, Path] = {}
@@ -4252,6 +4260,15 @@ class PoolQueue:
         self._layout_ensured = False
         if not self.root.is_absolute():
             raise PoolContractError("pool root must be absolute")
+        # Only the default is checked (#976).  A caller that names a root owns
+        # it, and fixtures and benches build theirs under a fresh directory;
+        # nobody chose the default, so a missing one is a wrong guess about
+        # the box, and reading it as an empty queue hides that.
+        if defaulted and not self.root.is_dir():
+            raise PoolContractError(
+                f"the default pool root {self.root} is not a directory on this "
+                "box, so there is no queue to read; name the queue root "
+                "explicitly or set PRISMABUILD_POOL_ROOT")
 
     # -- layout ---------------------------------------------------------
 
