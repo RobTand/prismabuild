@@ -235,6 +235,10 @@ POOL_MOVE_SCHEMA_V1 = "prismaquant.prismabuild.pool_move.v1"
 #: returned for it.  Filed beside the move receipts so one directory answers
 #: "what is on the stage and who holds it".
 POOL_EGRESS_SCHEMA_V1 = "prismaquant.prismabuild.pool_egress.v1"
+#: The two receipts ``PoolQueue.record_move`` files, and keeps as filed
+#: (#1158): a receipt with no schema is a move receipt; any other schema is
+#: refused.
+POOL_MOVEMENT_RECEIPT_SCHEMAS = (POOL_MOVE_SCHEMA_V1, POOL_EGRESS_SCHEMA_V1)
 #: The move-receipt field naming the mover a range was taken over from (#598).
 #: A receipt carrying it copied nothing: the bytes were already on the tier and
 #: the tokens standing for them changed owner.  It is the only way to tell an
@@ -6539,7 +6543,12 @@ class PoolQueue:
         return self.root / MOVERS / f"{action_key}.json"
 
     def move_record(self, action_key: str) -> dict[str, object] | None:
-        """What one movement node staged, if it has finished and filed it.
+        """What one movement node staged or released, if it has filed it.
+
+        Either receipt :meth:`record_move` files: a mover's, or an egress's
+        under the egress's own key, which is how ``produced_output`` finds a
+        finished egress (#1158).  The keys differ, so a mover's key never
+        reads an egress receipt.
 
         Every caller is asking whether a mover on another box has filed yet,
         and most of them poll, so the read revalidates before answering no
@@ -6550,7 +6559,7 @@ class PoolQueue:
         record = _read_json_fresh(self.move_path(action_key))
         if not isinstance(record, dict):
             return None
-        if record.get("schema") != POOL_MOVE_SCHEMA_V1:
+        if record.get("schema") not in POOL_MOVEMENT_RECEIPT_SCHEMAS:
             return None
         return record
 
@@ -6753,6 +6762,12 @@ class PoolQueue:
         section cannot deadlock.  A receipt naming no tier files exactly as
         before (egress receipts are not move receipts and never count).
 
+        The receipt keeps the schema it was built with when it is one of
+        :data:`POOL_MOVEMENT_RECEIPT_SCHEMAS`; one with none files as a move
+        receipt, and any other schema is refused before anything is written.
+        Stamping the move schema over an egress receipt hid every egress
+        from the egress price (#1158).
+
         Then, outside the mint lock, the receipt's line is appended to the
         pricing log (#1044), after the receipt itself is in place, so a line
         never names a receipt that is not there yet.  A receipt re-filed
@@ -6763,6 +6778,12 @@ class PoolQueue:
         append does not fail the filing: a receipt the log does not cover is
         read by the next :meth:`move_records`.
         """
+
+        schema = record.get("schema") if isinstance(record, Mapping) else None
+        if schema is not None and schema not in POOL_MOVEMENT_RECEIPT_SCHEMAS:
+            raise PoolContractError(
+                f"movement receipt {action_key} has schema {schema!r}; "
+                f"record_move files only {', '.join(POOL_MOVEMENT_RECEIPT_SCHEMAS)}")
 
         tier_id = record.get("tier_id") if isinstance(record, Mapping) else None
         # A name the log's line format cannot carry is never logged; the
@@ -6805,7 +6826,8 @@ class PoolQueue:
 
         path = self.move_path(action_key)
         path.parent.mkdir(parents=True, exist_ok=True)
-        body = {**dict(record), "schema": POOL_MOVE_SCHEMA_V1,
+        body = {**dict(record),
+                "schema": record.get("schema") or POOL_MOVE_SCHEMA_V1,
                 "action_key": action_key}
         _write_json_atomic(path, body)
         return path, body
