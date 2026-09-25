@@ -5246,6 +5246,34 @@ def window_pressure(
     return need
 
 
+def _legs_a_reader_can_reach(consumers: list) -> dict[str, list[str]]:
+    """Every stage leg a claimed consumer can still read, and who reads it (#1151).
+
+    A claimed consumer's reach is :func:`residency_plan.remaining`: the phase
+    its accepted progress names, which it is inside, and every phase after
+    it.  That is the window's own rule for what it may not take back, and it
+    reads a consumer that has not reported, or reports a phase this plan
+    does not carry, as at the beginning, so a reader that has not said where
+    it is protects its whole plan.  A ready consumer reaches nothing: no
+    claim admits it over a range that has not landed.
+
+    ``consumers`` is :func:`_planned_consumers`' list.  Keys are stage mover
+    keys, one per chunk for a chunked phase (#675); values are the claimed
+    consumers that reach each, so a shared range (#1026) lists every sharer.
+    """
+
+    reach: dict[str, list[str]] = {}
+    for consumer_key, consumer, plan, _tier_id in consumers:
+        if not isinstance(consumer, Mapping) or consumer.get(
+                "state") != pool.CLAIMED:
+            continue
+        ahead = residency_plan.remaining(
+            plan, consumer.get("accepted_phase"))  # type: ignore[arg-type]
+        for mover_key in residency_plan.stage_mover_keys({"phases": ahead}):
+            reach.setdefault(mover_key, []).append(str(consumer_key))
+    return reach
+
+
 def reclaim_failed_mover_partials(
         queue: pool.PoolQueue, consumers: list,
         pressure: Mapping[str, int], *,
@@ -5277,6 +5305,22 @@ def reclaim_failed_mover_partials(
     that did not land is range-wide; so once one sharer's egress is asked
     this cycle, the others are not.
 
+    Never from under a reader either (#1151).  A claimed consumer reads its
+    ranges as their entries land, so the partials of the phase it is inside
+    are what it is reading, and those of every later phase are what it will
+    read next: :func:`_legs_a_reader_can_reach` names them.  Retiring one
+    would retire its fragment, and the reader's next lease on a name it had
+    already been told was covered would refuse ``unpublished``.  Those legs
+    are left to the window instead, which republishes the same key, and the
+    retry resumes its own landed coverage (``entries_resumed``) and copies
+    only what is missing.  Only a range no claimed consumer can still read
+    -- one every reader has read past, or one whose readers have not been
+    admitted, which no claim admits over a range that did not land -- is an
+    eviction candidate.  A decline for a reader is the one decline that is
+    an event (``failed-mover-reclaim-deferred-for-reader``), because it is
+    the decision #1151 changed: it fires exactly where an egress used to be
+    published.
+
     ``budget`` is the tier loop's cycle budget (#1136): each pressured
     consumer's legs are one ``FAILED_MOVER_RECLAIM_UNIT``, since each leg
     reads its ledger holding, its queue state, its move receipt and its
@@ -5288,6 +5332,9 @@ def reclaim_failed_mover_partials(
     root = queue.residency_fragment_root()
     shared = _shared_movers(queue) or frozenset()
     asked: set[str] = set()
+    # Over every consumer, not only the ones this cycle's budget reads: a
+    # shared range is protected by any sharer that can still read it.
+    readers = _legs_a_reader_can_reach(consumers)
     for consumer_key, _consumer, plan, tier_id in _budget_order(
             budget, FAILED_MOVER_RECLAIM_UNIT, consumers,
             lambda consumer: str(consumer[0])):
@@ -5365,6 +5412,17 @@ def reclaim_failed_mover_partials(
                         or queue.item_path(pool.WITHDRAWN, egress_key).exists()):
                     continue      # concluded and the fragment is still there:
                                   # it refused rather than raced; do not spin
+                reading = readers.get(mover_key)
+                if reading:
+                    # A claimed consumer reads, or will read, these entries
+                    # (#1151): the window's same-key retry resumes them.
+                    events.append({
+                        "event": "failed-mover-reclaim-deferred-for-reader",
+                        "consumer": consumer_key, "phase": phase.get("name"),
+                        "chunk_index": chunk_index,
+                        "mover": mover_key, "action_key": egress_key,
+                        "readers": reading[:5], "tier_id": tier_id})
+                    continue
                 try:
                     # And the same question again under the queue's lock, so
                     # the look above and this publication are one decision
