@@ -928,3 +928,73 @@ def test_a_sidecar_entry_that_dates_other_bytes_is_declined(
         "donor_material_mismatch"}
     assert queue.tier_ledger(TIER).holder_tokens(donor) == {
         "stage_gib": PHASE_GIB}
+
+
+def test_a_kill_between_the_successors_documents_leaves_no_undated_vouch(
+        queue, stage, monkeypatch) -> None:
+    """#1087: the successor's sidecar lands before its fragment.
+
+    The adoption is killed between the successor's two documents, whichever
+    it writes first.  What it leaves must never be a successor vouch that
+    nothing dates: the publication gate reads one as a pending date for
+    every later mover of the names and refuses on it for as long as it
+    stands, and once the donor's own documents go nothing proves the names
+    at all.  The donor keeps the range, and the adoption simply runs again.
+    """
+
+    donor = _hexkey("firstmover0")
+    successor = _hexkey("secondmover0")
+    _stage_range(queue, mover=donor, consumer=FIRST, stage=stage)
+    root = queue.residency_fragment_root()
+
+    class Killed(BaseException):
+        """Nothing in the adoption catches it."""
+
+    landed: list[str] = []
+    real_fragment = residency_map.write_fragment
+    real_material = reader_lease.write_material
+
+    def fragment(where, document, *args, **kwargs):
+        if document.get("mover_action_key") == successor:
+            if landed:
+                raise Killed("killed before the successor's fragment")
+            landed.append("fragment")
+        return real_fragment(where, document, *args, **kwargs)
+
+    def material(where, **kwargs):
+        if kwargs.get("mover_action_key") == successor:
+            if landed:
+                raise Killed("killed before the successor's sidecar")
+            landed.append("material")
+        return real_material(where, **kwargs)
+
+    monkeypatch.setattr(residency_map, "write_fragment", fragment)
+    monkeypatch.setattr(reader_lease, "write_material", material)
+    arguments = dict(old_key=donor, new_key=successor,
+                     consumer_action_key=SECOND, tier_id=TIER,
+                     phase="phase-0", range_start_bytes=0,
+                     range_end_bytes=PHASE_GIB * GIB, residency_root=root)
+    with pytest.raises(Killed):
+        tier_loop.adopt(queue, **arguments)
+    monkeypatch.undo()
+
+    def documents() -> tuple[set[str] | None, set[str] | None]:
+        path = residency_map.fragment_path(root, SECOND, successor)
+        vouched = (set(json.loads(path.read_text())["entries"])
+                   if path.exists() else None)
+        dated = reader_lease.read_material(root, SECOND, successor)
+        return vouched, (set(dated["entries"]) if isinstance(dated, dict)
+                         else None)
+
+    vouched, dated = documents()
+    assert vouched is None or (dated is not None and vouched <= dated), (
+        f"the successor vouches for names nothing dates: "
+        f"vouched={vouched} dated={dated}")
+    assert queue.tier_ledger(TIER).holder_tokens(donor) == {
+        "stage_gib": PHASE_GIB}
+
+    again = tier_loop.adopt(queue, **arguments)
+    assert again["adopted"] is True, again
+    vouched, dated = documents()
+    assert vouched and vouched == dated, (vouched, dated)
+    assert_ledger_matches_the_stage(queue)

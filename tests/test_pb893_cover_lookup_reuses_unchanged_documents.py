@@ -14,6 +14,14 @@ the pre-#893 lookup answers (``pb893_reference``, frozen from ef997618e133)
 for every document state and every republish between calls, including the
 same-generation incremental republish of #823.
 
+One answer changed on purpose since the freeze (#1087): a date the fragment
+does not vouch is inert, where the frozen lookup refused the key as
+``sidecar/fragment disagree``.  The movers write the sidecar first, so that
+is the state an in-flight or interrupted publication shows.  The frozen
+equivalence below therefore runs over fleets whose fragments never omit a
+key their sidecars date, and a second one runs over fleets that do, against
+the frozen lookup with those dates removed.
+
 Every republish in these fixtures changes the file's size, so the identity
 change the cache relies on never depends on the test filesystem's timestamp
 granularity. The production writers rename a new inode into place on every
@@ -21,6 +29,7 @@ publish. Run via published pbtest at -10; fixtures use tmp_path roots only.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
@@ -55,7 +64,7 @@ def _fresh_cache():
 
 def _publish(root: Path, stage: Path, mover: str, keys: dict[str, str],
              generation: str) -> None:
-    """One publication: fragment first, then the sidecar that dates it."""
+    """One publication: the sidecar first, then the fragment it dates (#1087)."""
 
     staged = {}
     dated = {}
@@ -67,15 +76,15 @@ def _publish(root: Path, stage: Path, mover: str, keys: dict[str, str],
                       "sha256": digest,
                       "file_id": {"ino": 7, "size": 512, "mtime_ns": 1,
                                   "ctime_ns": 1}}
+    reader_lease.write_material(
+        root, consumer_action_key=CONSUMER, mover_action_key=mover,
+        tier_id=TIER, stage_root=str(stage), manifest_sha256=MANIFEST,
+        generation=generation, entries=dated)
     residency_map.write_fragment(root, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": CONSUMER, "mover_action_key": mover,
         "tier_id": TIER, "stage_root": str(stage),
         "manifest_sha256": MANIFEST, "entries": staged})
-    reader_lease.write_material(
-        root, consumer_action_key=CONSUMER, mover_action_key=mover,
-        tier_id=TIER, stage_root=str(stage), manifest_sha256=MANIFEST,
-        generation=generation, entries=dated)
 
 
 @pytest.fixture()
@@ -283,11 +292,15 @@ class Fleet:
     JSON), so every republish changes the file's identity on any filesystem.
     """
 
-    def __init__(self, root: Path, rng: random.Random) -> None:
+    def __init__(self, root: Path, rng: random.Random, *,
+                 omits: bool = False) -> None:
         self.root = root
         self.rng = rng
         self.movers: dict[str, dict] = {}
         self.sizes: dict[Path, int] = {}
+        #: Whether a fragment may omit a key its sidecar dates.  The frozen
+        #: lookup refuses that key and this one ignores the date (#1087).
+        self.omits = omits
 
     # -- document state ---------------------------------------------------
 
@@ -325,7 +338,11 @@ class Fleet:
         return state
 
     def _disagree(self, state: dict) -> None:
-        """Sometimes the fragment vouches different bytes or omits a key."""
+        """Sometimes the fragment vouches different bytes or omits a key.
+
+        The omission only when :attr:`omits`; the draws are the same either
+        way, so a seed lays down the same sequence otherwise.
+        """
 
         rng = self.rng
         for key in list(state["fragment_entries"]):
@@ -333,7 +350,7 @@ class Fleet:
             if roll < 0.1:
                 size, _ = state["fragment_entries"][key]
                 state["fragment_entries"][key] = (size, _digest_for(rng))
-            elif roll < 0.15:
+            elif roll < 0.15 and self.omits:
                 del state["fragment_entries"][key]
 
     def material_doc(self, mover: str, state: dict) -> object:
@@ -541,17 +558,25 @@ def test_covers_for_keys_answers_exactly_what_the_pre_893_lookup_answers(
     assert compared > 30_000, compared
 
 
-def _compare_sequence(base: Path, seed: int, outcomes: set[str]) -> int:
+def _compare_sequence(base: Path, seed: int, outcomes: set[str], *,
+                      omits: bool = False,
+                      differed: list[object] | None = None) -> int:
     """One seeded sequence of republishes, each followed by every query.
 
     Each query runs four ways: the new and the frozen lookup with a fresh
     context per call (PQ's pattern), and each again with its own context
     kept across the whole sequence.  Returns the number of comparisons.
+
+    ``omits`` lays down fragments that omit keys their sidecars date and
+    runs the fresh-context pair only, against a frozen lookup the caller
+    made read each sidecar without the dates its fragment does not vouch
+    (:func:`_vouched_dates_only`).  Each such query the untrimmed frozen
+    lookup answers differently is appended to ``differed``.
     """
 
     rng = random.Random(seed)
     root = base / "residency"
-    fleet = Fleet(root, rng)
+    fleet = Fleet(root, rng, omits=omits)
     persistent_new: dict = {}
     persistent_old: dict = {}
     compared = 0
@@ -588,6 +613,17 @@ def _compare_sequence(base: Path, seed: int, outcomes: set[str]) -> int:
                         old = reference.covers_for_keys(
                             root, CONSUMER, keys, context={}, **arguments)
                     assert new == old, (seed, step, event, keys, arguments)
+                    if omits:
+                        if differed is not None:
+                            with reference.old_hex_checks(), _untrimmed():
+                                frozen = reference.covers_for_keys(
+                                    root, CONSUMER, keys, context={},
+                                    **arguments)
+                            if frozen != new:
+                                differed.append((frozen, new))
+                        compared += 1
+                        outcomes.add(str(new.get("refusal") or "ok"))
+                        continue
                     new = reader_lease.covers_for_keys(
                         root, CONSUMER, keys, context=persistent_new,
                         **arguments)
@@ -601,6 +637,81 @@ def _compare_sequence(base: Path, seed: int, outcomes: set[str]) -> int:
                     outcomes.add(str(new.get("refusal") or "ok"))
         _assert_cache_matches_disk(root)
     return compared
+
+
+_FROZEN_READ_MATERIAL = reference.read_material
+
+
+def _vouched_dates_only(root, consumer_action_key: str, mover_action_key: str):
+    """The frozen lookup's sidecar read, less each date no vouch cites.
+
+    The sidecar is read as the frozen lookup reads it, then its entries are
+    cut to the keys its mover's fragment names.  A fragment that is absent
+    or unreadable cuts nothing: the frozen lookup then meets it as it always
+    did and skips the mover.
+    """
+
+    material = _FROZEN_READ_MATERIAL(root, consumer_action_key,
+                                     mover_action_key)
+    if not isinstance(material, dict):
+        return material
+    try:
+        with open(residency_map.fragment_path(
+                root, consumer_action_key, mover_action_key)) as stream:
+            fragment = residency_map.validate_fragment(json.load(stream))
+    except (OSError, ValueError):
+        return material
+    vouched = fragment["entries"]
+    return {**material, "entries": {
+        key: mention for key, mention in material["entries"].items()
+        if str(key) in vouched}}
+
+
+@contextmanager
+def _untrimmed():
+    """The frozen lookup exactly as frozen, for one call."""
+
+    trimmed = reference.read_material
+    reference.read_material = _FROZEN_READ_MATERIAL
+    try:
+        yield
+    finally:
+        reference.read_material = trimmed
+
+
+def test_a_date_no_vouch_cites_changes_no_answer(tmp_path: Path,
+                                                  monkeypatch) -> None:
+    """#1087: a date the fragment does not vouch is inert.
+
+    Over fleets whose fragments omit keys their sidecars date -- what a
+    mover's publication leaves between its two writes, or after a kill
+    there, since the sidecar goes first -- the lookup answers what the
+    frozen lookup answers once those dates are removed.  The frozen lookup
+    as frozen refused such a key as ``sidecar/fragment disagree``, which PQ
+    reads as an integrity failure; ``differed`` shows the fleets reach it.
+    Fresh contexts only, PQ's call pattern: a kept context reuses a
+    fragment while its sidecar is unchanged, and cutting the sidecar would
+    change which calls reuse it.
+    """
+
+    monkeypatch.setattr(reference, "read_material", _vouched_dates_only)
+    compared = 0
+    outcomes: set[str] = set()
+    differed: list[object] = []
+    for seed in (1087, 893, 2026):
+        compared += _compare_sequence(tmp_path / str(seed), seed, outcomes,
+                                      omits=True, differed=differed)
+    assert outcomes >= {"ok", "unpublished", "source-coverage-gap",
+                        "ownership-uncertain: contradictory covers",
+                        "ownership-uncertain: sidecar/fragment disagree",
+                        "ownership-uncertain: staged epoch set"}, outcomes
+    assert any(frozen.get("refusal")
+               == "ownership-uncertain: sidecar/fragment disagree"
+               and new.get("refusal")
+               != "ownership-uncertain: sidecar/fragment disagree"
+               for frozen, new in differed), (
+        "no generated state left a date without a vouch")
+    assert compared > 15_000, compared
 
 
 def test_concurrent_lookups_agree_with_serial_answers(tmp_path: Path) -> None:

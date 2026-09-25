@@ -9871,9 +9871,9 @@ per-path proof and copies the rest; whole-range adoption never certifies a
 shortened fragment as the original complete range.  When a crash between the
 two document writes leaves the material a superset, the next sweep trims it
 to the surviving fragment's exact validated key set under the same
-generation, so the strict reader's every-material-entry walk accepts the
-recovered pair; safe extra material never grants ownership or deletion
-authority.
+generation, so the pair is exact again; the strict reader already ignores
+the extra dates (#1087, below), and safe extra material never grants
+ownership or deletion authority.
 
 ### Reader pins: a live reader blocks eviction until it releases
 
@@ -10079,9 +10079,13 @@ ordinary machinery. Two tiers, deliberately different:
   matches the live file. A readable sidecar with contradictory headers
   is conflicting state and refuses — it must never be carried and
   republished under corrected headers — while an absent or unparseable
-  sidecar is the documented crash window (a vouch without a date):
-  vouches are kept, no date is invented, and the rerun overwrites both
-  as it always has. No payload is hashed.
+  sidecar (a vouch without a date, the crash window before #1087) keeps
+  its vouches, invents no date, and the rerun overwrites both as it
+  always has. No payload is hashed. Since #1087 the movers write the
+  sidecar first, so a crash leaves the other shape: dates for entries
+  the fragment does not vouch yet. The resume walks the fragment's
+  entries only, so it neither carries nor contradicts those dates, and
+  the gate adopts each such name by its content (#1081).
 
 A retry's publications are therefore never smaller than the coverage it
 inherited, in flight and at the final publish, and repeated interruptions
@@ -10199,6 +10203,7 @@ keep exactly their verdicts. Unattributed bytes that do not match wait out the
 grace and heal by replacement as before. A mover's own undated vouch still
 refuses rather than falling through to the content proof, because the
 same-key resume above depends on that refusal to never replace changed bytes.
+Since #1087 an interrupted publication no longer leaves one (below).
 
 The promotion receipt now carries `phase_timings`, as the stage mover's does,
 with the phase `content_proof` and the outcomes `adopted_by_content` (before
@@ -10207,6 +10212,80 @@ any copy) and `adopted_by_content_at_publication` (after a digest-less copy).
 stage mover and promoter: the restart adopts with no copy, no poll and no
 rename, and the copy in flight, live claim, live pin, dated divergence and
 unattributed wrong bytes keep their verdicts.
+
+### A kill between a mover's two documents blocks nothing (#1087)
+
+Every publication of a range files two documents: the map fragment, which
+vouches that a staged name is this mover's, and the material sidecar, which
+dates the vouch with the file identity and digest a reader and the
+publication gate prove against. Both movers used to write the fragment
+first. A kill between the two writes -- a withdrawal (#708), a
+`no_progress` kill, a worker restart, every PB publish's tier-role restart
+for a promotion -- left a vouch that nothing dates, and the gate reads such
+an entry as `owned`, a publisher's date still pending. It read the mover's
+own interrupted write that way too, and it does not ask whose fragment it
+is. So the same key's retry, and every other mover of the same
+content-addressed names, copied the entry again, waited out the grace and
+refused (#853 then ended the range). No retry dated the vouch, so the range
+could not be published until something retired its owner. A stage mover
+opens that window on every incremental publication, at most every
+`FRAGMENT_PUBLISH_S`; a promotion opens it once, at the end of its range,
+over all of it.
+
+**Dates land before the vouches they date, and go after them.** The stage
+mover (`stage_move.move`'s `publish`), the RAM promotion
+(`ram_promote.promote`) and range adoption (`tier_loop.adopt`) now write the
+sidecar first and the fragment second, as the #1026 fan-out already did. A
+kill between the two leaves a date that no vouch cites, and that is inert:
+
+- The publication gate walks fragments only, so an undated-and-unvouched
+  name reads as positive absence. The #1081 content proof adopts it
+  without the grace when its bytes hash to the trusted digest -- before
+  any copy when the manifest declares one; otherwise the name waits out
+  the grace and heals, as any landed file no fragment names always has. A retry's resume walks its own
+  fragment's entries only and carries the dates of the ones it vouches.
+- The strict reader covers a key only where both documents name it
+  (`reader_lease.acquire`, `covers_for_keys`, and `resolve_window_covers`
+  without keys). A date the fragment does not vouch covers nothing and
+  contradicts nothing. Before #1087 it refused such a date as
+  `ownership-uncertain: sidecar/fragment disagree` -- `acquire` for any
+  window of that mover, the lookup for any key the date names -- which PQ
+  classifies as an integrity failure; with the sidecar written first,
+  every in-flight publication would have shown that state to a reader
+  between its two writes. It now answers what the old order showed a reader in the same
+  window, a vouch not yet dated: `unpublished` when the key is all it asks
+  for, `source-coverage-gap` beside covered keys. A key both documents
+  name with different bytes still refuses.
+
+Removal keeps the mirror order: a vouch goes before its date (the egress's
+`_drop_vouch`, the partial prune, the overrun path), so no interruption
+leaves a vouch without a date there either.
+
+What stays refused is unchanged: a vouched name whose bytes changed since
+its date is divergent or superseded and is never replaced while a record
+names it; a date is never written without a proof; a live claim, a live pin
+and a copy in flight are still waited for or refused; an own undated vouch
+(the resume's changed entry) still refuses.
+
+Two limits. A vouch without a date that an older build left on disk is not
+healed by this change; it still refuses until its owner is retired or an
+operator drops it. And a caller that keeps an `acquire` or `covers_for_keys`
+`context` across calls reuses a fragment while its sidecar is unchanged
+(#823), which assumed the sidecar is written last; such a caller can hold a
+fragment one publication old until the sidecar next changes. PQ passes a
+fresh context per call for exactly this reason (PQ #905) and no PB caller
+keeps one, so nothing reads that way today.
+
+`tests/test_a_kill_between_a_movers_two_documents_blocks_nothing.py` kills
+each mover between the first and second document of a publication,
+whichever it writes first, then runs the same key and a second key of the
+same range in both orders and requires both to complete with no copy, no
+grace and no replacement; it also pins the strict reader's answers over a
+sidecar ahead of its fragment. The #893 cover-lookup equivalence
+(`tests/test_pb893_cover_lookup_reuses_unchanged_documents.py`) still holds
+the lookup to the frozen pre-#893 one over fleets whose fragments never
+omit a dated key, and holds it to that lookup over sidecars cut to their
+fragment's keys for fleets that do.
 
 ### Consumers of one staged range share one copy, charged once (#1026)
 
