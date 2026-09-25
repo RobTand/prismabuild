@@ -11,9 +11,11 @@ source edits and Git operations may run on the coordinator. If the fleet is
 unavailable, repair it; do not silently fall back to local tests or GPU work.
 PrismaBuild owns placement, including its bounded best-effort preferences ---
 `deferred_for_preferred_cpu` and `deferred_for_cross_resource_placement`, which
-prefers not to spend a busy box's GPU power on work that can go elsewhere. A
-deferral expires by itself; do not read one as a refusal, and do not retag or
-resubmit to defeat it.
+prefers not to spend a busy box's GPU power on work that can go elsewhere, and
+`deferred_for_ready_gpu_row`, which keeps CPU-only work out of the room a
+ready GPU row needs on a free GPU for the pass in which the scan cannot
+evaluate that row (#1169). A deferral expires by itself; do not read one as a
+refusal, and do not retag or resubmit to defeat it.
 
 Everything vLLM is exempt, universally (Rob, 2026-09-07): a serve, a census, a
 routing run, a benchmark against a live endpoint, its GPU containers. Run it

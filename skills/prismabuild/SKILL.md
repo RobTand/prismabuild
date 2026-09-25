@@ -344,7 +344,9 @@ other one: a CPU-only action arriving at a box drawing GPU power, or a GPU
 action arriving at a CPU-busy box, waits up to 20 seconds for a freer
 compatible box and is then claimed anyway. It never refuses or strands work,
 and a `deferred_for_cross_resource_placement` denial is that bounded wait, not
-starvation. Nothing here measures temperature or throughput.
+starvation. A `deferred_for_ready_gpu_row` denial is a CPU-only action held
+back for one pass so it does not take the room a ready GPU action needs on a
+free GPU (#1169); it expires by itself. Nothing here measures temperature or throughput.
 
 Use `--measurement` for measurements: the pool defaults to the submitting host,
 seals platform/toolchain identity, admits only against a fresh near-idle host, and
