@@ -10363,7 +10363,10 @@ receipt; the tier cycle line counts skipped and censused owners instead, as
 A refused checkpoint says why (#1069). Whenever the receipt of an otherwise
 idle owner reads `cacheable: false`, its `cache_refused` names the first
 refusal found: `document-version-unknown` (this owner's fragment or material
-version, or a co-owner fragment's, could not be read),
+version, or a co-owner fragment's, could not be read, or the #1070 fence
+refused this owner's: changed in the tick it was read in, or on a
+filesystem the trusted rule does not list, which is therefore the reason an
+owner on NFS reports),
 `no-directory-stamp` (the owner names no path to fence),
 `directory-stamp-untrusted` (the trusted rule refused a parent directory's
 stamp, #1062), `outside-sweep-scope` (the latest sweep did not discover the

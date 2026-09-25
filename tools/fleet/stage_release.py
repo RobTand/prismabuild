@@ -3142,7 +3142,10 @@ class _CheckpointVerdict:
     boolean it always was; ``refused`` names the reason when it was not:
 
     * ``document-version-unknown`` -- this owner's fragment or material
-      version, or a co-owner fragment's, could not be read;
+      version, or a co-owner fragment's, could not be read, or the #1070
+      fence refused this owner's (changed in the tick it was read in, or on
+      a filesystem the trusted rule does not list; documents are tested
+      first, so an owner on such a filesystem reports this reason);
     * ``no-directory-stamp`` -- the owner names no path, so there is no
       directory to fence;
     * ``directory-stamp-untrusted`` -- a parent directory's stamp was refused
