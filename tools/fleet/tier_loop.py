@@ -419,17 +419,43 @@ class ReceiptCache:
         #: Receipt directories the last :meth:`read` could not read, and why.
         self.unreadable: dict[str, str] = {}
 
-    def read(self, directories: list[Path]) -> list[dict[str, object]]:
+    def read(self, directories: list[Path], *,
+             liveness: "Liveness | None" = None) -> list[dict[str, object]]:
+        """Every receipt in ``directories``, re-read only where it changed.
+
+        ``liveness`` is the tier loop's `Liveness` (#1148).  The read
+        checkpoints it while each directory is listed, before each entry is
+        stat-ed and parsed, and after each directory: on a loaded pool this
+        read took 113.7 s in one cycle, and a record re-announced only
+        between steps aged past the bound.  The step runs before the cycle's
+        mint, so what a checkpoint re-announces is the record the previous
+        cycle minted, which is the loop's word until this cycle's mint
+        replaces it.  These are checkpoints, not budgeted units: every
+        receipt must be read, since the fill supply is a fold over all of
+        them, so no part of the read can be left for the next cycle.  A
+        hang inside one entry is a stretch longer than any measured, and
+        gets no write.
+        """
+
         out: list[dict[str, object]] = []
         read: list[Path] = []
         unreadable: dict[str, str] = {}
         for directory in directories:
+            checkpoint = None
+            if liveness is not None:
+                checkpoint = functools.partial(
+                    liveness.checkpoint, f"receipts:{directory.name}")
             try:
                 kept = self.records.read(
-                    directory, select=_receipt_name, parse=pool._read_json)
+                    directory, select=_receipt_name, parse=pool._read_json,
+                    **({} if checkpoint is None
+                       else {"checkpoint": checkpoint}))
             except OSError as exc:
                 unreadable[str(directory)] = f"{type(exc).__name__}: {exc}"
                 continue
+            finally:
+                if checkpoint is not None:
+                    checkpoint()      # this directory is read
             read.append(directory)
             for _path, record in kept:
                 if isinstance(record, dict):
@@ -501,19 +527,6 @@ def probe_fill_demand(ready: list[dict[str, object]], tier_id: str) -> int | Non
     return min(candidates)[1]
 
 
-def _released_origin_consumer(queue: pool.PoolQueue, key: str) -> bool:
-    """Whether a claim will refuse ``key`` as a released consumer (#954).
-
-    Unknown counts as released: the claim denies a row whose release it cannot
-    read, so staging it would copy bytes nothing reads.
-    """
-
-    try:
-        return produced_output.origin_consumer_release(queue, key) is not None
-    except produced_output.ProducedOutputError:
-        return True
-
-
 def live_consumers(queue: pool.PoolQueue) -> list[dict[str, object]]:
     """Every ready or claimed item that declares leads, with what it has accepted.
 
@@ -547,7 +560,7 @@ def live_consumers(queue: pool.PoolQueue) -> list[dict[str, object]]:
             if not isinstance(key, str):
                 continue
             if (state == pool.READY and key in released
-                    and _released_origin_consumer(queue, key)):
+                    and prewarm_loop.released_origin_consumer(queue, key)):
                 continue
             accepted = None
             claimed_unix = None
@@ -2818,11 +2831,17 @@ def _readahead_bytes(item: object) -> int | None:
 
     Its memory reservations: ``mem_gb`` of host memory plus the GPU memory
     its admission budgeted.  A consumer that keeps what it prefetches cannot
-    hold more than it reserved.  The two are summed even where they share
-    one physical pool (a GB10's unified memory), which over-states the
-    reach, so the horizon errs long, never short.  ``None`` when the item's
-    resources do not read.  The fallback of :func:`_readahead` for a plan
-    that declares no read-ahead (#909).
+    hold more than it reserved.  ``None`` when the item's resources do not
+    read.  The fallback of :func:`_readahead` for a plan that declares no
+    read-ahead (#909).
+
+    The two are one pool where the admitted device's memory is unified
+    (#959): admission measures the device's ``memory_domain`` and records it
+    on the claim, and on ``shared_system`` memory (a GB10) the GPU budget is
+    a subset of ``mem_gb`` (``pbrun --gpu-memory-gb``), so the reach is the
+    larger of the two, not their sum.  On a ``discrete`` device, and on a
+    claim whose admission did not measure the domain, the two are summed:
+    an unknown domain errs long, never short.
     """
 
     if not isinstance(item, Mapping):
@@ -2839,7 +2858,10 @@ def _readahead_bytes(item: object) -> int | None:
     if isinstance(admission, Mapping):
         budget = admission.get("gpu_memory_budget_bytes")
         if isinstance(budget, int) and not isinstance(budget, bool) and budget > 0:
-            total += budget
+            if admission.get("memory_domain") == "shared_system":
+                total = max(total, budget)
+            else:
+                total += budget
     return total
 
 
@@ -5368,6 +5390,34 @@ def window_pressure(
     return need
 
 
+def _legs_a_reader_can_reach(consumers: list) -> dict[str, list[str]]:
+    """Every stage leg a claimed consumer can still read, and who reads it (#1151).
+
+    A claimed consumer's reach is :func:`residency_plan.remaining`: the phase
+    its accepted progress names, which it is inside, and every phase after
+    it.  That is the window's own rule for what it may not take back, and it
+    reads a consumer that has not reported, or reports a phase this plan
+    does not carry, as at the beginning, so a reader that has not said where
+    it is protects its whole plan.  A ready consumer reaches nothing: no
+    claim admits it over a range that has not landed.
+
+    ``consumers`` is :func:`_planned_consumers`' list.  Keys are stage mover
+    keys, one per chunk for a chunked phase (#675); values are the claimed
+    consumers that reach each, so a shared range (#1026) lists every sharer.
+    """
+
+    reach: dict[str, list[str]] = {}
+    for consumer_key, consumer, plan, _tier_id in consumers:
+        if not isinstance(consumer, Mapping) or consumer.get(
+                "state") != pool.CLAIMED:
+            continue
+        ahead = residency_plan.remaining(
+            plan, consumer.get("accepted_phase"))  # type: ignore[arg-type]
+        for mover_key in residency_plan.stage_mover_keys({"phases": ahead}):
+            reach.setdefault(mover_key, []).append(str(consumer_key))
+    return reach
+
+
 def reclaim_failed_mover_partials(
         queue: pool.PoolQueue, consumers: list,
         pressure: Mapping[str, int], *,
@@ -5399,6 +5449,22 @@ def reclaim_failed_mover_partials(
     that did not land is range-wide; so once one sharer's egress is asked
     this cycle, the others are not.
 
+    Never from under a reader either (#1151).  A claimed consumer reads its
+    ranges as their entries land, so the partials of the phase it is inside
+    are what it is reading, and those of every later phase are what it will
+    read next: :func:`_legs_a_reader_can_reach` names them.  Retiring one
+    would retire its fragment, and the reader's next lease on a name it had
+    already been told was covered would refuse ``unpublished``.  Those legs
+    are left to the window instead, which republishes the same key, and the
+    retry resumes its own landed coverage (``entries_resumed``) and copies
+    only what is missing.  Only a range no claimed consumer can still read
+    -- one every reader has read past, or one whose readers have not been
+    admitted, which no claim admits over a range that did not land -- is an
+    eviction candidate.  A decline for a reader is the one decline that is
+    an event (``failed-mover-reclaim-deferred-for-reader``), because it is
+    the decision #1151 changed: it fires exactly where an egress used to be
+    published.
+
     ``budget`` is the tier loop's cycle budget (#1136): each pressured
     consumer's legs are one ``FAILED_MOVER_RECLAIM_UNIT``, since each leg
     reads its ledger holding, its queue state, its move receipt and its
@@ -5410,6 +5476,9 @@ def reclaim_failed_mover_partials(
     root = queue.residency_fragment_root()
     shared = _shared_movers(queue) or frozenset()
     asked: set[str] = set()
+    # Over every consumer, not only the ones this cycle's budget reads: a
+    # shared range is protected by any sharer that can still read it.
+    readers = _legs_a_reader_can_reach(consumers)
     for consumer_key, _consumer, plan, tier_id in _budget_order(
             budget, FAILED_MOVER_RECLAIM_UNIT, consumers,
             lambda consumer: str(consumer[0])):
@@ -5487,6 +5556,17 @@ def reclaim_failed_mover_partials(
                         or queue.item_path(pool.WITHDRAWN, egress_key).exists()):
                     continue      # concluded and the fragment is still there:
                                   # it refused rather than raced; do not spin
+                reading = readers.get(mover_key)
+                if reading:
+                    # A claimed consumer reads, or will read, these entries
+                    # (#1151): the window's same-key retry resumes them.
+                    events.append({
+                        "event": "failed-mover-reclaim-deferred-for-reader",
+                        "consumer": consumer_key, "phase": phase.get("name"),
+                        "chunk_index": chunk_index,
+                        "mover": mover_key, "action_key": egress_key,
+                        "readers": reading[:5], "tier_id": tier_id})
+                    continue
                 try:
                     # And the same question again under the queue's lock, so
                     # the look above and this publication are one decision
@@ -7017,6 +7097,101 @@ def _settle_protected(queue: pool.PoolQueue,
     return events
 
 
+#: Each stage tier's commitment totals as this cycle filed them (#960),
+#: cleared at the top of every :func:`cycle` and copied into
+#: ``LAST_CYCLE["commitments"]`` at its end, so the ``tier-cycle`` line can
+#: carry them per tier without reading the records back off the mount.
+_CYCLE_COMMITMENTS: dict[str, dict[str, object]] = {}
+
+
+def commitment_totals(record: Mapping[str, object]) -> dict[str, object]:
+    """A commitment record's per-tier totals for the ``tier-cycle`` line (#960).
+
+    ``committed_gib`` as the census priced it (``None`` when the tier was not
+    censused or its census failed), how many newcomers wait on the tier and
+    the GiB they asked for.  A retired tier reports ``retired``.
+    """
+
+    waiting = [entry for entry in record.get("waiting") or ()  # type: ignore[union-attr]
+               if isinstance(entry, Mapping)]
+    need = [entry.get("need_gib") for entry in waiting]
+    totals: dict[str, object] = {
+        "committed_gib": record.get("committed_gib"),
+        "waiting": len(waiting),
+        "waiting_need_gib": sum(int(value) for value in need
+                                if isinstance(value, int)
+                                and not isinstance(value, bool)),
+    }
+    if record.get("retired"):
+        totals["retired"] = True
+    return totals
+
+
+def _retire_commitment(queue: pool.PoolQueue, tier_id: str
+                       ) -> dict[str, object] | None:
+    """Mark a retired stage tier's commitment record retired (#960).
+
+    Its last record would otherwise keep naming holders, waits and a claim
+    order on a tier nothing censuses any more, and only age through
+    ``commitment_age_s``.  The record is replaced, not deleted, for the
+    reason the tier record is: it says why the tier is empty rather than
+    vanishing.  It carries no ``over_committed_gib``, so a staged wait reads
+    the tier's commitment as unknown, never as a stale over-commitment.
+    Rewritten only when the filed record is not already retired, so a tier
+    retired long ago costs a read per cycle, not a write.  Returns a
+    ``tier-commitment-unfiled`` event when the record cannot be read or
+    written, else ``None``.
+    """
+
+    try:
+        filed = queue.tier_commitment(tier_id)
+    except (OSError, ValueError, pool.PoolContractError):
+        filed = None
+    if isinstance(filed, Mapping) and filed.get("retired") is True:
+        _CYCLE_COMMITMENTS[tier_id] = commitment_totals(filed)
+        return None
+    record: dict[str, object] = {"tier_id": tier_id, "retired": True,
+                                 "waiting": []}
+    try:
+        queue.file_tier_commitment(record)
+    except (OSError, pool.PoolContractError, ValueError, TypeError) as exc:
+        return {"event": "tier-commitment-unfiled", "tier_id": tier_id,
+                "error": repr(exc)}
+    _CYCLE_COMMITMENTS[tier_id] = commitment_totals(record)
+    return None
+
+
+def tier_cycle_line(host: str, records: Sequence[Mapping[str, object]],
+                    last_cycle: Mapping[str, object], *,
+                    unix: float | None = None) -> dict[str, object]:
+    """The ``tier-cycle`` summary line: each tier, with its commitment totals.
+
+    A stage tier's entry carries the totals its commitment record was filed
+    with this cycle (#960): ``committed_gib``, ``waiting`` and
+    ``waiting_need_gib``.  A tier with no commitment record this cycle (not
+    a stage tier) carries none of them.
+    """
+
+    commitments = last_cycle.get("commitments")
+    commitments = commitments if isinstance(commitments, Mapping) else {}
+    tiers = []
+    for record in records:
+        entry = {k: record.get(k) for k in (
+            "tier_id", "tier", "capacity_bytes", storage_tiers.FILL_RECORD_FIELD,
+            "fill_source", "fill_supply", "tokens")}
+        totals = commitments.get(str(record.get("tier_id")))
+        if isinstance(totals, Mapping):
+            entry.update(totals)
+        tiers.append(entry)
+    return {
+        "event": "tier-cycle", "unix": time.time() if unix is None else unix,
+        "host": host, "tiers": tiers,
+        # ``cycle_seconds``, the seconds of every step, and what the cycle
+        # listed, parsed and reused (#992).  The commitments are on the tiers.
+        **{k: v for k, v in last_cycle.items() if k != "commitments"},
+    }
+
+
 def _report_commitments(queue: pool.PoolQueue,
                         tiers: Mapping[str, Mapping[str, object]],
                         protection: Mapping[str, object], *,
@@ -7066,6 +7241,7 @@ def _report_commitments(queue: pool.PoolQueue,
         record = _commitment_report(
             tier_id, census.get(tier_id) if isinstance(census, Mapping) else None,
             gated, claim_order=(claim_order or {}).get(tier_id))  # type: ignore[arg-type]
+        _CYCLE_COMMITMENTS[tier_id] = commitment_totals(record)
         if int(record.get("over_committed_gib") or 0) > 0:  # type: ignore[call-overload]
             events.append({
                 "event": "tier-over-committed", "tier_id": tier_id,
@@ -9057,6 +9233,13 @@ def _read_counts(receipts: ReceiptCache) -> dict[str, int]:
             value = getattr(source, field, None)
             if isinstance(value, int):
                 counts[f"{prefix}_{field}"] = value
+        # Idle owners whose skip checkpoint was refused, one counter per
+        # reason (#1069), so the per-cycle delta says which reason recurs.
+        refused = getattr(source, "stale_cache_refused", None)
+        if isinstance(refused, dict):
+            for reason, value in refused.items():
+                if isinstance(value, int):
+                    counts[f"{prefix}_stale_cache_refused.{reason}"] = value
     return counts
 
 
@@ -9107,6 +9290,7 @@ def cycle(
     records = getattr(receipts, "records", None)
     _STAGED_WAITS[0] = {}
     _SHARED_MOVERS[0] = {}
+    _CYCLE_COMMITMENTS.clear()
     # Each shared mover's index read once per cycle, not once per plan leg
     # that names it (#1026).
     residency_plan._SHARE_NAMESPACE_MEMO[0] = {}
@@ -9138,6 +9322,8 @@ def cycle(
                       for name in after},
             "receipts_unreadable": dict(getattr(receipts, "unreadable", {})),
             "transition_lock_busy": _LOCK_BUSY_COUNT[0],
+            "commitments": {tier_id: dict(totals) for tier_id, totals
+                            in sorted(_CYCLE_COMMITMENTS.items())},
         }
         if liveness is not None:
             try:
@@ -9168,7 +9354,11 @@ def _cycle(
     for event in reclaim_idle_rates(queue):
         _emit(queue, host, event, tier_consumers=tier_consumers)
     phases.lap("reclaim_idle_rates")
-    fill_records = receipts.read([queue.root / pool.PREWARM, queue.root / MOVER_RECEIPTS])
+    # Checkpointed inside, per entry listed and read (#1148): the read can
+    # outlast the liveness bound on a loaded pool.
+    fill_records = receipts.read(
+        [queue.root / pool.PREWARM, queue.root / MOVER_RECEIPTS],
+        **({} if phases.liveness is None else {"liveness": phases.liveness}))
     phases.lap("receipts")
     # The ram tier's declared sizing, read fresh: a published policy change is
     # picked up between cycles without a remount, and a rare operator remount
@@ -9634,6 +9824,13 @@ def _cycle(
             "capacity_bytes": 0, "retired": True, "ledger": ledger,
             "sampled_unix": time.time() if now is None else now,
         })
+        # Its commitment record too, in the same cycle (#960): only stage
+        # tiers file one.
+        if (storage_tiers.capacity_kind_of(tier_id)
+                == storage_tiers.STAGE_CAPACITY_KIND):
+            unfiled = _retire_commitment(queue, tier_id)
+            if unfiled is not None:
+                _emit(queue, host, unfiled)
     phases.lap("census_cost_and_retired_tiers")
     return announced
 
@@ -9714,16 +9911,8 @@ def _serve(args) -> int:
                               "unix": time.time(), **LAST_CYCLE}), flush=True)
             records = []
         else:
-            print(json.dumps({
-                "event": "tier-cycle", "unix": time.time(), "host": host,
-                "tiers": [{k: r.get(k) for k in ("tier_id", "tier", "capacity_bytes",
-                                                    storage_tiers.FILL_RECORD_FIELD, "fill_source",
-                                                    "fill_supply", "tokens")}
-                          for r in records],
-                # ``cycle_seconds``, the seconds of every step, and what the
-                # cycle listed, parsed and reused (#992).
-                **LAST_CYCLE,
-            }), flush=True)
+            print(json.dumps(tier_cycle_line(host, records, LAST_CYCLE)),
+                  flush=True)
         if args.once:
             print(json.dumps(records, indent=1, default=str))
             return 0

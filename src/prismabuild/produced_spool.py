@@ -5,7 +5,8 @@ permits the caller to use its existing canonical produced-output descriptors.
 Pending local bytes are never committed units or canonical origin identities.
 A write-only template's producer (#912) commits an acknowledged group at its
 origin through `ProducedSpool.commit_origin_group`, against the identities the
-acknowledgement recorded.
+acknowledgement recorded.  So does a read-back owner for a group it reads back
+from this spool and never publishes (#1034).
 """
 from __future__ import annotations
 
@@ -705,7 +706,12 @@ class ProducedSpool:
 
     def commit_origin_group(self, batch_id, descriptors, *,
                             lifetime=po.ORIGIN_LIFETIME_RETAIN):
-        """Commit one exported group as a write-only batch at its origin (#912).
+        """Commit one exported group as a batch at its origin (#912, #1034).
+
+        A write-only template's group is a handoff a later action stages.  A
+        read-back template's group is one its owner reads back from this
+        local spool (#1034); nothing stages it, and this commit is what ends
+        its prewrite and charges it its actual bytes.
 
         Only after the group's export receipt is durable: before it, a
         retried export can still replace a landed copy, so an identity taken

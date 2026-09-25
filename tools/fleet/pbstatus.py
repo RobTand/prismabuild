@@ -1977,6 +1977,12 @@ def read_blocked_origins(queue_root: str | Path) -> dict:
     ``orphaned_prewrites`` lists the prewrites, of any template (#1053),
     whose attempt ended before committing and whose files belong to no batch
     (#949), each with the remedy.
+
+    ``held_by_unknown`` lists each consumed batch or ended prewrite that the
+    tier cycle would free now but for another attempt, whose state cannot be
+    read, that has prewritten one of its paths (#1065): the holders, why
+    each is unknown, whether it is orphaned (no queue row past the lease
+    timeout) and, for an orphaned one, the remedy.
     """
 
     queue = pool.PoolQueue(queue_root)
@@ -1998,6 +2004,7 @@ def read_blocked_origins(queue_root: str | Path) -> dict:
                 for item in found["orphaned_prewrites"]]
     return {"schema": BLOCKED_ORIGINS_SCHEMA_V1, "blocked": blocked,
             "orphaned_prewrites": orphaned,
+            "held_by_unknown": list(found["held_by_unknown"]),
             "unreadable": list(found["unreadable"]),
             "complete": not found["unreadable"]}
 

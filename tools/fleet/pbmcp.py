@@ -1802,6 +1802,8 @@ class Session:
         a record could not be read; ``unreadable`` names them.
         ``orphaned_prewrites`` lists each ended attempt's write-only prewrite
         whose present files no committed batch owns (#949), with its remedy.
+        ``held_by_unknown`` lists what only an attempt whose state cannot be
+        read holds, naming the holder, why, and whether it is orphaned (#1065).
         """
 
         blob = call.read(
@@ -1814,6 +1816,7 @@ class Session:
             "census_complete": blob.get("complete"),
             "blocked": blob.get("blocked"),
             "orphaned_prewrites": blob.get("orphaned_prewrites"),
+            "held_by_unknown": blob.get("held_by_unknown"),
             "unreadable": blob.get("unreadable"),
         }
 
@@ -2451,7 +2454,10 @@ TOOLS: tuple[dict, ...] = (
                        "resubmission with --supersedes. Also lists each "
                        "ended attempt's write-only prewrite (#949) whose "
                        "files no committed batch owns, under "
-                       "`orphaned_prewrites`. Read-only and "
+                       "`orphaned_prewrites`, and what only an attempt whose "
+                       "state cannot be read holds (no queue row, queued, "
+                       "moving; orphaned past the lease timeout) under "
+                       "`held_by_unknown` (#1065). Read-only and "
                        "deadline-bounded; check `census_complete`.",
         "inputSchema": {"type": "object", "properties": {},
                         "additionalProperties": False},

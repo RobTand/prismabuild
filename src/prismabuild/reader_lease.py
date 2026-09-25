@@ -3188,6 +3188,38 @@ def inspect_claim_context(queue, action_key: str) -> dict[str, object]:
     }}
 
 
+def launch_queue_root(env=None) -> "Path | None":
+    """The root of the queue that launched this action, or ``None`` (#961).
+
+    The supported way for an action to find its queue: the pool launcher
+    publishes the root as ``PRISMABUILD_QUEUE_ROOT`` (``core.QUEUE_ROOT_ENV``)
+    for every action it runs, so a consumer never re-derives it from where
+    the residency map happens to live.  A launch by a pool generation older
+    than #961 carries no such variable; for that launch only, the root is
+    read from the residency map's path (``<queue>/residency/<key>.json``),
+    the layout that generation wrote.  ``None`` when neither is set: this
+    process was not launched by a pool worker, and guessing a root from
+    topology would bind to the wrong queue.
+    """
+
+    source = dict(os.environ) if env is None else dict(env)
+    try:
+        from prismabuild.core import QUEUE_ROOT_ENV
+    except ImportError:
+        QUEUE_ROOT_ENV = "PRISMABUILD_QUEUE_ROOT"
+    try:
+        from prismabuild.residency_map import RESIDENCY_MAP_ENV
+    except ImportError:
+        RESIDENCY_MAP_ENV = "PRISMABUILD_RESIDENCY_MAP"
+    published = source.get(QUEUE_ROOT_ENV) or ""
+    if published:
+        return Path(published)
+    map_path = source.get(RESIDENCY_MAP_ENV) or ""
+    if map_path:
+        return Path(map_path).parent.parent
+    return None
+
+
 def injected_context(queue=None, *, env=None, residency_root=None):
     """Build this reader's identity from launch-bound sources, never guessed.
 
@@ -3235,8 +3267,7 @@ def injected_context(queue=None, *, env=None, residency_root=None):
     if not map_path:
         return {"ok": False, "refusal": "no-map-context"}
     if queue is None:
-        queue = pool_mod.PoolQueue(
-            Path(map_path).parent.parent)
+        queue = pool_mod.PoolQueue(launch_queue_root(source))
     try:
         claim = pool_mod._read_json(
             queue.item_path(pool_mod.CLAIMED, action_key))
@@ -3402,6 +3433,7 @@ __all__ = [
     "clear_retiring",
     "containment_certificate_ok",
     "export_verdict_proves_empty",
+    "launch_queue_root",
     "leases_root",
     "live_for",
     "material_path",

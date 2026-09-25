@@ -609,6 +609,11 @@ class CensusIndex(_CensusMemo):
         #: because a skip emits no per-owner receipt.
         self.stale_skipped = 0
         self.stale_censused = 0
+        #: Censused owners that were idle but whose skip checkpoint was
+        #: refused, by reason (#1069): the receipt names the reason, and the
+        #: cycle line counts them so a cycle that keeps re-censusing an
+        #: owner shows why.
+        self.stale_cache_refused: dict[str, int] = {}
 
     def fresh_pins(self) -> _PinMemo:
         """A pin memo for one call (see the class docstring)."""
@@ -807,7 +812,8 @@ class DirectoryRecords:
         return self._generations.get(str(directory), 0)
 
     def read(self, directory: Path, *, select, parse, thaw=None,
-             keep=None, stat_parse: bool = False) -> list[tuple[Path, object]]:
+             keep=None, stat_parse: bool = False,
+             checkpoint=None) -> list[tuple[Path, object]]:
         """``(path, record)`` for each selected name, in name order.
 
         ``select(entry)`` takes an ``os.DirEntry`` and says whether the name
@@ -824,16 +830,28 @@ class DirectoryRecords:
         ``info`` is the ``os.stat`` its version was taken from (``None`` when
         that failed), so a parse that wants the file's metadata does not
         stat the file a second time.
+
+        ``checkpoint``, when given, is called with no arguments after each
+        entry the listing yields, once the listing is complete, and before
+        each entry is stat-ed and, if it changed, parsed (#1148).  It is the
+        tier loop's liveness checkpoint (`tier_loop.Liveness.checkpoint`):
+        a directory on a loaded pool can take minutes to list and stat, and
+        the tier records must be re-announced inside that read, not only
+        after it.  A checkpoint is a clock read and a comparison, against a
+        stat that costs milliseconds or more on a loaded pool, so each
+        entry is its own batch.  What it raises reaches the caller as a
+        parse's raise would.  Without it the read is as before.
         """
 
         out = self._read(directory, select=select, parse=parse, keep=keep,
-                         stat_parse=stat_parse)
+                         stat_parse=stat_parse, checkpoint=checkpoint)
         if thaw is None:
             return out
         return [(path, thaw(path, kept)) for path, kept in out]
 
     def _read(self, directory: Path, *, select, parse, keep,
-              stat_parse: bool = False) -> list[tuple[Path, object]]:
+              stat_parse: bool = False,
+              checkpoint=None) -> list[tuple[Path, object]]:
         name = str(directory)
         kept = self._directories.get(name)
         if (kept is not None and kept[0] is not None
@@ -848,20 +866,35 @@ class DirectoryRecords:
         fence = _version_fence()
         local: dict[int, bool] = {}
         try:
-            entries = sorted((entry for entry in os.scandir(directory)
-                              if select(entry)),
-                             key=lambda entry: entry.name)
+            if checkpoint is None:
+                entries = sorted((entry for entry in os.scandir(directory)
+                                  if select(entry)),
+                                 key=lambda entry: entry.name)
+            else:
+                # A listing is one stretch too, and on a loaded pool a long
+                # one (#1148): checkpoint after every entry it yields.
+                selected = []
+                with os.scandir(directory) as listing:
+                    for entry in listing:
+                        if select(entry):
+                            selected.append(entry)
+                        checkpoint()
+                entries = sorted(selected, key=lambda entry: entry.name)
         except (FileNotFoundError, NotADirectoryError):
             if self._directories.pop(name, None) is not None:
                 self._generations[name] = self._generations.get(name, 0) + 1
             return []
         self.listed += 1
+        if checkpoint is not None:
+            checkpoint()      # the directory is listed
         records: dict[str, tuple[tuple, object]] = {}
         out: list[tuple[Path, object]] = []
         complete = True
         changed = False
         try:
             for entry in entries:
+                if checkpoint is not None:
+                    checkpoint()      # before each entry's stat and parse
                 path = directory / entry.name
                 info = None
                 try:
@@ -3047,6 +3080,29 @@ def _path_version(path: Path | str) -> tuple[int, int, int, int, int] | None:
     return _metadata_version(info)
 
 
+def _fenced_path_version(path: Path | str, fence: int | None,
+                         ) -> tuple[tuple[int, int, int, int, int] | None,
+                                    tuple[int, int, int, int, int] | None]:
+    """``(version, trusted)`` for one regular metadata file, from one ``lstat``.
+
+    ``version`` is :func:`_path_version`'s change evidence, which the prune
+    compares before and after its scan.  ``trusted`` is the same version
+    when a skip checkpoint may stand on it, else ``None``: the #1045 rule
+    (:func:`stage_move._keepable_version`) with ``fence`` read before this
+    ``lstat``.  A file whose ctime is not strictly before the fence changed
+    in the fence's clock tick, and a rename cycle later in that tick can be
+    given the freed inode number and reproduce all five fields (#1070).
+    """
+
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return None, None
+    if not statmod.S_ISREG(info.st_mode):
+        return None, None
+    return _metadata_version(info), _keepable_version(info, fence)
+
+
 def _directory_version(path: Path | str) -> tuple[int, int, int, int] | None:
     """Change evidence for one immediate parent directory, or ``None``.
 
@@ -3108,10 +3164,49 @@ def _co_owner_fences(memo: _CensusMemo,
     return fences
 
 
+class _CheckpointVerdict:
+    """What :func:`_install_skip_checkpoint` did: installed, or why not (#1069).
+
+    Truthy exactly when the checkpoint was installed, so it reads as the
+    boolean it always was; ``refused`` names the reason when it was not:
+
+    * ``document-version-unknown`` -- this owner's fragment or material
+      version, or a co-owner fragment's, could not be read, or the #1070
+      fence refused this owner's (changed in the tick it was read in, or on
+      a filesystem the trusted rule does not list; documents are tested
+      first, so an owner on such a filesystem reports this reason);
+    * ``no-directory-stamp`` -- the owner names no path, so there is no
+      directory to fence;
+    * ``directory-stamp-untrusted`` -- a parent directory's stamp was refused
+      by the trusted rule (#1062): changed in the tick it was read in, or on
+      a filesystem the rule does not list;
+    * ``outside-sweep-scope`` -- the latest sweep did not discover this owner;
+    * ``cache-full`` -- the cache holds as many checkpoints as the sweep
+      allows, and a newcomer is refused rather than evicting one.
+    """
+
+    __slots__ = ("refused",)
+
+    def __init__(self, refused: str = "") -> None:
+        self.refused = refused
+
+    def __bool__(self) -> bool:
+        return not self.refused
+
+    def __repr__(self) -> str:
+        return f"_CheckpointVerdict(refused={self.refused!r})"
+
+
+#: Every reason a skip checkpoint can be refused, in the order they are tested.
+SKIP_CHECKPOINT_REFUSALS = (
+    "document-version-unknown", "no-directory-stamp",
+    "directory-stamp-untrusted", "outside-sweep-scope", "cache-full")
+
+
 def _install_skip_checkpoint(key: tuple, fragment_version, material_version,
                              stamps: dict[str, tuple[int, int, int, int]],
                              documents: dict[str, tuple] | None = None,
-                             ) -> bool:
+                             ) -> _CheckpointVerdict:
     """Install the EXACT verified versions of one owner with nothing to act on.
 
     The caller passes the trusted stamps it sampled before its scan
@@ -3123,28 +3218,36 @@ def _install_skip_checkpoint(key: tuple, fragment_version, material_version,
     difference and re-scans.  Every stamp must be present: a directory the
     trusted rule refused, because it changed in the tick its stamp was taken
     in, is one a later rename might not move, so nothing is installed on it.
+    The fragment and material versions are the trusted ones
+    (:func:`_fenced_path_version`, #1070), ``None`` for a document changed in
+    the tick of its read, and ``None`` installs nothing either.
     Only an owner the latest sweep discovered is cached, one checkpoint each
     (:func:`_retain_skip_checkpoints`); when the cache is full the newcomer
     is refused and nothing is evicted.  A cache entry only ever skips a
     cleanup scan: it holds no deletion or adoption authority.
+
+    Returns a :class:`_CheckpointVerdict`: truthy when installed, else it
+    names the refusal, which the stale-mention receipt carries (#1069).
     """
 
-    if fragment_version is None or material_version is None or not stamps:
-        return False
-    if documents is None:
-        return False
+    if fragment_version is None or material_version is None:
+        return _CheckpointVerdict("document-version-unknown")
+    if documents is None or any(version is None
+                                for version in documents.values()):
+        return _CheckpointVerdict("document-version-unknown")
+    if not stamps:
+        return _CheckpointVerdict("no-directory-stamp")
     if any(version is None for version in stamps.values()):
-        return False
-    if any(version is None for version in documents.values()):
-        return False
+        return _CheckpointVerdict("directory-stamp-untrusted")
     fences = len(stamps) + len(documents)
     chars = sum(len(name) for name in stamps) + sum(len(name) for name in documents)
     with _skip_checkpoints_lock:
         _forget_checkpoint_locked(key)
-        if (key not in _skip_checkpoint_scope["keys"]  # type: ignore[operator]
-                or len(_skip_checkpoints)
+        if key not in _skip_checkpoint_scope["keys"]:  # type: ignore[operator]
+            return _CheckpointVerdict("outside-sweep-scope")
+        if (len(_skip_checkpoints)
                 >= int(_skip_checkpoint_scope["capacity"])):  # type: ignore[arg-type]
-            return False
+            return _CheckpointVerdict("cache-full")
         _skip_checkpoints[key] = {
             "fragment": fragment_version, "material": material_version,
             "dirs": dict(stamps), "documents": dict(documents),
@@ -3152,7 +3255,7 @@ def _install_skip_checkpoint(key: tuple, fragment_version, material_version,
         }
         _skip_checkpoint_usage["fences"] += fences
         _skip_checkpoint_usage["bytes"] += chars
-    return True
+    return _CheckpointVerdict()
 
 
 def _skip_checkpoint_hit(key: tuple, fragment_path: Path,
@@ -3357,8 +3460,12 @@ def prune_stale_mentions(queue: pool.PoolQueue, mover_action_key: str, *,
     def receipt(*, pruned: int = 0, absent: int = 0, retained: int = 0,
                 unlinked: int = 0, unlinked_bytes: int = 0,
                 pair_complete: bool = True, partial: bool = False,
-                complete: bool = False, cacheable: bool = False,
+                complete: bool = False, cacheable=False,
                 charge_retained: bool = True) -> dict[str, object]:
+        # ``cacheable`` may be a checkpoint verdict: an idle owner whose
+        # checkpoint was refused says why (#1069); every other receipt,
+        # cached or not idle, carries an empty reason.
+        refused = getattr(cacheable, "refused", "")
         return {
             "schema": pool.POOL_EGRESS_SCHEMA_V1, "event": STALE_MENTION_EVENT,
             "action_key": mover_action_key,
@@ -3370,7 +3477,8 @@ def prune_stale_mentions(queue: pool.PoolQueue, mover_action_key: str, *,
             "bytes_unlinked": unlinked_bytes,
             "document_pair_complete": pair_complete,
             "charge_retained": charge_retained, "partial": partial,
-            "cacheable": cacheable, "retained_reason": retained_reason,
+            "cacheable": bool(cacheable), "cache_refused": refused,
+            "retained_reason": retained_reason,
             "complete": complete, "errors": errors,
             "host": socket.gethostname(), "unix": time.time(),
         }
@@ -3384,8 +3492,15 @@ def prune_stale_mentions(queue: pool.PoolQueue, mover_action_key: str, *,
     # Versions before the reads and again after the scan: metadata that
     # changed while this transaction classified it is not acted on, and the
     # versions a checkpoint installs are exactly the ones verified here.
-    fragment_version_before = _path_version(fragment_path)
-    material_version_before = _path_version(material_path)
+    # A checkpoint installs only the trusted ones (#1070): a document changed
+    # in the tick of the clock read before its ``lstat`` is one a same-tick
+    # rename given the freed inode could reproduce, so it is scanned again
+    # next pass, as a refused directory stamp is (#1062).
+    document_fence = _version_fence()
+    fragment_version_before, fragment_trusted = _fenced_path_version(
+        fragment_path, document_fence)
+    material_version_before, material_trusted = _fenced_path_version(
+        material_path, document_fence)
 
     # The censuses and the containment fences go first, as hints, without
     # the lock (#988): the pass under it re-reads only what changed, and the
@@ -3662,8 +3777,8 @@ def prune_stale_mentions(queue: pool.PoolQueue, mover_action_key: str, *,
             idle = (not prune and not absent
                     and (retained_paths > 0 or exact_material))
             cacheable = idle and _install_skip_checkpoint(
-                checkpoint_key, fragment_version_after,
-                material_version_after, dirs_trusted, co_owner_fences)
+                checkpoint_key, fragment_trusted,
+                material_trusted, dirs_trusted, co_owner_fences)
             return receipt(retained=total, cacheable=cacheable)
         if not prune and not absent:
             if retained_paths:
@@ -3671,8 +3786,8 @@ def prune_stale_mentions(queue: pool.PoolQueue, mover_action_key: str, *,
                 # changes until a document it read does (#1056).
                 retained_reason = "co-owner"
                 cacheable = _install_skip_checkpoint(
-                    checkpoint_key, fragment_version_after,
-                    material_version_after, dirs_trusted, co_owner_fences)
+                    checkpoint_key, fragment_trusted,
+                    material_trusted, dirs_trusted, co_owner_fences)
                 return receipt(retained=total, cacheable=cacheable)
             # A crash between the fragment and material writes leaves the
             # material a superset.  The strict reader ignores a date no
@@ -3680,7 +3795,7 @@ def prune_stale_mentions(queue: pool.PoolQueue, mover_action_key: str, *,
             # material dates exactly the fragment's validated keys: trim it
             # before caching this otherwise-coherent owner, under the same
             # generation.
-            material_final_version = material_version_after
+            material_final_version = material_trusted
             if not exact_material:
                 try:
                     reader_lease.write_material(
@@ -3694,9 +3809,12 @@ def prune_stale_mentions(queue: pool.PoolQueue, mover_action_key: str, *,
                 except (OSError, ValueError, pb.PrismaBuildError) as exc:
                     errors.append(f"material trim: {exc}")
                     return receipt(retained=total)
-                material_final_version = _path_version(material_path)
+                # The trim's own write is in the current tick, so this is
+                # trusted only once a tick has passed since it (#1070).
+                material_final_version = _fenced_path_version(
+                    material_path, _version_fence())[1]
             cacheable = _install_skip_checkpoint(
-                checkpoint_key, fragment_version_after,
+                checkpoint_key, fragment_trusted,
                 material_final_version, dirs_trusted, co_owner_fences)
             return receipt(retained=total, cacheable=cacheable)
         if not retained_paths and len(prune) + len(absent) == total:
@@ -4227,7 +4345,9 @@ def sweep_dead_owner_fragments(
     once it completes, only the owners it found keep a checkpoint, one
     each, and ``index`` counts the owners a checkpoint skipped
     (``stale_skipped``) and the owners censused (``stale_censused``) for
-    the cycle line, since a skip files no receipt.
+    the cycle line, since a skip files no receipt, and, by reason, the
+    censused owners that were idle but whose checkpoint was refused
+    (``stale_cache_refused``, #1069).
 
     ``budget``, when the tier loop passes one (#1072), is asked before each
     candidate consumer whether its unit still fits this cycle
@@ -4447,6 +4567,11 @@ def _dead_owner_unit(queue: pool.PoolQueue, consumer: str,
                                     stage=Path(stage_roots[tier]), tier_id=tier,
                                     root=root, observed=observed)
                                 receipts.append(pruned)
+                                refused = pruned.get("cache_refused")
+                                if index is not None and refused:
+                                    counts = index.stale_cache_refused
+                                    counts[str(refused)] = counts.get(
+                                        str(refused), 0) + 1
                                 coherent = _left_coherent(pruned)
                             # #1061: an owner with no token whose paths the
                             # transaction found whole is room under pressure.
