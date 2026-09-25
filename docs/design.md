@@ -191,6 +191,22 @@ opens remain (actions 8c9e1d2bd5f4 and 8550ef5bc4ab). On the NFS export a
 listing is at least one READDIR, and a per-key lookup is a LOOKUP unless
 the client's dentry cache answers it.
 
+Each claim pass times its per-key transition-lock holds (#1029): every lock
+the pass acquires is timed on `time.monotonic()` from acquisition to the end
+of the block that held it, however the block ends, and a lock another loop
+held is not a hold. The pass's `transition_holds` (count),
+`transition_held_s` (total), `transition_held_max_s` and
+`transition_held_max_key` (the longest hold and the key it was held for) are
+`PoolQueue.last_claim_pass`, and a pass that held at least one lock files
+them, with `host`, `pid` and `passed_unix`, as its loop's entry under
+`claim_passes` in the host's latest-only `claim-denials.json`. That entry is
+keyed by pid, keeps the newest `MAX_CLAIM_PASS_LOOPS` (64) loops, is written
+under the same local diagnostics lock as the denials and is as best-effort:
+a contended lock drops it and never delays or changes a claim. The snapshot
+publisher copies it with the denials, and the denial readers ignore it. A
+slow NFS round trip under the lock is visible there instead of only as the
+`transition_busy` every loop that met the lock recorded.
+
 When the claimant supplies CPU tiers, validation of an existing `cpu-map.json`
 also runs before host admission. That map is immutable while workers run;
 changing it requires stopped workers and drained reservations. A missing map
@@ -485,6 +501,26 @@ inventing a verdict. The selection step `pbrun.outcome_poll` calls it beside
 the mutable rows for the same reason it follows a preemption successor: the
 waiter's generation is the one it submitted, and a newer generation's ending
 is never reported as this run's.
+
+**One key, one terminal record (#1117).** `done/` and `failed/` are one slot
+each, so a later generation that ends in the same state replaces the earlier
+row. One that ends in the *other* state -- a failed key resubmitted and
+executed, or the reverse -- used to leave the earlier row standing beside its
+own, and the key read as both: `done/` first said executed, a reader asking
+"is there a failed record" said dead, and `reclaim_terminal_reservation`
+refused the key for carrying two terminals. `finish` now retires it under the
+key's transition lock: the earlier generation's record (a different
+`published_unix`) is first copied whole to `withdrawn/superseded/` as
+`<key>.<unix>.<state>-terminal.json`, stamped `superseded_by_published_unix`
+and `superseded_by_state`; the new terminal carries `supersedes_terminal`
+(the earlier `state`, `status`, `published_unix`, `finished_unix`,
+`attempts`, `attempt_history` and the archive's `superseded_path`); and the
+earlier row is unlinked only after the new one is filed, so the key is never
+without an ending. A republish alone retires nothing: until the new
+generation ends, the earlier ending is the key's only one. If the archive
+cannot be written the earlier row stays, the pre-#1117 state, never a lost
+record. A waiter pinned to the earlier generation reads its ending from the
+immutable attempt archive, as above.
 
 The synchronous pull-queue path in `pbrun` reads one terminal snapshot at a
 time in an isolated child with a five-second read budget. That snapshot covers
@@ -2560,7 +2596,17 @@ Reports use the existing stable no-follow regular-file reader with a 64 KiB
 accepted-byte limit. Symlinks, FIFOs, oversized or changing files are rejected;
 strict UTF-8 JSON rejects duplicate keys, malformed data and non-finite values.
 Parser depth errors and unrepresentable timestamps cannot escape into action
-termination. Missing reports retain the current grace; invalid reports count
+termination. A report is a whole-record file its writer replaces with
+`os.replace`, so a name that moved to a newer *regular* file between the
+reader's open and its final identity check is a benign replacement, not tamper
+(#1017): the reader opts into `replaced_leaf` and reads again from a fresh
+no-follow resolution, at most `_REPLACED_RECORD_READ_ATTEMPTS` (8) times, then
+refuses with `ReplacedRecordError` (a `CASTamperError`), recorded as
+`unreadable: ReplacedRecordError`. The staged-wait record and the tier loop's
+two mover reads (`mover_report`, `mover_landing`) read the same way. A name
+that moved to anything but a regular file is still tamper, and CAS objects,
+never replaced by design, keep the strict identity check. Missing reports
+retain the current grace; invalid reports count
 as rejections and do not extend it. These are byte and type bounds, not a hard
 deadline on NFS syscalls: like the existing lease and withdrawal checkpoints,
 a regular-file operation can block in the kernel. Shared-filesystem recovery
@@ -3059,6 +3105,19 @@ The guard exists because a role cannot depend on its launcher being single.
   kernel holds while the role is stopped.  Resuming is the operator's to
   undo (``kill -CONT``), and the stopped holder keeps the singleton lock
   while it is diagnosed.
+* **A role that refused is backed off, not respawned every tick (#1046).**
+  The lock probe cannot see every holder: a unit with ``PrivateTmp`` holds
+  its own copy of the lock, and a ``metrics`` role also refuses on a bound
+  port.  ``_reap_children`` therefore reads the exit status of every role
+  child this process image spawned (never a worker loop's), and a role that
+  exited ``ROLE_SINGLETON_HELD_EXIT`` is not spawned again until its backoff
+  elapses: ``BUSY_INTERVAL_S`` after the first refusal, doubling with each
+  consecutive one, capped at ``ROLE_REFUSAL_BACKOFF_MAX_S`` (300 s).  The
+  supervisor names the refusal once, with the next attempt, in its own log;
+  a role later seen live clears it (``role <name> refusal cleared``), and any
+  other exit status -- a crash, a signal -- ends the streak and keeps the
+  prompt respawn.  The backoff is in memory only, so a re-exec'd supervisor
+  pays at most one refusal to learn it again.
 
 The updater includes this storage reader in its drain observation using that
 same marker. These checks establish no cross-host quorum and do not enable
@@ -4653,7 +4712,8 @@ A divergent name is settled by the states of its owners, not refused forever
 (#966). Before this change, a name whose recorded owner held different bytes
 was a retryable refusal. The retry met the same owner, the tier loop
 republished a mover that was neither queued nor pinned, and a mover whose
-owner had long ended reran every cycle while holding fill. A stage mover now
+owner had long ended reran every cycle while holding fill. A stage mover, and
+a RAM promotion by its promoting consumer (#1004), now
 collects every other consumer and mover whose fragment names the divergent
 path, and judges each owner under its transition locks. The locks are taken
 without blocking, in the usual order: consumer, then mover, then the stage
@@ -4665,7 +4725,10 @@ another mover of the copy's own consumer, is judged by its mover alone. Anything
 else is uncertain: no outcome, a lease without its record, a queued mover, or
 an unreadable fragment. Under the ownership lock the name is decided again.
 An owner that was not judged sends the decision back for another judgment.
-So does a remembered ending whose consumer or mover has a queue record again.
+So does a remembered ending whose consumer or mover has a queue record again;
+for a sibling only its mover is re-checked, since its consumer is the copy's
+own and is queued by construction (#1004: re-checking it re-judged a
+remembered sibling for every name, one publication poll each).
 
 - Every owner has ended: the copy replaces the name by rename over the old
   file, once the pin, live-claim and partial-copy censuses read clean.
@@ -4678,9 +4741,31 @@ So does a remembered ending whose consumer or mover has a queue record again.
   the adoption proof before any copy. The receipt's `conflict` names the
   path, both owners and both digests. The mover exits 1 and marks its window
   superseded with the #708 record, so the tier loop stops republishing it.
-  The live copy is never touched.
+  The live copy is never touched. The marker carries the conflict itself,
+  structured (`conflict`: the refusal, the path and every owner with its
+  state), not only its reason. The stalled consumer sits READY until an
+  operator resubmits it, and both readers of that stall name the retirement
+  (#1004): its claim denial's `residency.plan_superseded` (read only once a
+  lead has finished, so a lead still coming costs the claim scan nothing
+  more) and the plan's `superseded` entry in `pbstatus --starvation`
+  (`residency_plan.supersession_summary`). An unreadable marker reads as
+  `unreadable`, never as no retirement.
 - An unproven ending: the retryable refusal it always was, now raised before
-  any copy.
+  any copy, and bounded (#1004). Some unproven endings settle by themselves:
+  a queued, claimed or leased key, or a queue state that did not read. Those
+  are never counted. Others do not settle: no outcome record (#798), two
+  outcome records, an unparseable outcome or fragment, or a key that is not
+  an action key. Each run files the unprovable evidence it refused on
+  (`[consumer, mover, why]` per owner) in its receipt's `unproven` block.
+  The block also counts the consecutive runs of the same key that refused
+  on the same evidence. The count is read from the key's previous receipt
+  before the new one is filed. At `UNPROVEN_ENDING_RUNS` (3) runs spanning
+  at least `UNPROVEN_ENDING_MIN_SPAN_S` (60 s, twice the queue mount's
+  `acdirmin`, so a record that was only not yet visible cannot cause it),
+  the run refuses `staged_destination_unproven`. That refusal names the path
+  and the unproven owners in `conflict`, exits 1 and retires the window
+  with the #708 record, as the live-owner conflict does. Nothing is
+  replaced. RAM promotions arbitrate and bound the same way.
 
 An owner proven ended is remembered for the run, so a range whose names one
 dead owner holds costs one judgment per owner, not one per name. A judgment
@@ -4956,6 +5041,26 @@ because a receipt is replaced under its own name (a mover re-run under the
 same key files its receipt again, and a prewarm receipt is pruned and filed
 afresh) and a new file can reuse an unlinked file's inode number. Neither the
 name nor the inode number says a record is unchanged; the full version does.
+
+**A file version is kept only once its tick has passed (#1045).** The full
+version is not enough on its own: a file unlinked and another created under
+its name in one clock tick can be given the freed inode number, and with the
+same size all five fields match. So each kept file version carries the
+directory stamp's rule (`stage_move._keepable_version`): the coarse realtime
+clock is read before the listing (or before the open, for the census's
+`fstat` reads), and a version whose `ctime_ns` is not strictly before that
+read is not kept. The record is still returned; it is read again on the next
+pass, as a refused directory is listed again, and a listing holding such an
+entry is not kept either. Every later change to a file, a new file under its
+name included, is stamped at or after the clock read and so moves the ctime.
+The rule applies to `DirectoryRecords`, the census memo's fragment and
+material reads (`_read_fragment`, `_read_own_material`, and so the #1056
+co-owner fences, which read the kept version), and `pbmetrics`'s kept
+history entries. As with directory stamps, only a filesystem in
+`_LOCAL_CLOCK_FILESYSTEMS` qualifies: an NFS file's times come from the
+server's clock, so a reader over NFS keeps no file version and parses every
+record of a listed directory each pass. The tier loop and the metrics
+exporter read the queue and the stage on dl380g10's own ZFS.
 
 **The terminal directories are never listed.** A step that asks whether a
 key has ended looks the key up: `withdraw_dead_consumer_movers` does one
@@ -5306,8 +5411,10 @@ on the box exits `3`. If the port is already bound -- by an installed unit
 beside the role, whose lock the role cannot see -- the server also exits `3`
 and writes one JSON record naming the port and, where `/proc` lets it, the
 holder's pid and argv (`pbmetrics.REFUSAL_SCHEMA`), not a traceback. The
-supervisor still spawns a role that exited this way on its next tick, so the
-refusal repeats once a tick until the unit is stopped. `--once` writes nothing
+supervisor backs off a role that exited this way (#1046): it retries after
+5 s, doubling with each consecutive refusal up to 300 s, so the refusal
+repeats at most once every five minutes until the unit is stopped, and the
+supervisor's log names it once. `--once` writes nothing
 and keeps nothing, so it takes no lock. Deploying #1020 retires the three
 installed units in the order `docs/pb_metrics.md` gives.
 
@@ -8640,7 +8747,7 @@ on (`evidence`, `evidence_unix`):
 | Mover | Evidence | Exempt |
 |---|---|---|
 | `ready`, and every host's latest claim-pass reason on it (its denial ring, for its generation) is a refusal (`MOVER_REFUSAL_REASONS`, a `container_image_` reason) | `refused`; the entry names the reason as `refusal` and the host | no, and the hold accrues nothing |
-| `ready`, every host's latest reason is a refusal, a withhold or neutral, and at least one host withholds (`*_withholding`; a withhold outranks another host's refusal, since that host holds its box for the row) | `withheld` while the withhold's epoch is at most `WITHHOLD_CEILING_S` old, `withhold-lapsed` after that or with no epoch on file; the entry names the reason as `withhold`, the host, the epoch as `evidence_unix` and its `withhold_basis` | `withheld` only |
+| `ready`, every host's latest reason is a refusal, a withhold or neutral, and at least one host withholds (`*_withholding`; a withhold outranks another host's refusal, since that host holds its box for the row) | `withheld` while the claim pass counted a denial of the row within `WITHHOLD_STAMP_FRESH_S` (`withhold_live_by: claim-pass`, #1052) or, with no such pass on file, while the withhold's epoch is at most `WITHHOLD_CEILING_S` old (`withhold_live_by: epoch`); `withhold-lapsed` otherwise, or with no epoch on file; the entry names the reason as `withhold`, the host, the epoch as `evidence_unix`, its `withhold_basis` and the pass's `withhold_stamp_unix` | `withheld` only |
 | `ready`, otherwise | `copy-ahead-live` while a mover queued ahead of it at the wait's first check (`waiting_behind`: the landing record's `movers_ahead` at that check) is claimed with a live lease (below); else `baseline` on the wait's first check, and on the first check after a withhold or after the row was `claimed`; `bytes-ahead-fell` when its `bytes_ahead` in the consumer's landing record fell since the previous check; `carried` while the last of those is within the evidence window; `none` after a whole window without one | yes, except `none` |
 | `claimed` | `progress` or `claimed` when its landed-bytes report (`claimed/<key>.progress`, #1010) or, before its first report, its claim is at most `mover_report_latency_s()` (two heartbeats) old; `progress-grew` when the report's landed bytes grew since the previous check (one entry can take longer than two heartbeats to land); `lease-live` when its own lease is live (below); `none` otherwise | yes, except `none` |
 
@@ -8681,19 +8788,39 @@ start, `epoch_unix` in the row's passes sidecar, which is the same number as
 the campaign's chunk grace, but only for an episode with refills: work
 claimed after the epoch that refilled the veto (`_withhold_verdict`). An
 episode with none runs as long as its holders drain soon, which can reach a
-transient holder's declared end (`holder_bound`), past the 900 s the
-consumer allows it. The consumer then ends up to `WITHHOLD_CEILING_S` early
-(#1052). Round 2 read a withhold as "not coming", so a
+transient holder's declared end (`holder_bound`), past the 900 s an
+epoch clock allows it. Round 2 read a withhold as "not coming", so a
 withhold that ran toward its ceiling ended a healthy consumer while the pool
-was about to place its mover. The verdict now reads it as evidence, with the
-epoch as its `evidence_unix` and the pool's own bound: `withheld` until
-`WITHHOLD_CEILING_S` past the epoch, and `withhold-lapsed` after that. A
+was about to place its mover. Round 3 read it as evidence bounded by the
+epoch alone, which ended a consumer up to `WITHHOLD_CEILING_S` early while
+the claim pass was still withholding for its mover (#1052).
+
+The verdict now takes the pool's live answer as the bound. The claim pass
+re-judges the withhold on every pass and counts the denial, which rewrites
+`updated_unix` in the row's passes sidecar (`record_pass`); the pass that
+stops withholding records a reason that is not a withhold (`_past_ceiling`,
+`_starved`). So the entry is `withheld` while the host's latest reason is
+`*_withholding` and that counted denial is at most `WITHHOLD_STAMP_FRESH_S`
+old (`withhold_live_by: claim-pass`). That bound is `OFFER_TIMEOUT_S`, the
+fleet's freshness for a claim loop, a dozen missed default polls, so a slow
+pass or an NFS stall does not read as the withhold ending; a stamp up to
+`OFFER_FUTURE_TOLERANCE_S` in the future is clock skew and counts as fresh.
+With no fresh pass on file the epoch is the bound, as in round 3: `withheld`
+until `WITHHOLD_CEILING_S` past the epoch (`withhold_live_by: epoch`), and
+`withhold-lapsed` after that. The epoch fallback never ends a wait earlier
+than round 3 did; the stamp only extends it, and only while the pool still
+withholds, which the pool itself bounds (`holder_bound`, the refill expiry).
+The entry keeps the epoch as its `evidence_unix`. A
 withhold with no episode on file (`in_flight`, `holder_tail`) is bounded by
 the row's first denial (`first_unix`), the clock the pool bounds `in_flight`
 by; `withhold_basis` says which (`episode` or `first-denial`), and a sidecar
-with neither is `withhold-lapsed`. Each new episode has a new epoch, so
-back-to-back episodes renew the wait, each for at most `WITHHOLD_CEILING_S`
-on the consumer's clock. The chain of episodes has no total bound, and the
+with neither is `withhold-lapsed`, whatever its stamp: `record_pass` always
+keeps `first_unix`. The live answer also covers a `holder_tail` block older
+than 900 s, which the first-denial clock lapsed a few minutes before the
+pool's own sample-window bound. Each new episode has a new epoch, so
+back-to-back episodes renew the wait, each for as long as the pool withholds
+it (at most `WITHHOLD_CEILING_S` on the epoch clock when no fresh pass is on
+file). The chain of episodes has no total bound, and the
 join between two episodes reads as a fresh `baseline`, not as a refusal:
 each renewal is evidence that the pool admitted and drained other work, a
 #924 fairness question rather than a liveness gap.
@@ -8800,6 +8927,77 @@ them the tier serves first.
   unmeasured`), so if its copy stops it holds its claim until the box's
   announced ceiling, and the reader waits that long. Every mover of a plan
   whose manifest has landed once on the tier is bounded (next section).
+
+### An owner's wait on its own export is not quiet (#1035)
+
+Since PrismaQuant #1118 a Stage A owner waits on its own produced-output
+exports (`ProducedSpool.submit_group`) at its ordering barriers (a
+checkpoint's seal, the handoff record, progress, the capture's end) and when
+its local window is full. The wait has no clock of its own and commits
+nothing, so its `no_progress` allowance depended on the export's admission:
+a congested export queue ended a healthy owner. `declare_staged_wait` could
+not name it, because an export is not a mover in any residency plan.
+
+**The record.** An owner that waits writes `<progress path>.export-wait`
+(`prismabuild.export_wait.v1`, `progress.declare_export_wait`): its progress
+token, when the wait began and the export action keys it waits on (the
+`export_key` `submit_group` returns); `clear_export_wait` ends it. It is a
+record of its own, beside the staged-wait record, so an owner can declare
+both, and the tier loop's claim order, which ranks consumers by their staged
+waits (#1011), does not read it. It is read under the staged-wait record's
+rules (`pool.read_export_wait`: the stable reader, the same byte bound, the
+exact schema and this launch's token), and removed with the progress file.
+
+**The verdict.** When the `no_progress` rung finds the owner quiet after the
+staged-wait check, it asks `PoolQueue.export_wait_verdict`, and credits an
+exempt verdict through the same mark as every other exemption
+(`ProgressWatch._credit`), so an interval is credited once. The wait is
+exempt while any named export shows progress. Each export is first checked
+to be the owner's own: its sealed request, read from the owner's CAS, names
+the owner in `params.produced_spool.owner` (`dependent_of` on the row is a
+hint only); otherwise it is `not-own-export`, or `unknown` when the request
+does not read. Then, per state:
+
+| Export | Evidence | Exempt |
+|---|---|---|
+| `claimed` | `progress-grew` when its landed bytes grew since the previous check of the same claim; `claimed` while its claim is at most `mover_report_latency_s()` (two heartbeats) old; `baseline` at the first reading of a claim; `carried` while the last growth is within the evidence window; `unread` when the landed bytes do not read; `none` otherwise | yes, except `none` and `unread` |
+| `ready`, and every host's latest claim-pass reason on it is a refusal (`MOVER_REFUSAL_REASONS`) | `refused`, naming the reason and host | no |
+| `ready`, and a host withholds or defers it behind a withhold (`deferred_behind_withholding`, `*_withholding`) | `withheld`, naming the reason and host | no |
+| `ready`, and the spool filed an identity refusal for it (`produced-spool-refusals/<owner>/`, #1098) | `refused`, naming the filing as `spool_refusal` | no |
+| `ready`, otherwise | `baseline` at the first check, and at the first after a refusal or withhold lifts; `carried` within the evidence window; `none` after | yes, except `none` |
+| `done` | `landed` while it finished at most `mover_report_latency_s()` ago; `none` after | `landed` only |
+| `failed`, `withdrawn`, `unpublished` | `none` | no |
+
+The landed bytes are read off the export's sealed manifest (its
+`produced-spool-manifest` input): for each entry, the destination, or while
+it is being written its temporary, as the owner's box stats it, capped at
+the entry's bytes. The export runs on the owner's host (`submit_group` pins
+it there), so the owner's worker sees the writes. An export seals no
+progress contract and has no stall rung of its own, so its lease is not
+evidence here, unlike a stage mover's (#1022 review round 2): a hung export
+keeps its lease until its execution bound. A withheld export is not exempt,
+unlike a withheld stage mover, by #1035's ruling. The evidence window is the
+owner's own phase grace, as the rung passes it, and the rung passes the
+launch's previous verdict so evidence carries within one wait (the same
+`since_unix`).
+
+**Records.** The progress observation carries `export_wait_exempt_s` and
+`export_wait`: every named export with its state, evidence and
+`evidence_unix`, and for a claimed one `claimed_unix`, `landed_bytes` and
+`export_bytes`. A `no_progress` ending's `stall.credited_s` carries
+`export_wait`. A verdict that is not exempt says `no named export shows
+progress`.
+
+**Bounds.** A claimed export that writes nothing ends the owner after about
+two graces of quiet, one more than without the wait: the first look is the
+baseline, and the rung looks again one grace later. A queued export that is
+neither refused nor withheld extends the owner by one evidence window from
+its first look. A retried
+export returns to `ready` and takes a new baseline; a requeued and reclaimed
+one takes a new baseline on its new claim. PrismaQuant does not declare the
+wait yet: the owner's barrier and window waits must call
+`declare_export_wait` with their outstanding export keys and
+`clear_export_wait` when they end (owed on the PrismaQuant side).
 
 ### Every leg has a row, and a blocked reader moves its horizon (#1018)
 
@@ -9226,7 +9424,10 @@ as a wait, that hold would keep an egress wedged in its census under the
 lock alive for as long as it stayed wedged.
 
 So every hold `stage_release` takes (`_stage_ownership`: the eviction,
-`prune_stale_mentions`, `reconcile` and `recover_orphaned_range`) files a
+`prune_stale_mentions`, `reconcile` and `recover_orphaned_range`), and a
+mover's resume census (`stage_move._resume_own_coverage`, role
+`mover-resume`, #1110), goes through one helper,
+`PoolQueue.recorded_stage_ownership`, which files a
 holder record once the lock is granted and removes it before letting go:
 `stage-ownership-holders/<name>.json` under the queue root, where `<name>`
 is the lock's own name (`PoolQueue.write_stage_ownership_holder`, schema
@@ -9241,10 +9442,21 @@ When a look finds the lock held, the worker reads the record
 holder's own host, its pid is still a process, and, for an action, its claim
 is still filed. A live record that names this action from this host is the
 action's own hold: the look counts it in `start_gate_self_probes` and treats
-the lock as free, so none of it is credited. An egress under a progress
+the lock as free, so none of it is credited. An egress or a mover under a progress
 contract whose record will not write raises and lets the lock go, because
 its own worker could not tell its hold from a wait. Anywhere else, the hold
 goes ahead without the record.
+
+A mover's other holds file no record, and need none. Its start gate
+(`PoolQueue.ownership_start_gate`) takes the lock and releases it at once,
+holding nothing; a record would only lengthen it. Its publisher's per-entry
+holds (`_StagedPublisher._ownership`) come after the gate, once the mover has
+reported entering `copy`, so the worker has stopped looking; a record per
+entry would add a write and an unlink on the queue mount to every
+publication under the lock (#981). A mover sealed without the `start` phase
+still looks during `copy` until its first accepted report, and there an
+unrecorded per-entry hold is still credited as a wait on an unrecorded
+holder, as before #1110.
 
 Between the grant and the record's write, a look can find the lock held with
 no record. That look grants an entry edge, as for any unrecorded holder, and
@@ -10961,21 +11173,55 @@ A mover keeps only these of its consumer's fields:
 |---|---|
 | `task.definition_id`, `definition_version` | They name the sealing tool; `adaptive_cpu.action_identity` keys pbrun's shape on `fleet/pbrun`. |
 | `task.working_directory` | Where the wrapper starts, relative to `cwd`. |
-| `task.determinism` | Keeps every generation consumer's mover key. It matters only when one key publishes a second result: a deterministic mover whose log differs is then refused as a conflict. |
 | `inputs`, `code_closure`, `params.cwd`, `params.checkout_snapshot` | Preflight materializes and proves the consumer's snapshot before the mover runs. |
 | `params.data_manifest` | The mover copies the manifest's ranges and verifies each entry's digest against it. |
-| `environment.variables` | The runtime generation's shim `PATH`; the two container-owner variables are re-derived for the mover. |
 | Row `priority` | The consumer's urgency: a mover that ranked below its consumer would starve it. |
 | Row `checkout_snapshot` | The materialization the sealed snapshot names. |
 
-Its own, never the consumer's: the task class, artifact family and kind,
-execution scope, toolchain, `argv` and result, command, demand, placement
+Its own, never the consumer's: the task class, determinism, artifact family
+and kind, execution scope, toolchain, environment variables, `argv` and
+result, command, demand, placement
 (`required_tags` is the tier's host, never the consumer's tags or
-`--host-class`), a mover's `retry_policy`, `max_attempts` and `retry_safe`
-(#603), and its container owner. It carries none of the consumer's
-`execution_timeout_s`, progress, profile, GPU or container-image
-parameters. An egress, which passes no retry policy, still inherits the
-consumer's retry policy and attempt limit.
+`--host-class`), a movement node's `retry_policy`, `max_attempts` and
+`retry_safe` (#603, #950), and its container owner. It carries none of the
+consumer's `execution_timeout_s`, progress, profile, GPU or container-image
+parameters.
+
+Every movement node, mover and egress alike, is retry-safe with a bounded
+attempt count of its own and is sealed `stochastic` (#950). pbrun's stage and
+ram egresses take the movers' policy (`--residency-mover-max-attempts`,
+default 3, `retry_safe: true`) on the sealed body and the row; a caller of
+`seal_movement_action` that names no policy gets
+`movement_actions.MOVEMENT_RETRY_POLICY` (3 attempts, retry-safe), never the
+template's. An egress used to inherit the consumer's: under a single-attempt
+consumer one transient unlink error ended it `failed`, and the range's bytes
+kept their tier tokens until pressure eviction. A second attempt is safe
+because the egress counts a file already gone as released. The movers of a
+`--deterministic` consumer used to be sealed deterministic, and a mover's
+result is the log of one copy: a re-stage under the same key with
+`recompute` (after an eviction, when the consumer retries) copied the bytes
+and was then refused as a conflicting deterministic recomputation. Sealed
+`stochastic`, every staging is a real copy that publishes its own log.
+Determinism and the retry policy are both in the key, so every pbrun egress
+and every movement node of a deterministic consumer or producer is sealed
+under a new key; a mover of a stochastic consumer that already passed its
+own policy keeps the key #996 gave it.
+
+A mover's environment is a movement environment (#996,
+`movement_actions.movement_environment`): `PATH` is the directory of the
+tier interpreter the command starts with, then `/usr/local/bin:/usr/bin:/bin`;
+`LANG` and `LC_ALL` are `C.UTF-8`; and the two container-owner variables are
+derived for the mover. The pool and CAS roots it works on are on its command.
+It used to be the consumer's whole environment minus the owner pair, with the
+consumer's `PATH` head exported by the argv, so a Stage A row sealed on a GB10
+carried its venv `PATH` head, thread caps, spool root, pacing opt-ins and
+`PRISMAQUANT_*` reader settings into an x86 mover on dl380g10: inert while the
+interpreter comes off the tier record, wrong for any mover that shells out.
+The sealed `PATH` is now the launch `PATH` whole (`run_local_action` builds the
+child's environment from the sealed variables alone), so the argv exports
+nothing. A consumer's environment is no longer part of its movers' keys, so
+every mover and egress sealed after this change has a new key; a stage
+mover's command still names its consumer's key.
 
 ### Not built here
 

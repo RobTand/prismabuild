@@ -6165,6 +6165,12 @@ def residency_stage_rows(
                 tags=(tags if egress_policy is None
                       else [*tags, *progress_required_tags(egress_policy),
                             pb.POOL_CONTENTION_TAG, pb.EGRESS_PROGRESS_TAG]),
+                # The egress's retry policy is a movement node's, as the
+                # mover's is (#950): with the consumer's single attempt, one
+                # transient unlink error left the range's bytes holding their
+                # tokens until pressure eviction.  An egress's second attempt
+                # finds released what the first released.
+                retry_policy=mover_retry_policy,
                 log_name=f"stage-release-{ordinal:04d}-{span['name']}{csuffix}.log",
                 extra_params=(None if egress_policy is None
                               else {pb.PROGRESS_PARAM: egress_policy,
@@ -6176,7 +6182,9 @@ def residency_stage_rows(
             # below the range's own floor.  An egress finds its mover by
             # ``--mover-action-key``, not by a range of its own.
             return mover_row, publication_row(
-                chunk_egress, args=args, queue=queue)
+                chunk_egress, args=args, queue=queue,
+                max_attempts=int(args.residency_mover_max_attempts),
+                retry_safe=True)
 
         stage_chunks = None
         stage_mover_row: dict[str, object] | None = None
@@ -6266,6 +6274,7 @@ def residency_stage_rows(
                     # server, and unknown CPU use would refuse to run beside the
                     # loops that make it never-empty.
                     demand={"cpu": 1, "mem_gb": 1}, tags=tags,
+                    retry_policy=mover_retry_policy,
                     log_name=f"ram-release-{ordinal:04d}-{span['name']}{csuffix}.log")
                 cas.publish_action_request(ram_mover)
                 cas.publish_action_request(ram_egress)
@@ -6288,7 +6297,9 @@ def residency_stage_rows(
                     },
                 }
                 return mover_row, publication_row(
-                    ram_egress, args=args, queue=queue)
+                    ram_egress, args=args, queue=queue,
+                    max_attempts=int(args.residency_mover_max_attempts),
+                    retry_safe=True)
 
             if len(chunk_ranges) == 1:
                 ram_mover_row, ram_egress_row = seal_ram_chunk(

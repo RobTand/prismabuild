@@ -568,19 +568,27 @@ class KeptReads:
                       previous: dict[str, _KeptEntry]) -> Iterable[_KeptEntry]:
         directory = Path(name)
         stamp = stage_move._trusted_directory_stamp(directory)
+        # Read before any entry is stat-ed (#1045): an entry whose ctime is
+        # not strictly before it is listed with no version, so the next
+        # listing derives it afresh, and this listing is not kept.
+        fence = stage_move._version_fence()
+        local: dict[int, bool] = {}
+        keepable = stage_move._keepable_version
+        complete = True
         entries: dict[str, _KeptEntry] = {}
         stat = os.stat
-        version_of = stage_move._metadata_version
         try:
             with os.scandir(name) as scan:
                 for entry in scan:
                     if not select(entry):
                         continue
                     info = stat(entry.path)
-                    version = version_of(info)
+                    version = keepable(info, fence, local=local)
                     kept = previous.get(entry.name)
-                    if kept is None or kept.version != version:
+                    if (version is None or kept is None
+                            or kept.version != version):
                         kept = _KeptEntry(entry.path, entry.name, info, version)
+                        complete = complete and version is not None
                     entries[entry.name] = kept
         except FileNotFoundError:
             try:
@@ -591,7 +599,7 @@ class KeptReads:
             # The directory exists, but a selected entry was not readable.
             raise
         self._history_listed += 1
-        if (stamp is not None
+        if (stamp is not None and complete
                 and stage_move._current_directory_version(directory) == stamp):
             self._histories[name] = (stamp, entries)
         return entries.values()
