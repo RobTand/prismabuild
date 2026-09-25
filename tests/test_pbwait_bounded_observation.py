@@ -106,11 +106,19 @@ def test_immutable_summary_verification_is_bounded_per_key(
 ) -> None:
     queue = _queue(tmp_path)
     queue.item_path(pool.DONE, KEY).write_text(json.dumps(_outcome()), encoding="utf-8")
-    monkeypatch.setattr(pbwait, "PBWAIT_READ_TIMEOUT_S", 0.05)
+    real_read = pbrun._bounded_pool_read
+
+    def short_verification(section, read, *, budget_s, **kwargs):
+        # Only the verification is meant to time out. The observation before
+        # it must answer, so it keeps its real budget (#1170).
+        if section == "pool outcome verification":
+            budget_s = 0.05
+        return real_read(section, read, budget_s=budget_s, **kwargs)
 
     def blocked(*_args, **_kwargs):
         time.sleep(30)
 
+    monkeypatch.setattr(pbrun, "_bounded_pool_read", short_verification)
     monkeypatch.setattr(pbrun, "outcome_summary", blocked)
     # Zero patience pins one bounded verification; a patient wait retries it.
     row = pbwait.wait_one(

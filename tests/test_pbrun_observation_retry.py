@@ -19,6 +19,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import pbrun  # noqa: E402
 
 
+#: The production reader budget, before a test shortens it for a FIFO.
+PRODUCTION_READ_TIMEOUT_S = pbrun.OUTCOME_READ_TIMEOUT_S
+
 KEY = "c" * 64
 
 
@@ -91,6 +94,11 @@ def test_patient_wait_returns_the_verdict_of_a_record_that_becomes_readable(
         stops.append(section)
         if len(stops) == 1:
             os.replace(readable, path)
+            # The short budget exists to time out the FIFO. The readable
+            # record's reads get the production budget, so a loaded box
+            # cannot time them out too (#1170).
+            monkeypatch.setattr(pbrun, "OUTCOME_READ_TIMEOUT_S",
+                                PRODUCTION_READ_TIMEOUT_S)
 
     _fast_reads(monkeypatch)
     monkeypatch.setattr(pbrun.pbstatus, "_stop_reader", stop_then_land)

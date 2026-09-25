@@ -32,6 +32,9 @@ import pbcampaign
 import pbrun
 
 
+#: The production offer-read budget, before a test shortens it for a FIFO.
+PRODUCTION_OFFER_READ_TIMEOUT_S = pbrun.SUBMISSION_OFFER_READ_TIMEOUT_S
+
 X86 = {"tags": ["x86"], "needs_gpu": False, "resources": {"mem_gb": 4}}
 
 
@@ -200,6 +203,11 @@ def test_campaign_window_retries_an_offer_discovery_timeout(
             return real(row, **kwargs)
         finally:
             fifo.unlink(missing_ok=True)
+            # The short budget exists to time out the FIFO. The retry's offer
+            # read gets the production budget, so a loaded box cannot time it
+            # out too (#1170).
+            monkeypatch.setattr(pbrun, "SUBMISSION_OFFER_READ_TIMEOUT_S",
+                                PRODUCTION_OFFER_READ_TIMEOUT_S)
 
     monkeypatch.setattr(pbcampaign, "_submit_record", once_wedged)
     manifest = _manifest(tmp_path, [_row(work, "printf retried")])

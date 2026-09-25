@@ -125,11 +125,19 @@ def test_immutable_verification_timeout_is_loud_non_success(
     queue = Queue(tmp_path / "queue")
     outcome = _ending("executed", 0)
     queue.item_path("done", KEY).write_text(json.dumps(outcome), encoding="utf-8")
-    monkeypatch.setattr(pbrun, "OUTCOME_READ_TIMEOUT_S", 0.05)
+    real_read = pbrun._bounded_pool_read
+
+    def short_verification(section, read, *, budget_s, **kwargs):
+        # Only the verification is meant to time out. The observation before
+        # it must answer, so it keeps its real budget (#1170).
+        if section == "pool outcome verification":
+            budget_s = 0.05
+        return real_read(section, read, budget_s=budget_s, **kwargs)
 
     def blocked_summary(*_args, **_kwargs):
         time.sleep(30)
 
+    monkeypatch.setattr(pbrun, "_bounded_pool_read", short_verification)
     monkeypatch.setattr(pbrun, "outcome_summary", blocked_summary)
     assert pbrun.await_outcome(queue, KEY, wait_s=0) == pbrun.RECORD_WRITE_FAILED_EXIT
     assert "pool outcome verification timed out" in capsys.readouterr().err

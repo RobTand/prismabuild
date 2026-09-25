@@ -73,6 +73,11 @@ def test_patient_wait_reports_a_record_that_becomes_readable(
         stops.append(section)
         if len(stops) == 1:
             os.replace(readable, path)
+            # The short budget exists to time out the FIFO. The readable
+            # record's reads get the production budget, so a loaded box
+            # cannot time them out too (#1170).
+            monkeypatch.setattr(pbwait, "PBWAIT_READ_TIMEOUT_S",
+                                pbrun.OUTCOME_READ_TIMEOUT_S)
 
     _fast_reads(monkeypatch)
     monkeypatch.setattr(pbrun.pbstatus, "_stop_reader", stop_then_land)
