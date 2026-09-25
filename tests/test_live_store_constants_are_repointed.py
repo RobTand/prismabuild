@@ -51,6 +51,10 @@ EXEMPT: dict[tuple[str, str], str] = {
         "classifier: reached only by is_relative_to() to decide whether a "
         "checkout is box-local, never opened"
     ),
+    ("bench_failed_mover_reclaim", "FORBIDDEN_ROOTS"): (
+        "classifier: the bench refuses a --work path under any of these "
+        "roots; compared with startswith() and never opened"
+    ),
     ("prismabuild.slurm_lane", "DEFAULT_LANE_ROOT"): (
         "fallback behind PRISMABUILD_SLURM_LANE_ROOT, which LIVE_ENV already "
         "repoints; its value is also asserted equal to the Epilog script's "

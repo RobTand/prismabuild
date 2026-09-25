@@ -522,13 +522,15 @@ def main(argv: list[str] | None = None) -> int:
                         help="entries it landed before failing (574747d7: 436)")
     parser.add_argument("--shared", type=int, default=64,
                         help="staged names the two colliding movers share")
-    parser.add_argument("--entry-bytes", type=int, default=4096)
+    parser.add_argument("--entry-bytes", type=int, default=4096,
+                        help="bytes written per staged entry")
     parser.add_argument("--grace-s", type=float, default=3.0,
                         help="the publication grace, shortened from 30 s")
     parser.add_argument("--fragment-s", type=float, default=0.5,
                         help="the fragment rate limit, shortened from 5 s in "
                              "proportion to the grace")
-    parser.add_argument("--keep", action="store_true")
+    parser.add_argument("--keep", action="store_true",
+                        help="keep the run's scratch subdirectory for inspection")
     args = parser.parse_args(argv)
     work = Path(args.work).resolve()
     if any(str(work) == root or str(work).startswith(root + "/")
