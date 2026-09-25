@@ -12,6 +12,7 @@ Fixtures are independent (tmp_path queue, no cross-worker state).
 """
 from __future__ import annotations
 
+import errno
 import json
 import os
 import socket
@@ -2720,9 +2721,17 @@ def test_unknown_scan_never_reports_released(fleet) -> None:
     leases = reader_lease.leases_root(queue)
     os.chmod(leases, 0o000)
     try:
-        # Full scan unreadable: no released report.
-        assert reader_lease.release(
-            queue, acquired["pin_id"], acquired["ref_id"]) is False
+        # Full scan unreadable: no released report, and the refusal names
+        # the census and its errno (#1023), which no retry inside the call
+        # can clear.
+        released = reader_lease.release(
+            queue, acquired["pin_id"], acquired["ref_id"])
+        assert isinstance(released, reader_lease.ReleaseFailure)
+        assert not released
+        assert released.step == "census"
+        assert released.errno == errno.EACCES
+        assert released.retryable is False
+        assert released.attempts == 1
         owners, tainted = reader_lease.live_for(
             queue, {os.path.normpath(str(staged))})
         assert owners == {} and len(tainted) == 1
