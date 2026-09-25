@@ -8595,7 +8595,7 @@ on (`evidence`, `evidence_unix`):
 | Mover | Evidence | Exempt |
 |---|---|---|
 | `ready`, and every host's latest claim-pass reason on it (its denial ring, for its generation) is a refusal (`MOVER_REFUSAL_REASONS`, a `container_image_` reason) | `refused`; the entry names the reason as `refusal` and the host | no, and the hold accrues nothing |
-| `ready`, every host's latest reason is a refusal, a withhold or neutral, and at least one host withholds (`*_withholding`; a withhold outranks another host's refusal, since that host holds its box for the row) | `withheld` while the withhold's epoch is at most `WITHHOLD_CEILING_S` old, `withhold-lapsed` after that or with no epoch on file; the entry names the reason as `withhold`, the host, the epoch as `evidence_unix` and its `withhold_basis` | `withheld` only |
+| `ready`, every host's latest reason is a refusal, a withhold or neutral, and at least one host withholds (`*_withholding`; a withhold outranks another host's refusal, since that host holds its box for the row) | `withheld` while the claim pass counted a denial of the row within `WITHHOLD_STAMP_FRESH_S` (`withhold_live_by: claim-pass`, #1052) or, with no such pass on file, while the withhold's epoch is at most `WITHHOLD_CEILING_S` old (`withhold_live_by: epoch`); `withhold-lapsed` otherwise, or with no epoch on file; the entry names the reason as `withhold`, the host, the epoch as `evidence_unix`, its `withhold_basis` and the pass's `withhold_stamp_unix` | `withheld` only |
 | `ready`, otherwise | `copy-ahead-live` while a mover queued ahead of it at the wait's first check (`waiting_behind`: the landing record's `movers_ahead` at that check) is claimed with a live lease (below); else `baseline` on the wait's first check, and on the first check after a withhold or after the row was `claimed`; `bytes-ahead-fell` when its `bytes_ahead` in the consumer's landing record fell since the previous check; `carried` while the last of those is within the evidence window; `none` after a whole window without one | yes, except `none` |
 | `claimed` | `progress` or `claimed` when its landed-bytes report (`claimed/<key>.progress`, #1010) or, before its first report, its claim is at most `mover_report_latency_s()` (two heartbeats) old; `progress-grew` when the report's landed bytes grew since the previous check (one entry can take longer than two heartbeats to land); `lease-live` when its own lease is live (below); `none` otherwise | yes, except `none` |
 
@@ -8636,19 +8636,39 @@ start, `epoch_unix` in the row's passes sidecar, which is the same number as
 the campaign's chunk grace, but only for an episode with refills: work
 claimed after the epoch that refilled the veto (`_withhold_verdict`). An
 episode with none runs as long as its holders drain soon, which can reach a
-transient holder's declared end (`holder_bound`), past the 900 s the
-consumer allows it. The consumer then ends up to `WITHHOLD_CEILING_S` early
-(#1052). Round 2 read a withhold as "not coming", so a
+transient holder's declared end (`holder_bound`), past the 900 s an
+epoch clock allows it. Round 2 read a withhold as "not coming", so a
 withhold that ran toward its ceiling ended a healthy consumer while the pool
-was about to place its mover. The verdict now reads it as evidence, with the
-epoch as its `evidence_unix` and the pool's own bound: `withheld` until
-`WITHHOLD_CEILING_S` past the epoch, and `withhold-lapsed` after that. A
+was about to place its mover. Round 3 read it as evidence bounded by the
+epoch alone, which ended a consumer up to `WITHHOLD_CEILING_S` early while
+the claim pass was still withholding for its mover (#1052).
+
+The verdict now takes the pool's live answer as the bound. The claim pass
+re-judges the withhold on every pass and counts the denial, which rewrites
+`updated_unix` in the row's passes sidecar (`record_pass`); the pass that
+stops withholding records a reason that is not a withhold (`_past_ceiling`,
+`_starved`). So the entry is `withheld` while the host's latest reason is
+`*_withholding` and that counted denial is at most `WITHHOLD_STAMP_FRESH_S`
+old (`withhold_live_by: claim-pass`). That bound is `OFFER_TIMEOUT_S`, the
+fleet's freshness for a claim loop, a dozen missed default polls, so a slow
+pass or an NFS stall does not read as the withhold ending; a stamp up to
+`OFFER_FUTURE_TOLERANCE_S` in the future is clock skew and counts as fresh.
+With no fresh pass on file the epoch is the bound, as in round 3: `withheld`
+until `WITHHOLD_CEILING_S` past the epoch (`withhold_live_by: epoch`), and
+`withhold-lapsed` after that. The epoch fallback never ends a wait earlier
+than round 3 did; the stamp only extends it, and only while the pool still
+withholds, which the pool itself bounds (`holder_bound`, the refill expiry).
+The entry keeps the epoch as its `evidence_unix`. A
 withhold with no episode on file (`in_flight`, `holder_tail`) is bounded by
 the row's first denial (`first_unix`), the clock the pool bounds `in_flight`
 by; `withhold_basis` says which (`episode` or `first-denial`), and a sidecar
-with neither is `withhold-lapsed`. Each new episode has a new epoch, so
-back-to-back episodes renew the wait, each for at most `WITHHOLD_CEILING_S`
-on the consumer's clock. The chain of episodes has no total bound, and the
+with neither is `withhold-lapsed`, whatever its stamp: `record_pass` always
+keeps `first_unix`. The live answer also covers a `holder_tail` block older
+than 900 s, which the first-denial clock lapsed a few minutes before the
+pool's own sample-window bound. Each new episode has a new epoch, so
+back-to-back episodes renew the wait, each for as long as the pool withholds
+it (at most `WITHHOLD_CEILING_S` on the epoch clock when no fresh pass is on
+file). The chain of episodes has no total bound, and the
 join between two episodes reads as a fresh `baseline`, not as a refusal:
 each renewal is evidence that the pool admitted and drained other work, a
 #924 fairness question rather than a liveness gap.
