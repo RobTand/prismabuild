@@ -432,14 +432,11 @@ def _off_the_live_store(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     yield
 
 
-#: The broker-owned reader tuple ``resource_exec`` injects into an admitted
-#: attempt, taken from the module that defines it so the two spellings cannot
-#: drift.
-_READER_IDENTITY_ENV = (
-    pb_core.ACTION_NONCE_ENV,
-    pb_core.ACTION_SCOPE_ENV,
-    pb_core.READER_HELPER_ROOT_ENV,
-)
+#: The launch context the pool publishes to an admitted attempt: the action
+#: key, the residency map and the queue root (#961), plus the broker-owned
+#: reader tuple ``resource_exec`` injects. Taken from the module that defines
+#: it so the two spellings cannot drift.
+_LAUNCH_CONTEXT_ENV = pb_core.ACTION_RESIDENCY_ENV
 
 
 @pytest.fixture(autouse=True)
@@ -447,22 +444,26 @@ def _standalone_action_identity(monkeypatch: pytest.MonkeyPatch) -> None:
     """A synthetic action runs as itself, not as the action that admitted it.
 
     The suite itself runs as an admitted PrismaBuild action, so the outer
-    attempt's broker-owned reader tuple is in the environment of every test.
+    attempt's launch context is in the environment of every test.
     ``PoolQueue.execute`` launches its nested worker with this process's own
     environment, and ``core._reader_identity_environment`` refuses to forward
     an outer identity to an unrelated synthetic action -- correctly, because
     that check is what stops a nested action borrowing the attempt it was
-    launched under (#786). Reader identity is not what those tests are about,
-    so they run the way a standalone box runs them: no ambient tuple at all,
-    with the production check left strict.
+    launched under (#786). The queue root is the same kind of name: since #961
+    the launcher publishes ``PRISMABUILD_QUEUE_ROOT``, which under PB is the
+    fleet's live queue, and ``reader_lease.launch_queue_root()`` reads
+    ``os.environ`` by default. None of that is what these tests are about, so
+    they run the way a standalone box runs them: no ambient launch context at
+    all, with the production checks left strict.
 
-    Autouse and conftest-wide because the ambient tuple reaches every test, not
-    only the ones that know about it. A test that does mean to state something
-    about reader identity sets the three names itself, after this fixture, and
-    ``tests/test_reader_launch_identity.py`` scrubs them first in any case.
+    Autouse and conftest-wide because the ambient context reaches every test,
+    not only the ones that know about it. A test that does mean to state
+    something about launch identity sets the names itself, after this
+    fixture, and ``tests/test_reader_launch_identity.py`` scrubs them first in
+    any case.
     """
 
-    for name in _READER_IDENTITY_ENV:
+    for name in _LAUNCH_CONTEXT_ENV:
         monkeypatch.delenv(name, raising=False)
 
 
