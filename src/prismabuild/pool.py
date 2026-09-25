@@ -348,21 +348,6 @@ EXPORT_WAIT_LIVE_EVIDENCE = frozenset({
 DENIAL_RING_EXEMPT_REASONS = frozenset({
     "transition_busy", "placement_mismatch", "deferred_behind_withheld_row"})
 
-#: What the claim pass records for a row it could not evaluate, for a reason
-#: that says nothing about the row (#1143): another loop holds its transition
-#: lock (#1085), the box's image inventory did not read (#714), or the row's
-#: residency lead record or composed map did not read.  None of them is a
-#: verdict either way, so a row this host last withheld for keeps that
-#: withhold for the pass (:meth:`PoolQueue._carried_withhold`): unknown is not
-#: presence, and it is not a release of the drain either.  Every other
-#: ``continue`` in the pass is either a verdict about the row -- it refuses
-#: the row, places it elsewhere, defers it by a bounded placement preference,
-#: or admitted it -- or the pass's own withhold for an earlier row, which
-#: already holds the box for that row.
-CARRIES_WITHHOLD_REASONS = frozenset({
-    "transition_busy", "container_image_presence_unknown",
-    "residency_lead_record_unreadable", "residency_map_unreadable"})
-
 # Claim-order reliefs under which no standing exempts a wait (#1022 review
 # round 3).  ``refused`` (the stage root refused an eviction) and ``unknown``
 # (the tier ledger did not read) make no room and name no victim, so a wait
@@ -5894,20 +5879,17 @@ class PoolQueue:
                           *, host: str, now: float) -> dict[str, object] | None:
         """This host's last word on ``item``, when it is a live withhold (#1085).
 
-        Read by a pass that cannot evaluate the row: another loop holds its
-        transition lock, or an input it is judged on did not read
-        (:data:`CARRIES_WITHHOLD_REASONS`, #1143).  A withhold is live while
-        its episode is inside
+        Read by a pass that finds the row's transition lock held by another
+        loop.  A withhold is live while its episode is inside
         ``WITHHOLD_CEILING_S``: the episode is the verdict's own
         (``episode_age_s`` back from when it was filed), or, for a withhold
         with none on file (``in_flight``, ``holder_tail``), the row's first
         denial (``withhold_age_s``) -- the epoch bound a stage mover's
         consumer falls back to when no fresh pass is on file
-        (:meth:`_withhold_epoch`, #1052).  A pass that carries a withhold
-        files its denial with the episode it carried, so the next such pass
-        reads the same start, whichever of those reasons each records, and a
-        run of them never renews it.  Returns ``{"reason", "mode",
-        "epoch_unix"}``, or ``None``.
+        (:meth:`_withhold_epoch`, #1052).  A busy pass that carries
+        a withhold files its ``transition_busy`` with the episode it carried,
+        so the next busy pass reads the same start, and a run of them never
+        renews it.  Returns ``{"reason", "mode", "epoch_unix"}``, or ``None``.
         """
 
         def finite(value: object) -> bool:
@@ -5922,7 +5904,7 @@ class PoolQueue:
         reason, evidence = record.get("reason"), record.get("evidence")
         if not isinstance(reason, str) or not isinstance(evidence, Mapping):
             return None
-        if reason in CARRIES_WITHHOLD_REASONS:
+        if reason == "transition_busy":
             carried = evidence.get("withhold_carried")
             if not isinstance(carried, Mapping):
                 return None
@@ -16012,12 +15994,9 @@ class PoolQueue:
         will never run there is the deadlock, not the fix.  An item refused
         because the pool's own GPU holders are on the device withholds only
         the rows behind it that demand a GPU, and CPU-only rows still fill the
-        box (#1085, :data:`DRAIN_GPU_HOLDERS`).  A row this pass cannot
-        evaluate -- another loop holds its transition lock, or the image
-        inventory, a residency lead record or the composed map does not read
-        (:data:`CARRIES_WITHHOLD_REASONS`, #1143) -- keeps the withhold this
-        host last filed for it while that withhold's episode is live
-        (:meth:`_carried_withhold`).
+        box (#1085, :data:`DRAIN_GPU_HOLDERS`).  A row whose transition lock
+        another loop holds keeps the withhold this host last filed for it
+        while that withhold's episode is live (:meth:`_carried_withhold`).
         Placement is judged before a row's lock is taken, so a box that can
         never place a row does not collide with the box that can.
 
@@ -16129,31 +16108,6 @@ class PoolQueue:
                 withheld_for, withheld_kinds = key, kinds
             else:
                 withheld_kinds = withheld_kinds | kinds
-
-        def unevaluated(item: Mapping[str, object], key: str, reason: str,
-                        evidence: Mapping[str, object] | None = None) -> None:
-            """Deny a row this pass cannot evaluate, keeping its withhold (#1143).
-
-            ``reason`` is one of :data:`CARRIES_WITHHOLD_REASONS`.  If this
-            host's last word on the row was a withhold still inside its
-            episode, the row withholds for this pass as it did then, and the
-            denial files the episode it carried.  Nothing is read once the
-            whole box is held already.
-            """
-
-            nonlocal host_verdicts
-            carried = None
-            if withheld_for is None or withheld_kinds is not None:
-                if host_verdicts is None:
-                    host_verdicts = self._host_denial_records()
-                carried = self._carried_withhold(
-                    host_verdicts, item, host=socket.gethostname(), now=_now())
-            detail = dict(evidence or {})
-            if carried is not None:
-                detail["withhold_carried"] = carried
-            self.record_denial(item, reason, detail)
-            if carried is not None:
-                withhold(key, WITHHOLD_KINDS.get(str(carried["mode"])))
         #: ``claimed/`` as this pass listed it, once (#993).  Listed under the
         #: first transition lock the pass takes, not before it, and a
         #: ``READDIR`` is itself the revalidation a cached negative lookup
@@ -16212,7 +16166,18 @@ class PoolQueue:
                         # this box's sibling deciding the same row, or another
                         # box deciding it for itself, and neither ends the
                         # drain this box is holding it for.
-                        unevaluated(item, key, "transition_busy")
+                        carried = None
+                        if withheld_for is None or withheld_kinds is not None:
+                            if host_verdicts is None:
+                                host_verdicts = self._host_denial_records()
+                            carried = self._carried_withhold(
+                                host_verdicts, item, host=socket.gethostname(),
+                                now=_now())
+                        self.record_denial(item, "transition_busy", (
+                            {"withhold_carried": carried} if carried is not None
+                            else None))
+                        if carried is not None:
+                            withhold(key, WITHHOLD_KINDS.get(str(carried["mode"])))
                     continue
                 if claimed_listed is None:
                     names = os.listdir(self.dir(CLAIMED))
@@ -16268,13 +16233,10 @@ class PoolQueue:
                     if observed is None:
                         # Unknown is not presence.  Fail closed: the item
                         # stays ready for a box that can show the reference.
-                        # Nor is it a verdict that ends a drain: a withhold
-                        # this host holds for the row holds for this pass too
-                        # (#1143), or each pass that meets a sibling loop's
-                        # refresh admits a row behind it, and the box never
-                        # empties for the row it is held for.
-                        unevaluated(item, key, "container_image_presence_unknown",
-                                    {"required": declared_images})
+                        self.record_denial(
+                            item, "container_image_presence_unknown", {
+                                "required": declared_images,
+                            })
                         continue
                     absent = image_inventory.missing(declared_images, observed)
                     if absent:
@@ -16323,9 +16285,7 @@ class PoolQueue:
                     residency_block = item.get("residency")
                     leads = (residency_block.get("leads")
                              if isinstance(residency_block, Mapping) else None)
-                    # Not a verdict either way, so a live withhold holds
-                    # (#1143), as for ``map_unreadable`` below.
-                    unevaluated(item, key, "residency_lead_record_unreadable", {
+                    self.record_denial(item, "residency_lead_record_unreadable", {
                         "error": str(exc), "leads": leads})
                     continue
                 if residency["state"] in ("lead_not_resident", "lead_unpinned",
@@ -16343,10 +16303,7 @@ class PoolQueue:
                     # there and unreachable: without the map the action reads
                     # the pool and says nothing went wrong.  ``map_unreadable``
                     # is the same refusal when the mount would not say either
-                    # way; both leave the item ready for the next scan.  It
-                    # alone is no verdict, so a withhold this host holds for
-                    # the row holds through it (#1143): a stall says nothing
-                    # about the bytes, and nothing about the drain either.
+                    # way; both leave the item ready for the next scan.
                     # ``map_stale`` is the third of that family: the map is
                     # there and readable but was composed before this item's
                     # lead landed, so it addresses every range but the one the
@@ -16370,10 +16327,7 @@ class PoolQueue:
                             # fleet-wide denial snapshot tells it apart from a
                             # mover that simply has not finished (#595).
                             reason = "residency_lead_terminal"
-                    if reason in CARRIES_WITHHOLD_REASONS:
-                        unevaluated(item, key, reason, {"residency": residency})
-                    else:
-                        self.record_denial(item, reason, {"residency": residency})
+                    self.record_denial(item, reason, {"residency": residency})
                     continue
                 try:
                     sealed_demand = self.demand_of(item)

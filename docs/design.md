@@ -408,24 +408,11 @@ goes on only for rows that may be a producer's export (the rows above): one
 admitted on its producer's allowance takes nothing the withholding item waits
 for. Any other row is left unevaluated, with no pass, as the withhold always
 left it; a real dependent among them is denied `deferred_behind_withholding`,
-naming `withheld_for` (#985). When a pass cannot evaluate a row for a
-reason that says nothing about the row, the row still withholds for that
-pass if this host's latest verdict for it is a withhold whose episode is
-inside `WITHHOLD_CEILING_S`: another loop holds its transition lock
-(`transition_busy`, #1085), the box's image inventory did not read
-(`container_image_presence_unknown`), or its residency lead record or
-composed map did not read (`residency_lead_record_unreadable`,
-`residency_map_unreadable`) (#1143, `pool.CARRIES_WITHHOLD_REASONS`). The
-denial it records carries that episode's start, so a run of such passes,
-whichever reasons they record, never renews it. Unknown still admits
-nothing, and it does not end the drain either: on 2026-09-25 an image-pinned
-Stage B row on an idle SW-capped sparky withheld the whole box for its
-broker jobs (#1125), and each pass that read the inventory as unknown
-admitted a CPU row behind it, which kept a broker job on the host, so the
-drain never finished. Every other denial in the pass is a verdict about the
-row (a refusal, another box's placement, a bounded placement preference, an
-image the box positively lacks, or an admission) or the pass's own withhold
-for an earlier row, and carries nothing. An item
+naming `withheld_for` (#985). When a pass finds a row's transition lock
+held by another loop, the row still withholds for that pass if this host's
+latest verdict for it is a withhold whose episode is inside
+`WITHHOLD_CEILING_S` (#1085); the `transition_busy` it records carries that
+episode's start, so a run of busy passes never renews it. An item
 whose holders do not drain soon keeps its passes and its place, is denied
 `..._starved` (or `..._past_ceiling` when its own clock ran out, or when the
 veto expired under refills), and is listed under `starved` by
@@ -2492,10 +2479,7 @@ Contract:
   missing reference denies (`container_image_absent`, digest named) and an
   unreadable inventory denies (`container_image_presence_unknown`); neither
   records a pass, spends an attempt or takes a token, so the item stays
-  `ready` for a box that has the image. An unknown inventory is not a
-  verdict, though, so a withhold this host holds for the row holds through
-  it (#1143, above); an absent reference is one, and ends it: a box that
-  cannot run the row does not hold itself for it. An image removed between the
+  `ready` for a box that has the image. An image removed between the
   observation and the container start is the residual race; the action's own
   failure reports it.
 - **The probe is two bounded reads.** One `docker image ls` answers the ID
