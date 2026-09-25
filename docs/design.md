@@ -976,6 +976,16 @@ default placement class is `x86` for CPU and `gb10` for GPU, overridable by
 explicit tags. CPU demand remains pytest workers times their native thread
 ceiling, or a larger explicit reservation; host memory covers the entire shard.
 
+A `--gpu` run must declare its per-test bound (#975): `--test-timeout-s`, or
+`--timeout-s`, from which the bound is derived one heartbeat inside the sealed
+deadline. With neither, `pbtest` refuses with exit 2 before any shard is
+submitted and names both flags. The bound belongs to the suite and its
+submitter, not to the longest job a box accepts: derived from the announced
+ceilings alone, a GPU shard's bound followed the Sparks' 86,400 s campaign
+ceiling (86,370 s), so a hung test held its GPU for a day. `--test-timeout-s 0`
+is a declaration and is honoured. CPU shards still derive their bound from the
+ceilings they read when neither flag is given.
+
 Structured `--pytest-args` forwarding uses a closed population/report vocabulary
 and replaces environment/project `addopts` when supplied. Worker count, config
 indirection, extra file paths, and xdist's population-duplicating `each` mode

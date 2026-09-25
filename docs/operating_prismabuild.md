@@ -1432,8 +1432,11 @@ heartbeat inside that deadline (`PRISMABUILD_TEST_TIMEOUT_S`), so a test that
 hangs fails by name before the deadline ends the lease. `--test-timeout-s`
 sets a tighter bound from a measured duration, and `0` removes it. A box's
 ceiling can be long -- a loop set for campaign work may announce a day -- so
-pass `--timeout-s` when a hung test should be named sooner. `pbtest` prints the
-deadline it sealed and the ceilings it read.
+pass `--timeout-s` when a hung test should be named sooner. A `--gpu` run must
+pass `--timeout-s` or `--test-timeout-s`; with neither, `pbtest` refuses with
+exit 2 before submitting anything, because the bound would otherwise follow the
+Sparks' campaign ceiling and a hung test would hold its GPU for a day (#975).
+`pbtest` prints the deadline it sealed and the ceilings it read.
 
 `pbtest` reads every shard's output while the shard runs and prints each
 `pbrun:` and `pbstatus:` line at once, prefixed with the shard number: the
@@ -1455,7 +1458,7 @@ Use `--pytest-args` with a JSON array to forward population and report options:
 
     tools/fleet/pbtest.py --checkout /home/rob/tessera \
         --python /home/rob/venvs/pq-cu130/bin/python --tag gb10 \
-        --gpu --mem-gb 8 --gpu-memory-gb 4 \
+        --gpu --timeout-s 3600 --mem-gb 8 --gpu-memory-gb 4 \
         --workers-per-shard 2 --threads-per-shard 1 \
         --pytest-args '["--strict-cuda", "--surface-json", "surface.json", "--dist", "worksteal"]' tests
 

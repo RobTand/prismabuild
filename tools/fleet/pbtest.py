@@ -686,7 +686,10 @@ def main() -> int:
     ap.add_argument("--mem-gb", type=int, default=3,
                     help="memory each shard demands of its box")
     ap.add_argument("--gpu", action="store_true",
-                    help="request a GPU for every shard; a tag alone does not request one")
+                    help="request a GPU for every shard; a tag alone does not "
+                         "request one. Requires --timeout-s or --test-timeout-s, "
+                         "so each test's bound is the submitter's and never a "
+                         "box's campaign ceiling (#975)")
     ap.add_argument("--gpu-memory-gb", type=float, default=None,
                     help="per-shard GPU memory budget, requires --gpu and pool transport")
     ap.add_argument("--pytest-args", default=None,
@@ -702,7 +705,8 @@ def main() -> int:
     ap.add_argument("--test-timeout-s", type=float, default=None,
                     help="per-test bound for every shard, in seconds; the "
                          "default is derived from the shard's own execution "
-                         "ceiling and 0 disables the bound. A test that "
+                         "ceiling and 0 disables the bound. A --gpu run with "
+                         "no --timeout-s must pass it (#975). A test that "
                          "outlives it fails, named, instead of holding the "
                          "shard's slot to the ceiling (#600). Tighten it only "
                          "on a measured shard duration")
@@ -749,6 +753,21 @@ def main() -> int:
                        if args.pytest_args is not None else [])
     except ValueError as exc:
         sys.stderr.write(f"pbtest: {exc}\n")
+        return 2
+    # A test's bound belongs to the suite and its submitter, not to the
+    # longest job a box accepts (#975).  Derived from the announced ceilings,
+    # a GPU shard's bound was one heartbeat inside the Sparks' campaign
+    # ceiling, 86370 s, so a hung test held its shard and its GPU for a day
+    # before pytest named it.  So a shard that reserves a GPU takes its bound
+    # from the submission, and with none there is nothing to derive it from.
+    if args.gpu and args.timeout_s is None and args.test_timeout_s is None:
+        sys.stderr.write(
+            "pbtest: a --gpu shard needs a declared bound, because the "
+            "ceiling a box announces may be the one it accepts for campaign "
+            "work and a hung test would hold its GPU that long: pass "
+            "--timeout-s (the shard's deadline; each test is bounded one "
+            "heartbeat inside it) or --test-timeout-s (each test's own bound; "
+            "0 removes it) (#975)\n")
         return 2
 
     if PBRUN is None:
