@@ -350,8 +350,15 @@ controller lets a shared GPU row join a holder, and each one that does keeps
 the device occupied past the holder it joined, while a CPU-only row takes
 nothing those holders release and keeps filling the box. The row it holds
 back is denied `deferred_behind_withheld_row`, naming `withheld_for` and
-`withheld_kinds`, with no pass. Every other adaptive refusal is overtaken as
-before. A
+`withheld_kinds`, with no pass. A `host_or_device_congested` refusal with
+`limited` set withholds only on an idle SW-capped GB10 (#1125): the first-job
+exception below admits that device only on an empty host, so when its
+recorded observations, re-judged with no holder and no broker job, would
+admit, occupancy is the one unmet condition. Holders present take the GPU
+drain above; broker jobs present, CPU-only jobs included, take the exclusive
+drain, which counts every holder and holds the whole box back. Thermal,
+power-brake, slowdown, unknown-mask, pressure and above-idle-gate refusals
+are overtaken. Every other adaptive refusal is overtaken as before. A
 `measurement_holder` refusal whose decision names `isolated_by` -- a
 measurement already holds the box -- never withholds: that box admits only the
 measurement's own dependents, so a veto would block just the work its progress
