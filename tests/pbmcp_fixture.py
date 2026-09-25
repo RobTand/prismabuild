@@ -29,7 +29,7 @@ sys.path.insert(0, str(REPOSITORY / "src"))
 sys.path.insert(0, str(REPOSITORY / "tools" / "fleet"))
 
 from prismabuild import core as pb  # noqa: E402
-from prismabuild import pool, residency_plan, storage_tiers  # noqa: E402
+from prismabuild import adaptive_snapshot, pool, residency_plan, storage_tiers  # noqa: E402
 
 import residency_publication  # noqa: E402
 
@@ -53,6 +53,11 @@ STARVED_GIB = storage_tiers.GIB
 STDOUT = "first line\nsecond line\nthird line\n"
 STDERR = "a warning\n"
 PAYLOAD = b"the result payload\n"
+
+#: How long :func:`build` waits for the snapshot copy its own claims started.
+#: A bound on a hang, not a tuning: the copy is one small file on local disk
+#: and measured 24 ms on sparklina (#1175).
+PUBLISHER_SETTLE_S = 30.0
 
 GENERATION_A = "aaaaaaaaaaaa-1700000000-aaaaaaaaaaaa"
 GENERATION_B = "bbbbbbbbbbbb-1700000001-bbbbbbbbbbbb"
@@ -113,7 +118,24 @@ def build(base: Path, *, host: str = "fixture-box") -> Fleet:
                   resources={"cpu": 3, "mem_gb": 6}, **common)
     _write_manifest_and_receipt(fleet)
     _write_generations(fleet)
+    settle_publishers()
     return fleet
+
+
+def settle_publishers() -> None:
+    """Wait for every snapshot copy this process's claims started (#1175).
+
+    ``claim`` files its pass in the host's local ``claim-denials.json`` and
+    starts ``adaptive_snapshot.publish``, a detached child that copies that
+    file into ``reservations/<this host>/adaptive/`` of the queue it claimed
+    from.  The child writes after ``claim`` has returned.  Unwaited, it lands
+    whenever it lands: before a test's first listing on a slow box and after
+    it on a fast one, and a read-only test then blames whatever it ran in
+    between.  A fixture hands over a queue at rest, so it waits here.
+    """
+
+    for child in list(adaptive_snapshot._children):
+        child.wait(timeout=PUBLISHER_SETTLE_S)
 
 
 def action_manifest(fleet: Fleet, key: str = DONE_KEY) -> dict:
