@@ -3052,6 +3052,19 @@ The guard exists because a role cannot depend on its launcher being single.
   kernel holds while the role is stopped.  Resuming is the operator's to
   undo (``kill -CONT``), and the stopped holder keeps the singleton lock
   while it is diagnosed.
+* **A role that refused is backed off, not respawned every tick (#1046).**
+  The lock probe cannot see every holder: a unit with ``PrivateTmp`` holds
+  its own copy of the lock, and a ``metrics`` role also refuses on a bound
+  port.  ``_reap_children`` therefore reads the exit status of every role
+  child this process image spawned (never a worker loop's), and a role that
+  exited ``ROLE_SINGLETON_HELD_EXIT`` is not spawned again until its backoff
+  elapses: ``BUSY_INTERVAL_S`` after the first refusal, doubling with each
+  consecutive one, capped at ``ROLE_REFUSAL_BACKOFF_MAX_S`` (300 s).  The
+  supervisor names the refusal once, with the next attempt, in its own log;
+  a role later seen live clears it (``role <name> refusal cleared``), and any
+  other exit status -- a crash, a signal -- ends the streak and keeps the
+  prompt respawn.  The backoff is in memory only, so a re-exec'd supervisor
+  pays at most one refusal to learn it again.
 
 The updater includes this storage reader in its drain observation using that
 same marker. These checks establish no cross-host quorum and do not enable
@@ -5254,8 +5267,10 @@ on the box exits `3`. If the port is already bound -- by an installed unit
 beside the role, whose lock the role cannot see -- the server also exits `3`
 and writes one JSON record naming the port and, where `/proc` lets it, the
 holder's pid and argv (`pbmetrics.REFUSAL_SCHEMA`), not a traceback. The
-supervisor still spawns a role that exited this way on its next tick, so the
-refusal repeats once a tick until the unit is stopped. `--once` writes nothing
+supervisor backs off a role that exited this way (#1046): it retries after
+5 s, doubling with each consecutive refusal up to 300 s, so the refusal
+repeats at most once every five minutes until the unit is stopped, and the
+supervisor's log names it once. `--once` writes nothing
 and keeps nothing, so it takes no lock. Deploying #1020 retires the three
 installed units in the order `docs/pb_metrics.md` gives.
 

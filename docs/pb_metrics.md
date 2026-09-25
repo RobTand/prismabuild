@@ -41,8 +41,11 @@ in use it also exits `3`, and its last line in the role's log
 `prismabuild.pbmetrics.refusal.v1`, `reason` `port-in-use`, the `listen`
 address and `port`, and the holder's `holder_pid` and `holder_argv` when
 `/proc` shows them to the role's user (`null` otherwise). The supervisor
-spawns the role again on its next tick, so that record repeats once a tick
-until whatever holds the port is stopped. `--once` reads and reports, and
+backs off a role that exited `3` (#1046): the first retry is 5 s later, each
+consecutive refusal doubles the wait up to 300 s, and the supervisor's own
+log names the refusal once with the next attempt. So that record repeats at
+most once every five minutes until whatever holds the port is stopped, and
+the role is back within five minutes after it is. `--once` reads and reports, and
 takes no lock.
 
 Between scrapes the server keeps what it read, and reuses a directory's
@@ -64,8 +67,8 @@ fleet-wide series as the dl380g10 copy. Retiring them is part of deploying
    role is published: `sudo systemctl disable --now prismabuild-metrics.service`.
    The unit runs with `PrivateTmp=yes`, so the role's lock cannot see it, and a
    unit left running holds port 9469: the supervised role would refuse with
-   exit `3` and a `port-in-use` record, once every supervisor tick, until the
-   unit is stopped.
+   exit `3` and a `port-in-use` record, backed off to at most once every five
+   minutes (#1046), until the unit is stopped.
 2. Publish. The dl380g10 supervisor starts the `metrics` role on its next
    tick, on the same `127.0.0.1:9469`. dl380g10's local Netdata `prismabuild`
    job keeps scraping `127.0.0.1:9469` without a change, and is the fleet's

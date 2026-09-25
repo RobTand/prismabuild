@@ -42,7 +42,7 @@ fi
 # The box whose roster entry declares the `metrics` role already runs the
 # exporter under its supervisor (#1020). A unit there would contend for the
 # role's port, and with PrivateTmp=yes the role cannot see the unit's lock, so
-# the role would refuse on the port every supervisor tick (#1042). The roster
+# the role would keep refusing on the port (#1042, #1046). The roster
 # is the runtime's own, looked up by hostname or declared `_alias` exactly as
 # the supervisor looks it up; an unreadable roster is refused, not guessed at.
 roster=$runtime/tools/fleet/fleet_boxes.json

@@ -288,7 +288,7 @@ def test_install_refused_on_the_metrics_role_host(install_fixture, host):
     """#1042: the queue host's supervisor runs the exporter on the same port.
 
     A unit there would contend for 9469, and its PrivateTmp hides its lock
-    from the role, which would then refuse on the port every tick. The
+    from the role, which would then keep refusing on the port. The
     installer refuses before writing the unit, the collector or any service.
     """
 
