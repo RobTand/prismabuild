@@ -54,7 +54,7 @@ from runtime_paths import (  # noqa: E402
 
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
-from prismabuild import adaptive_gpu, pool  # noqa: E402
+from prismabuild import adaptive_gpu, core, pool  # noqa: E402
 from pbrun import require_gpu_memory_scope  # noqa: E402
 #: Read for ``pbrun.SH`` when the queue is asked, so the conftest's repointing
 #: of the live store reaches it: see :func:`announced_ceilings`.
@@ -161,6 +161,11 @@ def offer_discovery_timed_out(lines: list[str], returncode: int | None) -> bool:
 #: minute, but a line that sits in a pipe until the shard ends says nothing.
 STREAMED_PREFIXES = ("pbrun:", "pbstatus:")
 
+#: The line ``pbrun`` prints when it publishes a shard to the pull queue, or
+#: attaches to the run already carrying its key.  It is the one line naming
+#: the full action key (#1012); SLURM's submission line names a prefix only.
+SUBMITTED = re.compile(r"^pbrun: (queued|attached to) ([0-9a-f]{64})(?![0-9a-f])")
+
 _PRINT_LOCK = threading.Lock()
 
 
@@ -171,7 +176,7 @@ def _say(text: str) -> None:
         print(text, flush=True)
 
 
-def drain_shard(index: int, stream, lines: list[str]) -> None:
+def drain_shard(index: int, stream, lines: list[str], *, submitted=None) -> None:
     """Read one shard's output as it arrives, keeping all of it in ``lines``.
 
     Every shard gets its own thread, started as soon as the shard is, so no
@@ -179,16 +184,20 @@ def drain_shard(index: int, stream, lines: list[str]) -> None:
     blocks ``pbrun`` in ``write(2)``, in the middle of its own wait (#1048).
     Lines that start with a ``STREAMED_PREFIXES`` word are printed at once,
     prefixed with the shard; pytest's own output stays in the shard's result.
+    ``submitted(key, verb)`` is called for ``pbrun``'s ``SUBMITTED`` line.
     """
 
     for line in iter(stream.readline, ""):
         lines.append(line)
         if line.startswith(STREAMED_PREFIXES):
             _say(f"shard {index:>3} {line.rstrip()}")
+            match = SUBMITTED.match(line) if submitted is not None else None
+            if match is not None:
+                submitted(match.group(2), match.group(1))
 
 
 def run_shard(index: int, command: list[str], first, *, wait_s: float,
-              deadline: float, result: dict) -> None:
+              deadline: float, result: dict, files: list[str] = ()) -> None:
     """Drain one shard's ``pbrun`` and resubmit it after an offer-read timeout.
 
     ``first`` is the attempt the caller already launched, so shards start in
@@ -198,13 +207,29 @@ def run_shard(index: int, command: list[str], first, *, wait_s: float,
     ``--wait-s`` lasts -- the rule ``pbcampaign --max-inflight`` applies to a
     row (#560).  Any other ending is the shard's ending.  Every attempt's
     output stays in ``result["lines"]``, so the receipt shows each refusal.
+
+    When ``pbrun`` says which key it queued or attached to, the key goes in
+    ``result["action_key"]`` and is printed with the shard's ``files`` at
+    once, so a run's keys can be cited while it is still running (#1012).
     """
 
     lines: list[str] = []
-    result.update(lines=lines, attempts=1, returncode=None)
+    result.update(lines=lines, attempts=1, returncode=None, action_key=None)
+
+    def submitted(key: str, verb: str) -> None:
+        # The first such line is this shard's: pbrun prints it before the
+        # action runs and relays the action's own output only at the end,
+        # where a failing test that drove pbrun can print one of its own.
+        if result["action_key"] is not None:
+            return
+        result["action_key"] = key
+        _say(f"shard {index:>3} action {key} "
+             f"({'queued' if verb == 'queued' else 'attached'}): "
+             + " ".join(files))
+
     proc = first
     while True:
-        drain_shard(index, proc.stdout, lines)
+        drain_shard(index, proc.stdout, lines, submitted=submitted)
         proc.wait()
         result["returncode"] = proc.returncode
         if not offer_discovery_timed_out(lines, proc.returncode):
@@ -294,9 +319,10 @@ def announced_ceilings(tags: list[str]) -> dict[str, float | None]:
     The queue read is the one every shard is submitted to, ``pbrun.SH /
     "pb-queue"``, the root ``pbwait`` and ``pbstatus`` read too.  This used to
     ask a bare ``pool.PoolQueue()``, whose default root
-    (``pool.DEFAULT_POOL_ROOT``, ``/mnt/shared/pb-queue``) is a directory no
-    box has, so it found no offers and every bound fell back to the published
-    default: 7170 s on dl380g10, whose loop announces 3600 s (#939).
+    (``pool.DEFAULT_POOL_ROOT``, then ``/mnt/shared/pb-queue``) was a directory
+    no box has, so it found no offers and every bound fell back to the
+    published default: 7170 s on dl380g10, whose loop announces 3600 s (#939).
+    That default now names this same queue and refuses a missing one (#976).
     """
 
     try:
@@ -314,6 +340,24 @@ def announced_ceilings(tags: list[str]) -> dict[str, float | None]:
             if isinstance(announced, (int, float)) and not isinstance(announced, bool)
             else None)
     return ceilings
+
+
+def receipt_path(action_key: str | None) -> str | None:
+    """The CAS receipt of a shard's key, when the fleet's CAS holds one.
+
+    ``None`` when there is no key, no receipt at that path, or no answer from
+    the mount: a path in a shard record is a file a reader can open.  One
+    ``stat`` per shard, after it ended; the receipt is not verified here
+    (``PrismaBuildCAS.lookup`` is the verifier).
+    """
+
+    if not action_key:
+        return None
+    path = core.PrismaBuildCAS(pbrun.SH / "cas").receipt_path(action_key)
+    try:
+        return str(path) if path.is_file() else None
+    except OSError:
+        return None
 
 
 def per_test_bound(*, timeout_s: float | None, override_s: float | None,
@@ -685,7 +729,10 @@ def main() -> int:
     ap.add_argument("--mem-gb", type=int, default=3,
                     help="memory each shard demands of its box")
     ap.add_argument("--gpu", action="store_true",
-                    help="request a GPU for every shard; a tag alone does not request one")
+                    help="request a GPU for every shard; a tag alone does not "
+                         "request one. Requires --timeout-s or --test-timeout-s, "
+                         "so each test's bound is the submitter's and never a "
+                         "box's campaign ceiling (#975)")
     ap.add_argument("--gpu-memory-gb", type=float, default=None,
                     help="per-shard GPU memory budget, requires --gpu and pool transport")
     ap.add_argument("--pytest-args", default=None,
@@ -701,7 +748,8 @@ def main() -> int:
     ap.add_argument("--test-timeout-s", type=float, default=None,
                     help="per-test bound for every shard, in seconds; the "
                          "default is derived from the shard's own execution "
-                         "ceiling and 0 disables the bound. A test that "
+                         "ceiling and 0 disables the bound. A --gpu run with "
+                         "no --timeout-s must pass it (#975). A test that "
                          "outlives it fails, named, instead of holding the "
                          "shard's slot to the ceiling (#600). Tighten it only "
                          "on a measured shard duration")
@@ -748,6 +796,21 @@ def main() -> int:
                        if args.pytest_args is not None else [])
     except ValueError as exc:
         sys.stderr.write(f"pbtest: {exc}\n")
+        return 2
+    # A test's bound belongs to the suite and its submitter, not to the
+    # longest job a box accepts (#975).  Derived from the announced ceilings,
+    # a GPU shard's bound was one heartbeat inside the Sparks' campaign
+    # ceiling, 86370 s, so a hung test held its shard and its GPU for a day
+    # before pytest named it.  So a shard that reserves a GPU takes its bound
+    # from the submission, and with none there is nothing to derive it from.
+    if args.gpu and args.timeout_s is None and args.test_timeout_s is None:
+        sys.stderr.write(
+            "pbtest: a --gpu shard needs a declared bound, because the "
+            "ceiling a box announces may be the one it accepts for campaign "
+            "work and a hung test would hold its GPU that long: pass "
+            "--timeout-s (the shard's deadline; each test is bounded one "
+            "heartbeat inside it) or --test-timeout-s (each test's own bound; "
+            "0 removes it) (#975)\n")
         return 2
 
     if PBRUN is None:
@@ -945,7 +1008,7 @@ def main() -> int:
         drain = threading.Thread(
             target=run_shard, args=(index, command, proc),
             kwargs={"wait_s": args.wait_s, "deadline": deadline,
-                    "result": shard_result},
+                    "result": shard_result, "files": bucket},
             name=f"pbtest-shard-{index}", daemon=True)
         drain.start()
         procs.append((index, bucket, drain, shard_result))
@@ -997,8 +1060,13 @@ def main() -> int:
         # Each skip by node ID, with its reason (#942).  ``None`` is "this
         # shard printed no record", which is not "it skipped nothing".
         skipped = recorded_skips(pbtest_outcomes.parse(out))
+        # The key as structured fields beside the returncode, so a report can
+        # cite the action rather than a prefix dug out of ``output`` (#1012).
+        action_key = shard_result.get("action_key")
         results.append({"shard": index, "files": bucket,
-                        "returncode": returncode, "summary": summary,
+                        "returncode": returncode, "action_key": action_key,
+                        "receipt_path": receipt_path(action_key),
+                        "summary": summary,
                         "ran": ran, "skipped": skipped, "attempts": attempts,
                         "output": out})
         state = "ok" if returncode == 0 else f"rc={returncode}"
@@ -1007,7 +1075,9 @@ def main() -> int:
         retried = (f" [attempt {attempts}; {attempts - 1} earlier submission(s) "
                    "refused by a worker-offer discovery timeout]"
                    if attempts > 1 else "")
-        _say(f"shard {index:>3} {state:<8} {summary}{retried}")
+        keyed = (f" [action {action_key}]" if action_key else
+                 " [no action key: pbrun printed no queued or attached line]")
+        _say(f"shard {index:>3} {state:<8} {summary}{retried}{keyed}")
         counted = summary_count(summary, "skipped") if ran else 0
         if skipped is None and counted:
             print(f"shard {index:>3} {counted} skip(s) with NO RECORDED REASON: "

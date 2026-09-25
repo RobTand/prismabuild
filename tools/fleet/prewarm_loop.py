@@ -368,9 +368,9 @@ STAGE_CONSUMER = {
 #: a fault, and the tier's state says so for the rest of the cycle.
 _STAGE_FULL_ERRNOS = frozenset({errno.ENOSPC, errno.EDQUOT, errno.EFBIG})
 #: The fleet's own store, spelled the way ``worker_loop`` spells it.  Not
-#: ``pool.DEFAULT_POOL_ROOT``: that default is ``/mnt/shared/pb-queue``, one
-#: directory above the queue this fleet actually keeps, and a loop pointed
-#: there reports an empty ready list forever rather than an error.
+#: ``pool.DEFAULT_POOL_ROOT``: that default was ``/mnt/shared/pb-queue`` until
+#: #976, one directory above the queue this fleet actually keeps, and a loop
+#: pointed there reported an empty ready list forever rather than an error.
 SH = Path("/mnt/shared/prismabuild-fleet")
 
 

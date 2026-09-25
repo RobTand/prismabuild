@@ -220,7 +220,9 @@ def main(argv: list[str] | None = None) -> int:
         "host", help="the worker name to retire, as it appears in workers/")
     parser.add_argument(
         "--root", default=None,
-        help="queue root to act on (default: the fleet's pool root)")
+        help="queue root to act on (default: the fleet's pool root, "
+             "pool.DEFAULT_POOL_ROOT; refused by name if this box has no "
+             "such directory)")
     parser.add_argument(
         "--apply", action="store_true",
         help="actually move the record; without it the checks are run and "
@@ -230,7 +232,13 @@ def main(argv: list[str] | None = None) -> int:
         help="move a retired record back into workers/ instead")
     args = parser.parse_args(argv)
 
-    queue = pool.PoolQueue(args.root) if args.root else pool.PoolQueue()
+    try:
+        queue = pool.PoolQueue(args.root) if args.root else pool.PoolQueue()
+    except pool.PoolContractError as exc:
+        # A missing default queue is not "no worker record": nothing was
+        # read, so nothing can be said about the name (#976).
+        print(f"retire_worker: {exc}", file=sys.stderr)
+        return 2
     if args.restore:
         code, message = restore(queue, args.host)
         print(message)

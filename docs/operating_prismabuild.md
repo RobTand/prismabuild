@@ -1208,6 +1208,11 @@ an omitted field is not passed at all.
 | `host_class` | `--host-class`, a pool measurement worker class or SLURM Feature such as `gb10` |
 | `retry_safe` | `--retry-safe` |
 | `max_attempts` | `--max-attempts` |
+| `residency` | `--residency`: `none` or `stage`, the staged read path; `stage` needs `data_manifest` |
+| `residency_ram` | `--residency-ram`: `auto` or `off` |
+| `residency_prefetch_depth_gib` | `--residency-prefetch-depth-gib`: whole GiB, 0 or more |
+| `residency_read_mb_s` | `--residency-read-mb-s`: positive whole MB/s |
+| `cpus` | `--cpus`: cores, at least 1; a `demand.cpu` wins over it, as for `pbrun` |
 
 An unknown field is refused when the manifest loads, before any row is sealed:
 a dropped typo would seal an action nobody asked for.
@@ -1228,7 +1233,9 @@ the traceback. A count in `demand` is an integer or a string holding one, a
 name in `demand` and `env` is a string, an `env` value is a string or a number,
 `tags` and `snapshot_ref` are lists of non-empty strings, `timeout_s` is a
 number, `cwd` and `host_class` are strings, and every switch field is `true` or
-`false` rather than anything truthy. Two of those refusals were silent before:
+`false` rather than anything truthy. `residency` and `residency_ram` must be
+one of `pbrun`'s words for them, and `cpus`, `residency_prefetch_depth_gib` and
+`residency_read_mb_s` are integers within `pbrun`'s bounds (#1082). Two of those refusals were silent before:
 `"tags": "x86"` sealed three tags, one per character, and `"deterministic":
 "no"` sealed the opposite of what it said. Each refusal names the row index,
 the field, and the value.
@@ -1432,14 +1439,28 @@ heartbeat inside that deadline (`PRISMABUILD_TEST_TIMEOUT_S`), so a test that
 hangs fails by name before the deadline ends the lease. `--test-timeout-s`
 sets a tighter bound from a measured duration, and `0` removes it. A box's
 ceiling can be long -- a loop set for campaign work may announce a day -- so
-pass `--timeout-s` when a hung test should be named sooner. `pbtest` prints the
-deadline it sealed and the ceilings it read.
+pass `--timeout-s` when a hung test should be named sooner. A `--gpu` run must
+pass `--timeout-s` or `--test-timeout-s`; with neither, `pbtest` refuses with
+exit 2 before submitting anything, because the bound would otherwise follow the
+Sparks' campaign ceiling and a hung test would hold its GPU for a day (#975).
+`pbtest` prints the deadline it sealed and the ceilings it read.
 
 `pbtest` reads every shard's output while the shard runs and prints each
 `pbrun:` and `pbstatus:` line at once, prefixed with the shard number: the
 `queued` line with the shard's action key, and the notices of a wait that is
 outlasting a stuck read. Pytest's own output stays in the shard's result
 (#1048).
+
+`pbrun`'s `queued` (or `attached to`) line names the full 64-character action
+key; later lines name it by its 12-character prefix, which is what
+`pbrun --withdraw` accepts. When that line arrives, `pbtest` prints
+`shard N action <key> (queued): <files>`, the shard's key and its test files.
+The shard's ending line repeats the key as `[action <key>]`, or says that
+`pbrun` printed none (a refused submission, or a SLURM shard, whose submission
+line names a prefix only). Each shard record in `--json` carries `action_key`
+and `receipt_path` beside `returncode`: the key's receipt in the fleet CAS when
+one is there, and `null` otherwise. The path is located, not verified (#1012).
+The key names the shard's `done/`, `failed/` or `withdrawn/` record.
 
 `--gpu` requests a GPU for **every shard**. A placement tag alone never grants
 CUDA visibility. With the published runtime, the default tag changes from
@@ -1455,7 +1476,7 @@ Use `--pytest-args` with a JSON array to forward population and report options:
 
     tools/fleet/pbtest.py --checkout /home/rob/tessera \
         --python /home/rob/venvs/pq-cu130/bin/python --tag gb10 \
-        --gpu --mem-gb 8 --gpu-memory-gb 4 \
+        --gpu --timeout-s 3600 --mem-gb 8 --gpu-memory-gb 4 \
         --workers-per-shard 2 --threads-per-shard 1 \
         --pytest-args '["--strict-cuda", "--surface-json", "surface.json", "--dist", "worksteal"]' tests
 

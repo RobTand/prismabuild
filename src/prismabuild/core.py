@@ -4080,6 +4080,17 @@ class PrismaBuildCAS:
             / f"{action_key}.json"
         )
 
+    def receipt_path(self, action_key: str) -> Path:
+        """Where this CAS keeps the receipt for ``action_key``, which may not exist.
+
+        A location, not a verification: ``lookup`` is the only reader that
+        proves a receipt.  Public so a caller that reports a key's receipt
+        (``pbtest``'s shard records, #1012) names the layout this class owns
+        rather than a copy of it.
+        """
+
+        return self._receipt_path(_sha256(action_key, where="action key"))
+
     def _legacy_v2_receipt_path(self, action_key: str) -> Path:
         return self.root / "actions" / action_key[:2] / f"{action_key}.json"
 

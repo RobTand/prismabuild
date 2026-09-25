@@ -13,6 +13,7 @@ from test_pbtest_reserves_its_threads import _dispatch, pbtest
 def test_gpu_budget_and_population_options_reach_the_shard(tmp_path, monkeypatch):
     code, calls = _dispatch(tmp_path, monkeypatch, [
         "--gpu", "--gpu-memory-gb", "2.5", "--mem-gb", "8", "--tag", "gb10",
+        "--timeout-s", "3600",
         "--workers-per-shard", "2", "--threads-per-shard", "1",
         "--pytest-args", json.dumps([
             "--strict-cuda", "--surface-json", "surface.json", "--dist", "worksteal",
@@ -107,7 +108,7 @@ def pytest_sessionfinish(session):
 
 def test_gpu_default_placement_uses_the_fleets_gpu_class(tmp_path, monkeypatch):
     monkeypatch.setattr(pbtest, "RUNTIME_ROOT", Path("/mnt/shared/published-runtime"))
-    code, calls = _dispatch(tmp_path, monkeypatch, ["--gpu"])
+    code, calls = _dispatch(tmp_path, monkeypatch, ["--gpu", "--timeout-s", "3600"])
     assert code == 0
     assert calls[0][calls[0].index("--tag") + 1] == "gb10"
 

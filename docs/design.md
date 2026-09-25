@@ -976,6 +976,16 @@ default placement class is `x86` for CPU and `gb10` for GPU, overridable by
 explicit tags. CPU demand remains pytest workers times their native thread
 ceiling, or a larger explicit reservation; host memory covers the entire shard.
 
+A `--gpu` run must declare its per-test bound (#975): `--test-timeout-s`, or
+`--timeout-s`, from which the bound is derived one heartbeat inside the sealed
+deadline. With neither, `pbtest` refuses with exit 2 before any shard is
+submitted and names both flags. The bound belongs to the suite and its
+submitter, not to the longest job a box accepts: derived from the announced
+ceilings alone, a GPU shard's bound followed the Sparks' 86,400 s campaign
+ceiling (86,370 s), so a hung test held its GPU for a day. `--test-timeout-s 0`
+is a declaration and is honoured. CPU shards still derive their bound from the
+ceilings they read when neither flag is given.
+
 Structured `--pytest-args` forwarding uses a closed population/report vocabulary
 and replaces environment/project `addopts` when supplied. Worker count, config
 indirection, extra file paths, and xdist's population-duplicating `each` mode
@@ -1034,6 +1044,15 @@ pass does not) and a test the summary counts in more than one phase (a pass
 whose teardown errors or skips). The report's totals line states the sum:
 outcomes equal tests, plus outcomes at collection, plus extra phases.
 
+`pbtest` names every shard's full action key (#1012). `pbrun`'s pool
+submission line (`queued` or `attached to`) carries the full key, and every
+later `pbrun` line keeps the 12-character prefix. `pbtest` prints each key with
+the shard's files when that line arrives, repeats it on the shard's ending
+line, and records `action_key` and `receipt_path` in the shard's `--json`
+entry. `receipt_path` is `PrismaBuildCAS.receipt_path` under the fleet CAS when
+a file is there and `null` otherwise, located and not verified. A SLURM
+submission line still names a prefix, so its shards record no key.
+
 `pbtest` resubmits a shard whose `pbrun` refused it with a worker-offer
 discovery timeout (#1102), by the rule `pbcampaign --max-inflight` applies to a
 row (#560). `pbtest` runs `pbrun` as a subprocess, so it recognizes the refusal
@@ -1074,7 +1093,12 @@ partitions/reservations, or attested any machine through a SLURM allocation.
 | — | M5 Mac mini | below the value line; not a tier |
 
 The live data plane is `/mnt/shared` (NFS from dl380), including the deployed
-PrismaBuild CAS and pull queue under `/mnt/shared/prismabuild-fleet`. Workers
+PrismaBuild CAS and pull queue under `/mnt/shared/prismabuild-fleet`. The
+queue is `/mnt/shared/prismabuild-fleet/pb-queue`, which is also
+`pool.DEFAULT_POOL_ROOT` (unless `PRISMABUILD_POOL_ROOT` names another), the
+root a bare `PoolQueue()` opens. A bare `PoolQueue()` refuses that default,
+naming the path, when it is not a directory: a missing queue is not an empty
+one (#976). A caller that names its root still owns creating it. Workers
 load immutable published runtime generations and use per-architecture venvs
 (envs cannot be shared across aarch64-CUDA / x86). A future
 munge-authenticated SLURM installation remains the proposed trust plane for a
@@ -8154,7 +8178,13 @@ A deferred submission (#913) carries both as optional publication options, so
 a record filed before #909 still releases, undeclared. A logical campaign
 declares them once for every child, as the optional `prefetch_depth_gib` and
 `read_mb_s` fields of its `task_data_manifest` policy; a policy without them
-freezes the same parent identity as before. The tier loop prices:
+freezes the same parent identity as before. A list-campaign row carries them,
+with `residency`, `residency_ram` and `cpus`, as row fields of the same names
+(`residency_prefetch_depth_gib`, `residency_read_mb_s`), each passed to `pbrun`
+as its flag and refused at load outside `pbrun`'s vocabulary and bounds (#1082).
+Residency is a publication choice, not part of the action key, so a row that
+could not carry it reproduced the action but not its read path. The tier loop
+prices:
 
 | Term | First of | Basis names |
 |---|---|---|

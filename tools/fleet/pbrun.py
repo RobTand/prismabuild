@@ -99,6 +99,10 @@ POLL_S = 5.0
 #: untouched by any of this.
 TRANSPORTS = ("pool", "slurm")
 DEFAULT_TRANSPORT_ENV = "PRISMABUILD_TRANSPORT"
+#: ``--residency`` and ``--residency-ram``'s words, named once so a campaign
+#: row that carries them is refused by the same vocabulary (#1082).
+RESIDENCY_MODES = ("none", "stage")
+RESIDENCY_RAM_MODES = ("auto", "off")
 #: What ``pbrun`` exits with when it stopped waiting before the work finished.
 #: The pool path already spells it this way; the SLURM path means the same
 #: thing by it, and in both cases the work is still running.
@@ -6538,7 +6542,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
              "all of it before the producer starts. Pool transport only.",
     )
     ap.add_argument(
-        "--residency", choices=("none", "stage"), default="none",
+        "--residency", choices=RESIDENCY_MODES, default="none",
         help="stage this action's declared bytes onto a storage tier before it "
              "runs (#583).  'stage' seals one movement node per phase of the "
              "data manifest's read order and one egress node each, and admits "
@@ -6555,7 +6559,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
              "fleet announces more than one",
     )
     ap.add_argument(
-        "--residency-ram", choices=("auto", "off"), default="auto",
+        "--residency-ram", choices=RESIDENCY_RAM_MODES, default="auto",
         help="seal a ram leg onto the residency plan: one promotion node and "
              "one egress node per phase, copying each landed stage range into "
              "the ram tier the storage box announces (#640).  'auto' seals the "
@@ -8127,7 +8131,10 @@ def main() -> int:
               f"decision", file=sys.stderr, flush=True)
     masked = "" if demand.get("gpu") else "  [no GPU: CUDA_VISIBLE_DEVICES='']"
     verb = "queued" if queued_path is not None else "attached to"
-    print(f"pbrun: {verb} {key[:12]} tags={tags} demand={demand}{masked}",
+    # The one line that names the full key, so a caller can cite the action
+    # rather than a prefix of it; ``pbtest`` records it per shard (#1012).
+    # Every later line names it by prefix, which is what ``--withdraw`` takes.
+    print(f"pbrun: {verb} {key} tags={tags} demand={demand}{masked}",
           file=sys.stderr, flush=True)
 
     if args.detach:

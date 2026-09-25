@@ -246,3 +246,35 @@ def test_a_name_with_no_record_is_reported_not_invented(tmp_path, capsys):
 
     assert _tool().main(["gx10-nobody", "--root", str(queue.root), "--apply"]) == 1
     assert "no worker record" in capsys.readouterr().out
+
+
+# --- the default queue (#976) ----------------------------------------------
+
+def test_without_root_a_missing_default_queue_is_refused_by_name(
+    tmp_path, monkeypatch, capsys,
+):
+    """main: the default root named a directory no box has, so the tool read
+    an empty queue and said ``no worker record``, which is a claim about the
+    fleet that nobody observed.
+
+    branch: the refusal names the queue it could not find.
+    """
+
+    tool = _tool()
+    absent = tmp_path / "no-such-queue"
+    monkeypatch.setattr(pool, "DEFAULT_POOL_ROOT", absent)
+
+    assert tool.main([HOST, "--apply"]) != 0
+
+    captured = capsys.readouterr()
+    assert str(absent) in captured.err
+    assert "no worker record" not in captured.out + captured.err
+
+
+def test_without_root_the_default_queue_is_the_one_read(tmp_path, monkeypatch, capsys):
+    queue = _queue(tmp_path)
+    _announce(queue, age_s=pool.LEASE_TIMEOUT_S + 60)
+    monkeypatch.setattr(pool, "DEFAULT_POOL_ROOT", queue.root)
+
+    assert _tool().main([HOST]) == 0
+    assert "would retire" in capsys.readouterr().out
