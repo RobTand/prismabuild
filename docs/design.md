@@ -1006,18 +1006,31 @@ input, so forwarding them cannot change an action key.
 ### Fleet command demand vocabulary
 
 `pbrun` and manifests consumed by `pbcampaign` use the closed demand vocabulary
-`cpu`, `gpu`, and `mem_gb`. Validation occurs before a request is sealed; a
-manifest is validated as a whole before its first row is published. The live
-pool offers and SLURM translation both define only these resource kinds, so an
-unknown name would otherwise create an action no worker could admit. This does
-not narrow the generic `PoolQueue` resource ledger, whose direct producers may
-define resources outside the fleet-command client contract.
+`cpu`, `gpu`, `mem_gb`, and `disk_metadata`. Validation occurs before a request
+is sealed; a manifest is validated as a whole before its first row is
+published. The live pool offers and SLURM translation both define only these
+resource kinds, so an unknown name would otherwise create an action no worker
+could admit. This does not narrow the generic `PoolQueue` resource ledger,
+whose direct producers may define resources outside the fleet-command client
+contract.
+
+`disk_metadata` (#1008 item 4) reserves the executing box's directory/file
+metadata throughput, the same way `cpu` and `mem_gb` reserve its cores and
+memory: a consumable count, not a byte budget. A box offers a small fixed
+count of it (one, today), so a shard that declares `disk_metadata=1` gets that
+box's whole metadata throughput to itself for as long as it holds the
+reservation. It exists because two timing-sensitive stage tests sharing a box
+distort each other's measured hold times -- a 20,000-entry egress measured
+0.25 s alone and 1.22 s beside a second one on the same disk (#1005) -- and
+neither `cpu` nor `mem_gb` demand serializes them, since neither is what they
+actually contend on. `pbtest --disk-metadata` requests it for every shard of
+that invocation (see [Test fanout submission](#test-fanout-submission)).
 
 Storage-tier kinds are exactly such a producer-defined resource. `PoolQueue`
 understands a demand key spelled `<kind>@<tier_id>` and reserves it on a
 cluster-scoped tier ledger rather than on the executing box; `pbrun --demand`
-and campaign rows still refuse every name outside `cpu`, `gpu` and `mem_gb`, so
-no fleet-command submission can carry one. See
+and campaign rows still refuse every name outside `cpu`, `gpu`, `mem_gb` and
+`disk_metadata`, so no fleet-command submission can carry one. See
 [Cluster-scoped storage tiers](#cluster-scoped-storage-tiers-583).
 
 ## Work decomposition boundary

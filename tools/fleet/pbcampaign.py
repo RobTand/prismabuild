@@ -570,9 +570,12 @@ def _require_submittable_row(row, *, index: int, transport: str) -> None:
         # PoolQueue ledger remains available to other producers through its
         # own API.
         demand = row.get("demand") or {}
-        pbrun.validate_fleet_demand(
-            {name.strip(): count for name, count in demand.items()}
-        )
+        normalized_demand = {name.strip(): count for name, count in demand.items()}
+        pbrun.validate_fleet_demand(normalized_demand)
+    except SystemExit as exc:
+        raise ManifestError(f"row {index}: {exc}") from None
+    try:
+        pbrun.require_disk_metadata_scope(normalized_demand, transport=transport)
     except SystemExit as exc:
         raise ManifestError(f"row {index}: {exc}") from None
     try:

@@ -768,6 +768,12 @@ def main() -> int:
                          "--threads-per-shard 0, which sets no ceiling at all")
     ap.add_argument("--mem-gb", type=int, default=3,
                     help="memory each shard demands of its box")
+    ap.add_argument("--disk-metadata", action="store_true",
+                    help="reserve every shard's box's disk-metadata capacity "
+                         "(a box offers one unit of it), so a timing-sensitive "
+                         "test does not share its box's directory/file "
+                         "metadata throughput with another shard or a live "
+                         "egress (#1008 item 4)")
     ap.add_argument("--gpu", action="store_true",
                     help="request a GPU for every shard; a tag alone does not "
                          "request one. Requires --timeout-s or --test-timeout-s, "
@@ -1000,8 +1006,13 @@ def main() -> int:
         # either way, so the shards keep their placement and their keys.
         for tag in tags:
             flags += ["--tag", tag]
+        # One --demand token per reserved kind, comma-joined: pbrun parses
+        # it as k=v pairs (#1008 item 4 adds disk_metadata beside mem_gb).
+        demand_terms = [f"mem_gb={args.mem_gb}"]
+        if args.disk_metadata:
+            demand_terms.append("disk_metadata=1")
         flags += [
-            "--demand", f"mem_gb={args.mem_gb}",
+            "--demand", ",".join(demand_terms),
             # pbrun fills the cpu demand from --cpus, and its default is 1.
             # Naming it here is what makes the reservation match the thread
             # ceiling above; it is sealed into the action's params, so a suite

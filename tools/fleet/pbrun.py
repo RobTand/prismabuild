@@ -1128,7 +1128,14 @@ def require_relocatable_checkout(
         )
 
 
-_FLEET_DEMAND_KINDS = frozenset({"cpu", "gpu", "mem_gb"})
+#: ``disk_metadata`` is a host-scoped consumable exactly like ``cpu`` and
+#: ``mem_gb``, never a byte budget: a box offers a small fixed count of it (one,
+#: today) so a shard that declares ``disk_metadata=1`` gets the box's whole
+#: directory/file metadata throughput to itself, the way a timing-sensitive
+#: stage test needs (#1008 item 4) -- two 20,000-entry egresses sharing a
+#: disk distort each other's measured hold times, and neither ``cpu`` nor
+#: ``mem_gb`` demand serializes them, since neither is what they contend on.
+_FLEET_DEMAND_KINDS = frozenset({"cpu", "gpu", "mem_gb", "disk_metadata"})
 #: The derived host kind a produced-output producer's spool window reserves,
 #: and the two sealed variables it is derived from (#747).  Spelled here so
 #: the typed-demand refusal does not import the spool module; the derivation
@@ -3862,6 +3869,28 @@ def require_gpu_memory_scope(*, gpu_memory_gb, gpu: bool, transport: str) -> Non
         raise ValueError(
             "--gpu-memory-gb requires pool transport; SLURM VRAM budgets are not supported"
         )
+
+
+def require_disk_metadata_scope(demand: Mapping[str, object], *, transport: str) -> None:
+    """Refuse a ``disk_metadata`` reservation on a transport with nothing to enforce it.
+
+    ``disk_metadata`` (#1008 item 4) is a host-ledger consumable a pull-queue
+    worker offer prices exactly like ``cpu`` or ``mem_gb``: a box declares a
+    small fixed count, and a claim charges it at admission.  The SLURM lane's
+    translation (``slurm_lane.LaneResources.from_demand``) reads only ``cpu``,
+    ``gpu`` and ``mem_gb`` -- it has no GRES for directory/file metadata
+    throughput -- so a ``disk_metadata`` demand sealed there would never be
+    enforced, and two such jobs could still land on the same node.  Sealing
+    that would be worse than refusing it, the same reasoning
+    :func:`require_progress_scope` states for the stall watchdog: the action
+    would be admitted on a promise of exclusivity nothing on that lane keeps.
+    """
+
+    if demand.get("disk_metadata") and transport != "pool":
+        raise SystemExit(
+            f"pbrun: --demand disk_metadata needs the pull queue: it is a "
+            f"host-ledger reservation, and --transport {transport} has no "
+            "way to enforce it")
 
 
 def require_progress_scope(*, progress: Mapping[str, object] | None,
@@ -6926,6 +6955,7 @@ def prepare_submission(args: argparse.Namespace) -> dict[str, object]:
         caller_variables[key] = value
 
     demand = _parse_demand(args.demand)
+    require_disk_metadata_scope(demand, transport=args.transport)
     if args.gpu_memory_gb is not None:
         try:
             adaptive_gpu.memory_budget_bytes(args.gpu_memory_gb)
