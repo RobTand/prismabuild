@@ -76,8 +76,11 @@ def test_an_earlier_runs_ending_does_not_answer_this_run(queue) -> None:
     ) == 75
 
     _file(queue, pool.DONE, _outcome(200.0, status="executed", returncode=0))
+    # The ending is already filed, so one immediate observation (the reader
+    # keeps its production budget) is the whole check; a 0.05 s caller wait
+    # gave the reader 0.05 s and read as 74 on a loaded box (#1170).
     assert pbrun.await_outcome(
-        queue, KEY, wait_s=0.05, generation=200.0
+        queue, KEY, wait_s=0, generation=200.0
     ) == 0
 
 
@@ -88,7 +91,7 @@ def test_a_caller_that_does_not_know_the_generation_takes_what_is_filed(
     say", which is what every reader had before generations were stamped."""
 
     _file(queue, pool.FAILED, _outcome(100.0, status="failed", returncode=3))
-    assert pbrun.await_outcome(queue, KEY, wait_s=0.05) == 3
+    assert pbrun.await_outcome(queue, KEY, wait_s=0) == 3
 
 
 def test_an_ending_with_no_generation_stands(queue) -> None:
@@ -100,7 +103,7 @@ def test_an_ending_with_no_generation_stands(queue) -> None:
     del record["published_unix"]
     _file(queue, pool.FAILED, record)
     assert pbrun.await_outcome(
-        queue, KEY, wait_s=0.05, generation=200.0
+        queue, KEY, wait_s=0, generation=200.0
     ) == 3
 
 

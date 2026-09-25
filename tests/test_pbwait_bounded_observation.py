@@ -11,6 +11,7 @@ from pathlib import Path
 import signal
 import subprocess
 import sys
+import threading
 import time
 
 import pytest
@@ -84,9 +85,12 @@ print(row["status"])
 print(row["note"])
 '''
     try:
+        # A hang guard, not the property: 4.5 s leaves a loaded box time to
+        # start Python and fork, and stays under the 5 s production budget, so a
+        # child that ignored the 0.05 s override still fails (#1170).
         completed = subprocess.run(
             [sys.executable, "-c", code], text=True, capture_output=True,
-            timeout=2.0, check=False,
+            timeout=4.5, check=False,
         )
     except subprocess.TimeoutExpired as exc:
         pytest.fail(
@@ -105,11 +109,19 @@ def test_immutable_summary_verification_is_bounded_per_key(
 ) -> None:
     queue = _queue(tmp_path)
     queue.item_path(pool.DONE, KEY).write_text(json.dumps(_outcome()), encoding="utf-8")
-    monkeypatch.setattr(pbwait, "PBWAIT_READ_TIMEOUT_S", 0.05)
+    real_read = pbrun._bounded_pool_read
+
+    def short_verification(section, read, *, budget_s, **kwargs):
+        # Only the verification is meant to time out. The observation before
+        # it must answer, so it keeps its real budget (#1170).
+        if section == "pool outcome verification":
+            budget_s = 0.05
+        return real_read(section, read, budget_s=budget_s, **kwargs)
 
     def blocked(*_args, **_kwargs):
         time.sleep(30)
 
+    monkeypatch.setattr(pbrun, "_bounded_pool_read", short_verification)
     monkeypatch.setattr(pbrun, "outcome_summary", blocked)
     # Zero patience pins one bounded verification; a patient wait retries it.
     row = pbwait.wait_one(
@@ -211,22 +223,66 @@ def test_preemption_handoff_skips_cas_until_the_successor_is_observed(
     assert observed["receipt_published"] is False
 
 
+class _BlockedRead(Exception):
+    """Stands in for a shared-filesystem read that never answers."""
+
+
 def test_one_blocked_key_does_not_hide_a_healthy_key_in_a_multi_wait(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """A key whose read hangs neither delays nor overwrites a healthy key's row.
+
+    The reads are injected, so no bound here depends on how fast the box
+    answers (#1170). The blocked key's submission read holds until the healthy
+    key's row has been returned, then times out the way a real bounded reader
+    does. A multi-wait that served the keys in turn would hold that read until
+    the safety bound instead, and one that let the timed-out row stand for the
+    other key would report two errors. The real FIFO-backed reader bound is
+    covered by ``test_fifo_submission_observation_is_bounded_with_a_causal_marker``.
+    """
+
     queue = _queue(tmp_path)
     blocked = "a" * 64
     healthy = "b" * 64
-    os.mkfifo(queue.item_path(pool.READY, blocked))
     good = {**_outcome(), "action_key": healthy}
     queue.item_path(pool.DONE, healthy).write_text(json.dumps(good), encoding="utf-8")
-    monkeypatch.setattr(pbwait, "PBWAIT_READ_TIMEOUT_S", 0.05)
+    healthy_returned = threading.Event()
+    released_by_healthy_row = []
+
+    def outstanding(q, key, **kwargs):
+        if key == blocked:
+            # Only a failing multi-wait reaches the safety bound; a passing
+            # one releases this read as soon as the healthy row exists.
+            released_by_healthy_row.append(healthy_returned.wait(timeout=60.0))
+            raise _BlockedRead
+        return pbrun.outstanding_submission(q, key, **kwargs)
+
+    def inline_reader(section, read, *, budget_s, **_kwargs):
+        try:
+            return read()
+        except _BlockedRead:
+            raise pbrun.OutcomeObservationTimedOut(
+                f"{section} timed out after {budget_s}s") from None
+
+    real_wait_one = pbwait.wait_one
+
+    def observed_wait_one(q, key, **kwargs):
+        row = real_wait_one(q, key, **kwargs)
+        if key == healthy:
+            healthy_returned.set()
+        return row
+
+    monkeypatch.setattr(pbwait, "outstanding", outstanding)
+    monkeypatch.setattr(pbrun, "_bounded_pool_read", inline_reader)
+    monkeypatch.setattr(pbwait, "wait_one", observed_wait_one)
     # Zero patience: the blocked key's single timed-out read is its row. A
     # patient wait would retry it until the deadline (#558).
     rows = pbwait.wait_for_keys(
         queue, [blocked, healthy], cas=pb.PrismaBuildCAS(tmp_path / "cas"),
         wait_s=0,
     )
+    assert released_by_healthy_row == [True], (
+        "the healthy key's row waited for the blocked key's read")
     assert [row["status"] for row in rows] == ["record_error", "executed"]
     assert "pbwait observation timed out" in str(rows[0]["note"])
 
