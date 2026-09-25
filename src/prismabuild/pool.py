@@ -6801,21 +6801,40 @@ class PoolQueue:
         self, item: Mapping[str, object], *, host: str, reason: str,
         decision_reason: str | None,
     ) -> None:
-        """Append to the key's ring when this host's reason changed (#991).
+        """Append to the key's ring when this host's reason changed (#991),
+        damping a flap back to an already-seen reason onto its own entry
+        (#1006).
 
         What makes this free on the claim pass: an in-process memo of the
         reason this process last saw on file for its host, per key and
         generation.  A starved row's reason is the same for hours, so every
         pass but the first answers from the memo with no I/O at all.  On a
         change -- or the first sight of a key -- one small read and, only if
-        the file's newest entry for this host differs, one atomic write.
+        the file's newest entry for this host differs, one write.
 
         The memo is this process's view, and the file check is the newest
-        entry *for this host*.  So two loops on one host that disagree about
-        a key -- a GPU loop and a CPU loop can -- write each reason once and
-        then stay quiet, rather than rewriting the file every pass; the ring
-        then holds both reasons, and the latest-only record says which one
-        was said last.
+        entry *for this host*: the one with the greatest ``last_unix``, since
+        a damped repeat updates that field on its own entry without moving
+        it, so ring position no longer tracks recency once a reason has
+        flapped.  So two loops on one host that disagree about a key -- a
+        GPU loop and a CPU loop can -- write each reason once and then stay
+        quiet, rather than rewriting the file every pass; the ring then holds
+        both reasons, and the latest-only record says which one was said
+        last.
+
+        A reason that flips back and forth at a threshold (``host_pressure``
+        against ``admitted`` as PSI crosses the gate) used to push its own
+        first occurrence out of the ring once 16 flips had appended 16 new
+        entries -- exactly the transitions that diagnose where the
+        starvation began.  A reason already in this host's ring is instead
+        damped onto its own entry: ``count`` is incremented and
+        ``last_unix`` is bumped to now, in place, so the ring holds one entry
+        per distinct reason this host has shown rather than one per flip, and
+        the first transition of each survives however long the flapping
+        lasts.  A genuinely new reason still appends, and the ring is still
+        cut to the newest :data:`MAX_DENIAL_TRANSITIONS` entries -- unchanged
+        for a key whose reasons never repeat (the #991 acceptance: three
+        distinct reasons in three passes all still land, in order).
 
         Survives contention by construction.  It shares no lock with the
         latest-only file's ``flock``; pool callers hold the key's transition lock.
@@ -6833,8 +6852,7 @@ class PoolQueue:
         verdict = (reason, decision_reason)
         if _DENIAL_SEEN.get(memo) == verdict:
             return
-        entry = {"unix": _now(), "host": host, "reason": reason,
-                 "decision_reason": decision_reason, "published_unix": generation}
+        now = _now()
         path = self.denial_transitions_path(key)
         try:
             try:
@@ -6843,15 +6861,34 @@ class PoolQueue:
                 prior = {}    # an unparsable ring is replaced, not trusted
             ring = [dict(value) for value in prior.get("transitions", [])
                     if isinstance(value, Mapping)] if isinstance(prior, Mapping) else []
-            last = next((value for value in reversed(ring)
-                         if value.get("host") == host
-                         and value.get("published_unix") == generation), None)
-            if last is None or (last.get("reason"), last.get("decision_reason")) != verdict:
-                ring.append(entry)
-                path.parent.mkdir(parents=True, exist_ok=True)
-                _write_json_atomic(path, {
-                    "schema": DENIAL_TRANSITIONS_SCHEMA_V1, "action_key": key,
-                    "transitions": ring[-MAX_DENIAL_TRANSITIONS:]})
+            on_host = [value for value in ring
+                      if value.get("host") == host
+                      and value.get("published_unix") == generation]
+            last = max(
+                on_host,
+                key=lambda value: (value.get("last_unix", value.get("unix", 0.0))
+                                   if isinstance(value.get("last_unix", value.get("unix")),
+                                                 (int, float)) else 0.0),
+                default=None)
+            if last is not None and (last.get("reason"), last.get("decision_reason")) == verdict:
+                _DENIAL_SEEN[memo] = verdict
+                return  # unchanged from the newest transition on file
+            repeat = next((value for value in on_host
+                          if (value.get("reason"), value.get("decision_reason")) == verdict),
+                         None)
+            if repeat is not None:
+                repeat["count"] = int(repeat.get("count") or 1) + 1
+                repeat["last_unix"] = now
+            else:
+                ring.append({"unix": now, "host": host, "reason": reason,
+                            "decision_reason": decision_reason,
+                            "published_unix": generation, "count": 1,
+                            "last_unix": now})
+                ring = ring[-MAX_DENIAL_TRANSITIONS:]
+            path.parent.mkdir(parents=True, exist_ok=True)
+            _write_json_atomic(path, {
+                "schema": DENIAL_TRANSITIONS_SCHEMA_V1, "action_key": key,
+                "transitions": ring})
         except (OSError, PoolContractError, TypeError, ValueError):
             return
         _DENIAL_SEEN[memo] = verdict

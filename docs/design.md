@@ -237,27 +237,52 @@ partial without making its valid job unreadable or erasing queue counts.
 That latest-only record is not the only evidence of a denial (#991). Each
 action also has a reason ring, `denial-transitions/<key>.json` in the queue
 root, which keeps the newest 16 `{unix, host, reason, decision_reason,
-published_unix}` entries. An entry is appended only when the reason (the
-branch plus the controller decision's own reason) differs from that host's
-newest entry for the same generation, so the sequence that diagnoses a
-starvation, for example `measurement_holder` then `host_pressure`, survives
-every pass that overwrites the latest record. The ring takes no lock of its
-own: every `record_denial` call in the claim scan that reaches it runs under
-the key's transition lock, which already serializes that key's writers across
-the fleet. `transition_busy`, recorded because another loop holds that lock,
-stays out of the ring: it is a sibling loop evaluating the item this instant,
-not a verdict about the item, and several loops per box would otherwise fill
-the ring with it. So do the two reasons the scan records before it takes the
-lock (#1085), `placement_mismatch` and `deferred_behind_withheld_row`: an
-unlocked read-modify-write of the ring could drop the entry a lock holder is
-writing. Both still reach the latest record. One writer is outside the claim scan and its lock: the tier
-loop's `residency_plan_unreadable`, whose entry is best-effort against a claim
-loop writing the same key at that instant. The ring shares nothing with the latest record's local `flock`, so a busy diagnostic
-lock no longer loses a reason. Its cost on the 1 Hz claim loop is a dictionary
-lookup for an unchanged reason: an in-process memo holds the reason each
-process last saw on file for its host, pruned to the ready queue every pass.
-A change costs one small read and one atomic write, the same kind and size as
-the `passes/` write the pass already makes for that denial. The prewarm loop's
+published_unix, count, last_unix}` entries. An entry is appended only when
+the reason (the branch plus the controller decision's own reason) differs
+from that host's newest entry for the same generation -- the entry with the
+greatest `last_unix` for that host, since a damped repeat (below) updates a
+reason's own entry in place without moving it, so ring position alone no
+longer says which is newest once a reason has flapped -- so the sequence
+that diagnoses a starvation, for example `measurement_holder` then
+`host_pressure`, survives every pass that overwrites the latest record. The
+ring takes no lock of its own: every `record_denial` call in the claim scan
+that reaches it runs under the key's transition lock, which already
+serializes that key's writers across the fleet. `transition_busy`, recorded
+because another loop holds that lock, stays out of the ring: it is a sibling
+loop evaluating the item this instant, not a verdict about the item, and
+several loops per box would otherwise fill the ring with it. So do the two
+reasons the scan records before it takes the lock (#1085),
+`placement_mismatch` and `deferred_behind_withheld_row`: an unlocked
+read-modify-write of the ring could drop the entry a lock holder is writing.
+Both still reach the latest record. One writer is outside the claim scan and
+its lock: the tier loop's `residency_plan_unreadable`, whose entry is
+best-effort against a claim loop writing the same key at that instant. The
+ring shares nothing with the latest record's local `flock`, so a busy
+diagnostic lock no longer loses a reason. Its cost on the 1 Hz claim loop is
+a dictionary lookup for an unchanged reason: an in-process memo holds the
+reason each process last saw on file for its host, pruned to the ready queue
+every pass. A change costs one small read and, when the reason is new to this
+host's ring, one write the same kind and size as the `passes/` write the pass
+already makes for that denial.
+
+**A repeat of an already-seen reason is damped onto its own entry, not
+appended (#1006).** A reason that flips back and forth at a threshold, for
+example `host_pressure` against an admitted verdict as PSI crosses the gate,
+is a *change* on every pass by the rule above, so before this it appended a
+fresh entry on every flip and, within 16 flips, evicted the ring's own first
+entry -- the transition that names where the starvation began. Now, when the
+incoming `(reason, decision_reason)` already has an entry on this host's ring
+(anywhere in it, not only the newest), that entry's `count` is incremented
+and its `last_unix` is set to now, in place; nothing is appended and nothing
+is evicted. A genuinely new reason still appends and the ring is still cut to
+the newest 16, so a key whose reasons never repeat is unaffected (the #991
+acceptance: three distinct reasons in three passes all still land, in order,
+each with `count: 1`). The ring's size is then bounded by the number of
+distinct reasons a host has ever shown for this generation, not by how many
+times it changed, and the first transition of each survives however long the
+flapping lasts.
+
+The prewarm loop's
 receipt sweep retires the rings of terminal and withdrawn keys on the same
 live set, and a ring no state directory names is kept for seven days.
 An unfunded token acquisition also retains `token_shortage`: the first failing

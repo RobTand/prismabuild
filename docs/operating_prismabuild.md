@@ -1968,7 +1968,10 @@ read what it waited on before reading any host's logs:
 3.  Read that row's `last_denial` for the current reason and its
     `denial_transitions` for the sequence, oldest first. For example,
     `measurement_holder` for 13 minutes and then `host_pressure` is two
-    different causes, and the first one is the one that held the row.
+    different causes, and the first one is the one that held the row. A
+    reason that flapped back to one already in the sequence does not get a
+    second entry: its `count` and `last_unix` grow in place instead (#1006),
+    so a flapping `host_pressure` still reads as one cause, not sixteen.
 4.  Read `tier_events` for the tier loops' verdicts about the action:
     `window-stalled`, `range-adoption-declined`, `beyond-horizon-eviction-*`
     and the deferrals. `waited_s` is how long the loop has seen that verdict
