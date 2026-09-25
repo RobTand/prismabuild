@@ -1208,6 +1208,11 @@ an omitted field is not passed at all.
 | `host_class` | `--host-class`, a pool measurement worker class or SLURM Feature such as `gb10` |
 | `retry_safe` | `--retry-safe` |
 | `max_attempts` | `--max-attempts` |
+| `residency` | `--residency`: `none` or `stage`, the staged read path; `stage` needs `data_manifest` |
+| `residency_ram` | `--residency-ram`: `auto` or `off` |
+| `residency_prefetch_depth_gib` | `--residency-prefetch-depth-gib`: whole GiB, 0 or more |
+| `residency_read_mb_s` | `--residency-read-mb-s`: positive whole MB/s |
+| `cpus` | `--cpus`: cores, at least 1; a `demand.cpu` wins over it, as for `pbrun` |
 
 An unknown field is refused when the manifest loads, before any row is sealed:
 a dropped typo would seal an action nobody asked for.
@@ -1228,7 +1233,9 @@ the traceback. A count in `demand` is an integer or a string holding one, a
 name in `demand` and `env` is a string, an `env` value is a string or a number,
 `tags` and `snapshot_ref` are lists of non-empty strings, `timeout_s` is a
 number, `cwd` and `host_class` are strings, and every switch field is `true` or
-`false` rather than anything truthy. Two of those refusals were silent before:
+`false` rather than anything truthy. `residency` and `residency_ram` must be
+one of `pbrun`'s words for them, and `cpus`, `residency_prefetch_depth_gib` and
+`residency_read_mb_s` are integers within `pbrun`'s bounds (#1082). Two of those refusals were silent before:
 `"tags": "x86"` sealed three tags, one per character, and `"deterministic":
 "no"` sealed the opposite of what it said. Each refusal names the row index,
 the field, and the value.

@@ -70,6 +70,15 @@ and each one is exactly one ``pbrun`` flag:
 ``data_manifest``    ``--data-manifest``: file naming the shared-mount bytes
                      this row reads, so a storage-role loop can make them
                      resident first.  It is hashed into the action key
+``residency``        ``--residency``: ``none`` or ``stage``, the staged read
+                     path; ``stage`` needs ``data_manifest``
+``residency_ram``    ``--residency-ram``: ``auto`` or ``off``
+``residency_prefetch_depth_gib``
+                     ``--residency-prefetch-depth-gib``: whole GiB, 0 or more
+``residency_read_mb_s``
+                     ``--residency-read-mb-s``: positive whole MB/s
+``cpus``             ``--cpus``: cores, at least 1; ``demand.cpu`` wins when
+                     both are given, as it does for ``pbrun``
 ===================  ====================================================
 
 Every field except ``argv`` is optional, and an omitted one is not passed to
@@ -252,6 +261,14 @@ _VALUE_FIELDS = (
     ("max_attempts", "--max-attempts"),
     ("data_manifest", "--data-manifest"),
     ("produced_output_template", "--produced-output-template"),
+    # The staged read path and the core count (#1082).  Residency is a
+    # publication choice rather than part of the key, so a row that could
+    # not carry it reproduced the action but not the IO path it reads by.
+    ("residency", "--residency"),
+    ("residency_ram", "--residency-ram"),
+    ("residency_prefetch_depth_gib", "--residency-prefetch-depth-gib"),
+    ("residency_read_mb_s", "--residency-read-mb-s"),
+    ("cpus", "--cpus"),
 )
 _SWITCH_FIELDS = (
     ("deterministic", "--deterministic"),
@@ -287,6 +304,18 @@ class ManifestError(Exception):
 _INTEGER_FIELDS = (
     ("gpu_capacity", 0),
     ("priority", None),
+    # ``pbrun`` refuses ``--cpus`` below 1 (#1082); the two residency reader
+    # fields' bounds are ``pbrun.reader_declaration``'s, asked in
+    # ``_require_submittable_row`` in its own words.
+    ("cpus", 1),
+    ("residency_prefetch_depth_gib", None),
+    ("residency_read_mb_s", None),
+)
+
+#: Fields ``pbrun`` parses against a closed vocabulary, and that vocabulary.
+_CHOICE_FIELDS = (
+    ("residency", pbrun.RESIDENCY_MODES),
+    ("residency_ram", pbrun.RESIDENCY_RAM_MODES),
 )
 
 #: Fields whose value reaches ``pbrun`` as text.
@@ -448,6 +477,10 @@ def _require_row_shape(row, *, index: int) -> None:
         value = row.get(field)
         if value is not None and not isinstance(value, str):
             raise _refuse(index, field, "must be a string", value)
+    for field, choices in _CHOICE_FIELDS:
+        value = row.get(field)
+        if value is not None and value not in choices:
+            raise _refuse(index, field, f"must be one of {', '.join(choices)}", value)
     if "as_sealed_by" in row:
         try:
             pbrun.require_reseal_key(row["as_sealed_by"])
@@ -570,6 +603,16 @@ def _require_submittable_row(row, *, index: int, transport: str) -> None:
         )
     except ValueError as exc:
         raise ManifestError(f"row {index}: {exc}") from None
+    except SystemExit as exc:
+        raise ManifestError(f"row {index}: {exc}") from None
+    try:
+        # ``pbrun`` reads these into the residency plan's reader block with
+        # this function and refuses there; asked here, a bad value refuses the
+        # manifest instead of one row after the rows before it were published.
+        # The shape is already an integer (``_require_row_shape``).
+        pbrun.reader_declaration(argparse.Namespace(**{
+            field: int(row[field]) if row.get(field) is not None else None
+            for field in ("residency_prefetch_depth_gib", "residency_read_mb_s")}))
     except SystemExit as exc:
         raise ManifestError(f"row {index}: {exc}") from None
     images = row.get("container_images") or []
