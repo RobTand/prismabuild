@@ -10851,21 +10851,39 @@ A mover keeps only these of its consumer's fields:
 |---|---|
 | `task.definition_id`, `definition_version` | They name the sealing tool; `adaptive_cpu.action_identity` keys pbrun's shape on `fleet/pbrun`. |
 | `task.working_directory` | Where the wrapper starts, relative to `cwd`. |
-| `task.determinism` | Keeps every generation consumer's mover key. It matters only when one key publishes a second result: a deterministic mover whose log differs is then refused as a conflict. |
 | `inputs`, `code_closure`, `params.cwd`, `params.checkout_snapshot` | Preflight materializes and proves the consumer's snapshot before the mover runs. |
 | `params.data_manifest` | The mover copies the manifest's ranges and verifies each entry's digest against it. |
 | Row `priority` | The consumer's urgency: a mover that ranked below its consumer would starve it. |
 | Row `checkout_snapshot` | The materialization the sealed snapshot names. |
 
-Its own, never the consumer's: the task class, artifact family and kind,
-execution scope, toolchain, environment variables, `argv` and result,
-command, demand, placement
+Its own, never the consumer's: the task class, determinism, artifact family
+and kind, execution scope, toolchain, environment variables, `argv` and
+result, command, demand, placement
 (`required_tags` is the tier's host, never the consumer's tags or
-`--host-class`), a mover's `retry_policy`, `max_attempts` and `retry_safe`
-(#603), and its container owner. It carries none of the consumer's
-`execution_timeout_s`, progress, profile, GPU or container-image
-parameters. An egress, which passes no retry policy, still inherits the
-consumer's retry policy and attempt limit.
+`--host-class`), a movement node's `retry_policy`, `max_attempts` and
+`retry_safe` (#603, #950), and its container owner. It carries none of the
+consumer's `execution_timeout_s`, progress, profile, GPU or container-image
+parameters.
+
+Every movement node, mover and egress alike, is retry-safe with a bounded
+attempt count of its own and is sealed `stochastic` (#950). pbrun's stage and
+ram egresses take the movers' policy (`--residency-mover-max-attempts`,
+default 3, `retry_safe: true`) on the sealed body and the row; a caller of
+`seal_movement_action` that names no policy gets
+`movement_actions.MOVEMENT_RETRY_POLICY` (3 attempts, retry-safe), never the
+template's. An egress used to inherit the consumer's: under a single-attempt
+consumer one transient unlink error ended it `failed`, and the range's bytes
+kept their tier tokens until pressure eviction. A second attempt is safe
+because the egress counts a file already gone as released. The movers of a
+`--deterministic` consumer used to be sealed deterministic, and a mover's
+result is the log of one copy: a re-stage under the same key with
+`recompute` (after an eviction, when the consumer retries) copied the bytes
+and was then refused as a conflicting deterministic recomputation. Sealed
+`stochastic`, every staging is a real copy that publishes its own log.
+Determinism and the retry policy are both in the key, so every pbrun egress
+and every movement node of a deterministic consumer or producer is sealed
+under a new key; a mover of a stochastic consumer that already passed its
+own policy keeps the key #996 gave it.
 
 A mover's environment is a movement environment (#996,
 `movement_actions.movement_environment`): `PATH` is the directory of the
