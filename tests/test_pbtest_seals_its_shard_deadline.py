@@ -137,23 +137,26 @@ def test_every_shard_seals_the_smallest_ceiling_a_claimant_announces(
     """main: the sealed deadline is the one the shard would be cut at anyway.
 
     branch: of the two x86 boxes that could claim it, the smaller ceiling is
-    the one a claim would apply, so every shard seals 3600 s; the gb10 box
+    the one a claim would apply, so every shard seals 1200 s; the gb10 box
     cannot claim an x86 shard and does not enter the ``min``.  The per-test
     bound is one heartbeat inside the sealed deadline, on the same read.
+    Both announced ceilings stay under pbtest's own non-GPU cap (#1123, twice
+    ``pool.WITHHOLD_CEILING_S``) so this exercises the ``min``-over-claimants
+    logic in isolation from that cap, which has its own coverage.
     """
 
-    _announce(dl380g10=(["x86", "dl380g10"], 3600.0),
-              other=(["x86", "other"], 7200.0),
+    _announce(dl380g10=(["x86", "dl380g10"], 1200.0),
+              other=(["x86", "other"], 1500.0),
               sparky=(["gb10", "sparky"], 600.0))
 
     calls = _dispatch(tmp_path, monkeypatch, ["--tag", "x86"])
 
     for command in calls:
-        assert _sealed(command) == 3600.0
-        assert _exported_bound(command) == pytest.approx(3600.0 - pool.HEARTBEAT_S)
+        assert _sealed(command) == 1200.0
+        assert _exported_bound(command) == pytest.approx(1200.0 - pool.HEARTBEAT_S)
     out = capsys.readouterr().out
-    assert "execution_timeout_s=3600" in out
-    assert "dl380g10 3600s" in out
+    assert "execution_timeout_s=1200" in out
+    assert "dl380g10 1200s" in out
 
 
 def test_an_asked_deadline_inside_every_ceiling_is_sealed_as_asked(
@@ -220,14 +223,17 @@ def test_switching_the_per_test_bound_off_still_seals_the_deadline(
     """``--test-timeout-s 0`` removes the per-test bound, not the shard's end.
 
     branch: the deadline is the box's, and a shard runs under it either way.
+    The announced ceiling stays under pbtest's own non-GPU cap (#1123) so
+    this exercises "0 does not touch the sealed end" without that cap
+    intervening, which has its own coverage.
     """
 
-    _announce(dl380g10=(["x86", "dl380g10"], 3600.0))
+    _announce(dl380g10=(["x86", "dl380g10"], 1200.0))
 
     calls = _dispatch(tmp_path, monkeypatch, ["--tag", "x86", "--test-timeout-s", "0"])
 
     for command in calls:
-        assert _sealed(command) == 3600.0
+        assert _sealed(command) == 1200.0
         assert _exported_bound(command) is None
 
 

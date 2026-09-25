@@ -305,6 +305,24 @@ from worker_loop import DEFAULT_EXECUTION_CEILING_S  # noqa: E402
 #: The recorder every shard's pytest runs under, and the reader of its record.
 import pbtest_outcomes  # noqa: E402
 
+#: The largest end a non-GPU shard may seal from an announcement it never
+#: asked for, derived from admission's own rule rather than picked.
+#: ``PoolQueue.holder_bound`` reads a bounded holder as ``transient`` -- the
+#: only reading under which a starved action waits instead of overtaking it
+#: -- while its age is inside ``pool.WITHHOLD_CEILING_S`` of its claim, or its
+#: declared end is inside that same ceiling of *now*.  With a declared end
+#: ``T``, those two conditions cover the holder's *entire* life (age 0 to
+#: ``T``) exactly when ``T <= 2 * WITHHOLD_CEILING_S``: age alone covers the
+#: first half, "ends soon" the second.  Past that, there is a window in the
+#: middle of the holder's life -- from ``WITHHOLD_CEILING_S`` to
+#: ``T - WITHHOLD_CEILING_S`` -- where neither condition holds and the holder
+#: reads ``long``, however briefly it actually runs.  ``DEFAULT_EXECUTION_CEILING_S``
+#: (7,200 s) still leaves that window open from 900 s to 6,300 s of a shard's
+#: life -- the same shape of starvation the Sparks' 86,400 s campaign ceiling
+#: gave, just shorter -- so it is not this cap; twice
+#: ``pool.WITHHOLD_CEILING_S`` is (#1123).
+NON_GPU_UNREQUESTED_CEILING_CAP_S = 2 * pool.WITHHOLD_CEILING_S
+
 
 def announced_ceilings(tags: list[str]) -> dict[str, float | None]:
     """What each live worker able to take these shards says its ceiling is.
@@ -361,6 +379,7 @@ def receipt_path(action_key: str | None) -> str | None:
 
 
 def per_test_bound(*, timeout_s: float | None, override_s: float | None,
+                   gpu: bool = False,
                    ceilings: dict[str, float | None] | None = None) -> float:
     """The per-test bound a shard exports, in seconds; ``0`` means none.
 
@@ -373,14 +392,16 @@ def per_test_bound(*, timeout_s: float | None, override_s: float | None,
     early is one whose stderr bytes -- the node id the handler writes before
     raising -- are counted into the record while the action is still alive.
 
-    The ceiling is the smaller of what the submitter asked for and what the
-    boxes that could claim these shards announce, which is exactly the ``min``
-    ``pool._execution_timeout`` applies.  Reading the announcement matters:
-    dl380g10 announces 3600 s, so a bound derived from the published loop
-    default of 7200 s would never have fired on the very box whose shard hung.
-    ``DEFAULT_EXECUTION_CEILING_S`` is the fallback for a fleet that announced
-    nothing, where the bound may be too generous to fire -- which leaves the
-    shard behaving exactly as it does today, never worse.
+    With something announced, the ceiling is derived exactly as the shard's
+    own sealed end is (:func:`shard_ceiling`, including its #1123 cap for a
+    non-GPU shard with no ``--timeout-s``), so the two numbers cannot drift
+    apart.  With nothing announced at all, ``DEFAULT_EXECUTION_CEILING_S``
+    stands in for the box's ceiling *here, and only here*: dl380g10
+    announces 3600 s, so a bound sized against the published default of
+    7200 s would never have fired on the very box whose shard hung, but with
+    no announcement to correct there is no borrowed campaign ceiling to cap
+    either -- a bound too generous to fire is never worse than today, whereas
+    a sealed guess would be (``shard_ceiling``).
 
     ``--test-timeout-s`` overrides it, because a shard whose duration has been
     measured can be bounded far tighter than its ceiling, and ``0`` disables
@@ -391,16 +412,15 @@ def per_test_bound(*, timeout_s: float | None, override_s: float | None,
         return max(0.0, float(override_s))
     announced = {host: value for host, value in (ceilings or {}).items()
                  if value is not None}
-    # With nothing announced the published default stands in for the box's
-    # ceiling here, and only here: a bound too generous to fire is never
-    # worse than today, whereas a sealed guess would be (``shard_ceiling``).
-    ceiling = shard_ceiling(
-        timeout_s=timeout_s,
-        ceilings=announced or {"published default": DEFAULT_EXECUTION_CEILING_S})
+    if announced:
+        ceiling = shard_ceiling(timeout_s=timeout_s, gpu=gpu, ceilings=announced)
+    else:
+        ceiling = (DEFAULT_EXECUTION_CEILING_S if timeout_s is None
+                  else min(float(timeout_s), DEFAULT_EXECUTION_CEILING_S))
     return max(0.0, ceiling - pool.HEARTBEAT_S)
 
 
-def shard_ceiling(*, timeout_s: float | None,
+def shard_ceiling(*, timeout_s: float | None, gpu: bool = False,
                   ceilings: dict[str, float | None] | None = None) -> float | None:
     """The deadline every shard seals as ``execution_timeout_s``; ``None`` seals none.
 
@@ -422,12 +442,32 @@ def shard_ceiling(*, timeout_s: float | None,
     seals nothing, as before.  The published loop default is a guess about
     boxes that said nothing, and a sealed guess is a declared end nobody
     declared.
+
+    A shard that does not reserve a GPU never runs campaign work, so an
+    *unrequested* announcement is not this shard's own bound to inherit: it
+    is capped at ``NON_GPU_UNREQUESTED_CEILING_CAP_S``, the largest end
+    admission's own rule (``PoolQueue.holder_bound``) still reads as
+    ``transient`` for a holder's *entire* life, whatever that end is (see the
+    constant's own comment for the derivation).  A CPU-only shard tagged
+    ``gb10`` sealed the bare 86,400 s campaign ceiling, so admission read it
+    as ``long`` for the middle of its life and a starved GPU action lost its
+    reservation to a same-band shard that in fact ran for minutes -- and
+    capping at ``DEFAULT_EXECUTION_CEILING_S`` (7,200 s) alone does not fix
+    that: it still reads ``long`` from 900 s to 6,300 s of a shard's life, the
+    same shape of starvation, only shorter (#1123).  ``--timeout-s`` is a
+    declared choice and is honoured uncapped; only the unrequested inheritance
+    is corrected.
     """
 
     bounds = [value for value in (ceilings or {}).values() if value is not None]
     if timeout_s is not None:
         bounds.append(float(timeout_s))
-    return min(bounds) if bounds else None
+    if not bounds:
+        return None
+    sealed = min(bounds)
+    if not gpu and timeout_s is None:
+        sealed = min(sealed, NON_GPU_UNREQUESTED_CEILING_CAP_S)
+    return sealed
 
 
 def discover(checkout: Path, paths: list[str]) -> list[str]:
@@ -728,6 +768,12 @@ def main() -> int:
                          "--threads-per-shard 0, which sets no ceiling at all")
     ap.add_argument("--mem-gb", type=int, default=3,
                     help="memory each shard demands of its box")
+    ap.add_argument("--disk-metadata", action="store_true",
+                    help="reserve every shard's box's disk-metadata capacity "
+                         "(a box offers one unit of it), so a timing-sensitive "
+                         "test does not share its box's directory/file "
+                         "metadata throughput with another shard or a live "
+                         "egress (#1008 item 4)")
     ap.add_argument("--gpu", action="store_true",
                     help="request a GPU for every shard; a tag alone does not "
                          "request one. Requires --timeout-s or --test-timeout-s, "
@@ -744,7 +790,12 @@ def main() -> int:
                          "of this and the smallest ceiling a box able to claim "
                          "it announces, which admission reads as its declared "
                          "end (#939); unset seals that ceiling, and nothing "
-                         "if no box announces one")
+                         "if no box announces one -- except a non-GPU shard, "
+                         "which caps an unrequested announcement at twice the "
+                         "pool's own withhold ceiling, the largest end "
+                         "admission still reads as draining soon for the "
+                         "shard's whole life, never a box's campaign ceiling "
+                         "(#1123)")
     ap.add_argument("--test-timeout-s", type=float, default=None,
                     help="per-test bound for every shard, in seconds; the "
                          "default is derived from the shard's own execution "
@@ -911,7 +962,7 @@ def main() -> int:
     # One read of the announcements serves both numbers below, so the shard's
     # sealed deadline and the per-test bound inside it cannot disagree.
     ceilings = announced_ceilings(tags)
-    sealed_s = shard_ceiling(timeout_s=args.timeout_s, ceilings=ceilings)
+    sealed_s = shard_ceiling(timeout_s=args.timeout_s, gpu=args.gpu, ceilings=ceilings)
     announced = ", ".join(f"{host} {value:g}s" for host, value in sorted(ceilings.items())
                           if value is not None) or "none"
     if sealed_s is None:
@@ -927,7 +978,7 @@ def main() -> int:
                   f"claimant announces, which would cut the shard at {sealed_s:g}s "
                   "anyway; that is the deadline sealed", flush=True)
     test_bound_s = per_test_bound(
-        timeout_s=args.timeout_s, override_s=args.test_timeout_s,
+        timeout_s=args.timeout_s, override_s=args.test_timeout_s, gpu=args.gpu,
         ceilings=ceilings)
     test_bound = ([f"{pytest_test_bound.TIMEOUT_ENV}={test_bound_s:g}"]
                   if test_bound_s > 0 else [])
@@ -955,8 +1006,13 @@ def main() -> int:
         # either way, so the shards keep their placement and their keys.
         for tag in tags:
             flags += ["--tag", tag]
+        # One --demand token per reserved kind, comma-joined: pbrun parses
+        # it as k=v pairs (#1008 item 4 adds disk_metadata beside mem_gb).
+        demand_terms = [f"mem_gb={args.mem_gb}"]
+        if args.disk_metadata:
+            demand_terms.append("disk_metadata=1")
         flags += [
-            "--demand", f"mem_gb={args.mem_gb}",
+            "--demand", ",".join(demand_terms),
             # pbrun fills the cpu demand from --cpus, and its default is 1.
             # Naming it here is what makes the reservation match the thread
             # ceiling above; it is sealed into the action's params, so a suite

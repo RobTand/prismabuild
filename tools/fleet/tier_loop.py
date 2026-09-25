@@ -162,16 +162,47 @@ def _stamp_standing(record: dict[str, object]) -> None:
     record["waited_s"] = round(max(0.0, now - float(slot[0])), 3)
 
 
+def _append_bounded_event(path: Path, record: Mapping[str, object]) -> None:
+    """Append one line to ``path``, kept to the newest ``MAX_CONSUMER_EVENT_LINES``.
+
+    Shared by :func:`_append_consumer_event` and :func:`_append_host_event`:
+    the same one-writer-per-file idiom, whichever directory a verdict's
+    consumer or host names.  Once the file holds
+    ``2 * MAX_CONSUMER_EVENT_LINES`` lines it is rewritten to its newest
+    ``MAX_CONSUMER_EVENT_LINES`` by an atomic rename.  Raises ``OSError`` on
+    any failure; the caller reports it and clears its own line-count memo.
+    """
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    count = _EVENT_LINES.get(str(path))
+    if count is None:
+        try:
+            with open(path) as stream:
+                count = sum(1 for _line in stream)
+        except FileNotFoundError:
+            count = 0
+    with open(path, "a") as stream:
+        stream.write(json.dumps(record, default=str) + "\n")
+    count += 1
+    if count >= 2 * pool.MAX_CONSUMER_EVENT_LINES:
+        with open(path) as stream:
+            kept = stream.readlines()[-pool.MAX_CONSUMER_EVENT_LINES:]
+        temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        with open(temporary, "w") as stream:
+            stream.writelines(kept)
+        os.replace(temporary, path)
+        count = len(kept)
+    _EVENT_LINES[str(path)] = count
+
+
 def _append_consumer_event(queue: pool.PoolQueue, host: str, consumer: str,
                            record: Mapping[str, object]) -> None:
     """Append one verdict to ``residency-events/<consumer>/<host>.jsonl``.
 
     This host's tier loop is the file's only writer (the role singleton), so
-    an append needs no lock and never crosses the NFS client boundary.  Once
-    the file holds ``2 * MAX_CONSUMER_EVENT_LINES`` lines it is rewritten to
-    its newest ``MAX_CONSUMER_EVENT_LINES`` by an atomic rename.  Best-effort:
-    a write that fails is said on stderr and the cycle goes on; the same
-    verdict is still on stdout.
+    an append needs no lock and never crosses the NFS client boundary.
+    Best-effort: a write that fails is said on stderr and the cycle goes on;
+    the same verdict is still on stdout.
     """
 
     try:
@@ -180,30 +211,32 @@ def _append_consumer_event(queue: pool.PoolQueue, host: str, consumer: str,
         return
     path = directory / f"{host}.jsonl"
     try:
-        directory.mkdir(parents=True, exist_ok=True)
-        count = _EVENT_LINES.get(str(path))
-        if count is None:
-            try:
-                with open(path) as stream:
-                    count = sum(1 for _line in stream)
-            except FileNotFoundError:
-                count = 0
-        with open(path, "a") as stream:
-            stream.write(json.dumps(record, default=str) + "\n")
-        count += 1
-        if count >= 2 * pool.MAX_CONSUMER_EVENT_LINES:
-            with open(path) as stream:
-                kept = stream.readlines()[-pool.MAX_CONSUMER_EVENT_LINES:]
-            temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-            with open(temporary, "w") as stream:
-                stream.writelines(kept)
-            os.replace(temporary, path)
-            count = len(kept)
-        _EVENT_LINES[str(path)] = count
+        _append_bounded_event(path, record)
     except OSError as exc:
         _EVENT_LINES.pop(str(path), None)
         print(json.dumps({"unix": time.time(), "event": "consumer-event-unwritten",
                           "consumer": consumer, "error": repr(exc)}),
+              file=sys.stderr, flush=True)
+
+
+def _append_host_event(queue: pool.PoolQueue, host: str,
+                       record: Mapping[str, object]) -> None:
+    """Append one verdict naming no consumer to ``residency-events/_host/<host>.jsonl``.
+
+    A verdict about the host's own tier -- the stage's ARC ``primarycache``
+    refusal, a ram-admission refusal, a ram epoch change -- or a tier-level
+    verdict whose tier plans no consumer yet names nobody to blame it on, and
+    used to reach only this host's stdout (#1006).  Same one-writer-per-file
+    idiom and bound as :func:`_append_consumer_event`; best-effort the same way.
+    """
+
+    path = queue.host_events_dir() / f"{host}.jsonl"
+    try:
+        _append_bounded_event(path, record)
+    except OSError as exc:
+        _EVENT_LINES.pop(str(path), None)
+        print(json.dumps({"unix": time.time(), "event": "host-event-unwritten",
+                          "host": host, "error": repr(exc)}),
               file=sys.stderr, flush=True)
 
 
@@ -262,10 +295,15 @@ def _emit(queue: pool.PoolQueue, host: str, event: Mapping[str, object], *,
     ending record read.  A tier-level verdict that names no consumer (an
     eviction that was futile or refused) is filed for every consumer
     ``tier_consumers`` lists on its tier, marked ``attributed_by: tier_id``.
-    A standing verdict carries ``waited_s`` (:func:`_stamp_standing`).  The
-    filed copy adds ``host`` (the reader merges every host's file); stdout is
-    unchanged apart from that stamp.  The plan reaper's own event retires the
-    consumer's directory, and the prewarm sweep
+    An event that names neither a consumer nor a tier with any planned
+    consumer on it -- the ARC ``primarycache`` refusal, a ram-admission
+    refusal, a ram epoch change -- has nobody's plan to be filed under, and
+    lands instead in ``residency-events/_host/<host>.jsonl`` (#1006), read by
+    :meth:`pool.PoolQueue.host_events`. A standing verdict carries
+    ``waited_s`` (:func:`_stamp_standing`).  The filed copy adds ``host``
+    (the reader merges every host's file); stdout is unchanged apart from
+    that stamp.  The plan reaper's own event retires the consumer's
+    directory, and the prewarm sweep
     (:meth:`pool.PoolQueue.sweep_consumer_events`) retires any directory a
     late append recreated.
     """
@@ -293,10 +331,16 @@ def _emit(queue: pool.PoolQueue, host: str, event: Mapping[str, object], *,
         _append_consumer_event(queue, host, consumer, record)
         return
     tier_id = record.get("tier_id")
+    filed = False
     if consumer is None and tier_consumers and isinstance(tier_id, str):
         for key in tier_consumers.get(tier_id, ()):
             _append_consumer_event(queue, host, key,
                                    {**record, "attributed_by": "tier_id"})
+            filed = True
+    if not filed:
+        # Nobody's plan claims this verdict (#1006): a host-level tier fact,
+        # or a tier-level verdict for a tier planning no consumer this cycle.
+        _append_host_event(queue, host, record)
 
 
 def load_ram_policy() -> dict[str, object] | None:
@@ -332,6 +376,19 @@ def _receipt_name(entry: os.DirEntry) -> bool:
     """A receipt file, as ``glob("*.json")`` selected one: no dotfile."""
 
     return entry.name.endswith(".json") and not entry.name.startswith(".")
+
+
+#: How many receipts the tier loop reads at once while a receipt directory
+#: changed (#1153).  A cold receipt costs one seek on the HDD pool that
+#: ``pb-queue`` lives on, and serially a fresh loop read about 4 a second
+#: (12,295 receipts, 2026-09-25 11:29Z).  The pool serves many small reads at
+#: once: 64 parallel readers ahead of the loop took it through 4,300 receipts
+#: in 17 s the same morning, about 253 a second, 63x the serial rate with no
+#: sign of a ceiling.  64 is the deepest point measured, as
+#: ``prewarm_loop.MAX_READERS`` is for bulk reads.  The read is a burst at a
+#: cold start and a handful of stats otherwise, and each reader holds one
+#: small file at a time.
+RECEIPT_READERS = 64
 
 
 class ReceiptCache:
@@ -391,6 +448,13 @@ class ReceiptCache:
         them, so no part of the read can be left for the next cycle.  A
         hang inside one entry is a stretch longer than any measured, and
         gets no write.
+
+        A changed directory's entries are stat-ed and parsed by
+        :data:`RECEIPT_READERS` threads (#1153), in name order as seen by
+        this thread, which alone checkpoints and keeps what was read
+        (`stage_release.DirectoryRecords.read`).  A stretch between two
+        checkpoints is still at most one entry's read, and a hung entry
+        stops the checkpoints once this thread reaches it.
         """
 
         out: list[dict[str, object]] = []
@@ -404,6 +468,7 @@ class ReceiptCache:
             try:
                 kept = self.records.read(
                     directory, select=_receipt_name, parse=pool._read_json,
+                    readers=RECEIPT_READERS,
                     **({} if checkpoint is None
                        else {"checkpoint": checkpoint}))
             except OSError as exc:
@@ -2787,11 +2852,17 @@ def _readahead_bytes(item: object) -> int | None:
 
     Its memory reservations: ``mem_gb`` of host memory plus the GPU memory
     its admission budgeted.  A consumer that keeps what it prefetches cannot
-    hold more than it reserved.  The two are summed even where they share
-    one physical pool (a GB10's unified memory), which over-states the
-    reach, so the horizon errs long, never short.  ``None`` when the item's
-    resources do not read.  The fallback of :func:`_readahead` for a plan
-    that declares no read-ahead (#909).
+    hold more than it reserved.  ``None`` when the item's resources do not
+    read.  The fallback of :func:`_readahead` for a plan that declares no
+    read-ahead (#909).
+
+    The two are one pool where the admitted device's memory is unified
+    (#959): admission measures the device's ``memory_domain`` and records it
+    on the claim, and on ``shared_system`` memory (a GB10) the GPU budget is
+    a subset of ``mem_gb`` (``pbrun --gpu-memory-gb``), so the reach is the
+    larger of the two, not their sum.  On a ``discrete`` device, and on a
+    claim whose admission did not measure the domain, the two are summed:
+    an unknown domain errs long, never short.
     """
 
     if not isinstance(item, Mapping):
@@ -2808,7 +2879,10 @@ def _readahead_bytes(item: object) -> int | None:
     if isinstance(admission, Mapping):
         budget = admission.get("gpu_memory_budget_bytes")
         if isinstance(budget, int) and not isinstance(budget, bool) and budget > 0:
-            total += budget
+            if admission.get("memory_domain") == "shared_system":
+                total = max(total, budget)
+            else:
+                total += budget
     return total
 
 
@@ -4252,6 +4326,7 @@ def _claim_of(key: str, consumer: Mapping[str, object],
               horizon: Mapping[str, object] | None, *, reading: str | None,
               leg: tuple[str, int, str, int, int] | None,
               published: bool, blocked_since: float | None = None,
+              further: Sequence[tuple[str, int, str, int, int]] = (),
               ) -> dict[str, object]:
     """One claimed window's entry for :func:`window_credit.claim_order`.
 
@@ -4260,7 +4335,14 @@ def _claim_of(key: str, consumer: Mapping[str, object],
     ``published`` says that leg is already queued: it will take its tokens
     from free when it claims, but the window publishes nothing more for it.
     ``blocked_since`` (:func:`_blocked_since`) ranks a blocked window among
-    the blocked ones.
+    the blocked ones.  ``further`` is every leg beyond ``leg``, in read
+    order, that :func:`residency_plan.window` already decided this window
+    would publish given the room -- the same shape as ``leg``.  Kept on the
+    claim as ``further_legs`` for :func:`_rank_claims` to spend against the
+    tier's measured landing rate (#1038): a granted window's cap is one leg
+    only until the rank knows that rate, so nothing here decides how many of
+    them a cycle publishes.  Empty when ``leg`` is ``None`` or already
+    published -- a window with something queued asks for nothing new.
     """
 
     stamp = consumer.get("claimed_unix")
@@ -4279,7 +4361,72 @@ def _claim_of(key: str, consumer: Mapping[str, object],
             "need_start_bytes": int(start), "need_end_bytes": int(end)})
         if phase == reading and blocked_since is not None:
             claim["blocked_since_unix"] = float(blocked_since)
+        if not published and further:
+            claim["further_legs"] = [
+                {"gib": int(g), "start_bytes": int(s), "end_bytes": int(e)}
+                for _mover, g, _phase, s, e in further]
     return claim
+
+
+def _leg_bytes(claim: Mapping[str, object]) -> int:
+    """A claim's priced first leg, in bytes (``need_start_bytes``/``need_end_bytes``)."""
+
+    return (int(claim["need_end_bytes"])                          # type: ignore[arg-type]
+            - int(claim["need_start_bytes"]))                     # type: ignore[arg-type]
+
+
+def _granted_extra_legs_gib(
+        granted: Sequence[tuple[str, Mapping[str, object]]], *,
+        free_gib: int, rate: float, cycle_s: float) -> dict[str, int]:
+    """Extra GiB each granted entry may publish beyond its priced first leg (#1038).
+
+    Capping a granted window at its next leg's GiB (:func:`_claim_of`'s
+    ``publish_gib``) caps its copy stream at ``chunk_bytes /
+    CYCLE_INTERVAL_S`` however fast the tier can actually land it -- below
+    the landing rate whenever a leg lands inside a cycle (PB#1022 review
+    item 7). ``rate * cycle_s`` is the tier's whole cycle, though, not one
+    granted window's: giving each granted entry its own ``rate * cycle_s``
+    budget lets K granted windows together ask for K times what the tier can
+    land, and letting each entry's extra legs draw independently on
+    ``free_gib`` lets a window that publishes first spend the room the rank
+    walk reserved for a later window's own first leg -- which the walk
+    already granted and this must not take back.
+
+    So both budgets are one shared pool, spent once: ``free_gib`` less every
+    granted entry's first-leg GiB (what the walk already paid for; the rank
+    reserved it, and this only ever grows a window past it, never into it),
+    and ``rate * cycle_s`` less every granted entry's first-leg bytes (what
+    the cycle already prices to land regardless).  ``granted`` is every
+    ``granted`` claim's ``(consumer, claim)`` pair in rank order --
+    ``shared_with`` entries left out, since their first leg costs nothing
+    new and this does not grow them further.  The pool is spent in that same
+    rank order, one already-decided leg at a time
+    (:func:`_claim_of`'s ``further_legs``, in each window's own read order):
+    a window's legs are sequential, so a leg that does not fit stops that
+    window's share rather than skipping ahead to a smaller later one, and
+    moves on to the next window's turn at what is left.  Nothing here
+    invents a leg :func:`residency_plan.window` did not already decide a
+    window would publish given the room.
+    """
+
+    first_bytes = sum(_leg_bytes(claim) for _key, claim in granted)
+    first_gib = sum(int(claim.get("need_gib") or 0) for _key, claim in granted)
+    room_gib = max(0, int(free_gib) - first_gib)
+    budget_bytes = max(0.0, rate * cycle_s - first_bytes)
+    extra: dict[str, int] = {}
+    for key, claim in granted:
+        got = 0
+        for leg in claim.get("further_legs") or ():                # type: ignore[union-attr]
+            leg_bytes = int(leg["end_bytes"]) - int(leg["start_bytes"])
+            leg_gib = int(leg["gib"])
+            if leg_bytes > budget_bytes or leg_gib > room_gib:
+                break
+            budget_bytes -= leg_bytes
+            room_gib -= leg_gib
+            got += leg_gib
+        if got:
+            extra[key] = got
+    return extra
 
 
 def _blocked_since(queue: pool.PoolQueue, key: str,
@@ -4487,6 +4634,18 @@ def _rank_claims(queue: pool.PoolQueue, tier_id: str,
     not read: no rank is safer than a guessed one.  A consumer whose claim
     time does not read is left out of the rank; the window holds it back
     behind the whole rank (:func:`_protect_tier_advances`).
+
+    Every ``granted`` entry's ``publish_gib`` can grow past its one priced
+    leg once this rate is known (:func:`_granted_extra_legs_gib`, #1038):
+    the walk above still ranks and spends the tier's free on one leg per
+    consumer, so who is granted, the head and the eviction target are
+    unchanged.  The extra room -- the tier's free beyond every granted
+    entry's first leg, and the cycle's landing-rate budget beyond every
+    granted entry's first leg's bytes -- is one pool the granted entries
+    share in rank order, not one ``rate * CYCLE_INTERVAL_S`` budget each: see
+    that function for why.  No measured rate (cold start, or a tier nothing
+    has landed on yet) leaves every ``publish_gib`` at its one-leg default,
+    today's behavior.
     """
 
     moment = time.time() if now is None else float(now)
@@ -4524,6 +4683,22 @@ def _rank_claims(queue: pool.PoolQueue, tier_id: str,
         entry["expected_landing_unix"] = (
             moment + CYCLE_INTERVAL_S * (int(entry["rank"]) - head_rank)
             + pool.HEARTBEAT_S + through / rate)
+    if rate is not None and rate > 0:
+        # One shared pool of extra room, spent in rank order, never a
+        # per-entry budget (#1038, :func:`_granted_extra_legs_gib`): who is
+        # granted and the eviction target above are already settled on one
+        # leg per consumer, so this only ever grows a granted entry's own
+        # ``publish_gib`` past what the walk already reserved it.
+        granted = [(str(entry["consumer"]), by_key[str(entry["consumer"])])
+                   for entry in order["entries"]                  # type: ignore[union-attr]
+                   if entry["standing"] == window_credit.CLAIM_GRANTED
+                   and "shared_with" not in entry]
+        extra = _granted_extra_legs_gib(
+            granted, free_gib=free, rate=rate, cycle_s=CYCLE_INTERVAL_S)
+        for entry in order["entries"]:                            # type: ignore[union-attr]
+            more = extra.get(str(entry["consumer"]))
+            if more:
+                entry["publish_gib"] = int(entry.get("publish_gib") or 0) + more
     order.update({
         "tier_id": tier_id, "free_gib": free, "ranked_unix": moment,
         "landing_bytes_per_s": rate,
@@ -5018,7 +5193,10 @@ def window_pressure(
                       int(wanted[0]["start_bytes"]), int(wanted[0]["end_bytes"]))
                      if wanted else None),
                 published=False,
-                blocked_since=_blocked_since(queue, _key, consumer)))
+                blocked_since=_blocked_since(queue, _key, consumer),
+                further=[(str(row["mover_action_key"]), int(row["stage_gib"]),
+                          str(row["phase"]), int(row["start_bytes"]),
+                          int(row["end_bytes"])) for row in wanted[1:]]))
         if wanted:
             need[tier_id] = max(need.get(tier_id, 0), int(wanted[0]["stage_gib"]))
             if not stage_newcomer and str(wanted[0]["phase"]) != reading:
@@ -8884,6 +9062,69 @@ class Liveness:
         self._records[str(minted.get("tier_id"))] = [
             queue, minted, stamp, stamp, 0, self._cycle]
 
+    def adopt(self, queue, *, host: str) -> list[str]:
+        """Take this host's live tier records on disk as minted, and re-announce them (#1153).
+
+        A loop that has just started has minted nothing, so until its first
+        cycle's mint no checkpoint has a record to re-announce, and that
+        cycle's first ``receipts`` step is the cold read of every receipt.
+        The records on disk were minted by the process this one replaced,
+        and they are that loop's word until this one's first mint, exactly
+        as a previous cycle's mint is during a warm read (#1148).
+
+        A record is adopted only when the readers would accept it now: it
+        parses, its ``tier_id`` is its file's name (`PoolQueue.tiers`) and
+        names this host (the suffix the retired-tier pass matches), its
+        schema is `storage_tiers.TIER_RECORD_SCHEMA_V1` (what PQ's reader
+        checks), and its ``announced_unix`` is no older than ``L``, the test
+        `PoolQueue._tier_loop_alive` and PQ's ``landing_verdict`` apply.  A
+        record older than that is a dead loop's word: a reader may already
+        have refused on it, and nothing here may bring it back.
+
+        Each adopted record is written at once, with a ``liveness_refresh``
+        note (``after: "adopted"``) that keeps the mint's own stamp, and is
+        kept as minted in the cycle before the first, so `end_cycle` drops it
+        after the first cycle: replaced by the first mint, or, if that cycle
+        failed before minting, never written again.  Returns the tier ids
+        adopted, in name order.
+        """
+
+        now = self._now()
+        suffix = f":{host}"
+        adopted: list[str] = []
+        for path in pool._glob(queue.root / pool.TIERS, "*.json"):
+            tier_id = path.stem
+            if not tier_id.endswith(suffix):
+                continue
+            try:
+                record = pool._read_json(path)
+            except (OSError, pool.PoolContractError, ValueError):
+                continue           # an unreadable record is a dead one
+            if (not isinstance(record, dict)
+                    or record.get("tier_id") != tier_id
+                    or record.get("schema") != storage_tiers.TIER_RECORD_SCHEMA_V1):
+                continue
+            age = pool.offer_timing(record.get("announced_unix"), now=now).age_s
+            if age is None or age > pool.OFFER_TIMEOUT_S:
+                continue
+            note = record.get("liveness_refresh")
+            note = note if isinstance(note, Mapping) else {}
+            minted_unix = note.get("minted_unix")
+            if type(minted_unix) not in (int, float):
+                minted_unix = record["announced_unix"]
+            refreshes = note.get("refreshes")
+            if type(refreshes) is not int:
+                refreshes = 0
+            minted = copy.deepcopy(record)
+            minted.pop("liveness_refresh", None)
+            self._records[tier_id] = [queue, minted, float(minted_unix),
+                                      float(record["announced_unix"]),
+                                      refreshes, self._cycle]
+            adopted.append(tier_id)
+        if adopted:
+            self._refresh("adopted")
+        return adopted
+
     def _age(self, now: float) -> float:
         if not self._records:
             return 0.0
@@ -9262,13 +9503,16 @@ def _cycle(
             verdict = storage_tiers.stage_arc_eligibility(record)
             record["arc_warm"] = verdict
             if verdict["primarycache"] is not None and not verdict["eligible"]:
-                print(json.dumps({
-                    "event": "stage-primarycache-refused",
-                    "unix": time.time(), "host": host, "tier_id": tier_id,
+                # A fact about this host's tier, not about any consumer's
+                # plan, so it is filed in the host sink rather than
+                # attributed to whoever the tier happens to be serving
+                # today (#1006).
+                _emit(queue, host, {
+                    "event": "stage-primarycache-refused", "tier_id": tier_id,
                     "dataset": record.get("dataset"),
                     "primarycache": verdict["primarycache"],
                     "reason": verdict["reason"],
-                }), flush=True)
+                })
             # One chunk family across tiers (#675): the stage announces the
             # same effective promotion chunk the ram tier on this host
             # announces, so the submitter cuts both legs at the same size.
@@ -9297,11 +9541,12 @@ def _cycle(
                                 "policy window")
             admission = record.get("ram_admission")
             if isinstance(admission, Mapping) and not admission.get("admissible"):
-                print(json.dumps({
-                    "event": "ram-admission-refused",
-                    "unix": time.time(), "host": host, "tier_id": tier_id,
+                # A host fact, not a consumer verdict (#1006): same host sink
+                # as the ARC refusal above.
+                _emit(queue, host, {
+                    "event": "ram-admission-refused", "tier_id": tier_id,
                     "ram_admission": admission,
-                }), flush=True)
+                })
             previous = earlier.get(tier_id)
             previous_epoch = (str(previous.get("epoch") or "")
                               if isinstance(previous, Mapping) else "")
@@ -9309,13 +9554,13 @@ def _cycle(
                     and previous_epoch != str(record.get("epoch") or "")):
                 # The one event an operator must never miss: every prior-epoch
                 # fragment is about to be dropped, and every ghost token is
-                # about to come back.
-                print(json.dumps({
-                    "event": "ram-epoch-changed",
-                    "unix": time.time(), "host": host, "tier_id": tier_id,
+                # about to come back.  A host fact (#1006): filed in the host
+                # sink alongside the other two.
+                _emit(queue, host, {
+                    "event": "ram-epoch-changed", "tier_id": tier_id,
                     "epoch": record.get("epoch"),
                     "previous_epoch": previous_epoch or None,
-                }), flush=True)
+                })
         record["fill_source"] = "measured" if storage_tiers.FILL_KIND in tokens else "none"
         record["fill_records"] = len(fill_records)
         # The probe rule, generalised from "nothing measured yet" to "nothing
@@ -9703,6 +9948,35 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _start(queue: pool.PoolQueue, *, host: str, interval_s: float,
+           ) -> tuple[ReceiptCache, Liveness]:
+    """What a freshly started loop holds before its first cycle.
+
+    Both are kept for the loop's life: the receipts it read (#992), and the
+    stretches and write times it measured last cycle, which are this cycle's
+    estimates (#1072).  Before anything else reads the queue, the loop
+    adopts the tier records the loop it replaced announced, while a reader
+    would still accept them (`Liveness.adopt`, #1153): its first cycle
+    reads every receipt cold, and those records must stay alive through it.
+    """
+
+    receipts = ReceiptCache()
+    liveness = Liveness(interval_s=float(interval_s))
+    try:
+        adopted = liveness.adopt(queue, host=host)
+    except OSError as exc:
+        # Adoption is a courtesy to the readers, never a reason not to
+        # start: without it the records age as they did before #1153.
+        print(json.dumps({"event": "tier-records-adopt-failed",
+                          "unix": time.time(), "host": host,
+                          "error": repr(exc)}), flush=True)
+    else:
+        print(json.dumps({"event": "tier-records-adopted",
+                          "unix": time.time(), "host": host,
+                          "tiers": adopted}), flush=True)
+    return receipts, liveness
+
+
 def _serve(args) -> int:
     global CYCLE_INTERVAL_S
     # The cadence this loop decides at is part of every horizon it prices
@@ -9711,10 +9985,8 @@ def _serve(args) -> int:
     queue = pool.PoolQueue(Path(args.pool_root))
     queue.ensure_layout()
     host = socket.gethostname()
-    receipts = ReceiptCache()
-    # Kept for the loop's life: the stretches and write times it measured
-    # last cycle are this cycle's estimates (#1072).
-    liveness = Liveness(interval_s=float(args.interval_s))
+    receipts, liveness = _start(queue, host=host,
+                                interval_s=float(args.interval_s))
     loaded_commit = runtime_gate.loaded_runtime_commit()
     loaded_generation = runtime_gate._generation_at(runtime_gate.GENERATION_VERSION)
 

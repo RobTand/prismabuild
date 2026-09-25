@@ -19,6 +19,7 @@ with no total timeout) must not hold the box shut for anyone.
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 from pathlib import Path
 import sys
@@ -30,7 +31,25 @@ sys.path[:0] = [str(ROOT / "src"), str(ROOT / "tools" / "fleet")]
 from prismabuild import adaptive_cpu, core as pb, pool  # noqa: E402
 import pbstatus  # noqa: E402
 
+#: Loaded the same way the ``pbtest`` test files load it: a fresh module
+#: object per test file, not ``sys.modules``'s cached one, so a monkeypatch
+#: elsewhere cannot leak in.  Used below to drive this file's real
+#: ``holder_bound`` with the exact number ``pbtest`` itself derives (#1123),
+#: rather than a copy of it that could drift from the source.
+_PBTEST_SPEC = importlib.util.spec_from_file_location(
+    "pbtest", ROOT / "tools" / "fleet" / "pbtest.py")
+pbtest = importlib.util.module_from_spec(_PBTEST_SPEC)
+_PBTEST_SPEC.loader.exec_module(pbtest)               # type: ignore[union-attr]
+
 T0 = 2_000_000.0
+
+#: The end ``pbtest`` seals for a CPU-only shard whose only claimants
+#: announce the Sparks' 86,400 s campaign ceiling, with no ``--timeout-s``
+#: (#1123).  Read off ``pbtest.shard_ceiling`` itself, not restated as a
+#: literal, so this file fails the moment that derivation drifts.
+CPU_SHARD_SEALED_END_S = pbtest.shard_ceiling(
+    timeout_s=None, gpu=False,
+    ceilings={"sparky": 86400.0, "sparklina": 86400.0})
 
 
 def _key(seed: str) -> str:
@@ -411,6 +430,68 @@ def test_a_sealed_shard_is_read_by_its_declared_end(
     assert _denial(queue, gpu_action)["reason"] == (
         "reservation_unavailable_withholding" if withholds
         else "reservation_unavailable_starved")
+
+
+# -- #1123: pbtest's non-GPU cap never reads long across a shard's life ------
+
+
+def test_pbtests_non_gpu_cap_matches_twice_the_pools_withhold_ceiling() -> None:
+    """No hidden drift between what ``pbtest`` seals and the pool's own rule.
+
+    ``holder_bound`` reads a bounded holder as ``transient`` only while its
+    age is inside ``WITHHOLD_CEILING_S`` of its claim, or its declared end is
+    inside that same ceiling of now.  With a declared end ``T``, that covers
+    every age of the holder's life exactly when ``T <= 2 * WITHHOLD_CEILING_S``:
+    the first half by age, the second half by "ends soon".  A CPU-only
+    shard tagged for the Sparks' 86,400 s campaign ceiling, with no
+    ``--timeout-s``, must never seal more than that -- sealing 7,200 s (the
+    published loop default, tried and rejected for this) still reads
+    ``long`` for every age from 900 s to 6,300 s, the same starvation window
+    the original 86,400 s seal gave for any shard that outlives 15 minutes.
+    """
+
+    assert CPU_SHARD_SEALED_END_S == 2 * pool.WITHHOLD_CEILING_S
+
+
+@pytest.mark.parametrize("age_s", [
+    0.0, 1.0,
+    pool.WITHHOLD_CEILING_S - 1, pool.WITHHOLD_CEILING_S + 1,
+    CPU_SHARD_SEALED_END_S / 2,
+    CPU_SHARD_SEALED_END_S - 1, CPU_SHARD_SEALED_END_S - 0.001,
+], ids=["at-claim", "one-second-in", "just-inside-the-age-window",
+       "just-past-the-age-window", "midpoint", "near-its-end",
+       "an-instant-before-its-end"])
+def test_a_pbtest_cpu_shards_sealed_end_reads_transient_at_every_age(
+    queue: pool.PoolQueue, clock, tmp_path: Path, age_s: float,
+) -> None:
+    """Drives the real ``holder_bound`` with what ``pbtest`` itself derives.
+
+    Not a copy of the constant compared to itself: ``CPU_SHARD_SEALED_END_S``
+    is read off ``pbtest.shard_ceiling``, and this claims a holder sealed to
+    it and asks the pool's own ``holder_bound`` whether it drains soon, at
+    ages spanning the holder's whole declared life.  A ``transient`` holder is
+    exactly what lets the GPU action *withhold* -- reserve the box and refuse
+    even the 1-CPU item behind it (``claim() is None``) -- rather than being
+    read ``long`` and reported merely ``starved``, which is what let the
+    2026-09-25 incident's same-band CPU shard claim the box out from under a
+    waiting GPU quantum.  That reservation must hold at every one of these
+    ages, not just at the ones #939's own fixture happened to try.
+    """
+
+    claim, shard, gpu_action, behind = _gpu_action_behind_a_shard(
+        queue, clock, tmp_path, timeout_s=CPU_SHARD_SEALED_END_S, age_s=age_s)
+
+    bound = queue.holder_bound(shard)["bound"]
+    assert bound == "transient", (
+        f"a CPU shard sealed to pbtest's own {CPU_SHARD_SEALED_END_S:g}s end, "
+        f"{age_s:g}s into its life, reads {bound!r} -- a starved GPU action "
+        "behind it would lose its reservation to a same-band claim (#1123)")
+    assert claim() is None, (
+        f"the GPU action did not hold its reservation ({age_s:g}s into the "
+        f"shard's {CPU_SHARD_SEALED_END_S:g}s declared life): a same-band CPU "
+        "shard claimed the box out from under it, reproducing #1123")
+    assert _denial(queue, gpu_action)["reason"] == "reservation_unavailable_withholding"
+    assert queue.item_path(pool.READY, behind).exists()
 
 
 # -- the measurement's exclusive need ----------------------------------------

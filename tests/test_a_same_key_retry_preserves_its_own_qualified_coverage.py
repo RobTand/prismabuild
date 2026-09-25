@@ -33,6 +33,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import threading
 
 import pytest
 
@@ -242,6 +243,143 @@ def test_a_repeated_partial_retry_keeps_its_coverage(fleet, monkeypatch) -> None
                for document in documents.documents)
     final = fragment_keys(args)
     assert set(final) == set(keys)
+
+
+# --- the pre-lock parse (#1008 item 1) --------------------------------------
+
+def _resume_kwargs(args) -> tuple[pool.PoolQueue, dict[str, object]]:
+    """This args's own ``_resume_own_coverage`` call, built as :func:`stage_move.move`
+    builds it, so the fence can be exercised directly rather than through a
+    full run."""
+
+    manifest = stage_move.load_manifest(
+        Path(args.cas_root), args.action_key, args.manifest)
+    entries = stage_move.prewarm_loop.manifest_read_entries(manifest)
+    window = stage_move.prewarm_loop.entries_between(
+        entries, int(args.range_start_bytes), int(args.range_end_bytes))
+    queue = pool.PoolQueue(Path(args.pool_root))
+    return queue, dict(
+        consumer_action_key=str(args.consumer_action_key),
+        mover_action_key=str(args.action_key), tier_id=str(args.tier_id),
+        stage_root=Path(args.stage_root),
+        manifest_sha256=str(args.manifest_sha256),
+        residency_root=Path(args.residency_root), window=window,
+        mount_prefix=str(manifest["mount_prefix"]),
+        named_once=frozenset(stage_move.paths_named_once(entries)))
+
+
+def test_the_resume_parse_does_not_hold_the_stage_ownership_lock(
+        fleet, monkeypatch) -> None:
+    """The pre-lock parse of a same-key retry's own fragment never holds
+    the stage ownership lock (#1008 item 1).
+
+    Before this, ``_resume_own_coverage`` opened and parsed the fragment
+    *inside* the lock -- a mover's first wait for it, per #1005's
+    ``resume_lock_wait_s``.  A slow parse of a large prior fragment would
+    then serialize every other mover's start gate and every reader's pin
+    behind it, exactly what #988 already fixed for the egress's own
+    censuses.  Here the parse is made artificially slow, and the lock is
+    probed, non-blocking, from another thread while it runs.
+    """
+
+    _tmp, args, _mount, _entries, keys, _names = fleet
+    _interrupted_first_attempt(fleet)
+    queue, kwargs = _resume_kwargs(args)
+
+    parsing = threading.Event()
+    release = threading.Event()
+    real_validate = residency_map.validate_fragment
+    calls: list[int] = []
+
+    def slow_validate(value):
+        calls.append(1)
+        if len(calls) == 1:
+            parsing.set()
+            assert release.wait(5.0), "the test never released the parse"
+        return real_validate(value)
+
+    monkeypatch.setattr(residency_map, "validate_fragment", slow_validate)
+
+    outcome: dict[str, object] = {}
+
+    def run() -> None:
+        outcome["result"] = stage_move._resume_own_coverage(queue, **kwargs)
+
+    worker = threading.Thread(target=run)
+    worker.start()
+    try:
+        assert parsing.wait(5.0), "the resume parse never started"
+        with queue.stage_ownership_lock(
+                str(args.stage_root), blocking=False) as acquired:
+            assert acquired, (
+                "the stage ownership lock was held while the pre-lock "
+                "parse ran")
+    finally:
+        release.set()
+        worker.join(10.0)
+    assert not worker.is_alive()
+    # The fragment did not change, so the version fence let the pass under
+    # the lock reuse this parse rather than paying for a second one.
+    assert calls == [1]
+    staged, _sidecar, _generation = outcome["result"]
+    assert set(staged) == set(keys[:2])
+
+
+def test_a_fragment_changed_between_the_pre_lock_parse_and_the_lock_is_reread(
+        fleet, monkeypatch) -> None:
+    """A fragment rewritten in the gap is re-read, never served stale.
+
+    The pre-lock parse is a hint, exactly as the egress's own pre-lock
+    census is (#988): the pass under the lock re-checks the file's #761
+    version and re-parses whenever it changed
+    (:class:`stage_release._CensusMemo`'s promise, applied here to the
+    mover's own resume).  The fragment is rewritten -- a different digest
+    for one already-covered entry -- while the pre-lock parse is paused on
+    the *old* bytes, and the resumed coverage must carry the rewritten one.
+    """
+
+    _tmp, args, _mount, _entries, keys, _names = fleet
+    _interrupted_first_attempt(fleet)
+    queue, kwargs = _resume_kwargs(args)
+    fragment_path = residency_map.fragment_path(
+        Path(args.residency_root), CONSUMER, MOVER)
+
+    parsing = threading.Event()
+    release = threading.Event()
+    real_validate = residency_map.validate_fragment
+    calls: list[int] = []
+    rewritten_digest = "5" * 64
+
+    def slow_validate(value):
+        calls.append(1)
+        if len(calls) == 1:
+            parsing.set()
+            assert release.wait(5.0), "the test never released the parse"
+        return real_validate(value)
+
+    monkeypatch.setattr(residency_map, "validate_fragment", slow_validate)
+
+    def rewrite_between_parse_and_lock() -> None:
+        assert parsing.wait(5.0), "the resume parse never started"
+        document = json.loads(fragment_path.read_bytes())
+        document["entries"][keys[1]]["sha256"] = rewritten_digest
+        fragment_path.write_text(json.dumps(document, sort_keys=True))
+        release.set()
+
+    rewriter = threading.Thread(target=rewrite_between_parse_and_lock)
+    rewriter.start()
+    outcome: dict[str, object] = {}
+    try:
+        outcome["result"] = stage_move._resume_own_coverage(queue, **kwargs)
+    finally:
+        rewriter.join(10.0)
+
+    assert not rewriter.is_alive()
+    assert len(calls) == 2, (
+        "the changed fragment was not re-parsed under the lock")
+    staged, _sidecar, _generation = outcome["result"]
+    assert staged[keys[1]]["sha256"] == rewritten_digest, (
+        "the resume trusted the stale pre-lock parse over the current file")
 
 
 # --- fail closed -------------------------------------------------------------

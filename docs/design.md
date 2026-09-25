@@ -237,27 +237,52 @@ partial without making its valid job unreadable or erasing queue counts.
 That latest-only record is not the only evidence of a denial (#991). Each
 action also has a reason ring, `denial-transitions/<key>.json` in the queue
 root, which keeps the newest 16 `{unix, host, reason, decision_reason,
-published_unix}` entries. An entry is appended only when the reason (the
-branch plus the controller decision's own reason) differs from that host's
-newest entry for the same generation, so the sequence that diagnoses a
-starvation, for example `measurement_holder` then `host_pressure`, survives
-every pass that overwrites the latest record. The ring takes no lock of its
-own: every `record_denial` call in the claim scan that reaches it runs under
-the key's transition lock, which already serializes that key's writers across
-the fleet. `transition_busy`, recorded because another loop holds that lock,
-stays out of the ring: it is a sibling loop evaluating the item this instant,
-not a verdict about the item, and several loops per box would otherwise fill
-the ring with it. So do the two reasons the scan records before it takes the
-lock (#1085), `placement_mismatch` and `deferred_behind_withheld_row`: an
-unlocked read-modify-write of the ring could drop the entry a lock holder is
-writing. Both still reach the latest record. One writer is outside the claim scan and its lock: the tier
-loop's `residency_plan_unreadable`, whose entry is best-effort against a claim
-loop writing the same key at that instant. The ring shares nothing with the latest record's local `flock`, so a busy diagnostic
-lock no longer loses a reason. Its cost on the 1 Hz claim loop is a dictionary
-lookup for an unchanged reason: an in-process memo holds the reason each
-process last saw on file for its host, pruned to the ready queue every pass.
-A change costs one small read and one atomic write, the same kind and size as
-the `passes/` write the pass already makes for that denial. The prewarm loop's
+published_unix, count, last_unix}` entries. An entry is appended only when
+the reason (the branch plus the controller decision's own reason) differs
+from that host's newest entry for the same generation -- the entry with the
+greatest `last_unix` for that host, since a damped repeat (below) updates a
+reason's own entry in place without moving it, so ring position alone no
+longer says which is newest once a reason has flapped -- so the sequence
+that diagnoses a starvation, for example `measurement_holder` then
+`host_pressure`, survives every pass that overwrites the latest record. The
+ring takes no lock of its own: every `record_denial` call in the claim scan
+that reaches it runs under the key's transition lock, which already
+serializes that key's writers across the fleet. `transition_busy`, recorded
+because another loop holds that lock, stays out of the ring: it is a sibling
+loop evaluating the item this instant, not a verdict about the item, and
+several loops per box would otherwise fill the ring with it. So do the two
+reasons the scan records before it takes the lock (#1085),
+`placement_mismatch` and `deferred_behind_withheld_row`: an unlocked
+read-modify-write of the ring could drop the entry a lock holder is writing.
+Both still reach the latest record. One writer is outside the claim scan and
+its lock: the tier loop's `residency_plan_unreadable`, whose entry is
+best-effort against a claim loop writing the same key at that instant. The
+ring shares nothing with the latest record's local `flock`, so a busy
+diagnostic lock no longer loses a reason. Its cost on the 1 Hz claim loop is
+a dictionary lookup for an unchanged reason: an in-process memo holds the
+reason each process last saw on file for its host, pruned to the ready queue
+every pass. A change costs one small read and, when the reason is new to this
+host's ring, one write the same kind and size as the `passes/` write the pass
+already makes for that denial.
+
+**A repeat of an already-seen reason is damped onto its own entry, not
+appended (#1006).** A reason that flips back and forth at a threshold, for
+example `host_pressure` against an admitted verdict as PSI crosses the gate,
+is a *change* on every pass by the rule above, so before this it appended a
+fresh entry on every flip and, within 16 flips, evicted the ring's own first
+entry -- the transition that names where the starvation began. Now, when the
+incoming `(reason, decision_reason)` already has an entry on this host's ring
+(anywhere in it, not only the newest), that entry's `count` is incremented
+and its `last_unix` is set to now, in place; nothing is appended and nothing
+is evicted. A genuinely new reason still appends and the ring is still cut to
+the newest 16, so a key whose reasons never repeat is unaffected (the #991
+acceptance: three distinct reasons in three passes all still land, in order,
+each with `count: 1`). The ring's size is then bounded by the number of
+distinct reasons a host has ever shown for this generation, not by how many
+times it changed, and the first transition of each survives however long the
+flapping lasts.
+
+The prewarm loop's
 receipt sweep retires the rings of terminal and withdrawn keys on the same
 live set, and a ring no state directory names is kept for seven days.
 An unfunded token acquisition also retains `token_shortage`: the first failing
@@ -981,18 +1006,31 @@ input, so forwarding them cannot change an action key.
 ### Fleet command demand vocabulary
 
 `pbrun` and manifests consumed by `pbcampaign` use the closed demand vocabulary
-`cpu`, `gpu`, and `mem_gb`. Validation occurs before a request is sealed; a
-manifest is validated as a whole before its first row is published. The live
-pool offers and SLURM translation both define only these resource kinds, so an
-unknown name would otherwise create an action no worker could admit. This does
-not narrow the generic `PoolQueue` resource ledger, whose direct producers may
-define resources outside the fleet-command client contract.
+`cpu`, `gpu`, `mem_gb`, and `disk_metadata`. Validation occurs before a request
+is sealed; a manifest is validated as a whole before its first row is
+published. The live pool offers and SLURM translation both define only these
+resource kinds, so an unknown name would otherwise create an action no worker
+could admit. This does not narrow the generic `PoolQueue` resource ledger,
+whose direct producers may define resources outside the fleet-command client
+contract.
+
+`disk_metadata` (#1008 item 4) reserves the executing box's directory/file
+metadata throughput, the same way `cpu` and `mem_gb` reserve its cores and
+memory: a consumable count, not a byte budget. A box offers a small fixed
+count of it (one, today), so a shard that declares `disk_metadata=1` gets that
+box's whole metadata throughput to itself for as long as it holds the
+reservation. It exists because two timing-sensitive stage tests sharing a box
+distort each other's measured hold times -- a 20,000-entry egress measured
+0.25 s alone and 1.22 s beside a second one on the same disk (#1005) -- and
+neither `cpu` nor `mem_gb` demand serializes them, since neither is what they
+actually contend on. `pbtest --disk-metadata` requests it for every shard of
+that invocation (see [Test fanout submission](#test-fanout-submission)).
 
 Storage-tier kinds are exactly such a producer-defined resource. `PoolQueue`
 understands a demand key spelled `<kind>@<tier_id>` and reserves it on a
 cluster-scoped tier ledger rather than on the executing box; `pbrun --demand`
-and campaign rows still refuse every name outside `cpu`, `gpu` and `mem_gb`, so
-no fleet-command submission can carry one. See
+and campaign rows still refuse every name outside `cpu`, `gpu`, `mem_gb` and
+`disk_metadata`, so no fleet-command submission can carry one. See
 [Cluster-scoped storage tiers](#cluster-scoped-storage-tiers-583).
 
 ## Work decomposition boundary
@@ -1037,7 +1075,23 @@ submitter, not to the longest job a box accepts: derived from the announced
 ceilings alone, a GPU shard's bound followed the Sparks' 86,400 s campaign
 ceiling (86,370 s), so a hung test held its GPU for a day. `--test-timeout-s 0`
 is a declaration and is honoured. CPU shards still derive their bound from the
-ceilings they read when neither flag is given.
+ceilings they read when neither flag is given, but a non-`--gpu` shard's own
+sealed deadline caps an unrequested announcement at
+`pbtest.NON_GPU_UNREQUESTED_CEILING_CAP_S` (#1123), `2 * pool.WITHHOLD_CEILING_S`
+(1,800 s): a CPU-only shard never runs campaign work, so both Sparks' 86,400 s
+ceiling is not its own bound to inherit, and admission
+(`PoolQueue.holder_bound`) reads a bounded holder as draining soon only while
+its age is inside `WITHHOLD_CEILING_S` (900 s) of its claim or its declared
+end is inside that same ceiling of now -- so a holder sealed to more than
+twice `WITHHOLD_CEILING_S` reads as not draining for the entire middle of its
+life, whatever it actually seals. Capping at the published loop default
+(7,200 s) was tried first and rejected: it still leaves that gap open from
+900 s to 6,300 s of a shard's life, the same shape of starvation the original
+86,400 s seal gave, only shorter. `2 * WITHHOLD_CEILING_S` is the largest end
+for which admission reads `transient` across a holder's *entire* declared
+life, so a CPU shard sealed to it can never itself flip a starved GPU
+action's reservation off. An explicit `--timeout-s` is still honoured
+uncapped, exactly like an announced ceiling already tighter than the cap.
 
 Structured `--pytest-args` forwarding uses a closed population/report vocabulary
 and replaces environment/project `addopts` when supplied. Worker count, config
@@ -3579,18 +3633,26 @@ decision feeds it:
   compared afterwards on the baselines they ran against.
 * A run of samples above the baseline is an *excursion*, judged against the
   samples before it began, so a sustained foreign load is refused for as long
-  as it runs and not only on its first pass. A run that lasts as long as the
-  samples before it span has outlived what the window remembers, and the
-  host's idle state is taken to have changed. Every idle sample joins the
-  window, the excursion's included.
+  as it runs and not only on its first pass. Its span is measured from the
+  *oldest* remembered sample to the run's own start, not between the
+  remembered samples themselves: that span is zero with only one of them,
+  which read every run as having already outlived the window on its first
+  pass (#1014, fixed 2026-09-25). A run that lasts as long as that span has
+  outlived what the window remembers, and the host's idle state is taken to
+  have changed. An excursion sample joins the window as it runs, so it can
+  become the baseline once it outlives it.
 * With no idle history nothing about the host is measured yet, and the
   pre-#997 line judges the sample (`busy_cpus > .05 x CPUs` or `psi_some >=
-  .10`), labelled `basis: unmeasured` with the line it applied; the sample
-  seeds the window, so the next pass is judged against it. This is the same
-  rule as the unmeasured export slot count (#999): with no measurement, the
-  previous value applies and says so. Refusing an unmeasured host outright
-  would delay every first exclusive claim by one pass and protect nothing,
-  since the next pass would be judged against the sample it refused.
+  .10`), labelled `basis: unmeasured` with the line it applied. A sample the
+  line refuses is foreign load, not idle evidence, and does not seed the
+  window (#1014, fixed 2026-09-25): seeding it would make that load its own
+  baseline maximum, admitting the same load on the very next pass, which is
+  exactly what a cold host did before the fix. A sample the line does not
+  refuse seeds the window, so the next pass is judged against it — this is
+  the same rule as the unmeasured export slot count (#999): with no
+  measurement, the previous value applies and says so. A refusal reads
+  `basis: unmeasured` on every pass until a sample the line does not refuse
+  arrives, however many passes that takes.
 * With holders present the sample measures them too. It is judged against
   the whole window (`state: holders_present`) and never joins it: above the
   history it refuses the measurement `measurement_host_not_idle`, as the
@@ -3613,7 +3675,7 @@ one does:
 | Threshold | Source | Judged against |
 |---|---|---|
 | Measurement, unbounded and full-width idleness (busy CPUs, PSI `some`) | The host's own idle baseline, above | The largest idle sample; `1/(IDLE_WINDOW+1)` false refusal when stationary |
-| The same, on a host with no idle history (`busy_cpus > .05 x CPUs`, `psi_some >= .10`) | The pre-#997 lines, labelled `basis: unmeasured` | One pass, until the host's first idle sample exists |
+| The same, on a host with no idle history (`busy_cpus > .05 x CPUs`, `psi_some >= .10`) | The pre-#997 lines, labelled `basis: unmeasured` | Every pass the line refuses, until a sample it does not refuse seeds the window (#1014) |
 | Full-width reservation beside holders, `psi_some >= .10` | Constant, unchanged | The baseline cannot separate the holders' load from foreign load |
 | GPU measurement host pressure (memory PSI `some`/`full`, CPU PSI `some`) | The same baseline, in `gpu-state.json` | The same |
 | Host saturation, `busy_cpus >= .95 * cpus` | Constant, unchanged | Refuses every CPU claim; out of #997's scope |
@@ -3668,8 +3730,8 @@ the longest export landing over the shortest group spacing, which is the
 most exports one producer has in flight. Landing is an export's own wall
 time, and spacing the gap between one producer's successive exports, both
 learned at completion into the host-local `export-rates.json`, the last 32 of
-each per template. Where either side is unmeasured, as on a template's first
-claim, `k` is `DEFAULT_EXPORT_SLOTS` (1). The allowance metadata records which
+each per key. Where either side is unmeasured, as on a key's first claim, `k`
+is `DEFAULT_EXPORT_SLOTS` (1). The allowance metadata records which
 (`basis`: `declared`, `measured` with both numbers, or `unmeasured`). The allowance is derived from the sealed request, like the
 #747 `spool_gb` window, but at claim rather than at seal, so already sealed
 producers get it when a runtime carrying it claims them; a producer claimed
@@ -3679,6 +3741,34 @@ of the producer's own affinity and recorded in its holder metadata as
 producer, so nothing else is admitted onto them and the producer pays for the
 room while it is idle. A producer with unbounded CPU demand, or one that fits
 the box only without the allowance, is claimed without it, as before.
+
+**Export rates per declared family (#1126).** The key is the template's
+digest unless the template declares `export_rate_family`, an identifier by
+the action contract's input-id rule (`produced_output.validate_export_rate_family`).
+Then every template of the family shares one entry, `family:<name>`, which no
+64-hex template digest can equal (`adaptive_cpu.export_rate_key`). A GLM-5.3
+Stage B row is its own template, because its layer, chain and inputs differ,
+so a rate learned per template was never learned: every row ran its handoff
+exports on the unmeasured single slot, and they never overlapped (PQ #1225,
+row 029). With a family, the family's first row on a host starts
+`unmeasured` and every later row inherits what the earlier ones measured; the
+rule is unchanged, and only the key it learns under moves. The family is part
+of the template's canonical bytes, present only when declared, so a template
+without it keeps its `template_sha256`, and the sealed request's declaration,
+which carries the digest, covers it. `PoolQueue.publish` projects it into the
+row's `produced_output` reference beside the digest, and the allowance at
+claim and the learning at an export's completion (`PoolQueue._learn_export`)
+both read it there (`adaptive_cpu.export_rate_names`). A reference naming a
+family that is not an identifier gets no allowance and teaches nothing, rather
+than falling back to the template; a producer that declares none keys on its
+template, as before, and a family's rates are never read for it. The basis
+names `export_rate_family` when one is declared. Nothing seals a slot count:
+PB measures. The allowance is also what carries a producer's exports past a
+withhold on its host (the withholding rule, #985): a funded export takes
+nothing the withholding item waits for and is admitted, while one past the
+allowance would take free tokens and is deferred behind it. So the slots a
+family measures are also how many of a row's exports run while the next row
+waits for the box.
 
 `submit_group` publishes each export with `dependent_of` set to its producer.
 The row field is only a hint for which rows are worth a read: for a row that
@@ -4811,15 +4901,23 @@ the lock. The memo lives for one call, holds only what that call parsed, and
 is dropped when it returns. The judgement and the unlinks stay in the hold.
 The empty-directory prune runs after it: a publisher renames into a
 directory that already holds its temporary, so `rmdir` cannot remove it, and
-the publisher's `mkdir` already runs outside the lock.
+the publisher's `mkdir` already runs outside the lock. That `mkdir` and the
+temporary's creation are not themselves atomic, though: the directory holds
+nothing between them, so this same prune can remove it in the gap. Since
+#1008 item 2, `stage_move._Copier._copy_one` retries the `mkdir` once, on the
+specific `FileNotFoundError` that race leaves, before opening the temporary
+again -- the same single retry `residency_map._write_atomic` already takes
+against the identical race for its own fragment directory.
 
 The unlinks stay under the lock because moving them out is not safe without
 new state. Unlinking outside the lock means dropping the ownership in one
 hold and unlinking in a later one. Two co-owners' egresses can then each
 judge a shared path against the other's fragment, which is still present,
-and both drop their ownership. The file is left with no owner, and because
-the mover marked it published, `reconcile` counts it in `unowned_left` and
-does not reclaim it. Closing that gap needs a durable egress-intent record
+and both drop their ownership. The file is left with no owner. A copy
+published before #1088 carries only the source mark, so `reconcile` counts
+it in `unowned_left` and does not reclaim it; a later copy is reclaimed only
+once its writer has ended, which says nothing about the egresses that
+dropped it. Closing that gap needs a durable egress-intent record
 and a resumer that finishes the unlinks after a crash. A `fable-high`
 consult on the split design (drop in one hold, then unlink in bounded holds)
 judged it sound with seven fixes, among them liveness for publishers past
@@ -4891,14 +4989,39 @@ The other holders of the lock follow the same pattern where it applies:
   lock it checks the READY and CLAIMED rows and the movers again, takes the
   censuses through the memo, and classifies and unlinks. The prune runs
   after the hold.
+* A same-key retry's resume (`stage_move._resume_own_coverage`, #1008 item 1)
+  parses its own prior fragment and material sidecar before this same lock
+  is requested -- the mover's first wait for it, `resume_lock_wait_s`.
+  Each parse is kept with the `fstat` version it was read at
+  (`stage_move._parse_own_document`); once the lock is held, the file is
+  opened again and the parse is reused only while that version still holds,
+  and re-parsed otherwise (`stage_move._reread_own_document`). A prior
+  fragment or sidecar this pass could not use decides nothing -- it is a
+  hint, exactly as the egress's own pre-lock census is -- so the pass under
+  the lock always re-reads a document it returned nothing for.
 
 Range adoption also checks the donor's dated material against the current file
 identity under the ownership lock before publishing a successor or transferring
 credit (#755/#756). A superseded donor is skipped in favor of another current
 donor for the same range. Path-level publication likewise searches past records
 for an older inode; those records do not describe the current file's bytes.
-An in-place modification of a dated inode remains a conflict. These checks use
-metadata and preserve valid zero-copy reuse; they do not rehash staged payloads.
+An in-place modification of a dated inode remains a conflict once its size also
+disagrees. These checks use metadata first and preserve valid zero-copy reuse;
+only a same-inode, same-size record whose `mtime_ns`/`ctime_ns` alone drifted
+rehashes the destination, against that record's own digest, to tell an
+in-place write from a coincidence neither side can settle from stat alone
+(`_content_proof`, #1078) -- the allocator handing a just-freed inode straight
+back to the very next create in the same directory reads exactly like an
+in-place write, and reused it in `test_a_live_pinned_file_with_only_stale_records_is_never_replaced`
+after only two replacements on plain ext4, no concurrency required. A settled
+match is not treated as proof of an unbroken lineage either: it falls back to
+the same "skip it, another record (or a live pin) may still date the current
+incarnation" handling as a record naming a different inode, never an adoption
+on its own. This is the same content tie-break #1096 uses for an NFS
+delegation recall, applied here for the first time; `stage_release.py`'s
+independent `#853` stale-mention prune does not take it and keeps the
+stricter "same-inode size/time change is divergence" rule verbatim, since
+that prune path must not cost a rehash on its own hot path.
 
 **The proof-lookup index is a bounded, exact projection.** A mover runs
 `_proof_search` once per destination and again on every publish poll, so the
@@ -5288,12 +5411,112 @@ there re-announces is the record the previous cycle minted. `Liveness`
 already allows this, byte for byte as above: `end_cycle` keeps the records
 the cycle announced, `begin_cycle` does not clear them, and `_refresh`
 writes every record it keeps. That record is still the loop's word until
-this cycle's mint replaces it. Two cases have nothing to re-announce, and
-read as dead within `L + P` as before: the first cycle after the loop
-starts, whose records on disk were written by the process before it, and a
-cycle after one that failed before its mint. A hang inside one entry's
-stat or parse is a stretch longer than every one measured, and gets no
-write.
+this cycle's mint replaces it. A cycle after one that failed before its
+mint has nothing to re-announce, and reads as dead within `L + P` as
+before. The first cycle after the loop starts re-announces the records it
+adopted from the process before it (#1153, below). A hang inside one
+entry's stat or parse is a stretch longer than every one measured, and gets
+no write.
+
+**A fresh loop adopts the live records before its first read (#1153).** A
+runtime publish re-executes the tier loop (`tier-runtime-moved`). The new
+process starts with an empty `ReceiptCache`, so its first `receipts` step
+reads every prewarm and movement receipt cold, and it had minted nothing
+for a checkpoint to re-announce. On 2026-09-25 the publish of
+`9ea9dc9ac4cd` re-executed the loop at 11:29:03Z; the new process read
+12,295 receipts serially at about 4 a second on the loaded HDD pool, logged
+nothing for over 8 minutes, and Stage B row 020 died in its staged wait at
+11:30:55Z (`the tier loop last announced prismabuild-stage:dl380g10 120 s
+ago`).
+
+`tier_loop._start` builds the loop's `ReceiptCache` and `Liveness`, and
+before anything else reads the queue calls `Liveness.adopt`. It takes each
+tier record on disk that the readers would accept now, re-announces it at
+once, and keeps it as minted, so the first cycle's checkpoints refresh it
+through the cold read exactly as a warm read refreshes the previous mint.
+A record is adopted only when all of these hold:
+
+* It parses, and its `tier_id` is its file's name (`PoolQueue.tiers`).
+* Its `tier_id` names this host (the `:<host>` suffix the retired-tier pass
+  matches).
+* Its schema is `storage_tiers.TIER_RECORD_SCHEMA_V1`, which PQ's reader
+  checks.
+* Its `announced_unix` is no older than `L`: the test
+  `PoolQueue._tier_loop_alive` and PQ's `landing_verdict` apply.
+
+A record older than `L` is a dead loop's word. A reader may already have
+refused on it, and adopting it would bring back a loop the readers had
+called dead, so it is left to age. The adoption write carries a
+`liveness_refresh` note with `after: "adopted"` and the mint's own
+`minted_unix`, and the role logs a `tier-records-adopted` line naming the
+tiers; the time from `tier-runtime-moved` to that line is the live gap. An
+adopted record is kept in the cycle before the first, so `end_cycle` drops
+it after the first cycle: the first mint has replaced it, or the cycle
+failed before minting and the record is never written again. What an
+adopted record says (mountpoint, epoch, fill offer, ledger) is the previous
+process's mint, as a warm read's refresh carries the previous cycle's, and
+`sampled_unix` still ages it for readers of the content.
+
+**A changed receipt directory is read by 64 readers (#1153).**
+`ReceiptCache.read` passes `readers=tier_loop.RECEIPT_READERS` to
+`DirectoryRecords.read`, which stats and parses a changed directory's
+entries on a bounded pool of threads. A cold receipt costs one seek, and
+the pool serves many at once: the same morning, 64 parallel readers ahead
+of the loop took it through 4,300 receipts in 17 s, about 253 a second, 63
+times the serial rate with no sign of a ceiling. 64 is the deepest point
+measured, as `prewarm_loop.MAX_READERS` is for bulk reads. The cold read
+now costs (receipts / readers) × latency.
+
+Only the `stat` and the parse run on a reader. A reader takes a run of
+consecutive entries, at most `stage_release.READ_RUN_MAX` (16) and fewer
+when there are too few entries to give every reader two runs, and at most
+`2 × readers` runs are in flight. Handing an entry to a thread and taking
+its result back costs about as much as a warm `stat`, so one entry per
+handoff made the steady-state read slower (below); a run of 16 amortizes
+that. The calling thread takes the results one entry at a time, in name
+order, and does everything a serial read does with them: the #761 version
+comparison, `keep`, the #1045 fence, the `parsed` counter and the
+checkpoint, which runs before each entry's result is taken. So the records
+returned, their order, what is kept, the generation counter and the
+counters are those of a serial read. A raise ends its run and reaches the
+caller at its entry's turn, after the entries before it, first in name
+order as a serial read's is; the runs still being read are not waited for,
+and nothing they read is kept. An unreadable receipt makes its directory
+unreadable for the cycle, as before. A stretch between two checkpoints is at
+most one run's read: 16 cold reads, about 4 s at the serial rate dl380g10's
+loaded pool gave on 2026-09-25, against the 90 s horizon. So the #1148
+arithmetic holds, and a hung entry stops the checkpoints once the calling
+thread reaches it: the record reads as dead within `L + P`. Every other
+`DirectoryRecords` caller reads serially, as before.
+
+The fake-clock test of #1148 charges each read in full, one after another,
+which models a serial read, so its per-read case pins `RECEIPT_READERS` to
+1. `tests/test_a_fresh_tier_loop_announces_before_its_cold_read.py` tests
+the parallel read, the adoption and each fix alone on a real clock with the
+bound scaled to 8 s. On `origin/main` its three liveness cases fail as the
+live row did: `the tier loop is silent` at 8.0 s.
+
+**Measured.** `tools/fleet/bench_tier_cold_start.py` builds 12,000 movement
+receipts, runs the replaced loop's last cycle, then starts a fresh loop the
+way the role does and times its first cycle, with every receipt read
+sleeping 20 ms first. Through pbrun on the GB10s:
+
+| Tree | First cycle | First tier write | Oldest record | Polls past `L` |
+|---|---|---|---|---|
+| `origin/main` (sparklina) | 247.5 s | 247.5 s | 248.0 s | 2,538 of 4,907 |
+| Adoption only, 1 reader (sparky) | 245.3 s | 0.008 s | 89.97 s | 0 |
+| Both, 64 readers (sparky) | 4.0 to 4.4 s | under 0.01 s | 3.9 to 4.4 s | 0 |
+
+The cProfile of the `origin/main` first cycle puts 191.4 s of the loop
+thread's own time in the injected reads (12,000 sleeps), and `receipts` is
+247.4 s of the 247.5 s cycle: the step is the serial read. With adoption
+alone the record is refreshed twice through the same read and peaks just
+under `H` (90 s), which is what `Liveness` promises. In the steady state,
+one new receipt per cycle over the same 12,000, the `receipts` step
+alternated in one process took a median 0.182 s with 64 readers and 0.136 s
+with one (10 pairs, sparky): the readers cost about 46 ms per cycle when
+every `stat` is served from memory. Before runs, one entry per handoff, it
+was 0.26 to 0.28 s.
 
 **A dead producer's backlog writes its commitments once.** `retire_batch`
 reads the instance's `commitments.json` four times and writes it once, with
@@ -5763,7 +5986,8 @@ batches (#912)".
 carried tier demand to exactly cover the derived window (plus the input range
 floor when an input residency range lands on the same tier; input leads carry
 none), files the template immutably, and projects
-`item["produced_output"] = {template_id, template_sha256}`. The #595 gate is
+`item["produced_output"] = {template_id, template_sha256}`, plus
+`export_rate_family` when the template declares one (#1126). The #595 gate is
 extended narrowly for this declared window only: tier demand with neither an
 input residency block nor a correct produced-output declaration still
 refuses, and underdeclared, mismatched, foreign, tampered, or extra tier
@@ -5916,6 +6140,47 @@ than guessing — while an ungated fold (a tier announced by an older
 generation) reads everything, exactly as before. Prewarm records carry no tier
 and no identity and are the pool's other measurement; the supply fold keeps
 reading them, and keying them is a separate change.
+
+### A submission prices its movers from one log, not every receipt (#1044)
+
+Every consumer-row submission prices its movers through
+`PoolQueue.move_records`: pbrun's `residency_stage_rows`, pbcampaign's frozen
+data plans, and the produced-output exporter. That call used to open every
+receipt in `movers/`. On 2026-09-23 there were 8,148, growing by about 3,800 a
+day, on an HDD pool at 60-83% util, and on 2026-09-25 py-spy caught a Stage B
+row submission 2 min 10 s into that read.
+
+`record_move` now also appends one line per filed receipt to
+`movers-pricing/receipts.jsonl`, after the receipt is in place. A line holds
+`pool.move_pricing_projection` of the receipt: the fields
+`pool.MOVE_PRICING_FIELDS` names, which are every field the prices read
+(`storage_tiers.mover_demand_from_receipts`, `mover_fill_price`,
+`movement_actions.egress_price` and pbrun's window-concurrency count). A field
+is kept only when the receipt has it, so the prices are the same as off the
+whole receipt. The log lives outside `movers/` because the tier loop, pbmcp,
+pbmetrics and the visibility qualifier all list `movers/*.json`.
+
+`move_records` still decides the receipt set by one names-only listing of
+`movers/*.json`. It takes each listed name from the log, and opens only the
+names the log does not cover. It appends lines for those names under a
+non-blocking lock, so the next read does not open them again. The last line
+about a name wins. A line whose body does not parse makes its name unknown, so
+the receipt is read itself. With no log, the first read is the old full read,
+once.
+
+A receipt re-filed under its own name first appends a line that makes the
+name unknown, then files, then appends its own line. A crash or a failed
+append between the two leaves the name to be read from the receipt. A reader
+that logs a name compares against lines appended since it read the log, so
+its older line never lands after a writer's newer one.
+
+Two limits remain. The listing and the log are still one entry per receipt,
+so a read is O(receipts) in names and log bytes, but no longer in file opens.
+A line was about 780 bytes for the bench's receipts, and is longer for a
+receipt whose `pool_identity` lists more members. And a receipt re-filed by a writer that predates
+the log, under a name the log already covers, prices off the older line until
+that name is filed again. Retiring old receipts is a separate decision that
+this change does not make.
 
 ### The residency map
 
@@ -6398,7 +6663,8 @@ that declares no consumed batch takes no lock.
 cycle, after it retires terminal output funding. The tick scans the
 produced-output scopes, as `unheld_window_gib` and `output_scope_tick` do.
 For each consumed batch that is not reclaimed, it takes the batch's
-output-prefix lock and decides:
+output-prefix lock, with the lock of every filed template prefix that
+overlaps it (#1063, below), and decides:
 
 - If consumers are declared, every one must have succeeded. A consumer's
   state is its action key's latest generation. A `claimed` or `ready` row,
@@ -6421,7 +6687,12 @@ output-prefix lock and decides:
   attempt. An owner that is `done` by this attempt, still claimed by it,
   queued, being moved, or unreadable keeps the batch without a log line,
   because a consumer may still come. A read-back template's batch (#1034)
-  can have no consumer, so `done` by this attempt ends it too.
+  can have no consumer, so `done` by this attempt ends it too. The owner's
+  state is the tick's one read of its key (`_TickReads.generation`, #977),
+  taken before the output-prefix lock, whatever the number of due batches:
+  an attempt that ended, `dead` or `done` by itself, never runs again under
+  its nonce, so an older read can only defer a retirement to the next cycle,
+  never cause one.
 
 **The delete.** The tick first stats the instance's output prefix. If the
 prefix is not a directory on this host, it refuses
@@ -6779,7 +7050,16 @@ event's fields. `pb_blocked_origins` serves it too.
 
 **What one tick reads.** The owner key's generation is read once per owner
 for all its attempts (`_attempt_state` over one `_key_generation`), both for
-an instance's own state and for its siblings'. Per ended instance, the
+an instance's own state and for its siblings', and, since #977, for the
+#914 retirement of each of its due batches too: before #977 that asked
+`_producer_attempt_state` per batch, one owner-key read per batch per cycle
+for a running producer committing ahead of its consumers. The sweep and
+the retirement of one ended instance share the tick's one read of each
+sibling's commitments and prewrite records (`_TickReads.path_owners`).
+`tests/test_the_retirement_tick_reads_each_owner_once.py` pins both by
+read counts. The instance's own `commitments.json` is still read again
+under its lock by each batch's retirement: the decision it records is a
+read-modify-write that must see every write made before the lock. Per ended instance, the
 output prefix is statted once, and the other attempts' paths are read at
 most once, only when some planned path is present. Every scope costs one
 more directory listing than before (its `prewrites`). A scope with
@@ -6926,8 +7206,7 @@ ended prewrite is swept like a write-only one (#949 above), and held while
 a pool funding intent names its batch.
 
 **A delete never removes a successor's file.** A producer writes an origin
-file by `rename(tmp, path)` under no PB lock, and a template whose prefix
-only overlaps this one takes a different lock, so a check followed by
+file by `rename(tmp, path)` under no PB lock, so a check followed by
 `unlink(path)` can remove a file renamed onto the name between the two.
 `_unlink_if_committed` instead:
 
@@ -6975,9 +7254,10 @@ null-digest staged batch could then never be restaged
 accept it, and an `lstat` made while the file was aside refused the commit
 as `descriptor-unstatable`. Both take the identity under the lock now.
 `origin_retirement_tick` holds that lock from its owner read through the
-put-back, so a commit of a template with the same prefix records the
-identity the file has after it. `commit_origin_batch` with `landed` still
-reads an origin whose timestamps alone moved outside the lock (#1111); the
+put-back, so a commit of a template with the same prefix, or since #1063
+with any prefix that overlaps it, records the identity the file has after
+it. `commit_origin_batch` with `landed` still reads an origin whose
+timestamps alone moved outside the lock (#1111); the
 `lstat` under the lock must find the identity the read hashed, an origin
 that moved again meanwhile is read once more with the lock let go, and a
 second move refuses as `origin-is-not-the-landed-copy`.
@@ -7011,10 +7291,9 @@ Limits:
 
 - A successor inheriting the dead instance (the issue's option 1) was not
   built.
-- A template whose prefix only overlaps this one's takes its own lock, so
-  its prewrite and this one's are not serialized against each other; each
-  still refuses the other's committed or prewritten path, and the delete's
-  move-aside covers the delete side.
+- Until #1063 a template whose prefix only overlaps this one's took its
+  own lock, so its prewrite, its commit and this one's retirement were not
+  serialized against each other. They are now (below).
 - A scope created by code older than the index after the index is marked
   complete is not seen by the gate until the next tier cycle files its
   pointer.
@@ -7027,17 +7306,91 @@ Limits:
 - A file the tier loop may not link, on a file system without
   `RENAME_NOREPLACE` (NFS), refuses at the put-back, and the file stays at
   the private name, named in the refusal, until a tick can put it back.
-- A commit under a template whose prefix only overlaps this one's takes its
-  own lock, which the retirement does not hold, so its identity can still
-  carry the ctime from before a move aside (#1063 is the lock question).
-  An origin-only batch, and a staged one with a digest, settle that by
-  content (#1111); a DEV null-digest staged batch stays strict and cannot
-  be restaged.
 - A spool export's retirement of a failed group's file (#1097) holds the
   group's `.export.lock`, not the output-prefix lock. No commit it could
   stale is in flight: only dead attempts' prewrites and the exporting
   attempt's own prewrite name the path, and that attempt commits after its
   export.
+
+#### Nested prefixes share their locks (#1063)
+
+A path is named by every template whose output prefix contains it, and any
+two such prefixes nest. Each step that claims or deletes an origin path
+took the ownership lock of its own template's prefix only, so two templates
+whose prefixes nest took different locks and nothing ordered them. With a
+consumed origin-only batch under one and a successor under the other:
+
+1. the retirement read every other attempt's claim on the batch's paths
+   under its lock, and found none;
+2. the successor prewrote a path and committed the file already there,
+   under its own lock. A commit with no spool receipt records the identity
+   `lstat` finds (`_origin_identity_at_commit`), inode included, so it
+   adopted the batch's file;
+3. the retirement's identity check still matched, and its delete removed
+   the successor's committed file.
+
+Nothing live reached it (the census on the issue: no live template is
+write-only, and the 55 overlapping template pairs all have identical
+prefixes, which share one lock). A template over all of `a4/overlay`
+beside a layer's write-only handoff would.
+
+Every step that files a claim on an origin path (`require_prewrite`,
+`commit_batch`, `commit_origin_batch`) or deletes one (the consumed
+retirement) now holds, across its check and its act, the lock of its own
+prefix and of every filed template prefix that overlaps it
+(`_output_prefix_locks`). Two such steps on one path always share a lock:
+a template is filed when its row is published, before any attempt of it
+binds, and is never removed, so of two steps the one that lists the
+templates later finds the other's template and takes its lock, and the
+other takes its own. A successor's prewrite and commit wait for a
+retirement that holds it; a retirement that comes second finds the
+successor's commit and leaves the file as `superseded`.
+
+The locks are asked for together, sorted by absolute path, and no other
+lock of the family is asked for while they are held. Every other holder of
+an ownership lock holds one and asks for no other (the one-root rule of
+`PoolQueue.stage_ownership_lock`, which names this exception), so a holder
+only waits for a lock that sorts after every lock it holds, and no two can
+wait for each other. Transition-then-ownership is unchanged.
+
+The same read missed a template of the *same* prefix. The tick listed the
+templates once, at its first owner read, and a template filed after that,
+whose attempt committed a due batch's file before that batch's retirement
+took the lock, was not in the list. The retirement now lists the templates
+again under its locks (`_TickReads.path_owners(relist=True)`), and the tick
+keeps the new listing.
+
+Cost: the prewrite gate lists the templates once more, before its locks; a
+commit lists them once per round. The retirement takes its locks from the
+tick's listing, one per tick with a due batch, which is valid because every
+scope the tick visits was declared, and its template filed, before the tick
+first listed them; it lists again only for a batch that reaches its delete.
+A listing is one `scandir` of the templates directory; a template file is
+read once per process. The number of locks is the number of distinct
+overlapping prefixes, one on every live queue.
+
+`tests/test_a_nested_prefix_successors_adopted_file_survives_retirement.py`
+starts the successor in a thread at the retirement's owner read and at its
+delete, with its template both around and inside the batch's, write-only
+and read-back. The retirement goes on once the successor has finished or
+has been refused a lock the retirement holds. On the tree before this
+change all eight delete the successor's committed file, and so does a
+template filed in the middle of a tick; each step asked for its own
+prefix's lock only.
+
+Limits:
+
+- A direct commit still adopts a present file. The issue offered refusing
+  that as an alternative; it would change what a commit with no spool
+  receipt accepts, and with the locks shared the retirement no longer
+  deletes an adopted file, so it was not built.
+- The ended-prewrite sweep (#949), `abort_prewrite`, `reclaim_origin` and
+  consumer declaration and release keep their own prefix's lock. They file
+  or drop a reservation, a charge or a consumer declaration, never a file,
+  and every lock set above includes that lock.
+- Which templates overlap is read from a listing of the templates
+  directory. A template filed on another host counts once this host's
+  listing shows it, the assumption the #1053 attempt index already makes.
 
 #### Deferred consumers: action edges (#913)
 
@@ -7763,6 +8116,20 @@ prewarm loop's sweep removes a directory that another host's late append
 recreated once its consumer is terminal and unplanned. A kill's ending record
 and `pbstatus --starvation` read these files.
 
+**A verdict about the host, not about anyone's plan, still gets a file
+(#1006).** The stage's ARC `primarycache` refusal, a ram-admission refusal, a
+ram epoch change, and a tier-level verdict whose tier plans no consumer this
+cycle name neither a consumer nor a tier with anyone on it, so `_emit`'s
+`tier_consumers` attribution has nowhere to put them. Rather than let them
+fall back to that host's stdout, `_emit` files them in
+`residency-events/_host/<host>.jsonl`, one file per writing host, same
+one-writer-per-file idiom and the same 256/512-line bound as the per-consumer
+files, read by `PoolQueue.host_events`. The leading underscore keeps the
+directory out of `sweep_consumer_events`, which only reaps directories named
+by a 64-character action key, so a host's file is never mistaken for a
+retired consumer's. `pbstatus --starvation` reads it too, one row per host
+that has ever filed one, with the newest verdict and how many it has filed.
+
 **It does not fight #598's deferred eviction.** `window_pressure` now asks the
 window what it *would publish given room*, rather than reading the first phase
 the consumer has not staged. A phase the run-ahead bound has declined is not
@@ -8137,8 +8504,11 @@ start where the previous one ended). It has three spans:
 * The phase the consumer's accepted progress names, which it is reading.
 * The consumer's read-ahead: `mem_gb` plus its admission's
   `gpu_memory_budget_bytes`, the most it can hold ahead of what it reads.
-  The two are summed even where they share one physical pool (GB10 unified
-  memory), which over-states the reach, so the horizon errs long.
+  Where the admitted device's memory is unified (admission's measured
+  `memory_domain` is `shared_system`, a GB10), the GPU budget is a subset of
+  `mem_gb` and the two are one pool, so the read-ahead is the larger of them,
+  not their sum (#959). A `discrete` device, or a claim whose admission
+  recorded no domain, keeps the sum, which errs long.
 * The refill: ranges past that reach until they cover what the consumer
   reads while a copy published now lands, and never less than one range.
 
@@ -9820,10 +10190,18 @@ futile state starts or its head or victim changes, not every cycle it lasts
 event file on the tier, and at one line a minute the 256-line cap rotated
 real `window-gated` evidence out in about four hours.
 
-**Publication.** In `residency_window`, a ranked window publishes at most
-the one leg its standing is about: its free is capped at that leg's GiB
-(`publish_gib`, 0 when the leg is already queued), so a granted consumer
-cannot spend the head's room. A `granted` window or the `head` whose advance
+**Publication.** In `residency_window`, a ranked window's free is capped at
+`publish_gib`: the leg its standing is about (0 when that leg is already
+queued), so a granted consumer cannot spend the head's room. For a `granted`
+entry `publish_gib` can cover more than that one leg -- as many of the
+window's own already-decided legs as the tier's measured landing rate and
+free room, shared once across every granted entry, can still afford
+(`_granted_extra_legs_gib`, #1038; the Limits list above has the count and
+why the pool is shared rather than one budget per entry) -- but never past
+what `residency_plan.window` itself would publish given the room, and
+`min(free, publish_gib)` at the publish call still bounds it to the tier's
+real free besides. The head's `publish_gib` stays the one leg its standing
+is about. A `granted` window or the `head` whose advance
 fence does not fit is permitted without one (`advance: claim-order`): on an
 over-committed tier the rank, not a fence, keeps its room. A `granted`
 window or the `head` also takes no fresh fence when one would fit (#1022
@@ -9980,16 +10358,45 @@ and at most one candidate walk a cycle, and at most two censuses.
   cannot recall it.
 * One head is served a cycle, so N blocked consumers take N cycles to
   drain, whatever the room.
-* Every granted window publishes one leg a cycle (#1022 review, item 7).
-  Measured on two chunked R12 plans, 11 GiB (11.70 GB) chunks, with 3, 4
-  and 6 chunks of room over three cycles
+* A granted window's cap was fixed at one leg a cycle until #1038
+  (#1022 review, item 7). Measured on two chunked R12 plans, 11 GiB
+  (11.70 GB) chunks, with 3, 4 and 6 chunks of room over three cycles
   (`test_measure_the_legs_a_granted_chunked_window_publishes_a_cycle`):
-  every granted window published exactly one leg a cycle. That caps one
-  window's copy stream at chunk bytes per `CYCLE_INTERVAL_S`, 195 MB/s here,
-  above the fixture's slowest landing rate, 134 MB/s, so the cap costs
-  nothing at this chunk size. It binds for chunks below landing rate x
+  every granted window published exactly one leg a cycle. That capped one
+  window's copy stream at chunk bytes per `CYCLE_INTERVAL_S`, 195 MB/s
+  there, above the fixture's slowest landing rate, 134 MB/s, so the cap cost
+  nothing at that chunk size, but it bound below landing rate x
   `CYCLE_INTERVAL_S` (8.05 GB, 7.5 GiB, at 134 MB/s), where one window's
-  stream is capped at chunk bytes / 60 s.
+  stream was capped at chunk bytes / 60 s -- below what the tier could
+  land, and below what a small-chunk plan needs (#1038). `_rank_claims`
+  now grows a granted entry's `publish_gib` past its one priced leg once it
+  knows the tier's landing rate (`_granted_extra_legs_gib`): as many of the
+  window's already-decided legs (`residency_plan.window`'s own answer, read
+  in order from the one already priced) as a pool shared by every granted
+  entry can still afford. The rank still spends the tier's free on exactly
+  one leg per consumer, so who is granted, the head and the eviction target
+  are unaffected; only how much of its own room a granted window may
+  publish changes. No measured rate (cold start) leaves it at one leg, as
+  before. Measured on the same fixture at a 4 GiB chunk, 6 chunks of room
+  (`test_a_granted_chunked_window_publishes_enough_legs_to_reach_the_landing_rate`):
+  the achieved published rate, summed over every granted window that
+  cycle, reaches the fixture's landing rate, and every granted entry's
+  `publish_gib` never exceeds the tier's free at the rank that granted it.
+
+  The pool is one per tier, not one per entry: the landing rate and the
+  free room are both the tier's, so K granted windows each budgeted at the
+  tier's rate would together ask for K times what it can land, and a
+  granted window's extras bounded only by free room could spend the first
+  leg the rank walk guarantees another granted window.
+  `_granted_extra_legs_gib` therefore takes `free_gib` less every granted
+  entry's first-leg GiB, and `rate * CYCLE_INTERVAL_S` less every granted
+  entry's first-leg bytes, as one pool, and spends it once, in rank order,
+  one already-decided leg at a time, moving to the next entry when a leg
+  does not fit rather than skipping ahead within a window's sequential
+  legs. `test_the_shared_extra_leg_pool_is_spent_once_in_rank_order`: two
+  granted windows share 12 GiB of free room at an effectively unlimited
+  rate; both first legs publish, the one extra leg goes to the window
+  ranked first, and the cycle's total is exactly the tier's free.
 * A preempted chunk is copied twice.
 * Only claimed consumers are ranked. A ready consumer whose leads are
   published is bounded by the commitment it was admitted on (#907), not by
@@ -10228,9 +10635,13 @@ path, matching bytes, and matching digest where the fragment declares one --
 before any path state is classified, so a by-path, first-mention or
 partially-known sidecar can never authorize a deletion; extra material keys
 are the crash superset and are never ownership. Positive staleness for an
-existing regular file is **inode difference**, exactly as
-`_StagedPublisher._proof_candidate` reads it (#755); a same-inode size/time
-change is divergence, not permission. Absent paths prune as absent.
+existing regular file is **inode difference**, the same rule
+`_StagedPublisher._proof_candidate` reads (#755); a same-inode size/time
+change is divergence, not permission -- this prune path does not take
+`_proof_candidate`'s #1078 content tie-break for a same-inode, same-size
+timestamp drift, since a stale-mention prune must not cost a rehash on its
+own hot path, so it stays the stricter of the two on that one case. Absent
+paths prune as absent.
 Everything else retains the whole owner: an unreadable, malformed or foreign
 fragment/material, any binding mismatch, an epoch that is not the shape the
 strict reader requires (absent or empty off the ram tier, the same non-empty
@@ -10294,7 +10705,8 @@ A checkpoint fences every input the classification read, each at the version
 the transaction verified, and nothing is re-sampled at installation:
 
 * this owner's fragment and material file versions, sampled before their
-  reads and again after the scan, and installed only when the two are equal;
+  reads and again after the scan, and installed only when the two are equal
+  and the version is trusted (#1070, below);
 * device/inode/mtime/ctime stamps of every unique immediate parent directory
   of the fragment's paths, sampled before the classification scan with
   `stage_move._trusted_directory_stamp` and again after it, and installed
@@ -10317,12 +10729,21 @@ one tick later and installs if nothing else changed. On ZFS and tmpfs, the
 stage and RAM tier filesystems, a steady cycle therefore caches after at most
 one extra uncached pass; on a filesystem the rule does not list, such as NFS,
 no checkpoint is installed, as no #992 listing is kept there. The file fences
-take no clock read. Every writer of a fragment or material sidecar replaces it
-by rename (`residency_map._write_atomic`, `reader_lease.write_material`), so
-the first change after the census read installs a new inode while the read
-one is still linked. Matching the recorded version again would take a second
-replacement that reuses the read inode's number with the same size, mtime and
-ctime. A co-owner fragment that is
+carry the same rule (#1045, #1070). Every writer of a fragment or material
+sidecar replaces it by rename (`residency_map._write_atomic`,
+`reader_lease.write_material`), so the first change after the census read
+normally installs a new inode, but two rename cycles in one clock tick can be
+given the freed inode number the census read, and at the same size all five
+fields of the version match. So the owner's own fragment and material are
+installed only at a version whose ctime is strictly before a clock read taken
+before their `lstat` (`stage_release._fenced_path_version`, applying
+`stage_move._keepable_version`), and a co-owner fragment only at the version
+the census memo kept, which the memo keeps under the same rule (#1045). Every
+later change to a file, a new file under its name included, is stamped at or
+after that clock read and so moves the ctime. A document changed in the tick
+of its read is scanned again next pass, like a refused directory; a material
+trim's own write is therefore installed only if a tick has passed since it,
+and otherwise the next pass installs it. A co-owner fragment that is
 removed or rewritten re-runs the census, where the path it protected
 may now prune, or the whole owner evict. A new co-owner needs no fence,
 because it can only add protection. A symlink or non-directory parent is
@@ -10346,7 +10767,10 @@ receipt; the tier cycle line counts skipped and censused owners instead, as
 A refused checkpoint says why (#1069). Whenever the receipt of an otherwise
 idle owner reads `cacheable: false`, its `cache_refused` names the first
 refusal found: `document-version-unknown` (this owner's fragment or material
-version, or a co-owner fragment's, could not be read),
+version, or a co-owner fragment's, could not be read, or the #1070 fence
+refused this owner's: changed in the tick it was read in, or on a
+filesystem the trusted rule does not list, which is therefore the reason an
+owner on NFS reports),
 `no-directory-stamp` (the owner names no path to fence),
 `directory-stamp-untrusted` (the trusted rule refused a parent directory's
 stamp, #1062), `outside-sweep-scope` (the latest sweep did not discover the
@@ -10837,6 +11261,138 @@ the lookup to the frozen pre-#893 one over fleets whose fragments never
 omit a dated key, and holds it to that lookup over sidecars cut to their
 fragment's keys for fleets that do.
 
+### A publish wait is recorded and named by verdict (#994)
+
+Before this, a publication that waited for another publisher left no trace of
+having waited at all. `_StagedPublisher.publish` polls the ownership gate's
+four wait verdicts -- a fragment names the destination without a usable date
+(`owned`), a live mover claim covers it (`live_publisher`), a sibling copy is
+in flight (`in_flight`), or nothing names it and it has not been re-verified
+absent (`unattributed`) -- for the whole `_PUBLISH_GRACE_S` (30 s), re-taking
+the host-wide lock every `_PUBLISH_POLL_S`. The receipt carried
+`phase_timings`, `start_gate_wait_s` and `resume_lock_wait_s`, but nothing
+said an entry had waited, for how long, or under which verdict; the refusal
+that ended the range (#853) was a free-text sentence, capped among 20
+entries, naming the destination but never the verdict.
+
+Each wait verdict now carries its kind as a third tuple element
+(`PUBLISH_WAIT_OWNED`, `PUBLISH_WAIT_LIVE_PUBLISHER`, `PUBLISH_WAIT_IN_FLIGHT`,
+`PUBLISH_WAIT_UNATTRIBUTED`), and `publish` totals one entry's real elapsed
+time under each kind onto `_PhaseClock` when the entry's own call returns or
+raises -- once per entry, not once per poll, so a receipt's count is entries,
+not polls; an entry whose wait changes kind mid-poll is flushed under the old
+kind and credits the new one separately rather than mislabeling the second
+span as the first. The mover's receipt carries the total as `publish_waits`,
+a sibling of `phase_timings` (the way `start_gate_wait_s` sits beside it
+rather than inside it): `{kind: {entries, seconds}}`, present only for the
+kinds an entry actually waited under.
+
+The verdict a wait settles to after the grace (`owned`, `live_publisher` or
+`in_flight` refuse; `unattributed` heals by replacement instead of refusing,
+as before) now travels on `_PublicationRefused.wait_verdict`, and the
+copier's per-entry error record names it ahead of the free-text message, so
+the entry and the verdict both survive the 20-entry cap even when later,
+unrelated errors bury the rest of the sentence.
+
+`tests/test_a_publish_wait_is_recorded_by_verdict_and_seconds.py` drives the
+real `stage_move.move`: a destination staged and named by a fragment with no
+material sidecar (`owned`, undated, and never healed by elapsed time alone)
+waits out a shrunk grace and refuses, and the receipt's `publish_waits` and
+the recorded error both name the verdict.
+
+### A killed mover's copies that no fragment names are reclaimed, and sized (#1088)
+
+Both movers set the prewarm loop's `user.pbstage.source` on every copy before
+its rename, and `stage_release.reconcile` read that mark as a prewarm object:
+counted in `unowned_left`, never deleted. A copy a mover renamed after its
+last fragment is named by nothing: at most one `FRAGMENT_PUBLISH_S` interval
+of a stage mover's range per kill, and every copy of a RAM promotion's range,
+which files its only fragment at the end. The dead-owner sweep deletes by
+fragment names and the prewarm loop by its own records, so once no retry of
+the same key adopted the copies (#1081) -- the consumer moved on, the plan
+was superseded -- they stayed until an operator removed them, or on the tmpfs
+until its epoch ended. The receipt counted them without their bytes, mixed
+in with the prewarm loop's objects, and the `reconcile` docstring claimed to
+take them back.
+
+**Each copy names its writer.** `stage_move._Copier` sets
+`user.pbstage.mover` (`stage_move.STAGE_MOVER_XATTR`) to its mover's action
+key on the temporary, beside the source mark and before the rename, so a
+copy carries it from its first instant under the final name. Both movers
+copy through it. An adoption writes nothing, so an adopted name keeps the
+mark of the mover that wrote it: a copy a later mover adopted and was killed
+before naming is judged by its writer, and the adopter's retry may copy it
+again. That costs a copy, never a byte a reader holds, since a reader reads
+only what a fragment names, and pins it. The mark is best-effort like the
+source mark: a filesystem that refuses it leaves the copy to the rules that
+held before.
+
+**`reconcile` deletes such a copy once nothing can still own it.** The copy
+must be named by no fragment at all, wanted or not: a copy some fragment
+names has an owner, and the egress, the dead-owner sweep (#839) and the
+uncharged-owner pass (#1061) retire it together with the fragment and
+material that name it. Deleting it from under them would leave a vouch for a
+missing file, and would turn #1061's pressure-gated cache into a per-cycle
+deletion. No live pin may name it. Its writer must have ended, which is read
+from the queue and never from a clock:
+
+- the writer is not in the pass's `wanted` set -- a live consumer's leads or
+  plan, a live item, a held key -- because a live plan may retry that key,
+  and the retry adopts the copy by content (#1081);
+- nothing under the writer's key is in `ready/` or `claimed/`, a lease that
+  outlived its record included (`residency_plan.live_state`, the ending
+  proof the publication gate's owner arbitration reads). A mover ready or
+  claimed on the tier already skips the whole pass, so a live mover's copies
+  that no fragment names yet are never judged.
+
+No live RAM promotion may read it as a source leg
+(`_claimed_source_paths`). A queue state or a promotion census that cannot
+be read keeps the copy and names the reason in `errors`. The stage ownership
+lock, the containment check and the identity-since-walk check gate the
+unlink as they gate every other one.
+
+**Marks from before #1088 are kept.** A copy published before this change
+carries the source mark alone, exactly as a prewarm object does, and nothing
+on the file tells the two apart, so both are left and reported as
+`source_mark_only`. The tmpfs's epoch ends the RAM tier's; on a stage,
+`recover_orphaned_range` (below) is the bounded operator repair for a
+retired head's. On a filesystem without user extended attributes neither
+mark exists, and every such file is left as `mark_unanswerable`.
+
+**The receipt sizes what it found, by kind.** `stage-unattributed-evicted`
+carries `deleted_by_kind` (`partial`, `unmarked`, `mover_residue`) and
+`unowned_left_by_kind` (`mover_residue`, `source_mark_only`,
+`mark_unanswerable`), each as `{"entries", "bytes"}`; `unowned_left_bytes`
+beside `unowned_left`, which now totals every left kind; and
+`mover_residue_left_reasons`, the count of left residue per reason
+(`mover_wanted`, `mover_ready`, `mover_claimed`, `mover_state_unreadable`,
+`promotion_source`, `promotion_census_unreadable`). A copy with the mover
+mark that some fragment names is in none of them, since it is owned; a
+legacy copy a withdrawn fragment names is still counted as before.
+
+Two limits. The ledger side is unchanged: a promotion whose receipt never
+landed returned its tokens at its reap, before this reclaim, which is the
+order the staged-read contract's failed-copy transition (SM-02) forbids.
+The stage's supply is minted from its dataset's `available_bytes` and the
+RAM tier's from `statvfs`, so nothing is admitted onto the residue
+meanwhile. And the reclaim runs on the tier loop's cycle, so residue stays
+until the first pass after its writer has ended and nothing wants it.
+
+The cost is one more `getxattr` per file the walk judges that is not a
+mover's copy (the mover mark is read first; a copy carrying it needs one
+read). `bench_stage_reconcile.py` at 20,000 files with 14,000 source-marked,
+run in a cloud container rather than on the fleet, measured a steady census
+of 0.69 to 0.82 s before and 0.80 to 0.82 s after.
+
+`tests/test_a_killed_movers_unnamed_copies_are_reclaimed.py` drives the real
+stage mover, RAM promotion and sweep: a promotion killed after renaming its
+whole range, never retried and superseded, leaves copies the next sweep
+deletes and sizes; a stage mover's copy renamed after its last fragment goes
+while the copies that fragment names stay; a ready mover's, a wanted
+writer's and a leased writer's copies stay, and a live promotion's source
+leg stays; a genuine prewarm object and a copy marked before the fix stay,
+sized as `source_mark_only`; and an unanswerable mark stays, sized.
+
 ### Consumers of one staged range share one copy, charged once (#1026)
 
 Before #1026, every consumer sealed its own mover for every range it reads. A
@@ -11100,7 +11656,8 @@ A live claim still defers a name whose bytes prove out:
 
 Every rule above decides *what* the sweep deletes: a held key no live plan
 names, a `.partial` no live copy is producing, an unmarked file no wanted
-fragment names. None of them asked *whose* stage was being walked. On
+fragment names (and, since #1088, a mover's copy no fragment names whose
+writer has ended). None of them asked *whose* stage was being walked. On
 2026-09-18 at 16:05Z a test on the storage box announced `/stage/prewarm` to a
 queue under `tmp_path` and ran one tier cycle; that queue's fragments attributed
 nothing, the prewarm xattr marked nothing, and `stage_release.reconcile` deleted
@@ -11205,9 +11762,12 @@ it is not this gate.
 
 Routine `reconcile` structurally cannot free one specific history: a head
 whose fragment and material a later egress retired while shared files
-survived. Every surviving copy carries the same `user.pbstage.source` mark
-`stage_move` stamps, so `reconcile` reads each as prewarm-owned and leaves it
-in `unowned_left` for the life of the fleet -- and every later head pays the
+survived. Every surviving copy published before #1088 carries only the
+`user.pbstage.source` mark `stage_move` stamps, so `reconcile` reads each as
+a prewarm object and leaves it in `unowned_left` for the life of the fleet
+(a copy published since carries its writer's mark too, and `reconcile`
+reclaims it once no fragment names it and that writer has ended; see
+#1088 above) -- and every later head pays the
 publisher's 30 s grace once per orphaned entry (measured on the incident
 that motivated this: 36439 entries, 10895318814 bytes, ~0.53 files/s).
 `stage_release.recover_orphaned_range` is the operator-scoped repair for
@@ -11941,6 +12501,7 @@ restaged.
 | Residency namespace `residency/<consumer>/` and its map `residency/<consumer>.map.json` | `residency_map.write_fragment`, on a mover's first fragment; the map by the tier loop's `compose_map` | The tier loop's `compose_map` unlinks the map of a consumer that is not running and has no stage fragment. The same `pb_gc` run removes the directory by `rmdir` and the map with it (#995) | Empty or gone, and its consumer terminal as above, re-read under the consumer's transition lock; a fragment that lands first makes the `rmdir` fail and keeps the map |
 | Landing record `residency/<consumer>.landing.json` | The tier loop's `publish_landing_expectations`, for a claimed consumer (#989) | `publish_landing_expectations` for a consumer it sees that is not claimed; the plan reaper (`_sweep_dead_consumer`) with a plan it reaps; `pb_gc --queue-root` for the rest, such as a finished consumer that was never superseded | Its consumer terminal as above, re-read under the consumer's transition lock, fragments or not |
 | Tier-loop events `residency-events/<consumer>/` | The tier loop's `_emit` (#990) | `sweep_consumer_events` in the tier loop | The consumer is terminal or withdrawn |
+| Host-level tier events `residency-events/_host/<host>.jsonl` | The tier loop's `_emit`, for a verdict naming no consumer and no tier with one planned on it (#1006) | Never by key: each writing host rewrites its own file to its newest 256 lines once it holds 512, the same bound as a consumer's file | Not applicable -- the file is the host's, not any one action's |
 | Spool retirement records `produced-spool-retirements/<host>.jsonl` and `<host>.tick.json` | The spool retirement tick (#1001) | Never: the lines are records, one per retired namespace, so they grow with producer attempts as `done/` does. The tick file is replaced by each tick | Not applicable |
 | Spool refusal records `produced-spool-refusals/<owner>/*.json` | A poll, a release or an export that makes an identity refusal (#1098) | Never: each is the evidence of one refusal, one per group, export, caller and code, so they grow with refused groups | Not applicable |
 | GC receipts `gc-receipts/<utc>-<host>-<pid>.json` | Each `pb_gc --queue-root` run | Never: one record per operator run | Not applicable |

@@ -136,6 +136,13 @@ class _Loop:
 
             monkeypatch.setattr(tier_loop, "_receipt_name", select)
         else:
+            # The fake clock charges each read in full, one after another:
+            # a model of a serial read.  Readers run concurrently (#1153),
+            # and a clock charged from several reader threads at once sums
+            # reads that overlapped in time, so here the read is serial.
+            # The parallel read's checkpoints are tested on a real clock in
+            # ``test_a_fresh_tier_loop_announces_before_its_cold_read``.
+            monkeypatch.setattr(tier_loop, "RECEIPT_READERS", 1)
             real_parse = pool._read_json
 
             def parse(path, *args, **kwargs):

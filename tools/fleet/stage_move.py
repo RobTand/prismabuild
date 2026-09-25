@@ -87,6 +87,16 @@ RANGE_SUFFIX = ".pbrange"
 #: was measured at 75 KB/s against 466 MB/s.
 FRAGMENT_PUBLISH_S = 5.0
 
+#: Whose copy a staged file is (#1088): the action key of the mover that
+#: wrote it, set on the temporary before the rename, beside the prewarm
+#: loop's ``user.pbstage.source``.  That mark alone cannot tell a mover's copy
+#: from a prewarm object, so a copy renamed into place after the mover's last
+#: fragment -- a stage mover's last interval, a RAM promotion's whole range --
+#: read as the prewarm loop's and nothing reclaimed it.
+#: ``stage_release.reconcile`` reads this one; a file without it is judged
+#: exactly as before.
+STAGE_MOVER_XATTR = "user.pbstage.mover"
+
 
 def stage_relative(path: str, offset: int, size: int, *, mount_prefix: str,
                    namespace: str | None = None,
@@ -342,6 +352,20 @@ def cpu_seconds(*, usage=resource.getrusage) -> float:
 #: once and never waits for it (#1081, :meth:`_StagedPublisher._content_proof`).
 _PUBLISH_GRACE_S = 30.0
 _PUBLISH_POLL_S = 0.25
+
+#: The four ways :meth:`_StagedPublisher._decide` can make a publication wait
+#: for another publisher, spelled exactly as :meth:`_StagedPublisher.publish`
+#: totals them onto the receipt's ``publish_waits`` (#994): a fragment vouches
+#: for the name without a usable date, a live mover claim covers it, a
+#: sibling copy is in flight, or nothing names it yet and it has not been
+#: re-verified absent.  Before #994 a mover could sit in these waits, refuse
+#: after the 30 s grace, and leave a receipt with no per-entry count, no
+#: seconds and no verdict -- only the free-text refusal, capped at 20 entries
+#: and easily buried by later, unrelated errors (#853).
+PUBLISH_WAIT_OWNED = "owned"
+PUBLISH_WAIT_LIVE_PUBLISHER = "live_publisher"
+PUBLISH_WAIT_IN_FLIGHT = "in_flight"
+PUBLISH_WAIT_UNATTRIBUTED = "unattributed"
 
 #: Residency subdirectories that never hold consumer fragments.
 _NON_FRAGMENT_DIRS = frozenset({"leases", "material"})
@@ -928,13 +952,25 @@ class _PublicationRefused(OSError):
     exits nonzero and retires its own window instead of being republished
     into the same refusal.  Every other refusal leaves them ``None`` and
     stays retryable.
+
+    ``wait_verdict`` (#994) is set only when this refusal is what a
+    :data:`PUBLISH_WAIT_OWNED`-family wait settled to after the grace: one of
+    ``owned``, ``live_publisher`` or ``in_flight``.  It is ``None`` for a
+    refusal that never waited -- an unstatable or non-regular destination, an
+    unreadable census, a live pin, a proven divergence -- and for
+    ``unattributed``, which the grace heals by replacement rather than
+    refusing.  The copier reads it to name the verdict on the per-entry error
+    it records (:meth:`_Copier.run`), so the obstruction the grace timed out
+    on is not left to the free-text message alone.
     """
 
     def __init__(self, *args: object, refusal: str | None = None,
-                 conflict: Mapping[str, object] | None = None) -> None:
+                 conflict: Mapping[str, object] | None = None,
+                 wait_verdict: str | None = None) -> None:
         super().__init__(*args)
         self.refusal = refusal
         self.conflict = dict(conflict) if conflict is not None else None
+        self.wait_verdict = wait_verdict
 
 
 #: The terminal refusal a mover files when a live owner holds different bytes
@@ -1118,12 +1154,22 @@ class _PhaseClock:
     ``adopted_at_publication`` after copying on a record's proof,
     ``adopted_by_content_at_publication`` after copying on its own bytes, or
     -- a name every owner of which had ended -- replaced at publication.
+
+    ``publish_waits`` (#994) totals, by :data:`PUBLISH_WAIT_OWNED`-family
+    kind, how many entries waited under it and the real elapsed seconds spent
+    waiting -- :meth:`_StagedPublisher.publish` credits an entry once, when
+    its own wait ends, not once per poll, so ``entries`` counts distinct
+    entries and ``seconds`` is the total time this mover spent parked in
+    that kind of wait.  Reported for the receipt's own ``publish_waits``
+    field, a sibling of ``phase_timings`` rather than a part of it, the way
+    ``start_gate_wait_s`` sits beside it rather than inside it.
     """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._phases: dict[str, list[float]] = {}
         self._outcomes: dict[str, int] = {}
+        self._waits: dict[str, list[float]] = {}
 
     def add(self, phase: str, seconds: float, calls: int = 1) -> None:
         with self._lock:
@@ -1145,6 +1191,14 @@ class _PhaseClock:
         with self._lock:
             self._outcomes[name] = self._outcomes.get(name, 0) + 1
 
+    def wait(self, kind: str, seconds: float) -> None:
+        """One entry's finished wait: ``kind`` is a ``PUBLISH_WAIT_*`` value."""
+
+        with self._lock:
+            row = self._waits.setdefault(kind, [0.0, 0])
+            row[0] += max(0.0, seconds)
+            row[1] += 1
+
     def report(self) -> dict[str, object]:
         with self._lock:
             return {
@@ -1153,6 +1207,13 @@ class _PhaseClock:
                             "max_s": round(row[2], 6)}
                     for phase, row in sorted(self._phases.items())},
                 "outcomes": dict(sorted(self._outcomes.items())),
+            }
+
+    def publish_waits_report(self) -> dict[str, object]:
+        with self._lock:
+            return {
+                kind: {"entries": int(row[1]), "seconds": round(row[0], 6)}
+                for kind, row in sorted(self._waits.items())
             }
 
 
@@ -1195,9 +1256,19 @@ class _StagedPublisher:
       needed on this path;
     * present and provably different -- a record that dates the current
       incarnation names a digest that matches neither the declared nor
-      the computed digest, or the very inode a record dates was modified
-      in place (no legitimate publication writes in place): never a blind
-      overwrite.  On a stage mover the owners decide it (#966,
+      the computed digest, or a same-inode record whose size also
+      disagrees (no legitimate publication writes in place): never a blind
+      overwrite.  A same-inode record whose size still agrees but whose
+      ``mtime_ns``/``ctime_ns`` drifted is not decided from stat alone --
+      an allocator handing a freed inode straight back to the very next
+      create in the directory reads exactly like an in-place write, so
+      whether it is genuine divergence is settled by the file's own bytes
+      against the record's own digest first (:meth:`_content_proof`,
+      #1078), the same tie-break #1096 uses for an NFS delegation recall;
+      a confirmed match is not itself proof of an unbroken lineage, so it
+      is treated like a record dating a superseded incarnation below,
+      never adopted on this record alone.  On a stage mover the owners
+      decide an actual divergence (#966,
       :meth:`_arbitration`): a live owner is a conflict for an owner to
       resolve, refused terminally and named; an owner whose ending cannot
       be proven is refused retryably, as before, until the same unprovable
@@ -1353,6 +1424,28 @@ class _StagedPublisher:
         #: its prior run (:func:`unproven_streak`).  Appended under
         #: ``_arbitration_lock``.
         self.unproven: list[dict[str, object]] = []
+        # The claim census memo for this publisher's whole run (#1089).
+        # ``stage_release._claimed_paths`` derives a claimed range mover's
+        # staged paths from its sealed request and its data manifest, both
+        # immutable under their digests -- so once derived for a claim key
+        # the answer cannot go stale, and a memo may keep it for as long as
+        # this publisher runs, not just for one call.  What is *not*
+        # memoized, by the memo's own contract, is the claim listing and
+        # each claim record: ``_claimed_paths`` reads both fresh on every
+        # call, so a claim that appears, ends or changes since the last
+        # check is still seen at once -- the memo only skips re-deriving
+        # paths for a claim it has already seen unchanged.  Imported here,
+        # not at module scope, because ``stage_release`` imports from this
+        # module (see :meth:`_live_claim_cover`'s own deferred import).
+        # Every copy worker thread shares one publisher and can reach
+        # ``_live_claim_cover`` concurrently.  No lock is taken around the
+        # census: ``_claimed_paths`` touches this memo only through single
+        # ``memo.claims`` dict reads and writes of immutable frozensets, so
+        # two threads racing on one claim at worst derive it twice, and a
+        # lock held across the census's directory scans and record reads
+        # would serialize every worker's check behind them.
+        from stage_release import _CensusMemo
+        self._claim_memo = _CensusMemo()
 
     @contextmanager
     def _ownership(self):
@@ -1663,44 +1756,69 @@ class _StagedPublisher:
         owner of which has ended is replaced by this copy.  A divergence
         first seen under the stage lock is decided on the next poll, since
         the owners' transition locks come before that lock.
+
+        A ``"wait"`` verdict's third element names which of the four
+        :data:`PUBLISH_WAIT_OWNED`-family kinds it is (#994).  This entry's
+        time under each kind -- real elapsed seconds between the poll that
+        first saw it and the poll that saw something else -- is totalled
+        onto ``self.clock`` (:meth:`_PhaseClock.wait`) exactly once, when
+        this call returns or raises, for the receipt's ``publish_waits`` to
+        report and for the eventual refusal (:meth:`_act`) to name.  A wait
+        that changes kind mid-poll is flushed under its old kind and
+        restarted under its new one, so one entry can credit two kinds
+        rather than mislabel the second as the first.
         """
 
         want = int(entry["bytes"])
         declared = entry.get("sha256")
         norm = os.path.normpath(str(destination))
         deadline = time.monotonic() + _PUBLISH_GRACE_S
-        while True:
-            now = time.monotonic()
-            heal = now >= deadline
-            owners = _Owners() if self._arbitrates else None
-            with self.clock.timing("publish_decide"):
-                verdict = self._decide(destination, want, declared, computed,
-                                       source_id, heal=heal, owners=owners)
-            if verdict[0] == "divergent":
-                done = self._publish_divergent(
-                    destination, norm, temp_path, want, declared, computed,
-                    source_id, heal, owners, verdict[1])
-                if done is not None:
-                    return done
-            elif verdict[0] != "wait":
-                with self._ownership():
-                    if not (verdict[0] == "adopt"
-                            and reader_lease.file_id_matches(
-                                verdict[2], reader_lease.stat_identity(norm))):
-                        verdict = self._decide(
-                            destination, want, declared, computed, source_id,
-                            heal=heal,
-                            owners=_Owners() if self._arbitrates else None,
-                            content=False)
-                    done = self._act(verdict, destination, temp_path, want,
-                                     computed)
+        wait_kind: str | None = None
+        wait_started: float | None = None
+        try:
+            while True:
+                now = time.monotonic()
+                heal = now >= deadline
+                owners = _Owners() if self._arbitrates else None
+                with self.clock.timing("publish_decide"):
+                    verdict = self._decide(destination, want, declared, computed,
+                                           source_id, heal=heal, owners=owners)
+                if verdict[0] == "wait":
+                    kind = verdict[2]
+                    if wait_started is None:
+                        wait_started = now
+                    elif kind != wait_kind:
+                        self.clock.wait(wait_kind, now - wait_started)
+                        wait_started = now
+                    wait_kind = kind
+                if verdict[0] == "divergent":
+                    done = self._publish_divergent(
+                        destination, norm, temp_path, want, declared, computed,
+                        source_id, heal, owners, verdict[1])
                     if done is not None:
                         return done
-            if stop is not None and stop.is_set():
-                temp_path.unlink(missing_ok=True)
-                raise OSError(f"stopping before {destination} publishes")
-            with self.clock.timing("publish_poll_sleep"):
-                time.sleep(_PUBLISH_POLL_S)
+                elif verdict[0] != "wait":
+                    with self._ownership():
+                        if not (verdict[0] == "adopt"
+                                and reader_lease.file_id_matches(
+                                    verdict[2], reader_lease.stat_identity(norm))):
+                            verdict = self._decide(
+                                destination, want, declared, computed, source_id,
+                                heal=heal,
+                                owners=_Owners() if self._arbitrates else None,
+                                content=False)
+                        done = self._act(verdict, destination, temp_path, want,
+                                         computed)
+                        if done is not None:
+                            return done
+                if stop is not None and stop.is_set():
+                    temp_path.unlink(missing_ok=True)
+                    raise OSError(f"stopping before {destination} publishes")
+                with self.clock.timing("publish_poll_sleep"):
+                    time.sleep(_PUBLISH_POLL_S)
+        finally:
+            if wait_started is not None:
+                self.clock.wait(wait_kind, time.monotonic() - wait_started)
 
     def _act(self, verdict: tuple, destination: Path, temp_path: Path,
              want: int, computed: str,
@@ -1723,7 +1841,9 @@ class _StagedPublisher:
             return want, verdict[1], verdict[2]
         if verdict[0] == "refuse":
             temp_path.unlink(missing_ok=True)
-            raise _PublicationRefused(verdict[1])
+            raise _PublicationRefused(
+                verdict[1],
+                wait_verdict=verdict[2] if len(verdict) > 2 else None)
         return None
 
     def _publish_divergent(self, destination: Path, norm: str,
@@ -2107,6 +2227,16 @@ class _StagedPublisher:
         lock passes ``False``: the hash reads a whole file, and a verdict
         decided under a lock only confirms one decided before it.  Without
         it positive absence waits, then heals, as it always did.
+
+        A ``"wait"`` verdict, and the ``"refuse"`` a wait settles to after
+        the grace, each carry a third element naming which of the four
+        :data:`PUBLISH_WAIT_OWNED`-family kinds it is (#994), for
+        :meth:`publish` to total onto the receipt's ``publish_waits`` and
+        for the eventual refusal to name.  Every other verdict --
+        ``"replace"``, ``"adopt"``, ``"divergent"``, and a ``"refuse"`` that
+        never waited (an unstatable or non-regular destination, an
+        unreadable census, a live pin) -- stays the plain two-element tuple
+        it always was.
         """
 
         norm = os.path.normpath(str(destination))
@@ -2157,10 +2287,10 @@ class _StagedPublisher:
                              "deferring to retry")
                 return ("refuse",
                         f"shared staged name is published elsewhere, "
-                        f"{temp_note}: {destination}")
+                        f"{temp_note}: {destination}", PUBLISH_WAIT_OWNED)
             return ("wait",
                     f"shared staged name is published elsewhere, "
-                    f"deferring: {destination}")
+                    f"deferring: {destination}", PUBLISH_WAIT_OWNED)
         cover, cover_detail = self._live_claim_cover(norm)
         if cover is None:
             return ("refuse",
@@ -2174,10 +2304,10 @@ class _StagedPublisher:
                 return ("refuse",
                         f"shared staged name still has a live publisher "
                         f"after the grace, deferring to retry: "
-                        f"{destination}")
+                        f"{destination}", PUBLISH_WAIT_LIVE_PUBLISHER)
             return ("wait",
                     f"shared staged name has a live publisher, "
-                    f"deferring: {destination}")
+                    f"deferring: {destination}", PUBLISH_WAIT_LIVE_PUBLISHER)
         partials = self._inflight_partials(destination)
         if partials is None:
             return ("refuse",
@@ -2188,10 +2318,11 @@ class _StagedPublisher:
                 return ("refuse",
                         f"shared staged name still has a copy in flight "
                         f"({partials}) after the grace, deferring to "
-                        f"retry: {destination}")
+                        f"retry: {destination}", PUBLISH_WAIT_IN_FLIGHT)
             return ("wait",
                     f"shared staged name has a copy in flight "
-                    f"({partials}), deferring: {destination}")
+                    f"({partials}), deferring: {destination}",
+                    PUBLISH_WAIT_IN_FLIGHT)
         # Positive absence, re-verified: no fragment, no pin, no live
         # claim, no copy in flight, every census clean.  Bytes that hash to
         # the trusted digest -- the declared one, or the copy's own for a
@@ -2211,7 +2342,8 @@ class _StagedPublisher:
         if heal:
             return ("replace",)
         return ("wait",
-                f"shared staged name unattributed, deferring: {destination}")
+                f"shared staged name unattributed, deferring: {destination}",
+                PUBLISH_WAIT_UNATTRIBUTED)
 
     def _live_pins(self, norm: str) -> list[str] | None:
         """Pin ids live on one staged path, or None when unknowable."""
@@ -2233,6 +2365,17 @@ class _StagedPublisher:
         fragment does.  This mover's own claim is excluded, so a mover
         never defers to itself.  ``None`` means unknowable (fail closed);
         the claim paths are stage-root-relative there, joined here.
+
+        Runs once per clean entry at content adoption, once per publish
+        poll while a name waits, and once per divergence invalidation
+        (#1089) -- so this passes ``self._claim_memo``, held for this
+        publisher's whole run, instead of deriving every claimed mover's
+        staged paths fresh on each check.  The memo does not weaken the
+        gate: it only remembers a claim's *derived* paths, which its own
+        sealed request and manifest fix forever; the claim listing and
+        each claim record are still read fresh inside ``_claimed_paths``
+        on every call, so a claim that appears, ends or changes is still
+        seen at once.  Unlocked across the census (see ``__init__``).
         """
 
         try:
@@ -2242,7 +2385,7 @@ class _StagedPublisher:
         try:
             paths, tainted = _claimed_paths(
                 self.queue, str(self.tier_id), self.cas_root,
-                exclude={str(self.mover)})
+                exclude={str(self.mover)}, memo=self._claim_memo)
         except Exception as exc:
             return None, str(exc)
         if tainted:
@@ -2621,17 +2764,28 @@ class _StagedPublisher:
           identity) with the sidecar digest riding along;
         * ``"divergent"`` -- a record that dates the *current* incarnation
           names the path but the bytes are provably not these: a digest
-          mismatch, or the very inode the record dates was modified in
-          place (same ``ino``, drifted mtime/ctime/size -- no legitimate
-          publication writes in place).  Immediate refuse, never wait.
+          mismatch, a different size on the same inode (no legitimate
+          publication writes in place), or -- when only ``mtime_ns``/
+          ``ctime_ns`` drifted on a same-inode, same-size record -- a
+          content check (:meth:`_content_proof`) against the record's own
+          digest that failed or could not run.  Immediate refuse, never
+          wait.  Same inode and size with drifted timestamps is not itself
+          divergence: it is also what a freed inode number reused for the
+          very next create in the same directory looks like (#1078), and
+          what an NFS delegation recall looks like (#1096), so whether it
+          diverges is settled by content first, exactly as #1096 settles a
+          recall -- and a confirmed match falls to ``"owned"`` below, not
+          to a proof, since matching bytes on a reused inode say nothing
+          about an unbroken lineage the way an exact stat match does;
           A record whose ``file_id`` names a *different inode* -- the name
           was replaced by a real publication, exactly what the pre-fix
           unconditional rename did -- says nothing about the bytes that
           are there now, so it is skipped and the search keeps looking
           for one that dates the current incarnation (#755);
         * ``"owned"`` -- a fragment names the path without proving it
-          (sidecar missing, undated, or dating a superseded incarnation):
-          defer, a rerun may date it;
+          (sidecar missing, undated, dating a superseded incarnation, or a
+          reused-inode record whose content settled clean, #1078): defer,
+          a rerun may date it;
         * ``"clean"`` -- no fragment names the path at all;
         * ``"unknown"`` -- unreadable proof state: fail closed even over
           an otherwise valid proof, since an unreadable fragment might
@@ -2950,11 +3104,32 @@ class _StagedPublisher:
             # record may still date the incarnation that is there (#755).
             return "stale"
         if not reader_lease.file_id_matches(published, file_id):
-            # Same inode, changed since the record dated it: an in-place
-            # write, which no legitimate publication performs.  The dated
-            # bytes are provably not the bytes that are there -- the one
-            # shape of stat mismatch that is immediate divergence.
-            return "divergent"
+            if not reader_lease.timestamp_only_mismatch(published, file_id):
+                # Same inode, different size (or an unreadable identity):
+                # an in-place write, which no legitimate publication
+                # performs.  The dated bytes are provably not the bytes
+                # that are there -- immediate divergence.
+                return "divergent"
+            # Inode and size still agree; only mtime/ctime moved.  #1096's
+            # NFS delegation recall is one cause; a freed inode number the
+            # allocator hands straight back to the very next create in the
+            # same directory is another (#1078: a stale donor's dated inode
+            # can coincide with the live file's purely by reuse, with no
+            # writer ever touching that inode in place).  Neither a live
+            # rewrite nor a coincidental reuse can be told apart by stat
+            # alone, so genuine divergence is settled the same way #1096
+            # settles a recall: by the file's own bytes, against this
+            # record's own digest -- never the caller's declared or
+            # computed one, which is judged after this returns.
+            if self._content_proof(norm, want, digest) is None:
+                return "divergent"
+            # The bytes are provably what this record dated, but a
+            # coincidental reuse proves nothing about an unbroken lineage
+            # the way an exact stat match does -- it is exactly what a
+            # record dating a superseded incarnation is: not proof, not
+            # divergence, not permission to overwrite.  Skip it; another
+            # record, or a live pin, may still settle the name.
+            return "stale"
         if isinstance(declared, str) and declared:
             if digest != declared:
                 return "divergent"
@@ -3294,7 +3469,20 @@ class _Copier:
                 raise OSError(f"not a regular file: {source}")
             if offset:
                 os.lseek(fd, offset, os.SEEK_SET)
-            with open(temporary, "wb") as sink:
+            try:
+                temporary_handle = open(temporary, "wb")
+            except FileNotFoundError:
+                # The directory made above is still empty until this file
+                # lands in it, so an egress's empty-directory prune
+                # (``stage_release._prune_empty``) can remove it in the gap
+                # (#1008 item 2).  One prune removes a directory once; a
+                # second would need a second sweep inside this window -- the
+                # same race and the same single retry
+                # ``residency_map._write_atomic`` already takes for its own
+                # directory.
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                temporary_handle = open(temporary, "wb")
+            with temporary_handle as sink:
                 buffer = bytearray(self.block)
                 view = memoryview(buffer)
                 while written < want and not stop.is_set():
@@ -3369,6 +3557,16 @@ class _Copier:
             temporary.unlink(missing_ok=True)
             raise OSError(f"digest mismatch on {source}: manifest says "
                           f"{declared[:12]}, the copy is {computed[:12]}")
+        if self.owner:
+            # Name this mover as the copy's writer (#1088), before the
+            # rename, so what this copy publishes carries it from its first
+            # instant under the final name.
+            # Best-effort like the mark below: a copy the filesystem would
+            # not mark is judged by the rules that held before this one.
+            try:
+                os.setxattr(temporary, STAGE_MOVER_XATTR, self.owner.encode())
+            except OSError:
+                pass
         if source_id is not None:
             # File the origin change-detection the prewarm loop defined
             # (same name, same format), best-effort: a filesystem that
@@ -3436,10 +3634,19 @@ class _Copier:
         #: Never held while logging (which takes ``self.lock``) or copying.
         dispatch = threading.Lock()
 
-        def record_error(path: str, exc: object) -> None:
+        def record_error(path: str, exc: object,
+                        wait_verdict: str | None = None) -> None:
             with self.lock:
                 if len(self.errors) < 20:
-                    self.errors.append(f"{os.path.basename(path)}: {exc}")
+                    # ``wait_verdict`` (#994) names the grace's own verdict
+                    # ahead of the free-text message, so the entry this
+                    # refusal is about and the wait it settled from both
+                    # survive the 20-entry cap even if later, unrelated
+                    # errors bury the rest of the sentence (#853).
+                    prefix = (f"publish wait ({wait_verdict}) refused after "
+                             f"the grace: " if wait_verdict else "")
+                    self.errors.append(
+                        f"{os.path.basename(path)}: {prefix}{exc}")
 
         def take() -> dict[str, object] | None:
             """The next entry, or ``None`` once dispatch has ended."""
@@ -3489,7 +3696,7 @@ class _Copier:
                         if exc.refusal is not None and self.refusal is None:
                             self.refusal = exc.refusal
                             self.conflict = exc.conflict
-                    record_error(path, exc)
+                    record_error(path, exc, wait_verdict=exc.wait_verdict)
                     return
                 except (OSError, ValueError) as exc:
                     # An ordinary source read, digest or filesystem failure:
@@ -4114,6 +4321,59 @@ def announced_pool_identity(pool_root: str | Path,
     return None
 
 
+def _parse_own_document(path: Path, validate: Callable[[object], object],
+                        ) -> tuple[tuple[int, int, int, int, int], object] | None:
+    """One resume document, parsed before the stage ownership lock (#1008).
+
+    Read under the #761 fence (:func:`_metadata_version`), exactly as
+    :class:`stage_release._CensusMemo` reads its own hint pass, so the
+    version this parse saw can be compared again once the lock is held
+    (:func:`_reread_own_document`).  A same-key retry's own fragment can be
+    large, and this is the mover's *first* wait for the stage lock
+    (``resume_lock_wait_s``): parsing it while holding that lock pays, under
+    the very lock #988 moved the census out from under, for work the fence
+    lets happen outside it instead.
+
+    ``None`` for anything this pass could not use -- absent, unreadable or
+    invalid -- and that decides nothing: it is a hint, exactly as the
+    pre-lock census is, so the pass under the lock always re-reads a
+    document this one returns ``None`` for.
+    """
+
+    try:
+        with open(path, "rb") as stream:
+            version = _metadata_version(os.fstat(stream.fileno()))
+            document = validate(json.load(stream))
+    except (OSError, ValueError):
+        return None
+    return version, document
+
+
+def _reread_own_document(path: Path,
+                         prior: tuple[tuple[int, int, int, int, int], object]
+                         | None,
+                         validate: Callable[[object], object]) -> object:
+    """This mover's own document, reusing ``prior`` only at its own version.
+
+    Called under the stage ownership lock.  ``prior`` is
+    :func:`_parse_own_document`'s answer from before the lock was taken.
+    The file is opened and ``fstat``-ed again regardless -- a document
+    added, removed, replaced or rewritten since the pre-lock parse must be
+    seen here, the same promise :class:`stage_release._CensusMemo` keeps for
+    the egress's own census -- and the earlier parse is returned without a
+    second parse only when the version taken now equals the one ``prior``
+    was read at. Raises exactly what a direct open-and-parse would:
+    ``FileNotFoundError`` for an absent document, or ``OSError``/
+    ``ValueError`` for one that exists but cannot be read or validated.
+    """
+
+    with open(path, "rb") as stream:
+        version = _metadata_version(os.fstat(stream.fileno()))
+        if prior is not None and prior[0] == version:
+            return prior[1]
+        return validate(json.load(stream))
+
+
 def _resume_own_coverage(queue, *, consumer_action_key: str,
                          mover_action_key: str, tier_id: str,
                          stage_root: Path, manifest_sha256: str,
@@ -4176,6 +4436,15 @@ def _resume_own_coverage(queue, *, consumer_action_key: str,
     Returns ``(staged_seeds, sidecar_seeds, resumed_generation)``.  Empty
     seeds with a ``None`` generation mean "nothing resumable", which is
     today's behavior, not an error.
+
+    The fragment and the sidecar are parsed once before the stage ownership
+    lock is taken and once more under it (:func:`_parse_own_document`,
+    :func:`_reread_own_document`, #1008 item 1) -- the same #761 fence
+    :class:`stage_release._CensusMemo` reads its own hint pass under, so
+    this mover's first wait for the lock (``resume_lock_wait_s``) no longer
+    pays for opening and parsing its own fragment, and a document that
+    changed in the gap between the two parses is still read fresh under the
+    lock, never trusted from before it.
     """
 
     staged: dict[str, dict[str, object]] = {}
@@ -4198,6 +4467,17 @@ def _resume_own_coverage(queue, *, consumer_action_key: str,
 
     fragment_path = residency_map.fragment_path(
         residency_root, consumer_action_key, mover_action_key)
+    sidecar_path = reader_lease.material_path(
+        residency_root, consumer_action_key, mover_action_key)
+    # Parsed before the stage ownership lock (#1008 item 1): this is the
+    # mover's first wait for it, and a same-key retry's own fragment can be
+    # large.  Each parse is a hint, kept with the file version it was read
+    # at; the pass under the lock below re-checks that version and re-parses
+    # only when it changed, never trusting this one for the decision.
+    pre_fragment = _parse_own_document(
+        fragment_path, residency_map.validate_fragment)
+    pre_sidecar = _parse_own_document(
+        sidecar_path, reader_lease.validate_material)
     asked = time.perf_counter()
     # Named as this mover's own hold (#1110): the census runs in the mover's
     # first phase, where its worker looks at the start gate, and an
@@ -4211,8 +4491,8 @@ def _resume_own_coverage(queue, *, consumer_action_key: str,
             # To the grant, so the record's own write is not called a wait.
             timings["resume_lock_wait_s"] = granted - asked
         try:
-            with open(fragment_path, "rb") as stream:
-                fragment = residency_map.validate_fragment(json.load(stream))
+            fragment = _reread_own_document(
+                fragment_path, pre_fragment, residency_map.validate_fragment)
         except FileNotFoundError:
             # Confirmed absence: a first publication, or everything this
             # key ever staged was retired.  Not conflict -- there is no
@@ -4248,8 +4528,16 @@ def _resume_own_coverage(queue, *, consumer_action_key: str,
                 f"{', '.join(conflicts)}; refusing keeps the record rather "
                 f"than republishing around it")
 
-        material = reader_lease.read_material(
-            residency_root, consumer_action_key, mover_action_key)
+        try:
+            material = _reread_own_document(
+                sidecar_path, pre_sidecar, reader_lease.validate_material)
+        except FileNotFoundError:
+            material = None
+        except (OSError, ValueError) as exc:
+            # :func:`reader_lease.read_material`'s own answer for this case:
+            # a taint, not a raise -- the check below treats it exactly as
+            # an absent sidecar, per this function's own docstring.
+            material = exc
         mentions: Mapping[str, Mapping[str, object]] = {}
         generation: str | None = None
         if isinstance(material, Mapping):
@@ -4716,6 +5004,14 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
         # single call, and how each entry ended (#981).  Totals alone could
         # not split chunk 0's 270 s tail; this can.
         "phase_timings": copier.clock.report(),
+        # How many entries waited for another publisher, under which of the
+        # four kinds (#994), and how many seconds -- a sibling of
+        # ``phase_timings`` rather than a phase inside it, and the field a
+        # post-grace refusal used to leave unrecorded: the mover looped on
+        # the wait, re-took the host-wide lock every ``_PUBLISH_POLL_S``,
+        # then refused with only a free-text message, capped at 20 entries
+        # and easily buried by later, unrelated errors (#853), to say why.
+        "publish_waits": copier.clock.publish_waits_report(),
         # How long this mover queued for the stage ownership lock before
         # its copy began (#988): at the start gate, and before it at the
         # read of its own prior coverage.  Either is an egress's hold, paid

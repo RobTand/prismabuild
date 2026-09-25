@@ -84,8 +84,13 @@ def test_an_untrusted_directory_stamp_says_so(fleet, monkeypatch):
 
 
 def test_a_filesystem_the_rule_does_not_list_says_so(fleet, monkeypatch):
+    # Since #1070 the owner's own fragment and material are fenced by the
+    # same trusted rule, and documents are tested before directories, so an
+    # owner on a filesystem the rule does not list is refused on its
+    # documents first. `directory-stamp-untrusted` keeps its own case in
+    # `test_an_untrusted_directory_stamp_says_so`.
     queue, stage, mover = _idle_owner(fleet, monkeypatch, filesystem="nfs4")
-    _assert_refused(queue, stage, mover, "directory-stamp-untrusted")
+    _assert_refused(queue, stage, mover, "document-version-unknown")
 
 
 def test_a_full_cache_says_so(fleet, monkeypatch):

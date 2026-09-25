@@ -72,9 +72,10 @@ withdrawn leaves its movers holding the stage forever otherwise.  And as a
 root against the fragments of the movers the fleet still wants, because both
 paths above are driven from a *key*: the ledger's held keys or a receipt's, and
 bytes no key holds are invisible to either for the life of the fleet.  That is
-what a withdrawn mid-copy mover leaves --- the shards it verified and renamed
-into place, and its ``.partial`` temporaries --- and its tokens have already
-gone back by then, so nothing keyed can find it.
+what a killed or withdrawn mid-copy mover leaves --- its ``.partial``
+temporaries, and the copies it renamed into place after its last fragment
+(#1088) --- and its tokens have already gone back by then, so nothing keyed
+can find it.
 
 **A stage root belongs to one queue, and says so (#628).**  Every rule above
 decides *what* to delete; none of them asked *whose* stage was being walked.
@@ -92,6 +93,8 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Mapping
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 import contextvars
 import errno
@@ -122,9 +125,10 @@ from prismabuild import window_credit  # noqa: E402
 
 import prewarm_loop  # noqa: E402
 from stage_move import (  # noqa: E402
-    RANGE_SUFFIX, _current_directory_version, _keepable_version,
-    _metadata_version, _trusted_directory_stamp, _version_fence,
-    paths_named_once, pre_range_stage_relative, stage_relative,
+    RANGE_SUFFIX, STAGE_MOVER_XATTR, _current_directory_version,
+    _is_action_key, _keepable_version, _metadata_version,
+    _trusted_directory_stamp, _version_fence, paths_named_once,
+    pre_range_stage_relative, stage_relative,
 )
 
 #: The errnos that mean "this file has no such attribute", as opposed to "this
@@ -147,6 +151,27 @@ PARTIAL_SUFFIX = ".partial"
 #: The event a reconciled eviction publishes, so an operator can tell bytes a
 #: mover's own fragment named from bytes nothing named at all.
 UNATTRIBUTED_EVENT = "stage-unattributed-evicted"
+
+#: What :func:`reconcile` can find on a file that no attribution names, as its
+#: receipt sizes it (#1088).  The first three may be deleted and are reported
+#: in ``deleted_by_kind``; the last three are what a pass can leave, reported
+#: in ``unowned_left_by_kind``:
+#:
+#: * ``partial`` -- a mover's own ``.<name>.partial`` temporary;
+#: * ``unmarked`` -- a file carrying neither stage mark;
+#: * ``mover_residue`` -- a copy a mover renamed into place, carrying
+#:   ``stage_move.STAGE_MOVER_XATTR``, that no fragment names.  It is left
+#:   while its mover is still wanted or queued, or while a live promotion
+#:   reads it;
+#: * ``source_mark_only`` -- a file carrying the prewarm loop's
+#:   ``user.pbstage.source`` and no mover mark: a prewarm object, or a mover's
+#:   copy published before #1088, which no attribute tells apart.  Always
+#:   left;
+#: * ``mark_unanswerable`` -- a file whose marks the filesystem cannot report,
+#:   or whose mover mark names no action key.  Always left.
+RECONCILE_DELETED_KINDS = ("partial", "unmarked", "mover_residue")
+RECONCILE_LEFT_KINDS = ("mover_residue", "source_mark_only",
+                        "mark_unanswerable")
 
 #: The event a bounded orphan recovery publishes.  Deliberately not
 #: ``UNATTRIBUTED_EVENT``: that one reports what routine reconciliation found
@@ -441,7 +466,9 @@ class _CensusMemo:
     are immutable under their digests; the claim listing and each claim
     record are still read fresh.  One memo lives for one call; nothing
     carries over between calls.  (:class:`CensusIndex`, the tier loop's
-    subclass, is the exception, and its docstring says what it keeps.)
+    subclass, is the exception, and its docstring says what it keeps.  So
+    is a staged publisher's claim-cover memo, which keeps only ``claims``
+    for the publisher's run: ``stage_move._StagedPublisher``, #1089.)
 
     It counts what it parses and what it reuses (fragments and material
     sidecars; for pins, what it parses), so a caller can record how much
@@ -788,7 +815,7 @@ class DirectoryRecords:
 
     def read(self, directory: Path, *, select, parse, thaw=None,
              keep=None, stat_parse: bool = False,
-             checkpoint=None) -> list[tuple[Path, object]]:
+             checkpoint=None, readers: int = 1) -> list[tuple[Path, object]]:
         """``(path, record)`` for each selected name, in name order.
 
         ``select(entry)`` takes an ``os.DirEntry`` and says whether the name
@@ -816,17 +843,33 @@ class DirectoryRecords:
         stat that costs milliseconds or more on a loaded pool, so each
         entry is its own batch.  What it raises reaches the caller as a
         parse's raise would.  Without it the read is as before.
+
+        ``readers`` above 1 stats and parses a changed directory's entries on
+        that many threads (#1153): a cold read costs one seek per entry, and
+        the pool serves many seeks at once, so the read costs (entries /
+        readers) x latency rather than entries x latency.  Only the ``stat``
+        and the ``parse`` run on the readers.  Everything else runs on the
+        calling thread, one entry at a time and in name order, exactly as a
+        serial read runs it: the version comparison, ``keep``, the #1045
+        fence, the counters, and ``checkpoint``, which is called before each
+        entry's result is taken.  A reader takes a run of consecutive entries
+        (:data:`READ_RUN_MAX` at most) and at most ``2 x readers`` runs are in
+        flight, so a raise, first in name order as a serial read's is, stops
+        the read with at most that many reads wasted, and nothing a reader
+        did is kept.  ``parse`` must then be safe to call from several
+        threads at once; ``pool._read_json`` is.
         """
 
         out = self._read(directory, select=select, parse=parse, keep=keep,
-                         stat_parse=stat_parse, checkpoint=checkpoint)
+                         stat_parse=stat_parse, checkpoint=checkpoint,
+                         readers=readers)
         if thaw is None:
             return out
         return [(path, thaw(path, kept)) for path, kept in out]
 
     def _read(self, directory: Path, *, select, parse, keep,
               stat_parse: bool = False,
-              checkpoint=None) -> list[tuple[Path, object]]:
+              checkpoint=None, readers: int = 1) -> list[tuple[Path, object]]:
         name = str(directory)
         kept = self._directories.get(name)
         if (kept is not None and kept[0] is not None
@@ -866,28 +909,44 @@ class DirectoryRecords:
         out: list[tuple[Path, object]] = []
         complete = True
         changed = False
+
+        def entry_io(entry: os.DirEntry) -> tuple | None:
+            """One entry's ``stat`` and, when its version moved, its parse.
+
+            ``None`` for an entry gone since the listing; otherwise ``(info,
+            version, parsed, record)``.  The only part of an entry's read
+            that may run on a reader thread: it touches nothing but the file.
+            """
+
+            path = directory / entry.name
+            info = None
+            try:
+                # The listing's own string, not ``path``: converting a
+                # ``Path`` back to a string for every name was most of a
+                # 30,000-name listing's cost.
+                info = os.stat(entry.path)
+                version = _metadata_version(info)
+            except FileNotFoundError:
+                return None
+            except OSError:
+                version = None
+            hit = previous.get(entry.name)
+            if version is not None and hit is not None and hit[0] == version:
+                return info, version, False, hit[1]
+            record = parse(path, info) if stat_parse else parse(path)
+            return info, version, True, record
+
         try:
-            for entry in entries:
-                if checkpoint is not None:
-                    checkpoint()      # before each entry's stat and parse
-                path = directory / entry.name
-                info = None
-                try:
-                    # The listing's own string, not ``path``: converting a
-                    # ``Path`` back to a string for every name was most of a
-                    # 30,000-name listing's cost.
-                    info = os.stat(entry.path)
-                    version = _metadata_version(info)
-                except FileNotFoundError:
+            for entry, outcome in _entry_reads(entries, entry_io,
+                                               readers=readers,
+                                               checkpoint=checkpoint):
+                if outcome is None:
                     continue
-                except OSError:
-                    complete = False
-                    version = None
-                hit = previous.get(entry.name)
-                if version is not None and hit is not None and hit[0] == version:
-                    record = hit[1]
-                else:
-                    record = parse(path, info) if stat_parse else parse(path)
+                path = directory / entry.name
+                info, version, parsed, record = outcome
+                if version is None:
+                    complete = False      # the stat failed
+                if parsed:
                     self.parsed += 1
                     changed = True
                     if keep is not None and not keep(record):
@@ -915,6 +974,84 @@ class DirectoryRecords:
             stamp = None
         self._directories[name] = (stamp, records)
         return out
+
+
+#: The most entries one reader takes at a time (#1153).  Handing an entry to
+#: a reader thread and taking its result back cost about as much as a warm
+#: ``stat`` (``tools/fleet/bench_tier_cold_start.py``: 12,000 entries of a
+#: changed directory took 0.26 to 0.28 s one entry per handoff, 0.12 to
+#: 0.17 s serially, on sparky), so a reader takes a run of consecutive
+#: entries and hands back the run.  16 makes the handoff a sixteenth of the
+#: warm cost.  It also bounds the longest wait between two checkpoints: 16
+#: cold reads, about 4 s at the 4 reads a second dl380g10's loaded pool
+#: gave a serial reader on 2026-09-25, against the 90 s horizon.
+READ_RUN_MAX = 16
+
+
+def _entry_reads(entries, entry_io, *, readers: int, checkpoint):
+    """``(entry, entry_io(entry))`` in ``entries``' order, read by ``readers``.
+
+    ``checkpoint`` runs on the calling thread before each entry's result is
+    taken: serially that is before its ``stat``, as :meth:`DirectoryRecords.read`
+    promised (#1148).  With readers, each reader takes a run of consecutive
+    entries (:data:`READ_RUN_MAX` at most, fewer when there are too few
+    entries to give every reader two runs) and reads them in order; the
+    calling thread waits for a run before its first entry and takes the
+    rest of it without waiting.  A stretch between two checkpoints is
+    therefore at most one run's read.  A raise from ``entry_io`` ends its
+    run there, and reaches the caller at that entry's turn, after the
+    entries before it; the runs still being read are not waited for: they
+    touch nothing but their files.
+    """
+
+    readers = min(int(readers), len(entries))
+    if readers <= 1:
+        for entry in entries:
+            if checkpoint is not None:
+                checkpoint()      # before each entry's stat and parse
+            yield entry, entry_io(entry)
+        return
+    size = max(1, min(READ_RUN_MAX, len(entries) // (2 * readers)))
+
+    def read_run(run):
+        done = []
+        for entry in run:
+            try:
+                done.append((entry, entry_io(entry), None))
+            except BaseException as exc:  # noqa: BLE001 -- raised in order
+                done.append((entry, None, exc))
+                break
+        return done
+
+    runs = iter([entries[at:at + size] for at in range(0, len(entries), size)])
+    # A bounded read-ahead: two runs per reader in flight, enough to keep
+    # every reader busy while the caller takes the run before, and no more,
+    # so a raise early in the directory does not wait on the rest of it.
+    window = 2 * readers
+    executor = ThreadPoolExecutor(max_workers=readers,
+                                  thread_name_prefix="directory-records")
+    pending: deque = deque()
+    try:
+        for run in runs:
+            pending.append(executor.submit(read_run, run))
+            if len(pending) >= window:
+                break
+        while pending:
+            future = pending.popleft()
+            if checkpoint is not None:
+                checkpoint()      # before the run's first result is taken
+            done = future.result()
+            following = next(runs, None)
+            if following is not None:
+                pending.append(executor.submit(read_run, following))
+            for at, (entry, outcome, raised) in enumerate(done):
+                if at and checkpoint is not None:
+                    checkpoint()  # before each later entry's result is taken
+                if raised is not None:
+                    raise raised
+                yield entry, outcome
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
 
 
 #: The tier loop's :class:`DirectoryRecords` while one of its cycles runs,
@@ -2240,8 +2377,12 @@ def _evict_locked(queue: pool.PoolQueue, mover_action_key: str, *,
     released = time.perf_counter()
     # Empty directories go after the lock.  A publisher's rename lands in a
     # directory that already holds its temporary, so ``rmdir`` cannot take
-    # it from under the rename; its ``mkdir`` runs outside the lock today,
-    # so the window between that and its temporary is no wider for this.
+    # it from under the rename; its ``mkdir`` runs outside the lock, before
+    # its temporary exists, so this prune can still remove that directory in
+    # the gap.  ``stage_move._copy_one`` retries the ``mkdir`` once, on
+    # ``FileNotFoundError``, when that race costs it its temporary's creation
+    # (#1008 item 2) -- the same single retry ``residency_map._write_atomic``
+    # already takes for its own directory.
     pruned_started = time.perf_counter()
     for parent in sorted(parents, key=lambda one: len(one.parts), reverse=True):
         _prune_empty(parent, stage)
@@ -3051,6 +3192,29 @@ def _path_version(path: Path | str) -> tuple[int, int, int, int, int] | None:
     return _metadata_version(info)
 
 
+def _fenced_path_version(path: Path | str, fence: int | None,
+                         ) -> tuple[tuple[int, int, int, int, int] | None,
+                                    tuple[int, int, int, int, int] | None]:
+    """``(version, trusted)`` for one regular metadata file, from one ``lstat``.
+
+    ``version`` is :func:`_path_version`'s change evidence, which the prune
+    compares before and after its scan.  ``trusted`` is the same version
+    when a skip checkpoint may stand on it, else ``None``: the #1045 rule
+    (:func:`stage_move._keepable_version`) with ``fence`` read before this
+    ``lstat``.  A file whose ctime is not strictly before the fence changed
+    in the fence's clock tick, and a rename cycle later in that tick can be
+    given the freed inode number and reproduce all five fields (#1070).
+    """
+
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return None, None
+    if not statmod.S_ISREG(info.st_mode):
+        return None, None
+    return _metadata_version(info), _keepable_version(info, fence)
+
+
 def _directory_version(path: Path | str) -> tuple[int, int, int, int] | None:
     """Change evidence for one immediate parent directory, or ``None``.
 
@@ -3119,7 +3283,10 @@ class _CheckpointVerdict:
     boolean it always was; ``refused`` names the reason when it was not:
 
     * ``document-version-unknown`` -- this owner's fragment or material
-      version, or a co-owner fragment's, could not be read;
+      version, or a co-owner fragment's, could not be read, or the #1070
+      fence refused this owner's (changed in the tick it was read in, or on
+      a filesystem the trusted rule does not list; documents are tested
+      first, so an owner on such a filesystem reports this reason);
     * ``no-directory-stamp`` -- the owner names no path, so there is no
       directory to fence;
     * ``directory-stamp-untrusted`` -- a parent directory's stamp was refused
@@ -3163,6 +3330,9 @@ def _install_skip_checkpoint(key: tuple, fragment_version, material_version,
     difference and re-scans.  Every stamp must be present: a directory the
     trusted rule refused, because it changed in the tick its stamp was taken
     in, is one a later rename might not move, so nothing is installed on it.
+    The fragment and material versions are the trusted ones
+    (:func:`_fenced_path_version`, #1070), ``None`` for a document changed in
+    the tick of its read, and ``None`` installs nothing either.
     Only an owner the latest sweep discovered is cached, one checkpoint each
     (:func:`_retain_skip_checkpoints`); when the cache is full the newcomer
     is refused and nothing is evicted.  A cache entry only ever skips a
@@ -3434,8 +3604,15 @@ def prune_stale_mentions(queue: pool.PoolQueue, mover_action_key: str, *,
     # Versions before the reads and again after the scan: metadata that
     # changed while this transaction classified it is not acted on, and the
     # versions a checkpoint installs are exactly the ones verified here.
-    fragment_version_before = _path_version(fragment_path)
-    material_version_before = _path_version(material_path)
+    # A checkpoint installs only the trusted ones (#1070): a document changed
+    # in the tick of the clock read before its ``lstat`` is one a same-tick
+    # rename given the freed inode could reproduce, so it is scanned again
+    # next pass, as a refused directory stamp is (#1062).
+    document_fence = _version_fence()
+    fragment_version_before, fragment_trusted = _fenced_path_version(
+        fragment_path, document_fence)
+    material_version_before, material_trusted = _fenced_path_version(
+        material_path, document_fence)
 
     # The censuses and the containment fences go first, as hints, without
     # the lock (#988): the pass under it re-reads only what changed, and the
@@ -3712,8 +3889,8 @@ def prune_stale_mentions(queue: pool.PoolQueue, mover_action_key: str, *,
             idle = (not prune and not absent
                     and (retained_paths > 0 or exact_material))
             cacheable = idle and _install_skip_checkpoint(
-                checkpoint_key, fragment_version_after,
-                material_version_after, dirs_trusted, co_owner_fences)
+                checkpoint_key, fragment_trusted,
+                material_trusted, dirs_trusted, co_owner_fences)
             return receipt(retained=total, cacheable=cacheable)
         if not prune and not absent:
             if retained_paths:
@@ -3721,8 +3898,8 @@ def prune_stale_mentions(queue: pool.PoolQueue, mover_action_key: str, *,
                 # changes until a document it read does (#1056).
                 retained_reason = "co-owner"
                 cacheable = _install_skip_checkpoint(
-                    checkpoint_key, fragment_version_after,
-                    material_version_after, dirs_trusted, co_owner_fences)
+                    checkpoint_key, fragment_trusted,
+                    material_trusted, dirs_trusted, co_owner_fences)
                 return receipt(retained=total, cacheable=cacheable)
             # A crash between the fragment and material writes leaves the
             # material a superset.  The strict reader ignores a date no
@@ -3730,7 +3907,7 @@ def prune_stale_mentions(queue: pool.PoolQueue, mover_action_key: str, *,
             # material dates exactly the fragment's validated keys: trim it
             # before caching this otherwise-coherent owner, under the same
             # generation.
-            material_final_version = material_version_after
+            material_final_version = material_trusted
             if not exact_material:
                 try:
                     reader_lease.write_material(
@@ -3744,9 +3921,12 @@ def prune_stale_mentions(queue: pool.PoolQueue, mover_action_key: str, *,
                 except (OSError, ValueError, pb.PrismaBuildError) as exc:
                     errors.append(f"material trim: {exc}")
                     return receipt(retained=total)
-                material_final_version = _path_version(material_path)
+                # The trim's own write is in the current tick, so this is
+                # trusted only once a tick has passed since it (#1070).
+                material_final_version = _fenced_path_version(
+                    material_path, _version_fence())[1]
             cacheable = _install_skip_checkpoint(
-                checkpoint_key, fragment_version_after,
+                checkpoint_key, fragment_trusted,
                 material_final_version, dirs_trusted, co_owner_fences)
             return receipt(retained=total, cacheable=cacheable)
         if not retained_paths and len(prune) + len(absent) == total:
@@ -5238,6 +5418,34 @@ def _marked_by_the_prewarm_stage(path: Path) -> bool | None:
     return True
 
 
+def _stage_mark(path: Path) -> tuple[str, str]:
+    """Which kind of unattributed file this is, by its marks (#1088).
+
+    Returns ``(kind, mover)``, the kind one of :data:`RECONCILE_DELETED_KINDS`
+    or :data:`RECONCILE_LEFT_KINDS` other than ``partial``, and ``mover`` the
+    writer a ``mover_residue`` mark names.  The mover's mark is read first:
+    a mover's copy carries both marks and only this one says whose it is.
+    Its absence is an answer and hands the question to the prewarm loop's
+    mark, decided as it always was (:func:`_marked_by_the_prewarm_stage`);
+    any other failure, or a value that is not an action key, is no answer.
+    """
+
+    try:
+        raw = os.getxattr(path, STAGE_MOVER_XATTR)
+    except OSError as exc:
+        if exc.errno not in _XATTR_ABSENT:
+            return "mark_unanswerable", ""
+    else:
+        mover = raw.decode("utf-8", "replace")
+        if not _is_action_key(mover):
+            return "mark_unanswerable", ""
+        return "mover_residue", mover
+    marked = _marked_by_the_prewarm_stage(path)
+    if marked is None:
+        return "mark_unanswerable", ""
+    return ("source_mark_only" if marked else "unmarked"), ""
+
+
 #: How many census taints one receipt names before it counts the rest.
 ATTRIBUTION_TAINT_LIMIT = 8
 
@@ -5253,21 +5461,40 @@ def _attributed_census(queue: pool.PoolQueue, *, wanted: set[str] | None,
     reader tolerance skipped is unknown ownership, not an unowned file.
     """
 
+    of_wanted, _of_any, tainted = _named_census(
+        queue, wanted=wanted, residency_root=residency_root, memo=memo)
+    return of_wanted, tainted
+
+
+def _named_census(queue: pool.PoolQueue, *, wanted: set[str] | None,
+                  residency_root: str | Path | None = None,
+                  memo: _CensusMemo | None = None,
+                  ) -> tuple[set[str], set[str], list[str]]:
+    """:func:`_attributed_census`, and every path *any* fragment names.
+
+    One census, two answers, for :func:`reconcile` (#1088): the paths the
+    ``wanted`` movers' fragments name (all of them when ``wanted`` is
+    ``None``), and the paths every fragment names, wanted or not.  A mover's
+    copy that some fragment names has an owner the key-driven passes retire
+    together with that fragment and its material, so only a copy outside the
+    second set is residue.  Same taint channel as the first.
+    """
+
     root = Path(residency_root if residency_root is not None
                 else queue.root / pool.RESIDENCY)
     fragments, tainted = _fragment_census(root, memo)
-    out: set[str] = set()
+    of_wanted: set[str] = set()
+    of_any: set[str] = set()
     for _namespace, mover, fragment, _direct in fragments:
-        if wanted is not None and mover not in wanted:
-            continue
         named = (memo.normalized_paths_of(fragment) if memo is not None
                  else None)
-        if named is not None:
-            out.update(named)
-            continue
-        for entry in dict(fragment["entries"]).values():
-            out.add(os.path.normpath(str(entry["stage_path"])))
-    return out, tainted
+        if named is None:
+            named = frozenset(os.path.normpath(str(entry["stage_path"]))
+                              for entry in dict(fragment["entries"]).values())
+        of_any.update(named)
+        if wanted is None or mover in wanted:
+            of_wanted.update(named)
+    return of_wanted, of_any, tainted
 
 
 def attributed_stage_paths(queue: pool.PoolQueue, *, wanted: set[str] | None,
@@ -5306,12 +5533,15 @@ def reconcile(queue: pool.PoolQueue, *, tier_id: str, stage_root: str,
 
     The half of #608 the held-key sweep structurally cannot do: it walks the
     tier ledger's held keys, so bytes no key holds are invisible to it forever.
-    A withdrawn mid-copy mover leaves exactly that -- the shards it had already
-    verified and renamed into place, and its ``.partial`` temporaries -- and its
-    tokens come back when its worker stops it, so the ledger reads its full
-    supply free over 130 GB of occupied stage.
+    A killed or withdrawn mid-copy mover leaves exactly that -- its
+    ``.partial`` temporaries, and the copies it verified and renamed into
+    place after the last fragment it filed -- and its tokens come back when
+    its worker stops it, so the ledger reads its full supply free over
+    occupied stage.  A stage mover files its fragment every
+    ``stage_move.FRAGMENT_PUBLISH_S``; a RAM promotion files its only one at
+    the end of its range, so a kill leaves every copy it renamed (#1088).
 
-    Three rules decide, and each one is a fact rather than a policy:
+    Four rules decide, and each one is a fact rather than a policy:
 
     * **Nothing is deleted while a mover could be writing.**  A mover ready or
       claimed on this tier means a copy is in flight or about to be, and its
@@ -5322,11 +5552,34 @@ def reconcile(queue: pool.PoolQueue, *, tier_id: str, stage_root: str,
     * **A mover's own temporary is always its own.**  ``.<name>.partial`` is
       ``stage_move``'s naming and nothing else writes it, so one that no live
       copy is producing is the residue of a killed or withdrawn one.
+    * **A mover's copy that no fragment names is residue once its writer has
+      ended (#1088).**  Both movers name themselves on every copy, in
+      ``stage_move.STAGE_MOVER_XATTR``, before its rename.  A copy that *no*
+      fragment names -- wanted or not: a copy some fragment names is retired
+      with that fragment and its material by the egress, the dead-owner
+      sweep or the uncharged-owner pass -- and no live pin names is deleted
+      once its writer has ended: the writer is not in ``wanted``, where a
+      live consumer's plan may retry it under the same key and adopt the
+      copy by content (#1081), and no entry under its key is ready or
+      claimed (``residency_plan.live_state``, the ending proof the
+      publication gate's owner arbitration reads, so a lease that outlived
+      its record still keeps the copy).  A live RAM promotion reading the
+      copy as a source leg keeps it too.  A queue state or promotion census
+      that cannot be read keeps it, and says so in ``errors``.
     * **Anything else must be shown to be unowned.**  The prewarm loop stages
       into this same pool and marks its objects with ``user.pbstage.source``, so
-      an unmarked file that no wanted mover's fragment names is unowned.  Where
-      the filesystem cannot answer the xattr question at all, "unmarked" means
-      nothing, and the file is left alone with the reason in the receipt.
+      an unmarked file that no wanted mover's fragment names is unowned.  A
+      file carrying that mark and no mover mark is left: it is a prewarm
+      object or a mover's copy from before #1088, and nothing on the file
+      tells the two apart (``recover_orphaned_range`` is the bounded repair
+      for the second).  Where the filesystem cannot answer the xattr question
+      at all, "unmarked" means nothing, and the file is left alone.
+
+    Every file the walk finds unattributed is sized by kind
+    (:data:`RECONCILE_DELETED_KINDS`, :data:`RECONCILE_LEFT_KINDS`):
+    ``deleted_by_kind`` and ``unowned_left_by_kind`` carry entries and bytes,
+    ``unowned_left`` and ``unowned_left_bytes`` total what was left, and
+    ``mover_residue_left_reasons`` counts why each left residue copy stayed.
 
     **Unknown ownership never deletes.**  The attribution census is strict
     (see :func:`_fragment_census`): a fragment that cannot be read or
@@ -5354,7 +5607,11 @@ def reconcile(queue: pool.PoolQueue, *, tier_id: str, stage_root: str,
         "bytes_deleted": 0,
         "tokens_released": 0,
         "partials_deleted": 0,
+        "deleted_by_kind": _sized_kinds(RECONCILE_DELETED_KINDS),
         "unowned_left": 0,
+        "unowned_left_bytes": 0,
+        "unowned_left_by_kind": _sized_kinds(RECONCILE_LEFT_KINDS),
+        "mover_residue_left_reasons": {},
         "left_since_walk": 0,
         "complete": True,
         "errors": [],
@@ -5400,13 +5657,19 @@ def reconcile(queue: pool.PoolQueue, *, tier_id: str, stage_root: str,
     if index is not None:
         index.fresh_pins()
     census_started = time.perf_counter()
-    hinted, _hint_taint = _attributed_census(
+    hinted, hinted_named, _hint_taint = _named_census(
         queue, wanted=wanted, residency_root=residency_root, memo=memo)
     hint_pins, _hint_pin_taint = reader_lease.live_for(
         queue, None, residency_root=residency_root, memo=memo.pins)
     hinted |= set(hint_pins)
+    hinted_named |= set(hint_pins)
     candidates, walk_errors = _unattributed_candidates(
-        stage, stage_resolved, hinted)
+        stage, stage_resolved, hinted, hinted_named)
+    if any(one[2] == "mover_residue" for one in candidates):
+        # Mover residue's promotion census once as a hint (#1088): it fills
+        # the memo with each promotion's derived source legs, so the one
+        # under the lock reads only the claim listing and its records.
+        _claimed_source_paths(queue, stage, memo=memo)
     census_s = time.perf_counter() - census_started
     emptied: set[Path] = set()
 
@@ -5420,7 +5683,7 @@ def reconcile(queue: pool.PoolQueue, *, tier_id: str, stage_root: str,
             receipt["skipped"] = "movers_in_flight"
             receipt["movers_in_flight"] = sorted(in_flight)
             return
-        attributed, attribution_taint = _attributed_census(
+        attributed, named, attribution_taint = _named_census(
             queue, wanted=wanted, residency_root=residency_root, memo=memo)
         if attribution_taint:
             # A fragment that cannot be read, or a directory that cannot be
@@ -5448,16 +5711,55 @@ def reconcile(queue: pool.PoolQueue, *, tier_id: str, stage_root: str,
         # A live pin is attribution: unattributed bytes nobody accounts for
         # go, pinned bytes never do.
         attributed |= set(pin_owners)
+        named |= set(pin_owners)
+        errors: list[str] = list(walk_errors)
+        # Mover residue's own keepers (#1088), read only when there is some:
+        # its writers' queue states, then the live promotions' source legs.
+        # Stats and listings only, and no transition lock: none may be taken
+        # under this one (transition, then ownership), and a writer queued
+        # again after this read cannot rename before the lock is released,
+        # nor adopt a copy without re-checking it under the lock.
+        residue = [one for one in candidates if one[2] == "mover_residue"]
+        writers = (_unended_writers(queue, {one[4] for one in residue},
+                                    wanted) if residue else {})
+        errors.extend(why for _state, why in sorted(set(writers.values()))
+                      if why)
+        reading: set[str] | None = set()
+        if any(one[4] not in writers for one in residue):
+            sources, source_taint = _claimed_source_paths(queue, stage,
+                                                          memo=memo)
+            if source_taint:
+                reading = None
+                errors.extend(
+                    f"promotion census uncertain: {item}"
+                    for item in source_taint[:ATTRIBUTION_TAINT_LIMIT])
+            else:
+                reading = sources
         receipt["census_validate_s"] = round(
             time.perf_counter() - validate_started, 6)
         receipt.update(_locked_parse_record(memo, parse_counts))
         receipt["entries_judged"] = len(candidates)
         deleted = bytes_deleted = partials = left = 0
-        errors: list[str] = list(walk_errors)
-        for path, identity, partial in candidates:
-            if os.path.normpath(str(path)) in attributed:
+        deleted_by = receipt["deleted_by_kind"]
+        residue_why: dict[str, int] = {}
+        for path, identity, kind, size, mover in candidates:
+            normalized = os.path.normpath(str(path))
+            if normalized in (named if kind == "mover_residue"
+                              else attributed):
                 left += 1   # an owner or a pin named it after the walk
                 continue
+            if kind == "mover_residue":
+                why = writers[mover][0] if mover in writers else ""
+                if not why and reading is None:
+                    why = "promotion_census_unreadable"
+                elif not why and _under_resolved(
+                        path, stage, stage_resolved) in reading:
+                    why = "promotion_source"
+                if why:
+                    residue_why[why] = residue_why.get(why, 0) + 1
+                    left_by_kind["mover_residue"]["entries"] += 1
+                    left_by_kind["mover_residue"]["bytes"] += size
+                    continue
             try:
                 info = os.lstat(path)
             except FileNotFoundError:
@@ -5478,20 +5780,33 @@ def reconcile(queue: pool.PoolQueue, *, tier_id: str, stage_root: str,
                 continue
             deleted += 1
             bytes_deleted += int(info.st_size)
-            partials += 1 if partial else 0
+            partials += 1 if kind == "partial" else 0
+            deleted_by[kind]["entries"] += 1
+            deleted_by[kind]["bytes"] += int(info.st_size)
             emptied.add(path.parent)
         receipt["entries_deleted"] = deleted
         receipt["bytes_deleted"] = bytes_deleted
         receipt["partials_deleted"] = partials
-        receipt["unowned_left"] = unowned_left
+        receipt["unowned_left_by_kind"] = left_by_kind
+        receipt["unowned_left"] = sum(
+            int(one["entries"]) for one in left_by_kind.values())
+        receipt["unowned_left_bytes"] = sum(
+            int(one["bytes"]) for one in left_by_kind.values())
+        receipt["mover_residue_left_reasons"] = dict(
+            sorted(residue_why.items()))
         # Candidates the walk found that the locked re-check kept: a
         # fragment or pin named them, or the file changed, after the walk.
         receipt["left_since_walk"] = left
         receipt["errors"] = errors
         receipt["complete"] = not errors
 
-    unowned_left = sum(1 for _path, identity, _partial in candidates
-                       if identity is None)
+    # What the walk left outright -- a source mark alone, or marks nobody
+    # can read -- is sized here; residue the lock keeps joins it there.
+    left_by_kind = _sized_kinds(RECONCILE_LEFT_KINDS)
+    for _path, identity, kind, size, _mover in candidates:
+        if identity is None:
+            left_by_kind[kind]["entries"] += 1
+            left_by_kind[kind]["bytes"] += size
     candidates = [one for one in candidates if one[1] is not None]
     asked = time.perf_counter()
     with _stage_ownership(queue, stage, role="reconcile") as granted:
@@ -5506,32 +5821,92 @@ def reconcile(queue: pool.PoolQueue, *, tier_id: str, stage_root: str,
     return receipt
 
 
+def _sized_kinds(kinds: tuple[str, ...]) -> dict[str, dict[str, int]]:
+    """A zero entries-and-bytes count per kind, for a receipt to fill."""
+
+    return {kind: {"entries": 0, "bytes": 0} for kind in kinds}
+
+
+def _unended_writers(queue: pool.PoolQueue, movers: set[str],
+                     wanted: set[str]) -> dict[str, tuple[str, str]]:
+    """Each residue writer not provably ended, as ``(reason, error)`` (#1088).
+
+    A writer in ``wanted`` -- a live consumer's leads or plan, a live item,
+    a held key -- may be retried under its own key, and the retry adopts its
+    copies by content (#1081): ``mover_wanted``.  A writer with any entry
+    under its key in ``ready/`` or ``claimed/`` -- its record, or a lease that
+    outlived it -- may still be writing: ``mover_ready`` or
+    ``mover_claimed``.  That is ``residency_plan.live_state``, the proof the
+    publication gate reads before it replaces an ended owner's name.  A state
+    that cannot be read is no proof: ``mover_state_unreadable``, with the
+    error for the receipt.  A writer absent from the answer has ended.
+    """
+
+    out: dict[str, tuple[str, str]] = {}
+    for mover in sorted(movers):
+        if mover in wanted:
+            out[mover] = ("mover_wanted", "")
+            continue
+        live, error = residency_plan.live_state(queue, mover)
+        if error:
+            out[mover] = ("mover_state_unreadable",
+                          f"residue writer {mover[:12]}: {error}")
+        elif live is not None:
+            out[mover] = (f"mover_{live}", "")
+    return out
+
+
+def _under_resolved(path: Path, stage: Path, stage_resolved: Path) -> str:
+    """``path`` spelled under the resolved stage root, as sources are named.
+
+    The walk names a file under ``stage`` as given; the promotion census
+    (:func:`_claimed_source_paths`) names a source leg under the stage's
+    ``realpath``.
+    """
+
+    return os.path.normpath(os.path.join(
+        str(stage_resolved), os.path.relpath(str(path), str(stage))))
+
+
 def _unattributed_candidates(stage: Path, stage_resolved: Path,
                              attributed: set[str],
-                             ) -> tuple[list[tuple[Path, tuple | None, bool]],
+                             named: set[str] | None = None,
+                             ) -> tuple[list[tuple[Path, tuple | None, str,
+                                                   int, str]],
                                         list[str]]:
     """The files :func:`reconcile` may delete, found without the lock (#988).
 
     The walk and every per-file rule of the reconciliation: the root's own
     markers are skipped, a symlink or non-regular file is skipped, an
-    attributed path is skipped, a prewarm temporary is skipped, a file the
-    prewarm stage marked -- or whose mark cannot be read -- is left, and a
+    attributed path is skipped, a prewarm temporary is skipped, a mover's
+    copy that any fragment names is skipped (#1088), a file the prewarm
+    stage alone marked -- or whose marks cannot be read -- is left, and a
     file that would be deleted but resolves outside the stage is skipped.
 
-    Containment is checked only for that last kind, a file about to carry an
-    identity (#1073).  It guards a deletion and nothing else, and resolving
-    every file of the live stage (54,400, 38,422 of them marked and only
-    counted) took 48% of the tier loop.  It still runs after the ``lstat``
-    that captures the identity: a directory swapped for a symlink before that
+    ``attributed`` is what the wanted movers' fragments and the live pins
+    name.  ``named`` is what every fragment and live pin names, wanted or
+    not, and judges a mover's copy only (:func:`_named_census`); ``None``
+    reads as ``attributed``.
+
+    Containment is checked only for a file about to carry an identity
+    (#1073).  It guards a deletion and nothing else, and resolving every
+    file of the live stage (54,400, 38,422 of them marked and only counted)
+    took 48% of the tier loop.  It still runs after the ``lstat`` that
+    captures the identity: a directory swapped for a symlink before that
     ``lstat`` is caught here, and one swapped after it changes the identity
-    the locked re-check compares, which never re-checks containment.  Returns
-    ``(candidates, errors)``: each candidate as ``(path, identity,
-    partial)`` where ``identity`` is the ``lstat`` version the caller must
-    see again under the lock, or ``None`` for a file left as unowned-but-
-    marked (counted, never deleted).
+    the locked re-check compares, which never re-checks containment.
+    Returns ``(candidates, errors)``: each candidate as ``(path, identity,
+    kind, size, mover)`` where ``identity`` is the ``lstat`` version the
+    caller must see again under the lock, or ``None`` for a file left
+    (counted and sized, never deleted); ``kind`` is one of
+    :data:`RECONCILE_DELETED_KINDS` or :data:`RECONCILE_LEFT_KINDS`;
+    ``size`` is that ``lstat``'s ``st_size``; and ``mover`` is the writer a
+    ``mover_residue`` mark names, otherwise ``""``.
     """
 
-    candidates: list[tuple[Path, tuple | None, bool]] = []
+    if named is None:
+        named = attributed
+    candidates: list[tuple[Path, tuple | None, str, int, str]] = []
     errors: list[str] = []
     # ``stage_resolved in resolved.parents``, as a string test: the resolved
     # path lies strictly below the resolved stage.
@@ -5558,17 +5933,23 @@ def _unattributed_candidates(stage: Path, stage_resolved: Path,
             except OSError as exc:
                 errors.append(f"{path.name}: {exc}")
                 continue
-            if os.path.normpath(str(path)) in attributed:
+            normalized = os.path.normpath(str(path))
+            if normalized in attributed:
                 continue
-            partial = _is_mover_partial(name)
-            if not partial:
+            kind, mover = "partial", ""
+            if not _is_mover_partial(name):
                 if prewarm_loop._STAGE_TEMPORARY.search(name):
                     # The prewarm loop reaps its own, once per process, and a
                     # live one belongs to a copy in flight.
                     continue
-                marked = _marked_by_the_prewarm_stage(path)
-                if marked is None or marked:
-                    candidates.append((path, None, False))
+                kind, mover = _stage_mark(path)
+                if kind == "mover_residue" and normalized in named:
+                    # Some fragment names this copy, wanted or not: its
+                    # owner is retired with that fragment and its material
+                    # by the key-driven passes, never from under them.
+                    continue
+                if kind in ("source_mark_only", "mark_unanswerable"):
+                    candidates.append((path, None, kind, int(info.st_size), ""))
                     continue
             try:
                 if not str(path.resolve()).startswith(inside):
@@ -5576,7 +5957,8 @@ def _unattributed_candidates(stage: Path, stage_resolved: Path,
             except OSError as exc:
                 errors.append(f"{path.name}: {exc}")
                 continue
-            candidates.append((path, _metadata_version(info), partial))
+            candidates.append((path, _metadata_version(info), kind,
+                               int(info.st_size), mover))
     return candidates, errors
 
 def _scope_for_range(cas_root: str, manifest_sha256: str,
@@ -5728,13 +6110,16 @@ def recover_orphaned_range(
         apply: bool = False) -> dict[str, object]:
     """Retire the cache copies of one retired head that nothing can prove.
 
-    Routine ``reconcile`` structurally cannot reach these.  It decides
-    ownership from the ``user.pbstage.source`` mark, and ``stage_move`` sets
-    that same mark on every file it publishes, so a stage copy always reads as
-    prewarm-owned and lands in ``unowned_left`` for the life of the fleet.  A
-    head whose fragment and material are gone therefore leaves bytes no
-    document proves and no sweep may touch, and every later head pays the
-    publisher grace once per entry for them.
+    Routine ``reconcile`` structurally cannot reach these when they were
+    published before #1088.  It decides ownership from the
+    ``user.pbstage.source`` mark, and ``stage_move`` set that same mark, and
+    no other, on every file it published, so such a stage copy reads as a
+    prewarm object and lands in ``unowned_left`` for the life of the fleet.
+    (A copy published since also names its writer, and ``reconcile`` takes it
+    back once no fragment names it and that writer has ended.)  A head whose
+    fragment and material are gone therefore leaves bytes no document proves
+    and no sweep may touch, and every later head pays the publisher grace
+    once per entry for them.
 
     Scope is bound to history, not to the caller.  The only identities taken
     are the head's own filed move receipt and the egress receipt that retired

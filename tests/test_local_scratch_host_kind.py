@@ -148,7 +148,8 @@ def test_a_pair_that_cannot_be_charged_is_refused_at_submit(
 def test_a_typed_local_disk_demand_is_still_refused(tmp_path, monkeypatch):
     with pytest.raises(SystemExit, match=KIND):
         _build(tmp_path, monkeypatch, *_env(*_declared()), "--demand", f"{KIND}=4")
-    assert pbrun._FLEET_DEMAND_KINDS == frozenset({"cpu", "gpu", "mem_gb"})
+    assert pbrun._FLEET_DEMAND_KINDS == frozenset(
+        {"cpu", "gpu", "mem_gb", "disk_metadata"})
 
 
 def test_slurm_refuses_declared_scratch(tmp_path, monkeypatch):
