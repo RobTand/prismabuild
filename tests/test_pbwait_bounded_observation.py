@@ -85,9 +85,12 @@ print(row["status"])
 print(row["note"])
 '''
     try:
+        # A hang guard, not the property: 4.5 s leaves a loaded box time to
+        # start Python and fork, and stays under the 5 s production budget, so a
+        # child that ignored the 0.05 s override still fails (#1170).
         completed = subprocess.run(
             [sys.executable, "-c", code], text=True, capture_output=True,
-            timeout=2.0, check=False,
+            timeout=4.5, check=False,
         )
     except subprocess.TimeoutExpired as exc:
         pytest.fail(

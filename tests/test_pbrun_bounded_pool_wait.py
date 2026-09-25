@@ -106,9 +106,12 @@ print("entered await_outcome", flush=True)
 print(pbrun.await_outcome(Queue(), key, wait_s=0), flush=True)
 '''
     try:
+        # A hang guard, not the property: 4.5 s leaves a loaded box time to
+        # start Python and fork, and stays under the 5 s production budget, so a
+        # child that ignored the 0.05 s override still fails (#1170).
         completed = subprocess.run(
             [sys.executable, "-c", code], text=True, capture_output=True,
-            timeout=1.0, check=False)
+            timeout=4.5, check=False)
     except subprocess.TimeoutExpired as exc:
         stdout = (exc.stdout or "").decode() if isinstance(exc.stdout, bytes) else (exc.stdout or "")
         pytest.fail(

@@ -109,8 +109,11 @@ pbwait.os.listdir = blocked
 pbwait.resolve_key(queue, "a", lane_root=Path({str(lane_root)!r}))
 '''
     try:
+        # A hang guard, not the property: 4.5 s leaves a loaded box time to
+        # start Python and fork, and stays under the 5 s production budget, so a
+        # child that ignored the 0.05 s override still fails (#1170).
         completed = subprocess.run([sys.executable, "-c", code], text=True,
-                                   capture_output=True, timeout=2.0, check=False)
+                                   capture_output=True, timeout=4.5, check=False)
     except subprocess.TimeoutExpired as exc:
         stdout = exc.stdout.decode() if isinstance(exc.stdout, bytes) else (exc.stdout or "")
         pytest.fail("prefix resolution exceeded its reader budget; marker="
