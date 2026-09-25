@@ -9783,6 +9783,36 @@ acquires need two releases; retrying one acquire token reuses its ref; a
 forked child registers its own inherited ref, so a parent release cannot
 unpin it.
 
+**A failed release names its step and errno (#1023).** `release` answers
+`True` for a release that happened and for a ref already gone. Anything else
+is a falsy `ReleaseFailure`, never a bare `False`, naming the step that
+failed and the `OSError`'s errno (`None` when the pin does not validate):
+`census` (listing the leases root), `read` (the unlocked read that only
+learns the stage root), `lock` (that root's ownership lock), `locked-read`,
+`stage-root` (a pin whose root moved again under its own lock), `write` (the
+rewrite that keeps other refs) or `unlink` (the last ref's pin). R13 died on
+a bare `False` from one of five of these, with nothing to say which. A
+failure leaves the ref held. `ESTALE`, `EIO`, `ETIMEDOUT` and `EAGAIN` are
+retried inside the call, outside the lock, `RELEASE_RETRY_DELAYS_S` bounding
+it (about a second); one that outlasts the bound comes back `retryable`, and
+the caller may retry on its own horizon. Every attempt re-reads the pin
+under the lock and removes only its own ref, so however many attempts and
+retries run, the ref goes exactly once. A caller holding the pin passes
+`stage_root=` and skips the unlocked read. The locked read stays
+authoritative: when it names another root, the release lets that lock go
+and takes the pin's own, one root at a time. The named consumer's pin is
+read directly; only `ENOENT` there, never another errno, sends the release
+to the census of the whole leases root (an `exists()` probe used to read
+several errnos as absence). Each failed release prints one
+`reader-release-failed` line on stderr and appends it, naming the consumer,
+pin, ref, step, errno and attempts, to
+`residency-events/<consumer>/<host>-reader-release.jsonl`. It sits beside
+the tier loop's `<host>.jsonl`, not in it, because that file has one writer
+(#1002). `consumer_events`, a kill's ending record and
+`pbstatus --starvation` read it with the tier loop's verdicts, and it keeps
+its newest `MAX_CONSUMER_EVENT_LINES`. A failure with no consumer to file
+under (a census failure when the caller named none) goes to stderr only.
+
 The egress defers to any live ref: it keeps the file, the fragment and the
 charge, files a retiring mark bound to the material generation (closed to
 new acquires for that generation only), and deletes after the last release.

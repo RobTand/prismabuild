@@ -60,15 +60,20 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from collections.abc import Mapping
+from dataclasses import dataclass
+import errno
 import hashlib
 import json
 import math
 import os
 from pathlib import Path
 import re
+import socket
 import stat
+import sys
 import threading
 import time
+from typing import NamedTuple
 import uuid
 
 #: Worker announce tag for this behavior; advertised only once qualified.
@@ -2521,9 +2526,121 @@ def open_pinned(queue, pin: Mapping[str, object], ref_id: str, key: str,
     return fd, serving
 
 
+#: The steps of one release, in the order it runs them; a failed release
+#: names the one that failed (#1023).  ``census`` lists the leases root when
+#: the named consumer's own directory does not hold the pin; ``read`` is the
+#: unlocked read that only learns the pin's stage root (skipped when the
+#: caller names it); ``lock`` takes that root's ownership lock;
+#: ``locked-read`` is the authoritative read under it; ``stage-root`` is a
+#: pin whose stage root is still not the locked one after the release has
+#: moved to the root the pin names; ``write`` keeps the other holders' refs;
+#: ``unlink`` drops the pin with its last ref.
+RELEASE_STEPS = ("census", "read", "lock", "locked-read", "stage-root",
+                 "write", "unlink")
+#: What an NFS client answers for a fault that can clear by itself: a handle
+#: the server replaced (the pin is written by rename), an I/O or RPC timeout,
+#: a resource that is busy for now.  A release retries these inside the call
+#: and, past its bound, answers ``retryable``; every other errno, and a pin
+#: that does not validate, is answered at once.
+RELEASE_RETRYABLE_ERRNOS = frozenset({
+    errno.ESTALE, errno.EIO, errno.ETIMEDOUT, errno.EAGAIN})
+#: The waits between one release's attempts: a transient errno is retried
+#: once per entry, about a second in all, and never while the stage lock is
+#: held.  A caller with a longer horizon (the mount's own, say) retries a
+#: ``retryable`` answer itself.
+RELEASE_RETRY_DELAYS_S = (0.05, 0.2, 0.8)
+#: The tier event a failed release files for its consumer (#1002's file).
+RELEASE_FAILED_EVENT = "reader-release-failed"
+#: That event's file, ``residency-events/<consumer>/<host>`` + this: beside
+#: the tier loop's ``<host>.jsonl`` rather than in it, because that file has
+#: one writer, the host's tier loop, and a reader is not it.
+RELEASE_EVENTS_SUFFIX = "-reader-release.jsonl"
+
+
+def _errno_name(code: int | None) -> str | None:
+    return None if code is None else errno.errorcode.get(code, str(code))
+
+
+@dataclass(frozen=True)
+class ReleaseFailure:
+    """A release that did not happen, which step failed, and why (#1023).
+
+    Falsy, so ``if not release(...)`` still reads it as the refusal it is;
+    never ``False``, so a caller that must know why can ask.  ``True`` stays
+    the answer for a release that happened and for a ref already gone.
+
+    ``step`` is one of :data:`RELEASE_STEPS`; ``errno`` is the ``OSError``'s,
+    or ``None`` when the step failed on something else (a pin that does not
+    validate).  ``retryable`` is true only when the last attempt failed with
+    one of :data:`RELEASE_RETRYABLE_ERRNOS` and the call's own retries did
+    not outlast it.  ``trail`` is every attempt's ``(step, errno)``, oldest
+    first.  ``path`` is the pin, or the leases root for a ``census``.
+    ``consumer_action_key`` is the consumer the failure is filed under: the
+    one the caller named, else the directory holding the pin, else ``None``.
+    The ref is held after any failure; a later release drops it exactly once.
+    """
+
+    pin_id: str
+    ref_id: str
+    step: str
+    errno: int | None
+    error: str
+    retryable: bool
+    attempts: int
+    trail: tuple[tuple[str, int | None], ...]
+    path: str
+    consumer_action_key: str | None
+
+    def __bool__(self) -> bool:
+        return False
+
+    def record(self) -> dict[str, object]:
+        """The failure as a JSON-ready record: an event, a receipt, a log line."""
+
+        return {
+            "pin_id": self.pin_id, "ref_id": self.ref_id,
+            "step": self.step, "errno": self.errno,
+            "errno_name": _errno_name(self.errno), "error": self.error,
+            "retryable": self.retryable, "attempts": self.attempts,
+            "trail": [[step, code] for step, code in self.trail],
+            "path": self.path,
+            "consumer_action_key": self.consumer_action_key,
+        }
+
+
+class _Fault(NamedTuple):
+    """One attempt's failed step."""
+
+    step: str
+    errno: int | None
+    error: str
+    path: str
+
+
+def _fault(step: str, cause: BaseException | str, path) -> _Fault:
+    if isinstance(cause, BaseException):
+        code = cause.errno if isinstance(cause, OSError) else None
+        return _Fault(step, code, f"{type(cause).__name__}: {cause}",
+                      str(path))
+    return _Fault(step, None, cause, str(path))
+
+
+class _Moved(NamedTuple):
+    """The locked read names another stage root than the one locked."""
+
+    stage_root: str
+
+
+#: The pin is not at this path: look in the next place, if any.
+_ABSENT = object()
+#: The lock refused before its body ran.
+_UNSET = object()
+
+
 def release(queue, pin_id: str, ref_id: str, *,
             consumer_action_key: str | None = None,
-            residency_root=None) -> bool:
+            residency_root=None,
+            stage_root=None) -> "bool | ReleaseFailure":
     """Drop exactly one ref: reads complete, the window becomes evictable.
 
     Explicit and idempotent, independent of compute progress -- progress
@@ -2536,55 +2653,201 @@ def release(queue, pin_id: str, ref_id: str, *,
     the same guard as acquire and the egress: a release racing an acquire
     or another release is ordered, never lost.  The pin lives under its
     OWNER directory (material namespace and owner split for produced
-    output); an explicit consumer that misses falls back to a full scan,
-    since pin and ref ids are globally unique and the exact named ref is
-    the only thing ever dropped.
+    output); the named consumer's pin is read directly, and only a pin that
+    is not there (``ENOENT``, never another errno) sends the release to a
+    census of the whole leases root, since pin and ref ids are globally
+    unique and the exact named ref is the only thing ever dropped.
+
+    ``stage_root`` is the root the pin names (``acquire`` returns the pin):
+    a caller that passes it skips the unlocked read that only learns it.
+    The locked read stays authoritative: when it names another root, the
+    release lets this lock go and takes the pin's own (one stage root at a
+    time, #780).
+
+    Returns ``True`` for a release that happened and for a ref already
+    gone.  Otherwise returns a falsy :class:`ReleaseFailure` naming the
+    step that failed and its errno (#1023), and files it for its consumer
+    (:data:`RELEASE_FAILED_EVENT`).  A transient errno
+    (:data:`RELEASE_RETRYABLE_ERRNOS`) is retried here first, outside the
+    lock, :data:`RELEASE_RETRY_DELAYS_S` bounding it; every attempt re-reads
+    the pin, so however many run, the ref is dropped exactly once.
     """
 
-    candidates, complete = _pin_candidates(
-        queue, pin_id, consumer_action_key=consumer_action_key,
-        residency_root=residency_root)
-    if (consumer_action_key is not None
-            and not any(path.exists() for path in candidates)):
-        candidates, complete = _pin_candidates(
-            queue, pin_id, consumer_action_key=None,
-            residency_root=residency_root)
-    if not complete:
+    hint = os.path.normpath(str(stage_root)) if stage_root else None
+    delays = tuple(RELEASE_RETRY_DELAYS_S)
+    trail: list[_Fault] = []
+    while True:
+        fault = _release_once(queue, str(pin_id), str(ref_id),
+                              consumer_action_key=consumer_action_key,
+                              residency_root=residency_root, stage_root=hint)
+        if fault is None:
+            return True
+        trail.append(fault)
+        if (fault.errno not in RELEASE_RETRYABLE_ERRNOS
+                or len(trail) > len(delays)):
+            break
+        time.sleep(delays[len(trail) - 1])
+    last = trail[-1]
+    consumer = consumer_action_key
+    if consumer is None and last.step != "census":
+        consumer = Path(last.path).parent.name or None
+    failure = ReleaseFailure(
+        pin_id=str(pin_id), ref_id=str(ref_id), step=last.step,
+        errno=last.errno, error=last.error,
+        retryable=last.errno in RELEASE_RETRYABLE_ERRNOS,
+        attempts=len(trail),
+        trail=tuple((fault.step, fault.errno) for fault in trail),
+        path=last.path, consumer_action_key=consumer)
+    _file_release_failure(queue, failure)
+    return failure
+
+
+def _release_once(queue, pin_id: str, ref_id: str, *,
+                  consumer_action_key: str | None, residency_root,
+                  stage_root: str | None) -> _Fault | None:
+    """One attempt: ``None`` once the ref is gone, else the step that failed."""
+
+    root = leases_root(queue, residency_root)
+    name = f"{pin_id}.lease.json"
+    own = None
+    if consumer_action_key is not None:
+        own = root / consumer_action_key / name
+        outcome = _release_pin(queue, own, ref_id, stage_root)
+        if outcome is not _ABSENT:
+            return outcome
+    try:
+        consumers = sorted(entry.name for entry in os.scandir(root)
+                           if entry.is_dir())
+    except OSError as exc:
         # Unknown absence: retain, never report released.
-        return False
-    for path in candidates:
+        return _fault("census", exc, root)
+    for consumer in consumers:
+        path = root / consumer / name
+        if path == own:
+            continue
+        # Hinted or not, a census finds the pin by an unlocked read of each
+        # candidate: locking to look would take the lock once per consumer
+        # directory to find one pin.
+        outcome = _release_pin(queue, path, ref_id, None)
+        if outcome is not _ABSENT:
+            return outcome
+    return None
+
+
+def _release_pin(queue, path: Path, ref_id: str, stage_root: str | None):
+    """Drop ``ref_id`` from the pin at ``path``: ``None``, ``_ABSENT`` or a fault."""
+
+    hinted = stage_root is not None
+    if not hinted:
         first = _read_pin(path)
         if first is None:
-            continue
+            return _ABSENT
         if isinstance(first, Exception):
-            return False
-        stage_root = str(first.get("stage_root") or "")
-        if not stage_root:
-            return False
+            return _fault("read", first, path)
+        stage_root = str(first["stage_root"])
+    for _root in range(2):
+        outcome = _locked_drop(queue, path, ref_id, str(stage_root),
+                               hinted=hinted)
+        if not isinstance(outcome, _Moved):
+            return outcome
+        stage_root, hinted = outcome.stage_root, False
+    return _fault("stage-root",
+                  "the pin's stage root moved again under its own lock, "
+                  f"to {stage_root!r}", path)
+
+
+def _locked_drop(queue, path: Path, ref_id: str, stage_root: str, *,
+                 hinted: bool):
+    """The locked half of one release; the lock's own failure is ``lock``."""
+
+    outcome = _UNSET
+    try:
         with queue.stage_ownership_lock(stage_root):
-            pin = _read_pin(path)
-            if pin is None:
-                return True  # a last release won the race; already gone
-            if isinstance(pin, Exception):
-                return False
-            refs_map = pin["refs"]
-            assert isinstance(refs_map, dict)
-            if ref_id not in refs_map:
-                return True  # already gone counts as released
-            del refs_map[ref_id]
-            if refs_map:
-                pin["refs"] = refs_map
-                try:
-                    _write_pin(path, pin)
-                except ReaderLeaseError:
-                    return False
-            else:
-                try:
-                    path.unlink(missing_ok=True)
-                except OSError:
-                    return False
-            return True
-    return True
+            outcome = _drop_ref(path, ref_id, stage_root, hinted=hinted)
+    except OSError as exc:
+        if outcome is _UNSET:
+            return _fault("lock", exc, path)
+        # The act was decided and done under the lock; a lock that then
+        # fails to let go still goes with its descriptor's close
+        # (``posix_lock.held``), so the act's answer stands.
+    return outcome
+
+
+def _drop_ref(path: Path, ref_id: str, stage_root: str, *, hinted: bool):
+    """Under ``stage_root``'s ownership lock: re-read, then drop the one ref."""
+
+    pin = _read_pin(path)
+    if pin is None:
+        # Seen here before the lock: a last release won the race, already
+        # gone.  Not seen (the caller named the root): look elsewhere.
+        return _ABSENT if hinted else None
+    if isinstance(pin, Exception):
+        return _fault("locked-read", pin, path)
+    if pin["stage_root"] != stage_root:
+        return _Moved(str(pin["stage_root"]))
+    refs_map = pin["refs"]
+    assert isinstance(refs_map, dict)
+    if ref_id not in refs_map:
+        return None  # already gone counts as released
+    del refs_map[ref_id]
+    if refs_map:
+        pin["refs"] = refs_map
+        try:
+            _write_pin(path, pin)
+        except (OSError, ReaderLeaseError) as exc:
+            return _fault("write", exc, path)
+    else:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as exc:
+            return _fault("unlink", exc, path)
+    return None
+
+
+def _file_release_failure(queue, failure: ReleaseFailure) -> None:
+    """Say a failed release on stderr, and file it where its consumer's are.
+
+    ``residency-events/<consumer>/<host>-reader-release.jsonl``: beside the
+    tier loops' verdicts (#1002), so :meth:`PoolQueue.consumer_events`, a
+    kill's ending record and ``pbstatus --starvation`` read it with them,
+    and the same sweeps retire it.  Once the file holds
+    ``2 * MAX_CONSUMER_EVENT_LINES`` lines it keeps its newest
+    ``MAX_CONSUMER_EVENT_LINES``.  Best-effort: a failure with no consumer
+    to file under, or a write that fails, is said on stderr only.
+    """
+
+    from prismabuild import pool as pool_mod
+
+    host = socket.gethostname()
+    record = failure.record()
+    consumer = record.pop("consumer_action_key")
+    line = json.dumps({"unix": time.time(), "event": RELEASE_FAILED_EVENT,
+                       "consumer": consumer, "host": host,
+                       "pid": os.getpid(), **record},
+                      sort_keys=True, default=str)
+    print(f"PrismaBuild: {line}", file=sys.stderr, flush=True)
+    if not isinstance(consumer, str):
+        return
+    try:
+        directory = queue.consumer_events_dir(consumer)
+    except (AttributeError, ValueError):
+        return
+    path = directory / f"{host}{RELEASE_EVENTS_SUFFIX}"
+    keep = pool_mod.MAX_CONSUMER_EVENT_LINES
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        with open(path, "a") as stream:
+            stream.write(line + "\n")
+        with open(path) as stream:
+            lines = stream.readlines()
+        if len(lines) >= 2 * keep:
+            temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+            with open(temporary, "w") as stream:
+                stream.writelines(lines[-keep:])
+            os.replace(temporary, path)
+    except OSError as exc:
+        print(f"PrismaBuild: {RELEASE_FAILED_EVENT} event unwritten: "
+              f"{exc!r}", file=sys.stderr, flush=True)
 
 
 def _pin_candidates(queue, pin_id: str, *,
@@ -2968,6 +3231,12 @@ __all__ = [
     "ATTESTATIONS_SUBDIR",
     "READER_LEASE_TAG",
     "ReaderLeaseError",
+    "ReleaseFailure",
+    "RELEASE_STEPS",
+    "RELEASE_RETRYABLE_ERRNOS",
+    "RELEASE_RETRY_DELAYS_S",
+    "RELEASE_FAILED_EVENT",
+    "RELEASE_EVENTS_SUFFIX",
     "acquire",
     "attestation_path",
     "attestation_proves_empty",

@@ -1937,12 +1937,17 @@ read what it waited on before reading any host's logs:
     `window-stalled`, `range-adoption-declined`, `beyond-horizon-eviction-*`
     and the deferrals. `waited_s` is how long the loop has seen that verdict
     stand. `attributed_by: tier_id` marks a tier-wide verdict filed for every
-    consumer on the tier.
+    consumer on the tier. A `reader-release-failed` event is the action's
+    own reader failing to release a pin (#1023). Its `step` and `errno_name`
+    say where and why, `retryable` says whether the fault was transient, and
+    the pin it names is still held.
 
 The latest-only denial record and the tier loop's stdout still exist, but
 neither is the only copy any more. The ring is in
 `denial-transitions/<key>.json`, and the events are in
-`residency-events/<consumer>/<host>.jsonl`, both under the queue root.
+`residency-events/<consumer>/<host>.jsonl`, both under the queue root. A
+reader's failed releases are beside them in
+`residency-events/<consumer>/<host>-reader-release.jsonl`.
 
 ### File the endings nobody asked for
 
