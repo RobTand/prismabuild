@@ -143,6 +143,56 @@ def test_a_collect_only_run_reconciles_its_item_count(tmp_path, monkeypatch, cap
     assert rec["collected"] == 7 and rec["problems"] == []
 
 
+@pytest.mark.parametrize("workers", [1, 2])
+@pytest.mark.parametrize("selector", ["-k", "-m"])
+def test_a_fully_deselected_file_is_accounted_for(
+        tmp_path, monkeypatch, capsys, workers, selector):
+    if workers > 1:
+        pytest.importorskip("xdist")
+    checkout = tmp_path / "project"
+    (checkout / "tests").mkdir(parents=True)
+    (checkout / "tests" / "test_keep.py").write_text(
+        "import pytest\n\n@pytest.mark.keep\ndef test_keep():\n    pass\n")
+    (checkout / "tests" / "test_drop.py").write_text(
+        "def test_drop():\n    pass\n")
+    subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+    code, results = _dispatch(checkout, monkeypatch,
+                              ["--shards", "1", "--workers-per-shard", str(workers),
+                               "--pytest-args", json.dumps([selector, "keep"])])
+    assert code == 0, capsys.readouterr().out
+    assert results[0]["reconciliation"]["missing_files"] == []
+
+
+def test_nested_pytest_root_still_matches_assigned_files(tmp_path, monkeypatch, capsys):
+    checkout = tmp_path / "project"
+    (checkout / "tests").mkdir(parents=True)
+    (checkout / "tests" / "pytest.ini").write_text("[pytest]\n")
+    (checkout / "tests" / "test_nested.py").write_text(
+        "def test_nested():\n    pass\n")
+    subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+    code, results = _dispatch(checkout, monkeypatch, ["--shards", "1"])
+    assert code == 0, capsys.readouterr().out
+    assert results[0]["reconciliation"]["missing_files"] == []
+
+
+@pytest.mark.parametrize("workers", [1, 2])
+def test_selector_does_not_excuse_a_file_with_no_collection(
+        tmp_path, monkeypatch, capsys, workers):
+    if workers > 1:
+        pytest.importorskip("xdist")
+    checkout = tmp_path / "project"
+    (checkout / "tests").mkdir(parents=True)
+    (checkout / "tests" / "test_keep.py").write_text(
+        "def test_keep():\n    pass\n")
+    (checkout / "tests" / "test_empty.py").write_text("# no tests\n")
+    subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+    code, results = _dispatch(checkout, monkeypatch,
+                              ["--shards", "1", "--workers-per-shard", str(workers),
+                               "--pytest-args", '["-k","keep"]'])
+    assert code == 1, capsys.readouterr().out
+    assert results[0]["reconciliation"]["missing_files"] == ["tests/test_empty.py"]
+
+
 def test_a_test_stopped_by_maxfail_is_named_as_never_run(tmp_path, monkeypatch, capsys):
     checkout = _checkout(tmp_path)
     (checkout / "tests" / "test_a_counts.py").write_text(
@@ -166,11 +216,15 @@ def _record(collected, reports, *, collect_only=False) -> str:
         "collected": collected, "reports": reports, "uncounted": []})
 
 
-def _stand_in(tmp_path: Path, monkeypatch, outputs: list[str], *, returncode=0):
+def _stand_in(tmp_path: Path, monkeypatch, outputs: list[str], *, returncode=0,
+              extra_file=False):
     checkout = tmp_path / "project"
     (checkout / "tests").mkdir(parents=True)
     for index in range(len(outputs)):
         (checkout / "tests" / f"test_{index}.py").write_text("def test_x():\n    pass\n")
+    if extra_file:
+        (checkout / "tests" / "test_missing.py").write_text(
+            "def test_missing():\n    pass\n")
     subprocess.run(["git", "init", "-q", str(checkout)], check=True)
     queue = list(outputs)
 
@@ -242,6 +296,37 @@ def test_a_shard_with_a_summary_and_no_record_is_not_green(tmp_path, monkeypatch
     printed = capsys.readouterr().out
     assert code == 1
     assert results[0]["reconciliation"]["problems"][0].startswith("no outcome record")
+
+
+def test_an_assigned_file_with_no_collection_or_outcome_fails(tmp_path, monkeypatch, capsys):
+    present = "tests/test_0.py::test_x"
+    output = _record([present], [[present, "call", "passed", None, None]])
+    code, results = _stand_in(tmp_path, monkeypatch, [output + "\n1 passed in 0.01s\n"],
+                              extra_file=True)
+    assert code == 1
+    assert results[0]["reconciliation"]["missing_files"] == ["tests/test_missing.py"]
+    assert "tests/test_missing.py" in capsys.readouterr().out
+
+
+def test_a_collection_skip_covers_its_assigned_file():
+    result = {"shard": 0, "files": ["tests/test_skipped.py"], "ran": True,
+              "summary": "1 skipped in 0.01s",
+              "output": _record([], [["tests/test_skipped.py", "collect", "skipped",
+                                       "optional dependency absent", None]])}
+    pbtest.reconcile_shards([result])
+    assert result["reconciliation"]["problems"] == []
+    assert result["reconciliation"]["missing_files"] == []
+
+
+def test_failed_shard_shows_full_failure_section(tmp_path, monkeypatch, capsys):
+    nodeid = "tests/test_0.py::test_x"
+    record = _record([nodeid], [[nodeid, "call", "failed", None, None]])
+    failure = "AssertionError: original failure context"
+    output = ("=== FAILURES ===\n" + failure + "\n" +
+              "\n".join(f"trace detail {n}" for n in range(40)) + "\n" +
+              record + "\n1 failed in 0.01s\n")
+    _stand_in(tmp_path, monkeypatch, [output], returncode=1)
+    assert failure in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("summary, counts, collected", [

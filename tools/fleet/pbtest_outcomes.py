@@ -30,13 +30,30 @@ delivers every worker's reports.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import sys
+import tempfile
 
 #: The version of the record's shape.  A reader refuses any other.
 SCHEMA = "prismabuild.pbtest_outcomes.v1"
 #: The one line a shard prints its record on.
 PREFIX = "pbtest-outcomes: "
+
+# xdist forwards selected IDs but neither successful collection reports nor
+# pytest_deselected to its controller. This tiny worker plugin returns only
+# actual deselected node IDs through xdist's own workeroutput channel.
+XDIST_ROSTER_PLUGIN = '''\
+_deselected = []
+
+def pytest_deselected(items):
+    _deselected.extend(item.nodeid for item in items)
+
+def pytest_sessionfinish(session, exitstatus):
+    output = getattr(session.config, "workeroutput", None)
+    if output is not None:
+        output["pbtest_deselected"] = _deselected
+'''
 
 
 def skip_reason(report) -> str:
@@ -202,6 +219,7 @@ def main(argv: list[str] | None = None, *, preflight=None) -> int:
         def __init__(self) -> None:
             self.config = None
             self.collected: list[str] | None = None
+            self.deselected: list[str] = []
             self.reports: list[list] = []
             self.uncounted: list[list] = []
             self.written = False
@@ -215,12 +233,21 @@ def main(argv: list[str] | None = None, *, preflight=None) -> int:
         def pytest_collection_finish(self, session) -> None:
             self.collected = [item.nodeid for item in session.items]
 
+        def pytest_deselected(self, items) -> None:
+            self.deselected.extend(item.nodeid for item in items)
+
         @pytest.hookimpl(optionalhook=True)
         def pytest_xdist_node_collection_finished(self, node, ids) -> None:
             # The xdist controller collects nothing itself; every worker
             # collects the whole population and reports its IDs here.
             if self.collected is None:
                 self.collected = list(ids)
+
+        @pytest.hookimpl(optionalhook=True)
+        def pytest_testnodedown(self, node, error) -> None:
+            output = getattr(node, "workeroutput", None)
+            if isinstance(output, dict):
+                self.deselected.extend(output.get("pbtest_deselected") or ())
 
         def pytest_collectreport(self, report) -> None:
             if report.failed:
@@ -252,9 +279,12 @@ def main(argv: list[str] | None = None, *, preflight=None) -> int:
             config = self.config
             return PREFIX + json.dumps({
                 "schema": SCHEMA,
+                "rootdir_relative": (os.path.relpath(config.rootpath,
+                    config.invocation_params.dir) if config is not None else "."),
                 "collect_only": bool(config is not None
                                      and config.getoption("collectonly", False)),
                 "collected": self.collected,
+                "deselected": self.deselected,
                 "reports": self.reports,
                 "uncounted": self.uncounted,
             }, separators=(",", ":"))
@@ -271,7 +301,27 @@ def main(argv: list[str] | None = None, *, preflight=None) -> int:
                 sys.stdout.flush()
                 self.written = True
 
-    code = pytest.main(sys.argv[1:] if argv is None else argv,
-                       plugins=[OutcomeRecorder()])
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    if "-n" in arguments or any(arg.startswith("-n") and arg != "-n"
+                                for arg in arguments):
+        # The shard is already inside one admitted PB action. The worker
+        # plugin lives only for this pytest invocation and changes no checkout
+        # or sealed input. xdist's workeroutput is the transport it owns.
+        with tempfile.TemporaryDirectory(prefix="pbtest-xdist-roster-") as folder:
+            Path(folder, "pbtest_xdist_roster.py").write_text(XDIST_ROSTER_PLUGIN)
+            sys.path.insert(0, folder)
+            old_path = os.environ.get("PYTHONPATH")
+            os.environ["PYTHONPATH"] = folder + os.pathsep + (old_path or "")
+            try:
+                code = pytest.main(["-p", "pbtest_xdist_roster", *arguments],
+                                   plugins=[OutcomeRecorder()])
+            finally:
+                sys.path.remove(folder)
+                if old_path is None:
+                    os.environ.pop("PYTHONPATH", None)
+                else:
+                    os.environ["PYTHONPATH"] = old_path
+    else:
+        code = pytest.main(arguments, plugins=[OutcomeRecorder()])
     sys.stdout.flush()
     return int(code)

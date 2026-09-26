@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import posixpath
 import re
 import subprocess
 import sys
@@ -615,7 +616,28 @@ def reconcile_shards(results: list[dict]) -> None:
                 "against its collection"]}
             continue
         counts, collected = summary_outcomes(result["summary"])
-        result["reconciliation"] = pbtest_outcomes.reconcile(record, counts, collected)
+        reconciliation = pbtest_outcomes.reconcile(record, counts, collected)
+        rootdir = record.get("rootdir_relative", ".")
+        if not isinstance(rootdir, str):
+            rootdir = ""
+
+        def source_file(nodeid: str) -> str:
+            return posixpath.normpath(posixpath.join(
+                rootdir, nodeid.split("::", 1)[0]))
+
+        observed = {source_file(nodeid) for nodeid in record.get("collected") or ()}
+        observed.update(source_file(nodeid)
+                        for nodeid in record.get("deselected") or ())
+        observed.update(source_file(row[0])
+                        for row in record.get("reports") or ()
+                        if row[1] == "collect")
+        missing = sorted(set(result["files"]) - observed)
+        reconciliation["missing_files"] = missing
+        if missing:
+            reconciliation["problems"].append(
+                "assigned file(s) had no collection or outcome: "
+                + ", ".join(missing))
+        result["reconciliation"] = reconciliation
         for nodeid in dict.fromkeys(record.get("collected") or ()):
             owners.setdefault(nodeid, []).append(result["shard"])
     for nodeid, shards in owners.items():
@@ -674,6 +696,7 @@ def print_reconciliation(results: list[dict]) -> None:
         _names("not collected:", reconciliation.get("not_collected") or ())
         _names("collected twice:", reconciliation.get("collected_twice") or ())
         _names("also in another shard:", reconciliation.get("in_other_shards") or ())
+        _names("assigned file absent:", reconciliation.get("missing_files") or ())
 
 
 def displayed(output: str) -> list[str]:
@@ -1184,7 +1207,9 @@ def main() -> int:
     print(f"\n{len(results) - len(failed)}/{len(results)} shards green")
     for r in failed:
         print(f"\n--- shard {r['shard']} ({', '.join(r['files'])})")
-        print("\n".join(displayed(r["output"])[-25:]))
+        # The full pytest failure section precedes the final 25 lines on a
+        # busy shard. Keep the actual tracebacks visible without another run.
+        print("\n".join(displayed(r["output"])))
     if args.json:
         Path(args.json).write_text(json.dumps(results, indent=1))
     return 1 if failed else 0

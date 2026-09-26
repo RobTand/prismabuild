@@ -140,6 +140,24 @@ def test_the_notice_names_the_capability_the_boxes_lack(tmp_path, capsys):
     assert f"not offering {CAPABILITY}: old-box" in notice
 
 
+def test_capacity_refusal_does_not_blame_a_present_image(tmp_path, monkeypatch):
+    work = _checkout(tmp_path)
+    queue = _queue(tmp_path)
+    queue.announce(host="sparky", tags=["sparky", CAPABILITY], has_gpu=False,
+                   capacity={"cpu": 4, "mem_gb": 16, "spool_gb": 241},
+                   observed_images=[REF_A])
+    with pytest.raises(SystemExit) as exc:
+        _run_pbrun(tmp_path, monkeypatch, work, "--detach", "--tag", "sparky",
+                   "--container-image", REF_A, "--env",
+                   f"PRISMABUILD_PRODUCED_SPOOL_MAX_BYTES={250 * 2**30}")
+    message = str(exc.value)
+    assert "spool_gb 250 > sparky 241" in message
+    assert "offer measured" in message
+    assert "Load or pull" not in message
+    assert "no recorded eligible worker reports" not in message
+    assert queue.ready_items() == []
+
+
 # --------------------------------------------------------------------------
 # Identity: the declaration must move the owner, not only the key
 # --------------------------------------------------------------------------

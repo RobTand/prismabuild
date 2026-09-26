@@ -1992,16 +1992,20 @@ def container_image_notice(queue, intent: Mapping[str, object]) -> str:
         return ""
     request = {name: value for name, value in intent.items()
                if name != "container_images"}
+    if queue.placeable(request, max_age_s=RECORDED_OFFER_MAX_AGE_S) is False:
+        return ""  # capacity or tags, not the image, blocks this request
+    without_capacity = {**request, "resources": {}}
     eligible = queue.placeable_hosts(
-        {**request, "tags": [tag for tag in request.get("tags") or []
-                             if tag != pb.CONTAINER_IMAGE_TAG]},
+        {**without_capacity, "tags": [tag for tag in request.get("tags") or []
+                                       if tag != pb.CONTAINER_IMAGE_TAG]},
         max_age_s=RECORDED_OFFER_MAX_AGE_S)
     if eligible is None:                       # nobody has announced at all
         return ""
     capable = set(queue.placeable_hosts(
-        request, max_age_s=RECORDED_OFFER_MAX_AGE_S) or [])
+        without_capacity, max_age_s=RECORDED_OFFER_MAX_AGE_S) or [])
     reporting = queue.placeable_hosts(
-        intent, max_age_s=RECORDED_OFFER_MAX_AGE_S) or []
+        {**without_capacity, "container_images": images},
+        max_age_s=RECORDED_OFFER_MAX_AGE_S) or []
     line = ("pbrun: container image " + ", ".join(images)
             + " required; reported on record by: "
             + (", ".join(reporting) if reporting else "(nobody)"))
@@ -2013,6 +2017,33 @@ def container_image_notice(queue, intent: Mapping[str, object]) -> str:
         line += (f"; not offering {pb.CONTAINER_IMAGE_TAG}: "
                  + ", ".join(no_capability))
     return line + "."
+
+
+def placement_capacity_notice(queue, intent: Mapping[str, object]) -> str:
+    """Name recorded capacity terms that prevent this request from fitting."""
+
+    request = {name: value for name, value in intent.items()
+               if name != "container_images"}
+    eligible = queue.placeable_hosts(
+        {**request, "resources": {}}, max_age_s=RECORDED_OFFER_MAX_AGE_S) or []
+    if not eligible:
+        return ""
+    demand = pool.PoolQueue.demand_of(request)
+    lines = []
+    for offer in queue.offers(max_age_s=RECORDED_OFFER_MAX_AGE_S):
+        host = str(offer.get("host") or "?")
+        if host not in eligible:
+            continue
+        capacity = offer.get("capacity") or {}
+        if not isinstance(capacity, Mapping):
+            continue
+        timing = pool.offer_timing(offer.get("announced_unix"), now=time.time())
+        measured = (f" (offer measured {timing.age_s:.0f}s ago)"
+                    if timing.age_s is not None else " (offer time unknown)")
+        for kind, need in demand.items():
+            if kind in capacity and int(capacity[kind]) < need:
+                lines.append(f"{kind} {need} > {host} {capacity[kind]}{measured}")
+    return "  capacity: " + "; ".join(lines) + "\n" if lines else ""
 
 
 #: The data-manifest annotation naming the origin-only batches a consumer
@@ -7354,14 +7385,31 @@ def announce_placement(
     capability_verdict = queue.placeable(
         intent, max_age_s=RECORDED_OFFER_MAX_AGE_S)
     if capability_verdict is False:
+        without_images = {name: value for name, value in intent.items()
+                          if name != "container_images"}
+        image_blocked = bool(intent.get("container_images")) and queue.placeable(
+            without_images, max_age_s=RECORDED_OFFER_MAX_AGE_S) is True
+        without_capability = {**without_images, "tags": [
+            tag for tag in without_images.get("tags") or []
+            if tag != pb.CONTAINER_IMAGE_TAG]}
+        capability_blocked = (
+            bool(intent.get("container_images")) and not image_blocked
+            and queue.placeable(without_capability,
+                                max_age_s=RECORDED_OFFER_MAX_AGE_S) is True)
         image_line = ""
-        if intent.get("container_images"):
+        if image_blocked:
             image_line = (
                 "  container images: "
                 + ", ".join(intent["container_images"])
                 + " (no recorded eligible worker reports "
                 + ("it" if len(intent["container_images"]) == 1 else "them")
                 + ")\n")
+        elif capability_blocked:
+            image_line = (
+                "  container images: " + ", ".join(intent["container_images"])
+                + f" (no eligible worker offers {pb.CONTAINER_IMAGE_TAG})\n")
+        capacity_line = ("" if image_blocked or capability_blocked else
+                         placement_capacity_notice(queue, intent))
         remedy = (
             "Load or pull the image on a box that offers these tags and the "
             f"{pb.CONTAINER_IMAGE_TAG} capability, then wait for its worker's "
@@ -7369,13 +7417,19 @@ def announce_placement(
             "requirement, so a box that cannot positively show it will not "
             "run the action."
             if image_line else
-            "Fix the --tag, or start a worker on a box that offers it."
+            "Fix the listed capacity demand or required tags, or wait for an "
+            "offer that can fit them."
         )
+        if capability_blocked:
+            remedy = (f"Start a worker offering {pb.CONTAINER_IMAGE_TAG} "
+                      "on an eligible box; its image inventory must then "
+                      "report the declared reference.")
         raise SystemExit(
             f"pbrun: no recorded worker can run this action.\n"
             f"  required tags: {tags or '(any box)'}\n"
             f"{image_line}"
             f"  demand:        {demand}\n"
+            f"{capacity_line}"
             f"  offered on record: "
             f"{queue.offered_tags(max_age_s=RECORDED_OFFER_MAX_AGE_S)}\n"
             f"{remedy}"
