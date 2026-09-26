@@ -29,7 +29,9 @@ Four constraints shape this:
   without a reservation is threads taking turns inside one core, because
   ``ConstrainCores=yes`` makes the declared demand a cpuset.
   ``--cpus-per-shard`` overrides the pairing, and it is required when the
-  ceiling is 0.
+  ceiling is 0.  A shard of several pytest workers with no ceiling of its
+  own gives each worker its share of those cores: each xdist worker would
+  otherwise inherit the whole row's thread count (#1192).
 
 Shards are round-robin by file, which balances only if files cost roughly the
 same.  They do not -- but the alternative is a duration model nobody has
@@ -758,9 +760,12 @@ def main() -> int:
     ap.add_argument("--workers-per-shard", type=int, default=1,
                     help="pytest workers in each action; above 1 uses pytest-xdist "
                          "(-n N), which must be installed in the target interpreter")
-    ap.add_argument("--threads-per-shard", type=int, default=2,
-                    help="BLAS/OMP threads each pytest worker may use; 0 leaves it "
-                         "alone and then --cpus-per-shard is required")
+    ap.add_argument("--threads-per-shard", type=int, default=None,
+                    help="BLAS/OMP threads each pytest worker may use (default 2, "
+                         "or with --workers-per-shard above 1 and --cpus-per-shard, "
+                         "each worker's share of the shard's cores); 0 leaves it "
+                         "to the row and then --cpus-per-shard is required, and "
+                         "with several workers each gets its share (#1192)")
     ap.add_argument("--cpus-per-shard", type=int, default=None,
                     help="cores each shard reserves; the default is "
                          "--workers-per-shard times --threads-per-shard, so the ceiling a shard is given "
@@ -883,9 +888,19 @@ def main() -> int:
     if args.workers_per_shard < 1:
         sys.stderr.write("--workers-per-shard must be at least 1\n")
         return 2
-    if args.threads_per_shard < 0:
+    if args.threads_per_shard is not None and args.threads_per_shard < 0:
         sys.stderr.write("--threads-per-shard cannot be negative\n")
         return 2
+    # Every pytest-xdist worker is its own process and inherits the row's
+    # native thread count, which PrismaBuild sets to the whole row's cores,
+    # so N workers each asked for all of them: a 16-core shard of 16 workers
+    # ran 16 x OMP_NUM_THREADS=16 and put sparklina at load 136 on 20 CPUs
+    # (#1192).  A shard with several workers and no ceiling of its own
+    # therefore gives each worker its share of the shard's cores.
+    derived_threads = (args.workers_per_shard > 1 and args.cpus_per_shard is not None
+                       and not args.threads_per_shard)
+    if args.threads_per_shard is None and not derived_threads:
+        args.threads_per_shard = 2
     if args.cpus_per_shard is None:
         if args.threads_per_shard == 0:
             sys.stderr.write(
@@ -901,6 +916,8 @@ def main() -> int:
         sys.stderr.write("--cpus-per-shard must be at least 1\n")
         return 2
 
+    if derived_threads:
+        args.threads_per_shard = max(1, cpus_per_shard // args.workers_per_shard)
     minimum_cpus = args.workers_per_shard * max(1, args.threads_per_shard)
     if cpus_per_shard < minimum_cpus:
         sys.stderr.write(
