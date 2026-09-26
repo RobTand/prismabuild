@@ -348,3 +348,25 @@ def test_an_ending_of_the_live_records_own_generation_stays_terminal(
     assert denial["reason"] == "residency_lead_terminal", denial["reason"]
     assert denial["evidence"]["residency"]["pending"] == [
         {"lead": mover, "status": "unpinned"}]
+
+
+def test_a_requeue_bound_to_another_manifest_stays_terminal(tmp_path: Path) -> None:
+    """A lead run again for the same wrong manifest will mismatch again."""
+
+    queue, mover = _terminal_queue(tmp_path)
+    row = {**_mover_row(queue, mover), "resources": {"cpu": 1, STAGE_KIND: 1},
+           "residency": {"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER,
+                         "manifest_sha256": "c" * 64, "manifest_bytes": 4096,
+                         "range_start_bytes": 0, "range_end_bytes": 4096}}
+    _end_earlier_generation(queue, row)
+    queue.publish(**row, recompute=True)
+    _claim_row(queue, mover)
+    _publish_waiting(queue, mover)
+
+    assert queue.claim(owner="worker", capacity={"cpu": 4}, tags=["sparky"]) is None
+
+    denial = _denial(queue, WAITING)
+    assert denial is not None
+    assert denial["reason"] == "residency_lead_terminal", denial["reason"]
+    [entry] = denial["evidence"]["residency"]["pending"]
+    assert entry["status"] == "manifest_mismatch", entry

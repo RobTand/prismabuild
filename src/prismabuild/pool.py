@@ -14546,7 +14546,8 @@ class PoolQueue:
         return str(declared) if isinstance(declared, str) else None
 
     def _unless_requeued(self, lead: str, entry: dict[str, object],
-                         ended: Mapping[str, object] | None) -> dict[str, object]:
+                         ended: Mapping[str, object] | None,
+                         wanted: object = None) -> dict[str, object]:
         """``entry``, or the lead's live requeue when it is newer than ``ended`` (#1186).
 
         A stage mover's key is its range's content address, so a range that
@@ -14560,6 +14561,8 @@ class PoolQueue:
         ending of the same generation is the live record's own: a finish
         that filed it before the claim was gone.  An ending with no readable
         generation is replaced by any live record, which can only be later.
+        A live record whose residency names a manifest other than ``wanted``
+        would end bound to another manifest again, so it replaces nothing.
 
         Only a lead that already reads as ended pays these reads, so the
         claim scan's cost for a lead still coming (``absent``) or resident is
@@ -14582,6 +14585,9 @@ class PoolQueue:
                 continue
             after = generation(live)
             if before is not None and (after is None or after <= before):
+                continue
+            declared = self._residency_manifest_of(live)
+            if wanted is not None and declared is not None and declared != wanted:
                 continue
             named: dict[str, object] = {"published_unix": after}
             for field in ("claimed_unix", "claimed_host", "claimed_by"):
@@ -14677,7 +14683,7 @@ class PoolQueue:
                     # mover whose bytes an egress has since deleted.
                     pending.append(self._unless_requeued(
                         str(lead), {"lead": str(lead), "status": "unpinned"},
-                        record))
+                        record, wanted))
                     continue
                 # The pool cannot open the manifest -- it holds records, not
                 # the CAS -- but it holds both blocks, and two blocks naming
@@ -14686,7 +14692,7 @@ class PoolQueue:
                     str(lead), {"lead": str(lead), "status": "manifest_mismatch",
                                 "declared_manifest_sha256": declared,
                                 "expected_manifest_sha256": str(wanted)},
-                    record))
+                    record, wanted))
                 continue
             ended = record
             if status is None:
@@ -14719,7 +14725,7 @@ class PoolQueue:
                 pending.append({"lead": str(lead), "status": "absent"})
                 continue
             pending.append(self._unless_requeued(
-                str(lead), {"lead": str(lead), "status": status}, ended))
+                str(lead), {"lead": str(lead), "status": status}, ended, wanted))
         if pending:
             # Two denials, because they mean different things to whoever reads
             # them: a lead that has not finished may still finish, while a lead
