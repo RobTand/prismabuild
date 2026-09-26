@@ -86,7 +86,8 @@ def test_a_timed_out_section_is_null_not_an_empty_collection(
 
     for name in ("read_endings",):
         monkeypatch.setattr(pbmcp.pbstatus, name, never)
-    for name in ("_reservations", "_scan_actions", "_records_for"):
+    for name in ("_reservations", "_scan_actions", "_records_for",
+                 "_queue_view"):
         monkeypatch.setattr(pbmcp, name, never)
     session = pbmcp.Session(queue_root=fleet.queue_root,
                             cas_root=fleet.cas_root, repo_link=fleet.repo_link,

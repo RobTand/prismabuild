@@ -2346,7 +2346,21 @@ def read_endings(queue_root: str | Path, *, limit: int = DEFAULT_RECENT,
         One dictionary per ending, newest first by the time the record says the
         work finished, falling back to the file's modification time. A record
         that cannot be read is returned as a row with status ``unreadable``,
-        naming its path and why, rather than left out.
+        naming its path and why, rather than left out.  A completed row also
+        says whether it answers how its key ended: ``current`` is true for the
+        row the queue's generation resolution selects, false for an older
+        generation's retained record (``superseded_by`` names the answer), and
+        ``terminal_conflict`` marks a key that carried more than one terminal
+        record.  ``current`` is ``None`` on an unreadable row, which answers
+        nothing, and on a row whose slot was replaced between its projection
+        and the resolution (``current_unresolved`` says so): path equality
+        alone is not identity, so the generation must match as well.
+
+    A kept-reads delegate (``pbmetrics``) answers the same selected rows and
+    projections from its retained listings but does not add the per-key
+    currency marking: that marking resolves the opposite terminal slot,
+    which the kept-listing cache deliberately does not re-read.  The gauges
+    do not consume the field.
     """
 
     reader = _KEPT_READS.get()
@@ -2354,8 +2368,78 @@ def read_endings(queue_root: str | Path, *, limit: int = DEFAULT_RECENT,
         return reader.endings(Path(queue_root), limit)
     rows = [ending_row(entry, queue_root)
             for entry in _ending_paths(queue_root, limit)]
+    _annotate_current_endings(rows, queue_root)
     rows.sort(key=lambda row: row["finished_unix"], reverse=True)
     return rows
+
+
+def _annotate_current_endings(rows: Sequence[dict], queue_root: str | Path) -> None:
+    """Mark each selected ending row with the key's current terminal answer.
+
+    ``done/`` and ``failed/`` are one slot each, so a key that was resubmitted
+    can hold two generations' records; without this a reader of the endings
+    table has two rows and no answer (#1178).  One
+    ``PoolQueue.current_ending`` read per distinct key names the row that
+    answers and the generations it supersedes.  The older row stays in the
+    table -- it is evidence -- and the double-record state is reported rather
+    than hidden.  Immutable withdrawal decisions are not the visible terminal
+    answer, so their rows carry ``current: None``.
+    """
+
+    if not rows:
+        return
+    queue = pool.PoolQueue(Path(queue_root))
+    answers: dict[str, dict] = {}
+    for row in rows:
+        key = str(row.get("action_key") or "")
+        if row.get("unreadable"):
+            row["current"] = None
+            row["terminal_conflict"] = None
+            continue
+        if key not in answers:
+            try:
+                answers[key] = queue.current_ending(key)
+            except (OSError, ValueError, pool.PoolContractError) as exc:
+                answers[key] = {
+                    "state": None, "path": None, "generation": None,
+                    "history": [], "ambiguous": True, "coexisting": [],
+                    "unreadable": [{"state": None, "path": None,
+                                    "reason": repr(exc)}],
+                }
+        answer = answers[key]
+        row["terminal_conflict"] = bool(
+            len(answer["coexisting"]) > 1 or answer["unreadable"])
+        row["terminal_ambiguous"] = bool(answer["ambiguous"])
+        path = Path(str(row.get("path") or ""))
+        if path.parent.parent.name == "decisions":
+            # An immutable cancellation decision is generation-scoped
+            # evidence, not the visible marker a key-level answer reads.
+            row["current"] = None
+            continue
+        if answer["state"] is None:
+            # No terminal answers for this key (an unreadable or unorderable
+            # pair).  No row may claim to be it.
+            row["current"] = None
+            continue
+        if answer["path"] is not None and Path(str(answer["path"])) == path:
+            # The path alone is not identity: the slot can be replaced
+            # between this row's projection and the resolution, and then the
+            # OLD row would be marked current for a newer record (#1178
+            # review, item 1).  The generation must match too.
+            if row.get("published_unix") == answer["generation"]:
+                row["current"] = True
+            else:
+                row["current"] = None
+                row["current_unresolved"] = (
+                    "the record at this path was replaced between its "
+                    "projection and the key's resolution")
+            continue
+        row["current"] = False
+        row["superseded_by"] = {
+            "state": answer["state"],
+            "path": None if answer["path"] is None else str(answer["path"]),
+            "generation": answer["generation"],
+        }
 
 
 def ending_row(entry: os.DirEntry, queue_root: str | Path) -> dict:
@@ -2473,6 +2557,18 @@ def _action_returncode(ending: Mapping[str, object]) -> object:
     if isinstance(signal, int) and not isinstance(signal, bool):
         return f"signal {signal}"
     return action
+
+
+def _superseded_note(ending: Mapping[str, object]) -> str:
+    """The NOTE for a retained earlier generation's row (#1178)."""
+
+    answer = ending.get("superseded_by")
+    if not isinstance(answer, Mapping):
+        return ABSENT
+    generation = answer.get("generation")
+    stamp = f" {float(generation):.1f}" if isinstance(
+        generation, (int, float)) else ""
+    return f"superseded by {answer.get('state')}{stamp}"
 
 
 def render_table(headers: Sequence[str], rows: Iterable[Sequence[object]],
@@ -2659,7 +2755,9 @@ def ending_lines(endings: Sequence[Mapping[str, object]],
             # the cost of a preemption, which is the one ending whose cause is
             # another action rather than this one's own exit.
             f"{reason}: {ending.get('path')}" if reason
-            else f"preempted by {str(ending['preempted_by'])[:12]}"
+            else _superseded_note(ending)
+            if ending.get("superseded_by") else
+            f"preempted by {str(ending['preempted_by'])[:12]}"
             if ending.get("preempted_by")
             # A profiled ending says where its blob is, so a human can open it
             # in speedscope without going back to the record.

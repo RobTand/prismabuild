@@ -685,7 +685,16 @@ class KeptReads:
         return records, notes
 
     def endings(self, queue_root: Path, limit: int) -> list[dict]:
-        """``pbstatus.read_endings``, from the kept terminal listings."""
+        """``pbstatus.read_endings``, from the kept terminal listings.
+
+        The same rows and projections, without the per-key currency marking
+        ``pbstatus.read_endings`` adds (#1178): resolving which of a key's
+        terminal generations is current needs the opposite slot, and serving
+        that from the kept listings would either read outside their retained
+        versions or pin an answer beside a slot that has since been
+        replaced.  The exporter's gauges do not consume the marking, so the
+        limit is stated here rather than paid for on every scrape.
+        """
 
         return _kept_endings(self, queue_root, limit)
 

@@ -428,6 +428,129 @@ def _records_for(queue_root: Path, key: str) -> dict[str, dict]:
     return records
 
 
+def _ending_view(answer: Mapping[str, object]) -> dict:
+    """One ``PoolQueue.current_ending`` as plain, JSON-carryable data.
+
+    ``pbstatus.bounded`` carries a child's value back through JSON, so the
+    resolution's ``Path`` fields and full records are projected here before
+    it crosses that boundary.
+    """
+
+    def entry_view(entry: Mapping[str, object]) -> dict:
+        record = entry.get("record")
+        return {
+            "state": str(entry.get("state")),
+            "path": str(entry.get("path")),
+            "generation": entry.get("generation"),
+            "status": record.get("status") if isinstance(record, Mapping)
+            else None,
+        }
+
+    return {
+        "state": answer.get("state"),
+        "path": None if answer.get("path") is None else str(answer["path"]),
+        "record": answer.get("record"),
+        "generation": answer.get("generation"),
+        "history": [entry_view(entry) for entry in answer.get("history") or ()],
+        "unreadable": [
+            {"state": entry.get("state"), "path": str(entry.get("path")),
+             "reason": entry.get("reason")}
+            for entry in answer.get("unreadable") or ()],
+        "ambiguous": bool(answer.get("ambiguous")),
+        "coexisting": [str(state) for state in answer.get("coexisting") or ()],
+    }
+
+
+def _queue_view(queue_root: Path, key: str) -> dict:
+    """One bounded read answering both "what records exist" and "current".
+
+    The state census and the generation resolution are derived from ONE
+    capture of the key's records.  Two reads would let a key be replaced
+    between them, ordering one record and reporting another; the capture
+    (including what could not be read) is the only thing this view answers
+    from (#1178 review, item 2).  ``records`` is the census across the five
+    states, ``answer`` the pure resolution of the same terminal capture.
+    """
+
+    queue = pool.PoolQueue(Path(queue_root).absolute())
+    records: dict[str, dict] = {}
+    for state in (pool.READY, pool.CLAIMED):
+        record = _read_record(queue.item_path(state, key))
+        if record is not None:
+            records[state] = record
+    # A capture that cannot read the terminal slots at all is left to raise:
+    # ``call.read`` records the section as unavailable and the payload says
+    # ``found: null``.  Swallowing it here would answer ``{}`` and let a dead
+    # mount read as an absent key (#1178 review, item 2).
+    readable, unreadable = queue.read_terminal_candidates(key)
+    for state, (_path, record) in readable.items():
+        records[state] = record
+    return {"records": records,
+            "answer": _ending_view(queue.resolve_ending(readable, unreadable))}
+
+
+def _resolve_state(records: Mapping[str, dict],
+                   answer: Mapping[str, object] | None,
+                   ) -> tuple[str | None, dict | None, dict | None]:
+    """Which state answers for this key, resolving terminals by generation.
+
+    A live row outranks a terminal one, as before.  Among terminals,
+    ``PoolQueue.resolve_ending`` is the queue's one generation-resolution
+    rule, so an older ``done/`` row standing beside a later failed
+    generation cannot answer success (#1178).  The returned record is the
+    exact one the resolution ordered; a census record never replaces it.
+    ``None`` is returned when no answer is readable: an unreadable or
+    unorderable pair is reported, never read around to a directory-order
+    success.
+    """
+
+    for state in (pool.READY, pool.CLAIMED):
+        if state in records:
+            return state, records[state], None
+    if answer is None or answer.get("state") is None:
+        return None, None, answer
+    state = str(answer["state"])
+    record = answer.get("record")
+    if not isinstance(record, Mapping):
+        record = records.get(state)
+    return state, record, answer  # type: ignore[return-value]
+
+
+def _unresolved_view(answer: Mapping[str, object] | None) -> dict | None:
+    """Why no record was chosen although terminal records are known (#1178).
+
+    ``None`` when a record was chosen, when the read never answered, or when
+    the key genuinely holds nothing; otherwise the coexisting terminal states
+    and each unreadable terminal's path and reason, so a tool can say
+    "unknown" rather than "absent".
+    """
+
+    if not isinstance(answer, Mapping) or answer.get("state") is not None:
+        return None
+    coexisting = answer.get("coexisting")
+    unreadable = answer.get("unreadable")
+    if not coexisting and not unreadable:
+        return None
+    return {"coexisting": list(coexisting or []),
+            "unreadable": list(unreadable or [])}
+
+
+def _superseded_view(answer: Mapping[str, object] | None) -> list[dict]:
+    """The older terminal generations that are not the key's answer."""
+
+    if not isinstance(answer, Mapping):
+        return []
+    history = answer.get("history")
+    if not isinstance(history, list):
+        return []
+    return [
+        {"state": entry.get("state"), "path": entry.get("path"),
+         "published_unix": entry.get("generation"),
+         "status": entry.get("status")}
+        for entry in history if isinstance(entry, Mapping)
+    ]
+
+
 def _attempt_identity_mismatch(
     record: Mapping[str, object], outcome: Mapping[str, object], number: int
 ) -> str | None:
@@ -1365,20 +1488,34 @@ class Session:
     def pb_action(self, call: Call, *, key_prefix: str,
                   tail_lines: int = DEFAULT_TAIL_LINES) -> dict:
         key = self._one_key(call, key_prefix)
-        records = call.read("records",
-                            lambda: _records_for(self.queue_root, key))
-        state = next((one for one in STATES if one in (records or {})), None)
-        record = (records or {}).get(state) if state else None
+        view = call.read("records",
+                         lambda: _queue_view(self.queue_root, key))
+        records = None if view is None else view["records"]
+        answer = None if view is None else view.get("answer")
+        state, record, _resolved = ((None, None, None) if records is None
+                                    else _resolve_state(records, answer))
         payload: dict[str, object] = {
             "key_prefix": str(key_prefix),
             "action_key": key,
             "state": state,
             "states": None if records is None else sorted(records),
+            # The older terminal generations the answer supersedes, so a key
+            # that carried two terminals says so rather than hiding one
+            # (#1178).
+            "superseded": _superseded_view(answer),
+            "terminal_ambiguous": (
+                None if answer is None else bool(answer.get("ambiguous"))),
         }
         if record is None:
             # ``null`` rather than ``False`` when the read never answered: an
-            # unread queue has not told anyone this key is absent.
-            payload["found"] = None if records is None else False
+            # unread queue has not told anyone this key is absent.  A
+            # resolution that chose nothing while terminal records stand is
+            # unknown too, never absent (#1178 review, item 2).
+            unresolved = _unresolved_view(answer)
+            payload["found"] = (
+                None if records is None or unresolved is not None else False)
+            if unresolved is not None:
+                payload["unresolved_terminals"] = unresolved
             return payload
         detail = record.get("detail")
         detail = detail if isinstance(detail, Mapping) else {}
@@ -1643,14 +1780,22 @@ class Session:
                     "error": f"{prefix!r} names {len(matches)} actions",
                     "candidates": matches[:20]}
         key = matches[0]
-        records = call.read(f"receipts:{prefix}:records",
-                            lambda: _records_for(self.queue_root, key))
-        if records is None:
+        view = call.read(f"receipts:{prefix}:records",
+                         lambda: _queue_view(self.queue_root, key))
+        if view is None:
             counts["unknown"] += 1
             return {"key_prefix": prefix, "action_key": key, "found": None}
-        state = next((one for one in STATES if one in records), None)
-        record = records.get(state) if state else None
+        state, record, answer = _resolve_state(view["records"],
+                                               view.get("answer"))
         if record is None:
+            unresolved = _unresolved_view(answer)
+            if unresolved is not None:
+                counts["unknown"] += 1
+                return {"key_prefix": prefix, "action_key": key,
+                        "found": None,
+                        "error": (f"{key[:12]} holds terminal records but "
+                                  "none could be chosen"),
+                        "unresolved_terminals": unresolved}
             counts["errors"] += 1
             return {"key_prefix": prefix, "action_key": key, "found": False,
                     "error": f"{key[:12]} names no queue record"}
@@ -1674,6 +1819,7 @@ class Session:
             "attempts": record.get("attempts"),
             "elapsed_s": detail.get("elapsed_s"),
             "finished_unix": record.get("finished_unix"),
+            "superseded": _superseded_view(answer),
             "receipt": call.read(f"receipts:{prefix}:receipt",
                                  lambda: _receipt_summary(record)),
         }
@@ -1963,13 +2109,22 @@ class Session:
             raise ToolError(f"unknown stream: {stream!r}",
                             streams=["stdout", "stderr"])
         key = self._one_key(call, key_prefix)
-        records = call.read("records",
-                            lambda: _records_for(self.queue_root, key))
-        state = next((one for one in STATES if one in (records or {})), None)
-        record = (records or {}).get(state) if state else None
+        view = call.read("records",
+                         lambda: _queue_view(self.queue_root, key))
+        records = None if view is None else view["records"]
+        answer = None if view is None else view.get("answer")
+        state, record, _resolved = ((None, None, None) if records is None
+                                    else _resolve_state(records, answer))
         if record is None:
-            return {"key_prefix": str(key_prefix), "action_key": key,
-                    "found": None if records is None else False, "log": None}
+            unresolved = _unresolved_view(answer)
+            payload: dict[str, object] = {
+                "key_prefix": str(key_prefix), "action_key": key,
+                "found": (None if records is None or unresolved is not None
+                          else False),
+                "log": None}
+            if unresolved is not None:
+                payload["unresolved_terminals"] = unresolved
+            return payload
         evidence = call.read("attempts",
                              lambda: _attempt_evidence(self.queue_root, record))
         if evidence is None:

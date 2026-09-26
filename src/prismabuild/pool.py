@@ -8037,24 +8037,34 @@ class PoolQueue:
                     state = READY
                 elif self.item_path(CLAIMED, mover).exists():
                     state = CLAIMED
-                elif self.item_path(DONE, mover).exists():
-                    # Landed (tokens held) or evicted (released, and the
-                    # window publishes it again): the ledger tells them apart.
-                    # Error-visible, so a holder this cannot list is unknown,
-                    # never "holds nothing".
-                    try:
-                        held = held_names_visible(self.tier_ledger(
-                            str(plan["tier_id"])), mover)  # type: ignore[index]
-                    except (OSError, ValueError, PoolContractError) as exc:
-                        state, detail = "unknown", f"done; tier ledger unreadable: {exc!r}"
-                    else:
-                        state = DONE if held else "evicted"
-                elif superseded:
-                    state = "superseded" if not self.item_path(
-                        FAILED, mover).exists() else FAILED
                 else:
-                    state = (FAILED if self.item_path(FAILED, mover).exists()
-                             else "unpublished")
+                    # One key-level answer, resolved by generation (#1178): an
+                    # older ``done/`` row beside a later failed generation is
+                    # not a landed range.  A live row above outranks both.
+                    ending = self.current_ending(mover)
+                    state = ending["state"]
+                    if state == DONE:
+                        # Landed (tokens held) or evicted (released, and the
+                        # window publishes it again): the ledger tells them
+                        # apart.  Error-visible, so a holder this cannot list
+                        # is unknown, never "holds nothing".
+                        try:
+                            held = held_names_visible(self.tier_ledger(
+                                str(plan["tier_id"])), mover)  # type: ignore[index]
+                        except (OSError, ValueError, PoolContractError) as exc:
+                            state, detail = "unknown", f"done; tier ledger unreadable: {exc!r}"
+                        else:
+                            state = DONE if held else "evicted"
+                    elif state == FAILED:
+                        state = FAILED
+                    elif state == WITHDRAWN:
+                        state = "superseded" if superseded else WITHDRAWN
+                    elif ending["unreadable"]:
+                        state, detail = "unknown", "; ".join(
+                            f"{entry['state']}: {entry['reason']}"
+                            for entry in ending["unreadable"])  # type: ignore[union-attr]
+                    else:
+                        state = "superseded" if superseded else "unpublished"
             except (OSError, ValueError) as exc:
                 state, detail = "unknown", repr(exc)
             entry: dict[str, object] = ({"key": mover, "state": state}
@@ -20756,6 +20766,159 @@ class PoolQueue:
             if isinstance(theirs, (int, float)) and float(mine) == float(theirs):
                 return state, outcome
         return None
+
+    def read_terminal_candidates(
+        self, action_key: str,
+    ) -> tuple[dict[str, tuple[Path, dict[str, object]]],
+               list[dict[str, object]]]:
+        """One capture of the three mutable terminal slots for this key.
+
+        Returns ``(readable, unreadable)``: ``readable`` maps a state to the
+        ``(path, record)`` this read found there, and ``unreadable`` names a
+        record that is present but could not be read, with its reason.  The
+        capture is deliberately separate from the resolution (#1178 review):
+        a census and a resolution built from two different reads can order
+        one record and report another when the key is replaced between them,
+        so a caller that needs both derives them from one capture.
+        """
+
+        key = str(action_key)
+        readable: dict[str, tuple[Path, dict[str, object]]] = {}
+        unreadable: list[dict[str, object]] = []
+        for state in (DONE, FAILED, WITHDRAWN):
+            path = self.item_path(state, key)
+            try:
+                record = _read_json(path)
+            except (OSError, PoolContractError) as exc:
+                unreadable.append({
+                    "state": state, "path": path,
+                    "reason": str(exc) or type(exc).__name__})
+                continue
+            if record is not None:
+                readable[state] = (path, record)
+        return readable, unreadable
+
+    def resolve_ending(
+        self,
+        readable: Mapping[str, tuple[Path, Mapping[str, object]]],
+        unreadable: Sequence[Mapping[str, object]],
+    ) -> dict[str, object]:
+        """How this key ended, by generation, over one captured record set.
+
+        Pure: no directory or record is read here, so the result can only
+        describe the capture it was handed.  ``done/`` and ``failed/`` are
+        one slot each and a key is a content hash, so two generations'
+        records can stand together: records filed before #1117 retired the
+        earlier row at conclusion, a crash between the new terminal's write
+        and the retired row's unlink, an archive write that failed, or a
+        terminal filed by a path that never archived.  Readers that each
+        walked the directories in their own order disagreed in exactly that
+        state (GLM Stage B layer 037: ``pbwait`` read ``executed``, a
+        ``failed/``-first census read dead).
+
+        The rule is ordering over validated generations.  The unique newest
+        finite ``published_unix`` among the readable candidates answers, and
+        the other readable candidates are ``history``.  ``supersedes_terminal``
+        is historical evidence the writer filed, not current authority: it
+        names the generation a later record retired, and a slot it points
+        into may since have been replaced by a newer one, so it never
+        decides.  A CONTESTED key generations cannot order -- a missing or
+        malformed generation, a tie at the maximum, a third unorderable
+        candidate, or a record that could not be read -- is never read as
+        success: a readable failure or cancellation stands, or ``state`` is
+        ``None`` when even that cannot be named, and ``ambiguous`` is true.
+
+        Nothing is moved, deleted or rewritten.  A lone record is the key's
+        ending even when its generation is malformed or absent:
+        ``pbrun.terminal_record`` already states that a record carrying no
+        generation stands, because staleness cannot be proved of it and
+        refusing it would hang a reader on the only account of what
+        happened.  The conservative rule above applies to a contest, not to
+        a sole record.  This is a point-in-time
+        status rule; a waiter bound to one generation keeps
+        ``pbrun.outcome_poll`` and ``archived_generation_outcomes``, which
+        are exact to that generation.
+        """
+
+        def generation(state: str) -> float | None:
+            value = readable[state][1].get("published_unix")
+            if (isinstance(value, (int, float)) and not isinstance(value, bool)
+                    and math.isfinite(float(value))):
+                return float(value)
+            return None
+
+        present = [state for state in (DONE, FAILED, WITHDRAWN)
+                   if state in readable]
+        unreadable_states = [str(entry["state"]) for entry in unreadable]
+        coexisting = present + unreadable_states
+
+        def result(state: str | None,
+                   *, ambiguous: bool = False) -> dict[str, object]:
+            history = [
+                {"state": other, "path": readable[other][0],
+                 "record": readable[other][1], "generation": generation(other)}
+                for other in present if other != state
+            ]
+            if state is None:
+                return {
+                    "state": None, "path": None, "record": None,
+                    "generation": None, "history": history,
+                    "unreadable": list(unreadable), "ambiguous": ambiguous,
+                    "coexisting": coexisting,
+                }
+            path, record = readable[state]
+            return {
+                "state": state, "path": path, "record": record,
+                "generation": generation(state), "history": history,
+                "unreadable": list(unreadable), "ambiguous": ambiguous,
+                "coexisting": coexisting,
+            }
+
+        def failure() -> str | None:
+            return next((state for state in (FAILED, WITHDRAWN)
+                         if state in readable), None)
+
+        if not coexisting:
+            return result(None)
+        if len(readable) == 1 and not unreadable:
+            return result(present[0])
+
+        orderable = [state for state in present if generation(state) is not None]
+        if len(orderable) >= 2:
+            generations = {state: generation(state) for state in orderable}
+            newest = max(
+                value for value in generations.values() if value is not None)
+            winners = [state for state, value in generations.items()
+                       if value == newest]
+            if len(winners) == 1:
+                winner = winners[0]
+                if winner == DONE and len(orderable) != len(coexisting):
+                    # An unorderable or unreadable sibling stands against
+                    # the success; a unique maximum over every candidate
+                    # does not.
+                    return result(failure(), ambiguous=True)
+                return result(winner, ambiguous=bool(unreadable))
+            failure_winner = next(
+                (state for state in winners if state != DONE), winners[0])
+            return result(failure_winner, ambiguous=True)
+        if len(orderable) == 1:
+            only = orderable[0]
+            if only == DONE and len(coexisting) > 1:
+                return result(failure(), ambiguous=True)
+            return result(only, ambiguous=len(coexisting) > 1)
+        return result(failure() or (present[0] if present else None),
+                      ambiguous=len(coexisting) > 1)
+
+    def current_ending(self, action_key: str) -> dict[str, object]:
+        """One capture and its generation-resolved answer (#1178).
+
+        The convenience the key-level readers call; see
+        :meth:`read_terminal_candidates` and :meth:`resolve_ending` for the
+        capture and the pure rule a status census must not split.
+        """
+
+        readable, unreadable = self.read_terminal_candidates(action_key)
+        return self.resolve_ending(readable, unreadable)
 
     def withdrawn_keys(self) -> frozenset[str]:
         """Every action an operator has withdrawn.
