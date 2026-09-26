@@ -10,10 +10,13 @@ fleet's free floor (``local_disk_free_floor_percent``).
 
 The supervisor measures the budget at start (#911): ``f_bavail`` minus the
 floor, in whole GiB, capped when the roster gives a number instead of
-``auto``.  It measures only while the host ledger shows no ``spool_gb``
+``auto``.  That first value is the loops' argument for the life of the
+process; every later tick measures again and records the value in a
+host-local offer file, which each loop declares in place of its argument
+(#1190).  It measures only while the host ledger shows no ``spool_gb``
 held, because a holder's written bytes cannot be told from other use of the
-disk; until then the loops keep the ledger's current total.  A refusal drops
-the flag rather than exiting, because the supervisor runs under
+disk; until then the offer stays what it was.  A refusal at start drops the
+flag rather than exiting, because the supervisor runs under
 ``Restart=always`` and an exit would take every loop on the box with it.
 
 These tests follow a declaration from the roster file through the
@@ -67,6 +70,7 @@ def _fresh_verdicts(monkeypatch):
     # Verdicts are per process by design; each test is its own "start".
     monkeypatch.setattr(supervise, "_SPOOL_VERDICTS", {})
     monkeypatch.setattr(supervise, "_SPOOL_WAITING", {})
+    monkeypatch.setattr(supervise, "_SPOOL_LIVE", {})
 
 
 @pytest.fixture
@@ -100,13 +104,19 @@ def _stat(monkeypatch, size_gib, free_gib):
     return stat
 
 
-def _worker_offer(args):
-    """What a worker started with ``args`` offers a claim, as the loop builds it."""
+def _worker_offer(args, ledger=None):
+    """What a worker started with ``args`` offers a claim, as the loop builds it.
+
+    With ``ledger``, the offer includes the loop's per-poll read of the live
+    ``spool_gb`` measurement the supervisor records for that ledger (#1190).
+    """
 
     parser = worker_loop.build_parser()
     parsed = parser.parse_args(args)
     worker_loop.validate_args(parser, parsed)
     declared = worker_loop.declared_host_capacity(parsed, cores=2)
+    if ledger is not None:
+        declared = worker_loop.live_host_capacity(declared, ledger)
     return box_capacity.observe(declared, {}, gpu_sample=None, mem_gb=None,
                                 load1=None).capacity
 
@@ -313,29 +323,212 @@ def test_a_zero_declaration_needs_no_disk(roster, monkeypatch):
     assert _worker_offer(args) == {"mem_gb": 8, "cpu": 2}
 
 
-# -- checked once per start, not every tick ----------------------------------
+# -- arguments settle once; the disk is measured every tick (#1190) ---------
 
 
-def test_the_check_runs_once_per_declaration_not_every_tick(roster, monkeypatch):
-    """A filling spool lowers free space; the offer must not flap with it."""
+def test_the_arguments_settle_once_and_the_disk_is_measured_every_tick(
+        roster, monkeypatch, tmp_path):
+    """The loops' arguments do not follow the disk; their offer does.
+
+    Changing a loop's arguments cycles it, so they carry the first
+    measurement for the life of the process.  With nothing held, each tick
+    measures the disk again and the loops declare that value instead.
+    """
 
     roster(args=[*BASE_ARGS, "--spool-gb", "32"])
-    stat = _stat(monkeypatch, 1000, 100)
+    queue = _holder_queue(tmp_path, monkeypatch)
+    stat = _stat(monkeypatch, 1000, 100)            # 50 GiB of room, capped at 32
     first = supervise.declared_shape("boxa", 0)
-    stat.f_bavail = 60 * GIB // 4096                # the box's own producer spools
+    assert first[1][-2:] == ["--spool-gb", "32"]
+    assert _worker_offer(first[1], queue.ledger())[KIND] == 32
+    stat.f_bavail = 60 * GIB // 4096                # another writer: 10 GiB of room
     for _ in range(3):
         assert supervise.declared_shape("boxa", 0, first) == first
-    assert len(stat.calls) == 1
-    # A new declaration is a new question.
+    assert len(stat.calls) == 4
+    assert _worker_offer(first[1], queue.ledger())[KIND] == 10
+    # A new declaration is a new question, and its arguments change once.
     roster(args=[*BASE_ARGS, "--spool-gb", "8"])
     assert supervise.declared_shape("boxa", 0, first)[1][-2:] == ["--spool-gb", "8"]
-    assert len(stat.calls) == 2
-    # A new process -- a restart or a publish's re-exec -- asks again, and
-    # this time 60 GiB free leaves 10 GiB above the floor.
+    assert len(stat.calls) == 5
+    # A new process -- a restart or a publish's re-exec -- starts its
+    # arguments from what it measures: 10 GiB above the floor.
     monkeypatch.setattr(supervise, "_SPOOL_VERDICTS", {})
     roster(args=[*BASE_ARGS, "--spool-gb", "32"])
     assert supervise.declared_shape("boxa", 0)[1][-2:] == ["--spool-gb", "10"]
-    assert len(stat.calls) == 3
+
+
+def test_a_holder_freezes_the_live_offer_until_it_is_released(
+        roster, monkeypatch, tmp_path):
+    """The live measurement never raises the offer under a held reservation.
+
+    A 150 GiB holder runs on a 200 GiB offer.  Another writer frees 100 GiB
+    while it runs: the disk now reads 300 GiB of room, but part of what the
+    holder has not yet written is in it, so the tick does not read the disk
+    and the offer stays 200.  A second 100 GiB holder is refused.  Once the
+    first releases, the next tick measures, and the second is admitted.
+    """
+
+    roster(args=[*BASE_ARGS, "--spool-gb", "auto"])
+    queue = _holder_queue(tmp_path, monkeypatch)
+    stat = _stat(monkeypatch, 1000, 250)            # 200 GiB of room
+    shape = supervise.declared_shape("boxa", 0)
+    first, second = "h" * 64, "i" * 64
+    _scratch_holder(queue, first, 150)
+    assert queue.claim(owner="w1", capacity=_worker_offer(
+        shape[1], queue.ledger()))["action_key"] == first
+
+    calls = len(stat.calls)
+    stat.f_bavail = 350 * GIB // 4096
+    for _ in range(2):
+        assert supervise.declared_shape("boxa", 0, shape) == shape
+    assert len(stat.calls) == calls                 # the disk was not read
+    offer = _worker_offer(shape[1], queue.ledger())
+    assert offer[KIND] == 200
+    _scratch_holder(queue, second, 100)
+    assert queue.claim(owner="w2", capacity=offer) is None
+
+    queue.ledger().release(first)
+    assert supervise.declared_shape("boxa", 0, shape) == shape
+    assert len(stat.calls) == calls + 1
+    offer = _worker_offer(shape[1], queue.ledger())
+    assert offer[KIND] == 300
+    assert queue.claim(owner="w2", capacity=offer)["action_key"] == second
+
+
+@pytest.mark.parametrize("how", ["full", "unreadable"])
+def test_a_disk_with_no_room_on_a_tick_offers_zero_and_keeps_the_flag(
+        how, roster, monkeypatch, tmp_path):
+    """A later tick with no room lowers the offer to 0; the loops keep running.
+
+    Dropping the flag, as a first measurement of 0 does, would change the
+    loops' arguments and cycle them.  The placeable declaration keeps the
+    loop's starting value, so a submission is queued rather than refused
+    while the disk is full for now.
+    """
+
+    roster(args=[*BASE_ARGS, "--spool-gb", "auto"])
+    queue = _holder_queue(tmp_path, monkeypatch)
+    stat = _stat(monkeypatch, 1000, 250)            # 200 GiB of room
+    shape = supervise.declared_shape("boxa", 0)
+    if how == "full":
+        stat.f_bavail = 40 * GIB // 4096            # under the 50 GiB floor
+    else:
+        def stale(path):
+            raise OSError(116, "Stale file handle")
+
+        monkeypatch.setattr(supervise.os, "statvfs", stale)
+    assert supervise.declared_shape("boxa", 0, shape) == shape
+    live = worker_loop.live_host_capacity({"mem_gb": 8, KIND: 200}, queue.ledger())
+    assert live == {"mem_gb": 8, KIND: 0}
+    assert _worker_offer(shape[1], queue.ledger())[KIND] == 0
+    assert worker_loop.stable_host_capacity(
+        live, {"mem_gb": 8, KIND: 200}) == {"mem_gb": 8, KIND: 200}
+
+
+def test_the_placeable_declaration_rises_with_a_freed_disk():
+    started = {"mem_gb": 8, "cpu": 2, KIND: 241}
+    assert worker_loop.stable_host_capacity(
+        {"mem_gb": 8, "cpu": 2, KIND: 302}, started)[KIND] == 302
+    assert worker_loop.stable_host_capacity(
+        {"mem_gb": 8, "cpu": 2}, {"mem_gb": 8, "cpu": 2}) == {"mem_gb": 8, "cpu": 2}
+
+
+def test_a_missing_live_offer_is_capped_at_the_ledger_total(
+        roster, monkeypatch, tmp_path):
+    """A missing offer file is no information, and it does not raise the offer.
+
+    The loops' 200 GiB argument was measured at start; the disk has since
+    filled and the ledger was retired to 40.  With the file gone, declaring
+    the argument would mint 160 GiB the disk does not have.
+    """
+
+    roster(args=[*BASE_ARGS, "--spool-gb", "auto"])
+    queue = _holder_queue(tmp_path, monkeypatch)
+    stat = _stat(monkeypatch, 1000, 250)            # 200 GiB of room
+    shape = supervise.declared_shape("boxa", 0)
+    ledger = queue.ledger()
+    ledger.ensure_capacity(_worker_offer(shape[1], ledger))
+    stat.f_bavail = 90 * GIB // 4096                # 40 GiB of room
+    supervise.declared_shape("boxa", 0, shape)
+    offer = _worker_offer(shape[1], ledger)
+    assert offer[KIND] == 40
+    ledger.retire_free_capacity(offer)
+
+    from prismabuild import local_scratch
+
+    local_scratch.clear_spool_offer(ledger.base)
+    assert local_scratch.read_spool_offer(ledger.base) is None
+    assert _worker_offer(shape[1], ledger)[KIND] == 40
+    # A ledger that has never held the kind gives no room either.
+    fresh = pool.PoolQueue(tmp_path / "other-queue").ledger("boxa")
+    assert _worker_offer(shape[1], fresh)[KIND] == 0
+
+
+def test_a_first_measurement_that_waits_removes_an_earlier_offer(
+        roster, monkeypatch, tmp_path):
+    """A value this process did not measure is not left for the loops."""
+
+    from prismabuild import local_scratch
+
+    roster(args=[*BASE_ARGS, "--spool-gb", "auto"])
+    queue = _holder_queue(tmp_path, monkeypatch)
+    ledger = queue.ledger()
+    local_scratch.write_spool_offer(ledger.base, 500, "an earlier process")
+    ledger.ensure_capacity({KIND: 64})
+    ledger.acquire("j" * 64, {KIND: 8})
+    monkeypatch.setattr(supervise.os, "statvfs", _refuse_statvfs)
+    args = supervise.declared_shape("boxa", 0)[1]
+    assert args[-2:] == ["--spool-gb", "64"]
+    assert local_scratch.read_spool_offer(ledger.base) is None
+    assert _worker_offer(args, ledger)[KIND] == 64
+
+
+def test_only_the_owning_supervisor_writes_the_live_offer(
+        roster, monkeypatch, tmp_path):
+    """A start before the ownership claim, or a one-shot, leaves the offer alone.
+
+    ``_run_supervisor`` reads the shape before it knows it owns the box, and
+    ``--cycle-stale --once`` reads it without ever owning it.  Neither may
+    write or remove the file the owner's loops read.
+    """
+
+    from prismabuild import local_scratch
+
+    roster(args=[*BASE_ARGS, "--spool-gb", "auto"])
+    queue = _holder_queue(tmp_path, monkeypatch)
+    ledger = queue.ledger()
+    stat = _stat(monkeypatch, 1000, 250)            # 200 GiB of room
+    shape = supervise.declared_shape("boxa", 0, record=False)
+    assert shape[1][-2:] == ["--spool-gb", "200"]
+    assert local_scratch.read_spool_offer(ledger.base) is None
+    calls = len(stat.calls)
+    stat.f_bavail = 350 * GIB // 4096
+    assert supervise.declared_shape("boxa", 0, shape, record=False) == shape
+    assert len(stat.calls) == calls
+    assert local_scratch.read_spool_offer(ledger.base) is None
+    # The owner's first tick measures and records.
+    assert supervise.declared_shape("boxa", 0, shape) == shape
+    assert local_scratch.read_spool_offer(ledger.base) == 300
+
+
+def test_an_owner_whose_first_tick_waits_removes_an_earlier_offer(
+        roster, monkeypatch, tmp_path):
+    """Settled before the claim, then a holder arrived: the old file goes."""
+
+    from prismabuild import local_scratch
+
+    roster(args=[*BASE_ARGS, "--spool-gb", "auto"])
+    queue = _holder_queue(tmp_path, monkeypatch)
+    ledger = queue.ledger()
+    local_scratch.write_spool_offer(ledger.base, 500, "an earlier process")
+    _stat(monkeypatch, 1000, 250)                   # 200 GiB of room
+    shape = supervise.declared_shape("boxa", 0, record=False)
+    assert local_scratch.read_spool_offer(ledger.base) == 500
+    ledger.ensure_capacity({KIND: 200})
+    ledger.acquire("k" * 64, {KIND: 8})
+    assert supervise.declared_shape("boxa", 0, shape) == shape
+    assert local_scratch.read_spool_offer(ledger.base) is None
+    assert _worker_offer(shape[1], ledger)[KIND] == 200
 
 
 def test_room_is_f_bavail_minus_a_rounded_up_floor():
@@ -451,7 +644,8 @@ def test_a_running_holder_is_neither_charged_twice_nor_credited_twice(
     assert "current 200 GiB" in out
 
     _scratch_holder(queue, second, 166)
-    assert queue.claim(owner="w2", capacity=_worker_offer(args)) is None
+    assert _worker_offer(args, queue.ledger())[KIND] == 200
+    assert queue.claim(owner="w2", capacity=_worker_offer(args, queue.ledger())) is None
     assert queue.ledger().capacity()[KIND] == 200
     assert (queue.dir(pool.READY) / f"{second}.json").exists()
 
@@ -465,6 +659,34 @@ def test_a_running_holder_is_neither_charged_twice_nor_credited_twice(
     assert supervise.declared_shape("boxa", 0)[1][-2:] == ["--spool-gb", "200"]
     assert len(stat.calls) == calls + 1
     assert "--spool-gb auto measured 200 GiB" in capsys.readouterr().out
+
+
+def test_freed_disk_reaches_the_offer_on_the_next_tick(roster, monkeypatch, tmp_path):
+    """A disk freed while nothing is held reaches the loops' offer (#1190).
+
+    sparky, 2026-09-26: its loops were started with 241 GiB above the floor.
+    Two agents then freed their scratch, leaving 352 GB free, and a 250 GiB
+    measurement row was still refused on the start-time 241. With nothing
+    held, the next supervisor tick measures the disk again, and the loops
+    declare what it found on their next poll. The row is admitted without a
+    restart or a publish. The loops' arguments do not change, so no loop is
+    cycled for it.
+    """
+
+    roster(args=[*BASE_ARGS, "--spool-gb", "auto"])
+    queue = _holder_queue(tmp_path, monkeypatch)
+    stat = _stat(monkeypatch, 1000, 291)            # 241 GiB above the floor
+    shape = supervise.declared_shape("boxa", 0)
+    assert shape[1][-2:] == ["--spool-gb", "241"]
+    row = "a" * 64
+    _scratch_holder(queue, row, 250)
+    assert queue.claim(owner="w1", capacity=_worker_offer(shape[1], queue.ledger())) is None
+
+    stat.f_bavail = 352 * GIB // 4096               # the scratch is pruned
+    assert supervise.declared_shape("boxa", 0, shape) == shape
+    offer = _worker_offer(shape[1], queue.ledger())
+    assert offer[KIND] == 302
+    assert queue.claim(owner="w1", capacity=offer)["action_key"] == row
 
 
 def test_a_holder_that_claims_during_the_reading_defers_it(

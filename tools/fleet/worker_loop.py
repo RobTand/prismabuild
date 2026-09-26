@@ -110,7 +110,7 @@ RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from prismabuild import (adaptive_cpu, adaptive_gpu as gpu_admission,  # noqa: E402
                          box_capacity, container_images,
-                         core as pb, cpu_topology, pool)
+                         core as pb, cpu_topology, local_scratch, pool)
 from pbstatus import Deadline, bounded  # noqa: E402
 
 #: The safety ceiling a worker loop enforces on one action unless told
@@ -1117,7 +1117,9 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--spool-gb", type=int, default=0,
                     help="local disk this box offers produced-output spool "
                          "windows and declared bounded local scratch, in GiB; "
-                         "0 declares none (#747, #911)")
+                         "0 declares none (#747, #911).  A positive value is "
+                         "the supervisor's first measurement; each poll "
+                         "declares its live one in its place (#1190)")
     return ap
 
 
@@ -1144,6 +1146,57 @@ def declared_host_capacity(args: argparse.Namespace, *, cores: int) -> dict[str,
     if args.spool_gb > 0:
         declared["spool_gb"] = args.spool_gb
     return declared
+
+
+def live_host_capacity(declared: dict[str, int], ledger) -> dict[str, int]:
+    """``declared`` with its ``spool_gb`` replaced by the box's live offer.
+
+    The loop's ``--spool-gb`` is the supervisor's first measurement of the
+    disk, and it does not change while the loop runs.  The supervisor measures
+    again on every tick while nothing holds ``spool_gb`` here and records the
+    value in the host-local offer file, which this reads on every poll (#1190).
+    A zero there is a measurement and is declared as one, so free tokens are
+    retired as the disk fills.
+
+    A missing or unreadable file is no information, not a zero.  The loop
+    then declares its argument capped at the ledger's current total: the file
+    may have been removed, or never written, while a holder runs, and
+    declaring the uncapped argument could mint back room the disk no longer
+    has.  A
+    loop started without ``--spool-gb`` declares no ``spool_gb`` and reads
+    nothing.
+    """
+
+    kind = local_scratch.KIND
+    if kind not in declared:
+        return dict(declared)
+    live = local_scratch.read_spool_offer(ledger.base)
+    if live is None:
+        try:
+            live = min(int(declared[kind]),
+                       int(ledger.capacity().get(kind, 0)))
+        except (OSError, pool.PoolContractError):
+            live = 0
+    return {**declared, kind: live}
+
+
+def stable_host_capacity(live: dict[str, int],
+                         started: dict[str, int]) -> dict[str, int]:
+    """What the offer record declares for ``placeable``: ``live``, held up.
+
+    ``placeable`` asks whether this box could ever run an item, and a disk
+    another writer has filled for now answers that no better than a box
+    running someone else's encode (see the announce below).  So the record
+    declares the larger of the loop's starting measurement and the live one:
+    a freed disk raises it at once, and a filling one does not refuse at
+    submission what the box offered when the loop started.  The claim still
+    uses ``live``.
+    """
+
+    kind = local_scratch.KIND
+    if kind not in live or kind not in started:
+        return dict(live)
+    return {**live, kind: max(int(live[kind]), int(started[kind]))}
 
 
 def _run_loop(stop_requested):
@@ -1381,7 +1434,9 @@ def _run_loop(stop_requested):
             detected = box_capacity.physical_gpu_count(gpu_sample)
             if detected > 0:
                 known_physical_gpus = detected
-        declared = {"gpu": known_physical_gpus, **base_declared}
+        declared = {"gpu": known_physical_gpus,
+                    **live_host_capacity(base_declared, queue.ledger())}
+        placeable_capacity = stable_host_capacity(declared, base_declared)
 
         # The announcement records the stable physical capability while the
         # ledger receives only the capacity justified at this claim boundary.
@@ -1478,7 +1533,7 @@ def _run_loop(stop_requested):
         observed_images = inventory.get()
 
         def announce_offer(queue=queue, host=host, tags=offered,
-                           has_gpu=gpu_capable, declared=declared,
+                           has_gpu=gpu_capable, declared=placeable_capacity,
                            capacity=capacity, observer=observer, loops=loops,
                            runtime_commit=loaded_commit, cpu_tiers=cpu_tiers,
                            timeout_s=args.timeout_s, addresses=addresses,

@@ -529,8 +529,20 @@ def box_state(base):
         if info.st_mode & 0o077:
             # The chmod did not take.  Now there is nothing left to try.
             raise RuntimeError('unsafe PrismaBuild admission lock directory')
+    return directory, box_identity(base)
+
+
+def box_identity(base):
+    """The digest that names ONE box's host-local state for the ledger at ``base``.
+
+    Every loop of a box names the same ledger and so the same digest; two boxes
+    serving one pool hash differently.  Host-local state kept outside
+    ``box_state``'s directory is keyed by it too (``local_scratch``'s spool
+    offer), so the two cannot disagree about which box they describe.
+    """
+
     identity = f'{Path(base).resolve()}:{socket.gethostname()}'
-    return directory, hashlib.sha256(identity.encode()).hexdigest()
+    return hashlib.sha256(identity.encode()).hexdigest()
 
 
 def local_state_base(base):

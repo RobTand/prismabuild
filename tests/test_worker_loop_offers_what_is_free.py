@@ -149,3 +149,32 @@ def test_assume_idle_cannot_bypass_missing_gpu_evidence(tmp_path):
     assert offer["capacity"]["gpu"] == 1
     assert offer["observed_capacity"]["gpu"] == 0
     assert queue.ledger(host).capacity().get("gpu", 0) == 0
+
+
+def test_the_live_spool_offer_reaches_the_record_and_the_claim_side(tmp_path):
+    """A loop declares the supervisor's live ``spool_gb`` measurement (#1190).
+
+    Its ``--spool-gb`` is the supervisor's first measurement.  A freed disk
+    raises both the record ``placeable`` reads and the observed offer; a
+    filling one lowers only the observed offer, so a submission the box
+    offered at start is queued rather than refused.
+    """
+
+    from prismabuild import local_scratch
+
+    host = socket.gethostname()
+    base = pool.PoolQueue(tmp_path / "pb-queue").ledger(host).base
+    argv = [*BASE, "--spool-gb", "200", "--once"]
+
+    local_scratch.write_spool_offer(base, 300, "freed")
+    queue = _run(tmp_path, argv, gpu_sample=sample())
+    offer = _offer(queue, host)
+    assert offer["capacity"]["spool_gb"] == 300
+    assert offer["observed_capacity"]["spool_gb"] == 300
+
+    local_scratch.write_spool_offer(base, 40, "filled")
+    queue = _run(tmp_path, argv, gpu_sample=sample())
+    offer = _offer(queue, host)
+    assert offer["capacity"]["spool_gb"] == 200
+    assert offer["observed_capacity"]["spool_gb"] == 40
+    assert queue.ledger(host).capacity().get("spool_gb", 0) <= 40

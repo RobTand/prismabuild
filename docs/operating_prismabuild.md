@@ -3426,30 +3426,58 @@ only when its roster `args` in `tools/fleet/fleet_boxes.json` carry
 or a whole number of GiB that caps it. Such a box also names `local_disk`, a
 directory on the filesystem the budget comes from, and the roster states the
 fleet's free floor once, as `local_disk_free_floor_percent` (5). The supervisor
-turns the roster value into a number: at each start, including the re-exec
-after a publish, it passes the loops `f_bavail` on `local_disk` minus the
-floor, in whole GiB. It logs `--spool-gb auto measured N GiB` with the free
-space and the floor. Roster `args` are the supervisor's input: do not copy
-`--spool-gb auto` onto a `worker_loop.py` command line, which takes only
-integers.
+turns the roster value into a number, `f_bavail` on `local_disk` minus the
+floor, in whole GiB, and measures it twice over:
+
+- At each start, including the re-exec after a publish, it passes the first
+  measurement to the loops as `--spool-gb N` and logs
+  `--spool-gb auto measured N GiB` with the free space and the floor. The
+  argument does not change for the life of the process, because a loop whose
+  arguments change is cycled.
+- On every tick after that, it measures again and records the value in a
+  host-local offer file, `<digest>.spool-offer.json` under
+  `/home/rob/tmp/prismabuild-spool-offer` (`PRISMABUILD_SPOOL_OFFER_ROOT`),
+  beside the supervisor's claim file; nothing is written under `/tmp`. Each
+  loop reads the file on every poll
+  and offers that value in place of its argument (#1190). The supervisor logs
+  `--spool-gb live offer N GiB` when the value changes. A freed disk raises
+  the offer on the next tick, and a filling one lowers it, to 0 when there is
+  no room above the floor.
+
+Roster `args` are the supervisor's input: do not copy `--spool-gb auto` onto
+a `worker_loop.py` command line, which takes only integers.
 
 While an action on the box holds `spool_gb`, the supervisor does not measure,
 because the disk cannot say which bytes the holder has already written. The
-loops keep the host ledger's current total, and the supervisor logs
-`--spool-gb measurement waits` once and measures on the first tick when
-nothing is held. When a declaration cannot stand (no `local_disk`, no floor, a
-disk that is not local or cannot be read, or no room above the floor), the
-supervisor starts its loops without `--spool-gb` and logs a line that begins
-`--spool-gb declaration refused`. The box keeps offering its other kinds; an
-action that needs disk records `never_fits_capacity` there and waits for a box
-where it fits. To see what a box offers, run `pgrep -af worker_loop` on it and
-read the number after `--spool-gb`.
+offer stays what it was: the file is left alone, and a first measurement that
+has to wait passes the loops the host ledger's current total. The supervisor
+logs `--spool-gb measurement waits` once and measures on the first tick when
+nothing is held. The live offer is therefore raised only by a measurement of a
+disk nothing holds. A missing offer file (a first start, or one removed
+because this supervisor has not measured yet) is no information: the loops
+then offer their argument capped at the ledger's current total, so a lost file
+cannot raise the offer either.
 
-The measured value does not fall as the disk fills between starts, and a
-refused or removed declaration does not take back `spool_gb` tokens the host
-ledger already minted: the ledger only grows, and a loop retires free tokens
-only for the kinds it offers. The producer's own `statvfs` check still refuses
-a spool group the disk cannot hold.
+When a declaration cannot stand at start (no `local_disk`, no floor, a disk
+that is not local or cannot be read, or no room above the floor), the
+supervisor starts its loops without `--spool-gb` and logs a line that begins
+`--spool-gb declaration refused`. Such a box offers no `spool_gb` until the
+supervisor restarts or re-execs, even after space is freed. The box keeps
+offering its other kinds; an action that needs disk records
+`never_fits_capacity` there and waits for a box where it fits. A disk that
+cannot be read on a later tick offers 0 until it can.
+
+To see what a box offers, read `capacity.spool_gb` in
+`pb-queue/workers/<host>.json`, or the latest `live offer` line in the
+supervisor log. That record is what `pbrun` checks a submission against, and
+it carries the larger of the loop's argument and the live value, so a disk
+that is full for now queues a submission instead of refusing it. Claims use
+the live value.
+
+A refused or removed declaration does not take back `spool_gb` tokens the
+host ledger already minted: a loop retires free tokens only for the kinds it
+offers. The producer's own `statvfs` check still refuses a spool group the
+disk cannot hold.
 
 ### Declare an action's bounded local scratch
 

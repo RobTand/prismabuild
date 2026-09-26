@@ -85,6 +85,11 @@ ENV_BACKED: dict[tuple[str, str], str] = {
     ("prismabuild.pool", "LOCAL_CHECKOUT_ROOT"): (
         "import-time copy of the above, with the same reason"
     ),
+    ("prismabuild.local_scratch", "OFFER_ROOT"): (
+        "reads an environment variable whose default is a local path beside "
+        "the checkouts, so it never names the mount; repointed because the "
+        "fleet's loops read the live spool offer there (#1190)"
+    ),
 }
 
 HOST_LOCAL: dict[tuple[str, str], str] = {

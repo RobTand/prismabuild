@@ -374,6 +374,9 @@ LIVE_DEFAULTS = (
     # the probe measuring a directory nothing writes to.
     ("prismabuild.adaptive_cpu", "BOX_STATE_ROOT", "box-state"),
     ("mount_latency", "ADMISSION_LOCK_DIR", "box-state"),
+    # Host-local and persistent beside the checkouts; a suite that wrote here
+    # would leave a file per test in the directory the fleet's loops read.
+    ("prismabuild.local_scratch", "OFFER_ROOT", "spool-offer"),
 )
 
 #: Environment variables the lane and the pool read on use.
@@ -389,6 +392,7 @@ LIVE_ENV = (
     # attributes below: a child worker imports ``adaptive_cpu`` fresh and
     # would otherwise sweep-mark the fleet's own directory.
     ("PRISMABUILD_BOX_STATE_ROOT", "box-state"),
+    ("PRISMABUILD_SPOOL_OFFER_ROOT", "spool-offer"),
 )
 
 
