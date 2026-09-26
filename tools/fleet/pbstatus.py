@@ -2352,7 +2352,9 @@ def read_endings(queue_root: str | Path, *, limit: int = DEFAULT_RECENT,
         generation's retained record (``superseded_by`` names the answer), and
         ``terminal_conflict`` marks a key that carried more than one terminal
         record.  ``current`` is ``None`` on an unreadable row, which answers
-        nothing.
+        nothing, and on a row whose slot was replaced between its projection
+        and the resolution (``current_unresolved`` says so): path equality
+        alone is not identity, so the generation must match as well.
 
     A kept-reads delegate (``pbmetrics``) answers the same selected rows and
     projections from its retained listings but does not add the per-key
@@ -2419,14 +2421,25 @@ def _annotate_current_endings(rows: Sequence[dict], queue_root: str | Path) -> N
             # pair).  No row may claim to be it.
             row["current"] = None
             continue
-        row["current"] = answer["path"] is not None and Path(
-            str(answer["path"])) == path
-        if not row["current"]:
-            row["superseded_by"] = {
-                "state": answer["state"],
-                "path": None if answer["path"] is None else str(answer["path"]),
-                "generation": answer["generation"],
-            }
+        if answer["path"] is not None and Path(str(answer["path"])) == path:
+            # The path alone is not identity: the slot can be replaced
+            # between this row's projection and the resolution, and then the
+            # OLD row would be marked current for a newer record (#1178
+            # review, item 1).  The generation must match too.
+            if row.get("published_unix") == answer["generation"]:
+                row["current"] = True
+            else:
+                row["current"] = None
+                row["current_unresolved"] = (
+                    "the record at this path was replaced between its "
+                    "projection and the key's resolution")
+            continue
+        row["current"] = False
+        row["superseded_by"] = {
+            "state": answer["state"],
+            "path": None if answer["path"] is None else str(answer["path"]),
+            "generation": answer["generation"],
+        }
 
 
 def ending_row(entry: os.DirEntry, queue_root: str | Path) -> dict:

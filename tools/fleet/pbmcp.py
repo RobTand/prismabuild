@@ -478,10 +478,11 @@ def _queue_view(queue_root: Path, key: str) -> dict:
         record = _read_record(queue.item_path(state, key))
         if record is not None:
             records[state] = record
-    try:
-        readable, unreadable = queue.read_terminal_candidates(key)
-    except (OSError, ValueError, pool.PoolContractError):
-        readable, unreadable = {}, []
+    # A capture that cannot read the terminal slots at all is left to raise:
+    # ``call.read`` records the section as unavailable and the payload says
+    # ``found: null``.  Swallowing it here would answer ``{}`` and let a dead
+    # mount read as an absent key (#1178 review, item 2).
+    readable, unreadable = queue.read_terminal_candidates(key)
     for state, (_path, record) in readable.items():
         records[state] = record
     return {"records": records,
@@ -513,6 +514,25 @@ def _resolve_state(records: Mapping[str, dict],
     if not isinstance(record, Mapping):
         record = records.get(state)
     return state, record, answer  # type: ignore[return-value]
+
+
+def _unresolved_view(answer: Mapping[str, object] | None) -> dict | None:
+    """Why no record was chosen although terminal records are known (#1178).
+
+    ``None`` when a record was chosen, when the read never answered, or when
+    the key genuinely holds nothing; otherwise the coexisting terminal states
+    and each unreadable terminal's path and reason, so a tool can say
+    "unknown" rather than "absent".
+    """
+
+    if not isinstance(answer, Mapping) or answer.get("state") is not None:
+        return None
+    coexisting = answer.get("coexisting")
+    unreadable = answer.get("unreadable")
+    if not coexisting and not unreadable:
+        return None
+    return {"coexisting": list(coexisting or []),
+            "unreadable": list(unreadable or [])}
 
 
 def _superseded_view(answer: Mapping[str, object] | None) -> list[dict]:
@@ -1488,8 +1508,14 @@ class Session:
         }
         if record is None:
             # ``null`` rather than ``False`` when the read never answered: an
-            # unread queue has not told anyone this key is absent.
-            payload["found"] = None if records is None else False
+            # unread queue has not told anyone this key is absent.  A
+            # resolution that chose nothing while terminal records stand is
+            # unknown too, never absent (#1178 review, item 2).
+            unresolved = _unresolved_view(answer)
+            payload["found"] = (
+                None if records is None or unresolved is not None else False)
+            if unresolved is not None:
+                payload["unresolved_terminals"] = unresolved
             return payload
         detail = record.get("detail")
         detail = detail if isinstance(detail, Mapping) else {}
@@ -1762,6 +1788,14 @@ class Session:
         state, record, answer = _resolve_state(view["records"],
                                                view.get("answer"))
         if record is None:
+            unresolved = _unresolved_view(answer)
+            if unresolved is not None:
+                counts["unknown"] += 1
+                return {"key_prefix": prefix, "action_key": key,
+                        "found": None,
+                        "error": (f"{key[:12]} holds terminal records but "
+                                  "none could be chosen"),
+                        "unresolved_terminals": unresolved}
             counts["errors"] += 1
             return {"key_prefix": prefix, "action_key": key, "found": False,
                     "error": f"{key[:12]} names no queue record"}
@@ -2078,12 +2112,19 @@ class Session:
         view = call.read("records",
                          lambda: _queue_view(self.queue_root, key))
         records = None if view is None else view["records"]
-        state, record, _answer = ((None, None, None) if records is None
-                                  else _resolve_state(records,
-                                                      view.get("answer")))
+        answer = None if view is None else view.get("answer")
+        state, record, _resolved = ((None, None, None) if records is None
+                                    else _resolve_state(records, answer))
         if record is None:
-            return {"key_prefix": str(key_prefix), "action_key": key,
-                    "found": None if records is None else False, "log": None}
+            unresolved = _unresolved_view(answer)
+            payload: dict[str, object] = {
+                "key_prefix": str(key_prefix), "action_key": key,
+                "found": (None if records is None or unresolved is not None
+                          else False),
+                "log": None}
+            if unresolved is not None:
+                payload["unresolved_terminals"] = unresolved
+            return payload
         evidence = call.read("attempts",
                              lambda: _attempt_evidence(self.queue_root, record))
         if evidence is None:

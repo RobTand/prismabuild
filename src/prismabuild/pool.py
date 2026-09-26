@@ -20822,17 +20822,19 @@ class PoolQueue:
         is historical evidence the writer filed, not current authority: it
         names the generation a later record retired, and a slot it points
         into may since have been replaced by a newer one, so it never
-        decides.  A pair generations cannot order -- a missing or malformed
-        generation, a tie at the maximum, a third unorderable candidate, or
-        a record that could not be read -- is never read as success: a
-        readable failure or cancellation stands, or ``state`` is ``None``
-        when even that cannot be named, and ``ambiguous`` is true.
+        decides.  A CONTESTED key generations cannot order -- a missing or
+        malformed generation, a tie at the maximum, a third unorderable
+        candidate, or a record that could not be read -- is never read as
+        success: a readable failure or cancellation stands, or ``state`` is
+        ``None`` when even that cannot be named, and ``ambiguous`` is true.
 
-        Nothing is moved, deleted or rewritten.  A lone record, generation
-        or not, is the key's ending: ``pbrun.terminal_record`` already
-        states that a record carrying no generation stands, because
-        staleness cannot be proved of it and refusing it would hang a reader
-        on the only account of what happened.  This is a point-in-time
+        Nothing is moved, deleted or rewritten.  A lone record is the key's
+        ending even when its generation is malformed or absent:
+        ``pbrun.terminal_record`` already states that a record carrying no
+        generation stands, because staleness cannot be proved of it and
+        refusing it would hang a reader on the only account of what
+        happened.  The conservative rule above applies to a contest, not to
+        a sole record.  This is a point-in-time
         status rule; a waiter bound to one generation keeps
         ``pbrun.outcome_poll`` and ``archived_generation_outcomes``, which
         are exact to that generation.

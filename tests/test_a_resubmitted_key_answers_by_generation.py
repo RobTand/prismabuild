@@ -522,3 +522,146 @@ def test_an_unknown_mcp_answer_never_falls_back_to_directory_order(
 
     assert state is None and record is None, (
         "an unknown resolution fell back to a directory-order success")
+
+
+def _session(queue: pool.PoolQueue, tmp_path: Path) -> pbmcp.Session:
+    return pbmcp.Session(queue_root=queue.root, cas_root=tmp_path / "cas",
+                         repo_link=tmp_path / "repo")
+
+
+def test_pbstatus_marks_current_only_when_path_and_generation_match(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Astra review item 1: the endings projection and the resolution are two
+    reads, so the slot can be replaced between them.  Path equality alone
+    would mark the OLD row current for a newer record; the generation must
+    match too, and a mismatch is unknown with a reason."""
+
+    queue = pool.PoolQueue(tmp_path / "queue")
+    queue.ensure_layout()
+    path = queue.item_path(pool.DONE, KEY)
+    path.write_text(json.dumps({"action_key": KEY, "status": "executed",
+                                "published_unix": 5.0, "finished_unix": 5.0}))
+    replaced = []
+
+    real = pbstatus.ending_row
+
+    def racing(entry, queue_root):
+        row = real(entry, queue_root)
+        if row.get("action_key") == KEY and not replaced:
+            replaced.append(True)
+            path.write_text(json.dumps({
+                "action_key": KEY, "status": "executed",
+                "published_unix": 10.0, "finished_unix": 10.0}))
+        return row
+
+    monkeypatch.setattr(pbstatus, "ending_row", racing)
+
+    rows = pbstatus.read_endings(queue.root, limit=10)
+    row = next(one for one in rows if one["action_key"] == KEY)
+
+    assert replaced, "the fixture did not replace the slot"
+    assert row["published_unix"] == pytest.approx(5.0)
+    assert row["current"] is None, (
+        "the replaced slot's old row was marked current")
+    assert "replaced" in row["current_unresolved"]
+
+
+def test_public_tools_report_unknown_not_absent_for_an_unreadable_terminal(
+        tmp_path: Path) -> None:
+    """Astra review item 2: a readable done beside a malformed failed record
+    holds known terminal records but no chosen one.  The tools must answer
+    unknown with the unreadable path and reason, not ``found: false``."""
+
+    queue = pool.PoolQueue(tmp_path / "queue")
+    queue.ensure_layout()
+    queue.item_path(pool.DONE, KEY).write_text(json.dumps({
+        "action_key": KEY, "status": "executed", "published_unix": 5.0,
+        "finished_unix": 5.0, "attempts": 1}))
+    queue.item_path(pool.FAILED, KEY).write_text("{not json")
+    failed_path = str(queue.item_path(pool.FAILED, KEY))
+
+    session = _session(queue, tmp_path)
+    action = session.call("pb_action", {"key_prefix": KEY[:12]})
+    assert action["state"] is None
+    assert action["found"] is None, (
+        "known terminal records answered as an absent key")
+    unresolved = action["unresolved_terminals"]
+    assert [entry["state"] for entry in unresolved["unreadable"]] == [
+        pool.FAILED]
+    assert unresolved["unreadable"][0]["path"] == failed_path
+    assert unresolved["unreadable"][0]["reason"]
+
+    receipts = session.call("pb_receipts", {"keys": [KEY[:12]]})
+    row = next(one for one in receipts["receipts"] if one["action_key"] == KEY)
+    assert row["found"] is None, "the receipt row answered absent"
+    assert row["unresolved_terminals"]["unreadable"][0]["path"] == failed_path
+    assert receipts["summary"]["unknown"] == 1
+    assert receipts["summary"]["errors"] == 0
+
+    log = session.call("pb_log", {"key_prefix": KEY[:12]})
+    assert log["found"] is None, "the log row answered absent"
+    assert log["unresolved_terminals"]["unreadable"][0]["path"] == failed_path
+
+
+def test_a_failed_terminal_capture_is_unavailable_not_an_absent_key(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Astra review item 2: a capture that cannot read the slots at all must
+    reach ``call.read``'s unavailable accounting, never be swallowed as an
+    empty census."""
+
+    queue = pool.PoolQueue(tmp_path / "queue")
+    queue.ensure_layout()
+    # A decision makes the prefix resolvable without a terminal marker, so
+    # the call reaches the failing capture rather than an unresolved prefix.
+    decisions = queue.root / pool.WITHDRAWN / "decisions" / KEY
+    decisions.mkdir(parents=True)
+    (decisions / "5.json").write_text(json.dumps(
+        {"action_key": KEY, "published_unix": 5.0}))
+
+    def refuse(self, action_key):
+        raise OSError("the queue root did not answer")
+
+    # Both the capture and the composed convenience are refused, so the test
+    # reproduces the swallowed failure on a candidate that reads terminals
+    # through either name.
+    monkeypatch.setattr(pool.PoolQueue, "read_terminal_candidates", refuse,
+                        raising=False)
+    monkeypatch.setattr(pool.PoolQueue, "current_ending", refuse,
+                        raising=False)
+
+    session = _session(queue, tmp_path)
+    body = session.call("pb_action", {"key_prefix": KEY[:12]})
+
+    assert body["found"] is None
+    assert body["states"] is None
+    assert body["complete"] is False
+    assert any(entry["section"] == "records" for entry in body["unavailable"]), (
+        "the failed capture was not recorded as unavailable")
+
+
+def test_an_absent_key_is_still_absent_for_public_tools(tmp_path: Path) -> None:
+    """A key with no terminal marker (only an immutable decision, which makes
+    its prefix resolvable) is still absent, with no unresolved terminals."""
+
+    queue = pool.PoolQueue(tmp_path / "queue")
+    queue.ensure_layout()
+    decisions = queue.root / pool.WITHDRAWN / "decisions" / KEY
+    decisions.mkdir(parents=True)
+    (decisions / "5.json").write_text(json.dumps(
+        {"action_key": KEY, "published_unix": 5.0}))
+
+    session = _session(queue, tmp_path)
+    action = session.call("pb_action", {"key_prefix": KEY[:12]})
+    assert action["found"] is False
+    assert action["state"] is None
+    assert "unresolved_terminals" not in action
+
+    log = session.call("pb_log", {"key_prefix": KEY[:12]})
+    assert log["found"] is False
+    assert "unresolved_terminals" not in log
+
+    receipts = session.call("pb_receipts", {"keys": [KEY[:12]]})
+    row = next(one for one in receipts["receipts"] if one["action_key"] == KEY)
+    assert row["found"] is False
+    assert receipts["summary"]["errors"] == 1
+    assert receipts["summary"]["unknown"] == 0

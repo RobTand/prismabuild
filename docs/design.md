@@ -606,13 +606,14 @@ that capture with no further reads. The unique newest finite
 `supersedes_terminal` is historical evidence the retiring writer filed, not
 current authority: it names the generation a later record retired, and a
 slot it points into may since have been replaced by a newer one, so it
-never decides. A pair generations cannot order -- a missing or malformed
-generation, a tie at the maximum, a third unorderable candidate, or a
-record that could not be read -- is never read as success: a readable
+never decides. A contested key generations cannot order -- a missing or
+malformed generation, a tie at the maximum, a third unorderable candidate,
+or a record that could not be read -- is never read as success: a readable
 failure or cancellation stands, or the answer is unknown when even that
 cannot be named, with `ambiguous` set. Nothing is moved, deleted or
-rewritten, and a lone record, generation or not, remains the key's ending
-under the legacy rule `pbrun.terminal_record` states. The readers wired to
+rewritten, and a lone record remains the key's ending even when its
+generation is malformed or absent, under the legacy rule
+`pbrun.terminal_record` states. The readers wired to
 it are the tier plan's mover-state resolution (`staged_wait_verdict`),
 `pbmcp`'s `pb_action` / `pb_receipts` / `pb_log` state selection (whose one
 bounded child derives the census and the resolution from the same capture,
