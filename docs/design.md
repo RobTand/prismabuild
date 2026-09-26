@@ -1097,6 +1097,19 @@ default placement class is `x86` for CPU and `gb10` for GPU, overridable by
 explicit tags. CPU demand remains pytest workers times their native thread
 ceiling, or a larger explicit reservation; host memory covers the entire shard.
 
+A shard's native-thread ceiling and its CPU reservation stay paired.
+`--threads-per-shard` keeps its 2-per-worker default, and one unset
+`--cpus-per-shard` reserves `--workers-per-shard` times that ceiling. With
+several pytest workers, a named `--cpus-per-shard`, and no ceiling of the
+shard's own (`--threads-per-shard` unset or `0`), each xdist worker would
+otherwise inherit the row's whole thread count, so it receives
+`max(1, cpus-per-shard // workers-per-shard)` instead: a shard of 16 workers
+reserving 16 cores runs every worker at one native thread (#1192). The share
+never enlarges the reservation. A named positive ceiling is kept, and one whose
+product with the worker count exceeds the reservation is refused with exit 2
+before any shard is submitted; a single worker with `0` still sets no ceiling
+and still requires `--cpus-per-shard`.
+
 A `--gpu` run must declare its per-test bound (#975): `--test-timeout-s`, or
 `--timeout-s`, from which the bound is derived one heartbeat inside the sealed
 deadline. With neither, `pbtest` refuses with exit 2 before any shard is

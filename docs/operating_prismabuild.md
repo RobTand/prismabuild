@@ -1433,6 +1433,15 @@ must allow at least one core per pytest worker. Invalid worker counts,
 negative thread ceilings, and insufficient reservations are refused with
 exit 2 before any action is submitted.
 
+A shard with several pytest workers and no thread ceiling of its own (no
+`--threads-per-shard`, or `0`) gives each worker its share of the shard's
+cores: `OMP`, `MKL`, `OPENBLAS` and `TORCH_NUM_THREADS` are set to
+`max(1, cpus-per-shard // workers-per-shard)` (#1192). Without it, each
+xdist worker inherits the row's thread count, which is the whole shard's
+cores. On 2026-09-26 a 16-core shard of 16 workers ran 16 ×
+`OMP_NUM_THREADS=16` and put sparklina at load 136 on 20 CPUs. Without
+`--cpus-per-shard`, the ceiling stays 2 per worker, as before.
+
 The CPU demand is sealed into each shard's action, so a suite fanned out at a
 different width is a different action rather than a cache hit of the last run.
 
