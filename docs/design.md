@@ -1958,6 +1958,24 @@ does not parse them as v3, overwrite them, delete them, or silently migrate
 them. A v2-only key is a v3 cache miss and must be recomputed under the new
 producer contract.
 
+Execution read-back (#1187) is distinct from canonical cache lookup. Local
+execution retains its own unchanged v3 receipt at
+`executions/v1/<prefix>/<receipt-sha256>.json`, using the same no-clobber,
+no-follow publication and read-back checks. Its returned `receipt` and
+`payload_path` name those execution bytes; a lost canonical race reports
+`execution_result_published`, not `canonical_result_reused`. The existing
+immutable pool attempt and its hashed stdout bind that receipt to the attempt.
+`lookup_execution(action, receipt_sha256)` verifies precisely that receipt and
+payload, refusing missing or mismatched evidence without falling back to the
+canonical result. `lookup(action)` and the default `publish_result` API retain
+first-writer-wins cache semantics; deterministic mismatches still refuse.
+Readers asking about an attempt must use its receipt digest, not action-only
+lookup. Historical `canonical_result_reused` outputs do not establish that
+attempt's payload. This adds an execution-receipt namespace and a worker result
+status; it does not change the v3 receipt encoding or queue claim protocol.
+Source/component qualification is not deployed support. Older readers that
+close over worker result statuses need upgrading before consuming these results.
+
 Receipt publication fsyncs the candidate, runs the potentially longer
 action-closure and executable callback first, then rehashes the core and
 launcher as the final userspace check before the first-writer-wins hard link.
@@ -1976,7 +1994,7 @@ Receipt readback can then validate the canonical receipt without a
 second or third payload hash. If another blob or stochastic receipt won, every
 unconsumed winning blob is hashed normally. Returning a path immediately from
 that successful publication reuses this proof; later `lookup()` and
-`result_path()` calls always consume and hash the canonical payload anew.
+`result_path()` calls always consume and hash the selected receipt's payload anew.
 The before/after 2 GiB and 256 MiB NFS measurements and their limits are in
 `docs/results/prismabuild_publish_io_2026-08-31.md`.
 CAS staging, blob, request, and receipt directories are walked or created only
