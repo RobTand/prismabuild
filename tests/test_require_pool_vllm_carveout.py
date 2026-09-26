@@ -130,6 +130,41 @@ def test_a_collective_in_a_vllm_image_is_still_refused(
     assert _verdict(_armed(tmp_path, None), command) == 2
 
 
+@pytest.mark.parametrize("command", [
+    # Options whose value is a PROGRAM the container runs are part of the
+    # program, not of its settings: a collective named there is bare, in
+    # both spellings (#1183 review).
+    "docker run --gpus all --health-cmd "
+    "/opt/nccl-tests/build/all_reduce_perf vllm/vllm-openai vllm serve foo",
+    "docker run --gpus all --health-cmd="
+    "/opt/nccl-tests/build/all_reduce_perf vllm/vllm-openai",
+    "docker run --gpus all --init-path "
+    "/opt/nccl-tests/build/all_reduce_perf vllm/vllm-openai vllm serve foo",
+    "docker run --gpus all --init-path="
+    "/opt/nccl-tests/build/all_reduce_perf vllm/vllm-openai",
+])
+def test_a_collective_in_a_program_option_is_refused(
+    tmp_path, command,
+) -> None:
+    assert _verdict(_armed(tmp_path, None), command) == 2
+
+
+@pytest.mark.parametrize("command", [
+    # An ordinary health check or init path keeps the serve exempt.
+    "docker run --gpus all --health-cmd "
+    "'curl -f http://localhost:8000/health || exit 1' "
+    "vllm/vllm-openai:latest --model foo",
+    "docker run --gpus all --health-cmd=curl vllm/vllm-openai:latest "
+    "vllm serve foo",
+    "docker run --gpus all --init-path /usr/bin/tini vllm/vllm-openai "
+    "vllm serve foo",
+])
+def test_an_ordinary_health_check_keeps_the_exemption(
+    tmp_path, command,
+) -> None:
+    assert _verdict(_armed(tmp_path, None), command) == 0
+
+
 def test_quoting_does_not_widen_the_carve_out(tmp_path) -> None:
     """A quoted collective is still the work; only prose ABOUT the rule is
     exempt, and a container that names no vLLM is still refused."""

@@ -1297,10 +1297,13 @@ DOCKER_VALUE_OPTIONS = frozenset({
 DOCKER_VALUE_SHORT = frozenset(
     {"a", "c", "e", "h", "l", "m", "p", "u", "v", "w"})
 
-#: The option whose value is a PROGRAM the container runs rather than one of
-#: its settings.  A collective named there is a bare collective like any
-#: other, so its value joins the program; the other option values do not.
-DOCKER_PROGRAM_OPTIONS = frozenset({"entrypoint"})
+#: The options whose value is a PROGRAM the container runs rather than one of
+#: its settings: the entrypoint, the health-check command, and the init
+#: binary.  A collective named in any of them is a bare collective like any
+#: other, so the value joins the program; the other option values do not.
+#: Discarding a program-valued option instead would exempt work the hook
+#: refused before this parser existed (#1183 review).
+DOCKER_PROGRAM_OPTIONS = frozenset({"entrypoint", "health-cmd", "init-path"})
 
 
 def _short_option_span(word: str) -> int:
@@ -1328,11 +1331,12 @@ def _docker_program(segment: str) -> str | None:
     arguments.  Reading the collective pattern off the whole segment refused
     an exempt serve because the image was named for the NCCL it carries
     (``spark-vllm-nccl230``, #1183).  So the option words are walked to find
-    the image, and what comes back is the program the container execs: an
-    ``--entrypoint`` value if the run carries one, plus the words after the
-    image.  Both spellings of the option are read, attached
-    (``--entrypoint=x``) and spaced (``--entrypoint x``), and a short-option
-    cluster consumes its value where the grammar says it does.
+    the image, and what comes back is the program the container execs: the
+    values of the options that name a program (``--entrypoint``,
+    ``--health-cmd``, ``--init-path``) when the run carries them, plus the
+    words after the image.  Both spellings of those options are read,
+    attached (``--entrypoint=x``) and spaced (``--entrypoint x``), and a
+    short-option cluster consumes its value where the grammar says it does.
 
     ``None`` means the segment is not a container run this can read -- the
     caller then judges the segment as it always did, which refuses.  This is
