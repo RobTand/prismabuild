@@ -1197,7 +1197,9 @@ def main() -> int:
     print(f"\n{len(results) - len(failed)}/{len(results)} shards green")
     for r in failed:
         print(f"\n--- shard {r['shard']} ({', '.join(r['files'])})")
-        print("\n".join(displayed(r["output"])[-25:]))
+        # The full pytest failure section precedes the final 25 lines on a
+        # busy shard. Keep the actual tracebacks visible without another run.
+        print("\n".join(displayed(r["output"])))
     if args.json:
         Path(args.json).write_text(json.dumps(results, indent=1))
     return 1 if failed else 0

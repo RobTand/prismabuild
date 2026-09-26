@@ -268,6 +268,17 @@ def test_a_collection_skip_covers_its_assigned_file():
     assert result["reconciliation"]["missing_files"] == []
 
 
+def test_failed_shard_shows_full_failure_section(tmp_path, monkeypatch, capsys):
+    nodeid = "tests/test_0.py::test_x"
+    record = _record([nodeid], [[nodeid, "call", "failed", None, None]])
+    failure = "AssertionError: original failure context"
+    output = ("=== FAILURES ===\n" + failure + "\n" +
+              "\n".join(f"trace detail {n}" for n in range(40)) + "\n" +
+              record + "\n1 failed in 0.01s\n")
+    _stand_in(tmp_path, monkeypatch, [output], returncode=1)
+    assert failure in capsys.readouterr().out
+
+
 @pytest.mark.parametrize("summary, counts, collected", [
     ("1 passed in 0.01s", {"passed": 1}, None),
     ("1 failed, 531 passed, 1 skipped, 2 warnings in 17.82s",

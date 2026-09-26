@@ -1240,6 +1240,9 @@ skipped or failed at import, which the summary counts and a `--collect-only`
 pass does not) and a test the summary counts in more than one phase (a pass
 whose teardown errors or skips). The report's totals line states the sum:
 outcomes equal tests, plus outcomes at collection, plus extra phases.
+For a failed shard, the human report prints its full output, including the
+pytest failure section; the pool also retains the action's immutable attempt
+stdout log. The `--json` entry contains that output without truncation.
 
 `pbtest` names every shard's full action key (#1012). `pbrun`'s pool
 submission line (`queued` or `attached to`) carries the full key, and every
