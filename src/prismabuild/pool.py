@@ -375,6 +375,13 @@ WITHHOLD_CARRYING_REASONS = frozenset({
 RESIDENCY_REFUSAL_STATES = ("lead_not_resident", "lead_unpinned", "map_not_composed",
                             "map_stale", "map_unreadable", "plan_unreadable")
 
+#: Pending-lead statuses (``residency_verdict``'s ``pending``) that a later
+#: poll can still see land: a lead with no ending yet (``absent``), and a lead
+#: queued or running again under a later generation than the ending on file
+#: (``ready``, ``claimed``, #1186).  Every other status is an ending, and a
+#: denial whose pending leads all ended is ``residency_lead_terminal`` (#595).
+RESIDENCY_LEAD_UNFINISHED = ("absent", READY, CLAIMED)
+
 # Claim-order reliefs under which no standing exempts a wait (#1022 review
 # round 3).  ``refused`` (the stage root refused an eviction) and ``unknown``
 # (the tier ledger did not read) make no room and name no victim, so a wait
@@ -14538,6 +14545,63 @@ class PoolQueue:
         declared = block.get("manifest_sha256")
         return str(declared) if isinstance(declared, str) else None
 
+    def _unless_requeued(self, lead: str, entry: dict[str, object],
+                         ended: Mapping[str, object] | None,
+                         wanted: object = None) -> dict[str, object]:
+        """``entry``, or the lead's live requeue when it is newer than ``ended`` (#1186).
+
+        A stage mover's key is its range's content address, so a range that
+        a previous consumer's egress took back is republished under the
+        same key, and the old ending stays on file beside the new claim.
+        ``ended`` is that ending's record (``None`` for a drop, whose record
+        is not read here).  A ``claimed/`` or ``ready/`` record of ``lead``
+        replaces it when its ``published_unix`` generation is later: the
+        pending entry is then ``claimed`` or ``ready``, names the live
+        record, and keeps the ending it replaced under ``replaces``.  An
+        ending of the same generation is the live record's own: a finish
+        that filed it before the claim was gone.  An ending with no readable
+        generation is replaced by any live record, which can only be later.
+        A live record whose residency names a manifest other than ``wanted``
+        would end bound to another manifest again, so it replaces nothing.
+
+        Only a lead that already reads as ended pays these reads, so the
+        claim scan's cost for a lead still coming (``absent``) or resident is
+        unchanged.  Admission is unchanged too: the lead is not resident
+        either way.  What changes is the denial: a lead running again is not
+        ``residency_lead_terminal`` (:data:`RESIDENCY_LEAD_UNFINISHED`).
+        """
+
+        def generation(record: Mapping[str, object] | None) -> float | None:
+            stamp = record.get("published_unix") if isinstance(record, Mapping) else None
+            if (isinstance(stamp, bool) or not isinstance(stamp, (int, float))
+                    or not math.isfinite(float(stamp))):
+                return None
+            return float(stamp)
+
+        before = generation(ended)
+        for state in (CLAIMED, READY):
+            live = _read_json(self.item_path(state, lead))
+            if not isinstance(live, Mapping):
+                continue
+            after = generation(live)
+            if before is not None and (after is None or after <= before):
+                continue
+            declared = self._residency_manifest_of(live)
+            if wanted is not None and declared is not None and declared != wanted:
+                continue
+            named: dict[str, object] = {"published_unix": after}
+            for field in ("claimed_unix", "claimed_host", "claimed_by"):
+                if live.get(field) is not None:
+                    named[field] = live.get(field)
+            replaced = {name: value for name, value in entry.items() if name != "lead"}
+            if isinstance(ended, Mapping):
+                replaced["published_unix"] = before
+                if ended.get("finished_unix") is not None:
+                    replaced["finished_unix"] = ended.get("finished_unix")
+            return {"lead": lead, "status": state, "live": named,
+                    "replaces": replaced}
+        return entry
+
     def _superseded_status_of(self, action_key: str) -> str | None:
         """The newest drop filed for this key, or ``None`` if it was never dropped.
 
@@ -14617,15 +14681,20 @@ class PoolQueue:
                     # pin is filed only when its receipt matches its range.
                     # Reading the ledger rather than the receipt also covers a
                     # mover whose bytes an egress has since deleted.
-                    pending.append({"lead": str(lead), "status": "unpinned"})
+                    pending.append(self._unless_requeued(
+                        str(lead), {"lead": str(lead), "status": "unpinned"},
+                        record, wanted))
                     continue
                 # The pool cannot open the manifest -- it holds records, not
                 # the CAS -- but it holds both blocks, and two blocks naming
                 # two digests are two manifests whatever the bytes say.
-                pending.append({"lead": str(lead), "status": "manifest_mismatch",
+                pending.append(self._unless_requeued(
+                    str(lead), {"lead": str(lead), "status": "manifest_mismatch",
                                 "declared_manifest_sha256": declared,
-                                "expected_manifest_sha256": str(wanted)})
+                                "expected_manifest_sha256": str(wanted)},
+                    record, wanted))
                 continue
+            ended = record
             if status is None:
                 if self._lead_was_adopted(residency, str(lead)):
                     # No terminal record because it never ran: this range was
@@ -14650,9 +14719,13 @@ class PoolQueue:
                         status = str(ended.get("status") or state)
                         break
                 else:
+                    ended = None
                     status = self._superseded_status_of(str(lead))
-            pending.append({"lead": str(lead),
-                            "status": status if status is not None else "absent"})
+            if status is None:
+                pending.append({"lead": str(lead), "status": "absent"})
+                continue
+            pending.append(self._unless_requeued(
+                str(lead), {"lead": str(lead), "status": status}, ended, wanted))
         if pending:
             # Two denials, because they mean different things to whoever reads
             # them: a lead that has not finished may still finish, while a lead
@@ -14663,7 +14736,8 @@ class PoolQueue:
                 "state": "lead_unpinned" if unpinned else "lead_not_resident",
                 "pending": pending,
                 "leads": [str(lead) for lead in leads]}
-            if any(entry.get("status") != "absent" for entry in pending):
+            if any(entry.get("status") not in RESIDENCY_LEAD_UNFINISHED
+                   for entry in pending):
                 # A lead that finished -- failed, withdrawn, dropped, or
                 # executed holding no tokens -- is republished only by the
                 # window, and not when a mover's terminal refusal (#966's
@@ -14674,8 +14748,8 @@ class PoolQueue:
                 # finished lead (#1004 item 3).  A refused lead that ran
                 # before reads ``unpinned``, from its earlier ``done/``
                 # record.  Read only once a lead has finished, so a lead
-                # that is still coming (``absent``) costs the scan nothing
-                # more.
+                # that is still coming (``absent``, or queued again under a
+                # later generation, #1186) costs the scan nothing more.
                 supersession = self._residency_supersession(item.get("action_key"))
                 if supersession is not None:
                     verdict["plan_superseded"] = supersession
@@ -16920,7 +16994,9 @@ class PoolQueue:
                         pending = residency.get("pending")
                         if (isinstance(pending, list) and pending
                                 and all(isinstance(entry, Mapping)
-                                        and entry.get("status") not in (None, "absent")
+                                        and entry.get("status") is not None
+                                        and entry.get("status")
+                                        not in RESIDENCY_LEAD_UNFINISHED
                                         for entry in pending)):
                             # Every lead ended somewhere no later poll repairs:
                             # failed, withdrawn, dropped, unpinned, or bound
@@ -16928,7 +17004,10 @@ class PoolQueue:
                             # the item stays ready, as documented above -- but
                             # the denial names the terminal state, so the
                             # fleet-wide denial snapshot tells it apart from a
-                            # mover that simply has not finished (#595).
+                            # mover that simply has not finished (#595).  A
+                            # lead queued or claimed again under a later
+                            # generation has not finished, whatever its old
+                            # ending says (#1186).
                             reason = "residency_lead_terminal"
                     self.record_denial(item, reason, {"residency": residency})
                     continue
