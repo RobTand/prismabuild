@@ -615,7 +615,19 @@ def reconcile_shards(results: list[dict]) -> None:
                 "against its collection"]}
             continue
         counts, collected = summary_outcomes(result["summary"])
-        result["reconciliation"] = pbtest_outcomes.reconcile(record, counts, collected)
+        reconciliation = pbtest_outcomes.reconcile(record, counts, collected)
+        observed = {nodeid.split("::", 1)[0]
+                    for nodeid in record.get("collected") or ()}
+        observed.update(row[0].split("::", 1)[0]
+                        for row in record.get("reports") or ()
+                        if row[1] == "collect")
+        missing = sorted(set(result["files"]) - observed)
+        reconciliation["missing_files"] = missing
+        if missing:
+            reconciliation["problems"].append(
+                "assigned file(s) had no collection or outcome: "
+                + ", ".join(missing))
+        result["reconciliation"] = reconciliation
         for nodeid in dict.fromkeys(record.get("collected") or ()):
             owners.setdefault(nodeid, []).append(result["shard"])
     for nodeid, shards in owners.items():
@@ -674,6 +686,7 @@ def print_reconciliation(results: list[dict]) -> None:
         _names("not collected:", reconciliation.get("not_collected") or ())
         _names("collected twice:", reconciliation.get("collected_twice") or ())
         _names("also in another shard:", reconciliation.get("in_other_shards") or ())
+        _names("assigned file absent:", reconciliation.get("missing_files") or ())
 
 
 def displayed(output: str) -> list[str]:

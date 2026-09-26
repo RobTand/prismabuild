@@ -166,11 +166,15 @@ def _record(collected, reports, *, collect_only=False) -> str:
         "collected": collected, "reports": reports, "uncounted": []})
 
 
-def _stand_in(tmp_path: Path, monkeypatch, outputs: list[str], *, returncode=0):
+def _stand_in(tmp_path: Path, monkeypatch, outputs: list[str], *, returncode=0,
+              extra_file=False):
     checkout = tmp_path / "project"
     (checkout / "tests").mkdir(parents=True)
     for index in range(len(outputs)):
         (checkout / "tests" / f"test_{index}.py").write_text("def test_x():\n    pass\n")
+    if extra_file:
+        (checkout / "tests" / "test_missing.py").write_text(
+            "def test_missing():\n    pass\n")
     subprocess.run(["git", "init", "-q", str(checkout)], check=True)
     queue = list(outputs)
 
@@ -242,6 +246,26 @@ def test_a_shard_with_a_summary_and_no_record_is_not_green(tmp_path, monkeypatch
     printed = capsys.readouterr().out
     assert code == 1
     assert results[0]["reconciliation"]["problems"][0].startswith("no outcome record")
+
+
+def test_an_assigned_file_with_no_collection_or_outcome_fails(tmp_path, monkeypatch, capsys):
+    present = "tests/test_0.py::test_x"
+    output = _record([present], [[present, "call", "passed", None, None]])
+    code, results = _stand_in(tmp_path, monkeypatch, [output + "\n1 passed in 0.01s\n"],
+                              extra_file=True)
+    assert code == 1
+    assert results[0]["reconciliation"]["missing_files"] == ["tests/test_missing.py"]
+    assert "tests/test_missing.py" in capsys.readouterr().out
+
+
+def test_a_collection_skip_covers_its_assigned_file():
+    result = {"shard": 0, "files": ["tests/test_skipped.py"], "ran": True,
+              "summary": "1 skipped in 0.01s",
+              "output": _record([], [["tests/test_skipped.py", "collect", "skipped",
+                                       "optional dependency absent", None]])}
+    pbtest.reconcile_shards([result])
+    assert result["reconciliation"]["problems"] == []
+    assert result["reconciliation"]["missing_files"] == []
 
 
 @pytest.mark.parametrize("summary, counts, collected", [

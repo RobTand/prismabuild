@@ -1230,7 +1230,10 @@ recorder saw, and its record's counts matched against its summary line. A
 shard is not green, whatever its exit code, when a collected test has no
 outcome, an outcome belongs to no collected test, a node ID is collected twice,
 another shard also collected one of its node IDs, its counts disagree with its
-summary, or it reported a summary and printed no record. A `--collect-only`
+summary, or it reported a summary and printed no record. It also checks the
+assigned file roster: each file must yield a collected node ID or a collection
+skip/error report. A listed file that silently yields neither fails by name;
+a module skipped at collection covers its file. A `--collect-only`
 shard is matched on its collected count instead. Two differences are not
 failures, and the report names each: an outcome at collection (a module that
 skipped or failed at import, which the summary counts and a `--collect-only`
