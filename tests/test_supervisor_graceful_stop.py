@@ -99,7 +99,7 @@ def test_stop_waits_for_current_action_and_reaps_owned_workers(tmp_path):
 def test_cron_ensure_defers_to_installed_systemd_owner(monkeypatch, capsys):
     monkeypatch.setattr(supervise, '_systemd_managed', lambda: True, raising=False)
     monkeypatch.setattr(sys, 'argv', ['supervise', '--ensure'])
-    monkeypatch.setattr(supervise, 'declared_shape', lambda *a: pytest.fail('cron reached worker setup'))
+    monkeypatch.setattr(supervise, 'declared_shape', lambda *a, **k: pytest.fail('cron reached worker setup'))
     assert supervise.main() == 0
     assert 'systemd' in capsys.readouterr().out
 
@@ -157,7 +157,7 @@ def isolated_supervisor(monkeypatch, tmp_path):
     monkeypatch.setattr(supervise, '_loaded_published_generation', lambda: None)
     monkeypatch.setattr(supervise, '_reexec_if_published', lambda *a: False)
     monkeypatch.setattr(supervise, '_reap_children', lambda: 0)
-    monkeypatch.setattr(supervise, 'declared_shape', lambda *a: (1, []))
+    monkeypatch.setattr(supervise, 'declared_shape', lambda *a, **k: (1, []))
     monkeypatch.setattr(supervise, '_next_log_index', lambda: 0)
     monkeypatch.setattr(supervise.time, 'sleep', lambda _: None)
 
@@ -165,7 +165,7 @@ def isolated_supervisor(monkeypatch, tmp_path):
 def test_stop_received_during_cycle_prevents_role_or_worker_spawns(monkeypatch, tmp_path):
     isolated_supervisor(monkeypatch, tmp_path)
     stopping = []
-    def shape(*a):
+    def shape(*a, **k):
         if len(a) == 3:
             stopping.append(True)  # A signal during a potentially slow shape read.
         return 1, []

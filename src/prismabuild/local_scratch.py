@@ -23,8 +23,10 @@ inferred from a variable's name.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from pathlib import PurePosixPath
+import os
+from pathlib import Path, PurePosixPath
 import re
+import time
 
 #: The sealed variable that names an action's bounded-local pairs.
 PAIRS_ENV = "PRISMABUILD_LOCAL_SCRATCH_PAIRS"
@@ -123,3 +125,86 @@ def scratch_terms(variables: Mapping[str, str]) -> dict[str, int]:
 
     total = sum(-(-int(pair["max_bytes"]) // GIB) for pair in scratch_pairs(variables))
     return {KIND: total} if total else {}
+
+
+# -- the live offer: measured by the supervisor, read by the loops (#1190) ---
+
+#: Where each box keeps its live ``--spool-gb`` measurement, carried from the
+#: supervisor to its loops (#1190): host-local and persistent, beside the
+#: supervisor's claim file and the local checkouts.  Not
+#: ``adaptive_cpu.box_state``'s directory, which defaults under ``/tmp``: the
+#: fleet writes nothing new there, because an OOM once cleared it.
+OFFER_ROOT = Path(os.environ.get("PRISMABUILD_SPOOL_OFFER_ROOT")
+                  or "/home/rob/tmp/prismabuild-spool-offer")
+OFFER_SUFFIX = ".spool-offer.json"
+
+
+def spool_offer_path(ledger_base) -> Path:
+    """Where the box whose host ledger is ``ledger_base`` keeps its live offer.
+
+    The supervisor and its loops name the same ledger, so they meet here
+    without a round trip through the shared queue.  The name is the digest
+    ``adaptive_cpu.box_identity`` gives the box's other host-local state.
+    """
+
+    from . import adaptive_cpu
+
+    return Path(OFFER_ROOT) / (adaptive_cpu.box_identity(ledger_base) + OFFER_SUFFIX)
+
+
+def _private_offer_root() -> Path:
+    """``OFFER_ROOT``, created private to this uid, or ``RuntimeError``."""
+
+    import stat
+
+    directory = Path(OFFER_ROOT)
+    directory.mkdir(parents=True, mode=0o700, exist_ok=True)
+    info = directory.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+        raise RuntimeError(f"unsafe spool offer directory {directory}")
+    if info.st_mode & 0o077:
+        directory.chmod(0o700)
+    return directory
+
+
+def write_spool_offer(ledger_base, gib: int, detail: str) -> None:
+    """Record ``gib`` as the box's measured ``spool_gb`` offer, atomically.
+
+    Only the supervisor writes it, and only from a measurement taken while
+    the host ledger held no ``spool_gb`` (see ``supervise._spool_budget``).
+    """
+
+    from . import adaptive_cpu
+
+    if type(gib) is not int or gib < 0:
+        raise ValueError(f"a spool offer is a whole number of GiB, not {gib!r}")
+    _private_offer_root()
+    adaptive_cpu.write_json(spool_offer_path(ledger_base), {
+        KIND: gib, "detail": str(detail), "measured_unix": time.time(),
+        "pid": os.getpid()})
+
+
+def clear_spool_offer(ledger_base) -> None:
+    """Remove the recorded offer: this process has no measurement to give."""
+
+    try:
+        spool_offer_path(ledger_base).unlink()
+    except FileNotFoundError:
+        pass
+
+
+def read_spool_offer(ledger_base) -> int | None:
+    """The recorded offer in GiB, or ``None`` when there is none to trust.
+
+    A missing or unreadable file -- a first start, or a file removed because
+    this supervisor has not measured -- is "no information", never a zero.
+    """
+
+    from . import adaptive_cpu
+
+    try:
+        path = spool_offer_path(ledger_base)
+    except OSError:
+        return None
+    value = adaptive_cpu.read_json(path).get(KIND)
+    return value if type(value) is int and value >= 0 else None

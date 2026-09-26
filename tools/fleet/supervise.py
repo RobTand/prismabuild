@@ -85,7 +85,7 @@ import fleet_roster  # noqa: E402
 import worker_loop as runtime_gate  # noqa: E402
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
-from prismabuild import pool  # noqa: E402
+from prismabuild import local_scratch, pool  # noqa: E402
 
 MIRROR = Path("/mnt/shared/prismabuild-fleet")
 CONFIG = Path(__file__).resolve().parent / "fleet_boxes.json"
@@ -494,8 +494,8 @@ def _config(host: str) -> dict:
 
 
 def declared_shape(host: str, override_loops: int,
-                   previous: tuple[int, list[str]] | None = None
-                   ) -> tuple[int, list[str]]:
+                   previous: tuple[int, list[str]] | None = None, *,
+                   record: bool = True) -> tuple[int, list[str]]:
     """This box's target count and loop arguments, re-read every tick.
 
     The docstring above promises that the shape of the fleet is a versioned
@@ -514,6 +514,11 @@ def declared_shape(host: str, override_loops: int,
     goes idle.  The first read has no previous to fall back on and still
     refuses, because guessing what a box offers is the one thing this must
     never do.
+
+    ``record`` says whether this process may write the box's live
+    ``spool_gb`` offer (``spool_declaration``).  Only the supervisor that owns
+    the box does; a one-shot ``--cycle-stale --once`` or a start that has not
+    yet taken the ownership claim reads the shape and leaves the offer alone.
     """
 
     try:
@@ -528,7 +533,7 @@ def declared_shape(host: str, override_loops: int,
         # other box's arguments are the file's, byte for byte (#910).
         found = _roster_entry(host)
         document = found[1] if found is not None else {}
-        args = spool_declaration(host, config, document, args)
+        args = spool_declaration(host, config, document, args, record=record)
     return (override_loops or int(config.get("loops", 1)), args)
 
 
@@ -551,16 +556,21 @@ LOCAL_DISK_FIELD = "local_disk"
 #: rule, stated in the file rather than assumed by the code.
 LOCAL_DISK_FLOOR_FIELD = "local_disk_free_floor_percent"
 GIB = 1 << 30
-#: One settled verdict per distinct declaration for the life of this
-#: process, so the disk is measured at supervisor start -- and again after a
-#: publish, which re-execs -- rather than every tick.  Other writers move free
-#: space continuously, and a per-tick measurement would change the loops'
-#: arguments, and so cycle every idle loop, with every GiB they wrote.  A
-#: measurement a running holder blocks is not settled; see ``_spool_budget``.
+#: One settled set of loop arguments per distinct declaration for the life of
+#: this process.  The arguments carry the first measurement and do not follow
+#: the disk: they are compared with every running loop's, and a change would
+#: cycle every idle loop each time another writer moved free space.  The disk
+#: itself is measured again every tick while nothing holds ``spool_gb`` here,
+#: and that value reaches the loops through the host-local offer file instead
+#: (#1190, ``local_scratch.write_spool_offer``).  A first measurement a
+#: running holder blocks is not settled; see ``_spool_budget``.
 _SPOOL_VERDICTS: dict[tuple, list[str]] = {}
 #: The last line printed for a declaration whose measurement is waiting on a
 #: holder, so a wait that repeats every tick is logged once.
 _SPOOL_WAITING: dict[tuple, str] = {}
+#: The last value (or refusal) the live measurement recorded per declaration,
+#: so a tick that measures the same room as the one before logs nothing.
+_SPOOL_LIVE: dict[tuple, object] = {}
 
 
 def local_disk_room(path: str, floor_percent: int, *,
@@ -654,10 +664,12 @@ def _spool_budget(host: str, entry: dict, document: dict, args: list[str], *,
                   statvfs=None) -> tuple:
     """Measure this box's ``--spool-gb`` from its disk: a verdict and a value.
 
-    ``("offer", gib, detail)`` and ``("refuse", reason)`` are settled; either
-    is kept for the life of the process.  ``("wait", reason)`` is not: a
+    ``("offer", gib, detail)`` is a measurement, and ``gib`` may be 0 when the
+    disk has no room above the floor.  ``("refuse", reason)`` says the
+    declaration cannot be measured at all.  ``("wait", reason)`` says a
     running action holds ``spool_gb`` here, and the measurement cannot be
-    taken until none does.
+    taken until none does.  ``spool_declaration`` decides what each one
+    settles.
 
     The measured budget is ``f_bavail`` on ``local_disk`` minus the fleet
     floor, in whole GiB, capped at a numeric declaration.  It is taken only
@@ -726,42 +738,76 @@ def _spool_budget(host: str, entry: dict, document: dict, args: list[str], *,
         gib = min(ceiling, gib)
     detail = (f"{room['free_bytes']} B free - {room['floor_bytes']} B "
               f"({floor}%) floor = {room['room_bytes']} B on {path}")
-    if gib == 0:
-        return ("refuse", f"{SPOOL_FLAG} {declared} measures 0 GiB: {detail}")
     return ("offer", gib, detail)
 
 
 def spool_declaration(host: str, entry: dict, document: dict,
-                      args: list[str], *, statvfs=None) -> list[str]:
+                      args: list[str], *, statvfs=None,
+                      record: bool = True) -> list[str]:
     """The loop arguments with ``--spool-gb`` measured, or dropped with a reason.
 
-    A settled measurement is kept once per distinct declaration in this
-    process (see ``_SPOOL_VERDICTS``).  A refusal drops the flag rather than
-    exiting: this supervisor runs under ``Restart=always``, so an exit would
-    take every loop on the box with it, where a refused budget should cost the
-    box only its disk kind.  Actions that need it then record
-    ``never_fits_capacity`` on this box and are claimed where it fits.
+    The arguments are settled once per distinct declaration in this process
+    (see ``_SPOOL_VERDICTS``).  A refusal drops the flag rather than exiting:
+    this supervisor runs under ``Restart=always``, so an exit would take every
+    loop on the box with it, where a refused budget should cost the box only
+    its disk kind.  Actions that need it then record ``never_fits_capacity``
+    on this box and are claimed where it fits.  A first measurement of 0 GiB
+    is refused the same way.
 
-    While a running action holds ``spool_gb`` here, nothing is settled and the
-    loops offer the ledger's current total, capped at a numeric declaration:
-    the last measured value, which neither grows nor shrinks the ledger.  The
-    measurement is retried every tick until the box holds none.
+    Once settled with a positive value, the disk is measured again on every
+    tick, and the value is recorded for the loops in the host-local offer
+    file (``_record_live_spool``).  A disk freed while nothing is held reaches
+    the offer on the next tick, and one that fills lowers it, without a
+    restart and without changing any loop's arguments (#1190).  With
+    ``record`` false, nothing is measured after the first verdict and the file
+    is neither written nor removed.
+
+    While a running action holds ``spool_gb`` here, the first measurement is
+    not settled and the loops offer the ledger's current total, capped at a
+    numeric declaration: the last measured value, which neither grows nor
+    shrinks the ledger.  The measurement is retried every tick until the box
+    holds none.
     """
 
     key = (host, tuple(args), entry.get(LOCAL_DISK_FIELD),
            document.get(LOCAL_DISK_FLOOR_FIELD) if isinstance(document, dict) else None)
     if key in _SPOOL_VERDICTS:
-        return list(_SPOOL_VERDICTS[key])
+        settled = list(_SPOOL_VERDICTS[key])
+        if (record and SPOOL_FLAG in settled
+                and int(settled[settled.index(SPOOL_FLAG) + 1]) > 0):
+            verdict = _spool_budget(host, entry, document, args, statvfs=statvfs)
+            if verdict[0] == "wait" and key not in _SPOOL_LIVE:
+                # Settled before this process owned the box, and a holder has
+                # arrived since: whatever the file holds was not measured here.
+                _clear_live_spool(host)
+                _SPOOL_LIVE[key] = "cleared"
+            else:
+                _record_live_spool(host, key, verdict)
+        return settled
     verdict = _spool_budget(host, entry, document, args, statvfs=statvfs)
+    if verdict[0] == "offer":
+        # A verdict of "offer" means the declaration parsed.
+        declared = args[args.index(SPOOL_FLAG) + 1]
+        if int(verdict[1]) == 0 and _spool_gb_of(args) != 0:
+            verdict = ("refuse", f"{SPOOL_FLAG} {declared} measures 0 GiB: "
+                       f"{verdict[2]}")
     if verdict[0] == "offer":
         gib = int(verdict[1])
         _SPOOL_VERDICTS[key] = _with_spool(args, gib)
         _SPOOL_WAITING.pop(key, None)
         if gib:
-            declared = args[args.index(SPOOL_FLAG) + 1]
             print(f"[{host}] {SPOOL_FLAG} {declared} measured {gib} GiB: "
                   f"{verdict[2]}", flush=True)
+        if record:
+            if gib:
+                _record_live_spool(host, key, verdict)
+            else:
+                _clear_live_spool(host)
         return list(_SPOOL_VERDICTS[key])
+    # No value this process measured may stand in the file: a refused or
+    # waiting declaration leaves the loops their own arguments (#1190).
+    if record:
+        _clear_live_spool(host)
     if verdict[0] == "refuse":
         _SPOOL_VERDICTS[key] = _without_spool(args)
         _SPOOL_WAITING.pop(key, None)
@@ -783,6 +829,54 @@ def spool_declaration(host: str, entry: dict, document: dict,
         _SPOOL_WAITING[key] = line
         print(line, flush=True)
     return waiting
+
+
+def _spool_ledger_base(host: str) -> Path:
+    """The host ledger the loops on this box name, and so their offer file."""
+
+    return pool.PoolQueue(_queue_root()).ledger(host).base
+
+
+def _record_live_spool(host: str, key: tuple, verdict: tuple) -> None:
+    """Record a tick's measurement for the loops, or keep the last one.
+
+    ``offer`` records its value, 0 included: it was taken with nothing held
+    on both sides of ``statvfs``, so every token it promises is room on the
+    disk.  ``refuse`` records 0: a disk that cannot be read or is no longer a
+    usable local filesystem has no room to give, and lowering an offer never
+    takes a token from a holder, because only free tokens are retired.
+    ``wait`` records nothing, so the offer in force stays exactly what it was
+    while a holder runs -- neither the bytes it has written nor the part of
+    its reservation it has not are counted again.  The ledger total the loops
+    reach is therefore raised only by a measurement of an unheld disk.
+    """
+
+    if verdict[0] == "wait":
+        return
+    gib = int(verdict[1]) if verdict[0] == "offer" else 0
+    reason = str(verdict[2]) if verdict[0] == "offer" else str(verdict[1])
+    try:
+        local_scratch.write_spool_offer(_spool_ledger_base(host), gib, reason)
+    except (OSError, RuntimeError, ValueError) as exc:
+        if _SPOOL_LIVE.get(key) != ("unwritten", str(exc)):
+            _SPOOL_LIVE[key] = ("unwritten", str(exc))
+            print(f"[{host}] {SPOOL_FLAG} live offer not recorded, so the loops "
+                  f"keep their last reading: {type(exc).__name__}: {exc}",
+                  flush=True)
+        return
+    if _SPOOL_LIVE.get(key) != gib:
+        _SPOOL_LIVE[key] = gib
+        print(f"[{host}] {SPOOL_FLAG} live offer {gib} GiB: {reason}", flush=True)
+
+
+def _clear_live_spool(host: str) -> None:
+    """Remove the offer file: this process has not measured this declaration."""
+
+    try:
+        local_scratch.clear_spool_offer(_spool_ledger_base(host))
+    except (OSError, RuntimeError) as exc:
+        print(f"[{host}] {SPOOL_FLAG} could not remove the live offer: "
+              f"{type(exc).__name__}: {exc}", flush=True)
 
 
 def declared_roles(host: str) -> list[tuple[str, list[str]]]:
@@ -1827,7 +1921,9 @@ def _run_supervisor(stop_requested) -> int:
         return 0 if args.ensure else 1
 
     host = socket.gethostname()
-    target, loop_args = declared_shape(host, args.loops)
+    # Not yet the box's owner, and perhaps never: the live offer is written
+    # only from the supervision loop below.
+    target, loop_args = declared_shape(host, args.loops, record=False)
 
     if args.cycle_stale and args.once:
         # A one-shot cycle does not need to own the box: it stops only idle

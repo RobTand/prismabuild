@@ -12791,8 +12791,8 @@ beside `boxes`, is the fleet's disk-headroom floor, 5% of a filesystem's size.
 When `supervise.py` starts, it measures `f_bavail` on `local_disk` minus the
 floor, in whole GiB, and passes that as `--spool-gb`. A number in the roster
 caps the measured value; `auto` does not. No measured value is written in the
-roster, so freeing space on a disk raises the box's offer at its next start.
-The supervisor refuses the declaration, and drops the flag, when `local_disk`
+roster. The start measurement is not the last one: see "The disk is measured
+on every tick" below. The supervisor refuses the declaration, and drops the flag, when `local_disk`
 is missing, relative or not on a local disk (the same mount check
 `ProducedSpool` makes), when the floor is missing, when the filesystem cannot
 be read, and when the measurement is 0 GiB. It logs one line with the reason
@@ -12817,17 +12817,57 @@ value (capped by a numeric declaration), and the supervisor measures again on
 each tick until nothing is held. The ledger's census is error-visible: a
 holder directory it cannot list makes the supervisor wait, never measure.
 
-A settled measurement is kept once per distinct declaration in a supervisor
-process: at start, and again after a publish, which re-execs the supervisor. It
-is not repeated every tick, because other writers move free space all the time,
-and each new value would change the loops' arguments and cycle every idle loop.
-Two limits follow. The value does not fall as other writers fill the disk
-until the next start; the runtime `statvfs` check in `reserve_group` still
-fails a spool producer closed when the disk is short. A refusal, or a later
-roster without the flag, does not shrink the host ledger: `ensure_capacity`
-only grows it, and the worker loop retires free tokens only for the kinds its
-offer names, so `spool_gb` tokens minted by an earlier declaration stay until a
-smaller positive value retires them.
+**The disk is measured on every tick (#1190).** The loops' arguments are
+settled once per distinct declaration in a supervisor process, at start and
+again after a publish's re-exec. They do not follow the disk, because the
+supervisor compares every running loop's arguments with the declared ones and
+cycles each idle loop that differs; other writers move free space all the time.
+Settling the value as well cost a measurement row on 2026-09-26: sparky's
+loops started with 241 GiB, two agents then freed their scratch, leaving
+352 GiB free, and a 250 GiB row was still refused on the start-time number.
+
+So the value travels on a second path. On every tick after the first, while
+nothing holds `spool_gb`, the supervisor measures again, with the same holder
+reads on both sides of `statvfs`, and records the result in a host-local offer
+file (`local_scratch.write_spool_offer`), named by the digest
+`adaptive_cpu.box_identity` gives the host ledger the loops share. The file is
+under `/home/rob/tmp/prismabuild-spool-offer`, beside the supervisor's claim
+file, and not in `box_state`'s directory, which defaults under `/tmp`: the
+fleet writes nothing new there, because an OOM once cleared it. Each
+loop reads it on every poll (`worker_loop.live_host_capacity`) and declares
+that value in place of its argument: the observer offers it, the ledger mints
+up to it at the next claim, and `retire_free_capacity` retires free tokens down
+to it. A tick with no room above the floor records 0, and so does one that
+cannot read the disk; the flag, and the loops, stay. While a holder runs, the
+tick records nothing, so the offer stays what it was. It is raised only by a
+measurement of a disk nothing holds, which is the rule the start measurement
+already follows. A first measurement that waits on a holder, or is refused,
+removes the file, and so does an owner whose first tick finds a holder, so a
+value from an earlier process never stands in for one this process has not
+taken. Only the supervisor that owns the box writes or removes the file: the
+shape `_run_supervisor` reads before it takes the ownership claim, and a
+one-shot `--cycle-stale --once`, leave it alone (`declared_shape(...,
+record=False)`).
+
+A missing file is no information: a first start has not written it, and a
+supervisor that has not measured removes it. A loop then declares its argument capped at the
+ledger's current total, which the loops have been retiring to the live value:
+declaring the uncapped argument would mint back room the disk may no longer
+have while a holder runs. The offer record's `capacity`, which `placeable`
+reads at submission, carries the larger of the argument and the live value
+(`worker_loop.stable_host_capacity`): `placeable` asks whether the box could
+ever run the item, and a disk another writer has filled for now is a slow
+submission, not an impossible one, just as a box running someone else's
+encode is. Claims use the live value.
+
+Two limits remain. A declaration refused at start, including one that
+measured 0 GiB, drops the flag, and the box offers no `spool_gb` until the
+supervisor restarts or re-execs. A refusal, or a later roster without the
+flag, does not shrink the host ledger: `ensure_capacity` only grows it, and
+the worker loop retires free tokens only for the kinds its offer names, so
+`spool_gb` tokens minted by an earlier declaration stay until a smaller
+positive value retires them. The runtime `statvfs` check in `reserve_group`
+still fails a spool producer closed when the disk is short.
 
 Both GB10s declare `auto` on `/home/rob`. At 2026-09-23T03:50Z, `statvfs`
 there gave sparky 138,829,066,240 B free of 1,968,362,958,848 B, which is
