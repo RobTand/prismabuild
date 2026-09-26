@@ -4380,11 +4380,35 @@ concurrent movers, so each extra mover only splits it further.
 Every cycle, the tier loop announces a `reader_plan` on each stage tier's
 record (`tier_loop.reader_plan`):
 
-* `declared_wait`: every queued stage mover on the tier that a claimed
-  consumer has declared a wait on (#1018). A wait is kept only when it began
-  inside the consumer's claim and names a mover of that consumer's plan. A
+* `declared_wait`: every queued stage mover on the tier that a consumer is
+  blocked on. There are two kinds of consumer:
+  * A claimed consumer that declared a wait (#1018). The wait counts only
+    when it began inside the consumer's claim.
+  * A ready consumer that the claim pass refuses on its leads, with
+    `residency_verdict` state `lead_not_resident` or `lead_unpinned` (#1186).
+    Each of its pending leads that is queued on the tier counts, from the
+    consumer's own `published_unix`. The verdict is the one admission reads.
+    Such a consumer is claimed only after its lead lands, so it can never
+    declare a wait. Before #1186 its lead was never listed, and the pacer
+    held it behind every other reader on the pool: a 3 GiB lead copied at
+    1.8 MB/s and was held 1,681.7 s of 1,695 s. A consumer an operator
+    released from an origin batch never runs, so its lead is not listed
+    (#954).
+
+  Either way, the mover must be a stage leg of that consumer's own plan. A
   claimed mover whose receipt is complete is not listed. With #1026 one mover
-  can be the wait of several consumers, so the row lists all of them.
+  can be the wait of several consumers, so the row lists all of them in
+  `consumers`, and the ready ones again in `ready_consumers`.
+
+  A listed row is claimed past the cap. Claimed consumers are bounded by the
+  resources their claims hold; ready consumers are bounded only by how many
+  leads the window published. So a mover that only ready consumers wait on is
+  listed only while there is room under `cap.movers` beside the claimed
+  consumers' waits: a mover already claimed first, then the oldest wait. An
+  unmeasured cap caps nothing, as it does elsewhere. While a ready consumer's
+  lead is listed, a running consumer's later-phase copies that nobody waits on
+  are deferred. If that consumer's reader runs out of staged bytes, it declares
+  a wait, and its copy is listed too.
 * `cap`: how many movers may read the pool at once
   (`storage_tiers.mover_cap_from_records`). Each usable receipt that read the
   pool is one point: its window's `mean_pool_read_mb_s` at its
@@ -5992,7 +6016,14 @@ reads `residency_lead_not_resident`; a lead that ended somewhere no later
 poll repairs -- failed, withdrawn, dropped, unpinned, or bound to another
 manifest -- reads `residency_lead_terminal`, so the fleet-wide denial
 snapshot tells the two apart.  Admission is the same either way: the item
-stays ready.  A `cache_hit` lead moved no bytes
+stays ready.  A stage mover's key is its range's content address, so a key
+whose earlier run ended can be queued or claimed again for a new consumer.
+Such a lead reads `ready` or `claimed`, not its old ending, whenever the live
+record's `published_unix` is later than the ending's.  The pending entry
+names the live record under `live` and the ending it replaces under
+`replaces`, and the denial is `residency_lead_not_resident` (#1186).  An
+ending of the same generation is the live record's own finish, so it stays
+terminal.  Only a lead that already reads as ended pays for the extra reads.  A `cache_hit` lead moved no bytes
 and does not satisfy the gate — the residency descriptor is deterministic on
 purpose, so that a consumer can bind it as a CAS dependency before the mover
 runs, which is exactly what makes a cached mover look finished.

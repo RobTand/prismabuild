@@ -4482,25 +4482,69 @@ def _staged_wait(queue: pool.PoolQueue, key: str) -> dict[str, object] | None:
 READER_PLAN_FIELD = pool.READER_PLAN_FIELD
 
 
-def declared_wait_movers(queue: pool.PoolQueue,
-                         tier_id: str) -> list[dict[str, object]]:
-    """The stage copies claimed consumers on ``tier_id`` are blocked on (#1091).
+def declared_wait_movers(queue: pool.PoolQueue, tier_id: str, *,
+                         cap_movers: object = None) -> list[dict[str, object]]:
+    """The stage copies consumers on ``tier_id`` are blocked on (#1091, #1186).
 
-    A claimed consumer whose reader declared a staged wait (#989, #1018)
-    names the movers it is blocked on.  A mover counts when the record falls
-    inside the claim (the rule :func:`_declared_wait_end` keeps), the mover
-    is one of the stage legs of that consumer's own frozen plan, and it is
-    queued on this tier, ``ready`` or ``claimed``, with no complete receipt.
-    A shared mover (#1026) is one leg of every sharer's plan, so it counts
-    when any of them waits on it, and it lists every one.
+    Two kinds of consumer wait on a copy:
+
+    * **Claimed.**  A claimed consumer whose reader declared a staged wait
+      (#989, #1018) names the movers it is blocked on.  A mover counts when
+      the record falls inside the claim (the rule :func:`_declared_wait_end`
+      keeps).
+    * **Ready (#1186).**  A ready consumer the claim pass refuses on its
+      leads (``residency_verdict`` ``lead_not_resident`` or
+      ``lead_unpinned``) cannot be claimed until they land, so it can never
+      file a staged wait: before #1186 its lead was never listed, and the
+      disk pacer held it behind every client reader on the pool (a 3 GiB
+      lead at 1.8 MB/s, 1,682 s of 1,695 s held).  Each of its pending leads
+      that is queued on this tier counts, from the consumer's own
+      ``published_unix``.  The same verdict is the claim pass's, so the
+      listing and the refusal cannot disagree about which lead is missing.
+      A consumer an operator released from an origin batch never runs, so
+      its lead is not listed (#954).
+
+    Either way the mover must be one of the stage legs of that consumer's own
+    frozen plan, and queued on this tier, ``ready`` or ``claimed``, with no
+    complete receipt.  A shared mover (#1026) is one leg of every sharer's
+    plan, so it counts when any of them waits on it, and it lists every one.
+
+    A listed copy is claimed ahead of every other copy on the tier, past the
+    cap, and every unlisted copy defers to it (``pool.reader_plan_verdict``).
+    Claimed consumers hold their claim's resources while they wait and are
+    bounded by them; ready consumers are bounded only by the leads the window
+    published.  So a copy only ready consumers wait on is listed only while
+    the tier has room under ``cap_movers`` (the measured knee,
+    :func:`storage_tiers.mover_cap_from_records`) beside the copies claimed
+    consumers wait on: one already claimed first, then the oldest wait.  An
+    unmeasured cap (``None``) caps nothing, as it caps nothing elsewhere.
 
     Oldest wait first.  Each row is ``{"mover_action_key", "state",
-    "consumers", "since_unix"}``.  One bounded read per claimed consumer per
-    cycle (:func:`_staged_wait`), and a plan read only for a consumer that
-    declared a wait.
+    "consumers", "ready_consumers", "since_unix"}``; ``ready_consumers`` is
+    the part of ``consumers`` that is not yet claimed.  One bounded read per
+    claimed consumer per cycle (:func:`_staged_wait`), and a plan read only
+    for a consumer that declared a wait.  A ready consumer costs a queue
+    lookup per lead, and the verdict and a plan read only when one of its
+    leads is queued.
     """
 
     waits: dict[str, dict[str, object]] = {}
+    queued: dict[str, tuple[str, dict[str, object]] | None] = {}
+
+    def queued_mover(mover: str) -> tuple[str, dict[str, object]] | None:
+        if mover not in queued:
+            queued[mover] = _queued_mover(queue, mover)
+        return queued[mover]
+
+    def waited(mover: str, consumer: str, since: float, *, ready: bool) -> None:
+        row = waits.setdefault(str(mover), {
+            "mover_action_key": str(mover), "consumers": [],
+            "ready_consumers": [], "since_unix": since})
+        row["consumers"].append(consumer)                       # type: ignore[union-attr]
+        if ready:
+            row["ready_consumers"].append(consumer)             # type: ignore[union-attr]
+        row["since_unix"] = min(float(row["since_unix"]), since)  # type: ignore[arg-type]
+
     try:
         claimed = stage_release.queue_records(queue, pool.CLAIMED)
     except (OSError, pool.PoolContractError):
@@ -4534,18 +4578,66 @@ def declared_wait_movers(queue: pool.PoolQueue,
         for mover in record["movers"]:                          # type: ignore[union-attr]
             if mover not in legs:
                 continue
-            row = waits.setdefault(str(mover), {
-                "mover_action_key": str(mover), "consumers": [],
-                "since_unix": since})
-            row["consumers"].append(key)                        # type: ignore[union-attr]
-            row["since_unix"] = min(float(row["since_unix"]), since)  # type: ignore[arg-type]
+            waited(str(mover), key, since, ready=False)
+    try:
+        ready = stage_release.queue_records(queue, pool.READY)
+    except (OSError, pool.PoolContractError):
+        ready = []
+    released: frozenset[str] | None = None
+    for _path, item in ready:
+        if not isinstance(item, dict):
+            continue
+        residency = item.get("residency")
+        if (not isinstance(residency, dict) or not residency.get("leads")
+                or str(residency.get("tier_id") or "") != str(tier_id)):
+            continue
+        key = item.get("action_key")
+        stamp = item.get("published_unix")
+        if (not isinstance(key, str) or isinstance(stamp, bool)
+                or not isinstance(stamp, (int, float))
+                or not math.isfinite(float(stamp))):
+            continue
+        leads = residency.get("leads")
+        live = [str(lead) for lead in (leads if isinstance(leads, list) else ())
+                if isinstance(lead, str) and queued_mover(lead) is not None]
+        if not live:
+            continue
+        if released is None:
+            try:
+                released = queue.released_origin_consumer_keys()
+            except (OSError, pool.PoolContractError):
+                released = frozenset()
+        if key in released and prewarm_loop.released_origin_consumer(queue, key):
+            continue
+        try:
+            verdict = queue.residency_verdict(item)
+        except (OSError, pool.PoolContractError):
+            continue
+        if verdict.get("state") not in ("lead_not_resident", "lead_unpinned"):
+            continue
+        pending = {str(entry.get("lead")) for entry in verdict.get("pending") or ()
+                   if isinstance(entry, Mapping)}
+        blocking = [lead for lead in live if lead in pending]
+        if not blocking:
+            continue
+        try:
+            plan, _incarnation = residency_plan.read_filed(queue, key)
+        except (OSError, ValueError, pool.PoolContractError,
+                residency_plan.ResidencyPlanError):
+            continue
+        if plan is None or str(plan.get("tier_id") or "") != str(tier_id):
+            continue
+        legs = set(residency_plan.stage_mover_keys(plan))
+        for mover in blocking:
+            if mover in legs:
+                waited(mover, key, float(stamp), ready=True)
     out: list[dict[str, object]] = []
     for mover, row in waits.items():
-        found = _queued_mover(queue, mover)
+        found = queued_mover(mover)
         if found is None:
             continue
-        state, queued = found
-        residency = queued.get("residency")
+        state, record = found
+        residency = record.get("residency")
         if (not isinstance(residency, Mapping)
                 or str(residency.get("tier_id") or "") != str(tier_id)):
             continue
@@ -4553,9 +4645,22 @@ def declared_wait_movers(queue: pool.PoolQueue,
             continue
         row["state"] = state
         row["consumers"] = sorted(set(row["consumers"]))        # type: ignore[arg-type]
+        row["ready_consumers"] = sorted(set(row["ready_consumers"]))  # type: ignore[arg-type]
         out.append(row)
-    return sorted(out, key=lambda row: (float(row["since_unix"]),  # type: ignore[arg-type]
-                                        str(row["mover_action_key"])))
+    claimed_waits: list[dict[str, object]] = []
+    ready_waits: list[dict[str, object]] = []
+    for row in out:
+        only_ready = row["consumers"] == row["ready_consumers"]
+        (ready_waits if only_ready else claimed_waits).append(row)
+    if (isinstance(cap_movers, int) and not isinstance(cap_movers, bool)
+            and cap_movers >= 1):
+        room = max(0, cap_movers - len(claimed_waits))
+        ready_waits = sorted(ready_waits, key=lambda row: (
+            row["state"] != pool.CLAIMED, float(row["since_unix"]),  # type: ignore[arg-type]
+            str(row["mover_action_key"])))[:room]
+    return sorted(claimed_waits + ready_waits,
+                  key=lambda row: (float(row["since_unix"]),    # type: ignore[arg-type]
+                                   str(row["mover_action_key"])))
 
 
 def reader_plan(queue: pool.PoolQueue, tier_id: str, *,
@@ -4566,11 +4671,13 @@ def reader_plan(queue: pool.PoolQueue, tier_id: str, *,
     read by the claim pass (``pool.PoolQueue.reader_plan_verdict``) and by
     every running copy (``stage_move``):
 
-    * ``declared_wait``: :func:`declared_wait_movers`.  While it lists any
-      copy, only those copies are claimed on the tier, the fill ledger does
-      not hold them back, the disk pacer never holds them, and every other
-      running copy on the tier stands aside while one of them is
-      ``claimed`` (a ``ready`` one reads nothing, #1091 review 1).
+    * ``declared_wait``: :func:`declared_wait_movers`, the copies claimed
+      consumers declared a wait on and the leads ready consumers are refused
+      on (#1186).  While it lists any copy, only those copies are claimed on
+      the tier, the fill ledger does not hold them back, the disk pacer never
+      holds them, and every other running copy on the tier stands aside
+      while one of them is ``claimed`` (a ``ready`` one reads nothing, #1091
+      review 1).
     * ``cap``: :func:`storage_tiers.mover_cap_from_records`, the mover count
       at which this pool's measured delivery stops rising, with its curve
       and its method.  No more copies than that are claimed at once.
@@ -4582,7 +4689,8 @@ def reader_plan(queue: pool.PoolQueue, tier_id: str, *,
     freeze a tier on a wait that ended.
     """
 
-    return {"declared_wait": declared_wait_movers(queue, tier_id),
+    return {"declared_wait": declared_wait_movers(
+                queue, tier_id, cap_movers=cap.get("movers")),
             "cap": dict(cap), "stale_after_s": pool.OFFER_TIMEOUT_S}
 
 
