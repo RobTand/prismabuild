@@ -587,6 +587,49 @@ cannot be written the earlier row stays, the pre-#1117 state, never a lost
 record. A waiter pinned to the earlier generation reads its ending from the
 immutable attempt archive, as above.
 
+**A key that still holds two terminals answers by generation (#1178).**
+Retirement at conclusion cannot cover records filed before #1117, a crash
+between the new terminal's write and the retired row's unlink, an archive
+write that failed, or a terminal filed by a path that never archived
+(`finish`'s lost-race branch, the origin-consumer release refusal), so
+`done/` and `failed/` can still hold two generations. Readers that each
+walked the directories in their own order disagreed: `pbwait` read `done/`
+first, `pbmcp` and the tier plan preferred `done/` by directory order, and
+`pbstatus --json` listed both rows with no answer. `PoolQueue.current_ending`
+is the one key-level rule every such reader now follows, built as one
+capture and one pure rule: `read_terminal_candidates` takes one read of the
+three mutable terminal rows (`done/`, `failed/`, the visible `withdrawn/`
+marker; immutable withdrawal decisions stay the generation-scoped waiter's
+evidence) and reports what it could not read, and `resolve_ending` orders
+that capture with no further reads. The unique newest finite
+`published_unix` answers and the other readable candidates are history.
+`supersedes_terminal` is historical evidence the retiring writer filed, not
+current authority: it names the generation a later record retired, and a
+slot it points into may since have been replaced by a newer one, so it
+never decides. A pair generations cannot order -- a missing or malformed
+generation, a tie at the maximum, a third unorderable candidate, or a
+record that could not be read -- is never read as success: a readable
+failure or cancellation stands, or the answer is unknown when even that
+cannot be named, with `ambiguous` set. Nothing is moved, deleted or
+rewritten, and a lone record, generation or not, remains the key's ending
+under the legacy rule `pbrun.terminal_record` states. The readers wired to
+it are the tier plan's mover-state resolution (`staged_wait_verdict`),
+`pbmcp`'s `pb_action` / `pb_receipts` / `pb_log` state selection (whose one
+bounded child derives the census and the resolution from the same capture,
+and which reports the superseded terminals), and `pbstatus`'s endings rows,
+which mark the current row, name the answer on a superseded one
+(`superseded_by`) and report the double-record state (`terminal_conflict`)
+without dropping either row. `pbwait` already binds by exact generation
+through `pbrun.outcome_poll` and is unchanged. The resolution is a
+point-in-time status read; a waiter's exact-generation question keeps its
+own reader. The `pbmetrics` kept-reads path serves the same ending rows
+from its retained listings and deliberately does not add the per-key
+currency marking: that marking needs the opposite terminal slot, and
+re-deriving it inside the kept-listing cache would either read outside the
+retained versions or pin a stale answer beside a replaced slot. The
+exporter's gauges do not consume the field, and the limit is stated where
+the kept path is defined.
+
 The synchronous pull-queue path in `pbrun` reads one terminal snapshot at a
 time in an isolated child with a five-second read budget. That snapshot covers
 the three mutable terminal rows, immutable withdrawal decisions, the archived
