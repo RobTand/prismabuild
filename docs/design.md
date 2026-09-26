@@ -1232,8 +1232,13 @@ outcome, an outcome belongs to no collected test, a node ID is collected twice,
 another shard also collected one of its node IDs, its counts disagree with its
 summary, or it reported a summary and printed no record. It also checks the
 assigned file roster: each file must yield a collected node ID or a collection
-skip/error report. A listed file that silently yields neither fails by name;
-a module skipped at collection covers its file. A `--collect-only`
+skip/error report, or an explicit deselected node ID from `-k`/`-m`. For
+xdist, its workers return the deselected IDs through `workeroutput`; the
+controller's selected collection alone cannot prove a file was intentionally
+excluded. Node IDs are resolved against pytest's rootdir relative to the
+shard checkout before comparing with assigned file paths. A listed file that
+silently yields none of these fails by name; a module skipped at collection
+covers its file. A `--collect-only`
 shard is matched on its collected count instead. Two differences are not
 failures, and the report names each: an outcome at collection (a module that
 skipped or failed at import, which the summary counts and a `--collect-only`

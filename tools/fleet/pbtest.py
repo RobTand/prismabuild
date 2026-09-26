@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import posixpath
 import re
 import subprocess
 import sys
@@ -616,9 +617,18 @@ def reconcile_shards(results: list[dict]) -> None:
             continue
         counts, collected = summary_outcomes(result["summary"])
         reconciliation = pbtest_outcomes.reconcile(record, counts, collected)
-        observed = {nodeid.split("::", 1)[0]
-                    for nodeid in record.get("collected") or ()}
-        observed.update(row[0].split("::", 1)[0]
+        rootdir = record.get("rootdir_relative", ".")
+        if not isinstance(rootdir, str):
+            rootdir = ""
+
+        def source_file(nodeid: str) -> str:
+            return posixpath.normpath(posixpath.join(
+                rootdir, nodeid.split("::", 1)[0]))
+
+        observed = {source_file(nodeid) for nodeid in record.get("collected") or ()}
+        observed.update(source_file(nodeid)
+                        for nodeid in record.get("deselected") or ())
+        observed.update(source_file(row[0])
                         for row in record.get("reports") or ()
                         if row[1] == "collect")
         missing = sorted(set(result["files"]) - observed)

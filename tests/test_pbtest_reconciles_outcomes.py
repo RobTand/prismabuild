@@ -143,6 +143,56 @@ def test_a_collect_only_run_reconciles_its_item_count(tmp_path, monkeypatch, cap
     assert rec["collected"] == 7 and rec["problems"] == []
 
 
+@pytest.mark.parametrize("workers", [1, 2])
+@pytest.mark.parametrize("selector", ["-k", "-m"])
+def test_a_fully_deselected_file_is_accounted_for(
+        tmp_path, monkeypatch, capsys, workers, selector):
+    if workers > 1:
+        pytest.importorskip("xdist")
+    checkout = tmp_path / "project"
+    (checkout / "tests").mkdir(parents=True)
+    (checkout / "tests" / "test_keep.py").write_text(
+        "import pytest\n\n@pytest.mark.keep\ndef test_keep():\n    pass\n")
+    (checkout / "tests" / "test_drop.py").write_text(
+        "def test_drop():\n    pass\n")
+    subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+    code, results = _dispatch(checkout, monkeypatch,
+                              ["--shards", "1", "--workers-per-shard", str(workers),
+                               "--pytest-args", json.dumps([selector, "keep"])])
+    assert code == 0, capsys.readouterr().out
+    assert results[0]["reconciliation"]["missing_files"] == []
+
+
+def test_nested_pytest_root_still_matches_assigned_files(tmp_path, monkeypatch, capsys):
+    checkout = tmp_path / "project"
+    (checkout / "tests").mkdir(parents=True)
+    (checkout / "tests" / "pytest.ini").write_text("[pytest]\n")
+    (checkout / "tests" / "test_nested.py").write_text(
+        "def test_nested():\n    pass\n")
+    subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+    code, results = _dispatch(checkout, monkeypatch, ["--shards", "1"])
+    assert code == 0, capsys.readouterr().out
+    assert results[0]["reconciliation"]["missing_files"] == []
+
+
+@pytest.mark.parametrize("workers", [1, 2])
+def test_selector_does_not_excuse_a_file_with_no_collection(
+        tmp_path, monkeypatch, capsys, workers):
+    if workers > 1:
+        pytest.importorskip("xdist")
+    checkout = tmp_path / "project"
+    (checkout / "tests").mkdir(parents=True)
+    (checkout / "tests" / "test_keep.py").write_text(
+        "def test_keep():\n    pass\n")
+    (checkout / "tests" / "test_empty.py").write_text("# no tests\n")
+    subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+    code, results = _dispatch(checkout, monkeypatch,
+                              ["--shards", "1", "--workers-per-shard", str(workers),
+                               "--pytest-args", '["-k","keep"]'])
+    assert code == 1, capsys.readouterr().out
+    assert results[0]["reconciliation"]["missing_files"] == ["tests/test_empty.py"]
+
+
 def test_a_test_stopped_by_maxfail_is_named_as_never_run(tmp_path, monkeypatch, capsys):
     checkout = _checkout(tmp_path)
     (checkout / "tests" / "test_a_counts.py").write_text(
