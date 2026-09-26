@@ -307,7 +307,10 @@ and container launches, and direct scheduler submissions when
 `/home/rob/tmp/arb/require_pool.on` exists. GPU containers that run vLLM
 pass: the hook encodes the exemption lexically, so exempt work needs no
 wrapper script -- the segment names vLLM as the image or the program, runs
-no test runner, and is not a bare collective borrowing the image (#588). A
+no test runner, and is not a bare collective in the program it runs.  The
+collective pattern is read against the program and its arguments, not the
+image reference, so an image named for the NCCL it carries
+(`spark-vllm-nccl230`) is not itself a collective (#588, #1183). A
 shell running a script file is read one level in, and work inside it refuses
 naming the file; a clean or unreadable script is recorded in
 `require_pool_sightings.log` beside the flag file rather than passing

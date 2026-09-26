@@ -1251,20 +1251,149 @@ VLLM_CONTAINER = re.compile(r"vllm", re.IGNORECASE)
 #: Fabric work that happens to borrow the image is not vLLM (#588's scoping
 #: note): a bare NCCL collective in a vLLM image is decided case by case by
 #: whoever holds the keyboard, and this carve-out must not decide it for
-#: them.  Nor is a test runner inside the container a serve.
+#: them.  Nor is a test runner inside the container a serve.  This pattern is
+#: read against the container's PROGRAM and its arguments, never the image
+#: reference: ``spark-vllm-nccl230`` is an image whose name records the NCCL
+#: 2.30.7 swap it carries, and reading ``nccl`` off that name refused the
+#: GLM-5.3 serve the image exists to run (#1183).  See ``_docker_program``.
 NOT_VLLM_CONTAINER = re.compile(
     r"nccl|all.?reduce|bandwidthTest|p2pBandwidth", re.IGNORECASE)
+
+
+#: Docker's option grammar, to the one question the hook asks of it: which
+#: options take the following WORD as their value, so that the image is the
+#: first word past them.  Only options that REQUIRE a separate value belong
+#: here.  A flag listed by mistake would swallow the image and move the
+#: program one word to the left, handing a real collective the exemption; an
+#: unlisted option that really takes a value only leaves its value standing
+#: where the image was, so the program search starts one word early and
+#: refuses.  That is the conservative direction, and the behaviour before
+#: this existed -- the failure mode to avoid is the other one.
+DOCKER_VALUE_OPTIONS = frozenset({
+    "add-host", "annotation", "attach", "blkio-weight",
+    "blkio-weight-device", "cap-add", "cap-drop", "cgroup-parent",
+    "cgroupns", "cidfile", "cpu-count", "cpu-percent", "cpu-period",
+    "cpu-quota", "cpu-rt-period", "cpu-rt-runtime", "cpu-shares", "cpus",
+    "cpuset-cpus", "cpuset-mems", "detach-keys", "device",
+    "device-cgroup-rule", "device-read-bps", "device-read-iops",
+    "device-write-bps", "device-write-iops", "dns", "dns-option",
+    "dns-search", "domainname", "entrypoint", "env", "env-file", "expose",
+    "gpus", "group-add", "health-cmd", "health-interval", "health-retries",
+    "health-start-interval", "health-start-period", "health-timeout",
+    "hostname", "init-path", "ip", "ip6", "ipc", "isolation",
+    "kernel-memory", "label", "label-file", "link", "link-local-ip",
+    "log-driver", "log-opt", "mac-address", "memory",
+    "memory-reservation", "memory-swap", "memory-swappiness", "mount",
+    "name", "net", "network", "network-alias", "oom-score-adj", "pid",
+    "pids-limit", "platform", "publish", "pull", "restart", "runtime",
+    "security-opt", "shm-size", "stop-signal", "stop-timeout",
+    "storage-opt", "sysctl", "tmpfs", "ulimit", "user", "userns", "uts",
+    "volume", "volume-driver", "volumes-from", "workdir",
+})
+
+#: The short options that take a value, whether it is attached
+#: (``-p8000:8000``) or a following word (``-p 8000:8000``).  A cluster ends
+#: at the value option: ``-itp 8000`` still consumes the next word.
+DOCKER_VALUE_SHORT = frozenset(
+    {"a", "c", "e", "h", "l", "m", "p", "u", "v", "w"})
+
+#: The option whose value is a PROGRAM the container runs rather than one of
+#: its settings.  A collective named there is a bare collective like any
+#: other, so its value joins the program; the other option values do not.
+DOCKER_PROGRAM_OPTIONS = frozenset({"entrypoint"})
+
+
+def _short_option_span(word: str) -> int:
+    """Words this short-option word consumes: itself and maybe its value.
+
+    ``-p 8000:8000`` is two words, ``-p8000:8000`` and ``-it`` are one, and a
+    cluster is read until the first character that names a value option --
+    after which the rest of the word is that option's attached value, or the
+    next word is its value.
+    """
+
+    cluster = word[1:]
+    for position, char in enumerate(cluster):
+        if char in DOCKER_VALUE_SHORT:
+            return 1 if position + 1 < len(cluster) else 2
+    return 1
+
+
+def _docker_program(segment: str) -> str | None:
+    """The program a ``docker run`` segment runs, or ``None`` if unreadable.
+
+    Docker's grammar is ``run [OPTIONS] IMAGE [COMMAND] [ARG...]``, and the
+    image is the one word whose text is not the work: it names the image the
+    task runs, and the work is the program the image runs plus that program's
+    arguments.  Reading the collective pattern off the whole segment refused
+    an exempt serve because the image was named for the NCCL it carries
+    (``spark-vllm-nccl230``, #1183).  So the option words are walked to find
+    the image, and what comes back is the program the container execs: an
+    ``--entrypoint`` value if the run carries one, plus the words after the
+    image.  Both spellings of the option are read, attached
+    (``--entrypoint=x``) and spaced (``--entrypoint x``), and a short-option
+    cluster consumes its value where the grammar says it does.
+
+    ``None`` means the segment is not a container run this can read -- the
+    caller then judges the segment as it always did, which refuses.  This is
+    a lexical reader of one CLI's shape, not a proof of what the container
+    runs, and the standing agent policy covers the shapes it cannot read.
+    """
+
+    words = _words(segment)
+    container = next(
+        (index for index, word in enumerate(words)
+         if _name_of(word) in ("docker", "podman")),
+        None)
+    if container is None:
+        return None
+    run = next(
+        (index for index in range(container + 1, len(words))
+         if _name_of(words[index]) in ("run", "create")),
+        None)
+    if run is None:
+        return None
+    program: list[str] = []
+    # Past the end while no image has been named, so the words after it are
+    # empty and only an entrypoint can still be the program.
+    image = len(words)
+    index = run + 1
+    while index < len(words):
+        word = words[index]
+        if word == "--":
+            image = index + 1
+            break
+        if word.startswith("--"):
+            name, equals, value = word[2:].partition("=")
+            if name in DOCKER_PROGRAM_OPTIONS:
+                if equals:
+                    program.append(value)
+                    index += 1
+                else:
+                    if index + 1 < len(words):
+                        program.append(words[index + 1])
+                    index += 2
+                continue
+            index += 1 if equals or name not in DOCKER_VALUE_OPTIONS else 2
+            continue
+        if word.startswith("-") and len(word) > 1:
+            index += _short_option_span(word)
+            continue
+        image = index
+        break
+    return " ".join(program + words[image + 1:])
 
 
 def _vllm_container(segment: str) -> bool:
     """True when this GPU-container invocation is exempt vLLM work (#588).
 
     The scan can evaluate it: the segment names vLLM as the image or the
-    program, runs no test runner, and is not a bare collective borrowing the
-    image.  Anything else with ``--gpus`` is still refused.
+    program, runs no test runner, and is not a bare collective in the
+    program.  Anything else with ``--gpus`` is still refused.
     """
 
-    if NOT_VLLM_CONTAINER.search(segment):
+    program = _docker_program(segment)
+    if NOT_VLLM_CONTAINER.search(segment if program is None else program):
         return False
     if TEST_WORK.search(segment):
         return False
