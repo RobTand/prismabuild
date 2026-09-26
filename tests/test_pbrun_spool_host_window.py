@@ -1,15 +1,20 @@
-"""pbrun derives a producer's spool window demand from its sealed environment (#747).
+"""pbrun accounts a declared produced-spool bound by default (#747, #905).
 
-The producer's local spool window becomes a ``spool_gb`` host reservation
-when its sealed environment sets ``PRISMABUILD_PRODUCED_SPOOL_HOST_WINDOW=1``.
-The amount is never typed: pbrun derives it from the byte bound the producer
-is sealed with, ``ceil(PRISMABUILD_PRODUCED_SPOOL_MAX_BYTES / 2**30)``, the
-same way the produced-output template derives its tier demand.  A typed
-``--demand spool_gb`` is refused, the typed vocabulary stays closed, and the
-SLURM lane, which cannot hold a host spool, refuses the opt-in.
+A producer whose sealed environment declares
+``PRISMABUILD_PRODUCED_SPOOL_MAX_BYTES`` gets a ``spool_gb`` host
+reservation at new submission: pbrun derives
+``ceil(PRISMABUILD_PRODUCED_SPOOL_MAX_BYTES / 2**30)``, the same way the
+produced-output template derives its tier demand, and seals
+``PRISMABUILD_PRODUCED_SPOOL_HOST_WINDOW=1`` with it before the action is
+frozen.  The amount is never typed: a typed ``--demand spool_gb`` is refused,
+the typed vocabulary stays closed, and the SLURM lane, which cannot hold a
+host spool, refuses a declared bound.  A declared bound with an explicit
+``HOST_WINDOW=0`` is a contradictory declaration and is refused by name.
 
-Off -- no variable, ``""`` or ``"0"`` -- the sealed action carries no
-``spool_gb`` anywhere, and its demand is exactly what it was before.
+No bound -- with or without a stale switch -- seals exactly the demand it did
+before.  ``produced_spool.host_window_terms`` itself keeps its switch-gated
+meaning, so an already-sealed request, explicit ``0`` included, is never
+re-derived.
 """
 from __future__ import annotations
 
@@ -50,23 +55,36 @@ def _sealed_mentions(template) -> bool:
     return KIND in body
 
 
-@pytest.mark.parametrize("env", [(), (f"{SWITCH}=",), (f"{SWITCH}=0",)])
-def test_an_unopted_submission_seals_no_spool_demand(tmp_path, monkeypatch, env):
-    extra = [item for value in env for item in ("--env", value)]
-    extra += ["--env", f"{MAX}={5 * GIB}"]
-    template = _build(tmp_path, monkeypatch, *extra)
-    assert template["params"]["demand"] == {"cpu": 1, "mem_gb": 4}
-    assert not _sealed_mentions(template)
-
-
+@pytest.mark.parametrize("switch", [None, "", "1"])
 @pytest.mark.parametrize("maximum, gib", [(256, 1), (GIB, 1), (3 * GIB + 1, 4)])
-def test_an_opted_in_submission_derives_spool_gb_from_the_byte_bound(
-        tmp_path, monkeypatch, maximum, gib):
-    template = _build(tmp_path, monkeypatch,
-                      "--env", f"{SWITCH}=1", "--env", f"{MAX}={maximum}")
+def test_a_declared_bound_derives_spool_gb_at_submission(
+        tmp_path, monkeypatch, switch, maximum, gib):
+    extra = [] if switch is None else ["--env", f"{SWITCH}={switch}"]
+    template = _build(tmp_path, monkeypatch, *extra, "--env", f"{MAX}={maximum}")
     assert template["params"]["demand"] == {"cpu": 1, "mem_gb": 4, KIND: gib}
     sealed = pbrun.seal_action_from_template(template)
     assert sealed["params"]["demand"][KIND] == gib
+    assert sealed["environment"]["variables"][SWITCH] == "1"
+
+
+def test_a_declared_bound_with_an_explicit_zero_is_refused(tmp_path, monkeypatch):
+    with pytest.raises(SystemExit, match=MAX):
+        _build(tmp_path, monkeypatch,
+               "--env", f"{SWITCH}=0", "--env", f"{MAX}=256")
+
+
+def test_a_submission_without_a_spool_bound_seals_no_spool_demand(tmp_path, monkeypatch):
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    template = _build(plain, monkeypatch)
+    assert template["params"]["demand"] == {"cpu": 1, "mem_gb": 4}
+    assert not _sealed_mentions(template)
+    # A stale switch with no bound changes nothing either.
+    stale = tmp_path / "stale"
+    stale.mkdir()
+    template = _build(stale, monkeypatch, "--env", f"{SWITCH}=0")
+    assert template["params"]["demand"] == {"cpu": 1, "mem_gb": 4}
+    assert not _sealed_mentions(template)
 
 
 def test_an_opted_in_submission_without_a_byte_bound_is_refused(tmp_path, monkeypatch):
@@ -98,6 +116,11 @@ def test_slurm_refuses_the_opt_in(tmp_path, monkeypatch):
                transport="slurm")
 
 
+def test_slurm_refuses_a_declared_bound(tmp_path, monkeypatch):
+    with pytest.raises(SystemExit, match="slurm|SLURM"):
+        _build(tmp_path, monkeypatch, "--env", f"{MAX}=256", transport="slurm")
+
+
 def _freeze(tmp_path, *, demand, variables, transport="pool"):
     repo = _checkout(tmp_path)
     return pbrun.freeze_action_template(
@@ -114,10 +137,11 @@ def _freeze(tmp_path, *, demand, variables, transport="pool"):
 
 
 @pytest.mark.parametrize("demand, variables", [
-    # A spool reservation with no opt-in behind it.
+    # A spool reservation nothing in the environment explains.
     ({"cpu": 1, "mem_gb": 1, KIND: 1}, {}),
+    # A declared bound whose explicit zero would not charge it.
     ({"cpu": 1, "mem_gb": 1, KIND: 1}, {SWITCH: "0", MAX: "256"}),
-    # An opt-in whose reservation is missing or disagrees with the bound.
+    # A switch whose reservation is missing or disagrees with the bound.
     ({"cpu": 1, "mem_gb": 1}, {SWITCH: "1", MAX: "256"}),
     ({"cpu": 1, "mem_gb": 1, KIND: 1}, {SWITCH: "1", MAX: str(GIB + 1)}),
 ])
@@ -133,6 +157,52 @@ def test_freeze_refuses_the_opt_in_off_the_pool(tmp_path, monkeypatch):
     with pytest.raises(SystemExit, match="slurm|SLURM|pool"):
         _freeze(tmp_path, demand={"cpu": 1, "mem_gb": 1, KIND: 1},
                 variables={SWITCH: "1", MAX: "256"}, transport="slurm")
+
+
+def test_freeze_accepts_a_declared_bound_and_normalizes_the_switch(tmp_path, monkeypatch):
+    monkeypatch.setattr(pbrun, "SH", tmp_path / "fleet")
+    frozen = _freeze(tmp_path, demand={"cpu": 1, "mem_gb": 1, KIND: 1},
+                     variables={MAX: "256"})
+    assert frozen["params"]["demand"][KIND] == 1
+    variables = frozen["environment"]["variables"]
+    assert variables[SWITCH] == "1"
+    assert ps.host_window_terms(variables) == {KIND: 1}
+
+
+def test_freeze_normalizes_before_the_ownership_and_stamp_fingerprints(tmp_path, monkeypatch):
+    """A declared bound and its explicit switch seal one action, not two.
+
+    The freeze fingerprints the environment for the result/stamp names and
+    for container ownership, and the sealed action re-derives its owner from
+    that environment.  Normalization therefore has to happen inside the
+    freeze, before those fingerprints, or the same effective contract would
+    take two action keys depending on how it was spelled.
+    """
+
+    monkeypatch.setattr(pbrun, "SH", tmp_path / "fleet")
+    repo = _checkout(tmp_path)
+
+    def frozen(variables):
+        return pbrun.freeze_action_template(
+            command=["/bin/bash", "-lc", "true"], cwd=repo, logical_cwd=".",
+            demand={"cpu": 1, "mem_gb": 1, KIND: 1},
+            placement={"required_tags": []},
+            variables={"PATH": "/usr/bin:/bin", **variables},
+            determinism="stochastic",
+            retry_policy={"max_attempts": 1, "retry_safe": False},
+            host_class=None, measurement=False, transport="pool",
+            pool_measurement_class=False, data_manifest_path=None,
+            checkout_snapshot_max_bytes=512 * 1024 * 1024, snapshot_refs=[],
+            exclusive=False, gpu_memory_gb=None, execution_timeout_s=None,
+            progress=None, profile=None, container_image_refs=(),
+            wrapper_dir=tmp_path / "wrapper")
+
+    default = frozen({MAX: "256"})
+    explicit = frozen({SWITCH: "1", MAX: "256"})
+    assert default["log_name"] == explicit["log_name"]
+    assert default["stamp_name"] == explicit["stamp_name"]
+    assert (pbrun.seal_action_from_template(default)["action_key"]
+            == pbrun.seal_action_from_template(explicit)["action_key"])
 
 
 def test_freeze_accepts_the_derived_demand(tmp_path, monkeypatch):

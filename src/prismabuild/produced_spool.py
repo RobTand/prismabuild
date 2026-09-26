@@ -33,13 +33,16 @@ MAX_ENV = "PRISMABUILD_PRODUCED_SPOOL_MAX_BYTES"
 #: to it; absent, empty or ``"0"`` leaves every export unreserved and unpaced,
 #: so publishing a runtime that carries the pacer changes no live export.
 PACED_EXPORT_ENV = "PRISMABUILD_PRODUCED_SPOOL_PACED_EXPORT"
-#: Opt-in for the host spool window (#747).  Only ``"1"`` in the producer's
-#: sealed environment turns the owner's :data:`MAX_ENV` window into a
-#: :data:`HOST_WINDOW_KIND` reservation on the host ledger, derived by pbrun
-#: and charged at claim against the budget a box declares with
-#: ``worker_loop.py --spool-gb``.  Absent, empty or ``"0"`` derives no demand
-#: and checks nothing, so publishing a runtime that carries it changes no
-#: live producer.
+#: The host spool window (#747, #905).  A producer whose sealed environment
+#: declares :data:`MAX_ENV` is accounted by default: ``pbrun`` normalizes a
+#: new submission to ``"1"`` before sealing and refuses ``"0"`` beside a
+#: declared bound (#905), so the sealed request, its demand and its claim all
+#: carry the window.  This function itself stays switch-gated -- only ``"1"``
+#: turns the :data:`MAX_ENV` window into a :data:`HOST_WINDOW_KIND`
+#: reservation on the host ledger, charged at claim against the budget a box
+#: declares with ``worker_loop.py --spool-gb``; absent, empty or ``"0"``
+#: derives no demand and checks nothing -- so an already-sealed request, an
+#: explicit ``"0"`` included, keeps exactly the meaning it was sealed with.
 HOST_WINDOW_ENV = "PRISMABUILD_PRODUCED_SPOOL_HOST_WINDOW"
 #: The host kind the window is reserved in, in GiB like ``mem_gb``.
 HOST_WINDOW_KIND = "spool_gb"
@@ -309,6 +312,11 @@ def host_window_terms(variables):
     else the environment says.  On, the window is the owner's byte bound,
     :data:`MAX_ENV`, rounded up to whole GiB: the unit the host ledger
     counts, so a reservation never holds less than the spool may fill.
+
+    The switch-gated meaning is deliberate (#905): a new submission's
+    declared bound is normalized to ``"1"`` by ``pbrun`` before sealing, and
+    an already-sealed request is never re-derived, so a sealed ``"0"`` keeps
+    the behavior it was sealed with.
     """
 
     switch = variables.get(HOST_WINDOW_ENV, "")

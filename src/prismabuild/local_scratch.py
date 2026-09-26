@@ -92,7 +92,8 @@ def scratch_pairs(variables: Mapping[str, str]) -> list[dict[str, object]]:
         if {root_env, max_env} & set(SPOOL_PAIR):
             raise LocalScratchError(
                 f"{PAIRS_ENV} must not list the produced spool's pair: its window "
-                "is charged by PRISMABUILD_PRODUCED_SPOOL_HOST_WINDOW=1")
+                "is charged by the declared PRISMABUILD_PRODUCED_SPOOL_MAX_BYTES "
+                "(PRISMABUILD_PRODUCED_SPOOL_HOST_WINDOW, 1 by default)")
         if root_env not in variables or max_env not in variables:
             missing = [n for n in (root_env, max_env) if n not in variables]
             raise LocalScratchError(
