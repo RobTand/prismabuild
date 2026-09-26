@@ -2030,6 +2030,7 @@ def placement_capacity_notice(queue, intent: Mapping[str, object]) -> str:
         return ""
     demand = pool.PoolQueue.demand_of(request)
     lines = []
+    spool_short = False
     for offer in queue.offers(max_age_s=RECORDED_OFFER_MAX_AGE_S):
         host = str(offer.get("host") or "?")
         if host not in eligible:
@@ -2038,12 +2039,35 @@ def placement_capacity_notice(queue, intent: Mapping[str, object]) -> str:
         if not isinstance(capacity, Mapping):
             continue
         timing = pool.offer_timing(offer.get("announced_unix"), now=time.time())
-        measured = (f" (offer measured {timing.age_s:.0f}s ago)"
-                    if timing.age_s is not None else " (offer time unknown)")
+        # ``announced_unix`` is when the loop last announced, not when it
+        # measured the capacity it reports.  The offer record carries no
+        # measurement timestamp, so state the age the reader actually holds
+        # and leave the measurement's age unknown rather than presenting the
+        # announcement age as one (#1189).
+        age = ("offer announced "
+               f"{timing.age_s:.0f}s ago; capacity measurement age unknown"
+               if timing.age_s is not None else
+               "offer announcement time unknown; "
+               "capacity measurement age unknown")
         for kind, need in demand.items():
             if kind in capacity and int(capacity[kind]) < need:
-                lines.append(f"{kind} {need} > {host} {capacity[kind]}{measured}")
-    return "  capacity: " + "; ".join(lines) + "\n" if lines else ""
+                if kind == "spool_gb":
+                    spool_short = True
+                lines.append(
+                    f"{kind} {need} > {host} {capacity[kind]} ({age})")
+    if not lines:
+        return ""
+    notice = "  capacity: " + "; ".join(lines) + "\n"
+    if spool_short:
+        # The deployed refresh path (#1190): a live box re-measures its spool
+        # offer on every tick while nothing holds spool_gb, but a declaration
+        # refused at start is not revisited without a restart.
+        notice += ("  spool_gb: the box's supervisor re-measures its spool "
+                   "offer on every tick while no spool_gb is held, so a freed "
+                   "disk raises the recorded offer on the next tick; a "
+                   "declaration refused at start offers no spool_gb until the "
+                   "supervisor restarts or re-execs (#1190).\n")
+    return notice
 
 
 #: The data-manifest annotation naming the origin-only batches a consumer

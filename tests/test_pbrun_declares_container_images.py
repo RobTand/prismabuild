@@ -152,10 +152,51 @@ def test_capacity_refusal_does_not_blame_a_present_image(tmp_path, monkeypatch):
                    f"PRISMABUILD_PRODUCED_SPOOL_MAX_BYTES={250 * 2**30}")
     message = str(exc.value)
     assert "spool_gb 250 > sparky 241" in message
-    assert "offer measured" in message
+    # The offer record carries no measurement timestamp: ``announced_unix``
+    # is when the loop announced, not when it measured the spool it reports.
+    # The notice states the age it actually holds and does not invent one for
+    # the measurement (#1189).
+    assert "offer announced" in message
+    assert "capacity measurement age unknown" in message
+    assert "offer measured" not in message
+    # A spool shortfall gets the deployed #1190 refresh path, not a pull hint.
+    assert "re-measures its spool offer on every tick" in message
+    assert "restarts or re-execs" in message
     assert "Load or pull" not in message
     assert "no recorded eligible worker reports" not in message
     assert queue.ready_items() == []
+
+
+class _OneOfferQueue:
+    """The two reads ``placement_capacity_notice`` makes, over one record."""
+
+    def __init__(self, offer: dict):
+        self._offer = offer
+
+    def placeable_hosts(self, _request, *, max_age_s):
+        return ["sparky"]
+
+    def offers(self, *, max_age_s):
+        return [self._offer]
+
+
+def test_capacity_notice_does_not_invent_an_announcement_time(tmp_path):
+    queue = _queue(tmp_path)
+    queue.announce(host="sparky", tags=["sparky"], has_gpu=False,
+                   capacity={"cpu": 4, "mem_gb": 16, "spool_gb": 241})
+    record = next(record for record in queue.offers()
+                  if record.get("host") == "sparky")
+    record["announced_unix"] = "not a stamp"
+
+    notice = pbrun.placement_capacity_notice(
+        _OneOfferQueue(record),
+        {"tags": ["sparky"], "needs_gpu": False,
+         "resources": {"spool_gb": 250}},
+    )
+    assert "spool_gb 250 > sparky 241" in notice
+    assert "announcement time unknown" in notice
+    assert "capacity measurement age unknown" in notice
+    assert "ago" not in notice
 
 
 # --------------------------------------------------------------------------
