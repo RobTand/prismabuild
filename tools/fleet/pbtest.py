@@ -199,6 +199,46 @@ def drain_shard(index: int, stream, lines: list[str], *, submitted=None) -> None
                 submitted(match.group(2), match.group(1))
 
 
+# Read-only recovery uses the same pinned pbrun renderer as the submitter.
+# Pass an absolute monotonic deadline, so interpreter startup cannot renew it.
+_RECOVER_OUTCOME = """\
+import runpy, sys, time
+from pathlib import Path
+reader = runpy.run_path(sys.argv[1])
+remaining = float(sys.argv[4]) - time.monotonic()
+if remaining <= 0:
+    sys.exit(reader['GAVE_UP_EXIT'])
+queue = reader['pool'].PoolQueue(reader['SH'] / 'pb-queue')
+sys.exit(reader['await_outcome'](queue, sys.argv[2], wait_s=remaining,
+                               generation=float(sys.argv[3])))
+"""
+
+
+def recovery_command(lines: list[str], key: str | None, deadline: float) -> list[str] | None:
+    """Recover only a named generation with no possibly retained reader.
+
+    A 74 at the original deadline remains unobserved. Old clients without a
+    generation stamp, and a client naming any retained reader, also refuse
+    recovery rather than read another attempt or race a kernel-blocked read.
+    """
+    if key is None or time.monotonic() >= deadline:
+        return None
+    if any("retained reader=" in line for line in lines):
+        return None
+    for line in lines:
+        submitted = SUBMITTED.match(line)
+        if submitted is None:
+            continue
+        if submitted.group(2) != key:
+            return None
+        stamp = re.search(r" published_unix=([0-9]+(?:\.[0-9]+)?)(?: |$)", line)
+        if stamp is None:
+            return None
+        return [sys.executable, "-c", _RECOVER_OUTCOME, str(PBRUN), key,
+                stamp.group(1), str(deadline)]
+    return None
+
+
 def run_shard(index: int, command: list[str], first, *, wait_s: float,
               deadline: float, result: dict, files: list[str] = ()) -> None:
     """Drain one shard's ``pbrun`` and resubmit it after an offer-read timeout.
@@ -208,8 +248,11 @@ def run_shard(index: int, command: list[str], first, *, wait_s: float,
     ``OFFER_DISCOVERY_TIMED_OUT`` published nothing and holds nothing, so the
     same command is run again after ``pbrun.POLL_S``, while the shard's own
     ``--wait-s`` lasts -- the rule ``pbcampaign --max-inflight`` applies to a
-    row (#560).  Any other ending is the shard's ending.  Every attempt's
-    output stays in ``result["lines"]``, so the receipt shows each refusal.
+    row (#560). An unobserved outcome (74) may instead start one read-only
+    recovery of the same stamped generation inside the original deadline.
+    It never repeats the submission or starts beside a retained reader.
+    Every attempt's output stays in ``result["lines"]``, so the receipt
+    shows each refusal.
 
     When ``pbrun`` says which key it queued or attached to, the key goes in
     ``result["action_key"]`` and is printed with the shard's ``files`` at
@@ -235,6 +278,22 @@ def run_shard(index: int, command: list[str], first, *, wait_s: float,
         drain_shard(index, proc.stdout, lines, submitted=submitted)
         proc.wait()
         result["returncode"] = proc.returncode
+        if proc.returncode == pbrun.RECORD_WRITE_FAILED_EXIT:
+            recovery = recovery_command(lines, result["action_key"], deadline)
+            if recovery is not None:
+                _say(f"shard {index:>3} pbtest: recovering the same generation's "
+                     "unobserved outcome inside the original deadline; not resubmitting")
+                try:
+                    observer = subprocess.Popen(
+                        recovery, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                        text=True, errors="replace")
+                except OSError as exc:
+                    _say(f"shard {index:>3} pbtest: cannot start outcome recovery: {exc}")
+                    return
+                drain_shard(index, observer.stdout, lines)
+                observer.wait()
+                result["returncode"] = observer.returncode
+            return
         if not offer_discovery_timed_out(lines, proc.returncode):
             return
         remaining = deadline - time.monotonic()

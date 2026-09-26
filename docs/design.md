@@ -1258,6 +1258,18 @@ entry. `receipt_path` is `PrismaBuildCAS.receipt_path` under the fleet CAS when
 a file is there and `null` otherwise, located and not verified. A SLURM
 submission line still names a prefix, so its shards record no key.
 
+`pbtest` can recover an unobserved outcome (exit 74) without submitting the
+shard again (#1033). The original pool submission line includes its exact
+`published_unix`; after that submitter exits, one read-only pbrun renderer
+follows that key and generation under the shard's original monotonic deadline.
+It recovers the actual stdout and recorder before normal reconciliation, so
+only complete passing evidence turns green. A failure stays failed. An expired
+budget, an unstamped older submitter, or any retained-reader notice stays
+unobserved: recovery never starts beside a possibly kernel-blocked reader.
+Recovery is not a new attempt and cannot extend the deadline. Queue records,
+claim protocol, action keys and admission are unchanged; this is client-side
+reporting and does not establish deployment.
+
 `pbtest` resubmits a shard whose `pbrun` refused it with a worker-offer
 discovery timeout (#1102), by the rule `pbcampaign --max-inflight` applies to a
 row (#560). `pbtest` runs `pbrun` as a subprocess, so it recognizes the refusal
