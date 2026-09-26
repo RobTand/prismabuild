@@ -7,10 +7,8 @@ invocation, so exempt work routed around the hook through a script file the
 lexical scan cannot see inside.  A hook that teaches the one way past it is
 advisory for exactly the work it most wants to see.
 
-This file runs DIRECTLY, never through PrismaBuild: it proves exempt work
-stays out of the pool, and submitting that proof through the pool would beg
-the question.  It is pure CPU -- no GPU, no containers, only command text
-and small local scripts.
+It is pure CPU -- no GPU, no containers, only command text and small local
+scripts -- so it runs as an ordinary CPU test shard and needs no GPU demand.
 """
 
 from __future__ import annotations
@@ -66,6 +64,115 @@ def test_the_carve_out_is_container_only(tmp_path) -> None:
     """The tessera#550 pytest refusal was correct and stays refused."""
 
     assert _verdict(_armed(tmp_path, None), "python3 -m pytest tests/") == 2
+
+
+# -- #1183: the image reference is not the program ----------------------------
+
+
+#: The GLM-5.3 serving target's repository name records the NCCL 2.30.7 swap;
+#: the name is not a collective, and searching the whole segment for the
+#: collective pattern refused the serve (issue #1183).
+NCCL_IMAGE = ("localhost/prismaquant/spark-vllm-nccl230"
+              "@sha256:a5424378a7bd6e2a6c1a4e37a2b7b0f1"
+              "3b1c0f0a4d5e6f708192a3b4c5d6e7f8")
+
+
+@pytest.mark.parametrize("command", [
+    f"docker run --gpus all {NCCL_IMAGE} vllm serve --model GLM-5.3",
+    f"docker run --gpus all {NCCL_IMAGE}",
+    f"docker run --gpus all {NCCL_IMAGE} --model GLM-5.3",
+    "docker run --gpus all registry/prismaquant-spark-nccl230 vllm serve foo",
+])
+def test_an_image_name_that_says_nccl_is_not_a_collective(
+    tmp_path, command,
+) -> None:
+    """The name of the image is not the program it runs."""
+
+    assert _verdict(_armed(tmp_path, None), command) == 0
+
+
+@pytest.mark.parametrize("command", [
+    # Option arguments before the image are the container's settings, not
+    # the work, even when their names mention NCCL.
+    "docker run --gpus all --ipc=host -p 8000:8000 --name glm-nccl "
+    "--env NCCL_DEBUG=INFO --shm-size 16g vllm/vllm-openai:v0.9 "
+    "vllm serve --model foo",
+    # The explicit vLLM entry command under an image named for its NCCL.
+    "docker run --gpus all registry/prismaquant-spark-nccl230 vllm serve foo",
+    # Both entrypoint spellings, whose value is the program.
+    "docker run --gpus all --entrypoint vllm vllm/vllm-openai serve foo",
+    "docker run --gpus all --entrypoint=/usr/bin/vllm vllm/vllm-openai "
+    "serve --model foo",
+])
+def test_option_and_entrypoint_shapes_keep_the_exemption(
+    tmp_path, command,
+) -> None:
+    assert _verdict(_armed(tmp_path, None), command) == 0
+
+
+@pytest.mark.parametrize("command", [
+    # The carve-out's negative half: the collective is in the program, so
+    # the image's own name changes nothing.
+    f"docker run --gpus all {NCCL_IMAGE} "
+    "/opt/nccl-tests/build/all_reduce_perf",
+    "docker run --gpus all vllm/vllm-openai bandwidthTest --device=0",
+    "docker run --gpus all vllm/vllm-openai p2pBandwidthLatencyTest",
+    # The entrypoint's value is a program, and a collective there is bare.
+    "docker run --gpus all --entrypoint "
+    "/opt/nccl-tests/build/all_reduce_perf vllm/vllm-openai",
+    # A shell nested in the container still runs the collective.
+    "docker run --gpus all vllm/vllm-openai bash -c "
+    "'/opt/nccl-tests/build/all_reduce_perf -b 1G'",
+])
+def test_a_collective_in_a_vllm_image_is_still_refused(
+    tmp_path, command,
+) -> None:
+    assert _verdict(_armed(tmp_path, None), command) == 2
+
+
+@pytest.mark.parametrize("command", [
+    # Options whose value is a PROGRAM the container runs are part of the
+    # program, not of its settings: a collective named there is bare, in
+    # both spellings (#1183 review).
+    "docker run --gpus all --health-cmd "
+    "/opt/nccl-tests/build/all_reduce_perf vllm/vllm-openai vllm serve foo",
+    "docker run --gpus all --health-cmd="
+    "/opt/nccl-tests/build/all_reduce_perf vllm/vllm-openai",
+    "docker run --gpus all --init-path "
+    "/opt/nccl-tests/build/all_reduce_perf vllm/vllm-openai vllm serve foo",
+    "docker run --gpus all --init-path="
+    "/opt/nccl-tests/build/all_reduce_perf vllm/vllm-openai",
+])
+def test_a_collective_in_a_program_option_is_refused(
+    tmp_path, command,
+) -> None:
+    assert _verdict(_armed(tmp_path, None), command) == 2
+
+
+@pytest.mark.parametrize("command", [
+    # An ordinary health check or init path keeps the serve exempt.
+    "docker run --gpus all --health-cmd "
+    "'curl -f http://localhost:8000/health || exit 1' "
+    "vllm/vllm-openai:latest --model foo",
+    "docker run --gpus all --health-cmd=curl vllm/vllm-openai:latest "
+    "vllm serve foo",
+    "docker run --gpus all --init-path /usr/bin/tini vllm/vllm-openai "
+    "vllm serve foo",
+])
+def test_an_ordinary_health_check_keeps_the_exemption(
+    tmp_path, command,
+) -> None:
+    assert _verdict(_armed(tmp_path, None), command) == 0
+
+
+def test_quoting_does_not_widen_the_carve_out(tmp_path) -> None:
+    """A quoted collective is still the work; only prose ABOUT the rule is
+    exempt, and a container that names no vLLM is still refused."""
+
+    module = _armed(tmp_path, None)
+    assert _verdict(
+        module, "docker run --gpus all image bash -c 'echo nccl'") == 2
+    assert _verdict(module, "docker run --gpus all image train.py") == 2
 
 
 # -- the script-file blind spot -----------------------------------------------
