@@ -3495,9 +3495,11 @@ pbrun.py --priority -10 \
 
 `pbrun` reserves ceil(178,000,000,000 / 2^30) = 166 GiB of the box's
 `spool_gb` for the whole claim. List several pairs with commas, and list only
-the pairs the action writes. Do not list the produced spool's own pair; set
-`PRISMABUILD_PRODUCED_SPOOL_HOST_WINDOW=1` for it, and the window and the
-scratch then add up in one reservation. The action is claimed only on a box
+the pairs the action writes. Do not list the produced spool's own pair:
+declare the spool's byte bound with `PRISMABUILD_PRODUCED_SPOOL_MAX_BYTES`,
+which pbrun charges by default (#905), and the window and the scratch then add
+up in one reservation. `PRISMABUILD_PRODUCED_SPOOL_HOST_WINDOW=1` is the same
+switch explicitly; `=0` beside a declared bound is refused at submission. The action is claimed only on a box
 whose `--spool-gb` covers it; see "A box's local disk budget". When every
 matching box offers less, `pbrun` refuses the action at submission. When some box's offer does
 not name the kind, `pbrun` queues it, and every claim records

@@ -1137,25 +1137,66 @@ def require_relocatable_checkout(
 #: ``mem_gb`` demand serializes them, since neither is what they contend on.
 _FLEET_DEMAND_KINDS = frozenset({"cpu", "gpu", "mem_gb", "disk_metadata"})
 #: The derived host kind a produced-output producer's spool window reserves,
-#: and the two sealed variables it is derived from (#747).  Spelled here so
-#: the typed-demand refusal does not import the spool module; the derivation
-#: itself is ``produced_spool.host_window_terms``.
+#: and the two sealed variables it is derived from (#747).  A declared bound
+#: is normalized to an accounted window at new submission (#905); the
+#: derivation itself is ``produced_spool.host_window_terms``.
 _SPOOL_WINDOW_KIND = "spool_gb"
 _SPOOL_WINDOW_ENV = "PRISMABUILD_PRODUCED_SPOOL_HOST_WINDOW"
 _SPOOL_MAX_ENV = "PRISMABUILD_PRODUCED_SPOOL_MAX_BYTES"
 
 
-def spool_window_terms(variables: Mapping[str, str], *, transport: str) -> dict[str, int]:
-    """The host demand a sealed environment's spool window derives, or ``{}``.
+def normalize_spool_declaration(variables: dict[str, str]) -> None:
+    """Seal a declared spool bound's effective window switch before sealing (#905).
 
-    Off, the environment derives nothing and every submission seals exactly
-    as before.  On, the producer's local spool window is a ``spool_gb``
-    reservation charged through the host ledger at claim, which only the pull
-    queue holds: a SLURM allocation has no host ledger to charge it to.
+    A new submission that declares a spool bound
+    (``PRISMABUILD_PRODUCED_SPOOL_MAX_BYTES``) is accounted by default:
+    unless the environment already says so, the effective switch
+    ``PRISMABUILD_PRODUCED_SPOOL_HOST_WINDOW`` is set to ``"1"`` **before**
+    the ownership and stamp fingerprints are taken, so the sealed action's
+    identity carries the accounting its claim charges.  ``HOST_WINDOW=0``
+    beside a declared bound is a contradictory declaration and is refused by
+    name: a declared spool that is not charged would silently evade the host
+    ledger.  No bound declares nothing, so an unchanged request without a
+    spool bound is byte-for-byte what it was.
+
+    ``produced_spool.host_window_terms`` itself stays switch-gated: an
+    already-sealed request keeps its meaning, explicit ``0`` included.  This
+    normalization is only ever applied while a new submission is being
+    sealed.
     """
 
-    if _SPOOL_WINDOW_ENV not in variables:
-        return {}     # the unopted path imports and reads nothing new
+    if _SPOOL_MAX_ENV not in variables:
+        return
+    switch = variables.get(_SPOOL_WINDOW_ENV, "")
+    if switch == "0":
+        raise SystemExit(
+            f"pbrun: {_SPOOL_MAX_ENV} declares a spool bound, but "
+            f"{_SPOOL_WINDOW_ENV}=0 would not charge it to the host "
+            f"ledger's {_SPOOL_WINDOW_KIND}; a declared spool is accounted "
+            f"by default (#905). Drop the bound to declare no spool, or "
+            f"drop {_SPOOL_WINDOW_ENV}=0.")
+    if switch in ("", "1"):
+        variables[_SPOOL_WINDOW_ENV] = "1"
+
+
+def spool_window_terms(variables: dict[str, str], *, transport: str) -> dict[str, int]:
+    """The host demand a sealed environment's spool window derives, or ``{}``.
+
+    A declared spool bound is accounted by default (#905):
+    :func:`normalize_spool_declaration` has sealed the effective switch in
+    ``variables``, so the action's identity carries the accounting the claim
+    charges and the producer's own claim check asks for the reservation.
+
+    The window is a ``spool_gb`` reservation charged through the host ledger
+    at claim, which only the pull queue holds: a SLURM allocation has no host
+    ledger to charge it to.  Off -- neither the switch nor a declared bound
+    -- nothing is imported or read, and every submission seals exactly as
+    before.
+    """
+
+    if _SPOOL_WINDOW_ENV not in variables and _SPOOL_MAX_ENV not in variables:
+        return {}     # the undeclared path imports and reads nothing new
+    normalize_spool_declaration(variables)
     from prismabuild import produced_spool
 
     try:
@@ -1201,12 +1242,13 @@ def scratch_window_terms(variables: Mapping[str, str], *, transport: str) -> dic
     return terms
 
 
-def local_disk_terms(variables: Mapping[str, str], *, transport: str) -> dict[str, int]:
+def local_disk_terms(variables: dict[str, str], *, transport: str) -> dict[str, int]:
     """The one local-disk demand: the spool window plus declared scratch.
 
     Both draw from the ``spool_gb`` kind a box declares with ``--spool-gb``,
-    because they share the box's disk (#747, #911).  With neither declared
-    this is ``{}``.
+    because they share the box's disk (#747, #911).  A declared spool bound
+    is normalised to an accounted window here (#905), so the sum is the one
+    reservation the claim takes.  With neither declared this is ``{}``.
     """
 
     total = sum(terms.get(_SPOOL_WINDOW_KIND, 0) for terms in (
@@ -5030,6 +5072,11 @@ def freeze_action_template(
 
     wrapper_dir = CONTAINER_WRAPPER_DIR if wrapper_dir is None else wrapper_dir
     variables = dict(variables)
+    # A declared spool bound is accounted by default (#905), and this must
+    # precede the ownership and stamp fingerprints below: they hash this
+    # environment, and the sealed action re-derives its owner from it, so both
+    # must see the same effective contract.
+    normalize_spool_declaration(variables)
     # Docker's payload is reparented to containerd-shim and therefore survives
     # a kill of every process group below the action launcher.  Put the fleet's
     # Docker shim first even under --no-default-env; it records a durable marker
@@ -6977,11 +7024,12 @@ def prepare_submission(args: argparse.Namespace) -> dict[str, object]:
     if not args.no_default_env:
         for name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
             variables.setdefault(name, str(demand["cpu"]))
-    # A produced-output producer's local spool window, when its environment
-    # opts in (#747), and any bounded local scratch it declares (#911).
-    # Derived like the template's tier demand, never typed: ``_parse_demand``
-    # has already refused a typed ``spool_gb``.  Off, this adds nothing, and
-    # the demand is byte-for-byte what it was.
+    # A produced-output producer's local spool window -- accounted by default
+    # when the environment declares a bound (#905), opt-in otherwise (#747) --
+    # and any bounded local scratch it declares (#911).  Derived like the
+    # template's tier demand, never typed: ``_parse_demand`` has already
+    # refused a typed ``spool_gb``.  With neither declared this adds nothing,
+    # and the demand is byte-for-byte what it was.
     demand.update(local_disk_terms(variables, transport=args.transport))
 
     if args.anywhere and args.here:

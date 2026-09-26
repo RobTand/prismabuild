@@ -12752,17 +12752,29 @@ resources differ from its sealed demand. Pricing reads every movement
 receipt once per restage seal, the same census pbrun takes for each
 submission. Only producers that opt in pay it.
 
-**Host spool window.** A producer's local spool window can be a host
+**Host spool window.** A producer's local spool window is a host
 reservation, so two producers on one box cannot together overrun its disk.
-Two switches turn it on, and both default off. A box declares a spool budget
-with `worker_loop.py --spool-gb N`, which adds `spool_gb: N` to the host
-kinds it offers. Without the flag, the box declares only `mem_gb` and `cpu`,
-as before. A producer opts in with `PRISMABUILD_PRODUCED_SPOOL_HOST_WINDOW=1`
-in its sealed environment. `pbrun` then derives `spool_gb` =
-ceil(`PRISMABUILD_PRODUCED_SPOOL_MAX_BYTES` / 2^30) into the sealed demand,
-the same way the produced-output template derives tier demand. `pbrun`
-refuses a typed `--demand spool_gb`, an opt-in with no positive byte bound,
-and an opt-in on `--transport slurm`, which cannot hold a host spool. Claim
+Two facts turn it on. A box declares a spool budget with `worker_loop.py
+--spool-gb N`, which adds `spool_gb: N` to the host kinds it offers; without
+the flag, the box declares only `mem_gb` and `cpu`, as before. A producer
+declares a byte bound, `PRISMABUILD_PRODUCED_SPOOL_MAX_BYTES`, and `pbrun`
+derives `spool_gb` = ceil(`PRISMABUILD_PRODUCED_SPOOL_MAX_BYTES` / 2^30) into
+the sealed demand, the same way the produced-output template derives tier
+demand. The declaration is accounted by default (#905): before sealing,
+`pbrun` seals the effective switch
+`PRISMABUILD_PRODUCED_SPOOL_HOST_WINDOW=1` alongside it, so the action's
+identity carries the accounting the claim charges and `ProducedSpool` asks
+the claim for the reservation it was admitted against. An explicit
+`PRISMABUILD_PRODUCED_SPOOL_HOST_WINDOW=1` is accepted and equivalent;
+`=0` beside a declared bound is a contradictory declaration refused by name
+at submission -- a declared spool that is not charged would silently evade
+the host ledger -- and so is a declared bound that is not a positive decimal
+integer. The window is derived only from a declared bound, and
+`produced_spool.host_window_terms` itself stays switch-gated, so an
+already-sealed request without the switch -- explicit `0` included -- keeps
+the behavior it was sealed with and is never re-derived. `pbrun` refuses a
+typed `--demand spool_gb`, a switch with no positive byte bound, and a
+declared bound on `--transport slurm`, which cannot hold a host spool. Claim
 charges `spool_gb` through the ordinary host ledger like `mem_gb`, and
 `ProducedSpool` refuses to start when its claimed row reserves less than the
 derived amount. The per-owner byte bound and the `statvfs` check still apply.
@@ -12898,9 +12910,9 @@ where it fits.
   name;
 - a name listed twice, or the list naming itself;
 - the spool window's own pair (`PRISMABUILD_PRODUCED_SPOOL_ROOT` and
-  `PRISMABUILD_PRODUCED_SPOOL_MAX_BYTES`), which
-  `PRISMABUILD_PRODUCED_SPOOL_HOST_WINDOW=1` already charges; listing it here
-  would charge the same bytes twice;
+  `PRISMABUILD_PRODUCED_SPOOL_MAX_BYTES`), which the declared bound already
+  charges (#905, sealed as `PRISMABUILD_PRODUCED_SPOOL_HOST_WINDOW=1`);
+  listing it here would charge the same bytes twice;
 - a named variable the sealed environment does not set;
 - a root that is not a canonical absolute path, or is `/`, or appears twice;
 - a ceiling that is not a positive decimal integer;

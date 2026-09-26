@@ -532,20 +532,28 @@
    },
    "id": "INV-01",
    "implementation": {
-    "commit": "PB:e534da78cf649b74c950f29fbda335b27b63d846 + integrated d4dd2a19db512070cb90ab65982ae0c241946ea8; 2026-09-23 update (snapshot 13:50Z): PB:3f0f752d4211 (#840), bb939e987ab9 (#845), 288a9d90fe4e (#865), 7d618325ad4b (#875), a926a4e0c81b (#880), 1e51518108d3 (#882), b50c4b9124be (#902), 5a972f1d3e35 (#904), 0bb9de9001c1 (#922), 97faa0e67200 (#928), 2c55b69482ef (#931) deployed; ee2420db7dfd (#947), bce50d049cfd (#951), 4448dd9dcec5 (#956) merged, not deployed",
+    "commit": "PB:e534da78cf649b74c950f29fbda335b27b63d846 + integrated d4dd2a19db512070cb90ab65982ae0c241946ea8; 2026-09-23 update (snapshot 13:50Z): PB:3f0f752d4211 (#840), bb939e987ab9 (#845), 288a9d90fe4e (#865), 7d618325ad4b (#875), a926a4e0c81b (#880), 1e51518108d3 (#882), b50c4b9124be (#902), 5a972f1d3e35 (#904), 0bb9de9001c1 (#922), 97faa0e67200 (#928), 2c55b69482ef (#931) deployed; ee2420db7dfd (#947), bce50d049cfd (#951), 4448dd9dcec5 (#956) merged, not deployed; 2026-09-26 update (#905 host-spool accounting lane): `pbrun.spool_window_terms` returned no `spool_gb` term for a new submission that declared `PRISMABUILD_PRODUCED_SPOOL_MAX_BYTES` without `PRISMABUILD_PRODUCED_SPOOL_HOST_WINDOW`, so the claim charged the executing box's host ledger nothing for a declared spool. A declared bound is now normalized before sealing (`pbrun.normalize_spool_declaration`: the effective switch is sealed as 1, the demand carries ceil(bytes/GiB), and HOST_WINDOW=0 beside a declared bound is refused by name); `produced_spool.host_window_terms` keeps its switch-gated meaning for already-sealed requests, explicit 0 included. Branch maintenance/905-spool-charge-20260926, base 0fcd2b2567f5; merge and deployment pending at this update.",
     "path": "src/prismabuild/pool.py tier mutation exclusion and atomic dead-credit reclaim; tools/fleet/tier_loop.py fresh writable/landed supply under the same lock; tools/fleet/stage_release.py shared occupancy decharge. Advance policy and prepaid output integration remain separate requirements.",
     "state": "partial"
    },
    "owner": "PB:pool-claim",
    "text": "Admitted resources fit aggregate lifetimes; concluded on both ledgers via one helper.",
    "validation": {
-    "detail": "PR742 root-reviewed CPU components: 92 tier/funding/claim/sweep tests, stronger real-claim RED dbea093b40f9 admits3 against backing2 on342095, GREENae57b5df521a8passes, integratedmembership/window/reader gate78passes atd4dd2a19. All source bundles fetched. No deployed backing/performance or full aggregate-lifetime conformance claim; publication must quiesce workers and storage until generation convergence. 2026-09-23 update (snapshot 13:50Z): #902 red dde768fd5a5f, green e49d2a53bd39; #904 red ff0ee178b3ad, green d6869b9de62d; #922 red eba0a352840d; #928 red e05102b65674 and ee8e749f8fa2 (live-number replay); #951 base 2d22f6ac1fcd (12 failed), head 6593cbc4676f (20 passed); #947 red on main ff200b3dacf1 (R13 beside R12 refused at 413 MB/s supply). Component and replay tests only.",
+    "detail": "PR742 root-reviewed CPU components: 92 tier/funding/claim/sweep tests, stronger real-claim RED dbea093b40f9 admits3 against backing2 on342095, GREENae57b5df521a8passes, integratedmembership/window/reader gate78passes atd4dd2a19. All source bundles fetched. No deployed backing/performance or full aggregate-lifetime conformance claim; publication must quiesce workers and storage until generation convergence. 2026-09-23 update (snapshot 13:50Z): #902 red dde768fd5a5f, green e49d2a53bd39; #904 red ff0ee178b3ad, green d6869b9de62d; #922 red eba0a352840d; #928 red e05102b65674 and ee8e749f8fa2 (live-number replay); #951 base 2d22f6ac1fcd (12 failed), head 6593cbc4676f (20 passed); #947 red on main ff200b3dacf1 (R13 beside R12 refused at 413 MB/s supply). Component and replay tests only. 2026-09-26 update (#905 host-spool lane, component only): red on base 0fcd2b2567f5, action c1fcb38b53a01fe8ac2fcbb69836cb8749039224762ee827f2e86180eb9f95d6, dl380g10, rc 1, 12 failed / 3 passed (the declared bound sealed no `spool_gb`; log sha256 0cccac2a9240128558cd1bf7f23f95aa3f8f1c6464f62057ac9720e5d78d3894); green on the branch action 1933469e9b2b9deb32c62cac118cb741adce6a3a0e6d7de2a2285df266c462a1, rc 0, 625 passed over the 33 spool/pbrun-touching test files, receipt 5df286d40419bf9bfedeaeb60276acb0fc3789eaeccf1c1f649860866f253571, local-result claim 67d473b60d61ae83a7178097a1d501af8d2e8a6593f49386200a7833945b2ef7 (payload c2498844e5ee242ea122427f3b303d6845e51d6ac9eaf4f6f21ea9269d603f55). Scoped to the host-spool accounting edge of INV-01; no deployment, and the row's tier/funding validation is unchanged.",
     "state": "partial"
    },
    "workload_proof": {
     "detail": "2026-09-23 update (snapshot 13:50Z): No. R12 (action 683cb3caa5ea, generation c2bda68758a3-1790110205-9e9735511db2, withdrawn from claimed at chain-016 on 2026-09-23T10:43:47Z) ran without #902 and #904: it waited 25 minutes beside 484 GiB of orphan cache (PB#901) and held 528 of 565 GiB of stage in 24 landed ranges (PB#903). No campaign has run on 81d95cba8d91-1790160372-5d100532e024 long enough to show the repaired windows.",
     "state": "no"
-   }
+   },
+   "live_defects": [
+    {
+     "issue": "PB#905",
+     "observed": "2026-09-26: prof-1 (PQ #1348, action f3f4489d2106) was claimed on sparky with PRISMABUILD_PRODUCED_SPOOL_MAX_BYTES=34359738368 sealed but no host-window switch; the claimed row held spool_gb=218 from declared scratch alone, so a declared 32 GiB spool was admitted outside the host ledger and a second row on that box could not see it",
+     "violation": "an admitted host resource (a declared local produced-spool bound) was not charged on the host ledger",
+     "status": "source fix on branch maintenance/905-spool-charge-20260926 (red c1fcb38b53a0, green 1933469e9b2b); not merged, not deployed"
+    }
+   ]
   },
   {
    "acceptance_assertion": "Lead-executed/same-manifest/pinned admission plus not_resident-vs-terminal denial split observed (partial: denial_top evidence only).",
