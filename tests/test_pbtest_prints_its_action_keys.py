@@ -64,6 +64,10 @@ def test_pbrun_names_the_full_key_it_queued(
     key = record.stem
     err = capsys.readouterr().err
     assert f"pbrun: queued {key} tags=" in err, err
+    generation = json.loads(record.read_text())["published_unix"]
+    assert f"published_unix={generation}" in err
+    command = pbtest.recovery_command(err.splitlines(), key, float("inf"))
+    assert command is not None and command[-2] == str(generation)
 
 
 # --- pbtest -----------------------------------------------------------------
