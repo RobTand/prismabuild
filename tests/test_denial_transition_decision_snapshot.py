@@ -96,7 +96,7 @@ def test_a_damped_repeat_keeps_the_first_snapshot(tmp_path, monkeypatch):
 
     history = queue.denial_transitions(key)
     assert [entry["reason"] for entry in history] == [
-        "host_pressure", "measurement_holder"], history
+        "adaptive_cpu_refused", "measurement_holder"], history
     repeat = history[0]
     assert repeat["count"] == 2
     assert repeat["last_unix"] == clock[0]
