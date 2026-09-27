@@ -2998,7 +2998,23 @@ drain under `/run/prismabuild/rollout/parked/`, named for the gate's
 `changed_unix` so a marker left by an earlier drain reads as the earlier drain.
 The marker also carries the PID and procfs start time. The write is best effort,
 so a loop that cannot record its park still parks and missing evidence cannot
-certify a drained host. The updater creates the directory for the unprivileged
+certify a drained host. A parked loop also keeps its queue offer fresh, because
+a box that stops announcing is indistinguishable from a crashed one: each drain
+poll republishes `workers/<host>.json` with `state: "draining"`, the gate's
+`owner`, `reason` and `changed_unix` (each bounded and omitted when malformed),
+its normal tags and the declared `capacity` the last open poll published
+(including a raised live spool figure), and a zero `observed_capacity` on every
+declared kind. The declared capability keeps a submission that is merely waiting
+on the drain queueable rather than refused; the zero live figure keeps the two
+bounded placement preferences from waiting on a box that will not claim, and no
+admission path reads either field -- the loop's own gate check is what stops it
+claiming. Staleness therefore again means the loop stopped, and `pbstatus`
+reports the node as `draining` with the holder and reason, not as stale or
+unhealthy. Missing, unparsable and malformed gates keep their existing meaning
+(draining), and this visibility changes no admission decision. The offer fields
+are additive on the existing offer schema, like the other optional fields; an
+offer without `state` is read as live.
+The updater creates the directory for the unprivileged
 worker uid and reports whether every serving process has a marker for the
 current drain and the broker reports no active scopes. Processes count by argv
 basename: `worker_loop.py`, `worker.py` and `prewarm_loop.py`, including one-shot

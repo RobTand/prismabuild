@@ -820,6 +820,46 @@ def _valid_pool_item(key: str, record: dict | None) -> bool:
             and record.get('action_key') == key and record.get('schema') == pool.POOL_ITEM_SCHEMA_V1)
 
 
+#: How much of a draining offer's holder and reason the node census reports.
+#: The worker bounds them before publishing (200 and 1000); these bounds keep
+#: a foreign or corrupt record from turning one status row into a wall of
+#: text, and the census is the reader that would have to print it.
+_DRAIN_OWNER_DISPLAY = 200
+_DRAIN_REASON_DISPLAY = 1000
+
+
+def _offer_drain(offer: Mapping[str, object]) -> dict | None:
+    """The drain a *fresh* offer publishes, or ``None`` when it offers admission.
+
+    The offer's ``state`` is written only by a loop holding the maintenance
+    gate (#1204): an absent value is an offer from before the field existed or
+    from an ordinary open gate, and anything other than ``"draining"`` is not
+    evidence of a parked loop.  The holder, reason and change time are copied
+    only in the shapes a reader can use; a malformed one reads as unknown
+    rather than being rendered.
+    """
+
+    if offer.get("state") != "draining":
+        return None
+    owner = offer.get("drain_owner")
+    reason = offer.get("drain_reason")
+    stamp = offer.get("drain_changed_unix")
+    changed = None
+    if type(stamp) in (int, float):
+        try:
+            stamp = float(stamp)
+        except OverflowError:
+            stamp = None
+        if stamp is not None and math.isfinite(stamp):
+            changed = stamp
+    return {
+        "owner": owner[:_DRAIN_OWNER_DISPLAY] if isinstance(owner, str) else None,
+        "reason": (reason[:_DRAIN_REASON_DISPLAY]
+                   if isinstance(reason, str) else None),
+        "changed_unix": changed,
+    }
+
+
 def _reservation_hosts(queue: pool.PoolQueue, notes: list[str]) -> list[Path]:
     """The host directories under ``reservations/``, one listing."""
 
@@ -957,8 +997,25 @@ def read_pool(queue_root: str | Path) -> dict:
             live.append(offer)
         else:
             notes.append(f"pool worker {host}: stale or invalid offer timestamp")
+        # A fresh offer a parked loop republishes says it is draining, and
+        # names the holder and reason the gate carries (#1204).  It is alive
+        # -- just not admitting -- so it is not unhealthy, and it is not
+        # stale: only a stopped loop leaves an expired offer.  A stale offer
+        # is read with none of this, so a drain that stopped announcing
+        # still reads as the loop having stopped.
+        drain = _offer_drain(offer) if fresh else None
+        if drain is not None:
+            state = "draining"
+            note = "draining for maintenance"
+            if drain["owner"]:
+                note += f"; owner {drain['owner']}"
+            if drain["reason"]:
+                note += f"; {drain['reason']}"
+        else:
+            state = "live" if fresh else "stale"
+            note = None if fresh else "offer expired or timestamp invalid"
         nodes.append({
-            "node": host, "transport": "pool", "state": "live" if fresh else "stale",
+            "node": host, "transport": "pool", "state": state,
             "healthy": fresh, "age_s": age, "capacity": offer.get("capacity"),
             "offer_clock_skew_s": timing.clock_skew_s,
             "observed_capacity": offer.get("observed_capacity"),
@@ -969,7 +1026,11 @@ def read_pool(queue_root: str | Path) -> dict:
             # reader below prints it as unknown and never as zero.
             "loops": offer.get("loops"),
             "timeout_ceiling_s": offer.get("timeout_ceiling_s"),
-            "reason": None if fresh else "offer expired or timestamp invalid",
+            "draining": drain is not None,
+            "drain_owner": drain["owner"] if drain else None,
+            "drain_reason": drain["reason"] if drain else None,
+            "drain_changed_unix": drain["changed_unix"] if drain else None,
+            "reason": note,
             "admission": {
                 "cpu": _admission_sample(admission[host]['cpu'], now=now,
                                          max_age_s=pool.cpu_admission.MAX_SAMPLE_AGE_S),

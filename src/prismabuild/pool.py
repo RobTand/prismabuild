@@ -5099,6 +5099,10 @@ class PoolQueue:
         progress_contracts: Sequence[str] | None = None,
         addresses: Sequence[str] | None = None,
         observed_images: Sequence[str] | None = None,
+        state: str | None = None,
+        drain_owner: str | None = None,
+        drain_reason: str | None = None,
+        drain_changed_unix: float | None = None,
     ) -> None:
         """Record what this worker offers, so a submitter can be told the truth.
 
@@ -5164,6 +5168,23 @@ class PoolQueue:
         written as an absent field for the same reason as the three above: a
         reader must not turn "not measured" into zero, and every loop published
         before this field existed announces without it.
+
+        ``state`` and the ``drain_*`` fields are how a deliberately parked
+        loop stays visible (#1204).  A loop holding a maintenance drain used
+        to announce nothing, so after one offer TTL its box read exactly like
+        a crashed worker, an NFS stall or a client clock fault, and the only
+        record of the holder and reason was a root-owned file no reader
+        reads.  A draining loop now republishes ``state="draining"`` with the
+        gate's ``owner``, ``reason`` and ``changed_unix`` on every poll.  The
+        record keeps the box's declared ``capacity`` and its tags, because
+        those answer "can any box ever run this" and preserving them keeps a
+        submission queueable instead of refused; it sets
+        ``observed_capacity`` to zero so nothing can read the parked box as
+        admittable and the two bounded placement preferences (which read the
+        live figure) do not wait for it.  Absent ``state`` is a loop from
+        before the field or an ordinary open gate, and means "live"; only
+        ``"draining"`` is treated as a drain.  Admission never reads these
+        fields: the loop's own gate check is what stops it claiming.
         """
 
         record = {
@@ -5218,6 +5239,14 @@ class PoolQueue:
             # declares images must read that absence as unknown (#714).
             record["container_images"] = sorted(
                 {str(entry) for entry in observed_images})
+        if state is not None:
+            record["state"] = str(state)
+        if drain_owner is not None:
+            record["drain_owner"] = str(drain_owner)
+        if drain_reason is not None:
+            record["drain_reason"] = str(drain_reason)
+        if drain_changed_unix is not None:
+            record["drain_changed_unix"] = float(drain_changed_unix)
         directory = self.root / WORKERS
         directory.mkdir(parents=True, exist_ok=True)
         _write_json_atomic(directory / f"{host}.json", record)

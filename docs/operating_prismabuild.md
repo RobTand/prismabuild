@@ -1717,7 +1717,12 @@ It prints three tables:
 
 *   **nodes** — for pool, each worker's declared and observed capacity, offer
     age, and freshness of persisted CPU/GPU admission evidence. Expired offers
-    remain visible as stale. For SLURM, the controller's nodes, partitions,
+    remain visible as stale. A box whose loop is parked on the maintenance gate
+    keeps a fresh offer that reports `state: draining` and names the gate's
+    holder and reason (both in the table's note and as `drain_owner`,
+    `drain_reason` and `drain_changed_unix` in `--json`); it is neither stale
+    nor unhealthy, and its `observed_capacity` is zero because it will not
+    claim -- only a loop that actually stopped leaves a stale offer. For SLURM, the controller's nodes, partitions,
     CPU/memory allocation, GRES, features, load and reachability.
 *   **jobs** — for pool, ready and claimed action keys, resources, placement,
     admission denial counts and lease age. Ready jobs use the pool's existing
@@ -3856,6 +3861,11 @@ root client updater initializes an explicit open gate after verifying current
 installed clients, matching healthy broker bytes and zero active scopes. Check
 `/var/lib/prismabuild-client-upgrade/status.json` when a booted supervisor is
 running but its workers remain parked; do not remove a gate to resume work.
+A parked loop keeps announcing a fresh `draining` offer that names its holder
+and reason and offers zero live capacity, so `pbstatus` shows the drain rather
+than a worker that vanished; its declared capability is unchanged, so matching
+submissions stay queueable until the gate reopens. A missing or unreadable gate
+still means draining, and the offer never admits work on its own.
 Deploy the paired worker/updater change and verify both versions fleet-wide.
 The gate is a volatile mirror of the root-owned durable broker hold. An active
 fleet epoch retains that hold across reboot and requires its validated resume

@@ -200,6 +200,31 @@ class MetricsFixture(unittest.TestCase):
         self.assertIn(
             'prismabuild_worker_memory_available_bytes{host="sparky"} 31138512896', text)
 
+    def test_a_draining_offer_is_valid_evidence_not_up_for_placement(self) -> None:
+        """A parked loop's fresh offer is a named state, not a scrape failure.
+
+        #1204: the draining record keeps the box's declared capability and
+        reports zero observed capacity.  The census accepts it as fresh
+        evidence -- ``worker_up`` keeps its freshness meaning, so a drain is
+        not mistaken for a stopped loop -- while the live figure reads zero.
+        """
+
+        _write(self.queue / "workers" / "parked.json", {
+            **_offer("parked", NOW - 2, gpu=True),
+            "state": "draining", "drain_owner": "x", "drain_reason": "y",
+            "drain_changed_unix": NOW - 100,
+            "observed_capacity": {"cpu": 0, "gpu": 0, "mem_gb": 0},
+        })
+        text = self.collect()
+
+        self.assertIn('prismabuild_collection_success 1', text)
+        self.assertIn('prismabuild_worker_up{host="parked"} 1', text)
+        self.assertIn('prismabuild_worker_offer_age_seconds{host="parked"} 2', text)
+        self.assertIn('prismabuild_worker_capacity{host="parked",resource="cpu"} 8', text)
+        self.assertIn(
+            'prismabuild_worker_observed_capacity{host="parked",resource="cpu"} 0',
+            text)
+
     def test_admission_and_terminal_metrics_are_window_gauges(self) -> None:
         text = self.collect(terminal_window_seconds=60, terminal_limit=20)
 
