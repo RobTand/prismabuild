@@ -442,10 +442,41 @@ busy GPU row whether or not the pass moved it ahead for the free GPU
 empty while a quantum holder still holds the GPU token -- a holder that
 releases mid-pass, exactly the drain-boundary incident, must not strip the
 row of the room its own claim would take, and `_ready_gpu_row_room` re-reads
-only live facts (free tokens, GPU sample, images, residency), so a row
-that no longer fits answers None on its own. A `None` carry because a row
+only live facts (GPU sample, images, residency). The room is kept whether
+or not it fits the free tokens when it is read (#1240): a holder that
+releases after that read and before a row behind is decided is the
+boundary itself, and `_room_taken_by` asks whether a room fits the free
+tokens at the moment each later row is decided, so a room that does not fit
+binds nothing. A `None` carry because a row
 this pass already withheld the whole box is not an expired episode and
-binds nothing extra. None of them is a
+binds nothing extra. A GPU row the pass *refuses* keeps the same room
+when the refusal is one its holders releasing resolves (#1240): an adaptive
+refusal whose drain classification names a drain of the pool's holders
+(`exclusive_holder`, `sharing_probe_not_authorized`,
+`holder_telemetry_unavailable`, `max_actions`, the SW-cap-idle and
+host-pressure drains; never one that names foreign load), and every token
+shortage. It is kept whatever the verdict -- withholding, `_starved`,
+`_past_ceiling` -- but only when the row's reservation does not fit the free
+tokens read under admission at the refusal (`PoolQueue._room_fits`, the test
+`_room_taken_by` binds on): then the holders' tokens are what stand between
+the row and its claim, and the room binds exactly when they release. It
+binds every row behind it (`gpu_room_kept`, `gpu_room_binds_all` in the
+refused row's denial). A room that already fit when the row was refused --
+measured pressure or a device state refused it, with the GPU free -- is not
+kept (`gpu_room_fit_at_refusal`), and the verdict stands alone as before: a
+room there would bind every GPU row behind a starved row on every pass while
+the measurement lasts, idling the GPU (#1241 review). Before #1240 a `_starved`
+verdict withheld nothing: on 2026-09-27 a priority +1 exclusive row, placeable
+only on sparklina, was refused `exclusive_holder` behind a holder `holder_bound`
+read `long`; the holder finished mid-pass, and 90 ms later the same pass
+admitted the priority -10 GPU row behind it into the released GPU. While the
+holders hold, the room does not fit the free tokens and binds nothing, so the
+box fills beside them exactly as the verdict allows (#924, #1085); once they
+release, a row behind is admitted only beside the room. A row a kept room
+defers is denied `deferred_for_ready_gpu_row` naming the room's row and the
+reason it was kept (`kept_for`), which the reason ring keeps after the
+latest-only record has rotated. The binding lasts the pass: the next pass
+decides the refused row first, on this box or on another it can place on. None of them is a
 verdict, and none releases the drain: without the carry, every pass that met
 an unknown inventory admitted the rows behind an image-pinned GPU row into
 the drain it was waiting on (#1143, the #1125 livelock again). The row is
@@ -481,8 +512,8 @@ earlier, and the row's withhold came one claim too late. When the scan meets
 such a row's transition lock held (`transition_busy`), the row keeps its room
 for that pass (`gpu_room_kept`, `PoolQueue._ready_gpu_row_room`): the
 reservation its claim charges here, its producer's export allowance included,
-kept only while its images are present, its residency is not refused, the GPU
-sample is clean and the room fits the free tokens. A row behind it that
+kept only while its images are present, its residency is not refused and the
+GPU sample is clean. A row behind it that
 demands no GPU is admitted only if the room still fits the free tokens
 afterwards, and is otherwise denied `deferred_for_ready_gpu_row`, naming the
 GPU row, the room, the free tokens and its own demand, with no pass. CPU work

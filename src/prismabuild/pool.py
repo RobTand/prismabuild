@@ -6441,8 +6441,12 @@ class PoolQueue:
         producer's export allowance included (#985), and it is kept only on
         the facts the row's own claim would read first: a clean, fresh GPU
         sample where the box samples its GPU (as ``gpu_first`` reads it), the
-        row's container images present, its residency not refused, and the
-        room inside the box's free tokens.  ``None`` otherwise.
+        row's container images present, and its residency not refused.
+        ``None`` otherwise.  The room need not fit the free tokens when it is
+        read (#1240): a holder that releases after this read and before a row
+        behind is decided is the drain boundary itself, and
+        :meth:`_room_taken_by` asks whether each room fits the free tokens at
+        the moment it is asked, so a room that does not fit binds nothing.
         """
 
         try:
@@ -6472,12 +6476,18 @@ class PoolQueue:
             if allowance:
                 for kind in cpu_admission.EXPORT_DEMAND:
                     reservation[kind] = int(reservation.get(kind, 0)) + int(allowance[kind])
-            available = ledger.available()
         except (OSError, TypeError, ValueError, pb.PrismaBuildError):
             return None
-        if not all(available.get(kind, 0) >= need for kind, need in reservation.items()):
-            return None
         return {"action_key": str(item.get("action_key", "")), "room": reservation}
+
+    @staticmethod
+    def _room_fits(available: Mapping[str, int], room: Mapping[str, object]) -> bool:
+        """Whether ``room`` fits the free tokens ``available``: the one test a
+        kept room binds on (:meth:`_room_taken_by`) and a refused row's room is
+        kept on (#1240)."""
+
+        return all(available.get(kind, 0) >= int(need)          # type: ignore[call-overload]
+                   for kind, need in room.items())
 
     @staticmethod
     def _room_taken_by(ledger: "ResourceLedger", rooms: Sequence[Mapping[str, object]],
@@ -6486,8 +6496,11 @@ class PoolQueue:
 
         Called under host admission, just before a row takes its tokens,
         for the rooms it is bound by: every kept room when the row demands
-        no GPU (#1169), and the rooms a busy row with no live withhold
-        carry marked ``binds: all`` when it demands one (#1217).  A room that
+        no GPU (#1169), and the rooms marked ``binds: all`` when it demands
+        one -- a busy row's with no live withhold carry (#1217), and a row's
+        refused on holders a drain releases (#1240).  The answer names the
+        reason the room was kept (``kept_for``), so the deferred row's own
+        record, and its reason ring, attribute the wait.  A room that
         no longer fits the free tokens
         without the row -- the GPU row's own claim or a sibling's admission
         has taken them since -- is left to that row's own verdict.  ``None``
@@ -6502,13 +6515,13 @@ class PoolQueue:
             return None
         for kept in rooms:
             room = kept["room"]
-            if not all(available.get(kind, 0) >= int(need)          # type: ignore[union-attr]
-                       for kind, need in room.items()):              # type: ignore[union-attr]
+            if not PoolQueue._room_fits(available, room):           # type: ignore[arg-type]
                 continue
             if all(available.get(kind, 0) - int(demand.get(kind, 0)) >= int(need)
                    for kind, need in room.items()):                  # type: ignore[union-attr]
                 continue
             return {"gpu_row": str(kept["action_key"])[:12], "room": dict(room),  # type: ignore[call-overload]
+                    "kept_for": kept.get("reason"),
                     "available": available, "demand": dict(demand)}
         return None
 
@@ -17704,6 +17717,44 @@ class PoolQueue:
             if carried is not None:
                 withhold(key, WITHHOLD_KINDS.get(str(carried["mode"])))
             return carried
+
+        def keep_refused_room(key: str, reservation: Mapping[str, object],
+                              reason: str, evidence: dict[str, object],
+                              free: Mapping[str, int] | None) -> None:
+            # A GPU row refused while holders' tokens stand between it and
+            # its claim -- the room its claim would take does not fit the
+            # free tokens the refusal was decided against (``free``) -- keeps
+            # that room, binding every row behind it (#1240).  It binds only
+            # at the drain boundary: while the holders hold, the room still
+            # does not fit, binds nothing, and the box fills as the verdict
+            # allows (#924, #1085); when they release before a row behind is
+            # decided -- 90 ms in the incident -- the room fits, and a row
+            # behind is admitted only beside it: CPU work that fits beside
+            # still runs (#1169), a GPU row does not take the boundary.  The
+            # next pass decides the refused row first.  A room that already
+            # fit when the row was refused keeps nothing: tokens were not
+            # what refused it (measured pressure, a device state), and its
+            # verdict -- withhold or starved -- stands alone, as before;
+            # binding there would idle the GPU behind a row starved by
+            # definition.  So would a refusal whose free tokens did not
+            # read.  Recorded on the refused row's denial, and named
+            # (``kept_for``) on each row it defers.
+            if ledger is None or free is None:
+                return
+            try:
+                room = {str(kind): int(need)  # type: ignore[call-overload]
+                        for kind, need in reservation.items()}
+            except (TypeError, ValueError):
+                return
+            if not room.get("gpu"):
+                return
+            if self._room_fits(free, room):
+                evidence["gpu_room_fit_at_refusal"] = True
+                return
+            gpu_rooms.append({"action_key": key, "room": room, "binds": "all",
+                              "reason": reason})
+            evidence["gpu_room_kept"] = dict(room)
+            evidence["gpu_room_binds_all"] = True
         #: ``claimed/`` as this pass listed it, once (#993).  Listed under the
         #: first transition lock the pass takes, not before it, and a
         #: ``READDIR`` is itself the revalidation a cached negative lookup
@@ -17827,6 +17878,7 @@ class PoolQueue:
                         if room is not None:
                             if carried is None and not whole_box_held:
                                 room["binds"] = "all"
+                            room["reason"] = "transition_busy"
                             gpu_rooms.append(room)
                         busy_evidence: dict[str, object] = {}
                         if carried is not None:
@@ -18152,6 +18204,7 @@ class PoolQueue:
                         refusal_source = None
                         room_taken: dict[str, object] | None = None
                         cpu_decision = gpu_decision = token_shortage = None
+                        free_at_refusal: dict[str, int] | None = None
                         with self._admission_lock(controller):
                             if controller is not None:
                                 adaptive = controller.decision(
@@ -18233,6 +18286,19 @@ class PoolQueue:
                                         gpu_probe = gpu_controller.reserve_probe(adaptive_gpu)
                                     if adaptive is not None:
                                         borrow = (adaptive, controller.admitted(adaptive))
+                            if (ledger is not None
+                                    and int(reservation_demand.get("gpu", 0) or 0)
+                                    and ((refused and refusal_source in (
+                                        "adaptive_gpu_refused", "adaptive_cpu_refused"))
+                                         or (not refused and handle is None))):
+                                # The free tokens the refusal was decided
+                                # against, read under the same exclusion
+                                # (#1240): a refused GPU row keeps its room
+                                # only when they do not fit it.
+                                try:
+                                    free_at_refusal = ledger.available()
+                                except OSError:
+                                    free_at_refusal = None
                         if refused:
                             # Aging is shared diagnostic/fairness bookkeeping, not
                             # capacity authority. Keep its I/O outside host admission.
@@ -18288,6 +18354,10 @@ class PoolQueue:
                                 self.record_denial(item, reason, evidence)
                                 continue
                             self.record_pass(key)
+                            # A refusal a drain of the pool's holders resolves
+                            # keeps the refused row's room, whatever its
+                            # verdict (#1240, ``keep_refused_room``).
+                            drain_resolves = mode is not None and not foreign
                             if verdict is not None and verdict["eligible"]:
                                 # #924: an occupied-box refusal holds the box
                                 # shut while its holders drain soon, exactly as
@@ -18301,12 +18371,17 @@ class PoolQueue:
                                     kinds = WITHHOLD_KINDS.get(str(verdict["mode"]))
                                     if kinds is not None:
                                         evidence["withheld_kinds"] = sorted(kinds)
-                                    self.record_denial(item, f"{reason}_withholding", evidence)
+                                    reason = f"{reason}_withholding"
+                                    if drain_resolves:
+                                        keep_refused_room(key, reservation_demand, reason, evidence, free_at_refusal)
+                                    self.record_denial(item, reason, evidence)
                                     withhold(key, kinds)
                                     continue
                                 reason = f"{reason}{_starved_suffix(verdict)}"
                                 evidence["starved"] = {"why": verdict["why"],
                                                        "holders": verdict.get("holders")}
+                            if drain_resolves:
+                                keep_refused_room(key, reservation_demand, reason, evidence, free_at_refusal)
                             self.record_denial(item, reason, evidence)
                             continue
                         if handle is None:
@@ -18334,6 +18409,9 @@ class PoolQueue:
                                 "withhold": verdict,
                             }
                             if withholding and verdict["withhold"]:
+                                keep_refused_room(
+                                    key, asked, "reservation_unavailable_withholding", evidence,
+                                    free_at_refusal)
                                 self.record_denial(
                                     item, "reservation_unavailable_withholding", evidence)
                                 withhold(key, None)
@@ -18344,10 +18422,13 @@ class PoolQueue:
                                 # do not drain soon (#924, 2026-09-04).
                                 evidence["starved"] = {"why": verdict["why"],
                                                        "holders": verdict.get("holders")}
-                            self.record_denial(
-                                item, "reservation_unavailable" + (
-                                    _starved_suffix(verdict) if withholding else ""),
-                                evidence)
+                            reason = "reservation_unavailable" + (
+                                _starved_suffix(verdict) if withholding else "")
+                            # A token shortage is what holders releasing
+                            # resolves: the room is kept at every verdict
+                            # (#1240, ``keep_refused_room``).
+                            keep_refused_room(key, asked, reason, evidence, free_at_refusal)
+                            self.record_denial(item, reason, evidence)
                             continue
                     allocation = (ledger.cpu_allocation(handle, cpu_tiers)
                                   if ledger is not None and handle is not None and cpu_tiers is not None else None)
