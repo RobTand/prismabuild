@@ -78,7 +78,7 @@ def _claim(q, capacity, *, tiers):
     return None if item is None else item["action_key"]
 
 
-def _foreign_sample(clock, *, held_quiet, foreign_level=0.43, spread=16):
+def _foreign_sample(clock, *, held_quiet, foreign_level=0.43, spread=15):
     """The incident's sample shape on a 20-CPU box.
 
     ``busy_cpus`` sums to 3.44, above the unmeasured prior line
@@ -188,10 +188,11 @@ def test_holder_busy_keeps_the_withhold_then_admits(
     per_cpu = {str(cpu): 0. for cpu in range(20)}
 
     def sample():
-        per_cpu["0"] = 0.43 if state["busy"] else 0.
+        level = 0.6 if state["busy"] else 0.
+        per_cpu["0"] = per_cpu["1"] = level
         return {
             "sampled_unix": clock[0], "cpu_count": 20, "interval_s": 1.,
-            "psi_some": 0.034, "busy_cpus": 0.43 if state["busy"] else 0.,
+            "psi_some": 0.034, "busy_cpus": 2. * level,
             "per_cpu_busy": dict(per_cpu),
             "foreign_per_cpu_busy": dict(per_cpu),
         }
@@ -204,7 +205,7 @@ def test_holder_busy_keeps_the_withhold_then_admits(
     def claim():
         return _claim(queue, capacity, tiers=tiers)
 
-    holder = _publish(queue, clock, _key("holder"), {"cpu": 1, "mem_gb": 1})
+    holder = _publish(queue, clock, _key("holder"), {"cpu": 2, "mem_gb": 1})
     assert claim() == holder
     _publish(queue, clock, measurement, {"cpu": 4, "mem_gb": 40})
     for _ in range(pool.STARVATION_FLOOR - 1):

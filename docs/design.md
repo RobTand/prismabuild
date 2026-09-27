@@ -3926,6 +3926,24 @@ decision feeds it:
   (#982). A full-width reservation beside holders keeps the pre-#997 PSI
   refusal, because only there can the lending path place it and the
   baseline cannot say which part of the load is the holders'.
+* The idle verdict cannot tell *whose* load exceeded it. A fresh sample's
+  attribution can, and the measurement gate uses it (#1231, fixed
+  2026-09-27): a CPU a pool holder holds carries the pool's own work, which
+  that holder draining clears, while foreign busy on an unheld CPU is load
+  no drain ever clears. When every held CPU reads quiet below the idle
+  fraction and the busy above it is all on unheld CPUs, the excess would
+  survive every holder draining, so the refusal is
+  `measurement_foreign_load` naming the foreign CPUs and the item starves
+  (`_starved`, visible under `pbstatus --starvation`) instead of
+  withholding: withholding for load the pool does not own would only cut
+  the box to one admission per sample window while the foreign load stays
+  (#1160's held-vs-foreign separation applied to the measurement gate; the
+  2026-09-27 incident had 211 ready rows stalled behind such a refusal on
+  sparky until the coordinator withdrew the measurement by hand). A sample
+  without attribution keeps the conservative `measurement_host_not_idle`
+  refusal, exactly as before (#1210's rolling-upgrade rule), and a busy
+  held CPU keeps the #924 withhold-then-admit behavior: that drain is
+  really pending.
 
 The GPU controller applies the same judgement to a measurement's host pressure
 (`memory_pressure_some`, `memory_pressure_full`, `cpu_pressure_some`, the
