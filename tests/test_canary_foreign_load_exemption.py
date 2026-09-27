@@ -133,6 +133,22 @@ def _saturated(clock) -> dict:
     }
 
 
+def _canary_claim(q):
+    """Claim as the new-generation worker that announced the capability.
+
+    The canary's placement requires the host pin, the capability and the
+    exact runtime-generation tag (#1213): a worker without them must not
+    even see it, which is why the box fixture's bare ``claim`` answers
+    ``placement_mismatch`` for these rows.
+    """
+    taken = q.claim(
+        tags=[socket.gethostname(), CAPABILITY, f"runtime-generation:{GENERATION}"],
+        has_gpu=True, adaptive_cpu=True,
+        capacity={"cpu": 20, "gpu": 1, "mem_gb": 120},
+        cpu_tiers={"preferred": list(range(20)), "fallback": []})
+    return None if taken is None else taken["action_key"]
+
+
 def test_a_verified_canary_is_admitted_through_foreign_load(
         gpu_box, tmp_path, monkeypatch) -> None:
     """The incident, answered: the promoted canary crosses the foreign gate.
@@ -142,13 +158,13 @@ def test_a_verified_canary_is_admitted_through_foreign_load(
     ordinary row.  GREEN: the verified canary is admitted on its free tokens;
     the exemption is the ruling's scope, not a priority change.
     """
-    q, clock, _contracts, _publish, tick, claim = gpu_box
+    q, clock, _contracts, _publish, _tick, _claim = gpu_box
     monkeypatch.setattr(adaptive_cpu.Controller, "sample",
                         lambda self: _foreign_on_every_cpu(clock))
     action, cas, checkout = _seal(tmp_path, "canary")
     _mint(q, action)
     _publish_canary(q, action, cas, checkout)
-    assert claim() == action["action_key"]
+    assert _canary_claim(q) == action["action_key"]
 
 
 def test_a_payload_row_in_the_same_state_is_still_refused(
@@ -178,7 +194,7 @@ def test_the_unverified_tag_case_is_refused(
     before any admission decision, so the foreign-load state cannot exempt
     it: only a validated, exact generation earns the exemption.
     """
-    q, clock, _contracts, _publish, _tick, claim = gpu_box
+    q, clock, _contracts, _publish, _tick, _claim = gpu_box
     monkeypatch.setattr(adaptive_cpu.Controller, "sample",
                         lambda self: _foreign_on_every_cpu(clock))
     action, cas, checkout = _seal(tmp_path, "spent")
@@ -187,7 +203,7 @@ def test_the_unverified_tag_case_is_refused(
     # Tamper after publish: the grant names another action key.
     grant.write_text(json.dumps({
         **json.loads(grant.read_text()), "action_key": _key("another-action")}))
-    assert claim() is None
+    assert _canary_claim(q) is None
     denial = _denial(q, action["action_key"])
     assert denial["reason"] == "publication_canary_authority_invalid", denial
 
@@ -200,13 +216,13 @@ def test_raw_saturation_still_refuses_even_the_canary(
     saturated refuses the canary exactly as before; there is no token the
     exemption could honestly hand it.
     """
-    q, clock, _contracts, _publish, _tick, claim = gpu_box
+    q, clock, _contracts, _publish, _tick, _claim = gpu_box
     monkeypatch.setattr(adaptive_cpu.Controller, "sample",
                         lambda self: _saturated(clock))
     action, cas, checkout = _seal(tmp_path, "saturated")
     _mint(q, action)
     _publish_canary(q, action, cas, checkout)
-    assert claim() is None
+    assert _canary_claim(q) is None
     denial = _denial(q, action["action_key"])
     assert denial["reason"] == "adaptive_cpu_refused", denial
     assert denial["evidence"]["decision"]["reason"] == "host_pressure", denial
