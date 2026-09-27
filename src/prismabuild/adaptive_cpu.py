@@ -672,8 +672,9 @@ def idle_judgement_with_reference(
     actually judged against -- the whole remembered window with holders
     present, the window before this sample less an ongoing excursion
     without them, and ``None`` where the verdict judged against nothing at
-    all: a forced holder tail, or a fresh window after an identity reset
-    (whose empty state the caller must not re-derive, #1233 review).  The
+    all: a forced holder tail, or the fresh empty window an identity reset
+    judges against (empty, not None -- the reset state carries no samples
+    to re-derive, #1233 review).  The
     reference is an answer, never a field of the verdict, which is
     serialized into refusal evidence.
 
@@ -853,7 +854,6 @@ class Controller:
         reference, prior_rule = self._idle[2], self._idle[3]
         if reference is None:
             return {'state': 'no-reference', 'exceeds': False}
-        reference, prior_rule = self._idle[2], self._idle[3]
         # PSI cannot be attributed to a CPU, so only the re-judged busy can
         # exceed: every other field reads as its quietest, zero.
         current = {field: 0.0 for field in IDLE_FIELDS}

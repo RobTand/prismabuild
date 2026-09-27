@@ -29,7 +29,7 @@ def _window(tmp_path: Path, entries: int, entry_bytes: int):
     """Real one-byte-pattern files under a private mount; (manifest, digest, total)."""
 
     mount = tmp_path / "sources"
-    mount.mkdir(exist_ok=True)
+    mount.mkdir(parents=True, exist_ok=True)
     listed = []
     for index in range(entries):
         payload = bytes([index % 251]) * entry_bytes
@@ -144,16 +144,17 @@ def test_the_boundary_is_one_pacer_sample_of_the_share(tmp_path, monkeypatch):
     byte more is held as every larger window is.
     """
 
-    # fill 1 MB/s, sample interval 0.5 s: the bound is exactly 512 KiB.
+    # fill 1 MB/s, sample interval 0.5 s: the bound is exactly 500,000
+    # bytes (MB, not MiB: the share and the pacer both speak MB).
     receipt, calls = _run(tmp_path / "a", monkeypatch, fill_mb_s=1,
-                          entries=1, entry_bytes=512 * 1024)
+                          entries=1, entry_bytes=500_000)
     pace = receipt["phase_timings"]["thread_seconds"]["pace_wait"]
     assert pace["seconds"] < 0.5, pace
     assert calls["wait"] == 0, calls
     assert calls["sample"] >= 1, calls
 
     receipt, calls = _run(tmp_path / "b", monkeypatch, fill_mb_s=1,
-                          entries=1, entry_bytes=512 * 1024 + 1)
+                          entries=1, entry_bytes=500_001)
     pace = receipt["phase_timings"]["thread_seconds"]["pace_wait"]
     assert calls["wait"] >= 1, calls
     assert pace["seconds"] >= 1.5, pace

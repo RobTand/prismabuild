@@ -3642,21 +3642,24 @@ class _Copier:
         # at the blocked consumer's expense (#1091).
         self.limit = (paced if plan is None
                       else (lambda: self.workers if plan.exempt() else paced()))
-        # #1235: a copy whose whole window fits inside the fill share this
-        # mover's claim already declared for one second is never held.  Its
-        # token bucket bounds its pool load to that share, so a pacer hold
-        # protects clients from nothing the bucket does not, while the
-        # hold's cost is all the copy waits for: the measured tail held a
-        # 6-10 MiB mover 35-88 s in a single ``pace_wait`` behind recurring
-        # client streams, for a copy whose own read was 0.05 s.  The sample
-        # still measures the pool, exactly as #1091's never-held copy.  A
-        # window with no declared share stays held as before, and so does
-        # every window bigger than the share: the large fills' rationing is
-        # untouched.
+        # #1235: a copy whose whole window its own reserved share delivers
+        # within ONE PACER SAMPLE INTERVAL is never held.  The bound is the
+        # live pacer's own time resolution (``sample_s``, read off the
+        # object, never a copied constant): such a window completes before
+        # the pacer can observe its contribution, so a hold cannot be a
+        # response to anything the copy caused, while the hold's cost (85 s
+        # of consumer latency behind recurring streams, measured) is all
+        # the copy waits for.  Its token bucket bounds its pool load to the
+        # same share anyway.  Still measured, never held, exactly as
+        # #1091's consumer-blocked copy.  A window with no declared share
+        # stays held as before, and so does every window bigger than the
+        # bound: the large fills' rationing is untouched.
         window_bytes = sum(int(entry["bytes"]) for entry in entries)
+        sample_s = float(getattr(self.pacer, "sample_s", 0.0) or 0.0)
         self.never_held = (self.pacer is not None and self.fill_mb_s > 0
-                           and 0 < window_bytes
-                           and window_bytes <= self.fill_mb_s * 1_000_000)
+                           and sample_s > 0.0 and 0 < window_bytes
+                           and window_bytes
+                           <= self.fill_mb_s * 1_000_000 * sample_s)
         work: queuelib.Queue = queuelib.Queue()
         for entry in entries:
             work.put(entry)
