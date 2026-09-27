@@ -64,6 +64,7 @@ import importlib
 import json
 import math
 import os
+import socket
 import subprocess
 import sys
 from pathlib import Path
@@ -308,6 +309,21 @@ def submit_leg(
     container_image = str(spec.get("container_image") or "").strip()
     if container_image:
         submit_argv += ["--container-image", container_image]
+    authorizer = paths.get("publication_canary_authorizer") if spec["name"] == "leg-2" else None
+    slot_intent = None
+    if authorizer is not None:
+        # The existing single GPU leg checks the publisher's GPU host. This
+        # explicit host scope is the rate-limit identity, not fleet sharding.
+        sys.path.insert(0, str(paths["published_src"]))
+        from prismabuild import publication_canary
+        slot_intent = publication_canary.identity({
+            "generation": generation, "host": socket.gethostname()})
+        submit_argv += ["--tag", slot_intent["host"],
+                        "--tag", publication_canary.CAPABILITY,
+                        "--tag", f"runtime-generation:{generation}",
+                        "--exclusive", "--gpu-capacity", "1",
+                        "--timeout-s", str(publication_canary.EXECUTION_TIMEOUT_S),
+                        "--max-attempts", "1"]
     submit_argv += extra
     if manifest is not None:
         submit_argv += ["--data-manifest", str(manifest)]
@@ -322,11 +338,28 @@ def submit_leg(
         submit_argv += ["--env", f"{name}={value}"]
     submit_argv += ["--", *command]
     try:
-        completed = run_process(submit_argv, timeout_s=120.0)
+        if slot_intent is None:
+            completed = run_process(submit_argv, timeout_s=120.0)
+        else:
+            from pbcanary_submission import submit
+            assert callable(authorizer)
+            completed = submit(
+                submit_argv, intent=slot_intent,
+                authorize=lambda action, *, deadline: authorizer(
+                    action, run_id=run_id, deadline=deadline),
+                timeout_s=120.0)
+    except (ValueError, OSError, RuntimeError) as exc:
+        raise PreconditionRefused(
+            f"precondition refused ({label}): publication canary handoff: {exc}: did not test"
+        ) from exc
     except subprocess.TimeoutExpired as exc:
+        detail = (f"; {str(exc.stderr)[:4096]}"
+                  if slot_intent is not None and exc.stderr else "")
+        reason = ("publication handoff timed out" if slot_intent is not None
+                  else "timed out: queue unreachable")
         raise PreconditionRefused(
             f"precondition refused ({label}): pbrun submission "
-            f"timed out: queue unreachable: did not test ({exc})"
+            f"{reason}: did not test ({exc}{detail})"
         ) from exc
     detach = first_json_with_stdout_key(completed.stdout, "action_key")
     if completed.returncode != 0 or detach is None:
@@ -824,7 +857,8 @@ def write_summary_dir(summary_dir: str | Path, run_id: str, results: list,
 
 
 def run_canary(args: argparse.Namespace | None = None,
-               *, generation: str | None = None, report: dict | None = None) -> int:
+               *, generation: str | None = None, report: dict | None = None,
+               publication_canary_authorizer=None) -> int:
     """Submit the requested legs through the real queue and verify them.
 
     ``args`` is the CLI namespace from :func:`main`; programmatic callers
@@ -845,6 +879,8 @@ def run_canary(args: argparse.Namespace | None = None,
     published_root = Path(args.published_root or DEFAULT_PUBLISHED_ROOT)
     fleet_root = Path(args.fleet_root or DEFAULT_FLEET_ROOT)
     paths = _fleet_paths(published_root, fleet_root)
+    if publication_canary_authorizer is not None:
+        paths["publication_canary_authorizer"] = publication_canary_authorizer
     requested = [leg.strip() for leg in args.legs.split(",") if leg.strip()]
     known = [name for name, _ in LEG_MODULES]
     for leg in requested:
@@ -873,7 +909,13 @@ def run_canary(args: argparse.Namespace | None = None,
     write_json(namespace / "run.json", run_record)
 
     results: list[dict] = []
-    for leg in requested:
+    # Publish the GPU slot before waiting on any other leg, so the serial
+    # driver itself cannot miss the next free GPU boundary. Standalone runs
+    # retain their requested order and cannot mint a slot.
+    execution_order = (["leg-2", *[leg for leg in requested if leg != "leg-2"]]
+                       if publication_canary_authorizer is not None and "leg-2" in requested
+                       else requested)
+    for leg in execution_order:
         leg_dir = namespace / leg
         leg_dir.mkdir(exist_ok=True)
         entry: dict = {"leg": leg, "ok": False, "reason": "",

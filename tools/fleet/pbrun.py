@@ -8117,8 +8117,15 @@ def release_origin_consumer_cli(batch_ref: str, consumer_key: str, *,
     return 0
 
 
-def main() -> int:
+def main(*, publication_canary_intent=None, authorize_canary=None) -> int:
     args = parse_args()
+    # Internal publisher handoff only; there is no public self-authorizing
+    # switch. PoolQueue independently checks the publisher's exact-key grant.
+    if publication_canary_intent is not None:
+        if (not callable(authorize_canary) or args.transport != "pool"
+                or not args.detach or args.after or args.withdraw
+                or args.release_origin_consumer is not None):
+            raise SystemExit("pbrun: publication canary requires a bounded publisher handoff")
     if args.withdraw:
         # Withdrawing is not a submission and must not need one: the operator
         # cancelling four suites has no command to give and no checkout to
@@ -8156,7 +8163,9 @@ def main() -> int:
     tags = template["params"]["placement"]["required_tags"]
     demand = template["params"]["demand"]
     cas = template["cas"]
-    action = seal_action_from_template(template)
+    action = (seal_action_from_template(
+        template, extra_params={"publication_canary": publication_canary_intent})
+        if publication_canary_intent is not None else seal_action_from_template(template))
     key = str(action["action_key"])
 
     if args.as_sealed_by is not None and key != args.as_sealed_by:
@@ -8168,6 +8177,8 @@ def main() -> int:
             "prevent reproduction by this client."
         )
 
+    if publication_canary_intent is not None:
+        authorize_canary(action)
     request_path = cas.publish_action_request(action)
 
     if args.detach and cas.lookup(action) is not None:

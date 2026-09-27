@@ -3172,6 +3172,74 @@ source/component validation establishes neither deployment nor a live canary.
 The running fleet adopts these semantics only when a carrying generation is
 published.
 
+**Publisher GPU boundary slot (#1213; approved 2026-09-27).** The publication
+canary's single GPU leg targets the publisher's GPU host and is submitted before
+the driver waits on other legs. A verified publisher grant places that action
+ahead of ordinary work in **every priority band**, both before a bounded ready
+prefix and after claim-side aging/GPU-first planning. With a known claimant,
+only positively matching placement earns this elevation; another host's or a
+superseded runtime's slot cannot take the bounded prefix through extra priority.
+A global listing still includes all grants. It retains priority -10,
+nonretryability, one attempt, exclusive GPU admission, and all ordinary CPU,
+GPU, memory, image, placement and transition-lock checks. Its queue envelope is
+CPU1/GPU1/mem16GiB: the ordinary leg declares 8 GiB, but pbrun's unchanged
+`--exclusive` path applies its existing 16-GiB floor. It never withdraws a
+running quantum. An ineligible/unknown resource state is not permission to run;
+the slot gets the next free boundary at which its safety requirements hold.
+Ordinary standalone canaries retain ordinary admission and cannot mint slots.
+
+Only the process owning the publisher's existing POSIX publication lock
+**authorizes** a mint. A bounded private socket handoff receives the exact sealed
+action from the published pbrun subprocess and authorizes it **before** CAS/READY
+publication; there is no public self-authorizing CLI flag. After proving ownership
+and the exact request, that parent delegates just the exclusive-create store
+mutation to the existing bounded helper. The storage primitive itself is not an
+authentication boundary. Queue publication reads the
+validated CAS request through the same read used for produced-batch binding,
+checks the sealed `params.publication_canary` identity, and independently checks
+the exact-key grant. Environment labels or a changed payload confer no right.
+The trust boundary remains the trusted runtime/queue filesystem: this is not
+protection against a malicious same-UID writer replacing the publisher or store.
+
+`publication-canaries/v1/sha256(runtime_generation + NUL + host).json` under the
+queue root records schema `prismabuild.publication_canary_slot.v1`, exact key,
+runtime generation, host, run id, execution bound and first `published_unix`.
+Exclusive grant creation permits **one distinct action ever per published
+runtime generation and host**, not one concurrently. First queue publication
+binds/consumes the grant under the action transition and grant locks; terminal
+states, retries, withdrawal and restart do not restore it. A crash after binding
+but before READY spends the slot and is a did-not-test availability loss, never
+an excuse to replace the action. An existing live exact row can be attached to
+through ordinary duplicate handling. Retain spent records for as long as their
+published generation remains addressable; namespace/run GC does not remove them.
+Growth is one small grant and persistent lock inode per host/generation.
+
+The worker advertises `publication-canary-slot-v1` and
+`runtime-generation:<loaded immutable generation>` only from its loaded runtime,
+not the moving repo symlink. Both tags are required by the sealed slot. Old
+workers cannot claim it; ordinary work retains its old envelopes and ordering.
+A missing carrying worker/capability is a visible refusal, not fallback to
+unprivileged execution. A queued slot for a superseded runtime cannot silently
+qualify its successor; it remains visibly unplaceable until operator disposition.
+Running old quanta still drain normally. No deployment or live-canary result is
+implied by source support, and rollback must not relabel outstanding slots.
+
+The sealed execution deadline is **32 s**: ceil(8 × 3.93170428276062 s), the
+verified same-image leg-2 execution measured by action
+`4ae5bc61d25fa5c5de7fcfc40b5e40430f5c137b6dce3eb8430ac944f3c0aa33`.
+Queue wait is excluded. Existing worker deadline/container cleanup enforces the
+bound, not merely the verdict or observer timer. Submission handoff has a 120 s
+whole-submission deadline, plus bounded owned-child cleanup, and 4 MiB
+message/output bounds. The authorization callback
+receives that same absolute monotonic deadline; its shared-store mutation runs
+in a separate bounded helper, not in a thread or the lock-owning parent. At
+expiry the parent sends no authorization ACK and records any retained helper
+identity. A late exclusive-create grant can spend the generation's availability,
+but cannot publish READY: an uncertain mint is never retried or replenished.
+The existing 600 s observer budget is separate: expiry remains not_run, not
+success or proof of an execution failure. No campaign code, quantum scope or
+running process is changed.
+
 The source delivery keeps `FINAL_BARRIER_QUALIFICATION_GUARD` enabled. Every
 public barrier mutation, including publication, activation, resume and rollback,
 therefore refuses before staging or stepping the epoch state machine.

@@ -153,6 +153,7 @@ from . import box_window
 from . import resource_scope
 from . import posix_lock
 from . import window_credit
+from . import publication_canary
 
 POOL_ITEM_SCHEMA_V1 = "prismaquant.prismabuild.pool_item.v1"
 POOL_CLAIM_INTENT_SCHEMA_V1 = "prismaquant.prismabuild.pool_claim_intent.v1"
@@ -1437,20 +1438,15 @@ def progress_policy(
     )
 
 
-def _sealed_produced_output_batch(
+def _sealed_action_request(
     cas_root: str | Path,
     action_key: str,
-) -> tuple[Mapping[str, object] | None, bool]:
-    """Read the sealed batch reference and request presence (R5).
+) -> Mapping[str, object] | None:
+    """Read one validated sealed request for all publication policies.
 
-    Returns ``(value_or_None, request_present)``. Only key ABSENCE means no
-    requirement: a present non-mapping value -- including explicit JSON
-    ``null`` -- is malformed and refuses. No request file (legacy direct
-    publish) declares nothing. A request file that exists but is unreadable,
-    undecodable, invalid, key-mismatched, or has non-object params refuses:
-    missing/corrupt authority never silently becomes legacy. Shape validation
-    belongs to the caller (filed template + namespace + residency bind),
-    which never trusts this mapping beyond it being the real sealed params.
+    An absent request permits only the legacy direct-publish path. Corrupt,
+    unreadable or key-mismatched authority never silently becomes legacy.
+    R5 batch binding and #1213 canary binding share this read.
     """
 
     key = str(action_key)
@@ -1458,7 +1454,7 @@ def _sealed_produced_output_batch(
     try:
         raw = pb._read_regular_file_nofollow(request, where="pool action request")
     except FileNotFoundError:
-        return (None, False)
+        return None
     try:
         action = pb.validate_action(
             pb._decode_strict_json(raw, where="pool action request"))
@@ -1469,6 +1465,26 @@ def _sealed_produced_output_batch(
     if action["action_key"] != key:
         raise PoolContractError("pool action request does not match the claimed key")
     params = action.get("params")
+    if not isinstance(params, Mapping):
+        raise PoolContractError("pool action request params must be an object")
+    return action
+
+
+def _sealed_produced_output_batch(
+    cas_root: str | Path,
+    action_key: str,
+) -> tuple[Mapping[str, object] | None, bool]:
+    """Preserve the R5 sealed-batch reader for claim, funding and finish.
+
+    Publication shares the validated action read with the canary policy;
+    these later transitions still independently reread immutable authority.
+    An absent request is legacy, an absent batch key declares no batch, and
+    a present non-mapping value (including null) refuses exactly as before.
+    """
+    action = _sealed_action_request(cas_root, action_key)
+    if action is None:
+        return (None, False)
+    params = action["params"]
     if not isinstance(params, Mapping):
         raise PoolContractError("pool action request params must be an object")
     if "produced_output_batch" not in params:
@@ -5778,7 +5794,7 @@ class PoolQueue:
         # Required immutable admission carrier (R4/R5): bound to the REAL
         # sealed params, never to the kwarg alone. The CAS-filed action
         # request is read through the existing request loader with key
-        # validation (`_sealed_produced_output_batch`, same machinery as the
+        # validation (`_sealed_action_request`, same machinery as the
         # sealed progress policy): no request file means legacy direct
         # publish; a sealed reference is derived from it even when the kwarg
         # is omitted; a contradictory kwarg refuses; a VALID filed request
@@ -5788,8 +5804,24 @@ class PoolQueue:
         # An unreadable/invalid sealed request refuses before READY exposure
         # and never silently becomes legacy.
         try:
-            sealed_batch_raw, sealed_request_present = (
-                _sealed_produced_output_batch(cas_root, action_key))
+            sealed_request = _sealed_action_request(cas_root, action_key)
+            sealed_request_present = sealed_request is not None
+            sealed_params = sealed_request["params"] if sealed_request is not None else {}
+            assert isinstance(sealed_params, Mapping)
+            sealed_batch_raw = sealed_params.get("produced_output_batch")
+            if ("produced_output_batch" in sealed_params
+                    and not isinstance(sealed_batch_raw, Mapping)):
+                raise PoolContractError(
+                    "action.params.produced_output_batch must be an object")
+            canary_ref = publication_canary.intent(sealed_request)
+            if canary_ref is not None:
+                publication_canary.check_envelope(
+                    canary_ref, tags=normalized_tags, needs_gpu=needs_gpu,
+                    resources=demand, priority=priority, retry_safe=retry_safe,
+                    max_attempts=max_attempts)
+                publication_canary.load(self.root, canary_ref, action_key)
+            elif publication_canary.CAPABILITY in normalized_tags:
+                raise PoolContractError("publication canary capability requires sealed intent")
         except PoolContractError:
             raise
         except (ValueError, OSError) as exc:
@@ -6069,6 +6101,12 @@ class PoolQueue:
             except produced_mod.ProducedOutputError as exc:
                 raise PoolContractError(
                     f"produced-output template conflict: {exc}") from exc
+        published_unix = _now()
+        if canary_ref is not None:
+            try:
+                publication_canary.bind(self.root, canary_ref, action_key, published_unix)
+            except (ValueError, OSError) as exc:
+                raise PoolContractError(str(exc)) from exc
         superseded = self._supersede_withdrawal(action_key)
         item = {
             "schema": POOL_ITEM_SCHEMA_V1,
@@ -6081,10 +6119,12 @@ class PoolQueue:
             "resources": demand,
             "attempts": 0,
             "max_attempts": max_attempts,
-            "published_unix": _now(),
+            "published_unix": published_unix,
             "published_by": socket.gethostname(),
             **addressing,
         }
+        if canary_ref is not None:
+            item["publication_canary"] = canary_ref
         if residency_block is not None:
             item["residency"] = residency_block
         if produced_ref is not None:
@@ -6705,7 +6745,12 @@ class PoolQueue:
         # send Python on to compare the item dictionaries themselves, which is
         # the same class of raise one layer down.
         ordered.sort(key=lambda pair: pair[0])
-        return [record for _order, record in ordered]
+        # Verified publication slots alone cross bands, before any caller's
+        # bounded prefix. Ordinary aging/priority remains byte-for-byte ordered.
+        return publication_canary.promote(
+            self.root, [record for _order, record in ordered],
+            eligible=(None if placement is None else lambda item:
+                      self._placement_matches(item, tags=tagset, has_gpu=has_gpu)))
 
     # -- aging ----------------------------------------------------------
 
@@ -17512,6 +17557,11 @@ class PoolQueue:
             ready, gpu_first = self._gpu_first_order(
                 ready, ledger=ledger, total=total, tags=tagset, has_gpu=has_gpu,
                 gpu_controller=gpu_controller)
+        # _aged_for and GPU-first planning can both restore ordinary band
+        # order. Re-elevate verified publication slots before any withhold.
+        ready = publication_canary.promote(
+            self.root, ready, eligible=lambda item: self._placement_matches(
+                item, tags=tagset, has_gpu=has_gpu))
         #: The rooms of those rows this pass could not evaluate because another
         #: loop held their transition lock (#1169, :meth:`_ready_gpu_row_room`).
         #: A row behind one that demands no GPU is admitted only beside them.
@@ -17663,6 +17713,12 @@ class PoolQueue:
                             "required_tags": item.get("tags"), "needs_gpu": item.get("needs_gpu"),
                         })
                     continue
+                if ("publication_canary" in item
+                        or publication_canary.CAPABILITY in (item.get("tags") or [])):
+                    if (not publication_canary.verified(self.root, item)
+                            or item["publication_canary"]["host"] != socket.gethostname()):
+                        self.record_denial(item, "publication_canary_authority_invalid")
+                        continue
                 declared_images = item.get("container_images")
                 item_tags = item.get("tags")
                 if (not declared_images and isinstance(item_tags, list)

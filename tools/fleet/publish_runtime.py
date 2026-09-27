@@ -65,6 +65,7 @@ CHECKOUT = _SCRIPT.parents[1] if _SCRIPT.parent.name == "tools" else _SCRIPT.par
 MIRROR = Path("/mnt/shared/prismabuild-fleet/repo")
 _PUBLISH_MUTEX = threading.RLock()
 _PUBLISH_LOCK_DEPTH = 0
+_PUBLISH_LOCK_PID: int | None = None
 #: Published as ``tools/<name>`` *and* ``tools/fleet/<name>``.
 FLEET_SCRIPTS = (
     "dispatch_tessera_model.py",
@@ -244,6 +245,10 @@ EXCLUDED: tuple[tuple[str, str], ...] = (
      "worker boxes execute the driver's legs from the submission snapshot, "
      "never from the generation; a box with no checkout has no reason to "
      "run it"),
+    ("pbcanary_submission.py",
+     "the checkout canary's private bounded sealed-action handoff to the "
+     "lock-owning publisher; it loads the published pbrun client but never "
+     "runs on workers or grants authority to a standalone caller (#1213)"),
     ("pbcanary_verdict.py",
      "the canary's verdict module (#688) is imported by the checkout's "
      "driver at verdict time, never executed standalone; it travels with "
@@ -832,12 +837,60 @@ def _load_canary_driver():
 def _invoke_canary_driver(generation_name: str) -> tuple[int, str]:
     """Run the driver against the just-activated generation; return (code, detail)."""
 
+    # Resolve the shared helper before the driver starts its submission budget.
+    import pbstatus
+
     entry = _load_canary_driver()
     report: dict = {}
+
+    def authorize(action, *, run_id, deadline):
+        # POSIX publication ownership belongs to this process, not a fork
+        # inheriting a positive nesting depth or a readable random token.
+        if _PUBLISH_LOCK_DEPTH < 1 or _PUBLISH_LOCK_PID != os.getpid():
+            raise ValueError("publication canary mint requires the owned publication lock")
+        remaining = float(deadline) - time.monotonic()
+        if not math.isfinite(remaining) or remaining <= 0:
+            raise TimeoutError("publication canary authorization deadline expired")
+        budget = pbstatus.Deadline(remaining)
+        sys.path.insert(0, str(CHECKOUT / "src"))
+        from prismabuild import core, publication_canary
+        checked = core.validate_action(action)
+        value = publication_canary.intent(checked)
+        environment = checked.get("environment")
+        variables = environment.get("variables") if isinstance(environment, dict) else None
+        if not isinstance(variables, dict):
+            raise ValueError("publication canary environment is not a mapping")
+        if (value is None or value["generation"] != generation_name
+                or value["host"] != socket.gethostname()
+                or variables.get("PBCANARY_LEG") != "leg-2"
+                or variables.get("PBCANARY_RUN_ID") != run_id
+                or variables.get("PBCANARY_GENERATION") != generation_name):
+            raise ValueError("publication canary action does not bind this publisher run")
+        # Only this parent authorizes. The exact, exclusive-create mutation
+        # runs in the existing bounded helper: a hard-mounted store cannot
+        # trap the publisher while it holds the publication lock. A timed-out
+        # helper can leave a late grant, but receives no READY authorization;
+        # never retry an uncertain mint or reclaim its one-generation budget.
+        abandoned = []
+        minted = pbstatus.bounded(
+            "publication canary mint",
+            lambda: str(publication_canary.mint(
+                MIRROR.parent / "pb-queue", checked, run_id=run_id)),
+            deadline=budget, abandoned=abandoned, announce_retained=False)
+        if minted.get("status") == "timed_out":
+            raise TimeoutError(
+                "publication canary mint deadline expired; "
+                f"retained helper={json.dumps(abandoned, sort_keys=True)}")
+        if minted.get("status") != "ok":
+            raise ValueError(f"publication canary mint refused: {minted.get('error')}")
+
     try:
         # Older retained drivers implement the original generation-only API.
         # New drivers return their durable per-leg identities through report.
-        options = {"report": report} if "report" in inspect.signature(entry).parameters else {}
+        parameters = inspect.signature(entry).parameters
+        options: dict[str, object] = {"report": report} if "report" in parameters else {}
+        if "publication_canary_authorizer" in parameters:
+            options["publication_canary_authorizer"] = authorize
         result = entry(generation=generation_name, **options)
     except SystemExit as exc:
         code = exc.code
@@ -972,9 +1025,11 @@ def _publication_lock():
     Closing another descriptor for this inode would release a process's lock,
     so nested entry reuses the outer descriptor instead of opening it again.
     """
-    global _PUBLISH_LOCK_DEPTH
+    global _PUBLISH_LOCK_DEPTH, _PUBLISH_LOCK_PID
     with _PUBLISH_MUTEX:
         if _PUBLISH_LOCK_DEPTH:
+            if _PUBLISH_LOCK_PID != os.getpid():
+                raise SystemExit("a fork cannot inherit publication lock ownership")
             _PUBLISH_LOCK_DEPTH += 1
             try:
                 yield
@@ -995,10 +1050,12 @@ def _publication_lock():
             except BlockingIOError as exc:
                 raise SystemExit("another publication or barrier coordinator holds the publication lock") from exc
             _PUBLISH_LOCK_DEPTH = 1
+            _PUBLISH_LOCK_PID = os.getpid()
             try:
                 yield
             finally:
                 _PUBLISH_LOCK_DEPTH = 0
+                _PUBLISH_LOCK_PID = None
         finally:
             os.close(fd)
 
