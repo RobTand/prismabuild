@@ -111,7 +111,8 @@ RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from prismabuild import (adaptive_cpu, adaptive_gpu as gpu_admission,  # noqa: E402
                          box_capacity, container_images,
-                         core as pb, cpu_topology, local_scratch, pool)
+                         core as pb, cpu_topology, local_scratch, pool,
+                         publication_canary)
 from pbstatus import Deadline, bounded  # noqa: E402
 
 #: The safety ceiling a worker loop enforces on one action unless told
@@ -1302,6 +1303,9 @@ def _run_loop(stop_requested):
     #: first image-pinned submission can be placed, and a failure leaves
     #: ``None`` (unknown), never an empty set (#714).
     inventory = container_images.InventoryCache()
+    # Immutable loaded generation, never the moving repo symlink. Old loops
+    # cannot claim a successor publisher's privileged action.
+    loaded_generation = _generation_at(GENERATION_VERSION)
     def offered_tags(name: str) -> list[str]:
         """What this box offers, for the name it currently has.
 
@@ -1335,6 +1339,9 @@ def _run_loop(stop_requested):
         # check then finds presence unknown and refuses, leaving the item
         # ready for a box that can see it.
         tags.append(pb.CONTAINER_IMAGE_TAG)
+        if loaded_generation:
+            tags.extend((publication_canary.CAPABILITY,
+                         f"runtime-generation:{loaded_generation}"))
         return tags
 
     host = socket.gethostname()
@@ -1366,7 +1373,6 @@ def _run_loop(stop_requested):
     #: must not accumulate one D-state process per poll per loop.
     abandoned_discoveries: list = []
     loaded_commit = loaded_runtime_commit()
-    loaded_generation = _generation_at(GENERATION_VERSION)
     print(f"[{host}] runtime {loaded_commit[:12] or '(unversioned)'}",
           flush=True)
     print(f"[{host}] offer publication bounded to {OFFER_PUBLISH_TIMEOUT_S:g}s "
