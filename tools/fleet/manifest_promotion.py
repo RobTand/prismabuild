@@ -93,6 +93,13 @@ def planner_args(**overrides: object) -> argparse.Namespace:
         residency_mover_max_attempts=3,
         residency_mover_mem_gb=1,
         residency_mover_readers=4,
+        # The publication row's own fields: a movement node's priority is the
+        # submitter's ordinary priority and its attempts are the mover
+        # policy's, both of which ``publication_row`` reads off the namespace
+        # exactly as it reads them off the CLI's.
+        priority=-10,
+        max_attempts=3,
+        retry_safe=True,
     )
     for name, value in overrides.items():
         setattr(args, name, value)
