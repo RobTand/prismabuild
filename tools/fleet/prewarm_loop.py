@@ -3977,6 +3977,16 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
             event["skipped"].append({"action_key": key,
                                      "reason": "origin consumer released"})
             continue
+        if (isinstance(item.get("produced_output_batch"), Mapping)
+                and queue.fail_dead_input_dependency(item, key)):
+            # #1184: a mover whose dead producer's bound origin is gone can
+            # never run.  The transition is serialized under the key's own
+            # transition lock inside the method, before any warm here or
+            # admission on a claim.  Does not spend the lookahead, for the
+            # same reason as the released consumer above.
+            event["skipped"].append({"action_key": key,
+                                     "reason": "input dependency failed"})
+            continue
         request = sealed_request(root, key)
         entry = manifest_input_of(request)
         if entry is None:

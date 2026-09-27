@@ -17656,6 +17656,17 @@ class PoolQueue:
                     "withheld_for": withheld_for,
                     "withheld_kinds": sorted(withheld_kinds or ())})
                 continue
+            if (isinstance(item.get("produced_output_batch"), Mapping)
+                    and key
+                    and self.fail_dead_input_dependency(item, key)):
+                # Before the hold and any admission (#1184): the method
+                # serializes its own transition under this key's lock, so a
+                # concurrent publisher or claimant cannot interleave with
+                # the ending.  A box that can place the row is one box that
+                # can fail it; the prewarm loop reaches it on every box
+                # regardless, and an unprovable dependency answers False
+                # and claims exactly as before.
+                continue
             with self._timed_transition_hold(key, holds) as acquired:
                 if not acquired:
                     if key:
@@ -21896,6 +21907,85 @@ class PoolQueue:
             _write_json_atomic(self.item_path(FAILED, key), record)
         self._finish_ready_transition(captured)
         return True
+
+    def fail_dead_input_dependency(self, item: Mapping[str, object],
+                                   key: str) -> bool:
+        """Fail a ready mover whose dead producer's bound origin is gone (#1184).
+
+        A mover's sealed ``produced_output_batch`` reference names the
+        producer attempt that owns its origin paths.  When that attempt is
+        provably dead and one of the batch's committed origin paths no
+        longer exists, the row can never run -- only that dead attempt
+        could write the missing file -- so it is failed here, before any
+        warm, placement, admission or staging: status ``failed`` with
+        ``termination_reason=input_dependency_failed`` naming the owner
+        nonce and the missing path, and the ready bytes kept under
+        ``withdrawn/superseded/``.  This is the identity-bound death proof
+        the design note requires: ENOENT, poll counts and unknown state
+        alone remain insufficient, and ``produced_output.dead_input_dependency``
+        answers ``None`` for every one of those, leaving the row ready.
+
+        The confirm and the filing run under this key's transition lock, so
+        a concurrent publisher or claimant of the same key serializes
+        against this ending, and the captured generation is restored rather
+        than replaced when a successor appears.  Returns ``True`` when the
+        row must not be warmed or claimed: it was failed, or its READY bytes
+        are gone (a stale listing).  ``False`` lets the caller proceed.
+        """
+
+        from . import produced_output as produced_mod
+
+        if not isinstance(item.get("produced_output_batch"), Mapping):
+            return False
+        with self._transition_locked(key):
+            try:
+                proof = produced_mod.dead_input_dependency(self, item)
+            except (produced_mod.ProducedOutputError, OSError,
+                    PoolContractError) as exc:
+                # Unreadable queue state is unknown state: it invents no
+                # ending, and the row stays claimable (#1184).
+                self.record_denial(item, "dead_input_dependency_unreadable",
+                                   {"error": str(exc)})
+                return False
+            if proof is None:
+                return False
+            captured = self._capture_ready_transition(
+                self.item_path(READY, key), kind="dead-input")
+            if captured is None:
+                return True       # the listing was stale: nothing of it is ready
+            try:
+                record = _read_json(captured)
+                covered = (self.terminal_outcome_covers(record, action_key=key)
+                           if record is not None else None)
+            except (OSError, PoolContractError):
+                self._restore_ready_transition(captured, key)
+                return False
+            if record is None:
+                self._restore_ready_transition(captured, key)
+                return True
+            if covered is None:
+                record.update({
+                    "schema": POOL_OUTCOME_SCHEMA_V1,
+                    "action_key": key,
+                    "status": "failed",
+                    "finished_unix": _now(),
+                    "finished_host": socket.gethostname(),
+                    "detail": {
+                        "termination_reason": "input_dependency_failed",
+                        "input_dependency": dict(proof),
+                        "refusal": "dead-producer-input-missing",
+                        "reason": (
+                            f"input dependency failed: producer "
+                            f"{proof['owner_action_key'][:12]} attempt "
+                            f"{proof['owner_nonce']} is dead and its origin "
+                            f"{proof['path']} does not exist"),
+                    },
+                })
+                # Replaced, as ``finish`` files an outcome: an earlier
+                # generation's ending under this key is not this row's.
+                _write_json_atomic(self.item_path(FAILED, key), record)
+            self._finish_ready_transition(captured)
+            return True
 
     def live_withdrawal(self, action_key: str) -> dict[str, object] | None:
         """The visible cancellation marker filed for this key, if there is one.

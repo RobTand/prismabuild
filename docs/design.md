@@ -4418,17 +4418,33 @@ READY diagnostics expose recorded prewarm input errors, including missing
 files, with the receipt's finish time and `permanence unproven` (#1184).
 Unreadable prewarm evidence makes the diagnostic census incomplete, never a
 claim of absence. This is the issue's visibility slice only: it does not
-terminalize dependents or alter admission. Generic data-manifest entries do
-not bind a producer, but produced-output movers do: their sealed
-`produced_output_batch` names the owner key, nonce, scope and batch manifest.
-The #1184 incident's retained row carries that binding. The prewarm error
-strings do not themselves bind the failed read to an exact queue generation
-or prove permanent loss. Existing dead-batch retirement deliberately retains
-READY/CLAIMED movers (`_dead_staged_batch_ready`), and `finish` concludes
-claims, not READY dependencies. A terminal repair must combine the existing
-owner-attempt proof with authoritative missing-input evidence and a serialized
-pre-admission refusal; it remains proposed here. ENOENT, arbitrary poll counts
-and unknown state alone remain insufficient.
+terminalize dependents or alter admission for generic rows. Generic
+data-manifest entries do not bind a producer, but produced-output movers
+do: their sealed `produced_output_batch` names the owner key, nonce, scope
+and batch manifest. The #1184 incident's retained row carries that binding.
+The prewarm error strings do not themselves bind the failed read to an
+exact queue generation or prove permanent loss. Existing dead-batch
+retirement deliberately retains READY/CLAIMED movers
+(`_dead_staged_batch_ready`), and `finish` concludes claims, not READY
+dependencies.
+
+The terminal repair combines the owner-attempt proof with authoritative
+missing-input evidence and a serialized pre-admission refusal (#1184,
+implemented 2026-09-27): `produced_output.dead_input_dependency` answers
+the combined proof for a READY mover -- the sealed reference cross-checked
+against its immutable filed instance, the producer attempt provably dead
+(`_producer_attempt_state`), the batch's committed entry bound back by
+manifest digest, and one of that batch's origin paths under the producer's
+output prefix that does not exist. `PoolQueue.fail_dead_input_dependency`
+then fails the row under the key's transition lock, before any warm,
+placement, admission or staging: status `failed` with
+`termination_reason=input_dependency_failed` naming the owner nonce and
+the missing path, `published_unix` preserved, and the ready bytes kept
+under `withdrawn/superseded/`. The prewarm cycle and the claim path both
+refuse through it. ENOENT, arbitrary poll counts and unknown state alone
+remain insufficient: an unreadable record, a live or succeeded or unknown
+producer, a foreign reference, or a batch whose origin paths all still
+exist answers None and the row stays READY.
 
 The data-manifest prewarmer is described in
 [`data_manifest_prewarm.md`](data_manifest_prewarm.md).  A storage-role warm

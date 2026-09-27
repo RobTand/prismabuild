@@ -7913,6 +7913,106 @@ def _producer_attempt_state(queue, instance: Mapping[str, object]) -> str:
         str(attempt["nonce"]))
 
 
+def dead_input_dependency(
+        queue, item: Mapping[str, object]) -> dict[str, object] | None:
+    """The proof that a ready mover's producer-owned input is gone (#1184).
+
+    A mover whose sealed row carries a ``produced_output_batch`` reference
+    reads origin files only that reference's producer attempt can write.
+    This answers the combined proof the terminalization needs: the instance
+    the reference names (read from its immutable filed record, with every
+    identity field cross-checked against the reference so a foreign or
+    forged reference never authorizes reading another owner's state), the
+    producer attempt provably dead (:func:`_producer_attempt_state` -- the
+    only authority that makes a missing origin permanent), the batch's
+    committed entry bound back to the reference by manifest digest, and one
+    of that batch's origin paths under the producer's output prefix that
+    does not exist.  The answer names the owner nonce and the missing path.
+
+    Anything unprovable -- a malformed or foreign reference, an unreadable
+    instance or commitments record, a live, succeeded or unknown producer,
+    a batch committed at origin, or a batch whose origin paths all still
+    exist -- answers ``None``: ENOENT and unknown state alone invent no
+    authority (#1184), and the row stays ready.  Never raises for
+    queue-state reasons.
+    """
+
+    from prismabuild import pool as pool_mod
+
+    ref = item.get("produced_output_batch")
+    if not isinstance(ref, Mapping):
+        return None
+    if ref.get("schema") != pool_mod.PRODUCED_OUTPUT_BATCH_REF_SCHEMA_V1:
+        return None
+    try:
+        owner = _hex64(str(ref.get("owner_action_key") or ""),
+                       where="reference owner_action_key")
+        template_id = _name(str(ref.get("template_id") or ""),
+                            where="reference template_id")
+        nonce = _hex32(str(ref.get("owner_nonce") or ""),
+                       where="reference nonce")
+        scope_id = _name(str(ref.get("owner_scope_id") or ""),
+                         where="reference scope_id")
+        manifest_digest = _hex64(str(ref.get("manifest_digest") or ""),
+                                 where="reference manifest_digest")
+        batch_id = _name(str(ref.get("batch_id") or ""),
+                         where="reference batch_id")
+    except ProducedOutputError:
+        return None
+    try:
+        raw = json.loads(
+            (Path(queue.root) / "residency" / OUTPUT_SCOPES_SUBDIR / owner
+             / f"{template_id}.{nonce}" / "instance.json").read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(raw, Mapping):
+        return None
+    try:
+        instance = validate_instance(dict(raw))
+    except ProducedOutputError:
+        return None
+    attempt = instance["owner_attempt"]
+    assert isinstance(attempt, dict)
+    if (str(instance["owner_action_key"]) != owner
+            or str(instance["template_id"]) != template_id
+            or str(attempt["nonce"]) != nonce
+            or str(attempt["scope_id"]) != scope_id):
+        return None          # the reference does not name this instance
+    state = _producer_attempt_state(queue, instance)
+    if state != "dead":
+        return None
+    try:
+        commitments = _read_commitments(_commitments_path(queue.root, instance))
+    except (ProducedOutputError, OSError):
+        return None
+    entry = commitments["batches"].get(batch_id)
+    if (not isinstance(entry, Mapping)
+            or str(entry.get("manifest_digest")) != manifest_digest
+            or entry.get("origin_only") is True):
+        return None
+    prefix = str(instance["output_prefix"]).rstrip(os.sep) + os.sep
+    paths = entry.get("paths")
+    if not isinstance(paths, list):
+        return None
+    for path in sorted(str(each) for each in paths):
+        if not path.startswith(prefix):
+            continue         # only the producer's namespace is its to lose
+        if not os.path.exists(path):
+            return {
+                "owner_action_key": owner,
+                "owner_nonce": nonce,
+                "owner_scope_id": scope_id,
+                "template_id": template_id,
+                "template_sha256": str(instance["template_sha256"]),
+                "batch_id": batch_id,
+                "manifest_digest": manifest_digest,
+                "tier_id": str(ref.get("tier_id") or ""),
+                "path": path,
+                "producer_state": state,
+            }
+    return None
+
+
 def _attempt_state(generation: tuple[str, dict[str, object] | None],
                    nonce: str) -> str:
     """`_producer_attempt_state` for one attempt, over a generation already read.
