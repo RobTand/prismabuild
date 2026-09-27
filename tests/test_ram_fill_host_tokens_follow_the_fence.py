@@ -128,19 +128,20 @@ def test_orphan_host_holds_are_reconciled_by_name(tmp_path: Path) -> None:
     assert queue.rows_host_memory_held(HOST) == 48
 
     events = queue.reconcile_ram_host_holds(RAM_TIER, expected_holders=set())
-    assert len(events) == 1, events
-    assert events[0]["reason"] == "orphan_ram_host_hold"
-    assert events[0]["holder"] == "ram-host:" + "a" * 64
-    assert events[0]["released_gib"] == 30
+    assert events["events"][0]["reason"] == "orphan_ram_host_hold"
+    assert events["events"][0]["holder"] == "ram-host:" + "a" * 64
+    assert events["events"][0]["released_gib"] == 30
+    assert events["converged"] is True
     assert host.holder_tokens("ram-host:" + "a" * 64) == {}
     assert queue.rows_host_memory_held(HOST) == 48
 
     # A live advance and an expected in-flight grant are both left alone.
     state, _ = queue.take_tier_advance(RAM_TIER, "b" * 64, 20, "ram_gib")
     assert state == "taken"
-    events = queue.reconcile_ram_host_holds(
+    verdict = queue.reconcile_ram_host_holds(
         RAM_TIER, expected_holders={"9" * 64})
-    assert events == []
+    assert verdict["events"] == []
+    assert verdict["converged"] is True
     assert host.holder_tokens("ram-host:" + "b" * 64) == {"mem_gb": 20}
 
 

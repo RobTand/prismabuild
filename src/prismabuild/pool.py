@@ -10875,6 +10875,10 @@ class PoolQueue:
         hold would leave the window saying room the host pool has already
         spent -- and the host half rolls back if the tier half fails.
 
+        The kind must be an occupancy kind: rate kinds never mirror into
+        host GiB, so handing one here refuses loudly rather than minting
+        bytes out of a ration (#1245 review r2).
+
         Tri-state verdicts: ``("taken", "")``, ``("host-short", ...)``
         when the host pool refused, ``("tier-short", ...)`` when the tier
         ledger did, and ``("unknown", ...)`` when either ledger could not
@@ -10882,6 +10886,10 @@ class PoolQueue:
         """
 
         ram = storage_tiers.tier_kind_of(str(tier_id)) == "ram"
+        if kind in TIER_RATE_KINDS:
+            raise PoolContractError(
+                f"rate kind {kind!r} is not an occupancy kind: RAM host "
+                "mirrors hold GiB, never a fill ration (#1245 review r2)")
         if ram:
             host_state, host_detail = self.hold_tier_host_memory(
                 self._ram_tier_host(str(tier_id)), grant, gib)
@@ -10939,31 +10947,76 @@ class PoolQueue:
 
     def reconcile_ram_host_holds(
             self, tier_id: str,
-            expected_holders: Iterable[str]) -> list[dict[str, object]]:
-        """Return orphan RAM host holds whose tier holder is gone (#1245 B1).
+            expected_holders: Iterable[str]) -> dict[str, object]:
+        """Two-way sync of the RAM host mirror (#1245 review r1/r2).
 
-        The crash window this heals is the one between the host take and
-        the tier take inside :meth:`take_tier_advance` (or between the
-        tier transfer and the host transfer inside
-        :meth:`transfer_tier_reservation`): the host half of an advance
-        can outlive its tier half.  Every ``ram-host:*`` holder that is
-        neither live in the tier ledger nor named in ``expected_holders``
-        (in-flight grants a later pass will decide about) is released by
-        name, and each heal is reported as an event.  Unreadable ledgers
-        reconcile nothing -- no verdict is not evidence of an orphan.
+        Claim-path takes straight off the tier ledger hold no
+        ``ram-host:`` tokens, so the single writer makes every live tier
+        holder's host hold *equal* to its occupancy tokens each cycle:
+        the excess is released (the orphan case, the crash window between
+        the two halves of a take or a transfer), and what is missing is
+        acquired.  Rate kinds are never mirrored -- only occupancy GiB
+        crosses to the host pool.  A host half that cannot land is named
+        (``ram-host-hold-missing``) and reported unconverged, so the
+        window gate refuses growth until the sync lands it; unreadable
+        ledgers reconcile nothing and also report unconverged -- no
+        verdict is not evidence of a clean mirror.  Holders named in
+        ``expected_holders`` are in flight and left for a later pass.
         """
 
         if storage_tiers.tier_kind_of(str(tier_id)) != "ram":
-            return []
+            return {"events": [], "converged": True}
         host = self._ram_tier_host(str(tier_id))
         try:
-            tier_live = set(self.tier_ledger(tier_id).held_keys())
-            holders = self.ledger(host).held_keys()
+            tier = self.tier_ledger(tier_id)
+            tier_live = set(tier.held_keys())
+            host_ledger = self.ledger(host)
+            holders = host_ledger.held_keys()
         except (OSError, PoolContractError, ValueError):
-            return []
+            return {"events": [], "converged": False}
         expected = {str(name) for name in expected_holders}
         events: list[dict[str, object]] = []
+        converged = True
         prefix = self.RAM_HOST_MEMORY_PREFIX
+        # Missing halves first, orphans second: a released orphan must not
+        # be re-acquired, and a missing half must not be read off a holder
+        # the orphan pass is about to release.
+        for holder in sorted(tier_live):
+            try:
+                tokens = tier.holder_tokens(holder)
+            except (OSError, PoolContractError, ValueError):
+                converged = False
+                continue
+            # Occupancy GiB only: rate kinds never cross to the host pool.
+            target = int(sum(int(v) for kind, v in tokens.items()
+                             if kind not in TIER_RATE_KINDS))
+            mirror = prefix + holder
+            current = int(host_ledger.holder_tokens(
+                mirror).get("mem_gb", 0))
+            if current == target:
+                continue
+            released = self.release_tier_host_memory(host, holder)
+            if current > target and released:
+                # The unsafe direction healed: the host half outlived part
+                # of its tier half, and the excess returns by name.
+                events.append({"reason": "ram-host-hold-trimmed",
+                               "holder": mirror,
+                               "released_gib": released})
+            if target <= 0:
+                continue
+            try:
+                taken = host_ledger.acquire(
+                    mirror, {"mem_gb": target})
+            except (OSError, PoolContractError, ValueError) as exc:
+                taken = False
+                detail = repr(exc)
+            else:
+                detail = str(host_ledger.last_token_shortage or "")
+            if not taken:
+                converged = False
+                events.append({"reason": "ram-host-hold-missing",
+                               "holder": mirror, "gib": target,
+                               "detail": detail})
         for holder in holders:
             if not holder.startswith(prefix):
                 continue
@@ -10974,7 +11027,7 @@ class PoolQueue:
             if released:
                 events.append({"reason": "orphan_ram_host_hold",
                                "holder": holder, "released_gib": released})
-        return events
+        return {"events": events, "converged": converged}
 
     def rows_host_memory_held(self, host: str) -> int | None:
         """Host ``mem_gb`` tokens held by rows, not by RAM fills (#1222).
@@ -11030,7 +11083,8 @@ class PoolQueue:
         return released
 
     def transfer_tier_reservation(self, tier_id: str, from_key: str,
-                                  to_key: str) -> int:
+                                  to_key: str, *, faults: list | None = None
+                                  ) -> int:
         """Hand one tier's whole reservation from one mover key to another (#598).
 
         The bytes do not move; only the name the ledger files them under does.
@@ -11052,8 +11106,15 @@ class PoolQueue:
                 self.ledger(host).transfer(
                     self.RAM_HOST_MEMORY_PREFIX + str(from_key),
                     self.RAM_HOST_MEMORY_PREFIX + str(to_key))
-            except (OSError, PoolContractError, ValueError):
-                pass
+            except (OSError, PoolContractError, ValueError) as exc:
+                # The tier half moved and the host half did not: named, not
+                # swallowed, and healed by name when the two-way sync next
+                # runs (#1245 review r2).
+                if faults is not None:
+                    faults.append({"reason": "ram_host_transfer_failed",
+                                   "tier_id": str(tier_id),
+                                   "from": str(from_key), "to": str(to_key),
+                                   "error": repr(exc)})
         return moved
 
     # -- advance-credit funding records (window progress protection) --------
@@ -11843,7 +11904,8 @@ class PoolQueue:
             return False
         return True
 
-    def transfer_fence(self, tier_id: str, grant: str, mover: str) -> int:
+    def transfer_fence(self, tier_id: str, grant: str, mover: str, *,
+                       faults: list | None = None) -> int:
         """Move a reserved fence onto its mover without a free interval.
 
         Per-token renames under ``held/``: at no instant is a token countable
@@ -11860,7 +11922,8 @@ class PoolQueue:
             if not (self.item_path(READY, mover).exists()
                     or self.item_path(CLAIMED, mover).exists()):
                 return 0
-            return int(self.transfer_tier_reservation(tier_id, grant, mover))
+            return int(self.transfer_tier_reservation(
+                tier_id, grant, mover, faults=faults))
         except (OSError, PoolContractError, ValueError):
             return 0
 

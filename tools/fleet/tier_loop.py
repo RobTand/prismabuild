@@ -6196,6 +6196,28 @@ def _shared_advance_fences(queue: pool.PoolQueue, tier_wants: list, *,
     return out
 
 
+# The RAM host mirror's per-cycle verdict, by host (#1245 review r2):
+# ``False`` while the two-way sync has a host half it could not land,
+# which the window gate reads as "refuse growth" until the next cycle
+# converges.  Written only from the single writer's reconcile pass.
+_RAM_HOST_SYNC: dict[str, bool] = {}
+
+
+def rows_held_for_gate(queue: pool.PoolQueue, host: str,
+                       converged: bool) -> int | None:
+    """Rows-held for the window gate, refusing while the mirror lags.
+
+    ``None`` is the refusal the admission already knows: when the
+    two-way sync has not converged, no rows number is read at all,
+    because the mirror owes the host pool bytes it has not landed yet
+    (#1245 review r2).
+    """
+
+    if not converged:
+        return None
+    return queue.rows_host_memory_held(host)
+
+
 def _protect_tier_advances(queue: pool.PoolQueue,
                            tiers: Mapping[str, Mapping[str, object]], *,
                            mover_role: str, tier_of, state_of,
@@ -7160,13 +7182,17 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                                "consumer": None, "tier_id": tier_id,
                                "leg": mover_role, "reason": "dangling-grant",
                                "released_gib": released})
-        # Per-cycle reconciliation (#1245 review B1): every ram-host hold
-        # whose tier holder is gone -- the crash window inside the take
-        # and the transfer -- returns here by name.  The same complete-
-        # census guard covers it: with evidence withheld, reconcile
-        # nothing, because no verdict is not evidence of an orphan.
-        for healed in queue.reconcile_ram_host_holds(
-                tier_id, expected_grants):
+        # Per-cycle reconciliation (#1245 review B1/r2): a two-way sync.
+        # Every live tier holder's ram-host hold is made equal to its
+        # occupancy tokens -- which covers the claim path's bare tier
+        # takes and the transfer's crash window -- and the excess is
+        # released by name.  The same complete-census guard covers it:
+        # with evidence withheld, reconcile nothing, because no verdict
+        # is not evidence of a clean mirror.
+        verdict = queue.reconcile_ram_host_holds(tier_id, expected_grants)
+        _RAM_HOST_SYNC[str(tier_id).split(":", 1)[1]] = bool(
+            verdict.get("converged"))
+        for healed in verdict.get("events") or []:
             events.append({"event": "ram-host-hold-reconciled",
                            "tier_id": tier_id, "leg": mover_role,
                            "reason": str(healed.get("reason")),
@@ -9870,7 +9896,11 @@ def _cycle(
     # admission refuses on rather than admitting a window beside rows it
     # cannot see.
     ram_tier_id = storage_tiers.tier_id("ram", host)
-    rows_held_gib = queue.rows_host_memory_held(host)
+    # One pool, two consumers -- and one mirror: while the two-way sync
+    # has not converged the gate refuses growth instead of reading a
+    # rows number with host bytes the mirror has not landed (#1245 r2).
+    rows_held_gib = rows_held_for_gate(
+        queue, host, _RAM_HOST_SYNC.get(host, True))
     tiers = discover(host=host, source_pool=source_pool, fill_records=fill_records,
                      now=now, ram_policy=ram_policy,
                      rows_held_gib=rows_held_gib)
