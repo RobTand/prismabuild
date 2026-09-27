@@ -5341,9 +5341,16 @@ filesystems whose directory times come from this kernel's clock (`zfs`,
 `/proc/self/mountinfo`). An answer is remembered only until the kernel
 signals a mount or unmount (`POLLPRI` on `/proc/self/mountinfo`), because
 anonymous device numbers are shared by ZFS, tmpfs, NFS, overlay and FUSE
-mounts and handed out again after an unmount. On the NFS export every
-directory is listed every time, as before. Two things are outside the
-argument. A file rewritten in place does not touch its directory. Every
+mounts and handed out again after an unmount. The trust is re-checked on
+every reuse, not only when the stamp is taken: `_current_directory_version`
+returns the four fields only on a filesystem that is still one of those
+(#1208), so a mount change under a kept listing makes the comparison miss.
+`DirectoryRecords` then drops what that listing parsed as well -- the trust
+loss voids the parse proof, not only the listing -- and reads every record
+of the directory again, as a plain read on the new filesystem reads it. On
+the NFS export every directory is listed every time, as before. Two things
+are outside the argument. A file rewritten in place does not touch its
+directory. Every
 writer of these records files by rename (`pool._write_json_atomic`,
 `residency_map.write_fragment`), and the two readers differ in what they
 rely on:
