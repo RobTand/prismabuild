@@ -4418,12 +4418,17 @@ READY diagnostics expose recorded prewarm input errors, including missing
 files, with the receipt's finish time and `permanence unproven` (#1184).
 Unreadable prewarm evidence makes the diagnostic census incomplete, never a
 claim of absence. This is the issue's visibility slice only: it does not
-terminalize dependents or alter admission. The prewarm receipt does not bind
-its errors to a producer's exhausted retry contract or even to an exact queue
-generation; a data-manifest entry names a path/range/digest, not that lifecycle
-edge. Terminalizing from ENOENT, an arbitrary poll threshold, or unknown state
-would invent authority. The terminalization repair remains proposed pending
-an explicit identity-bound death proof and serialized transition contract.
+terminalize dependents or alter admission. Generic data-manifest entries do
+not bind a producer, but produced-output movers do: their sealed
+`produced_output_batch` names the owner key, nonce, scope and batch manifest.
+The #1184 incident's retained row carries that binding. The prewarm error
+strings do not themselves bind the failed read to an exact queue generation
+or prove permanent loss. Existing dead-batch retirement deliberately retains
+READY/CLAIMED movers (`_dead_staged_batch_ready`), and `finish` concludes
+claims, not READY dependencies. A terminal repair must combine the existing
+owner-attempt proof with authoritative missing-input evidence and a serialized
+pre-admission refusal; it remains proposed here. ENOENT, arbitrary poll counts
+and unknown state alone remain insufficient.
 
 The data-manifest prewarmer is described in
 [`data_manifest_prewarm.md`](data_manifest_prewarm.md).  A storage-role warm
