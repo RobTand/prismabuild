@@ -735,6 +735,70 @@ def _owed_census(queue_root: str, host: str, owner: str) -> dict[str, list[str]]
     return {"skipped": sorted(skipped), "unsettled": _unsettled_owed_keys(queue, owed)}
 
 
+def _resign_claimed_census(queue_root: str, host: str) -> dict[str, Any]:
+    """Owned-claims census for resign, as the queue's owner (#1228)."""
+    queue = pool_module.PoolQueue(Path(queue_root))
+    owned, unknown = claimed_census(queue, host)
+    return {"owned": owned, "unknown": unknown}
+
+
+def _resign_resume_owed(queue_root: str, host: str,
+                        owner: str) -> dict[str, Any]:
+    """Withdrawn-row crash-resume census for resign, as the owner."""
+    queue = pool_module.PoolQueue(Path(queue_root))
+    resumed, skipped = resume_owed(queue, host, owner)
+    return {"resumed": resumed, "skipped": skipped}
+
+
+def _resign_plan_requeue(queue_root: str, record_json: str) -> dict[str, Any]:
+    """Successor plan for a claim about to be handed off, as the owner."""
+    queue = pool_module.PoolQueue(Path(queue_root))
+    return queue.plan_requeue(json.loads(record_json))
+
+
+def _resign_withdraw(queue_root: str, action_key: str, reason: str, by: str,
+                     handoff_json: str) -> dict[str, Any]:
+    """The membership withdrawal itself — a shared-queue write — as the
+    queue's owner, carrying the plan's proven handoff snapshot."""
+    queue = pool_module.PoolQueue(Path(queue_root))
+    return queue.withdraw(action_key, reason=reason, by=by,
+                           membership_handoff=json.loads(handoff_json))
+
+
+def _resign_claimed_exists(queue_root: str, action_key: str) -> bool:
+    """Whether a claim still occupies CLAIMED (holder-concluded check)."""
+    queue = pool_module.PoolQueue(Path(queue_root))
+    return queue.item_path(pool_module.CLAIMED, action_key).exists()
+
+
+def _resign_terminal_of(queue_root: str,
+                        snapshot_json: str) -> dict[str, Any] | None:
+    """The exact-attempt terminal (kind, record) for a proof probe."""
+    queue = pool_module.PoolQueue(Path(queue_root))
+    terminal = terminal_of(queue, json.loads(snapshot_json))
+    if terminal is None:
+        return None
+    kind, record = terminal
+    return {"kind": kind, "record": record}
+
+
+def _resign_reconcile(queue_root: str, host: str, owner: str) -> dict[str, Any]:
+    """Membership handoff settlement — successor publication writes and
+    adoptions — as the queue's owner."""
+    queue = pool_module.PoolQueue(Path(queue_root))
+    return reconcile_membership(queue, host, owner)
+
+
+def _resign_reader_refs_gate(queue_root: str, host: str,
+                             roots_json: str) -> dict[str, Any]:
+    """Reader-settlement reads for the resigned proof, as the owner."""
+    queue = pool_module.PoolQueue(Path(queue_root))
+    roots = json.loads(roots_json) if roots_json else None
+    drained, state, detail = reader_refs_gate(queue, host, roots)
+    return {"drained": drained, "state": state, "detail": detail}
+
+
+
 def _as_queue_owner(root: Path, call: str, *args: str) -> Any:
     """Run ``fleet_membership.<call>(*args)`` with the shared queue owner's IO.
 
@@ -1041,6 +1105,13 @@ def resign(
 ) -> dict[str, Any]:
     """Close the gate, withdraw owned claims while busy, prove completion.
 
+    Runs as root when the broker requires it; every shared-queue access
+    (owned-claims census, crash-resume reads, successor plans, the
+    withdrawals, exact-terminal probes, handoff reconciliation and
+    reader-settlement reads) is executed in a child dropped to the queue's
+    unprivileged owner through ``_as_queue_owner`` (#1228), because NFS
+    root_squash maps root's queue IO to nobody. Broker mutations stay root.
+
     The per-key claim fence narrows the poll-check→rename race but cannot
     lock the broker's gate: a claim can still win the rename after ``begin``.
     Such a late claim cannot execute — broker scope ``create`` refuses under
@@ -1112,7 +1183,11 @@ def resign(
                 "gate_key": key,
                 "reason": "no queue root: owned claims unobservable, fence retained",
                 "broker": began}
-    queue = pool_module.PoolQueue(Path(queue_root))
+    # Every shared-queue access below runs through _as_queue_owner: as
+    # root, NFS root_squash would map direct IO to nobody and the census,
+    # the withdrawals and the settlement reads would all fail (#1228).
+    # Broker mutations above and in the loop stay root by contract.
+    queue_root = Path(queue_root)
     deadline = time.monotonic() + max(0.0, float(wait_s))
     handled: dict[str, dict[str, Any]] = {}
     pending_note: str | None = None
@@ -1133,7 +1208,10 @@ def resign(
                             f"resignation ({incarnation_error or incarnation}); "
                             "stopping")
             break
-        owned, census_unknown = claimed_census(queue, host)
+        census_pack = _as_queue_owner(
+            queue_root, "_resign_claimed_census", str(queue_root), host)
+        owned, census_unknown = (census_pack["owned"],
+                                 census_pack["unknown"])
         # Evaluated fresh every round: a note from the previous round must
         # never suppress this round's checks.
         pending_note = None
@@ -1149,7 +1227,11 @@ def resign(
             # settled, including under a new supervisor incarnation.
             resumed, resume_skipped = ([], [])
             if withdraw_owned:
-                resumed, resume_skipped = resume_owed(queue, host, owner)
+                resumed_pack = _as_queue_owner(
+                    queue_root, "_resign_resume_owed",
+                    str(queue_root), host, owner)
+                resumed, resume_skipped = (resumed_pack["resumed"],
+                                           resumed_pack["skipped"])
             if resume_skipped:
                 armed = False
                 pending_note = ("unrevivable membership rows; fence retained: "
@@ -1192,11 +1274,14 @@ def resign(
                         # remaining budget and lineage -- and persist its
                         # identity in the immutable decision; a shape-only
                         # owner string proves nothing and files ordinary.
-                        plan = queue.plan_requeue(snap["record"])
-                        result = queue.withdraw(
-                            action_key,
-                            reason=f"resign {owner}: {reason}", by=owner,
-                            membership_handoff=plan["snapshot"])
+                        plan = _as_queue_owner(
+                            queue_root, "_resign_plan_requeue",
+                            str(queue_root), json.dumps(snap["record"]))
+                        result = _as_queue_owner(
+                            queue_root, "_resign_withdraw",
+                            str(queue_root), action_key,
+                            f"resign {owner}: {reason}", owner,
+                            json.dumps(plan["snapshot"]))
                         handled[action_key] = {"handoff": "withdrawn",
                                                "snapshot": _snap_id(snap),
                                                "withdraw": result.get("status")}
@@ -1207,8 +1292,9 @@ def resign(
                         # withdraw wins honestly: adopt its terminal below
                         # instead of failing the resignation.
                         try:
-                            concluded = not queue.item_path(
-                                pool_module.CLAIMED, action_key).exists()
+                            concluded = not _as_queue_owner(
+                                queue_root, "_resign_claimed_exists",
+                                str(queue_root), action_key)
                         except OSError:
                             concluded = False
                         if concluded:
@@ -1253,12 +1339,16 @@ def resign(
                 missing = sorted(
                     snap["action_key"][:12] for snap in proof
                     if isinstance(snap.get("action_key"), str)
-                    and terminal_of(queue, snap) is None)
+                    and _as_queue_owner(
+                        queue_root, "_resign_terminal_of",
+                        str(queue_root), json.dumps(snap)) is None)
                 # Settle through the shared reconciler (the same path the
                 # worker loops drive every poll): publish matured successors,
                 # adopt exact ones, preserve foreign rows. Results merge into
                 # this run's handled map; failures retain with reasons.
-                reconciliation = reconcile_membership(queue, host, owner)
+                reconciliation = _as_queue_owner(
+                    queue_root, "_resign_reconcile",
+                    str(queue_root), host, owner)
                 for published_key in reconciliation["published"]:
                     for action_key, entry in handled.items():
                         if action_key[:12] == published_key:
@@ -1284,7 +1374,9 @@ def resign(
                         retained = sorted(
                             snap["action_key"][:12] for snap in proof
                             if isinstance(snap.get("action_key"), str)
-                            and terminal_of(queue, snap) is None
+                            and _as_queue_owner(
+                                queue_root, "_resign_terminal_of",
+                                str(queue_root), json.dumps(snap)) is None
                             and handled.get(
                                 str(snap["action_key"]), {}).get("handoff")
                             == "retained-uninterruptible")
@@ -1304,8 +1396,14 @@ def resign(
                         armed = False
                         pending_note = f"broker still holds {scopes} active scopes"
                     else:
-                        refs_drained, refs_state, refs_detail = reader_refs_gate(
-                            queue, host, residency_roots)
+                        roots_json = (json.dumps([str(r) for r in residency_roots])
+                                      if residency_roots else "")
+                        refs_pack = _as_queue_owner(
+                            queue_root, "_resign_reader_refs_gate",
+                            str(queue_root), host, roots_json)
+                        refs_drained = refs_pack["drained"]
+                        refs_state = refs_pack["state"]
+                        refs_detail = refs_pack["detail"]
                         if not refs_drained:
                             armed = False
                             pending_note = (

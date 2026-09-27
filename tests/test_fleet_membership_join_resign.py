@@ -504,3 +504,138 @@ def test_a_root_join_reads_the_queue_only_as_its_unprivileged_owner(
     assert calls == [(owner, "_probe_once"), (owner, "_owed_census")], calls
     assert out["status"] == "joined", out
     assert fm.read_gate(gate) is None
+
+
+def test_a_root_resign_reads_and_writes_the_queue_only_as_its_unprivileged_owner(
+    tmp_path: Path, monkeypatch, authority
+) -> None:
+    """NFS root_squash maps root to nobody on the shared queue, and the
+    broker admits maintenance only from uid 0 (#1228). A root resign runs
+    every shared-queue read and write -- the owned-claims census, the
+    crash-resume census, the successor plan, the withdrawal itself, the
+    exact-terminal probe, the handoff reconciliation and the
+    reader-settlement reads -- in a child dropped to the queue's owner;
+    only the broker mutations stay root."""
+    import subprocess
+
+    host = socket.gethostname()
+    me = (f"{host}:supervisor-{os.getpid()}:"
+          f"{broker_mod._proc_starttime(os.getpid())}")
+    monkeypatch.setattr(fm, "supervisor_incarnation", lambda: (me, None))
+    queue_root = _shared_queue(monkeypatch, tmp_path)
+    queue = pool.PoolQueue(queue_root)
+    # A real sealed action in the queue's CAS: the owner-dropped children
+    # recompute the claim's action identity from the CAS request (no
+    # in-process monkeypatch crosses the process boundary), so the
+    # requeueable claim must be real at the CAS level, exactly as pbrun
+    # submissions are.
+    code_dir = tmp_path / "code"
+    code_dir.mkdir()
+    (code_dir / "task_code.py").write_text("# closure member\n",
+                                           encoding="utf-8")
+    action = pb_core.seal_action({
+        "schema": pb_core.ACTION_SCHEMA_V2,
+        "task": {
+            "definition_id": "tests/resign-owner", "definition_version": "v1",
+            "task_class": "generation", "determinism": "deterministic",
+            "artifact_family": "generic", "artifact_kind": "generic",
+            "argv": [sys.executable, "-c", "pass"],
+            "working_directory": ".", "result_path": "result.bin",
+        },
+        "inputs": [{"id": "model/config", "sha256": "2" * 64, "bytes": 20}],
+        "code_closure": pb_core.build_code_closure(code_dir,
+                                                    ["task_code.py"]),
+        "params": {"alpha": 1},
+        "environment": {"variables": {}, "toolchain": {}},
+        "execution_scope": {"portability": "portable", "platform_key": None,
+                             "host_class": None},
+    })
+    key = action["action_key"]
+    request = queue_root / "cas" / "requests" / key[:2] / f"{key}.json"
+    request.parent.mkdir(parents=True, exist_ok=True)
+    request.write_text(json.dumps(action))
+    _publish(queue, key, tags=["x86"], max_attempts=3, retry_safe=True)
+    snapshot = queue.claim(tags=["x86"], owner=f"{host}:1:q1",
+                           capacity={"cpu": 4})
+    assert snapshot is not None
+    authority.admin(0, {"op": "maintenance_begin", "reason": "t",
+                        "owner": me})
+    gate = Path(authority.maintenance_path)
+    owner = queue_root.stat().st_uid
+    epoch = fm.gate_key(fm.read_gate(gate))
+    parked = gate.parent / "rollout" / "parked"
+    parked.mkdir(parents=True)
+    (parked / f"111-s1-{epoch}").touch()
+    real_run = subprocess.run
+    calls: list[tuple[int, str]] = []
+
+    def run_as_owner(cmd, **kwargs):
+        assert kwargs.pop("extra_groups") == []
+        kwargs.pop("group")
+        calls.append((kwargs.pop("user"), cmd[5]))
+        return real_run(cmd, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", run_as_owner)
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+
+    # The faked worker loop: production resolves a withdrawal through the
+    # holder's own covered finish (terminal_of requires the entombed claim,
+    # never the filed decision alone), so the loop obeys the withdrawal and
+    # finishes its row once the decision lands.
+    import threading
+
+    errors: list = []
+    finished = threading.Event()
+
+    def holder_concludes():
+        try:
+            deadline = time.monotonic() + 20.0
+            while (time.monotonic() < deadline
+                   and not queue.item_path(pool.WITHDRAWN, key).exists()):
+                time.sleep(0.05)
+            queue.finish(key, status="withdrawn", detail={},
+                         claim_snapshot=snapshot)
+            finished.set()
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    finisher = threading.Thread(target=holder_concludes, daemon=True)
+    finisher.start()
+
+    def root_broker(payload: dict) -> dict:
+        # maintenance_begin goes to the real authority double (it writes the
+        # gate file); status answers as the holder-free fleet the
+        # resignation proof expects -- the same shape the retained-work
+        # test's broker fakes. The broker's own scope bookkeeping is not
+        # what this test examines.
+        if payload["op"] == "maintenance_status":
+            return {"ok": True, "draining": True, "health": True,
+                    "active_scopes": 0, "active_scope_ids": []}
+        return authority.admin(0, dict(payload))
+
+    out = fm.resign(host, reason="root resign", queue_root=queue_root,
+                    gate=gate, broker_call=root_broker,
+                    live=[(111, "s1")], wait_s=40.0)
+    finisher.join(timeout=10.0)
+    assert not errors, errors
+    assert finished.is_set(), "holder never saw its withdrawal"
+    names = [name for _, name in calls]
+    assert names, "resign touched the shared queue outside _as_queue_owner"
+    assert all(user == owner for user, _ in calls), calls
+    assert names[0] == "_resign_claimed_census", calls
+    assert "_resign_resume_owed" in names, calls
+    assert "_resign_plan_requeue" in names, calls
+    assert "_resign_withdraw" in names, calls
+    assert "_resign_reconcile" in names, calls
+    assert "_resign_reader_refs_gate" in names, calls
+    assert out["status"] == "resigned", out
+    # The handoff really happened on the queue its owner sees: the claim is
+    # concluded and settlement published the budget-preserving successor
+    # for the same action (the withdrawn row itself is consumed by that
+    # publish, leaving the revival linkage on the ready successor).
+    assert not queue.item_path(pool.CLAIMED, key).exists()
+    successor = json.loads(queue.item_path(pool.READY, key).read_text())
+    assert successor["attempts"] == 1
+    assert successor["retry_safe"] is True
+    assert out["handled"][key]["handoff"] == "withdrawn"
+    assert out["handled"][key]["published"] == "resign-successor"
