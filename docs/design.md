@@ -7171,10 +7171,14 @@ release is therefore enforced where live code always runs:
   retirement tick delete the batch while the claim, which lists only the
   index, ran a row of the key. Running a release again for a record that has
   no entry, such as one filed before #954, files the entry.
-- **The claim.** `PoolQueue._claim` lists the index once per scan, as it
-  lists `withdrawn/`, and for a listed key confirms the release against its
-  record under the key's transition lock, which a release also holds while
-  it writes the entry and the record. A confirmed key's ready row is failed
+- **The claim.** Under the key's transition lock -- the lock a release holds
+  while it writes the entry and the record -- `PoolQueue._claim` confirms the
+  release against its record by listing the index fresh for the candidate
+  (#964). The scan's own listing of `released-origin-consumers/` is kept only
+  as the placement-bypass hint (`_claim`'s placement check runs before the
+  lock), never as the authority: a release whose entry landed after that
+  listing is still seen, and one in flight holds the lock, so this claim
+  cannot pass. A confirmed key's ready row is failed
   before placement, so any box's scan files it: status
   `origin_consumer_released`, with `refusal: origin-consumer-released`, the
   ref, and the release's state, author and time in its `detail`. The row
@@ -7250,14 +7254,29 @@ Limits:
 - A `pbrun` older than #945 does not hold the key's transition lock between
   its declaration and its row. A row it publishes after the release is
   failed at claim (#954). One it publishes after the release has read the
-  consumer's state but before the release's record lands can be claimed
-  first. It then runs, and the retirement tick waits for it, because a
-  claimed consumer reads `live` whatever its release says; only a batch the
-  tick had already started to retire can go from under it.
+  consumer's state but before the release's record lands no longer runs: the
+  claim confirms the release under the key's transition lock (#964), so a
+  release that completed first is always seen, and while one is in flight the
+  claim's non-blocking acquire refuses it and a later pass sees the record.
+  The release itself still completes -- it cannot unsee a row that landed
+  after its state read -- but the row is failed by name
+  (`origin-consumer-released`) and the retirement tick does not wait on it.
+- A claim scan that listed the index just before the entry landed could once
+  claim the row (PR #962's second window). The fence re-confirms under the
+  key's transition lock (#964), so that window is closed where the claim runs
+  #964. The storage and prewarm loops that skip a released ready consumer
+  (`tier_loop.live_consumers`, the stalled-reader wait attribution and
+  `prewarm_loop.cycle`) still list the index once per cycle and confirm only
+  listed keys, so a release landing after their listing can still let them
+  warm or stage bytes of a batch whose retirement is starting; the claim
+  refuses that row before it runs, so the harm is wasted or race-y staging
+  I/O, not an action read. Closing that is out of #964's scope.
 - A worker or tier loop still running a generation older than #954 does not
-  read the index, so the claim refusal holds only on boxes that run #954.
-  A release filed by a generation between #945 and #954 has no index entry
-  until its release command is run again.
+  read the index, so the claim refusal holds only on boxes that run #954;
+  one running a generation between #954 and #964 keeps the stale-listing
+  window. A release filed by a generation between #945 and #954 has no index
+  entry until its release command is run again. No mixed-generation fleet is
+  claimed safe.
 - `pbstatus --blocked-origins` does not list a batch that an unpublished
   consumer holds, because a submission may still be in its window. The stall
   line names the consumer `unpublished`; `--release-origin-consumer` decides
