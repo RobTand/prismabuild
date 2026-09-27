@@ -465,7 +465,7 @@ def _shield_consumer(queue: pool.PoolQueue) -> None:
 
 def _tiny_discover(stage: Path, capacity_bytes: int, fill: int):
     def discover(*, host, source_pool, fill_records, now, ram_policy,
-                 worker_mem_gb):
+                 rows_held_gib):
         return {TIER: {
             "tier_id": TIER, "tier": "stage", "host": socket.gethostname(),
             "pool": "tank/stage", "dataset": "tank/stage",

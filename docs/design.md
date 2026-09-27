@@ -5066,15 +5066,34 @@ guard refuses until it is done. The ARC floor itself is the larger of the
 policy's declared floor and the metadata the ARC cannot drop. The roof is
 only the mount's ENOSPC backstop, though: what PB actually fills is the
 policy window below it, capped by the ledger — so the window must fit beside
-the box's own offered job capacity too, read live every cycle from the tier
-host's worker record (`workers/<host>.json`, `capacity.mem_gb`): the tier
-refuses while `window + worker_demand + max(arc_c_max, arc_floor) +
-system_reserve > MemTotal` (#645), and it refuses when no offer names a
-number at all, because a loop can appear between cycles. Tonight's box is
+what the rows beside it actually hold (#1222): one pool, two consumers.
+Rows and tier fills both acquire `mem_gb` tokens from the same host ledger
+— a fill takes its tokens under its mover grant beside the fence it takes
+(`PoolQueue.hold_tier_host_memory`), host-first at the plan, with the
+rollback on either side; every site that cancels a fence for the RAM tier
+returns the fill's host tokens in the same step; and the window gate
+refuses while `window + rows_held + max(arc_c_max, arc_floor) +
+system_reserve > MemTotal`, with `rows_held` read live every cycle from
+that same host ledger less the fills' own holds — and it refuses when the
+ledger will not say (`ram_rows_held_unknown`), because a ledger that will
+not say is not evidence of no rows. #645 subtracted the box's announced
+`capacity.mem_gb` instead; #1222 replaces the announce with the holds
+because the worker's offer is now the measured roof itself
+(`--mem-gb-ram-tier-roof`: the offer is `MemTotal − max(arc_c_max,
+arc_floor) − system_reserve`, reread every poll, fail-closed to the
+declared `--mem-gb` when any input is unreadable — the `--spool-gb auto`
+precedent, #1190), and a static subtraction beside a measured offer both
+starved the tier behind an offer nobody was using and double-counted once
+fills held tokens of their own. A host-memory shortfall on a row's claim
+asks the eviction sweep for nothing: host tokens are held only by active
+fills and by rows, both of which return them deterministically, so there
+is no withdrawn-orphans deadlock to break (#901's shape) and eviction
+cannot return tokens a landing fill still writes — the relief is the
+release, not the eviction. Tonight's box is
 the proof both halves hold together: the 240 GiB roof admits
-(240 ≤ 294.5 − 22 − 16), the 112 GiB window admits beside the 96 GiB the
-loops offer (worst case 112 + 96 + 22 + 16 = 246 ≤ 294.5), and a window
-publish toward the sanctioned 256 with jobs admitted would refuse. **The tmpfs
+(240 ≤ 294.5 − 22 − 16), the 112 GiB window admits beside 88 GiB of rows
+held (worst case 112 + 88 + 22 + 16 = 238 ≤ 294.5), and a window
+publish toward the sanctioned 256 with rows holding 96 GiB refuses. **The tmpfs
 must be mounted `noswap`:** the options are announced, and a mount without
 it refuses the warm-path admission outright — a swappable tmpfs can page
 "resident" bytes out, and a consumer whose gate says resident would then

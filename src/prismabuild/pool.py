@@ -10814,6 +10814,68 @@ class PoolQueue:
                 continue
         return released
 
+    #: Host-ledger holder prefix for RAM-tier fill holds (#1222).  The
+    #: holder names a mover grant, so eviction and reaping can release
+    #: exactly the tokens the fill took, and the rows-held read can
+    #: subtract exactly those holds.
+    RAM_HOST_MEMORY_PREFIX = "ram-host:"
+
+    def hold_tier_host_memory(self, host: str, grant: str, gib: int) -> bool:
+        """A RAM fill takes host ``mem_gb`` tokens under its grant (#1222).
+
+        One pool, two consumers: rows and tier fills acquire from the same
+        host ledger, so a fill that cannot fit beside the rows is refused
+        here, at plan time, before any bytes move.  The hold lives under
+        :attr:`RAM_HOST_MEMORY_PREFIX` plus the mover grant, and is returned
+        by :meth:`release_tier_host_memory` on evict, egress or reap.
+        """
+
+        try:
+            return bool(self.ledger(host).acquire(
+                self.RAM_HOST_MEMORY_PREFIX + str(grant),
+                {"mem_gb": int(gib)}))
+        except (OSError, PoolContractError, ValueError):
+            return False
+
+    def release_tier_host_memory(self, host: str, grant: str) -> int:
+        """Return every host ``mem_gb`` token a RAM fill holds (#1222).
+
+        Safe to call twice, like every release: a fill whose tokens were
+        already returned holds nothing.
+        """
+
+        try:
+            return int(self.ledger(host).release(
+                self.RAM_HOST_MEMORY_PREFIX + str(grant)))
+        except (OSError, PoolContractError, ValueError):
+            return 0
+
+    def rows_host_memory_held(self, host: str,
+                              fill_grants: Iterable[str]) -> int | None:
+        """Host ``mem_gb`` tokens held by rows, not by RAM fills (#1222).
+
+        The total the host ledger holds, less every fill hold named in
+        ``fill_grants`` (holders this box prefixed itself, so legacy fills
+        that hold no host tokens simply subtract nothing).  ``None`` when
+        the ledger will not say: no verdict is not evidence of no rows,
+        and the caller refuses fail-closed on it.
+        """
+
+        try:
+            ledger = self.ledger(host)
+            held = ledger.held()
+        except (OSError, PoolContractError):
+            return None
+        total = int(held.get("mem_gb", 0))
+        for grant in fill_grants:
+            try:
+                tokens = ledger.holder_tokens(
+                    self.RAM_HOST_MEMORY_PREFIX + str(grant))
+            except (OSError, PoolContractError):
+                return None
+            total -= int(tokens.get("mem_gb", 0))
+        return max(0, total)
+
     def release_tier_reservations(self, action_key: str) -> int:
         """Return every tier token filed under this action, on every tier.
 

@@ -122,12 +122,18 @@ def test_fills_hold_host_tokens_and_rows_read_what_is_left(tmp_path):
     assert queue.rows_host_memory_held(HOST, [grant]) == 48
 
 
-def test_a_ready_row_refused_for_host_memory_pressures_the_ram_tier(
+def test_a_host_memory_shortfall_is_returned_by_release_not_eviction(
         tmp_path: Path) -> None:
-    """#901 wiring: a ready row's host-mem shortfall asks the tier for
-    relief, so the existing orphan/past-horizon sweep can serve it (#1222
-    required change B).  The ask is bounded by the sweep, never by a new
-    eviction policy."""
+    """A host-mem shortfall asks the sweep for nothing (#1222).
+
+    Host tokens are held only by active fills and by rows, and both return
+    them deterministically: the fill when its fence is cancelled at every
+    cancel site, the row when it ends.  So unlike the #901 tier-fence
+    shape there is no "withdrawn consumer's orphans" deadlock to break --
+    eviction cannot return host tokens a landing fill still writes, and
+    asking it to would be the futile eviction the pressure walk refuses.
+    The relief is the release, and the row's claim is served the moment
+    the fill's hold returns."""
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
     import tier_loop  # noqa: E402
@@ -144,11 +150,13 @@ def test_a_ready_row_refused_for_host_memory_pressures_the_ram_tier(
         action_key=shard, cas_root=tmp_path / "cas",
         worker_script=tmp_path / "worker.py", tags=["x86"],
         resources={"cpu": 2, "mem_gb": 8})
-    need = tier_loop.window_pressure(
-        queue, tiers={RAM_TIER: {"tier_id": RAM_TIER}}, consumers=[])
-    assert need.get(RAM_TIER, 0) >= 2  # 8 needed, 6 free: at least the gap.
-    # With the fill gone the same row asks nothing.
-    assert queue.release_tier_host_memory(HOST, grant) == 250
+    # The shortfall is real -- the row cannot take 8 from 6 free...
+    assert ledger.acquire(shard, {"mem_gb": 8}) is False
+    # ...but it asks the sweep for nothing: eviction returns no host token.
     need = tier_loop.window_pressure(
         queue, tiers={RAM_TIER: {"tier_id": RAM_TIER}}, consumers=[])
     assert need.get(RAM_TIER, 0) == 0
+    # The release is the relief: the fence cancels, the hold returns, and
+    # the same claim takes its tokens and succeeds.
+    assert queue.release_tier_host_memory(HOST, grant) == 250
+    assert ledger.acquire(shard, {"mem_gb": 8}) is True

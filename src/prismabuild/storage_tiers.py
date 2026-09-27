@@ -846,37 +846,6 @@ def meminfo_total_bytes(path: str = "/proc/meminfo") -> int | None:
     return None
 
 
-def read_worker_mem_gb(workers_dir: str | Path, host: str) -> int | None:
-    """The job RAM this box's worker loops offer, or ``None``.
-
-    The pool's worker record ``workers/<host>.json`` carries what the box is
-    *configured* to offer under ``capacity.mem_gb`` -- the commitment
-    placement reads, not the windowed ``observed_capacity`` beside it, which
-    can lag a change by a whole observation window.  A box whose loops have
-    not announced names no number, and neither does a torn write or a record
-    without a usable offer: all of them answer ``None``, which the admission
-    below refuses on rather than reading as zero, because a loop can appear
-    between cycles.  The file names its own host; the reader trusts the path
-    it was asked for, the way every other reader here trusts the path it was
-    given.
-    """
-
-    try:
-        with open(Path(workers_dir) / f"{host}.json") as stream:
-            record = json.load(stream)
-    except (OSError, ValueError):
-        return None
-    if not isinstance(record, Mapping):
-        return None
-    capacity = record.get("capacity")
-    if not isinstance(capacity, Mapping):
-        return None
-    mem_gb = capacity.get("mem_gb")
-    if isinstance(mem_gb, bool) or not isinstance(mem_gb, int) or mem_gb < 0:
-        return None
-    return mem_gb
-
-
 def read_ram_epoch(root: str | Path) -> dict[str, object] | None:
     """The epoch a mounted tmpfs carries, read-only, or ``None``.
 
@@ -946,7 +915,7 @@ def ensure_ram_epoch(root: str | Path, *, host: str,
 
 def _ram_numbers(*, ceiling_bytes: int, mem_total: int | None,
                  arc: Mapping[str, int], policy: Mapping[str, object],
-                 worker_mem_gb: int | None = None,
+                 rows_held_gib: int | None = None,
                  ) -> dict[str, object]:
     """Every number a ram refusal must name, in the shape the record carries."""
 
@@ -955,14 +924,17 @@ def _ram_numbers(*, ceiling_bytes: int, mem_total: int | None,
     committed = max(int(arc.get("c_max", 0)), arc_floor)
     allowed = (None if mem_total is None
                else max(0, mem_total - committed - reserve))
-    # The box's own offered job capacity, in the same units as everything
-    # else.  Anything but a non-negative int is "not announced", which the
-    # admission refuses on: the one caller that reads the record already
-    # sanitises, and this keeps a direct caller fail-closed too.
-    worker_demand = (None if (isinstance(worker_mem_gb, bool)
-                              or not isinstance(worker_mem_gb, int)
-                              or worker_mem_gb < 0)
-                     else worker_mem_gb * GIB)
+    # Host mem_gb tokens rows hold beside the tier, in the same units as
+    # everything else (#1222: one pool, two consumers -- rows and fills
+    # acquire from the same host ledger, and this is the rows' side of it).
+    # Anything but a non-negative int is "the ledger will not say", which
+    # the admission refuses on: the caller reads the host ledger and
+    # subtracts the fill holds, and this keeps a direct caller fail-closed
+    # too.
+    rows_held = (None if (isinstance(rows_held_gib, bool)
+                          or not isinstance(rows_held_gib, int)
+                          or rows_held_gib < 0)
+                 else rows_held_gib * GIB)
     window = int(policy["window_gib_default"]) * GIB
     return {
         "ceiling_bytes": ceiling_bytes,
@@ -975,19 +947,20 @@ def _ram_numbers(*, ceiling_bytes: int, mem_total: int | None,
         # is larger: a floor the box is already above is not a floor.
         "arc_floor_bytes": arc_floor,
         "system_reserve_bytes": reserve,
-        "worker_demand_bytes": worker_demand,
+        "rows_held_bytes": rows_held,
         "allowed_ceiling_bytes": allowed,
-        # What the window may grow to: the roof's budget less the jobs the
-        # box has offered to run beside it (#645).
-        "allowed_window_bytes": (None if allowed is None or worker_demand is None
-                                 else max(0, allowed - worker_demand)),
+        # What the window may grow to: the roof's budget less the host
+        # tokens rows already hold beside the tier (#645 subtracted the
+        # announce; #1222 subtracts the holds).
+        "allowed_window_bytes": (None if allowed is None or rows_held is None
+                                 else max(0, allowed - rows_held)),
     }
 
 
 def ram_admission(*, ceiling_bytes: int, mount_options: list[str] | None,
                   policy: Mapping[str, object], mem_total: int | None,
                   arc: Mapping[str, int],
-                   worker_mem_gb: int | None = None) -> dict[str, object]:
+                   rows_held_gib: int | None = None) -> dict[str, object]:
     """Whether the warm path may admit against this mount, and why not.
 
     Five refusals, each fail-closed and each naming the numbers:
@@ -1007,24 +980,23 @@ def ram_admission(*, ceiling_bytes: int, mount_options: list[str] | None,
       whichever is larger: the ``c_max`` it is permitted now (the runbook's
       shrink is an operational precondition, and the guard refuses until it
       is done) or the floor it may never be shrunk past.
-    * **The box's offered job capacity is unknown.** ``worker_mem_gb`` is
-      what the tier host's own worker record announces under
-      ``capacity.mem_gb``; no announcement is not evidence of no jobs, so
-      the guard refuses rather than admitting a window beside demand it
+    * **The rows' held host tokens are unknown.** ``rows_held_gib`` is
+      what the host ledger says rows hold, less the tier's own fill holds
+      (#1222); a ledger that will not say is not evidence of no rows, so
+      the guard refuses rather than admitting a window beside rows it
       cannot see.
-    * **The window cannot coexist with the jobs beside it.** The roof above
+    * **The window cannot coexist with the rows beside it.** The roof above
       is the mount's ENOSPC backstop; the window is what PB actually fills,
       capped by the ledger, so it is the window that must fit beside the
-      announced worker demand: ``window + worker_demand + max(c_max,
-      arc_floor) + reserve > MemTotal`` refuses (#645).  Subtracting the
-      demand from the roof instead would refuse tonight's live 240 GiB
-      mount, which coexists because PB never fills past its 112 GiB
-      window.
+      host tokens rows hold: ``window + rows_held + max(c_max, arc_floor)
+      + reserve > MemTotal`` refuses (#645 subtracted the announce; #1222
+      makes the subtraction the holds, so the tier no longer starves
+      behind an offer nobody was using).
     """
 
     numbers = _ram_numbers(ceiling_bytes=ceiling_bytes, mem_total=mem_total,
                            arc=arc, policy=policy,
-                           worker_mem_gb=worker_mem_gb)
+                           rows_held_gib=rows_held_gib)
     if mount_options is not None and "noswap" not in mount_options:
         return {"admissible": False, "reason": "ram_mount_not_noswap", **numbers}
     if ceiling_bytes > int(policy["ceiling_gib_max"]) * GIB:
@@ -1037,8 +1009,8 @@ def ram_admission(*, ceiling_bytes: int, mount_options: list[str] | None,
     if ceiling_bytes > allowed:
         return {"admissible": False, "reason": "ram_ceiling_exceeds_memtotal_floor",
                 **numbers}
-    if numbers["worker_demand_bytes"] is None:
-        return {"admissible": False, "reason": "ram_worker_demand_unknown",
+    if numbers["rows_held_bytes"] is None:
+        return {"admissible": False, "reason": "ram_rows_held_unknown",
                 **numbers}
     allowed_window = numbers["allowed_window_bytes"]
     window = numbers["window_bytes"]
@@ -1056,7 +1028,7 @@ def ram_tier(policy: Mapping[str, object], *, host: str,
              arcstats_path: str = ARCSTATS,
              stats: Mapping[str, int] | None = None,
              now: float | None = None,
-             worker_mem_gb: int | None = None) -> dict[str, object] | None:
+             rows_held_gib: int | None = None) -> dict[str, object] | None:
     """The ram tier record, or ``None`` when the mount is absent.
 
     Capacity is the tmpfs's own ``statvfs`` -- ``f_bavail x f_frsize``, what
@@ -1087,17 +1059,17 @@ def ram_tier(policy: Mapping[str, object], *, host: str,
     if error is not None:
         admission: dict[str, object] = {
             **_ram_numbers(ceiling_bytes=0, mem_total=mem_total, arc=arc,
-                           policy=policy, worker_mem_gb=worker_mem_gb),
+                           policy=policy, rows_held_gib=rows_held_gib),
             "admissible": False, "reason": "ram_statvfs_unreadable", "error": error}
     elif epoch is None:
         admission = {**ram_admission(ceiling_bytes=ceiling, mount_options=options,
                                      policy=policy, mem_total=mem_total, arc=arc,
-                                     worker_mem_gb=worker_mem_gb),
+                                     rows_held_gib=rows_held_gib),
                      "admissible": False, "reason": "ram_epoch_unwritable"}
     else:
         admission = ram_admission(ceiling_bytes=ceiling, mount_options=options,
                                   policy=policy, mem_total=mem_total, arc=arc,
-                                  worker_mem_gb=worker_mem_gb)
+                                  rows_held_gib=rows_held_gib)
     return {
         "schema": TIER_RECORD_SCHEMA_V1,
         "tier": "ram",
@@ -2361,7 +2333,7 @@ def discover_tiers(
     statvfs: Callable[[str], os.statvfs_result] = os.statvfs,
     proc_mounts: str = "/proc/mounts",
     meminfo_path: str = "/proc/meminfo",
-    worker_mem_gb: int | None = None,
+    rows_held_gib: int | None = None,
 ) -> dict[str, dict[str, object]]:
     """Every tier this box offers, keyed by tier id, read fresh.
 
@@ -2374,10 +2346,10 @@ def discover_tiers(
     ``ram_policy`` is the RAM tier's declared sizing (``read_ram_policy``
     validated it); ``None`` discovers no ram tier, and so does a policy whose
     mountpoint carries no tmpfs -- the mount is the tier, the way an imported
-    pool is a stage tier.  ``worker_mem_gb`` is what the tier host's worker
-    record announces under ``capacity.mem_gb`` (``read_worker_mem_gb``
-    reads it); ``None`` refuses the ram admission fail-closed, because no
-    announcement is not evidence of no jobs.
+    pool is a stage tier.  ``rows_held_gib`` is what the host ledger says
+    rows hold beside the tier (#1222: one pool, two consumers); ``None``
+    refuses the ram admission fail-closed, because a ledger that will not
+    say is not evidence of no rows.
     """
 
     host = host or socket.gethostname()
@@ -2466,7 +2438,7 @@ def discover_tiers(
         record = ram_tier(
             ram_policy, host=host, statvfs=statvfs, proc_mounts=proc_mounts,
             meminfo_path=meminfo_path, arcstats_path=arcstats_path,
-            stats=arc_stats, now=now, worker_mem_gb=worker_mem_gb)
+            stats=arc_stats, now=now, rows_held_gib=rows_held_gib)
         if record is not None:
             tiers[str(record["tier_id"])] = record
     return tiers
@@ -2529,7 +2501,6 @@ __all__ = [
     "read_ram_policy",
     "split_range_into_chunks",
     "EntryExceedsWindow",
-    "read_worker_mem_gb",
     "split_demand",
     "split_demand_key",
     "stage_pools",

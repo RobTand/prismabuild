@@ -571,14 +571,14 @@ class ShapeGate:
                     "arc_meta_used": int(self.profile["arc_meta_used_bytes"]) // self.scale}  # type: ignore[arg-type]
 
     def discover(self, *, host, source_pool, fill_records, now, ram_policy,
-                 worker_mem_gb):
+                 rows_held_gib):
         """The storage host's two tiers, as ``discover_tiers`` would find them.
 
         The stage is the pool's writable bytes, which shrink as bytes land,
         the way ``zfs available`` does.  The RAM tier is the production
         record builder over the policy ``cycle`` read from this checkout,
-        with the host's tmpfs, memory and ARC facts, and the worker demand
-        the loop read from the host's own announcement.  The stage names no
+        with the host's tmpfs, memory and ARC facts, and the host-memory
+        tokens rows hold beside the tier (#1222).  The stage names no
         pool identity and no fill of its own; ``cycle`` prices its fill from
         the movers' receipts, as it does for a tier with no fill history.
         """
@@ -604,7 +604,7 @@ class ShapeGate:
                 policy, host=host, statvfs=_Statvfs(self.ram_dir, self.ram_ceiling),
                 proc_mounts=str(self.host_dir / "mounts"),
                 meminfo_path=str(self.host_dir / "meminfo"), stats=self.arc,
-                now=now, worker_mem_gb=worker_mem_gb)
+                now=now, rows_held_gib=rows_held_gib)
             if ram is not None:
                 tiers[self.ram_tier_id] = ram
         return tiers

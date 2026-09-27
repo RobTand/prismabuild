@@ -1022,7 +1022,7 @@ def test_cycle_drives_window_with_real_moves(tmp_path: Path) -> None:
     ledger = queue.tier_ledger(TIER)
 
     def discover(*, host, source_pool, fill_records, now, ram_policy,
-                 worker_mem_gb):
+                 rows_held_gib):
         assert host and source_pool is not None
         return {TIER: {"tier_id": TIER, "tier": "stage", "host": host,
                        "capacity_bytes": 3 * GIB}}
