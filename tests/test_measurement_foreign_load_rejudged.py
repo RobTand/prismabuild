@@ -222,3 +222,89 @@ def test_holder_only_busy_with_foreign_below_the_verdict_keeps_the_withhold(
     state["busy"] = False
     clock[0] += adaptive_cpu.MAX_INTERVAL_S + adaptive_cpu.MAX_SAMPLE_AGE_S + 1
     assert claim() == measurement
+
+
+def _controller(queue):
+    ledger = queue.ledger()
+    return adaptive_cpu.Controller(ledger, {"preferred": list(range(20)),
+                                            "fallback": []})
+
+
+def _sample_at(unix, *, busy, psi=0.034, interval=1.0, holders=None):
+    return {"sampled_unix": unix, "cpu_count": 20, "interval_s": interval,
+            "psi_some": psi, "busy_cpus": busy}
+
+
+def test_an_identity_change_rejudges_on_the_fresh_window(tmp_path):
+    """#1236 review: the reset verdict judged against nothing, not old samples.
+
+    A changed CPU topology is a different host: the verdict is judged on a
+    fresh empty window, and the re-judgement must not read the old-identity
+    samples the pass's state file still carries.
+    """
+    queue = pool.PoolQueue(tmp_path / "q")
+    queue.ensure_layout()
+    controller = _controller(queue)
+    seed = _sample_at(2000000.0, busy=0.3)
+    assert controller.idle(seed, [])["basis"] == "unmeasured"
+    grew = _sample_at(2000001.0, busy=0.3)
+    assert controller.idle(grew, [])["basis"] == "measured"
+
+    # A topology change under the controller: the state file still carries
+    # the old-identity samples, but the next judgement resets the window.
+    state = adaptive_cpu.read_json(controller.base / adaptive_cpu.IDLE_BASELINE)
+    state["identity"] = 999
+    adaptive_cpu.write_json(controller.base / adaptive_cpu.IDLE_BASELINE, state)
+    controller._idle = None
+    after = _sample_at(2000002.0, busy=2.0)
+    verdict = controller.idle(after, [])
+    assert verdict["state"] == "idle" and verdict["basis"] == "unmeasured"
+
+    rejudged = controller.rejudge_idle_foreign(after, [], busy_cpus=0.5)
+    assert rejudged["exceeds"] is False, rejudged
+    assert rejudged["basis"] == "unmeasured", rejudged
+
+
+def test_a_holder_tail_rejudges_against_nothing(tmp_path):
+    """#1236 review: a forced holder tail must not re-judge as foreign load.
+
+    The tail verdict is forced ``exceeds`` and judges against no reference at
+    all; a re-judgement that read the remembered window could read a holder's
+    own tail as load no drain clears -- and in that state no CPU is held, so
+    every tail CPU counts as unheld -- starving the measurement.
+    """
+    queue = pool.PoolQueue(tmp_path / "q")
+    queue.ensure_layout()
+    controller = _controller(queue)
+    seed = _sample_at(2000000.0, busy=0.3, interval=100.0)
+    assert controller.idle(seed, [])["basis"] == "unmeasured"
+    grew = _sample_at(2000001.0, busy=0.3, interval=100.0)
+    assert controller.idle(grew, [])["basis"] == "measured"
+    # A holder is seen inside the next sample's interval, then leaves.
+    controller.idle(_sample_at(2000050.0, busy=1.0), ["holder"])
+    tail = _sample_at(2000050.5, busy=2.0, interval=1.0)
+    verdict = controller.idle(tail, [])
+    assert verdict["state"] == "holder_tail" and verdict["exceeds"] is True
+
+    rejudged = controller.rejudge_idle_foreign(tail, [], busy_cpus=2.0)
+    assert rejudged["exceeds"] is False, rejudged
+
+
+def test_a_stale_cache_key_does_not_rejudge(tmp_path):
+    """#1236 review: the re-judgement is bound to this sample and holder state.
+
+    The cached verdict belongs to ``(sampled_unix, holders)``; a different
+    sample must not be re-judged against it.
+    """
+    queue = pool.PoolQueue(tmp_path / "q")
+    queue.ensure_layout()
+    controller = _controller(queue)
+    seed = _sample_at(2000000.0, busy=0.3)
+    assert controller.idle(seed, [])["basis"] == "unmeasured"
+    grew = _sample_at(2000001.0, busy=0.3)
+    assert controller.idle(grew, [])["basis"] == "measured"
+
+    other = _sample_at(2000006.0, busy=2.0)
+    rejudged = controller.rejudge_idle_foreign(other, [], busy_cpus=2.0)
+    assert rejudged["state"] == "stale-verdict", rejudged
+    assert rejudged["exceeds"] is False, rejudged
