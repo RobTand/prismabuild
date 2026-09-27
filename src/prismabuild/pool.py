@@ -3541,22 +3541,31 @@ class ResourceLedger:
             cpus.append(ordered[index])
         return cpus
 
-    def free_cpu_allocation(self, need: int, tiers: Mapping) -> list[int] | None:
-        """The CPUs the next ``need`` free ``cpu-*`` tokens would be given.
+    def free_cpu_tokens(self, tiers: Mapping | None = None, *, eligible_cpus=None) -> list[Path]:
+        """One selection rule for prediction and acquisition (#1210).
 
-        ``begin_acquire`` takes the first ``need`` free tokens in ``_glob``
-        (sorted) order and maps them through the same ordinal rule, so a caller
-        asking "which CPUs is this claim about to get?" reads one rule rather
-        than keeping a second copy of the selection policy in step with it.
-        ``None`` is the honest answer when the question cannot be answered --
-        fewer free tokens than the demand, or an ordinal the topology no longer
-        covers -- and callers treat it as unknown, never as idle.
+        Keep preferred-before-fallback ordinal order. Under fresh pressure a
+        decision may constrain this list to proven eligible CPUs; no acquisition
+        may silently substitute a busy CPU outside that proof. With no filter,
+        static and old adaptive decisions keep the original ordered selection.
         """
-        tokens = _glob(self.free_dir, "cpu-*")[:need]
-        if len(tokens) < need:
-            return None
+        tokens = _glob(self.free_dir, "cpu-*")
+        if eligible_cpus is None:
+            return tokens
+        if tiers is None:
+            raise PoolContractError('eligible CPU selection needs a topology')
+        allowed = set(eligible_cpus)
+        return [token for token, cpu in zip(tokens, self.cpu_ids(tokens, tiers)) if cpu in allowed]
+
+    def free_cpu_allocation(self, need: int, tiers: Mapping, *, eligible_cpus=None) -> list[int] | None:
+        """CPUs this claim would take by the acquisition rule, or unknown.
+
+        The optional eligible set is the decision's per-CPU pressure proof.
+        Missing tokens or out-of-range ordinals are never evidence of idleness.
+        """
         try:
-            return self.cpu_ids(tokens, tiers)
+            tokens = self.free_cpu_tokens(tiers, eligible_cpus=eligible_cpus)[:need]
+            return self.cpu_ids(tokens, tiers) if len(tokens) == need else None
         except PoolContractError:
             return None
 
@@ -4162,7 +4171,9 @@ class ResourceLedger:
                 if kind == "cpu" and adaptive is not None:
                     need -= int(adaptive.get("preferred_borrow", 0))
                 taken = 0
-                for token in _glob(self.free_dir, f"{kind}-*"):
+                tokens = (self.free_cpu_tokens(cpu_tiers, eligible_cpus=(adaptive or {}).get('eligible_cpus'))
+                          if kind == 'cpu' else _glob(self.free_dir, f"{kind}-*"))
+                for token in tokens:
                     if taken >= need:
                         break
                     try:

@@ -182,6 +182,7 @@ def test_cpu_samples_measure_busy_time_in_allowed_affinity_and_psi(tmp_path, mon
          'psi_total': 2000000},
     ])
     monkeypatch.setattr(adaptive_cpu, 'counters', lambda cpus: next(samples))
+    monkeypatch.setattr(adaptive_cpu, 'control_plane_counters', lambda cpus: {})
     assert controller.sample() == {}
     seen = controller.sample()
     assert seen['busy_cpus'] == pytest.approx(.6)
@@ -751,9 +752,10 @@ def test_disjoint_proof_maps_token_ordinals_through_the_tiers(tmp_path, monkeypa
     queue2.publish(action_key='b' * 64, cas_root=str(tmp_path / 'cas'),
                    checkout_root=str(tmp_path), worker_script='worker.py',
                    resources={'cpu': 1, 'mem_gb': 1})
-    # The first free token is ordinal 1 -> CPU 10, which the held action owns.
-    assert queue2.claim(capacity={'cpu': 4, 'mem_gb': 2}, cpu_tiers=tiers,
-                        adaptive_cpu=True) is None
+    # Ordinal 1 -> CPU 10 is foreign-busy, but idle fallback CPU 2 is free.
+    second = queue2.claim(capacity={'cpu': 4, 'mem_gb': 2}, cpu_tiers=tiers,
+                          adaptive_cpu=True)
+    assert second and second['cpu_allocation'] == {'preferred': [], 'fallback': [2]}
 
 
 def test_disjoint_proof_honours_a_borrowed_allocation_in_metadata(tmp_path, monkeypatch):
@@ -770,10 +772,11 @@ def test_disjoint_proof_honours_a_borrowed_allocation_in_metadata(tmp_path, monk
     queue.publish(action_key='c' * 64, cas_root=str(tmp_path / 'cas'),
                   checkout_root=str(tmp_path), worker_script='worker.py',
                   resources={'cpu': 1, 'mem_gb': 1})
-    # Token ordinal 2 is CPU 2, but the metadata says the holder holds CPU 8 --
-    # and 8 is the CPU this claim's first free token would be given.
-    assert queue.claim(capacity={'cpu': 4, 'mem_gb': 2}, cpu_tiers=tiers,
-                       adaptive_cpu=True) is None
+    # CPU 8 has a free token but is still borrowed. Skip it, using CPU 10;
+    # neither a free token nor zero occupancy permits overlapping that holder.
+    claim = queue.claim(capacity={'cpu': 4, 'mem_gb': 2}, cpu_tiers=tiers,
+                        adaptive_cpu=True)
+    assert claim and claim['cpu_allocation'] == {'preferred': [10], 'fallback': []}
 
 
 def test_pressure_override_never_borrows_a_busy_lender(tmp_path, monkeypatch):

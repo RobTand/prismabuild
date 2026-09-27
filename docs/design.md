@@ -3753,9 +3753,15 @@ occupancy refuses new CPU claims outright, and a fresh PSI `some` at or above
 .10 ordinarily refuses as well. One exception exists for ordinary bounded
 generation claims narrower than the host: the reading is treated as a pinned
 neighbour's local contention only when the CPUs this claim's own free tokens
-would map to are all idle (`per_cpu_busy <= .05`) and none is held by another
-action, in which case the claim proceeds on those disjoint free tokens and
-borrowing is disabled for that decision. Measurements, unbounded demand that
+would map to have foreign busy occupancy at most `.05` and none is held by
+another action, in which case the claim proceeds on those disjoint free tokens
+and borrowing is disabled for that decision. Under this proof, the ledger
+selects the first *eligible* free tokens in preferred/fallback ordinal order,
+not the first free token whether busy or idle (#1210). Prediction and
+`begin_acquire` use the same `ResourceLedger.free_cpu_tokens` rule and the same
+eligible CPU set. A lost eligible token cannot be replaced with an unproven
+one. If insufficient eligible CPUs remain, the existing held/foreign refusal
+and bounded withholding rules still apply. Measurements, unbounded demand that
 declares no CPU count, and full-width reservations need the host idle, and
 are judged on busy CPUs and PSI together against the host's own idle baseline
 instead (below); a learned cheap cost and an all-zero reading do not reopen a
@@ -3769,6 +3775,31 @@ meaning: the current gates do not run, and an ordinary bounded claim on free
 tokens can still be placed, while borrowing and measurement need fresh
 evidence. A local lock serializes each host's adaptive decisions, while the
 shared queue's rename still decides ownership.
+
+**Control-plane attribution (#1210).** `control_cpu` recognizes supervised
+worker, tier, prewarm and metrics loops by the supervisor's three ownership
+facts: Python executing a closed-set script inside this reader's loaded runtime
+root, plus the exact supervisor host mark. A mark alone is not an exemption,
+nor is being a descendant: ordinary action processes still count in full.
+Threads are matched by process/script identity, start ticks, CPU and kernel
+`se.nr_migrations`. Only intervals with unchanged migration counts and the same
+CPU contribute per-CPU control ticks. Process readings bracket the host reading
+(previous process sample after the host, current sample before it), so excluded
+work is contained in the measured interval. Missing, recycled, migrated or
+inconsistent identities/counters grant no subtraction. Unrecognized generations
+and other unproven control processes remain conservatively unattributed; the
+idle-token fallback still prevents one such busy CPU blocking the entire box.
+This is cooperative attribution, not hostile-process isolation.
+
+The sample retains raw `per_cpu_busy`, `busy_cpus` and PSI, adds diagnostic
+`control_plane_busy`, and exposes the residual `foreign_per_cpu_busy` only to
+the high-pressure per-CPU corroboration. Saturation, projected physical CPU
+cost, measurements, full-width and unbounded isolation still use raw load.
+Neither `.05` nor any pressure threshold is raised. No new queue/claim schema
+or CPU-map identity is introduced. Old readers ignore added sample/metadata
+fields and remain conservative; new readers use raw occupancy for old samples.
+Old and new readers share the admission lock and unchanged token ordinals.
+Existing reservations retain their actual stored allocation on either reader.
 
 **Idle baseline (#997).** "Idle" is what the host itself shows while none of
 the pool's work runs on it, not a fixed fraction of its CPUs. The 5% line
