@@ -50,7 +50,7 @@ def _ready_item(fleet: Fleet, key: str) -> dict:
 
 
 def _manifest_row(fleet: Fleet, seed: str, *, annotations=None,
-                  files=None) -> str:
+                  files=None, priority: int = 0) -> str:
     """Seal and publish a READY manifest row that carries a checkout snapshot.
 
     The movers a plan names materialize the consumer's sealed snapshot, so
@@ -108,7 +108,7 @@ def _manifest_row(fleet: Fleet, seed: str, *, annotations=None,
     fleet.queue.publish(
         action_key=key, cas_root=fleet.cas_root,
         worker_script=str(fleet.root / "worker.py"),
-        checkout_root=str(fleet.root))
+        checkout_root=str(fleet.root), priority=priority)
     return key
 
 
@@ -255,9 +255,9 @@ def test_a_mover_inherits_its_consumers_priority(tmp_path):
     """REVIEW-1252 item 4: staging rides the consumer's own band."""
 
     fleet = Fleet(tmp_path)
-    files = [fleet.file(name, size) for name, size in NAMED_FILES]
-    key = fleet.action("row-priority", files,
-                       priority=5, annotations={"phases": phase_table(NAMED_FILES)})
+    key = _manifest_row(fleet, "row-priority",
+                        annotations={"phases": phase_table(NAMED_FILES)},
+                        priority=5)
 
     outcomes = manifest_promotion.promote_ready_manifest_rows(
         fleet.queue, fleet.cas_root, _stage_tier(fleet),
