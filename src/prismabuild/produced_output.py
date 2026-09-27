@@ -7913,6 +7913,158 @@ def _producer_attempt_state(queue, instance: Mapping[str, object]) -> str:
         str(attempt["nonce"]))
 
 
+def dead_input_hint(queue, item: Mapping[str, object], hints) -> bool:
+    """The pass's memoized gate: does this mover's owner attempt read dead?
+
+    #1202 review N2: the gate the caller consults BEFORE taking the mover
+    key's transition lock, so a live producer's movers pay no lock round
+    trip at all.  One ``_key_generation`` read per distinct owner per pass
+    (the caller's memo); the answer is only a gate -- a ``dead`` hint still
+    pays for the full proof, which re-reads every fact fresh under the
+    lock, never trusting the memo.  Anything unprovable answers False.
+    """
+
+    ref = item.get("produced_output_batch")
+    if not isinstance(ref, Mapping):
+        return False
+    try:
+        owner = _hex64(str(ref.get("owner_action_key") or ""),
+                       where="reference owner_action_key")
+        nonce = _hex32(str(ref.get("owner_nonce") or ""),
+                       where="reference nonce")
+    except ProducedOutputError:
+        return False
+    generation = hints.get(owner)
+    if generation is None:
+        generation = hints[owner] = _key_generation(queue, owner)
+    return _attempt_state(generation, nonce) == "dead"
+
+
+def dead_input_dependency(
+        queue, item: Mapping[str, object]
+) -> dict[str, object] | None:
+    """The proof that a ready mover's producer-owned input is gone (#1184).
+
+    A mover whose sealed row carries a ``produced_output_batch`` reference
+    reads origin files only that reference's producer attempt can write.
+    This answers the combined proof the terminalization needs: the instance
+    the reference names (read from its immutable filed record, with every
+    identity field cross-checked against the reference so a foreign or
+    forged reference never authorizes reading another owner's state), the
+    producer attempt provably dead (:func:`_producer_attempt_state` -- the
+    only authority that makes a missing origin permanent), the batch's
+    committed entry bound back to the reference by manifest digest with its
+    sealed descriptors (``_load_batch_record`` -- every entry re-validated
+    against the bound template and instance, never the commitments' path
+    list read unvalidated), and one of those descriptors' origin paths
+    under the producer's output prefix that is missing: ``lstat`` answered
+    ``ENOENT`` (#1202 review: only FileNotFoundError is missing; EACCES,
+    ESTALE and EIO are unreadable, and unreadable is unknown, never gone).
+    The answer names the owner nonce and the missing path.
+
+    ``hints`` is the caller's per-pass memo of owner generations (#1202
+    review finding 5): one ``_key_generation`` read per distinct owner per
+    pass, so a fleet of movers of one live producer pays one ``claimed/``
+    census instead of two per mover. The hint is only a gate -- a
+    non-``dead`` hint skips the mover entirely this pass (a producer that
+    dies mid-pass is caught on the next one), and a ``dead`` hint still pays
+    for the full proof, which re-reads the state fresh under the caller's
+    lock, never trusting the memo.
+
+    Anything unprovable -- a malformed or foreign reference, an unreadable
+    instance, commitments or batch record, a live, succeeded or unknown
+    producer, a batch committed at origin, an unreadable origin path, or a
+    batch whose origin paths all still exist -- answers ``None``: ENOENT,
+    poll counts and unknown state alone invent no authority (#1184), and
+    the row stays ready.  Never raises for queue-state reasons.
+    """
+
+    from prismabuild import pool as pool_mod
+
+    ref = item.get("produced_output_batch")
+    if not isinstance(ref, Mapping):
+        return None
+    if ref.get("schema") != pool_mod.PRODUCED_OUTPUT_BATCH_REF_SCHEMA_V1:
+        return None
+    try:
+        owner = _hex64(str(ref.get("owner_action_key") or ""),
+                       where="reference owner_action_key")
+        template_id = _name(str(ref.get("template_id") or ""),
+                            where="reference template_id")
+        nonce = _hex32(str(ref.get("owner_nonce") or ""),
+                       where="reference nonce")
+        scope_id = _name(str(ref.get("owner_scope_id") or ""),
+                         where="reference scope_id")
+        manifest_digest = _hex64(str(ref.get("manifest_digest") or ""),
+                                 where="reference manifest_digest")
+        batch_id = _name(str(ref.get("batch_id") or ""),
+                         where="reference batch_id")
+    except ProducedOutputError:
+        return None
+    try:
+        raw = json.loads(
+            (Path(queue.root) / "residency" / OUTPUT_SCOPES_SUBDIR / owner
+             / f"{template_id}.{nonce}" / "instance.json").read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(raw, Mapping):
+        return None
+    try:
+        instance = validate_instance(dict(raw))
+        template = validate_template(json.loads(
+            (Path(queue.root) / "residency" / OUTPUT_TEMPLATES_SUBDIR
+             / f"{instance['template_id']}.json").read_text()))
+    except (OSError, ValueError, ProducedOutputError):
+        return None
+    attempt = instance["owner_attempt"]
+    assert isinstance(attempt, dict)
+    if (str(instance["owner_action_key"]) != owner
+            or str(instance["template_id"]) != template_id
+            or str(attempt["nonce"]) != nonce
+            or str(attempt["scope_id"]) != scope_id
+            or template_sha256(template) != str(instance["template_sha256"])):
+        return None          # the reference does not name this instance
+    state = _producer_attempt_state(queue, instance)
+    if state != "dead":
+        return None
+    try:
+        commitments = _read_commitments(_commitments_path(queue.root, instance))
+        entry = commitments["batches"].get(batch_id)
+        if (not isinstance(entry, Mapping)
+                or str(entry.get("manifest_digest")) != manifest_digest
+                or entry.get("origin_only") is True):
+            return None
+        _filed, sealed = _load_batch_record(
+            queue.root, instance, template, entry, batch_id)
+    except (ProducedOutputError, OSError, ValueError):
+        return None
+    prefix = str(instance["output_prefix"]).rstrip(os.sep) + os.sep
+    for path in sorted(str(each["path"]) for each in sealed):
+        if not path.startswith(prefix):
+            continue         # only the producer's namespace is its to lose
+        try:
+            os.lstat(path)
+        except FileNotFoundError:
+            return {
+                "owner_action_key": owner,
+                "owner_nonce": nonce,
+                "owner_scope_id": scope_id,
+                "template_id": template_id,
+                "template_sha256": str(instance["template_sha256"]),
+                "batch_id": batch_id,
+                "manifest_digest": manifest_digest,
+                "tier_id": str(ref.get("tier_id") or ""),
+                "path": path,
+                "producer_state": state,
+            }
+        except OSError:
+            # Unreadable is unknown, never missing (#1202 review finding 2):
+            # EACCES, ESTALE and EIO all mean the answer cannot be read, not
+            # that the file is gone.
+            return None
+    return None
+
+
 def _attempt_state(generation: tuple[str, dict[str, object] | None],
                    nonce: str) -> str:
     """`_producer_attempt_state` for one attempt, over a generation already read.

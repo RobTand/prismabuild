@@ -4463,6 +4463,58 @@ under SLURM before any row is submitted.
 
 ## Storage prewarm pacing
 
+READY diagnostics expose recorded prewarm input errors, including missing
+files, with the receipt's finish time and `permanence unproven` (#1184).
+Unreadable prewarm evidence makes the diagnostic census incomplete, never a
+claim of absence. This is the issue's visibility slice only: it does not
+terminalize dependents or alter admission for generic rows. Generic
+data-manifest entries do not bind a producer, but produced-output movers
+do: their sealed `produced_output_batch` names the owner key, nonce, scope
+and batch manifest. The #1184 incident's retained row carries that binding.
+The prewarm error strings do not themselves bind the failed read to an
+exact queue generation or prove permanent loss. Existing dead-batch
+retirement deliberately retains READY/CLAIMED movers
+(`_dead_staged_batch_ready`), and `finish` concludes claims, not READY
+dependencies.
+
+The terminal repair combines the owner-attempt proof with authoritative
+missing-input evidence and a serialized pre-admission refusal (#1184,
+implemented 2026-09-27): `produced_output.dead_input_dependency` answers
+the combined proof for a READY mover -- the sealed reference cross-checked
+against its immutable filed instance, the producer attempt provably dead
+(`_producer_attempt_state`), the batch's committed entry bound back by
+manifest digest with its sealed descriptors (`_load_batch_record`), and
+one of those descriptors' origin paths under the producer's output prefix
+whose `lstat` answered `ENOENT` (only ENOENT is missing; EACCES, ESTALE
+and EIO are unreadable, and unreadable is unknown, never gone).
+`PoolQueue.fail_dead_input_dependency` then fails the row under the key's
+transition lock, taken non-blocking through the pass's timed hold (#1029;
+a foreign holder answers not-acquired and the claim path's own hold on the
+same key records the `transition_busy` denial -- never a wait, #1115), and
+only after the pass's memoized hint says the owner attempt is dead, so a
+live producer's movers pay no lock round trip at all. A release the
+funding check cannot decide -- a transient read fault -- restores the row
+and records a denial instead of filing the terminal, because a terminal
+row makes the public release refuse forever; the next pass retries. This
+runs before any warm or admission -- on the claim path after the
+placement match, in the prewarm cycle before the manifest read: status `failed` with
+`termination_reason=input_dependency_failed` naming the owner nonce and
+the missing path, `published_unix` preserved, and the ready bytes kept
+under `withdrawn/superseded/`. Before the ending is filed the mover's
+prepaid funding is released as a proven never-started cancellation (the
+release's own no-CLAIMED/no-receipt/no-lease checks run inside, and the
+dead-input proof waives the committed-batch refusal because the batch's
+claim can never come), and the #929 produced lane retires a dead producer
+whose ended mover's funding settled -- consumed, or released by exactly
+this proof -- so the stage token and the batch do not outlive the row.
+The prewarm cycle and the claim path both refuse through it, each pass
+memoizing one owner-state read per distinct owner (a non-dead hint skips
+the mover; a dead hint still pays for the full proof, which re-reads fresh
+under the lock). ENOENT, arbitrary poll counts and unknown state alone
+remain insufficient: an unreadable record, a live or succeeded or unknown
+producer, a foreign reference, or a batch whose origin paths all still
+exist answers None and the row stays READY.
+
 The data-manifest prewarmer is described in
 [`data_manifest_prewarm.md`](data_manifest_prewarm.md).  A storage-role warm
 requires complete fresh disk telemetry for every discovered data-vdev member:

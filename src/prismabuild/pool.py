@@ -13334,75 +13334,134 @@ class PoolQueue:
         with self.mover_transition_lock(mover, blocking=False) as acquired:
             if not acquired:
                 return False
-            current = self.read_output_funding(mover, str(tier_id))
-            if current is None:
-                return False
-            if (generation is not None
-                    and str(current.get("generation")) != str(generation)):
-                return False
-            state = str(current.get("state"))
-            if state == "released":
-                return True
-            if state not in ("reserved", "transferring"):
-                return False
-            # Committed batches are recovery, not cancellation (R7 liveness):
-            # once the immutable batch record + commitments entry exist, the
-            # credit belongs to that batch's claim (or committed recovery
-            # after producer finish), and retiring it here would leave a
-            # filed batch whose sealed mover key can never claim or re-fund.
-            try:
-                if self._output_batch_authority(current):
+            # The public API answers a bool: an undecided read fault is a
+            # non-release for it, never a strand (#1202 review N3 makes the
+            # distinction only for the dead-input ending, which retries).
+            released = self._release_never_started_funding_locked(
+                mover, str(tier_id), generation=generation)
+            return released is True
+
+    def _release_never_started_funding_locked(
+            self, mover_action_key: str, tier_id: str, *,
+            generation: str | None = None,
+            dead_input: Mapping[str, object] | None = None) -> bool | None:
+        """Retire an output intent only when mover nonexecution is proven (R2).
+
+        The lock-free body of :meth:`release_output_funding`; the caller
+        holds the mover's transition lock (#1202's dead-input ending calls
+        this before it files its terminal, while no terminal row exists,
+        which is the one context in which the FAILED check below can never
+        fire).  Refuses (retain, never free) unless the mover provably never
+        started: no CLAIMED row, no DONE row, no FAILED row, no move receipt
+        with staged bytes, no lease, and no claimed terminal carrying this
+        funding generation. Missing marker/status is NOT proof a copy never
+        ran (failed/uncertain prefixes retain both names and accounting);
+        only the true not-started cancellation (published READY, never
+        claimed, no receipt/lease/terminal) retires credit once via
+        reserved|transferring -> released. Tokens stay where they are;
+        ordinary owner/mover release then frees them.
+
+        The answer is a tri-state (#1202 review N3): ``True`` released,
+        ``False`` refused on proof (the mover started, the record is
+        foreign, absent, or already settled), and ``None`` undecided -- a
+        read fault anywhere inside.  A caller that files a terminal on the
+        strength of this answer must treat ``None`` as "retry", never as a
+        refusal, because a terminal row makes the public release refuse
+        forever and strands the token.
+        """
+
+        mover = str(mover_action_key)
+        try:
+            current, file_state = self.output_funding_file_state(
+                mover, str(tier_id))
+        except (OSError, ValueError, PoolContractError):
+            return None                    # a read fault is undecided
+        if file_state == "absent":
+            return False                   # nothing to release is a settled answer
+        if file_state != "ok" or not isinstance(current, Mapping):
+            return None                    # an unreadable record is undecided
+        if (generation is not None
+                and str(current.get("generation")) != str(generation)):
+            return False
+        state = str(current.get("state"))
+        if state == "released":
+            return True
+        if state not in ("reserved", "transferring"):
+            return False
+        if dead_input is not None:
+            # #1202's dead-input ending: the caller proved this funding's
+            # producer attempt dead and its bound origin gone, so the batch's
+            # claim can never come and the committed-batch refusal below
+            # would strand the credit.  The funding must still name the same
+            # batch the proof proved dead; a foreign record is retained.
+            for field in ("batch_id", "manifest_digest", "tier_id",
+                          "owner_action_key", "owner_nonce"):
+                if str(current.get(field)) != str(dead_input.get(field)):
                     return False
-            except (OSError, PoolContractError, ValueError):
+        # Committed batches are recovery, not cancellation (R7 liveness):
+        # once the immutable batch record + commitments entry exist, the
+        # credit belongs to that batch's claim (or committed recovery
+        # after producer finish), and retiring it here would leave a
+        # filed batch whose sealed mover key can never claim or re-fund.
+        try:
+            if (dead_input is None
+                    and self._output_batch_authority(current)):
                 return False
-            exp_gen = str(current.get("generation"))
-            # Durable claim: CLAIMED row of any shape means the mover may hold
-            # the fence while the consumed marker failed.
+        except (OSError, PoolContractError, ValueError):
+            return None
+        exp_gen = str(current.get("generation"))
+        # Durable claim: CLAIMED row of any shape means the mover may hold
+        # the fence while the consumed marker failed.
+        try:
+            claimed = _read_json(self.item_path(CLAIMED, mover))
+        except (OSError, PoolContractError):
+            return None
+        if isinstance(claimed, Mapping):
+            return False
+        # Terminals: DONE or FAILED of any status means the mover started
+        # (or a successor did); a funded generation carried into the
+        # terminal proves it took this fence. Uncertain/missing terminal
+        # reads fail closed (retain).
+        for terminal_state in (DONE, FAILED):
             try:
-                claimed = _read_json(self.item_path(CLAIMED, mover))
+                terminal = _read_json(self.item_path(terminal_state, mover))
             except (OSError, PoolContractError):
-                return False
-            if isinstance(claimed, Mapping):
-                return False
-            # Terminals: DONE or FAILED of any status means the mover started
-            # (or a successor did); a funded generation carried into the
-            # terminal proves it took this fence. Uncertain/missing terminal
-            # reads fail closed (retain).
-            for terminal_state in (DONE, FAILED):
-                try:
-                    terminal = _read_json(self.item_path(terminal_state, mover))
-                except (OSError, PoolContractError):
-                    return False
-                if not isinstance(terminal, Mapping):
-                    continue
-                # Any terminal for this key is proof of execution start.
-                return False
-            # Physical lifetime: move receipt with any staged bytes (complete
-            # or partial, refused or not) means bytes may be on the stage.
+                return None
+            if not isinstance(terminal, Mapping):
+                continue
+            # Any terminal for this key is proof of execution start.
+            return False
+        # Physical lifetime: move receipt with any staged bytes (complete
+        # or partial, refused or not) means bytes may be on the stage.
+        try:
+            receipt = self.move_record(mover)
+        except (OSError, PoolContractError, ValueError):
+            return None
+        if isinstance(receipt, Mapping):
             try:
-                receipt = self.move_record(mover)
-            except (OSError, PoolContractError, ValueError):
-                return False
-            if isinstance(receipt, Mapping):
-                try:
-                    staged = receipt.get("bytes_staged")
-                    if isinstance(staged, int) and not isinstance(staged, bool) and staged > 0:
-                        return False
-                    if receipt.get("complete") is True:
-                        return False
-                except (TypeError, ValueError):
+                staged = receipt.get("bytes_staged")
+                if isinstance(staged, int) and not isinstance(staged, bool) and staged > 0:
                     return False
-            # Lease: a live lease file means the mover may still hold the key.
-            try:
-                lease = _read_json(self.lease_path(mover))
-            except (OSError, PoolContractError):
+                if receipt.get("complete") is True:
+                    return False
+            except (TypeError, ValueError):
                 return False
-            if isinstance(lease, Mapping):
-                return False
-            _ = exp_gen
-            return self._advance_output_funding_state_locked(
+        # Lease: a live lease file means the mover may still hold the key.
+        try:
+            lease = _read_json(self.lease_path(mover))
+        except (OSError, PoolContractError):
+            return None
+        if isinstance(lease, Mapping):
+            return False
+        _ = exp_gen
+        if self._advance_output_funding_state_locked(
                 mover, str(tier_id), expect=state, advance_to="released",
-                generation=str(current.get("generation")))
+                generation=str(current.get("generation"))):
+            return True
+        # Every proven refusal answered above; a False here is a read or
+        # write fault under the advance's own idempotence, which the next
+        # pass retries (#1202 review N3).
+        return None
 
     def output_census_for_owner(self, owner_key: str) -> tuple[list[dict], bool]:
         """Outstanding output intents for owner + census-unknown flag (R2).
@@ -17661,6 +17720,12 @@ class PoolQueue:
         #: whole pass (#1091 review 1): a cap that binds denies every mover
         #: row, and re-reading per row cost O(rows x claimed movers).
         reader_plans: dict[str, dict[str, object]] = {}
+        #: Each owner's generation, read once for the whole pass (#1202
+        #: review finding 5): the dead-input check's hint, so a fleet of
+        #: movers of one producer pays one ``claimed/`` census per pass
+        #: instead of two per mover.  A non-dead hint only skips the check;
+        #: a dead hint still pays for the full proof under the key's lock.
+        dead_input_hints: dict[str, tuple[str, dict[str, object] | None]] = {}
         for item in ready:
             key = str(item.get("action_key", ""))
             held_back = withheld_for is not None and (
@@ -17691,6 +17756,19 @@ class PoolQueue:
                 self.record_denial(item, "deferred_behind_withheld_row", {
                     "withheld_for": withheld_for,
                     "withheld_kinds": sorted(withheld_kinds or ())})
+                continue
+            if (isinstance(item.get("produced_output_batch"), Mapping)
+                    and key
+                    and self.fail_dead_input_dependency(item, key,
+                                                        hints=dead_input_hints,
+                                                        holds=holds)):
+                # Before the hold and any admission (#1184): the method
+                # serializes its own transition under this key's lock, so a
+                # concurrent publisher or claimant cannot interleave with
+                # the ending.  A box that can place the row is one box that
+                # can fail it; the prewarm loop reaches it on every box
+                # regardless, and an unprovable dependency answers False
+                # and claims exactly as before.
                 continue
             with self._timed_transition_hold(key, holds) as acquired:
                 if not acquired:
@@ -20104,7 +20182,7 @@ class PoolQueue:
             parts = captured.name.split(".")
             if (len(parts) != 5 or parts[-1] != "json"
                     or parts[3] not in {"orphan", "withdraw-ready",
-                                        "origin-released"}
+                                        "origin-released", "dead-input"}
                     or len(parts[0]) != 64
                     or any(c not in "0123456789abcdef" for c in parts[0])):
                 continue
@@ -21982,6 +22060,133 @@ class PoolQueue:
             _write_json_atomic(self.item_path(FAILED, key), record)
         self._finish_ready_transition(captured)
         return True
+
+    def fail_dead_input_dependency(self, item: Mapping[str, object],
+                                   key: str, hints=None, holds=None) -> bool:
+        """Fail a ready mover whose dead producer's bound origin is gone (#1184).
+
+        A mover's sealed ``produced_output_batch`` reference names the
+        producer attempt that owns its origin paths.  When that attempt is
+        provably dead and one of the batch's committed origin paths no
+        longer exists, the row can never run -- only that dead attempt
+        could write the missing file -- so it is failed here, before any
+        warm, placement, admission or staging: status ``failed`` with
+        ``termination_reason=input_dependency_failed`` naming the owner
+        nonce and the missing path, and the ready bytes kept under
+        ``withdrawn/superseded/``.  This is the identity-bound death proof
+        the design note requires: ENOENT, poll counts and unknown state
+        alone remain insufficient, and ``produced_output.dead_input_dependency``
+        answers ``None`` for every one of those, leaving the row ready.
+
+        The confirm and the filing run under this key's transition lock, so
+        a concurrent publisher or claimant of the same key serializes
+        against this ending, and the captured generation is restored rather
+        than replaced when a successor appears.  Returns ``True`` when the
+        row must not be warmed or claimed: it was failed, or its READY bytes
+        are gone (a stale listing).  ``False`` lets the caller proceed.
+        """
+
+        from . import produced_output as produced_mod
+
+        if not isinstance(item.get("produced_output_batch"), Mapping):
+            return False
+        # #1202 review N2: the hint is consulted BEFORE the key's lock, so
+        # a live producer's movers pay no lock round trip at all, and the
+        # lock is taken only on a dead hint -- through the pass's timed
+        # hold (#1029), so its cost is visible -- where the full proof
+        # re-reads every fact fresh, never trusting the memo.  A caller
+        # with no memo (a direct check) skips straight to that proof.
+        if (hints is not None
+                and not produced_mod.dead_input_hint(self, item, hints)):
+            return False
+        with self._timed_transition_hold(key, holds) as acquired:
+            if not acquired:
+                # Not held, so nothing was decided: the claim path's own
+                # hold on the same key records the busy denial with its
+                # carry, and the prewarm cycle retries next pass (#1202
+                # review N2).
+                return False
+            try:
+                proof = produced_mod.dead_input_dependency(self, item)
+            except (produced_mod.ProducedOutputError, OSError,
+                    PoolContractError) as exc:
+                # Unreadable queue state is unknown state: it invents no
+                # ending, and the row stays claimable (#1184).
+                self.record_denial(item, "dead_input_dependency_unreadable",
+                                   {"error": str(exc)})
+                return False
+            if proof is None:
+                return False
+            captured = self._capture_ready_transition(
+                self.item_path(READY, key), kind="dead-input")
+            if captured is None:
+                return True       # the listing was stale: nothing of it is ready
+            try:
+                record = _read_json(captured)
+                covered = (self.terminal_outcome_covers(record, action_key=key)
+                           if record is not None else None)
+            except (OSError, PoolContractError):
+                self._restore_ready_transition(captured, key)
+                return False
+            if record is None:
+                self._restore_ready_transition(captured, key)
+                return True
+            funding_released = False
+            if covered is None:
+                # #1202 review finding 1: release the prepaid funding while
+                # no terminal of this generation exists yet -- the release's
+                # own never-started checks (no CLAIMED row, no staged
+                # receipt, no lease) run inside, and the dead-input proof
+                # both waives the committed-batch refusal (the batch's claim
+                # can never come) and binds the funding to that batch -- so
+                # the stage token and the transferring record do not
+                # outlive the ending and the dead-producer sweep retires.
+                # #1202 review N3: a release that could not be decided -- a
+                # transient read fault anywhere inside -- restores the row
+                # and records the denial instead of filing FAILED, because
+                # a FAILED row makes the public release refuse forever and
+                # strands the token.  The next pass retries.
+                funding_released = self._release_never_started_funding_locked(
+                    key, str(proof["tier_id"]), dead_input=proof)
+                if funding_released is None:
+                    self._restore_ready_transition(captured, key)
+                    self.record_denial(item, "dead_input_funding_unreadable", {
+                        "reason": "the funding record could not be read; "
+                                  "the row stays ready and the next pass "
+                                  "retries"})
+                    return False
+                record.update({
+                    "schema": POOL_OUTCOME_SCHEMA_V1,
+                    "action_key": key,
+                    "status": "failed",
+                    "finished_unix": _now(),
+                    "finished_host": socket.gethostname(),
+                    "detail": {
+                        "termination_reason": "input_dependency_failed",
+                        "input_dependency": dict(proof),
+                        "funding_released": funding_released,
+                        "refusal": "dead-producer-input-missing",
+                        "reason": (
+                            f"input dependency failed: producer "
+                            f"{proof['owner_action_key'][:12]} attempt "
+                            f"{proof['owner_nonce']} is dead and its origin "
+                            f"{proof['path']} does not exist"),
+                    },
+                })
+                # Replaced, as ``finish`` files an outcome: an earlier
+                # generation's ending under this key is not this row's.
+                # A failed write restores the row rather than ending the
+                # pass (#1202 review round 2, non-blocking: the sweep
+                # recovers a real crash; this is the in-process guard).
+                try:
+                    _write_json_atomic(self.item_path(FAILED, key), record)
+                except OSError as exc:
+                    self._restore_ready_transition(captured, key)
+                    self.record_denial(item, "dead_input_dependency_unreadable",
+                                       {"error": str(exc)})
+                    return False
+            self._finish_ready_transition(captured)
+            return True
 
     def live_withdrawal(self, action_key: str) -> dict[str, object] | None:
         """The visible cancellation marker filed for this key, if there is one.
