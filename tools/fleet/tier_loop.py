@@ -62,6 +62,7 @@ from prismabuild import window_credit  # noqa: E402
 
 import deferred_release  # noqa: E402
 import prewarm_loop  # noqa: E402
+import manifest_promotion  # noqa: E402
 import stage_release  # noqa: E402
 #: The same generation gate ``prewarm_loop`` reads, under the same name, for
 #: the same reason: a loop holds the modules it imported for its whole life,

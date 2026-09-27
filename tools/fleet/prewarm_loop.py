@@ -3630,15 +3630,23 @@ def manifest_row_skip_reason(room: Mapping, ram_tier_live: bool) -> str | None:
     manifest rows -- it files residency plans and the movers stage through
     the fences, the host tokens (#1245) and the residency maps, and an ARC
     warm beside that would only churn a cache capped far below one row's
-    set.  Otherwise, a full ARC (``headroom_effective`` zero) makes a warm
-    evict a byte for every byte it reads: the 2026-09-27 G2 receipts show
-    309.9 s of pacer holds warming 21 MB of a 63.66 GB manifest.  Neither
-    skip spends the lookahead, so the rows behind keep their turn.
+    set.  Otherwise, a box with a real ARC at its ceiling
+    (``headroom_effective`` zero with ``arc_c_max`` above zero) makes a
+    warm evict a byte for every byte it reads: the 2026-09-27 G2 receipts
+    show 309.9 s of pacer holds warming 21 MB of a 63.66 GB manifest.  A
+    box with no ARC keeps its existing budget refusal.  Neither skip
+    spends the lookahead, so the rows behind keep their turn.
     """
 
     if ram_tier_live:
         return "ram-tier-planner-owns"
-    if int(room.get("headroom_effective", 0) or 0) <= 0:
+    if (int(room.get("arc_c_max", 0) or 0) > 0
+            and int(room.get("headroom_effective", 0) or 0) <= 0):
+        # A box with a real ARC at its ceiling: a warm here evicts a byte for
+        # every byte it reads -- the 2026-09-27 G2 receipts show 309.9 s of
+        # pacer holds warming 21 MB of a 63.66 GB manifest.  A box with no
+        # ARC at all keeps its existing answer (``headroom``): its budget is
+        # zero by construction and the budget's own refusal names it.
         return "headroom_effective zero"
     return None
 
