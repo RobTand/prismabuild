@@ -1,0 +1,9 @@
+# Shrink-only allowlist for tests/test_client_boundary.py: core._ARTIFACT_FAMILIES and core._PYTHON_DISTRIBUTIONS.
+# Step 4 (#1076) replaces them with submitter-declared fields; gridbook goes first.
+# One line per occurrence. Delete lines; never add.
+_ARTIFACT_FAMILIES	codebook
+_ARTIFACT_FAMILIES	generic
+_PYTHON_DISTRIBUTIONS	gridbook
+_PYTHON_DISTRIBUTIONS	torch
+_PYTHON_DISTRIBUTIONS	transformers
+_PYTHON_DISTRIBUTIONS	vllm
