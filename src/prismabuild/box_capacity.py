@@ -34,6 +34,7 @@ from __future__ import annotations
 from collections import deque
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+import json
 import math
 import os
 from pathlib import Path
@@ -522,6 +523,44 @@ def observe(
     return Observation(capacity=capacity, foreign=foreign, detail=detail)
 
 
+def ram_policy_mem_roof(*, policy_path: str | Path, arcstats_path: str | Path,
+                         meminfo_path: str | Path) -> int | None:
+    """The host-memory roof the RAM tier's policy leaves for jobs, in GiB.
+
+    ``MemTotal - max(arc_c_max, arc_floor) - system_reserve``, floored to
+    whole GiB -- the same inputs and arithmetic as the RAM tier's floor
+    guard (``storage_tiers._ram_numbers``), read here per poll so a worker
+    loop can offer the measured roof instead of a static ``--mem-gb``
+    (#1222, following the ``--spool-gb auto`` precedent #1190).  ``None``
+    when any input is unreadable: a roof nobody can prove is a roof nobody
+    may offer, and the caller keeps its declared fallback.
+    """
+
+    gib = 1024 ** 3
+    try:
+        policy = json.loads(Path(policy_path).read_text(encoding="utf-8"))
+        floor_bytes = int(policy["arc_floor_gib"]) * gib
+        reserve_bytes = int(policy["system_reserve_gib"]) * gib
+        c_max: int | None = None
+        for line in Path(arcstats_path).read_text(
+                encoding="utf-8").splitlines():
+            parts = line.split()
+            if len(parts) >= 3 and parts[0] == "c_max":
+                c_max = int(parts[2])
+                break
+        mem_total: int | None = None
+        for line in Path(meminfo_path).read_text(
+                encoding="utf-8").splitlines():
+            if line.startswith("MemTotal:"):
+                mem_total = int(line.split()[1]) * 1024
+                break
+        if c_max is None or mem_total is None:
+            return None
+    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+        return None
+    return max(0, mem_total - max(c_max, floor_bytes) - reserve_bytes) // gib
+
+
 class CapacityObserver:
     """The offer a worker publishes: observations, held for a few polls.
 
@@ -535,11 +574,18 @@ class CapacityObserver:
     def __init__(
         self, *, samples: int = DEFAULT_SAMPLES, margin_gb: int = MEMORY_MARGIN_GB,
         ledger_total: Mapping[str, int] | None = None,
+        mem_roof: Callable[[], int | None] | None = None,
     ) -> None:
         if int(samples) < 1:
             raise ValueError("a capacity observer needs at least one sample")
         self.samples = int(samples)
         self.margin_gb = int(margin_gb)
+        # #1222: an optional per-poll roof for ``mem_gb``.  A callable, not
+        # a number, because the roof is measured (``ram_policy_mem_roof``)
+        # and the ARC, the policy and the box's memory can all change under
+        # a running loop; ``None`` from the callable keeps the declaration,
+        # which fails closed to the operator's static fallback.
+        self._mem_roof = mem_roof
         # What this host's ledger already totals, read once by the caller: the
         # window is seeded from it so a restarting loop inherits the box's
         # standing verdict instead of re-asserting the declaration.  An empty
@@ -588,6 +634,35 @@ class CapacityObserver:
         **overrides: object,
     ) -> dict[str, int]:
         wanted = {str(kind): int(value) for kind, value in declared.items()}
+        # #1222/#1245 review B2: the roof in force, stamped into the
+        # observation every poll so a silent fall back to the static
+        # declaration is observable after deploy.  The callable may answer
+        # an int (measured, readable-API shorthand) or a
+        # ``(roof, source)`` pair carrying its own fallback reason.
+        roof_source = "fallback:not_configured"
+        roof_value: int | None = None
+        if self._mem_roof is not None and "mem_gb" in wanted:
+            # Measured once per offer, not once per process: the roof follows
+            # the ARC and the policy between polls (#1222).
+            try:
+                roof = self._mem_roof()
+            except Exception as exc:
+                roof = (None, f"fallback:roof_error:{type(exc).__name__}")
+            if isinstance(roof, tuple):
+                value, source = roof
+                roof_source = str(source)
+                roof_value = (int(value)
+                              if isinstance(value, int)
+                              and not isinstance(value, bool) and value >= 0
+                              else None)
+            elif (isinstance(roof, int) and not isinstance(roof, bool)
+                    and roof >= 0):
+                roof_value = roof
+                roof_source = "measured"
+            if roof_value is None and not isinstance(roof, tuple):
+                roof_source = "fallback:roof_unreadable"
+            if roof_value is not None:
+                wanted["mem_gb"] = roof_value
         if not self._seeded:
             # Seed the window once, so a worker's first reading is never
             # decisive on its own -- from the ledger's standing total where
@@ -603,6 +678,13 @@ class CapacityObserver:
                 self._history.append(dict(seed))
             self._seeded = True
         seen = observe(wanted, held, margin_gb=self.margin_gb, **overrides)  # type: ignore[arg-type]
+        if "mem_gb" in wanted:
+            # The roof in force this poll, before the honest clamp: the
+            # declaration itself when no measurement was used (#1245
+            # review B2).
+            seen.detail["mem_roof_gib"] = (
+                roof_value if roof_value is not None else int(wanted["mem_gb"]))
+            seen.detail["mem_roof_source"] = roof_source
         self.last = seen
         sample = dict(seen.capacity)
         if self._cap is not None:

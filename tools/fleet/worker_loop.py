@@ -112,7 +112,7 @@ sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from prismabuild import (adaptive_cpu, adaptive_gpu as gpu_admission,  # noqa: E402
                          box_capacity, container_images,
                          core as pb, cpu_topology, local_scratch, pool,
-                         publication_canary)
+                         publication_canary, storage_tiers)
 from pbstatus import Deadline, bounded  # noqa: E402
 
 #: The safety ceiling a worker loop enforces on one action unless told
@@ -1145,6 +1145,11 @@ def build_parser() -> argparse.ArgumentParser:
                     help="retain all inherited CPUs; reserve preferred cores before fallback")
     ap.add_argument("--mem-gb", type=int, default=96,
                     help="memory this box offers the queue, of ~121 GB total")
+    ap.add_argument("--mem-gb-ram-tier-roof", action="store_true",
+                    help="offer the RAM tier policy's measured roof "
+                         "(MemTotal - max(arc c_max, arc_floor) - reserve) "
+                         "instead of --mem-gb, reread every poll; unreadable "
+                         "inputs keep --mem-gb (#1222)")
     ap.add_argument("--tag", action="append", default=[],
                     help="extra placement tag this box offers")
     ap.add_argument("--assume-idle", action="store_true",
@@ -1189,6 +1194,35 @@ def declared_host_capacity(args: argparse.Namespace, *, cores: int) -> dict[str,
     if args.spool_gb > 0:
         declared["spool_gb"] = args.spool_gb
     return declared
+
+
+def _ram_tier_mem_roof() -> tuple[int | None, str]:
+    """The RAM tier policy's measured roof for this box, with its source.
+
+    The policy file sits beside this loop like it sits beside the tier
+    loop, published with the runtime; the ARC and ``MemTotal`` are read
+    per call so the observer re-measures the roof every poll.  The
+    answer is a ``(roof, source)`` pair the observer stamps into
+    ``observed_detail`` every poll (#1245 review B2): a measured roof
+    with ``"measured"``, and any unreadable input as ``None`` with its
+    fallback reason, so the worker record always says which roof is in
+    force and a silent fall back to the declared ``--mem-gb`` is
+    observable (#1222).
+    """
+
+    here = Path(__file__).resolve().parent
+    for candidate in (here / storage_tiers.RAM_POLICY_FILE,
+                      here.parent / storage_tiers.RAM_POLICY_FILE):
+        roof = box_capacity.ram_policy_mem_roof(
+            policy_path=candidate, arcstats_path=storage_tiers.ARCSTATS,
+            meminfo_path="/proc/meminfo")
+        if roof is not None:
+            return roof, "measured"
+        if not candidate.exists():
+            continue
+        # The policy is here but its inputs will not read: name it.
+        return None, "fallback:roof_unreadable"
+    return None, "fallback:policy_missing"
 
 
 def live_host_capacity(declared: dict[str, int], ledger) -> dict[str, int]:
@@ -1566,6 +1600,8 @@ def _run_loop(stop_requested):
                         box_capacity.CapacityObserver(
                             samples=args.observe_samples,
                             ledger_total=queue.ledger().capacity(),
+                            mem_roof=(_ram_tier_mem_roof
+                                      if args.mem_gb_ram_tier_roof else None),
                         ))
             observer_initialized = True
         gpu_sample = box_capacity.trusted_gpu_sample() if gpu_capable else None

@@ -5066,15 +5066,80 @@ guard refuses until it is done. The ARC floor itself is the larger of the
 policy's declared floor and the metadata the ARC cannot drop. The roof is
 only the mount's ENOSPC backstop, though: what PB actually fills is the
 policy window below it, capped by the ledger — so the window must fit beside
-the box's own offered job capacity too, read live every cycle from the tier
-host's worker record (`workers/<host>.json`, `capacity.mem_gb`): the tier
-refuses while `window + worker_demand + max(arc_c_max, arc_floor) +
-system_reserve > MemTotal` (#645), and it refuses when no offer names a
-number at all, because a loop can appear between cycles. Tonight's box is
+what the rows beside it actually hold (#1222): one pool, two consumers.
+Rows and tier fills both acquire `mem_gb` tokens from the same host ledger
+— a fill takes its tokens under its mover grant beside the fence it takes
+(`PoolQueue.take_tier_advance`: one primitive, tri-state — `taken`,
+`host-short`, `tier-short` or `unknown` with the error named — host-first
+at the plan, with the rollback on either side; #1245 review B3), and the
+host half moves under the *same holder name* as the tier tokens at every
+step of the fence's life (#1245 review B1):
+`transfer_tier_reservation` moves both halves on the hand-off, every
+cancel site routes through `PoolQueue.cancel_tier_fence`, key releases
+through `PoolQueue.release_tier_holder`, egress and evict through
+`release_tier_holder_for_egress` (which settles the host half only when
+the settle completed — a destroy shortfall keeps both halves held), and
+a shrink gate keeps `tier_loop` and `stage_release` from mutating either
+ledger outside these primitives. The crash windows between the two
+halves — inside the take, and inside the transfer — are healed by
+`reconcile_ram_host_holds` every cycle, which is a two-way sync (#1245
+review r2, r3): every live tier holder's `ram-host:*` hold is made equal to
+its occupancy tokens — covering the claim path's bare tier takes, which
+hold no host half of their own — and each hold whose tier holder is
+neither live nor an expected in-flight grant is released by name, as an
+event. The adjustment is a delta, never a release and a re-take (r3
+R4): a missing half is topped up by `target − current` — acquire merges
+into the existing holder, so the half already held is never freed for a
+concurrent row admission to take, and a failed top-up leaves it exactly
+as it was — and an excess is trimmed by name through `release_count`.
+Rate kinds never mirror into host GiB: the take primitive refuses one
+loudly, and the sync mirrors the RAM occupancy kind by name only (r3
+R7), so a kind added to the tier ledger later cannot silently become
+host GiB. A host half that cannot land — or a host read that fails
+mid-loop (r3 R6) — is named (`ram-host-hold-missing`) and the sync reports
+it unconverged, which the window gate reads as refusal — no rows number
+at all — until the next cycle lands it; a freshly restarted loop has
+no verdict and refuses the same way for its first cycle (r3 R5: the
+gate reads the previous cycle's verdict, because `discover` runs before
+`_protect_tier_advances`); a failed host transfer is named
+(`ram_host_transfer_failed`) rather than swallowed, and the sync heals
+the misfiled half by name. Every site that cancels a fence for the RAM tier
+returns the fill's host tokens in the same step; and the window gate
+refuses while `window + rows_held + max(arc_c_max, arc_floor) +
+system_reserve > MemTotal`, with `rows_held` read live every cycle from
+that same host ledger less every `ram-host:*` hold found by prefix scan
+(#1245 review B1: no caller hands in the fill names) — and it refuses when the
+ledger will not say (`ram_rows_held_unknown`), because a ledger that will
+not say is not evidence of no rows. The roof in force is stamped into
+the worker record every poll (`mem_roof_gib` and `mem_roof_source`:
+`measured` or `fallback:<reason>`), so a silent fall back to the static
+declaration is observable after deploy (#1245 review B2). #645 subtracted the box's announced
+`capacity.mem_gb` instead; #1222 replaces the announce with the holds
+because the worker's offer is now the measured roof itself
+(`--mem-gb-ram-tier-roof`: the offer is `MemTotal − max(arc_c_max,
+arc_floor) − system_reserve`, reread every poll, fail-closed to the
+declared `--mem-gb` when any input is unreadable — the `--spool-gb auto`
+precedent, #1190), and a static subtraction beside a measured offer both
+starved the tier behind an offer nobody was using and double-counted once
+fills held tokens of their own. A host-memory shortfall on a row's claim
+asks the eviction sweep for nothing: host tokens are held only by active
+fills and by rows, both of which return them deterministically, so there
+is no withdrawn-orphans deadlock to break (#901's shape) and eviction
+cannot return tokens a landing fill still writes — the relief is the
+release, not the eviction. The window is capped at the policy's
+`window_gib_default` (112 today), so under this design the rows always
+keep at least `roof − window` of the host pool (256.5 − 112 ≈ 144 GiB,
+more than today's static 96 reserved for them by subtraction); if
+`window_gib_default` is ever raised toward the roof, a window-pressure
+term on the host ledger becomes necessary again — that bound, and the
+fills' acquiring host tokens outside the pool's claim withholding (a
+withheld large row reserves nothing against fills, and the ≥144 GiB
+bound means no sanctioned row size starves), is the accepted deviation
+from the review's full form. Tonight's box is
 the proof both halves hold together: the 240 GiB roof admits
-(240 ≤ 294.5 − 22 − 16), the 112 GiB window admits beside the 96 GiB the
-loops offer (worst case 112 + 96 + 22 + 16 = 246 ≤ 294.5), and a window
-publish toward the sanctioned 256 with jobs admitted would refuse. **The tmpfs
+(240 ≤ 294.5 − 22 − 16), the 112 GiB window admits beside 88 GiB of rows
+held (worst case 112 + 88 + 22 + 16 = 238 ≤ 294.5), and a window
+publish toward the sanctioned 256 with rows holding 96 GiB refuses. **The tmpfs
 must be mounted `noswap`:** the options are announced, and a mount without
 it refuses the warm-path admission outright — a swappable tmpfs can page
 "resident" bytes out, and a consumer whose gate says resident would then

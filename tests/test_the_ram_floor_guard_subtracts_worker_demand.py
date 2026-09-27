@@ -1,21 +1,18 @@
-"""The floor guard subtracts the box's own offered job capacity (#645).
+"""The floor guard subtracts what rows actually hold, not the announce (#1222).
 
-``allowed_ceiling`` used to be ``MemTotal - max(c_max, arc_floor) - reserve``,
-which never subtracted the RAM the box's own worker loops offer to jobs --
-dl380g10 offers 96 GiB across 16 loops -- so a policy publish raising the
-window toward the sanctioned 256 while jobs were admitted would have sailed
-through the guard and met the OOM killer instead of ENOSPC (fail-random
-rather than fail-closed).
+The guard's window budget was ``MemTotal - max(c_max, arc_floor) - reserve``
+minus the *announced* worker demand (#645).  With the measured offer the
+announce is the roof itself, so the subtraction both starved the tier
+behind an offer nobody was using and double-counted once tier fills hold
+host tokens in the same ledger.  The approved replacement is one pool, two
+consumers: rows and tier fills acquire from the same host ledger, and the
+window gate checks the rows' held tokens beside the window --
+``window + rows_held + max(c_max, arc_floor) + reserve <= MemTotal``.
 
-The roof the mount declares and the window PB fills are different promises,
-and the guard treats them as such: the roof is still compared against
-``MemTotal - max(c_max, arc_floor) - reserve`` -- the ENOSPC backstop must be
-real RAM -- while the window PB may actually grow to is compared against
-that budget *minus the announced worker demand*.  Tonight's live tier is
-the regression both directions must satisfy: the 240 GiB roof still admits
-(240 <= 294.5 - 22 - 16), the 112 GiB window still admits
-(112 <= 294.5 - 22 - 16 - 96), and a window publish toward 256 with 96 GiB
-of jobs offered refuses.  Worst case 112 + 96 + 22 + 16 = 246 <= 294.5.
+Tonight's live tier is the regression the new contract must satisfy: the
+240 GiB roof still admits (240 <= 294.5 - 22 - 16), a 112 GiB window beside
+88 GiB of held rows still admits (112 + 88 + 22 + 16 = 238 <= 294.5), and a
+window publish toward 256 with 96 GiB of rows held refuses.
 """
 from __future__ import annotations
 
@@ -39,7 +36,7 @@ def _ram_tier(tmp_path: Path, *, size_gib: int, window_gib: int,
               memtotal_gib: float = 294, arc_c_max_gib: int = 22,
               arc_meta_gib: int = 5, arc_floor_gib: int = 20,
               reserve_gib: int = 16, ceiling_max_gib: int = 256,
-              worker_mem_gb: int | None = None):
+              rows_held_gib: int | None = None):
     mount = tmp_path / "ram"
     mount.mkdir(exist_ok=True)
     proc = tmp_path / "proc"
@@ -70,7 +67,7 @@ def _ram_tier(tmp_path: Path, *, size_gib: int, window_gib: int,
             "system_reserve_gib": reserve_gib, "prefill_depth": None,
         },
         statvfs=statvfs, proc_mounts=str(proc / "mounts"),
-        meminfo_path=str(proc / "meminfo"), worker_mem_gb=worker_mem_gb)
+        meminfo_path=str(proc / "meminfo"), rows_held_gib=rows_held_gib)
     return tiers[storage_tiers.tier_id("ram", HOST)]
 
 
@@ -85,7 +82,7 @@ def test_a_window_that_cannot_coexist_with_jobs_is_refused(
     """A publish raising the window toward 256 with 96 GiB offered refuses."""
 
     tier = _ram_tier(tmp_path, size_gib=240, window_gib=200,
-                     worker_mem_gb=96)
+                     rows_held_gib=96)
 
     admission = tier["ram_admission"]
     assert admission["admissible"] is False
@@ -97,7 +94,7 @@ def test_a_window_that_cannot_coexist_with_jobs_is_refused(
     assert admission["arc_c_max"] == 22 * GIB
     assert admission["arc_floor_bytes"] == 20 * GIB
     assert admission["system_reserve_bytes"] == 16 * GIB
-    assert admission["worker_demand_bytes"] == 96 * GIB
+    assert admission["rows_held_bytes"] == 96 * GIB
     assert admission["allowed_ceiling_bytes"] == 294 * GIB - 22 * GIB - 16 * GIB
     assert admission["allowed_window_bytes"] == (
         294 * GIB - 22 * GIB - 16 * GIB - 96 * GIB)
@@ -110,12 +107,12 @@ def test_the_live_tier_still_admits(tmp_path: Path) -> None:
     ARC already shrunk to 22 GiB -- 112 + 96 + 22 + 16 = 246 <= 294.5."""
 
     tier = _ram_tier(tmp_path, size_gib=240, window_gib=112,
-                     memtotal_gib=294.5, worker_mem_gb=96)
+                     memtotal_gib=294.5, rows_held_gib=96)
 
     admission = tier["ram_admission"]
     assert admission["admissible"] is True, admission
     assert admission["reason"] is None
-    assert admission["worker_demand_bytes"] == 96 * GIB
+    assert admission["rows_held_bytes"] == 96 * GIB
     assert storage_tiers.tier_tokens(tier) == {
         storage_tiers.RAM_CAPACITY_KIND: 112}
 
@@ -125,48 +122,20 @@ def test_unknown_worker_demand_refuses_fail_closed(tmp_path: Path) -> None:
     between cycles, so an unreadable offer refuses rather than admits."""
 
     tier = _ram_tier(tmp_path, size_gib=240, window_gib=112,
-                     worker_mem_gb=None)
+                     rows_held_gib=None)
 
     admission = tier["ram_admission"]
     assert admission["admissible"] is False
-    assert admission["reason"] == "ram_worker_demand_unknown"
-    assert admission["worker_demand_bytes"] is None
+    assert admission["reason"] == "ram_rows_held_unknown"
+    assert admission["rows_held_bytes"] is None
     assert admission["allowed_window_bytes"] is None
     assert storage_tiers.tier_tokens(tier) == {}
 
 
-def test_the_worker_offer_is_read_from_the_hosts_record(
-        tmp_path: Path) -> None:
-    """The guard reads ``capacity.mem_gb`` out of ``workers/<host>.json``."""
+def test_the_announce_no_longer_feeds_the_gate() -> None:
+    """One pool: the gate reads held tokens, never the announce record."""
 
-    workers = tmp_path / "workers"
-    workers.mkdir()
-    (workers / f"{HOST}.json").write_text(
-        json.dumps(_worker_record(HOST, 96)))
-
-    assert storage_tiers.read_worker_mem_gb(workers, HOST) == 96
-
-
-def test_the_worker_offer_reader_treats_garbage_as_unknown(
-        tmp_path: Path) -> None:
-    """A missing file, a torn write, or a record without a usable offer all
-    answer ``None`` -- the admission above turns that into a refusal."""
-
-    workers = tmp_path / "workers"
-    workers.mkdir()
-    assert storage_tiers.read_worker_mem_gb(workers, HOST) is None
-
-    (workers / f"{HOST}.json").write_text("{torn")
-    assert storage_tiers.read_worker_mem_gb(workers, HOST) is None
-
-    for bad in ({"host": HOST},
-                _worker_record(HOST, True),
-                _worker_record(HOST, "96"),
-                _worker_record(HOST, -1)):
-        (workers / f"{HOST}.json").write_text(json.dumps(bad))
-        assert storage_tiers.read_worker_mem_gb(workers, HOST) is None, bad
-
-    (workers / f"{HOST}.json").write_text(
-        json.dumps(_worker_record("other", 96)))
-    assert storage_tiers.read_worker_mem_gb(workers, HOST) == 96, \
-        "the file names its own host; the reader trusts the path, not it"
+    import inspect
+    source = inspect.getsource(storage_tiers.ram_admission)
+    assert "worker_mem_gb" not in source
+    assert "rows_held_gib" in source

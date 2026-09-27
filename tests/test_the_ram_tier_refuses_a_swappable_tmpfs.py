@@ -29,7 +29,7 @@ def _no_zfs(argv: list[str]) -> str:
 def _ram_tier(tmp_path: Path, options: str,
                # The fixture box offers no jobs; the guard's own tests cover
                # a nonzero offer (#645).
-               worker_mem_gb: int | None = 0) -> dict[str, object]:
+               rows_held_gib: int | None = 0) -> dict[str, object]:
     mount = tmp_path / "ram"
     mount.mkdir(exist_ok=True)
     proc = tmp_path / "proc"
@@ -57,7 +57,7 @@ def _ram_tier(tmp_path: Path, options: str,
             "system_reserve_gib": 16, "prefill_depth": None,
         },
         statvfs=statvfs, proc_mounts=str(proc / "mounts"),
-        meminfo_path=str(proc / "meminfo"), worker_mem_gb=worker_mem_gb)
+        meminfo_path=str(proc / "meminfo"), rows_held_gib=rows_held_gib)
     return tiers[storage_tiers.tier_id("ram", HOST)]
 
 

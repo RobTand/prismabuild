@@ -190,7 +190,7 @@ def test_the_tier_record_announces_the_effective_chunk(tmp_path) -> None:
             arcstats_path=str(proc / "arcstats"),
             ram_policy=policy(**over), statvfs=read,
             proc_mounts=str(proc / "mounts"),
-            meminfo_path=str(proc / "meminfo"), worker_mem_gb=0)
+            meminfo_path=str(proc / "meminfo"), rows_held_gib=0)
         return tiers.get(storage_tiers.tier_id("ram", "dl380g10"))
 
     assert record()["promotion_chunk_gib"] == 40
