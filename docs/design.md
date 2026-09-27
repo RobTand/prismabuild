@@ -3937,10 +3937,14 @@ decision feeds it:
   at least the attributed busy on unheld CPUs -- PB preserves each
   holder's `cpu_allocation` affinity -- so that sum, `S`, is re-judged by
   the idle verdict's own rule (#1233, fixed 2026-09-27): the same
-  `_judge_idle`, the same baseline or prior (the reference and prior rule
-  `Controller.idle` used, cached so the re-judgement cannot drift from the
-  window's own choice), with `busy_cpus := S` and every unattributable
-  field reading as its quietest. When that alone exceeds, whatever the
+  `_judge_idle`, the same baseline or prior -- the reference
+  `idle_judgement_with_reference` hands back, the very window the verdict
+  judged against, never a re-derived choice -- with `busy_cpus := S` and
+  every unattributable field reading as its quietest. A verdict that
+  judged against no reference at all (a forced holder tail, a fresh
+  window after an identity reset), or a cache keyed to another sample or
+  holder state, answers a non-exceeding state and the conservative
+  refusal stands (#1236 review). When that alone exceeds, whatever the
   held CPUs do, the refusal is `measurement_foreign_load` naming `S`, the
   re-judged verdict and the held CPUs, and the item starves (`_starved`,
   visible under `pbstatus --starvation`) instead of withholding:

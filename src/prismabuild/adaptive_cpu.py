@@ -659,14 +659,23 @@ def _idle_reference(samples, *, now, excursion_unix):
     return prior, None
 
 
-def idle_judgement(state, sample, *, holders, identity, fields=IDLE_FIELDS, interval_s=None,
-                   prior_rule=None):
+def idle_judgement_with_reference(
+        state, sample, *, holders, identity, fields=IDLE_FIELDS,
+        interval_s=None, prior_rule=None):
     """Judge one host sample against the host's own idle history (#997).
 
-    Returns ``(verdict, state)``: ``verdict['exceeds']`` is whether the sample
-    is outside what this host has been observed doing while PrismaBuild ran
-    nothing, with the evidence a refusal records, and ``state`` is the history
-    to persist (unchanged when ``state is`` the returned one).
+    Returns ``(verdict, state, reference)``: ``verdict['exceeds']`` is
+    whether the sample is outside what this host has been observed doing
+    while PrismaBuild ran nothing, with the evidence a refusal records,
+    ``state`` is the history to persist (unchanged when ``state is`` the
+    returned one), and ``reference`` is the baseline window the verdict was
+    actually judged against -- the whole remembered window with holders
+    present, the window before this sample less an ongoing excursion
+    without them, and ``None`` where the verdict judged against nothing at
+    all: a forced holder tail, or a fresh window after an identity reset
+    (whose empty state the caller must not re-derive, #1233 review).  The
+    reference is an answer, never a field of the verdict, which is
+    serialized into refusal evidence.
 
     * An **idle sample** is a fresh one taken with no holder on the host and
       no holder seen since its interval began: a sample whose interval
@@ -729,12 +738,15 @@ def idle_judgement(state, sample, *, holders, identity, fields=IDLE_FIELDS, inte
         verdict['exceeds'] = _judge_idle(verdict, samples, current, fields, prior_rule)
         if type(now) in (int, float) and (seen is None or now > seen):
             state['holders_seen_unix'] = now
-        return verdict, state
+        return verdict, state, samples
     started = now - (sample['interval_s'] if interval_s is None else interval_s)
     if seen is not None and started <= seen:
         verdict.update(state='holder_tail', exceeds=True, holders_seen_unix=seen,
                        interval_start_unix=started)
-        return verdict, state
+        # A forced tail judged against nothing: handing back a reference here
+        # would let #1233's re-judgement read a holder's own tail as foreign
+        # load and starve the measurement (#1236 review).
+        return verdict, state, None
     reference, run = _idle_reference(samples, now=now,
                                      excursion_unix=state.get('excursion_unix'))
     verdict['state'] = 'idle'
@@ -756,6 +768,22 @@ def idle_judgement(state, sample, *, holders, identity, fields=IDLE_FIELDS, inte
             state['excursion_unix'] = run if run is not None else now
         else:
             state.pop('excursion_unix', None)
+    return verdict, state, reference
+
+
+def idle_judgement(state, sample, *, holders, identity, fields=IDLE_FIELDS,
+                   interval_s=None, prior_rule=None):
+    """:func:`idle_judgement_with_reference` as the historical pair.
+
+    Every pre-#1233 caller wants ``(verdict, state)``; the reference the
+    verdict judged against is :func:`idle_judgement_with_reference`'s third
+    answer, kept out of the verdict dict, which is serialized into refusal
+    evidence.
+    """
+
+    verdict, state, _reference = idle_judgement_with_reference(
+        state, sample, holders=holders, identity=identity, fields=fields,
+        interval_s=interval_s, prior_rule=prior_rule)
     return verdict, state
 
 
@@ -786,21 +814,16 @@ class Controller:
             # history to judge against.
             return current['busy_cpus'] > .05 * cpus or current['psi_some'] >= .10
         prior_rule.__doc__ = f'busy_cpus > {.05 * cpus:g} (.05 x {cpus} CPUs) or psi_some >= .10'
-        verdict, updated = idle_judgement(state, sample, holders=bool(holders),
-                                          identity=cpus, prior_rule=prior_rule)
+        verdict, updated, reference = idle_judgement_with_reference(
+            state, sample, holders=bool(holders), identity=cpus,
+            prior_rule=prior_rule)
         if updated != state:
             self.write_state(IDLE_BASELINE, updated)
-        # The reference THIS verdict judged against, from the pre-update
-        # state (a sample that seeds the window is judged against what came
-        # before it), kept beside it so #1233's re-judgement reads the same
-        # baseline rather than a copy of the rule that could drift.
-        samples = _idle_samples(state)
-        if holders:
-            reference = samples
-        else:
-            reference = _idle_reference(
-                samples, now=sample.get('sampled_unix'),
-                excursion_unix=state.get('excursion_unix'))[0]
+        # The reference THIS verdict judged against, taken from the
+        # judgement itself and never re-derived here, so #1233's
+        # re-judgement cannot drift from the window's own choice -- not for
+        # a forced holder tail nor after an identity reset, which judge
+        # against nothing and hand back None (#1236 review).
         self._idle = (key, verdict, reference, prior_rule)
         return verdict
 
@@ -813,8 +836,11 @@ class Controller:
         no drain of the pool's holders can remove.  This re-judges that part
         alone, ``busy_cpus := busy_cpus``, through the same :func:`_judge_idle`
         against the same baseline or prior this pass's verdict used (the
-        cached reference and prior rule from :meth:`idle`; a verdict with no
-        cached pass never exceeds).  PSI cannot be attributed, so it
+        cached reference and prior rule from :meth:`idle`).  The cache is
+        keyed by this sample and holder state, and a mismatch -- or a
+        verdict that judged against no reference at all, a forced holder
+        tail -- answers a non-exceeding state, so the conservative refusal
+        stands (#1236 review).  PSI cannot be attributed, so it
         contributes nothing here: a verdict that exceeded only on
         ``psi_some`` stays conservative.  The answer is evidence, never
         persisted, and never seeds the window.
@@ -822,6 +848,11 @@ class Controller:
 
         if self._idle is None:
             return {'state': 'no-verdict', 'exceeds': False}
+        if self._idle[0] != (sample.get('sampled_unix'), bool(holders)):
+            return {'state': 'stale-verdict', 'exceeds': False}
+        reference, prior_rule = self._idle[2], self._idle[3]
+        if reference is None:
+            return {'state': 'no-reference', 'exceeds': False}
         reference, prior_rule = self._idle[2], self._idle[3]
         # PSI cannot be attributed to a CPU, so only the re-judged busy can
         # exceed: every other field reads as its quietest, zero.
