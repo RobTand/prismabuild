@@ -7914,7 +7914,8 @@ def _producer_attempt_state(queue, instance: Mapping[str, object]) -> str:
 
 
 def dead_input_dependency(
-        queue, item: Mapping[str, object]) -> dict[str, object] | None:
+        queue, item: Mapping[str, object], hints=None
+) -> dict[str, object] | None:
     """The proof that a ready mover's producer-owned input is gone (#1184).
 
     A mover whose sealed row carries a ``produced_output_batch`` reference
@@ -7925,16 +7926,30 @@ def dead_input_dependency(
     forged reference never authorizes reading another owner's state), the
     producer attempt provably dead (:func:`_producer_attempt_state` -- the
     only authority that makes a missing origin permanent), the batch's
-    committed entry bound back to the reference by manifest digest, and one
-    of that batch's origin paths under the producer's output prefix that
-    does not exist.  The answer names the owner nonce and the missing path.
+    committed entry bound back to the reference by manifest digest with its
+    sealed descriptors (``_load_batch_record`` -- every entry re-validated
+    against the bound template and instance, never the commitments' path
+    list read unvalidated), and one of those descriptors' origin paths
+    under the producer's output prefix that is missing: ``lstat`` answered
+    ``ENOENT`` (#1202 review: only FileNotFoundError is missing; EACCES,
+    ESTALE and EIO are unreadable, and unreadable is unknown, never gone).
+    The answer names the owner nonce and the missing path.
+
+    ``hints`` is the caller's per-pass memo of owner generations (#1202
+    review finding 5): one ``_key_generation`` read per distinct owner per
+    pass, so a fleet of movers of one live producer pays one ``claimed/``
+    census instead of two per mover. The hint is only a gate -- a
+    non-``dead`` hint skips the mover entirely this pass (a producer that
+    dies mid-pass is caught on the next one), and a ``dead`` hint still pays
+    for the full proof, which re-reads the state fresh under the caller's
+    lock, never trusting the memo.
 
     Anything unprovable -- a malformed or foreign reference, an unreadable
-    instance or commitments record, a live, succeeded or unknown producer,
-    a batch committed at origin, or a batch whose origin paths all still
-    exist -- answers ``None``: ENOENT and unknown state alone invent no
-    authority (#1184), and the row stays ready.  Never raises for
-    queue-state reasons.
+    instance, commitments or batch record, a live, succeeded or unknown
+    producer, a batch committed at origin, an unreadable origin path, or a
+    batch whose origin paths all still exist -- answers ``None``: ENOENT,
+    poll counts and unknown state alone invent no authority (#1184), and
+    the row stays ready.  Never raises for queue-state reasons.
     """
 
     from prismabuild import pool as pool_mod
@@ -7959,6 +7974,12 @@ def dead_input_dependency(
                          where="reference batch_id")
     except ProducedOutputError:
         return None
+    if hints is not None:
+        generation = hints.get(owner)
+        if generation is None:
+            generation = hints[owner] = _key_generation(queue, owner)
+        if _attempt_state(generation, nonce) != "dead":
+            return None
     try:
         raw = json.loads(
             (Path(queue.root) / "residency" / OUTPUT_SCOPES_SUBDIR / owner
@@ -7969,35 +7990,40 @@ def dead_input_dependency(
         return None
     try:
         instance = validate_instance(dict(raw))
-    except ProducedOutputError:
+        template = validate_template(dict(json.loads(
+            (Path(queue.root) / "residency" / OUTPUT_TEMPLATES_SUBDIR
+             / f"{instance['template_id']}.json").read_text())))
+    except (OSError, ValueError, ProducedOutputError):
         return None
     attempt = instance["owner_attempt"]
     assert isinstance(attempt, dict)
     if (str(instance["owner_action_key"]) != owner
             or str(instance["template_id"]) != template_id
             or str(attempt["nonce"]) != nonce
-            or str(attempt["scope_id"]) != scope_id):
+            or str(attempt["scope_id"]) != scope_id
+            or template_sha256(template) != str(instance["template_sha256"])):
         return None          # the reference does not name this instance
     state = _producer_attempt_state(queue, instance)
     if state != "dead":
         return None
     try:
         commitments = _read_commitments(_commitments_path(queue.root, instance))
-    except (ProducedOutputError, OSError):
-        return None
-    entry = commitments["batches"].get(batch_id)
-    if (not isinstance(entry, Mapping)
-            or str(entry.get("manifest_digest")) != manifest_digest
-            or entry.get("origin_only") is True):
+        entry = commitments["batches"].get(batch_id)
+        if (not isinstance(entry, Mapping)
+                or str(entry.get("manifest_digest")) != manifest_digest
+                or entry.get("origin_only") is True):
+            return None
+        _filed, sealed = _load_batch_record(
+            queue.root, instance, template, entry, batch_id)
+    except (ProducedOutputError, OSError, ValueError):
         return None
     prefix = str(instance["output_prefix"]).rstrip(os.sep) + os.sep
-    paths = entry.get("paths")
-    if not isinstance(paths, list):
-        return None
-    for path in sorted(str(each) for each in paths):
+    for path in sorted(str(each["path"]) for each in sealed):
         if not path.startswith(prefix):
             continue         # only the producer's namespace is its to lose
-        if not os.path.exists(path):
+        try:
+            os.lstat(path)
+        except FileNotFoundError:
             return {
                 "owner_action_key": owner,
                 "owner_nonce": nonce,
@@ -8010,6 +8036,11 @@ def dead_input_dependency(
                 "path": path,
                 "producer_state": state,
             }
+        except OSError:
+            # Unreadable is unknown, never missing (#1202 review finding 2):
+            # EACCES, ESTALE and EIO all mean the answer cannot be read, not
+            # that the file is gone.
+            return None
     return None
 
 

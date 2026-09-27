@@ -13310,75 +13310,111 @@ class PoolQueue:
         with self.mover_transition_lock(mover, blocking=False) as acquired:
             if not acquired:
                 return False
-            current = self.read_output_funding(mover, str(tier_id))
-            if current is None:
-                return False
-            if (generation is not None
-                    and str(current.get("generation")) != str(generation)):
-                return False
-            state = str(current.get("state"))
-            if state == "released":
-                return True
-            if state not in ("reserved", "transferring"):
-                return False
-            # Committed batches are recovery, not cancellation (R7 liveness):
-            # once the immutable batch record + commitments entry exist, the
-            # credit belongs to that batch's claim (or committed recovery
-            # after producer finish), and retiring it here would leave a
-            # filed batch whose sealed mover key can never claim or re-fund.
-            try:
-                if self._output_batch_authority(current):
+            return self._release_never_started_funding_locked(
+                mover, str(tier_id), generation=generation)
+
+    def _release_never_started_funding_locked(
+            self, mover_action_key: str, tier_id: str, *,
+            generation: str | None = None,
+            dead_input: Mapping[str, object] | None = None) -> bool:
+        """Retire an output intent only when mover nonexecution is proven (R2).
+
+        The lock-free body of :meth:`release_output_funding`; the caller
+        holds the mover's transition lock (#1202's dead-input ending calls
+        this before it files its terminal, while no terminal row exists,
+        which is the one context in which the FAILED check below can never
+        fire).  Refuses (retain, never free) unless the mover provably never
+        started: no CLAIMED row, no DONE row, no FAILED row, no move receipt
+        with staged bytes, no lease, and no claimed terminal carrying this
+        funding generation. Missing marker/status is NOT proof a copy never
+        ran (failed/uncertain prefixes retain both names and accounting);
+        only the true not-started cancellation (published READY, never
+        claimed, no receipt/lease/terminal) retires credit once via
+        reserved|transferring -> released. Tokens stay where they are;
+        ordinary owner/mover release then frees them.
+        """
+
+        mover = str(mover_action_key)
+        current = self.read_output_funding(mover, str(tier_id))
+        if current is None:
+            return False
+        if (generation is not None
+                and str(current.get("generation")) != str(generation)):
+            return False
+        state = str(current.get("state"))
+        if state == "released":
+            return True
+        if state not in ("reserved", "transferring"):
+            return False
+        if dead_input is not None:
+            # #1202's dead-input ending: the caller proved this funding's
+            # producer attempt dead and its bound origin gone, so the batch's
+            # claim can never come and the committed-batch refusal below
+            # would strand the credit.  The funding must still name the same
+            # batch the proof proved dead; a foreign record is retained.
+            for field in ("batch_id", "manifest_digest", "tier_id",
+                          "owner_action_key", "owner_nonce"):
+                if str(current.get(field)) != str(dead_input.get(field)):
                     return False
-            except (OSError, PoolContractError, ValueError):
+        # Committed batches are recovery, not cancellation (R7 liveness):
+        # once the immutable batch record + commitments entry exist, the
+        # credit belongs to that batch's claim (or committed recovery
+        # after producer finish), and retiring it here would leave a
+        # filed batch whose sealed mover key can never claim or re-fund.
+        try:
+            if (dead_input is None
+                    and self._output_batch_authority(current)):
                 return False
-            exp_gen = str(current.get("generation"))
-            # Durable claim: CLAIMED row of any shape means the mover may hold
-            # the fence while the consumed marker failed.
+        except (OSError, PoolContractError, ValueError):
+            return False
+        exp_gen = str(current.get("generation"))
+        # Durable claim: CLAIMED row of any shape means the mover may hold
+        # the fence while the consumed marker failed.
+        try:
+            claimed = _read_json(self.item_path(CLAIMED, mover))
+        except (OSError, PoolContractError):
+            return False
+        if isinstance(claimed, Mapping):
+            return False
+        # Terminals: DONE or FAILED of any status means the mover started
+        # (or a successor did); a funded generation carried into the
+        # terminal proves it took this fence. Uncertain/missing terminal
+        # reads fail closed (retain).
+        for terminal_state in (DONE, FAILED):
             try:
-                claimed = _read_json(self.item_path(CLAIMED, mover))
+                terminal = _read_json(self.item_path(terminal_state, mover))
             except (OSError, PoolContractError):
                 return False
-            if isinstance(claimed, Mapping):
-                return False
-            # Terminals: DONE or FAILED of any status means the mover started
-            # (or a successor did); a funded generation carried into the
-            # terminal proves it took this fence. Uncertain/missing terminal
-            # reads fail closed (retain).
-            for terminal_state in (DONE, FAILED):
-                try:
-                    terminal = _read_json(self.item_path(terminal_state, mover))
-                except (OSError, PoolContractError):
-                    return False
-                if not isinstance(terminal, Mapping):
-                    continue
-                # Any terminal for this key is proof of execution start.
-                return False
-            # Physical lifetime: move receipt with any staged bytes (complete
-            # or partial, refused or not) means bytes may be on the stage.
+            if not isinstance(terminal, Mapping):
+                continue
+            # Any terminal for this key is proof of execution start.
+            return False
+        # Physical lifetime: move receipt with any staged bytes (complete
+        # or partial, refused or not) means bytes may be on the stage.
+        try:
+            receipt = self.move_record(mover)
+        except (OSError, PoolContractError, ValueError):
+            return False
+        if isinstance(receipt, Mapping):
             try:
-                receipt = self.move_record(mover)
-            except (OSError, PoolContractError, ValueError):
-                return False
-            if isinstance(receipt, Mapping):
-                try:
-                    staged = receipt.get("bytes_staged")
-                    if isinstance(staged, int) and not isinstance(staged, bool) and staged > 0:
-                        return False
-                    if receipt.get("complete") is True:
-                        return False
-                except (TypeError, ValueError):
+                staged = receipt.get("bytes_staged")
+                if isinstance(staged, int) and not isinstance(staged, bool) and staged > 0:
                     return False
-            # Lease: a live lease file means the mover may still hold the key.
-            try:
-                lease = _read_json(self.lease_path(mover))
-            except (OSError, PoolContractError):
+                if receipt.get("complete") is True:
+                    return False
+            except (TypeError, ValueError):
                 return False
-            if isinstance(lease, Mapping):
-                return False
-            _ = exp_gen
-            return self._advance_output_funding_state_locked(
-                mover, str(tier_id), expect=state, advance_to="released",
-                generation=str(current.get("generation")))
+        # Lease: a live lease file means the mover may still hold the key.
+        try:
+            lease = _read_json(self.lease_path(mover))
+        except (OSError, PoolContractError):
+            return False
+        if isinstance(lease, Mapping):
+            return False
+        _ = exp_gen
+        return self._advance_output_funding_state_locked(
+            mover, str(tier_id), expect=state, advance_to="released",
+            generation=str(current.get("generation")))
 
     def output_census_for_owner(self, owner_key: str) -> tuple[list[dict], bool]:
         """Outstanding output intents for owner + census-unknown flag (R2).
@@ -17625,6 +17661,12 @@ class PoolQueue:
         #: whole pass (#1091 review 1): a cap that binds denies every mover
         #: row, and re-reading per row cost O(rows x claimed movers).
         reader_plans: dict[str, dict[str, object]] = {}
+        #: Each owner's generation, read once for the whole pass (#1202
+        #: review finding 5): the dead-input check's hint, so a fleet of
+        #: movers of one producer pays one ``claimed/`` census per pass
+        #: instead of two per mover.  A non-dead hint only skips the check;
+        #: a dead hint still pays for the full proof under the key's lock.
+        dead_input_hints: dict[str, tuple[str, dict[str, object] | None]] = {}
         for item in ready:
             key = str(item.get("action_key", ""))
             held_back = withheld_for is not None and (
@@ -17658,7 +17700,8 @@ class PoolQueue:
                 continue
             if (isinstance(item.get("produced_output_batch"), Mapping)
                     and key
-                    and self.fail_dead_input_dependency(item, key)):
+                    and self.fail_dead_input_dependency(item, key,
+                                                        hints=dead_input_hints)):
                 # Before the hold and any admission (#1184): the method
                 # serializes its own transition under this key's lock, so a
                 # concurrent publisher or claimant cannot interleave with
@@ -20029,7 +20072,7 @@ class PoolQueue:
             parts = captured.name.split(".")
             if (len(parts) != 5 or parts[-1] != "json"
                     or parts[3] not in {"orphan", "withdraw-ready",
-                                        "origin-released"}
+                                        "origin-released", "dead-input"}
                     or len(parts[0]) != 64
                     or any(c not in "0123456789abcdef" for c in parts[0])):
                 continue
@@ -21909,7 +21952,7 @@ class PoolQueue:
         return True
 
     def fail_dead_input_dependency(self, item: Mapping[str, object],
-                                   key: str) -> bool:
+                                   key: str, hints=None) -> bool:
         """Fail a ready mover whose dead producer's bound origin is gone (#1184).
 
         A mover's sealed ``produced_output_batch`` reference names the
@@ -21937,9 +21980,19 @@ class PoolQueue:
 
         if not isinstance(item.get("produced_output_batch"), Mapping):
             return False
-        with self._transition_locked(key):
+        started = _now()
+        with self._transition_locked(key, blocking=False) as acquired:
+            if not acquired:
+                # #1202 review finding 3: a claim pass must never wait on a
+                # foreign holder of the key (#1115 class); the attempt is
+                # timed (#1029) and reported, and the next pass retries.
+                self.record_denial(item, "transition_busy", {
+                    "hold_s": round(_now() - started, 3),
+                    "checking": "dead-input-dependency"})
+                return False
             try:
-                proof = produced_mod.dead_input_dependency(self, item)
+                proof = produced_mod.dead_input_dependency(self, item,
+                                                           hints=hints)
             except (produced_mod.ProducedOutputError, OSError,
                     PoolContractError) as exc:
                 # Unreadable queue state is unknown state: it invents no
@@ -21963,7 +22016,18 @@ class PoolQueue:
             if record is None:
                 self._restore_ready_transition(captured, key)
                 return True
+            funding_released = False
             if covered is None:
+                # #1202 review finding 1: release the prepaid funding while
+                # no terminal of this generation exists yet -- the release's
+                # own never-started checks (no CLAIMED row, no staged
+                # receipt, no lease) run inside, and the dead-input proof
+                # both waives the committed-batch refusal (the batch's claim
+                # can never come) and binds the funding to that batch -- so
+                # the stage token and the transferring record do not
+                # outlive the ending and the dead-producer sweep retires.
+                funding_released = self._release_never_started_funding_locked(
+                    key, str(proof["tier_id"]), dead_input=proof)
                 record.update({
                     "schema": POOL_OUTCOME_SCHEMA_V1,
                     "action_key": key,
@@ -21973,6 +22037,7 @@ class PoolQueue:
                     "detail": {
                         "termination_reason": "input_dependency_failed",
                         "input_dependency": dict(proof),
+                        "funding_released": funding_released,
                         "refusal": "dead-producer-input-missing",
                         "reason": (
                             f"input dependency failed: producer "

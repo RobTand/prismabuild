@@ -5408,8 +5408,8 @@ def produced_holder(queue: pool.PoolQueue, tier_id: str,
         return unknown(f"its producer attempt {owner[:12]} is {producer}")
     if mover_state not in (pool.DONE, pool.FAILED, pool.WITHDRAWN):
         return unknown(f"the mover's own queue state is {mover_state}")
-    if str(record.get("state")) != "consumed":
-        return unknown(f"its output funding is {record.get('state')}, not consumed")
+    if str(record.get("state")) not in ("consumed", "released"):
+        return unknown(f"its output funding is {record.get('state')}, not a settled end")
     try:
         commitments = produced_output._read_commitments(
             scope / "commitments.json")

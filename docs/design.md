@@ -4434,14 +4434,28 @@ implemented 2026-09-27): `produced_output.dead_input_dependency` answers
 the combined proof for a READY mover -- the sealed reference cross-checked
 against its immutable filed instance, the producer attempt provably dead
 (`_producer_attempt_state`), the batch's committed entry bound back by
-manifest digest, and one of that batch's origin paths under the producer's
-output prefix that does not exist. `PoolQueue.fail_dead_input_dependency`
-then fails the row under the key's transition lock, before any warm,
-placement, admission or staging: status `failed` with
+manifest digest with its sealed descriptors (`_load_batch_record`), and
+one of those descriptors' origin paths under the producer's output prefix
+whose `lstat` answered `ENOENT` (only ENOENT is missing; EACCES, ESTALE
+and EIO are unreadable, and unreadable is unknown, never gone).
+`PoolQueue.fail_dead_input_dependency` then fails the row under the key's
+transition lock, taken non-blocking (a foreign holder is a timed
+`transition_busy` denial, never a wait, #1115), before any warm or
+admission -- on the claim path after the placement match, in the prewarm
+cycle before the manifest read: status `failed` with
 `termination_reason=input_dependency_failed` naming the owner nonce and
 the missing path, `published_unix` preserved, and the ready bytes kept
-under `withdrawn/superseded/`. The prewarm cycle and the claim path both
-refuse through it. ENOENT, arbitrary poll counts and unknown state alone
+under `withdrawn/superseded/`. Before the ending is filed the mover's
+prepaid funding is released as a proven never-started cancellation (the
+release's own no-CLAIMED/no-receipt/no-lease checks run inside, and the
+dead-input proof waives the committed-batch refusal because the batch's
+claim can never come), and the #929 produced lane retires a dead producer
+whose ended mover's funding settled -- consumed, or released by exactly
+this proof -- so the stage token and the batch do not outlive the row.
+The prewarm cycle and the claim path both refuse through it, each pass
+memoizing one owner-state read per distinct owner (a non-dead hint skips
+the mover; a dead hint still pays for the full proof, which re-reads fresh
+under the lock). ENOENT, arbitrary poll counts and unknown state alone
 remain insufficient: an unreadable record, a live or succeeded or unknown
 producer, a foreign reference, or a batch whose origin paths all still
 exist answers None and the row stays READY.

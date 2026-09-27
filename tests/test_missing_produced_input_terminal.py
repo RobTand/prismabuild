@@ -3,11 +3,10 @@
 All queue/CAS/origin paths are private tmp_path fixtures. No stage mover is
 executed and no real mountpoint is read or removed.
 """
-import fcntl
 import json
 from pathlib import Path
+import subprocess
 import sys
-import threading
 import time
 
 from prismabuild import adaptive_cpu, pool, produced_output as po
@@ -162,23 +161,23 @@ def test_a_busy_transition_lock_does_not_block_the_claim_pass(tmp_path):
     lock = (world.q.root / "transition-locks" / (
         __import__("hashlib").sha256(world.mover.encode()).hexdigest() + ".lock"))
     lock.parent.mkdir(parents=True, exist_ok=True)
-    handle = open(lock, "a+")
-    fcntl.flock(handle, fcntl.LOCK_EX)
-    released = threading.Event()
-
-    def release_later():
-        time.sleep(2.0)
-        fcntl.flock(handle, fcntl.LOCK_UN)
-        released.set()
-
-    threading.Thread(target=release_later, daemon=True).start()
+    # A FOREIGN holder: the lock is per-process (fcntl record locks), so the
+    # holder must be another process, exactly as another box would be.
+    holder = subprocess.Popen(
+        [sys.executable, "-c",
+         "import fcntl, sys, time\n"
+         "handle = open(sys.argv[1], 'a+')\n"
+         "fcntl.lockf(handle, fcntl.LOCK_EX)\n"
+         "print('held', flush=True)\n"
+         "time.sleep(2.0)", str(lock)],
+        stdout=subprocess.PIPE, text=True)
+    assert holder.stdout.readline().strip() == "held"
     try:
         started = time.monotonic()
         claimed = world.q.claim(owner="w-mover", tags=[_tier_host(world.q)])
         elapsed = time.monotonic() - started
     finally:
-        fcntl.flock(handle, fcntl.LOCK_UN)
-        handle.close()
+        holder.wait(timeout=10)
     assert elapsed < 1.0, f"the claim pass blocked {elapsed:.2f}s on a foreign lock"
     assert claimed is None
     assert world.q.item_path(pool.READY, world.mover).exists()

@@ -3964,6 +3964,10 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
     # queued below -- it stays in ``ready/`` until a claim files it -- so its
     # receipt and any band it already holds retire with the row, not here.
     released_keys = queue.released_origin_consumer_keys()
+    #: Each owner's generation, read once for the whole cycle (#1202 review
+    #: finding 5): the dead-input check's hint, so a fleet of movers of one
+    #: producer pays one ``claimed/`` census per pass instead of two per mover.
+    dead_input_hints: dict[str, tuple[str, dict[str, object] | None]] = {}
     for item in ready:
         if taken >= args.lookahead or stop.is_set():
             break
@@ -3978,7 +3982,8 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
                                      "reason": "origin consumer released"})
             continue
         if (isinstance(item.get("produced_output_batch"), Mapping)
-                and queue.fail_dead_input_dependency(item, key)):
+                and queue.fail_dead_input_dependency(item, key,
+                                                     hints=dead_input_hints)):
             # #1184: a mover whose dead producer's bound origin is gone can
             # never run.  The transition is serialized under the key's own
             # transition lock inside the method, before any warm here or
