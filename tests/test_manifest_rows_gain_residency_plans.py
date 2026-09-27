@@ -213,3 +213,114 @@ def test_a_refusal_is_receipted_and_never_raises(tmp_path):
     tier = (fleet.queue.prewarm(key) or {}).get("tier")
     assert isinstance(tier, dict) and tier["status"] == "refused"
     assert residency_plan.read(fleet.queue, key) is None
+
+
+# --- review round 1 (#1252): containment, priority, deferral, memoization ---
+
+def test_a_corrupt_request_never_stops_the_cycle(tmp_path):
+    """REVIEW-1252 item 1: rows whose requests go bad are refused by name.
+
+    The planner reads the request file raw -- no validate_action between the
+    CAS and it -- so a corrupted-but-JSON body (a deleted ``task`` here, a
+    non-mapping one in the next case) must surface as a receipted refusal,
+    never as an exception out of the tier role's single writer, and the next
+    row in claim order must still be planned.
+    """
+
+    fleet = Fleet(tmp_path)
+    annotations = {"phases": phase_table(NAMED_FILES)}
+    first = _manifest_row(fleet, "bad-no-task", annotations=annotations)
+    second = _manifest_row(fleet, "bad-task-shape", annotations=annotations)
+    good = _manifest_row(fleet, "good-row", annotations=annotations)
+    for key, mutate in ((first, lambda body: body.pop("task")),
+                        (second, lambda body: body.update(task=["not", "a", "map"]))):
+        path = fleet.cas_root / "requests" / key[:2] / f"{key}.json"
+        body = json.loads(path.read_text())
+        mutate(body)
+        path.write_text(json.dumps(body))
+
+    outcomes = manifest_promotion.promote_ready_manifest_rows(
+        fleet.queue, fleet.cas_root, _stage_tier(fleet),
+        ready=[_ready_item(fleet, first), _ready_item(fleet, second),
+               _ready_item(fleet, good)])
+
+    assert [outcome["outcome"] for outcome in outcomes] == \
+        ["refused", "refused", "planned"]
+    for outcome in outcomes[:2]:
+        assert outcome["reason"]
+    assert residency_plan.read(fleet.queue, good) is not None
+
+
+def test_a_mover_inherits_its_consumers_priority(tmp_path):
+    """REVIEW-1252 item 4: staging rides the consumer's own band."""
+
+    fleet = Fleet(tmp_path)
+    files = [fleet.file(name, size) for name, size in NAMED_FILES]
+    key = fleet.action("row-priority", files,
+                       priority=5, annotations={"phases": phase_table(NAMED_FILES)})
+
+    outcomes = manifest_promotion.promote_ready_manifest_rows(
+        fleet.queue, fleet.cas_root, _stage_tier(fleet),
+        ready=[_ready_item(fleet, key)])
+
+    assert outcomes[0]["outcome"] == "planned"
+    plan = residency_plan.read(fleet.queue, key)
+    assert plan is not None
+    for phase in plan["phases"]:
+        assert int(phase["mover_row"]["priority"]) == 5
+
+
+def test_a_busy_transition_lock_defers_not_refuses(tmp_path, monkeypatch):
+    """REVIEW-1252 item 6: a busy lock is transient, and says so."""
+
+    import prismabuild.pool as pool_mod
+    fleet = Fleet(tmp_path)
+    key = _manifest_row(fleet, "row-busy",
+                        annotations={"phases": phase_table(NAMED_FILES)})
+
+    def _busy(self, action_key, **kwargs):
+        raise pool_mod.TransitionLockBusy(action_key, {"holder_pid": 1})
+
+    monkeypatch.setattr(pool_mod.PoolQueue, "_transition_locked", _busy)
+    outcomes = manifest_promotion.promote_ready_manifest_rows(
+        fleet.queue, fleet.cas_root, _stage_tier(fleet),
+        ready=[_ready_item(fleet, key)])
+    monkeypatch.undo()
+
+    assert outcomes[0]["outcome"] == "deferred"
+    assert outcomes[0]["reason"]
+    tier = (fleet.queue.prewarm(key) or {}).get("tier")
+    assert isinstance(tier, dict) and tier["status"] == "deferred"
+    assert residency_plan.read(fleet.queue, key) is None
+
+
+def test_decisions_are_memorized_and_receipts_not_rewritten(
+        tmp_path, monkeypatch):
+    """REVIEW-1252 item 3: one request read per key, one receipt per change."""
+
+    fleet = Fleet(tmp_path)
+    plain = fleet.action("row-plain", [
+        fleet.file(name, size) for name, size in NAMED_FILES],
+        with_manifest=False)
+    reads: list[str] = []
+    real = manifest_promotion.row_request
+
+    def counting(cas_root, action_key):
+        reads.append(action_key)
+        return real(cas_root, action_key)
+
+    monkeypatch.setattr(manifest_promotion, "row_request", counting)
+    first = manifest_promotion.promote_ready_manifest_rows(
+        fleet.queue, fleet.cas_root, _stage_tier(fleet),
+        ready=[_ready_item(fleet, plain)])
+    assert reads and reads[-1] == plain
+    reads.clear()
+
+    second = manifest_promotion.promote_ready_manifest_rows(
+        fleet.queue, fleet.cas_root, _stage_tier(fleet),
+        ready=[_ready_item(fleet, plain)])
+
+    assert second == first
+    assert reads == []          # the decision is remembered, not re-read
+    record = fleet.queue.prewarm(plain)
+    assert record is None       # a no_manifest row receipts nothing at all

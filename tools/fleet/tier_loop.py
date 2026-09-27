@@ -10225,9 +10225,11 @@ def _cycle(
                 _emit(queue, host,
                       {"event": "manifest-row-promotion", **outcome},
                       tier_consumers=tier_consumers)
-        except (OSError, pool.PoolContractError, ValueError) as exc:
+        except Exception as exc:  # REVIEW-1252 item 1: advisory, never fatal
             # The planner is fail-closed per row; this is the loop-level
-            # guard for what a row cannot catch (a queue read, say).  One
+            # guard for what a row cannot catch (a queue read, say).  Total,
+            # because this stage advises -- a cycle without new plans is the
+            # ordinary cost of a refusal, never a halted tier role.  One
             # cycle without new plans is the ordinary cost of a refusal.
             _emit(queue, host,
                   {"event": "manifest-row-promotion-refused",

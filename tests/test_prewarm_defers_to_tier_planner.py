@@ -9,6 +9,7 @@ manifest on 2026-09-27.
 from __future__ import annotations
 
 from pathlib import Path
+import socket
 import sys
 
 import prismabuild.pool as pool
@@ -26,13 +27,16 @@ def _queue_at(tmp_path: Path) -> pool.PoolQueue:
 def _announce_ram(queue: pool.PoolQueue, *, retired: bool = False) -> None:
     directory = queue.root / "tiers"
     directory.mkdir(parents=True, exist_ok=True)
+    # THIS host: the guard is scoped to the box the loop runs on (review
+    # item 5), so a ram tier another box announces stays that box's business.
     body = {"schema": "prismabuild.storage_tier.v1", "tier": "ram",
-            "tier_id": "ram:dl380g10", "host": "dl380g10",
+            "tier_id": "ram:" + socket.gethostname(),
+            "host": socket.gethostname(),
             "mountpoint": "/ram/prewarm"}
     if retired:
         body["retired"] = True
-    (directory / "ram:dl380g10.json").write_text(__import__("json")
-                                                 .dumps(body))
+    (directory / f"ram:{socket.gethostname()}.json").write_text(
+        __import__("json").dumps(body))
 
 
 def _room(headroom_effective: int) -> dict:

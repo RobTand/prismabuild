@@ -51,9 +51,11 @@ from prismabuild import pool
 from prismabuild import residency_plan
 from prismabuild import storage_tiers
 
-if __package__ in (None, ""):  # tools/fleet sibling import, as tier_loop does it
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
-    import pbrun  # noqa: E402
+# tools/fleet sibling import, the way tier_loop does its own: the path is
+# inserted once and unconditionally (REVIEW-1252 item 8), and the import is
+# never conditional on a package context that a caller may or may not give.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import pbrun  # noqa: E402
 
 
 #: The streaming rule: how many READY rows the planner seals per cycle.  One,
@@ -166,12 +168,6 @@ def movement_template_of(queue: pool.PoolQueue,
         return None
     params["checkout_snapshot"] = snapshot
     snapshot_sha256 = str(snapshot_input["sha256"])
-    if not snapshot_sha256:
-        # The ownership namespace keeps the historical digest over the first
-        # inherited input, else the consumer's own key.
-        snapshot_sha256 = next(
-            (str(entry.get("sha256")) for entry in inputs
-             if isinstance(entry.get("sha256"), str)), key)
     return {
         "task": dict(request["task"]),
         "inputs": inputs,
@@ -228,28 +224,51 @@ def promote_ready_manifest_rows(
         key = str(item.get("action_key") or "")
         if not key:
             continue
-        examined += 1
-        request = row_request(Path(cas_root), key)
-        outcome: dict[str, object] = {"action_key": key}
-        if not declares_data_manifest(request):
-            outcome["outcome"] = "no_manifest"
-            outcomes.append(outcome)
-            continue
+        # A filed plan answers before anything costs a read (REVIEW-1252
+        # item 3): one lstat against a CAS request fetch, and a row another
+        # submitter sealed residency for is never the planner's.
         if residency_plan.read(queue, key) is not None:
-            outcome["outcome"] = "stands_down"
-            outcomes.append(outcome)
+            outcomes.append({"action_key": key, "outcome": "stands_down"})
             continue
-        template = movement_template_of(queue, request, key)
-        if template is None:
-            outcome["outcome"] = "refused"
-            outcome["reason"] = ("no movement template off the sealed request "
-                                 "(a mover needs the row's sealed checkout "
-                                 "snapshot beside its manifest)")
-            outcomes.append(outcome)
-            _record_tier_receipt(queue, key, status="refused",
-                                 detail="no movement template")
+        examined += 1
+        memo_key = (str(queue.root), key)
+        memo = _DECISIONS.get(memo_key)
+        if memo is not None:
+            outcomes.append(dict(memo["outcome"]))
             continue
+        outcome: dict[str, object] = {"action_key": key}
+        # Total containment for this advisory stage (REVIEW-1252 item 1):
+        # the planner reads the request file raw -- no validate_action stands
+        # between the CAS and it -- so a corrupted-but-JSON body, a hostile
+        # shape or a sealing bug anywhere in the submitter's own path is a
+        # refusal receipted for THIS row, never an exception out of the tier
+        # role's single writer.  A row that gains no plan runs exactly as it
+        # does today, which is what makes ``except Exception`` the correct
+        # boundary here rather than a smell.
         try:
+            request = row_request(Path(cas_root), key)
+            if not declares_data_manifest(request):
+                outcome["outcome"] = "no_manifest"
+                outcomes.append(outcome)
+                _remember(memo_key, outcome)
+                continue
+            # The submitter's mover band is the consumer's own (REVIEW-1252
+            # item 4): a priority-1 consumer's staging waits behind the -10
+            # band otherwise.
+            args = planner_args(
+                priority=int(item.get("priority", -10) or -10))
+            template = movement_template_of(queue, request, key)
+            if template is None:
+                outcome["outcome"] = "refused"
+                outcome["reason"] = ("no movement template off the sealed "
+                                     "request (a mover needs the row's "
+                                     "sealed checkout snapshot beside its "
+                                     "manifest)")
+                outcomes.append(outcome)
+                _receipt_once(queue, memo_key, key, status="refused",
+                              detail=str(outcome["reason"]))
+                _remember(memo_key, outcome)
+                continue
             # The submitter's ownership transaction, verbatim (#708 review):
             # seal and file under the consumer's transition lock, so a
             # dead-consumer pass cannot reap a plan between its filing and
@@ -257,25 +276,29 @@ def promote_ready_manifest_rows(
             with queue._transition_locked(key):
                 staged = pbrun.residency_stage_rows(
                     template, consumer_action_key=key,
-                    tier=dict(stage_tier), args=planner_args(),
+                    tier=dict(stage_tier), args=args,
                     queue=queue, cas=cas)
                 if not staged.get("reused_frozen_plan"):
                     residency_plan.seal_window(
                         queue, staged["plan"], renew=True)
-        except SystemExit as exc:
-            outcome["outcome"] = "refused"
-            outcome["reason"] = str(exc)
+        except pool.TransitionLockBusy as exc:
+            # Transient, not a refusal (REVIEW-1252 item 6): the consumer's
+            # own publication or retirement holds the lock this cycle, and
+            # the next cycle is the retry.  Never memoized -- a deferral is
+            # a fact about this instant, not about the row.
+            outcome["outcome"] = "deferred"
+            outcome["reason"] = repr(exc)
             outcomes.append(outcome)
-            _record_tier_receipt(queue, key, status="refused",
-                                 detail=str(exc))
+            _record_tier_receipt(queue, key, status="deferred",
+                                 detail=repr(exc))
             continue
-        except (residency_plan.ResidencyPlanError, OSError,
-                pool.PoolContractError, ValueError) as exc:
+        except Exception as exc:  # noqa: BLE001 -- see the block comment
             outcome["outcome"] = "refused"
             outcome["reason"] = repr(exc)
             outcomes.append(outcome)
-            _record_tier_receipt(queue, key, status="refused",
-                                 detail=repr(exc))
+            _receipt_once(queue, memo_key, key, status="refused",
+                          detail=repr(exc))
+            _remember(memo_key, outcome)
             continue
         plan = staged["plan"]
         phases = list(plan.get("phases") or ())
@@ -294,6 +317,33 @@ def promote_ready_manifest_rows(
             manifest_bytes=int(plan.get("manifest_bytes") or 0))
         planned += 1
     return outcomes
+
+
+
+#: Terminal per-row decisions, remembered for the life of the loop
+#: (REVIEW-1252 item 3): a CAS request is content-addressed and immutable,
+#: so ``no_manifest`` and a template refusal are facts about the row, not
+#: about this cycle.  Keyed by queue root beside the action key so a test
+#: fleet's rows never answer for one another.  Deferrals are never stored --
+#: they are facts about an instant.
+_DECISIONS: dict[tuple[str, str], dict[str, object]] = {}
+
+
+def _remember(memo_key: tuple[str, str], outcome: dict[str, object]) -> None:
+    """Store one terminal decision, merging into any receipt state."""
+
+    _DECISIONS.setdefault(memo_key, {})["outcome"] = dict(outcome)
+
+
+def _receipt_once(queue: pool.PoolQueue, memo_key: tuple[str, str],
+                  action_key: str, **block: object) -> None:
+    """Write a refusal receipt only when its content changes (item 3)."""
+
+    memo = _DECISIONS.setdefault(memo_key, {})
+    if memo.get("receipt") == dict(block):
+        return
+    memo["receipt"] = dict(block)
+    _record_tier_receipt(queue, action_key, **block)
 
 
 def _record_tier_receipt(queue: pool.PoolQueue, action_key: str, *,

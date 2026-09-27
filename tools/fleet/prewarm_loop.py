@@ -3618,6 +3618,7 @@ def ram_tier_announced(queue: pool.PoolQueue) -> bool:
     try:
         return any(
             record.get("tier") == "ram" and not record.get("retired")
+            and str(record.get("host") or "") == socket.gethostname()
             for record in queue.tiers())
     except (OSError, pool.PoolContractError):
         return False
