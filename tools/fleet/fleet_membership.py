@@ -716,9 +716,9 @@ def _declared_demand(host: str, roster_path: Path | None) -> dict[str, int]:
     return demand
 
 
-def _probe_once(root: Path, host: str) -> None:
+def _probe_once(root: str, host: str) -> None:
     """Write, read back and remove one probe file in the shared queue."""
-    probe = root / f".membership-probe-{os.getpid()}"
+    probe = Path(root) / f".membership-probe-{os.getpid()}"
     try:
         probe.write_text(json.dumps({"host": host, "unix": _utc()}))
         if json.loads(probe.read_text())["host"] != host:
@@ -727,31 +727,41 @@ def _probe_once(root: Path, host: str) -> None:
         probe.unlink(missing_ok=True)
 
 
-def _probe_shared_namespace(root: Path, host: str) -> None:
-    """Prove this host reads and writes the shared queue namespace.
+def _owed_census(queue_root: str, host: str, owner: str) -> dict[str, list[str]]:
+    """This host's owed membership rows: unreadable or unrevivable ones
+    (``skipped``) and unsettled handoffs. Read-only."""
+    queue = pool_module.PoolQueue(Path(queue_root))
+    owed, skipped = resume_owed(queue, host, owner)
+    return {"skipped": sorted(skipped), "unsettled": _unsettled_owed_keys(queue, owed)}
+
+
+def _as_queue_owner(root: Path, call: str, *args: str) -> Any:
+    """Run ``fleet_membership.<call>(*args)`` with the shared queue owner's IO.
 
     NFS root_squash maps root to nobody on the shared mount, and the broker
-    admits maintenance only from uid 0, so a root join cannot write the probe
-    itself (#1223). It probes as the queue's unprivileged owner instead, in a
-    child that permanently drops to that uid, the way
-    ``upgrade_client.post_as_reader`` writes rollout markers.
+    admits maintenance only from uid 0, so a root join can neither probe nor
+    read the queue itself (#1223, #1225). Every shared-queue read and write
+    runs in a child that permanently drops to the queue's unprivileged owner,
+    the way ``upgrade_client.post_as_reader`` writes rollout markers; only the
+    broker mutation stays root. A non-root caller runs it in-process. The
+    result crosses the boundary as JSON.
     """
     if os.geteuid() != 0:
-        _probe_once(root, host)
-        return
+        return globals()[call](*args)
     owner = root.stat().st_uid
     if owner <= 0:
-        raise OSError(f"shared queue {root} has no unprivileged owner to probe as")
+        raise OSError(f"shared queue {root} has no unprivileged owner to act as")
     result = subprocess.run(
         [sys.executable, "-I", "-c",
-         "import sys; from pathlib import Path; sys.path.insert(0, sys.argv[1]); "
-         "import fleet_membership; fleet_membership._probe_once(Path(sys.argv[2]), sys.argv[3])",
-         str(TOOL_DIR), str(root), host],
+         "import json, sys; sys.path.insert(0, sys.argv[1]); import fleet_membership as fm; "
+         "print(json.dumps(getattr(fm, sys.argv[2])(*sys.argv[3:])))",
+         str(TOOL_DIR), call, *args],
         user=owner, group=pwd.getpwuid(owner).pw_gid, extra_groups=[],
-        capture_output=True, text=True, timeout=120)
+        capture_output=True, text=True, timeout=600)
     if result.returncode != 0:
-        raise OSError(f"shared queue probe as owner uid {owner} failed: "
+        raise OSError(f"{call} as queue owner uid {owner} failed: "
                       f"{result.stderr.strip()[-400:]}")
+    return json.loads(result.stdout.strip().splitlines()[-1])
 
 
 def qualify_host(
@@ -791,7 +801,7 @@ def qualify_host(
                 "checks": checks}
     root = Path(queue_root)
     try:
-        _probe_shared_namespace(root, host)
+        _as_queue_owner(root, "_probe_once", str(root), host)
         checks["shared_namespace_rw"] = True
     except (OSError, ValueError, KeyError, subprocess.SubprocessError) as exc:
         checks["shared_namespace_rw"] = False
@@ -964,11 +974,10 @@ def join(
         unknown: list[str] = []
         if queue_root is not None:
             try:
-                queue_here = pool_module.PoolQueue(Path(queue_root))
-                owed, skipped = resume_owed(queue_here, host, owner)
-                unsettled = _unsettled_owed_keys(queue_here, owed)
-                unknown = sorted(skipped)
-            except (OSError, ValueError):
+                census = _as_queue_owner(Path(queue_root), "_owed_census",
+                                         str(queue_root), host, owner)
+                unsettled, unknown = census["unsettled"], census["skipped"]
+            except (OSError, ValueError, KeyError):
                 unsettled = []
                 unknown = ["queue census unreadable"]
         return {"status": "already_joined", "host": host, "owner": owner,
@@ -976,8 +985,9 @@ def join(
                 "unsettled_membership_rows": unsettled,
                 "unsettled_unknown_rows": unknown}
     if queue_root is not None:
-        queue_here = pool_module.PoolQueue(Path(queue_root))
-        owed_here, skipped_here = resume_owed(queue_here, host, owner)
+        census = _as_queue_owner(Path(queue_root), "_owed_census",
+                                 str(queue_root), host, owner)
+        skipped_here = census["skipped"]
         if skipped_here:
             # Unknown is not settled: an unreadable directory, a corrupt
             # decision, an unknown prior owner, or an unplannable
@@ -988,7 +998,7 @@ def join(
                     "reason": "membership rows unreadable or unrevivable: "
                               + "; ".join(sorted(skipped_here)),
                     "checks": checks}
-        unsettled_here = _unsettled_owed_keys(queue_here, owed_here)
+        unsettled_here = census["unsettled"]
         if unsettled_here:
             # Ending this drain would clear unsettled handoff obligations:
             # resign (adopt and settle) first, then join. Exact successors
