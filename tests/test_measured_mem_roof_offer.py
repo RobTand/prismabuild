@@ -122,3 +122,53 @@ def test_the_measured_roof_lets_the_incident_shard_admit(tmp_path: Path) -> None
     offered = observer.offer({"mem_gb": 96, "cpu": 80}, held=held,
                              mem_gb=245, load1=0.0)
     assert offered["mem_gb"] >= 237
+
+
+def test_every_offer_stamps_the_roof_and_its_source(tmp_path: Path) -> None:
+    """#1245 review B2: the worker record says which roof is in force.
+
+    ``observed_detail`` carries ``mem_roof_gib`` (the roof in force,
+    before the honest clamp) and ``mem_roof_source`` -- ``measured`` or
+    ``fallback:<reason>`` -- every poll, so a silent fall back to the
+    static declaration is observable after deploy.
+    """
+
+    policy, arcstats, meminfo = _inputs(tmp_path)
+    # Measured, by int and by (roof, source) tuple alike.
+    observer = box_capacity.CapacityObserver(
+        samples=1, mem_roof=lambda: 256)
+    observer.offer({"mem_gb": 96, "cpu": 80}, held={}, mem_gb=245, load1=0.0)
+    assert observer.last.detail["mem_roof_gib"] == 256
+    assert observer.last.detail["mem_roof_source"] == "measured"
+
+    observer = box_capacity.CapacityObserver(
+        samples=1, mem_roof=lambda: (256, "measured"))
+    observer.offer({"mem_gb": 96, "cpu": 80}, held={}, mem_gb=245, load1=0.0)
+    assert observer.last.detail["mem_roof_gib"] == 256
+    assert observer.last.detail["mem_roof_source"] == "measured"
+
+
+def test_fallbacks_are_stamped_with_their_reason(tmp_path: Path) -> None:
+    """An unreadable or missing roof says so; no roof is not configured."""
+
+    policy, arcstats, meminfo = _inputs(tmp_path)
+    # The roof callable answers (None, reason): the declaration binds and
+    # the record names why the measurement was not used.
+    observer = box_capacity.CapacityObserver(
+        samples=1, mem_roof=lambda: (None, "fallback:policy_missing"))
+    observer.offer({"mem_gb": 96, "cpu": 80}, held={}, mem_gb=245, load1=0.0)
+    assert observer.last.detail["mem_roof_gib"] == 96
+    assert observer.last.detail["mem_roof_source"] == "fallback:policy_missing"
+
+    # A bare None (readable API, unreadable inputs) is roof_unreadable.
+    observer = box_capacity.CapacityObserver(
+        samples=1, mem_roof=lambda: None)
+    observer.offer({"mem_gb": 96, "cpu": 80}, held={}, mem_gb=245, load1=0.0)
+    assert observer.last.detail["mem_roof_gib"] == 96
+    assert observer.last.detail["mem_roof_source"] == "fallback:roof_unreadable"
+
+    # No roof wired at all: the flag is off and the record says so.
+    observer = box_capacity.CapacityObserver(samples=1, mem_roof=None)
+    observer.offer({"mem_gb": 96, "cpu": 80}, held={}, mem_gb=245, load1=0.0)
+    assert observer.last.detail["mem_roof_gib"] == 96
+    assert observer.last.detail["mem_roof_source"] == "fallback:not_configured"
