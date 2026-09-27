@@ -82,7 +82,8 @@ def test_the_host_hold_follows_the_fence_through_its_whole_life(
 
     outcome = queue.cancel_tier_fence(RAM_TIER, mover)
     assert outcome["released"] == 60
-    assert tier.held() == {"ram_gib": 0}
+    # held() drops zero-total kinds: nothing held is an empty answer.
+    assert tier.held().get("ram_gib", 0) == 0
     assert host.holder_tokens("ram-host:" + mover) == {}
     assert queue.rows_host_memory_held(HOST) == 48
 
@@ -148,6 +149,9 @@ def test_the_take_is_tristate_and_names_the_unknown_case(
     """taken / short / unknown; unknown carries the error that made it."""
 
     queue = _queue(tmp_path)
+    # A tight tier beside a roomy host: the tier ledger is the one that
+    # can be short while the host still fits the same take.
+    queue.mint_tier_capacity(RAM_TIER, {"ram_gib": 60})
     host = queue.ledger(HOST)
     assert host.acquire("c" * 64, {"mem_gb": 48}) is True
     state, detail = queue.hold_tier_host_memory(HOST, "d" * 64, 40)
@@ -156,10 +160,12 @@ def test_the_take_is_tristate_and_names_the_unknown_case(
     # 256 - 48 - 40 = 168 free: 240 does not fit, and that is short.
     state, detail = queue.hold_tier_host_memory(HOST, "e" * 64, 240)
     assert state == "short"
-    # An unreadable host ledger is unknown, never a free pool.
-    def _boom(holder: str, demand: dict) -> bool:
+    # An unreadable host ledger is unknown, never a free pool.  The ledger
+    # wrapper is constructed per call, so the refusal is installed on the
+    # class -- exactly the census fault the take has to survive.
+    def _boom(self, holder: str, demand: dict) -> bool:
         raise OSError("boom: host census unreadable")
-    monkeypatch.setattr(host, "acquire", _boom)
+    monkeypatch.setattr(pool.ResourceLedger, "acquire", _boom)
     state, detail = queue.hold_tier_host_memory(HOST, "f" * 64, 8)
     assert state == "unknown"
     assert "boom" in detail
@@ -167,12 +173,17 @@ def test_the_take_is_tristate_and_names_the_unknown_case(
     state, detail = queue.take_tier_advance(RAM_TIER, "1" * 64, 8, "ram_gib")
     assert state == "unknown"
     assert "boom" in detail
-    # A tier-short advance is named short too, not unknown.
+    # A tier-short advance is named short too, not unknown: the tier has
+    # 60, 40 of it is held, and 25 more does not fit -- while the host
+    # (48 + 40 + 25 <= 256) would have taken it.
     monkeypatch.undo()
-    state, detail = queue.take_tier_advance(RAM_TIER, "2" * 64, 999, "ram_gib")
+    state, detail = queue.take_tier_advance(RAM_TIER, "2" * 64, 25, "ram_gib")
     assert state == "tier-short"
+    # The host half of a tier-short take rolled back: the take holds
+    # nothing on the host (only the earlier "d" hold and the row remain).
+    assert host.holder_tokens("ram-host:" + "2" * 64) == {}
     # A host-short advance says which pool was short.
-    state, detail = queue.take_tier_advance(RAM_TIER, "3" * 64, 240, "ram_gib")
+    state, detail = queue.take_tier_advance(RAM_TIER, "3" * 64, 200, "ram_gib")
     assert state == "host-short"
 
 
