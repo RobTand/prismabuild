@@ -173,16 +173,21 @@ def test_the_take_is_tristate_and_names_the_unknown_case(
     state, detail = queue.take_tier_advance(RAM_TIER, "1" * 64, 8, "ram_gib")
     assert state == "unknown"
     assert "boom" in detail
-    # A tier-short advance is named short too, not unknown: the tier has
-    # 60, 40 of it is held, and 25 more does not fit -- while the host
-    # (48 + 40 + 25 <= 256) would have taken it.
+    # A tier-short advance is named short too, not unknown.  The "d"
+    # hold is host-side only, so the tier is filled by a real advance
+    # first: 40 of its 60 taken, and 25 more does not fit -- while the
+    # host (48 + 40 + 40 + 25 <= 256) would have taken it.
     monkeypatch.undo()
+    state, detail = queue.take_tier_advance(RAM_TIER, "g" * 64, 40, "ram_gib")
+    assert state == "taken"
     state, detail = queue.take_tier_advance(RAM_TIER, "2" * 64, 25, "ram_gib")
     assert state == "tier-short"
     # The host half of a tier-short take rolled back: the take holds
     # nothing on the host (only the earlier "d" hold and the row remain).
     assert host.holder_tokens("ram-host:" + "2" * 64) == {}
-    # A host-short advance says which pool was short.
+    # A host-short advance says which pool was short: the host would
+    # need 88 + 40 + 200 > 256, and the tier (40 + 200) is short too,
+    # but the host is the half that refuses first.
     state, detail = queue.take_tier_advance(RAM_TIER, "3" * 64, 200, "ram_gib")
     assert state == "host-short"
 
