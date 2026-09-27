@@ -1103,6 +1103,47 @@ class Controller:
         # otherwise the holder loop below refuses the measurement
         # ``measurement_holder`` (naming ``isolated_by``, #982).
         if measurement and (not fresh or idle['exceeds']):
+            # #1231: the idle verdict cannot tell whose load exceeded it.
+            # A fresh sample's attribution can: a CPU a pool holder holds
+            # carries the pool's own work, which that holder draining
+            # clears, while foreign busy on an unheld CPU is load no drain
+            # ever clears.  When every held CPU reads quiet below the idle
+            # fraction and the busy above it is all on unheld CPUs, the
+            # excess would survive every holder draining, so withholding
+            # the box for it would only cut the box to one admission per
+            # sample window while the foreign load stays (#1160's held-vs-
+            # foreign separation applied to the measurement gate).  The
+            # refusal names the foreign CPUs and the item starves instead.
+            # A sample without attribution keeps the conservative refusal,
+            # exactly as before (#1210's rolling-upgrade rule).
+            if fresh and idle['exceeds']:
+                per_cpu = sample.get('per_cpu_busy')
+                foreign_cpu = sample.get('foreign_per_cpu_busy', per_cpu)
+                if (isinstance(per_cpu, dict)
+                        and set(per_cpu) == {str(cpu) for cpu in self.cpus}
+                        and isinstance(foreign_cpu, dict)
+                        and set(foreign_cpu) == set(per_cpu)
+                        and all(type(busy) in (int, float) and math.isfinite(busy)
+                                and 0 <= busy <= 1 for busy in per_cpu.values())
+                        and all(type(value) in (int, float) and math.isfinite(value)
+                                and 0 <= value <= per_cpu[cpu]
+                                for cpu, value in foreign_cpu.items())):
+                    held = set()
+                    for holder in holders:
+                        allocation = self.ledger.cpu_allocation(
+                            holder.name, self.tiers)
+                        held.update(allocation['preferred']
+                                    + allocation['fallback'])
+                    foreign_busy = sorted(
+                        cpu for cpu in self.cpus if cpu not in held
+                        and foreign_cpu[str(cpu)] > IDLE_BUSY_FRACTION)
+                    held_busy = sorted(
+                        cpu for cpu in self.cpus if cpu in held
+                        and per_cpu[str(cpu)] > IDLE_BUSY_FRACTION)
+                    if foreign_busy and not held_busy:
+                        return refuse("measurement_foreign_load", fresh=fresh,
+                                      baseline=idle, foreign_cpus=foreign_busy[:8],
+                                      held_cpus=held_busy)
             return refuse("measurement_host_not_idle", fresh=fresh, baseline=idle)
         if full_width and fresh and not holders and idle['exceeds']:
             # A reservation of every CPU needs the host idle too.
