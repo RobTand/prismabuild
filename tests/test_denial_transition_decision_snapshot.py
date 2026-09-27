@@ -69,7 +69,14 @@ def test_a_new_transition_carries_the_decision_snapshot(tmp_path, monkeypatch):
 
 
 def test_a_damped_repeat_keeps_the_first_snapshot(tmp_path, monkeypatch):
-    """Damping does not overwrite where the starvation began."""
+    """Damping does not overwrite where the starvation began.
+
+    A back-to-back same-verdict pass is the #991 no-op (memo or the
+    newest-on-file check; no I/O, no count).  The damping path -- and the
+    count -- belongs to a reason that *returns* after a different verdict
+    intervened, which is exactly the flapping shape #1006 damps.  That
+    re-arriving refusal must not overwrite the first snapshot either.
+    """
 
     queue = pool.PoolQueue(tmp_path / "queue")
     item = fx._publish_export(queue, fx._hexkey("owner"), "damped")
@@ -77,22 +84,22 @@ def test_a_damped_repeat_keeps_the_first_snapshot(tmp_path, monkeypatch):
     clock = [1000.0]
     monkeypatch.setattr(pool, "_now", lambda: clock[0])
 
+    # The starvation begins under foreign load.
     _refuse_once(queue, item, HOST_PRESSURE_DECISION, clock)
-    # A same-verdict second pass in ONE process answers from the in-process
-    # memo with no I/O at all (the #991 design: a starved row's reason is
-    # the same for hours).  A damped repeat -- count on an existing entry --
-    # arises across loops or after a restart, so retire the memo the way
-    # _retire_denial_memo would before the second pass sees the file.
-    pool._DENIAL_SEEN.clear()
-    # A later pass sees a different foreign set but the same verdict word.
+    # A different verdict intervenes (an ordinary withholding, say).
+    queue.record_denial(item, "measurement_holder", {"holder": "g2"})
+    clock[0] += 1.0
+    # host_pressure returns -- with a *different* foreign set -- and damps
+    # onto its own entry.
     later = dict(HOST_PRESSURE_DECISION, foreign_cpus=[17], cpus=[17])
     _refuse_once(queue, item, later, clock)
 
     history = queue.denial_transitions(key)
-    assert len(history) == 1, history
+    assert [entry["reason"] for entry in history] == [
+        "host_pressure", "measurement_holder"], history
     repeat = history[0]
     assert repeat["count"] == 2
-    assert repeat["last_unix"] == clock[0] - 1.0
+    assert repeat["last_unix"] == clock[0]
     # The snapshot is the first one: the entry is the record of how the
     # starvation began, not a rolling latest-only view (that record exists
     # separately and overwrites every pass).
