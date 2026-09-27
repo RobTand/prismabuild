@@ -4665,6 +4665,19 @@ copy got 30.8 MB/s file side while 7 movers shared the pool. The pool delivered
 96.6 s over 54 holds. The pool's total barely moves between 5 and 10
 concurrent movers, so each extra mover only splits it further.
 
+A copy whose whole window fits inside the fill share its mover's claim
+declared for one second is never held (#1235, 2026-09-27): the measured tail
+held a 6-10 MiB mover 85.0 s of an 85.08 s child in one `pace_wait` while its
+`copy_read` was 0.05 s, behind recurring client streams no drain of the
+pool's own holders clears. The token bucket already bounds such a copy's
+pool load to its declared share, so a hold protects clients from nothing the
+bucket does not, while the hold's cost is all the copy -- and the consumer
+waiting on it -- waits for. The pacer still samples the pool, exactly as it
+does for #1091's never-held copy, so the receipt carries the delivery the cap
+is folded from. A window with no declared share stays held as before, and so
+does every window bigger than the share: the large fills' rationing is
+untouched.
+
 Every cycle, the tier loop announces a `reader_plan` on each stage tier's
 record (`tier_loop.reader_plan`):
 
