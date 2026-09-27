@@ -282,6 +282,20 @@ distinct reasons a host has ever shown for this generation, not by how many
 times it changed, and the first transition of each survives however long the
 flapping lasts.
 
+**A new transition stores the decision snapshot that produced it (#1239,
+request 1; 2026-09-27).** The ring's entry used to carry only the verdict
+word, so the #1239 incident — a canary starved through 1072 passes of
+`host_pressure` behind sustained foreign CPU load — could not be diagnosed
+from the ring after the fact: the foreign/held CPU split, eligible set and
+measured pressure lived only in the latest-only record, which overwrites
+itself every pass. Every *new* entry now also stores the controller's
+bounded decision snapshot, passed through the same `_bounded_denial_value`
+the latest-only evidence uses, so an entry stays within the cost the ring
+already pays per key (live rings: ~3.9 KiB per record). A damped repeat
+keeps the first snapshot — on the same principle as #1006, the transition
+that matters is where the starvation began — and a refusal recorded without
+a decision stores an explicit `None` rather than omitting the field.
+
 The prewarm loop's
 receipt sweep retires the rings of terminal and withdrawn keys on the same
 live set, and a ring no state directory names is kept for seven days.
