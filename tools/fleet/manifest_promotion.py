@@ -281,6 +281,16 @@ def promote_ready_manifest_rows(
                 if not staged.get("reused_frozen_plan"):
                     residency_plan.seal_window(
                         queue, staged["plan"], renew=True)
+        except SystemExit as exc:
+            # pbrun's refusal vocabulary: the sealing path says no with a
+            # SystemExit, which ``except Exception`` does not see.
+            outcome["outcome"] = "refused"
+            outcome["reason"] = str(exc)
+            outcomes.append(outcome)
+            _receipt_once(queue, memo_key, key, status="refused",
+                          detail=str(exc))
+            _remember(memo_key, outcome)
+            continue
         except pool.TransitionLockBusy as exc:
             # Transient, not a refusal (REVIEW-1252 item 6): the consumer's
             # own publication or retirement holds the lock this cycle, and

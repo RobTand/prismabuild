@@ -263,7 +263,7 @@ def test_a_mover_inherits_its_consumers_priority(tmp_path):
         fleet.queue, fleet.cas_root, _stage_tier(fleet),
         ready=[_ready_item(fleet, key)])
 
-    assert outcomes[0]["outcome"] == "planned"
+    assert outcomes[0]["outcome"] == "planned", outcomes[0]
     plan = residency_plan.read(fleet.queue, key)
     assert plan is not None
     for phase in plan["phases"]:
