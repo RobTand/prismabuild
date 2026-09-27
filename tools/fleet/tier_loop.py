@@ -378,6 +378,13 @@ def _receipt_name(entry: os.DirEntry) -> bool:
     return entry.name.endswith(".json") and not entry.name.startswith(".")
 
 
+def _retirement_document(entry: os.DirEntry) -> bool:
+    """The retirement checkpoint and its state marker, and nothing else."""
+
+    return entry.name in (pool.MOVERS_RETIREMENT_CHECKPOINT,
+                          pool.MOVERS_RETIREMENT_STATE)
+
+
 #: How many receipts the tier loop reads at once while a receipt directory
 #: changed (#1153).  A cold receipt costs one seek on the HDD pool that
 #: ``pb-queue`` lives on, and serially a fresh loop read about 4 a second
@@ -394,24 +401,27 @@ RECEIPT_READERS = 64
 class ReceiptCache:
     """What the tier loop reads every cycle and keeps from one to the next (#992).
 
-    Three things, all re-read only where they changed:
+    Four things, all re-read only where they changed:
 
-    * ``records`` (:class:`stage_release.DirectoryRecords`): the movement
-      and prewarm receipts the fill supply is folded from, every ``ready/``
-      and ``claimed/`` record (:func:`stage_release.queue_records`, inside a
-      cycle), and the tier and epoch of every residency fragment
+    * ``records`` (:class:`stage_release.DirectoryRecords`): the active
+      movement and prewarm receipts the fill supply is folded from, every
+      ``ready/`` and ``claimed/`` record (:func:`stage_release.queue_records`,
+      inside a cycle), and the tier and epoch of every residency fragment
       (:func:`drop_prior_ram_epochs`).  A directory nothing was filed in
       since its last listing is not listed again, and a file whose version
       is unchanged is not read again.
     * ``census`` (:class:`stage_release.CensusIndex`): the validated fragment
       census every sweep and reconciliation takes.
+    * The retired movement-receipt projections (#992 item 2): ``pb_gc
+      --queue-root`` moves a terminal consumer's receipt out of ``movers/``,
+      and the compact projection it leaves behind is merged with the active
+      records here -- an active record of the same key overriding the retired
+      one -- in the same name order the fold used to read them in.  The merge
+      is what keeps the fold, the cap and the announced fill exactly what
+      they were before the retirement.
     * The fill-supply fold per pool identity, remembered while the receipts
       it was folded from are the same records (:meth:`fill_supply`): the fold
       is a pure function of them.
-
-    The receipt set itself is every receipt on disk, as before.  Bounding it
-    by the oldest live plan would change the fold's answer, not only its cost
-    (#992 item 2 stays open for a fold that carries its state across the cut).
 
     A receipt directory that cannot be read is skipped, as the plain read
     skipped it, and named in :attr:`unreadable` for the cycle's record
@@ -421,6 +431,14 @@ class ReceiptCache:
     consumers read as a silent tier loop.  The fill supply is folded from
     the receipts that were read, and folded again when the directory
     becomes readable.
+
+    The retirement store is not skipped: a line of it that cannot be read is
+    unknown history, and the folds refuse (:attr:`retired_error`) rather
+    than pricing from a set that silently lost what was retired.  The cycle
+    fails and the next retries, which is the fail-closed direction the store
+    requires.  A :meth:`read` without a ``queue`` derives the store's root
+    from the first directory when it can; a caller that cannot be given one
+    reads the active set only, and the cycle always passes the queue.
     """
 
     def __init__(self) -> None:
@@ -429,11 +447,52 @@ class ReceiptCache:
         self._directories: tuple[Path, ...] = ()
         self._records: list[dict[str, object]] = []
         self._folds: dict[str, tuple[tuple, dict[str, object]]] = {}
+        self._queue: pool.PoolQueue | None = None
+        self._retired_generation: tuple | None = None
+        #: ``(directory generation, entries, marker incomplete)`` for a
+        #: validated checkpoint; only the trusted DirectoryRecords
+        #: generation may reuse it -- never a header field alone.
+        self._retired_memo: tuple | None = None
+        #: ``None`` while the retirement store was read, or why it was not.
+        self.retired_error: str | None = None
         #: Receipt directories the last :meth:`read` could not read, and why.
         self.unreadable: dict[str, str] = {}
 
+    def _owner(self, directories: list[Path],
+               queue: pool.PoolQueue | None = None,
+               ) -> pool.PoolQueue | None:
+        """The queue the directories belong to, replaced when they change.
+
+        A cache may be handed another queue's directories; keeping the first
+        queue forever would merge one queue's retired history into another's
+        active set, so the root the directories name wins.  A root change
+        also clears what was kept for the old one (the fold memo and the
+        validated-retirement memo), because neither is the other queue's.
+        """
+
+        if not directories:
+            return None
+        root = Path(directories[0]).parent
+        current = self._queue
+        if current is not None and Path(current.root) != root:
+            current = None
+            self._folds.clear()
+            self._retired_memo = None
+            self._retired_generation = None
+        if current is None:
+            if queue is not None and Path(queue.root) == root:
+                current = queue
+            else:
+                try:
+                    current = pool.PoolQueue(root)
+                except Exception:                                 # noqa: BLE001
+                    return None
+            self._queue = current
+        return current
+
     def read(self, directories: list[Path], *,
-             liveness: "Liveness | None" = None) -> list[dict[str, object]]:
+             liveness: "Liveness | None" = None,
+             queue: pool.PoolQueue | None = None) -> list[dict[str, object]]:
         """Every receipt in ``directories``, re-read only where it changed.
 
         ``liveness`` is the tier loop's `Liveness` (#1148).  The read
@@ -455,9 +514,13 @@ class ReceiptCache:
         (`stage_release.DirectoryRecords.read`).  A stretch between two
         checkpoints is still at most one entry's read, and a hung entry
         stops the checkpoints once this thread reaches it.
+
+        ``queue`` (or the root derived from ``directories``) is how the
+        retired projections are read; ``movers/`` is merged with them.
         """
 
-        out: list[dict[str, object]] = []
+        owner = self._owner(directories, queue)
+        by_directory: dict[str, list[dict[str, object]]] = {}
         read: list[Path] = []
         unreadable: dict[str, str] = {}
         for directory in directories:
@@ -478,26 +541,97 @@ class ReceiptCache:
                 if checkpoint is not None:
                     checkpoint()      # this directory is read
             read.append(directory)
-            for _path, record in kept:
-                if isinstance(record, dict):
-                    out.append(record)
+            by_directory[str(directory)] = [
+                record for _path, record in kept if isinstance(record, dict)]
+        retired: dict[str, dict[str, object]] = {}
+        generation: int | None = None
+        error: str | None = None
+        if owner is not None:
+            retired_dir = owner.root / pool.MOVERS_RETIRED
+            try:
+                # Through this cache's own DirectoryRecords, so the retirement
+                # documents carry the same trusted-version discipline as every
+                # other record the loop keeps -- no bare stat tuple, and an
+                # unreadable directory is not an empty one.
+                documents = {
+                    path.name: record for path, record in self.records.read(
+                        retired_dir, select=_retirement_document,
+                        parse=pool._read_json)}
+                generation = self.records.generation(retired_dir)
+                checkpoint = documents.get(pool.MOVERS_RETIREMENT_CHECKPOINT)
+                state = documents.get(pool.MOVERS_RETIREMENT_STATE)
+                memo = self._retired_memo
+                if (memo is not None and checkpoint is not None
+                        and memo[0] == generation):
+                    # Only the trusted directory stamp may prove the bytes
+                    # unchanged.  A header-only comparison would let a
+                    # tampered projection (revision and self-digest kept)
+                    # suppress the refusal, so an untrusted mount re-validates
+                    # every read -- conservative, exactly as the plain read
+                    # treats it.
+                    _entries, incomplete = memo[1], memo[2]
+                else:
+                    _entries, incomplete = pool._validate_mover_retirements(
+                        pool.MOVERS_RETIREMENT_CHECKPOINT in documents,
+                        checkpoint,
+                        pool.MOVERS_RETIREMENT_STATE in documents, state,
+                        archive_root=owner.root / pool.MOVERS_ARCHIVE)
+                    # A missing checkpoint's answer depends on the archive
+                    # directory, which this cache does not track: keep only
+                    # the checkpointed (and expensive) case.
+                    self._retired_memo = (
+                        None if checkpoint is None
+                        else (generation, _entries, incomplete))
+                retired = {key: entry["projection"]  # type: ignore[misc]
+                           for key, entry in _entries.items()}
+            except (OSError, pool.PoolContractError) as exc:
+                error = f"{type(exc).__name__}: {exc}"
+                self._retired_memo = None
+                generation = None
+                retired = {}
+        merged: list[dict[str, object]] = []
+        for directory in read:
+            records = by_directory.get(str(directory), [])
+            if directory.name == pool.MOVERS and retired:
+                union: dict[str, dict[str, object]] = {
+                    str(key): record for key, record in retired.items()}
+                for record in records:
+                    union[str(record.get("action_key") or "")] = record
+                records = [union[key] for key in sorted(union)]
+            merged.extend(records)
         self._directories = tuple(read)
-        self._records = out
+        self._records = merged
+        self._retired_generation = generation
+        self.retired_error = error
         self.unreadable = unreadable
-        return out
+        return merged
+
+    def _retired(self) -> None:
+        """Refuse to fold when the retirement store could not be read."""
+
+        if self.retired_error is not None:
+            raise pool.PoolContractError(
+                "movement retirements unreadable, so the receipt history "
+                f"is incomplete: {self.retired_error}")
+
+    def _generations(self) -> tuple:
+        generations = tuple((str(directory),
+                             self.records.generation(directory))
+                            for directory in self._directories)
+        root = "" if self._queue is None else str(self._queue.root)
+        return generations + (("retired", root, self._retired_generation),)
 
     def fill_supply(self, pool_identity: Mapping[str, object] | None,
                     ) -> dict[str, object]:
         """``storage_tiers.fill_supply_from_records`` over the last :meth:`read`.
 
-        Folded again only when a receipt directory's records changed, or for
-        an identity not folded since; a copy is returned, so nothing a caller
-        does to it reaches the next cycle.
+        Folded again only when a receipt directory's records changed, the
+        retirement store changed, or for an identity not folded since; a copy
+        is returned, so nothing a caller does to it reaches the next cycle.
         """
 
-        generations = tuple((str(directory),
-                             self.records.generation(directory))
-                            for directory in self._directories)
+        self._retired()
+        generations = self._generations()
         key = json.dumps(pool_identity, sort_keys=True, default=str)
         kept = self._folds.get(key)
         if kept is None or kept[0] != generations:
@@ -512,12 +646,12 @@ class ReceiptCache:
         """``storage_tiers.mover_cap_from_records`` over the last :meth:`read`.
 
         Remembered on the same rule as :meth:`fill_supply` (#1091): folded
-        again only when a receipt directory's records changed.
+        again only when a receipt directory's or the retirement store's
+        records changed.
         """
 
-        generations = tuple((str(directory),
-                             self.records.generation(directory))
-                            for directory in self._directories)
+        self._retired()
+        generations = self._generations()
         key = "mover-cap:" + json.dumps([tier_id, pool_identity],
                                         sort_keys=True, default=str)
         kept = self._folds.get(key)
@@ -526,6 +660,7 @@ class ReceiptCache:
                 self._records, tier_id=tier_id, pool_identity=pool_identity))
             self._folds[key] = kept
         return copy.deepcopy(kept[1])
+
 
 
 def probe_fill_demand(ready: list[dict[str, object]], tier_id: str) -> int | None:
@@ -2032,6 +2167,104 @@ def fan_out_shared_ranges(queue: pool.PoolQueue,
     return events
 
 
+#: The suffix a supersession marker's address ends with: the marker is
+#: ``{consumer_action_key}.{plan_sha256}.superseded.json`` beside the filed
+#: plan (``residency_plan._superseded_path``).
+_SUPERSEDED_MARKER_SUFFIX = ".superseded.json"
+
+#: The characters a reaped plan body's reason slug is built from
+#: (``residency_plan._retired_slug``).
+_SLUG_CHARACTERS = frozenset(
+    "abcdefghijklmnopqrstuvwxyz0123456789-")
+
+
+def _is_hex64(value: str) -> bool:
+    return (len(value) == 64
+            and all(character in "0123456789abcdef" for character in value))
+
+
+def _active_marker_key(name: str) -> str | None:
+    """The consumer key an active supersession marker name carries, or ``None``.
+
+    The address is ``{key}.{plan_sha256}.superseded.json``, both 64 lowercase
+    hex characters.  Any other name is not an active marker; the caller tells
+    a known archive name from an unrecognized one.
+    """
+
+    if not name.endswith(_SUPERSEDED_MARKER_SUFFIX):
+        return None
+    stem = name[:-len(_SUPERSEDED_MARKER_SUFFIX)]
+    key, separator, digest = stem.partition(".")
+    if not separator or "." in digest:
+        return None
+    if not _is_hex64(key) or not _is_hex64(digest):
+        return None
+    return key
+
+
+def _archived_supersession_name(name: str) -> bool:
+    """Whether one marker-directory name is a known archive entry.
+
+    ``residency_plan`` archives a reaped plan body as
+    ``{key}.{seconds}.{micros}.{reason-slug}.json`` and retires an active
+    marker beside it as
+    ``{key}.{digest}.{filing}.{seconds}.{micros}.marker.json``; a
+    publication temporary is ``.{name}.{random}.tmp``.  None of these can be
+    the address an active marker is read at, so a directory holding them
+    still answers which keys have one.  Anything else is unrecognized, and
+    the caller treats the whole listing as unknown.
+    """
+
+    if name.startswith("."):
+        return True
+    if name.endswith(".marker.json"):
+        parts = name[:-len(".marker.json")].split(".")
+        return (len(parts) == 5 and _is_hex64(parts[0]) and _is_hex64(parts[1])
+                and all(part.isdigit() for part in parts[2:]))
+    if name.endswith(".json"):
+        parts = name[:-len(".json")].split(".")
+        return (len(parts) == 4 and _is_hex64(parts[0])
+                and parts[1].isdigit() and parts[2].isdigit()
+                and bool(parts[3])
+                and all(character in _SLUG_CHARACTERS
+                        for character in parts[3]))
+    return False
+
+
+def _supersession_marker_keys(queue: pool.PoolQueue,
+                              ) -> frozenset[str] | None:
+    """The consumer keys an active supersession marker names, or ``None``.
+
+    One names-only listing of the marker directory per sweep (#992), read
+    through the cycle's kept records when one is running so an unchanged
+    directory is not listed again.  ``None`` means the listing or a name in
+    it could not be classified: an unknown answer is never read as "no
+    marker", and the caller falls back to the locked per-plan checks.  A
+    marker written after this snapshot is seen by the next sweep.
+    """
+
+    directory = (Path(queue.root) / pool.RESIDENCY_PLANS
+                 / residency_plan.SUPERSEDED)
+    reader = stage_release.queue_records_reader()
+    try:
+        if reader is None:
+            names: Iterable[str] = os.listdir(directory)
+        else:
+            names = reader.names(directory, select=lambda _name: True)
+    except FileNotFoundError:
+        return frozenset()
+    except OSError:
+        return None
+    keys: set[str] = set()
+    for name in names:
+        key = _active_marker_key(name)
+        if key is not None:
+            keys.add(key)
+        elif not _archived_supersession_name(name):
+            return None
+    return frozenset(keys)
+
+
 def withdraw_dead_consumer_movers(queue: pool.PoolQueue) -> list[dict[str, object]]:
     """Withdraw the still-queued movers of consumers that already failed (#620).
 
@@ -2069,9 +2302,22 @@ def withdraw_dead_consumer_movers(queue: pool.PoolQueue) -> list[dict[str, objec
     publishes its consumer under the same lock, and the window publishes the
     lead under it too, so a stale pass cannot reach the new generation's rows; a live or unreadable consumer
     defers the sweep to the next cycle (#708 review).
+
+    One names-only snapshot of the supersession markers is taken per pass
+    (#992).  A ``done/`` consumer no marker names is refused before its plan
+    body is read at all -- the plan can only matter if a marker covers it,
+    and a marker written after the snapshot is seen on the next pass.  A key
+    the snapshot does name, or a listing or name it could not classify, runs
+    the existing locked checks unchanged: the plan is read, the marker's
+    identity and filing are compared, and a marker for another filing
+    supersedes nothing.
     """
 
     events: list[dict[str, object]] = []
+    # The marker snapshot is not a decision: every check the sweep made
+    # before is still made under the consumer's lock when a marker can cover
+    # the plan, and unknown is never read as "no marker".
+    marker_keys = _supersession_marker_keys(queue)
     # Only a filed plan can attribute work to a dead consumer. Discover these
     # positive candidates before inspecting terminal history: live_state's
     # safe absence check lists the live queue, so doing it for every historical
@@ -2101,12 +2347,13 @@ def withdraw_dead_consumer_movers(queue: pool.PoolQueue) -> list[dict[str, objec
             except OSError:
                 break
             _sweep_dead_consumer(queue, key=key, state=state, path=path,
-                                 events=events)
+                                 events=events, marker_keys=marker_keys)
     return events
 
 
 def _sweep_dead_consumer(queue: pool.PoolQueue, *, key: str, state: str,
-                         path: Path, events: list[dict[str, object]]) -> None:
+                         path: Path, events: list[dict[str, object]],
+                         marker_keys: frozenset[str] | None = None) -> None:
     """One terminal record's sweep, inside the consumer's transition lock.
 
     The terminal and the no-live-parent observation are made outside the
@@ -2151,12 +2398,13 @@ def _sweep_dead_consumer(queue: pool.PoolQueue, *, key: str, state: str,
                             step="dead-consumer") as owned:
         if owned:
             _sweep_dead_consumer_owned(queue, key=key, state=state, path=path,
-                                       events=events)
+                                       events=events, marker_keys=marker_keys)
 
 
 def _sweep_dead_consumer_owned(queue: pool.PoolQueue, *, key: str, state: str,
                                path: Path,
-                               events: list[dict[str, object]]) -> None:
+                               events: list[dict[str, object]],
+                               marker_keys: frozenset[str] | None = None) -> None:
     """:func:`_sweep_dead_consumer`'s body, with the consumer's lock held."""
 
     item = pool._read_json(path)
@@ -2167,6 +2415,12 @@ def _sweep_dead_consumer_owned(queue: pool.PoolQueue, *, key: str, state: str,
         # Resubmitted under the same key: a new generation, live work.
         # A queue that cannot be read is uncertainty, not absence, and
         # defers the sweep exactly as it defers a handoff.
+        return
+    if (state == pool.DONE and marker_keys is not None
+            and key not in marker_keys):
+        # The snapshot names no marker for this consumer, so no marker can
+        # cover this filing and the plan body decides nothing.  A marker
+        # written after the snapshot is seen by the next sweep (#992).
         return
     plan, incarnation = residency_plan.read_filed(queue, key)
     if plan is None:
@@ -9421,7 +9675,8 @@ def _read_counts(receipts: ReceiptCache) -> dict[str, int]:
         # checkpoint passed over, and those censused (#1056); a skip files
         # no receipt, so this line is where it is counted.
         for field in ("listed", "kept", "parsed", "parses", "reuses",
-                      "stale_skipped", "stale_censused"):
+                      "walk_listed", "walk_kept", "walk_probed",
+                      "walk_reused", "stale_skipped", "stale_censused"):
             value = getattr(source, field, None)
             if isinstance(value, int):
                 counts[f"{prefix}_{field}"] = value
@@ -9550,6 +9805,7 @@ def _cycle(
     # outlast the liveness bound on a loaded pool.
     fill_records = receipts.read(
         [queue.root / pool.PREWARM, queue.root / MOVER_RECEIPTS],
+        queue=queue,
         **({} if phases.liveness is None else {"liveness": phases.liveness}))
     phases.lap("receipts")
     # The ram tier's declared sizing, read fresh: a published policy change is

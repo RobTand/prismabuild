@@ -40,6 +40,22 @@ and a namespace's ``rmdir`` fails on a fragment that landed after the
 survey.  An applied queue sweep writes a JSON receipt under
 ``<queue>/gc-receipts/``.
 
+A *movement receipt* (#992 item 2) is ``movers/<key>.json``; one is a
+candidate when its consumer is terminal under the same lease-timeout rule,
+its mover is not ready or claimed, and no capacity token on its tier is still
+held for that mover.  The removal is not a delete: under the consumer's and
+then the mover's transition lock and the tier's mint lock it archives the
+full receipt under its content digest (``movers-archive/``), appends its
+compact projection to the versioned retirement store
+(``movers-retired/projections.jsonl``), and only then unlinks the active
+file.  Every pricing read merges those projections with the active receipts,
+an active record of the same key overriding the retired one, so retiring a
+receipt changes no fold, no price and no direct evidence lookup.  This is
+explicit operator work and is opt-in: deploy a reader generation that
+understands ``movers-retired/`` before running ``--apply``, and keep the
+sweep off until one has been observed to fold with it.
+
+
 Canary run namespaces (``pb-canary/<run-id>/``) are a separate root with
 their own kind: the canary driver seals one per run, its receipts are CAS
 records this tool never touches, and the 24 MiB of staged chunks plus
@@ -74,7 +90,7 @@ sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
 from runtime_paths import generation_root  # noqa: E402
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
-from collections.abc import Iterable, Mapping  # noqa: E402
+from collections.abc import Iterable, Mapping, Sequence  # noqa: E402
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import pool, posix_lock  # noqa: E402
 
@@ -91,9 +107,22 @@ KINDS = (KIND_CLAIM, KIND_LOCK, KIND_NAMESPACE, KIND_INGEST,
 KIND_TRANSITION_LOCK = "transition lock"
 KIND_RESIDENCY_NAMESPACE = "residency namespace"
 KIND_LANDING_RECORD = "landing record"
+#: A retired movement receipt (#992 item 2): terminal consumer, mover not
+#: live, no held token, and the receipt's history is archived and
+#: checkpointed before the active file is unlinked.
+KIND_MOVEMENT_RECEIPT = "movement receipt"
+#: A movement candidate is only removed when the operator asks for it by
+#: name: an old reader generation cannot see the retirement store, so a
+#: rolling publish alone must never start retiring receipts.
+MISSING_RETIREMENT_OPT_IN = (
+    "movement-receipt retirement is explicit operator work; pass "
+    "--retire-movement-receipts once every reader generation can see "
+    "movers-retired/")
 #: In removal order: the residency kinds take their consumer's transition
-#: lock, so they go before the lock files are retired.
-QUEUE_KINDS = (KIND_RESIDENCY_NAMESPACE, KIND_LANDING_RECORD, KIND_TRANSITION_LOCK)
+#: lock, so they go before the lock files are retired.  So does a retired
+#: movement receipt, which takes its consumer's and then its mover's.
+QUEUE_KINDS = (KIND_RESIDENCY_NAMESPACE, KIND_LANDING_RECORD,
+               KIND_MOVEMENT_RECEIPT, KIND_TRANSITION_LOCK)
 #: ``residency_map.map_path`` and ``residency_map.landing_path``.
 MAP_SUFFIX = ".map.json"
 LANDING_SUFFIX = ".landing.json"
@@ -1177,6 +1206,102 @@ def _survey_residency_namespaces(queue_root: Path, *, live: set[str],
     return namespaces, landings
 
 
+def _survey_movement_receipts(queue_root: Path, *, live: set[str],
+                              terminal: Mapping[str, float], now: float,
+                              grace_s: float) -> dict:
+    """Retirement candidates among ``movers/`` (#992 item 2).
+
+    A receipt is a candidate only when its consumer is terminal under the
+    same grace the other queue kinds use, its mover is not queued, and no
+    token on its tier is still held for that mover.  The removal archives the
+    full receipt and checkpoints its compact projection before unlinking it,
+    so no pricing fold loses the history; a retirement store that cannot be
+    read retains every receipt (unknown coverage never retires).
+    """
+
+    root = queue_root / pool.MOVERS
+    section = {"scanned": 0, "remove": [], "keep": []}
+    queue = pool.PoolQueue(queue_root)
+    try:
+        queue.read_mover_retirements()
+        checkpoint_error = ""
+    except (OSError, pool.PoolContractError) as exc:
+        checkpoint_error = f"{type(exc).__name__}: {exc}"
+    for entry in _entries(root):
+        path = Path(entry.path)
+        key = entry.name[:-5] if entry.name.endswith(".json") else ""
+        if not (key and _is_digest(key)):
+            section["keep"].append(_retain(
+                KIND_MOVEMENT_RECEIPT, path, "unexpected entry"))
+            continue
+        section["scanned"] += 1
+        try:
+            info = entry.stat(follow_symlinks=False)
+        except OSError as exc:
+            section["keep"].append(_retain(
+                KIND_MOVEMENT_RECEIPT, path, f"cannot inspect: {exc}"))
+            continue
+        if not stat.S_ISREG(info.st_mode):
+            section["keep"].append(_retain(
+                KIND_MOVEMENT_RECEIPT, path, "not a regular file"))
+            continue
+        try:
+            record = pool._read_json(path)
+        except (OSError, pool.PoolContractError) as exc:
+            section["keep"].append(_retain(
+                KIND_MOVEMENT_RECEIPT, path, f"unreadable: {exc}"))
+            continue
+        if (not isinstance(record, dict)
+                or record.get("schema") not in pool.POOL_MOVEMENT_RECEIPT_SCHEMAS):
+            section["keep"].append(_retain(
+                KIND_MOVEMENT_RECEIPT, path, "not a movement receipt"))
+            continue
+        consumer = record.get("consumer_action_key")
+        if not isinstance(consumer, str) or not consumer:
+            section["keep"].append(_retain(
+                KIND_MOVEMENT_RECEIPT, path, "the receipt names no consumer"))
+            continue
+        if _key_live_now(queue_root, key):
+            section["keep"].append(_retain(
+                KIND_MOVEMENT_RECEIPT, path, "its mover is ready or claimed"))
+            continue
+        why, age = _terminal_why(consumer, live=live, terminal=terminal,
+                                 now=now, grace_s=grace_s,
+                                 subject="its consumer")
+        if why:
+            section["keep"].append(_retain(KIND_MOVEMENT_RECEIPT, path, why))
+            continue
+        tier_id = record.get("tier_id")
+        if isinstance(tier_id, str) and tier_id:
+            try:
+                held = pool.held_names_visible(queue.tier_ledger(tier_id), key)
+            except (OSError, pool.PoolContractError) as exc:
+                section["keep"].append(_retain(
+                    KIND_MOVEMENT_RECEIPT, path,
+                    f"cannot read its tier ledger: {exc}"))
+                continue
+            if held:
+                section["keep"].append(_retain(
+                    KIND_MOVEMENT_RECEIPT, path,
+                    "its mover still holds tokens on its tier"))
+                continue
+        if checkpoint_error:
+            section["keep"].append(_retain(
+                KIND_MOVEMENT_RECEIPT, path,
+                f"retirement checkpoint unreadable: {checkpoint_error}"))
+            continue
+        section["remove"].append({
+            "kind": KIND_MOVEMENT_RECEIPT, "path": path, "key": key,
+            "consumer": consumer,
+            "version": (info.st_dev, info.st_ino, info.st_size,
+                        info.st_mtime_ns,
+                        int(getattr(info, "st_ctime_ns", 0))),
+            "bytes": int(info.st_size), "age_s": age,
+            "why": ("its consumer is terminal, its mover is not queued and "
+                    "it holds no token; its history is archived first")})
+    return section
+
+
 def survey_queue(queue_root: Path, *, now: float | None = None,
                  grace_s: float = pool.LEASE_TIMEOUT_S) -> dict:
     """Classify the queue-root kinds; reads only.
@@ -1198,6 +1323,9 @@ def survey_queue(queue_root: Path, *, now: float | None = None,
     sections = {
         KIND_RESIDENCY_NAMESPACE: namespaces,
         KIND_LANDING_RECORD: landings,
+        KIND_MOVEMENT_RECEIPT: _survey_movement_receipts(
+            queue_root, live=live, terminal=terminal, now=now,
+            grace_s=grace_s),
         KIND_TRANSITION_LOCK: _survey_transition_locks(
             queue_root, live=live, terminal=terminal, now=now, grace_s=grace_s),
     }
@@ -1249,18 +1377,133 @@ def _remove_residency_row(queue: pool.PoolQueue, row: Mapping[str, object]) -> s
     return ""
 
 
+def _movement_prepare(queue: pool.PoolQueue,
+                      row: Mapping[str, object]
+                      ) -> tuple[dict[str, object] | None, str]:
+    """Archive one candidate under its consumer's and mover's locks."""
+
+    key = str(row["key"])
+    consumer = str(row.get("consumer") or "")
+    if not consumer:
+        return None, "the receipt names no consumer"
+    with queue._transition_locked(consumer, blocking=False) as got:
+        if not got:
+            return None, "its consumer's transition lock is held"
+        if _key_live_now(Path(queue.root), consumer):
+            return None, "its consumer was queued again"
+        with queue._transition_locked(key, blocking=False) as owned:
+            if not owned:
+                return None, "its mover's transition lock is held"
+            if _key_live_now(Path(queue.root), key):
+                return None, "its mover was queued again"
+            try:
+                prepared = queue.prepare_move_retirement(
+                    key, expected_version=tuple(row["version"]))  # type: ignore[arg-type]
+            except (OSError, pool.PoolContractError) as exc:
+                return None, f"cannot prepare: {type(exc).__name__}: {exc}"
+            if isinstance(prepared, str):
+                return None, prepared
+            return prepared, ""
+
+
+def _movement_unlink(queue: pool.PoolQueue, row: Mapping[str, object],
+                     entry: Mapping[str, object],
+                     commit_identity: tuple[int, str]) -> str:
+    """Unlink one committed candidate under the same locks, rechecking it."""
+
+    key = str(row["key"])
+    consumer = str(row.get("consumer") or "")
+    with queue._transition_locked(consumer, blocking=False) as got:
+        if not got:
+            return "its consumer's transition lock is held"
+        if _key_live_now(Path(queue.root), consumer):
+            return "its consumer was queued again"
+        with queue._transition_locked(key, blocking=False) as owned:
+            if not owned:
+                return "its mover's transition lock is held"
+            if _key_live_now(Path(queue.root), key):
+                return "its mover was queued again"
+            try:
+                return queue.unlink_retired_move(
+                    key, expected_version=tuple(row["version"]),  # type: ignore[arg-type]
+                    entry=entry, commit_identity=commit_identity)
+            except (OSError, pool.PoolContractError) as exc:
+                return f"cannot unlink: {type(exc).__name__}: {exc}"
+
+
+def _sweep_movement_receipts(queue: pool.PoolQueue, rows: Sequence[Mapping[str, object]],
+                             *, enabled: bool, removed: list[dict],
+                             skipped: list[tuple[dict, str]]) -> None:
+    """One batch: archive all, commit the checkpoint once, then unlink.
+
+    Batching is what keeps a sweep of N receipts O(N): each receipt's archive
+    is written once during prepare, the merged checkpoint is replaced once
+    under its lock, and each unlink re-checks only its own exact active
+    version and bytes.  Transition and mint locks are never held across the
+    checkpoint's leaf lock.  A receipt replaced between the commit and its
+    unlink stays active and overrides the retired projection.
+    """
+
+    if not enabled:
+        skipped.extend(
+            (dict(row), MISSING_RETIREMENT_OPT_IN) for row in rows)
+        return
+    # The baseline is captured -- and an empty checkpoint initialized when no
+    # history exists -- before the first archive, so readers never see
+    # archives without a checkpoint during preparation.
+    try:
+        baseline = queue.begin_mover_retirement_batch()
+    except (OSError, pool.PoolContractError) as exc:
+        skipped.extend((dict(row), f"cannot begin the retirement: {exc}")
+                       for row in rows)
+        return
+    prepared: list[tuple[dict, Mapping[str, object]]] = []
+    for row in rows:
+        entry, why = _movement_prepare(queue, row)
+        if why:
+            skipped.append((dict(row), why))
+        else:
+            assert entry is not None
+            prepared.append((dict(row), entry))
+    if not prepared:
+        return
+    try:
+        _committed, identity, reason = queue.commit_move_retirements(
+            [entry for _row, entry in prepared], expected_baseline=baseline)
+    except (OSError, pool.PoolContractError) as exc:
+        reason = f"cannot commit: {type(exc).__name__}: {exc}"
+        identity = None
+    if reason or identity is None:
+        skipped.extend((row, reason or "the commit left no identity")
+                       for row, _entry in prepared)
+        return
+    for row, entry in prepared:
+        why = _movement_unlink(queue, row, entry, identity)
+        if why:
+            skipped.append((row, why))
+        else:
+            removed.append(row)
+
+
 def _remove_queue_row(queue: pool.PoolQueue, row: Mapping[str, object]) -> str:
     if row["kind"] == KIND_TRANSITION_LOCK:
         return posix_lock.retire(Path(str(row["path"])))
     return _remove_residency_row(queue, row)
 
 
-def sweep_queue(plan: Mapping[str, object], *, lock_takers_verify: bool = False) -> dict:
+def sweep_queue(plan: Mapping[str, object], *, lock_takers_verify: bool = False,
+                retire_movement_receipts: bool = False) -> dict:
     """Remove the queue-root candidates; online, under the lock protocol.
 
     ``lock_takers_verify`` is the operator's statement that every process
     that takes a transition lock runs ``posix_lock.held``'s post-lock check
     (the module's ordering rule).  Without it nothing is removed.
+
+    ``retire_movement_receipts`` is the separate explicit opt-in for the
+    movement-receipt kind: an old reader generation cannot see the retirement
+    store, so a rolling publish alone must never start retiring receipts.  A
+    sweep without it reports every movement candidate as kept and touches
+    none.
     """
 
     if not lock_takers_verify:
@@ -1270,15 +1513,26 @@ def sweep_queue(plan: Mapping[str, object], *, lock_takers_verify: bool = False)
     queue = pool.PoolQueue(Path(str(plan["queue_root"])))
     removed: list[dict] = []
     skipped: list[tuple[dict, str]] = []
-    # ``plan["remove"]`` is in ``QUEUE_KINDS`` order: the residency rows take
-    # their consumer's transition lock, so they run before the lock files are
-    # retired, not after (taking a retired lock would create its file again).
+    rows_by_kind: dict[str, list[Mapping[str, object]]] = {
+        kind: [] for kind in QUEUE_KINDS}
     for row in plan["remove"]:  # type: ignore[index]
-        why = _remove_queue_row(queue, row)
-        if why:
-            skipped.append((dict(row), why))
-        else:
-            removed.append(dict(row))
+        rows_by_kind.setdefault(str(row["kind"]), []).append(row)
+    # ``QUEUE_KINDS`` order: the residency rows and the movement batch take
+    # their consumers' transition locks, so they run before the lock files are
+    # retired, not after (taking a retired lock would create its file again).
+    for kind in QUEUE_KINDS:
+        if kind == KIND_MOVEMENT_RECEIPT:
+            _sweep_movement_receipts(
+                queue, rows_by_kind.get(kind, []),
+                enabled=retire_movement_receipts, removed=removed,
+                skipped=skipped)
+            continue
+        for row in rows_by_kind.get(kind, []):
+            why = _remove_queue_row(queue, row)
+            if why:
+                skipped.append((dict(row), why))
+            else:
+                removed.append(dict(row))
     # A residency row whose consumer had no lock file at the survey created
     # one by taking it.  A removed row's key met the lock rule under that
     # lock (the rows share the rule), so its lock file is retired too rather
@@ -1497,6 +1751,12 @@ def build_parser() -> argparse.ArgumentParser:
                          "lock runs posix_lock's post-lock check (a runtime "
                          "carrying #995 on every box and role); required "
                          "with --apply for the queue kinds")
+    ap.add_argument("--retire-movement-receipts", action="store_true",
+                    help="explicitly enable the movement-receipt kind: an old "
+                         "reader generation cannot see movers-retired/, so a "
+                         "rolling publish alone must never start retiring "
+                         "receipts; require every reader to be on a "
+                         "generation that merges the retirement store first")
     ap.add_argument("--receipt", default=None,
                     help="where to write the queue sweep's JSON receipt "
                          "(default <queue>/gc-receipts/<utc>-<host>-<pid>.json)")
@@ -1521,7 +1781,9 @@ def _main_queue(args: argparse.Namespace) -> int:
     outcome = None
     if args.apply:
         try:
-            outcome = sweep_queue(plan, lock_takers_verify=args.all_lock_takers_verify)
+            outcome = sweep_queue(
+                plan, lock_takers_verify=args.all_lock_takers_verify,
+                retire_movement_receipts=args.retire_movement_receipts)
         except SweepError as exc:
             print(f"pb_gc: {exc}", file=sys.stderr)
             return 2

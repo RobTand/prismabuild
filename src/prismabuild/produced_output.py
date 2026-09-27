@@ -1059,7 +1059,8 @@ def _output_prefix_lock_order(own_prefix: str,
 
 def _output_prefix_locks(
         queue, instance: Mapping[str, object], *,
-        templates: Mapping[str, Mapping[str, object]] | None = None):
+        templates: Mapping[str, Mapping[str, object]] | None = None,
+        reads: "_TickReads | None" = None):
     """Every ownership lock that guards this instance's origin paths (#1063).
 
     A path is named by each template whose output prefix contains it, and
@@ -1086,13 +1087,17 @@ def _output_prefix_locks(
     template was filed (the retirement tick's, `_TickReads.templates`); by
     default the templates are listed now. The listing is taken here, before
     any lock: a failed one raises `ProducedOutputError`, since which locks
-    guard the paths is then unknown. Returns the context manager that holds
-    the locks.
+    guard the paths is then unknown. With ``reads``, the order is the
+    tick's memoized one for this listing (`_TickReads.lock_order`, #992),
+    which a newly filed template invalidates. Returns the context manager
+    that holds the locks.
     """
 
     listed = _filed_templates(queue.root) if templates is None else templates
-    return _held_in_order(queue, _output_prefix_lock_order(
-        str(instance["output_prefix"]), listed))
+    own = str(instance["output_prefix"])
+    order = (reads.lock_order(own, listed) if reads is not None
+             else _output_prefix_lock_order(own, listed))
+    return _held_in_order(queue, order)
 
 
 @contextlib.contextmanager
@@ -1291,35 +1296,105 @@ def _foreign_live_path_owner(queue, checked_instance: Mapping[str, object],
     return None
 
 
+def _metadata_version(info: os.stat_result) -> tuple[int, int, int, int, int]:
+    """Change evidence for one file: device, inode, size, mtime, ctime."""
+
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns,
+            int(getattr(info, "st_ctime_ns", 0)))
+
+
+def _file_stat(path: Path | str) -> os.stat_result | None:
+    """One ``stat``; absent is ``None``, any other failure raises."""
+
+    try:
+        return os.stat(path)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise ProducedOutputError(f"unknown-retain: {exc}") from None
+
+
 def _file_version(path: Path | str) -> tuple[int, ...] | None:
     """``(device, inode, size, mtime, ctime)``, or ``None`` when absent.
 
     Any other failure to ``stat`` raises `ProducedOutputError`.
     """
 
-    try:
-        info = os.stat(path)
-    except FileNotFoundError:
+    info = _file_stat(path)
+    return None if info is None else _metadata_version(info)
+
+
+#: ``(keepable_version, version_fence)`` from ``stage_move`` (#1045), looked
+#: up once per process.  ``None`` once the import failed: a process without
+#: the fleet's ``tools/fleet`` (an action-side reader) keeps no file version
+#: and re-reads, as it did before #992.
+_TRUSTED_VERSIONS: "tuple[object, object] | None" = None
+_TRUSTED_VERSIONS_TRIED = False
+
+
+def _trusted_version_facilities() -> "tuple[object, object] | None":
+    """`stage_move`'s trusted file-version fence and keeper (#1045).
+
+    The one facility every versioned fleet memo uses (`DirectoryRecords`,
+    `_CensusMemo`): a version is kept only when its ctime is strictly before
+    a coarse-clock fence read before the stat, on a filesystem whose times
+    come from this kernel's clock.  A network filesystem's are the server's,
+    and a same-tick replacement can reproduce a version, so both are refused.
+    An unimportable ``stage_move`` keeps nothing.
+    """
+
+    global _TRUSTED_VERSIONS, _TRUSTED_VERSIONS_TRIED
+    if not _TRUSTED_VERSIONS_TRIED:
+        _TRUSTED_VERSIONS_TRIED = True
+        try:
+            from stage_move import _keepable_version, _version_fence
+        except ImportError:
+            pass
+        else:
+            _TRUSTED_VERSIONS = (_keepable_version, _version_fence)
+    return _TRUSTED_VERSIONS
+
+
+def _version_fence() -> int | None:
+    """`stage_move._version_fence`, read before the stat it guards."""
+
+    trusted = _trusted_version_facilities()
+    return None if trusted is None else trusted[1]()  # type: ignore[operator]
+
+
+def _keepable_version(info: os.stat_result, fence: int | None
+                      ) -> tuple[int, int, int, int, int] | None:
+    """`stage_move._keepable_version` of one stat, or ``None`` when refused."""
+
+    trusted = _trusted_version_facilities()
+    if trusted is None:
         return None
-    except OSError as exc:
-        raise ProducedOutputError(f"unknown-retain: {exc}") from None
-    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns,
-            int(getattr(info, "st_ctime_ns", 0)))
+    return trusted[0](info, fence)  # type: ignore[operator]
 
 
 class _TickReads:
     """What one origin-retirement tick has read, so it reads each thing once.
 
-    Commitments are kept by the file's version (`_file_version`) and handed
-    back while a fresh ``stat`` returns the same version: every writer
-    replaces the file by rename (`_write_commitments`), so a changed file
-    has another version. The ``stat`` comes before the read, so a file
-    replaced between the two is read again next time, never remembered
-    under the new version with the old bytes. What an attempt owns
-    (`_attempt_owned_paths`) is kept the same way, under the versions of
-    its commitments and of each prewrite record it has. An owner key's
-    generation (`_key_generation`) and its funding census are read at most
-    once per tick.
+    Commitments are kept by the file's trusted version (`_keepable_version`
+    over a fence read before the stat, #1045) and handed back while a fresh
+    ``stat`` returns the same version: every writer replaces the file by
+    rename (`_write_commitments`), so a changed file has another version,
+    and a version no fence vouches for is never kept.  The ``stat`` comes
+    before the read, so a file replaced between the two is read again next
+    time, never remembered under the new version with the old bytes.  The
+    mapping handed back is a copy: a retirement's read-modify-write mutates
+    its own container, never what the next batch reads (#992).  What an
+    attempt owns (`_attempt_owned_paths`) is kept the same way, under the
+    versions of its commitments and of each prewrite record it has.  An
+    owner key's generation (`_key_generation`) and its funding census are
+    read at most once per tick.
+
+    ``forget(scope)`` drops a scope's commitments immediately before a write
+    is attempted, so a decision that could not be filed is never handed to a
+    later batch.  ``lock_order`` keeps one output-prefix lock order per
+    template listing the tick has seen: the retirement asks for the same
+    instance once per due batch, and a template filed between two asks
+    changes the listing and so the key.
     """
 
     def __init__(self, queue) -> None:
@@ -1329,18 +1404,77 @@ class _TickReads:
         self._generations: dict[str, tuple[str, dict[str, object] | None]] = {}
         self._census: dict[str, tuple[list[dict], bool]] = {}
         self._templates: dict[str, dict[str, object]] | None = None
+        self._lock_orders: dict[tuple[str, tuple[tuple[str, str], ...]],
+                                list[str]] = {}
+        #: Whole-document reads of a scope's commitments, and the reads
+        #: served from the version already parsed this tick (#992).
+        self.commitments_read = 0
+        self.commitments_reused = 0
+        #: Output-prefix lock orders derived (`lock_order`'s misses).
+        self.lock_orders = 0
 
     def batches(self, scope: Path) -> dict[str, object]:
         path = scope / "commitments.json"
-        version = _file_version(path)
+        fence = _version_fence()
+        info = _file_stat(path)
+        version = None if info is None else _metadata_version(info)
         kept = self._commitments.get(str(path))
         if version is not None and kept is not None and kept[0] == version:
-            return kept[1]
-        batches = _read_commitments(path)["batches"]
+            self.commitments_reused += 1
+            return dict(kept[1])
+        try:
+            batches = _read_commitments(path)["batches"]
+        except ProducedOutputError:
+            self._commitments.pop(str(path), None)
+            raise
         assert isinstance(batches, dict)
-        if version is not None:
-            self._commitments[str(path)] = (version, batches)
-        return batches
+        self.commitments_read += 1
+        if info is None:
+            self._commitments.pop(str(path), None)
+            return dict(batches)
+        # Kept only at a version no later write can reproduce (#1045): the
+        # fence was read before the stat, so a change after it moved ctime
+        # to or past the fence, and a refused version is read again.
+        keepable = _keepable_version(info, fence)
+        if keepable is None:
+            self._commitments.pop(str(path), None)
+        else:
+            self._commitments[str(path)] = (keepable, batches)
+        return dict(batches)
+
+    def forget(self, scope: Path) -> None:
+        """Drop this scope's commitments before its record is written.
+
+        Called immediately before every commitments write a retirement makes
+        (#992): if the write fails, the bytes on disk are the ones before
+        it, and the parse that was not filed must not answer a later batch.
+        """
+
+        self._commitments.pop(str(scope / "commitments.json"), None)
+
+    def lock_order(self, own_prefix: str,
+                   templates: Mapping[str, Mapping[str, object]]
+                   ) -> list[str]:
+        """The prefixes guarding ``own_prefix``, for this template listing.
+
+        `_output_prefix_lock_order` scans every template with a `commonpath`
+        call, and the tick's retirement asks for the same instance prefix
+        once per due batch (#992).  The answer is kept for the tick under the
+        listing's own content -- a template filed between two asks changes
+        the key -- so a stale derived order is never reused.  The caller
+        passes the listing it will read path owners under.
+        """
+
+        fingerprint = tuple(sorted(
+            (str(template_id), str(body["output_prefix"]))
+            for template_id, body in templates.items()))
+        key = (str(own_prefix), fingerprint)
+        found = self._lock_orders.get(key)
+        if found is None:
+            found = _output_prefix_lock_order(str(own_prefix), templates)
+            self._lock_orders[key] = found
+            self.lock_orders += 1
+        return found
 
     def owned(self, scope: Path
               ) -> tuple[object, dict[str, str], dict[str, str]]:
@@ -7843,6 +7977,14 @@ def _retire_consumed_batch(queue, instance: Mapping[str, object],
     (`_output_prefix_locks`, #1063).  The one thing done outside them is
     reading an origin whose timestamps alone moved (below).
 
+    The decision is taken from the tick's own read of this scope, under the
+    locks (`_TickReads.batches`, #992): it is re-read there whenever the
+    file's trusted version moved, so a write made before the locks were
+    taken answers, and an unchanged document is parsed once per tick rather
+    than once per due batch.  Every write of the document first drops the
+    memo (`_TickReads.forget`), so a decision a failed write did not file
+    can never answer the next batch.
+
     The decision, unless the batch is already ``retiring``:
 
     * With declared consumers: every one must have ``succeeded``. A live one
@@ -7952,19 +8094,30 @@ def _retire_consumed_batch_locked(
         # so its template filed, before the tick listed the templates.
         locks = _output_prefix_locks(
             queue, instance,
-            templates=reads.templates() if reads is not None else None)
+            templates=tick.templates() if reads is not None else None,
+            reads=tick if reads is not None else None)
     except ProducedOutputError as exc:
         return _unfiled_report(instance, batch_id, {
             "event": ORIGIN_RETIREMENT_REFUSED_EVENT, "reason": str(exc)})
     with locks:
         try:
-            commitments = _read_commitments(commitments_path)
+            # The tick's own parse while the file's trusted version holds
+            # (#992): unchanged commitments are parsed once per tick, not
+            # once per due batch.  The stat and the read are under these
+            # locks, so a writer they exclude cannot land between them; a
+            # writer that landed before them moved the version and is read.
+            batches = tick.batches(commitments_path.parent)
         except ProducedOutputError as exc:
             return _unfiled_report(instance, batch_id, {
                 "event": ORIGIN_RETIREMENT_REFUSED_EVENT,
                 "reason": str(exc)})
-        batches = commitments["batches"]
-        assert isinstance(batches, dict)
+
+        def write(record: Mapping[str, object]) -> None:
+            # The memo never outlives a write attempt: the parse that was
+            # not filed must not answer a later batch (#992).
+            tick.forget(commitments_path.parent)
+            _write_commitments(commitments_path, record)
+
         entry = batches.get(batch_id)
         if (not isinstance(entry, Mapping)
                 or entry.get("origin_only") is not True
@@ -7992,7 +8145,7 @@ def _retire_consumed_batch_locked(
                 return None
             entry["retirement_report"] = signature
             batches[batch_id] = entry
-            _write_commitments(commitments_path, {"batches": batches})
+            write({"batches": batches})
             return event
 
         def quiet() -> None:
@@ -8000,7 +8153,7 @@ def _retire_consumed_batch_locked(
             if "retirement_report" in entry:
                 entry.pop("retirement_report")
                 batches[batch_id] = entry
-                _write_commitments(commitments_path, {"batches": batches})
+                write({"batches": batches})
 
         retiring = entry.get("retiring")
         if isinstance(retiring, Mapping):
@@ -8171,11 +8324,11 @@ def _retire_consumed_batch_locked(
             entry["retiring"] = {"reason": reason, "consumers": consumers}
             entry.pop("retirement_report", None)
             batches[batch_id] = entry
-            _write_commitments(commitments_path, {"batches": batches})
+            write({"batches": batches})
         elif repinned:
             file_repins()
             batches[batch_id] = entry
-            _write_commitments(commitments_path, {"batches": batches})
+            write({"batches": batches})
         unlinked: list[str] = []
         superseded: list[str] = []
         absent: list[str] = []
@@ -8209,7 +8362,7 @@ def _retire_consumed_batch_locked(
             if repinned:
                 file_repins()
                 batches[batch_id] = entry
-                _write_commitments(commitments_path, {"batches": batches})
+                write({"batches": batches})
             if verdict == "unlink":
                 outcome, why = _unlink_if_committed(path, recorded[path], tag)
                 if outcome == "refuse":
@@ -8229,7 +8382,7 @@ def _retire_consumed_batch_locked(
         entry["origin_reclaimed"] = True
         entry.pop("retirement_report", None)
         batches[batch_id] = entry
-        _write_commitments(commitments_path, {"batches": batches})
+        write({"batches": batches})
     _UNFILED_REPORTS.pop(_batch_report_key(instance, batch_id), None)
     event = {"event": ORIGIN_RETIRED_EVENT, **base, "reason": reason,
              "consumers": consumers, "origin_identity": dict(recorded),
@@ -9396,7 +9549,10 @@ def origin_retirement_tick(queue, *, budget=None) -> list[dict[str, object]]:
 
     Called once per `tier_loop.cycle` on the tier host. It scans the same
     produced-output scopes `unheld_window_gib` and `output_scope_tick` scan
-    and reads each instance's commitments once (`_TickReads`). Then:
+    and reads each instance's commitments once (`_TickReads`); each due
+    batch's retirement under the output-prefix locks reuses that parse while
+    the file's trusted version holds, so an unchanged document is parsed
+    once per tick, not once per batch (#992). Then:
 
     * every origin-only batch committed with the ``consumed`` lifetime and
       not yet reclaimed goes to `_retire_consumed_batch`. A ``retain``

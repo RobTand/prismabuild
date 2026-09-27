@@ -178,6 +178,30 @@ def _terminal(queue: pool.PoolQueue, state: str, count: int) -> None:
              "status": status, "published_unix": 1000.0}) + "\n")
 
 
+def build_filed_plans(queue: pool.PoolQueue, stage: Path, *,
+                      plans: int, phases: int) -> dict[str, int]:
+    """Done consumers with a frozen plan no supersession marker covers (#992).
+
+    The live queue held 452 filed plans (141 MB on 2026-09-26), 450 of them
+    terminal in ``done/`` and none superseded.  Every cycle the withdrawal
+    sweep read each body and re-hashed it in ``residency_plan.superseded``
+    to learn that; the precheck refuses a done plan no marker names before
+    the body is read.
+    """
+
+    if not plans:
+        return {}
+    directory = queue.dir(pool.DONE)
+    for index in range(plans):
+        consumer = _key(f"filedplan{index}")
+        plan = _plan(queue, consumer, stage, phases=phases)
+        residency_plan.freeze(queue, plan)
+        (directory / f"{consumer}.json").write_text(json.dumps(
+            {"schema": pool.POOL_OUTCOME_SCHEMA_V1, "action_key": consumer,
+             "status": "executed", "published_unix": 1000.0}) + "\n")
+    return {"filed_plans": plans}
+
+
 def _receipts(queue: pool.PoolQueue, count: int) -> None:
     """Terminal movers' receipts: the fill history every cycle folds."""
 
@@ -502,6 +526,9 @@ def build_queue(queue: pool.PoolQueue, stage: Path, args) -> dict[str, int]:
         counts[state] = count
     _receipts(queue, args.receipts)
     counts["receipts"] = args.receipts
+    counts.update(build_filed_plans(
+        queue, stage, plans=getattr(args, "filed_plans", 0),
+        phases=getattr(args, "plan_phases", 128)))
     passes = queue.root / pool.PASSES
     passes.mkdir(parents=True, exist_ok=True)
     for index in range(args.passes):
@@ -731,6 +758,11 @@ def main(argv: list[str] | None = None) -> int:
                         help="movement receipts (6,434 live)")
     parser.add_argument("--passes", type=int, default=1324,
                         help="passes/ sidecars (1,324 live)")
+    parser.add_argument("--filed-plans", type=int, default=0,
+                        help="done consumers with a frozen plan no marker "
+                             "covers (452 live, 141 MB on 2026-09-26)")
+    parser.add_argument("--plan-phases", type=int, default=128,
+                        help="phases in each --filed-plans body")
     parser.add_argument("--empty-dirs", type=int, default=404,
                         help="empty consumer directories in the residency "
                              "forest")
