@@ -12470,6 +12470,16 @@ A bounded status reader belongs to its calling process. SIGINT/SIGTERM unwind
 through bounded pipe closure and exact-child termination/reaping; failed
 termination retains PID/starttime evidence, including on cancellation. Reader
 EOF does not by itself prove process exit. SIGKILL cannot execute cleanup.
+Failure diagnostics retain the child's exception type and failure stage,
+including `BaseException`, descriptor setup and IPC writes (#1214). The parent
+appends the observed child exit code or terminating signal to the existing
+error text; a missing wait status is explicitly unavailable, never inferred
+as exit 0. A broken IPC channel can prevent the diagnostic payload itself,
+but cannot turn a failed write into a successful child exit. Short writes are
+completed before exit. The success/error/timeout envelope, cleanup bounds and
+worker rule remain unchanged: failed discovery skips publication and admission,
+not an empty-queue snapshot or a fabricated fresh offer. These diagnostics do
+not, by themselves, establish the historical Sparky outage's root cause.
 
 The status read budget starts before default transport metadata is opened. A
 failed lookup reports unknown transport and incomplete status rather than

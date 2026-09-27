@@ -3059,25 +3059,58 @@ def wedged_peers(*, proc: Path = Path("/proc"), self_pid: int | None = None,
     return {"peers": peers, "scanned": scanned, "truncated": truncated, "note": None}
 
 
-def _reap_within(pid: int, grace_s: float) -> bool:
-    """Poll for a child's exit for a bounded time.  Never blocks in ``wait``.
+def _reap_status_within(pid: int, grace_s: float) -> tuple[bool, int | None]:
+    """Bounded reap, preserving the kernel status for failure diagnostics.
 
-    Copied in shape from ``tools/fleet/mount_latency.py`` ``_reap_within``:
-    an unreaped child in ``D`` is exactly what this command must not join.
+    ``None`` means unknown, not exit 0: another reaper may already have taken
+    the status, or the reader may still be alive. Never join a child in ``D``.
     """
     deadline = time.monotonic() + grace_s
     while True:
         try:
-            done, _status = os.waitpid(pid, os.WNOHANG)
+            done, status = os.waitpid(pid, os.WNOHANG)
         except ChildProcessError:
-            return True
+            return True, None
         except OSError:
-            return False
+            return False, None
         if done == pid:
-            return True
+            return True, status
         if time.monotonic() >= deadline:
-            return False
+            return False, None
         time.sleep(0.01)
+
+
+def _reap_within(pid: int, grace_s: float) -> bool:
+    """Compatibility wrapper for cleanup callers that only need ownership."""
+    return _reap_status_within(pid, grace_s)[0]
+
+
+def _reader_exit_detail(pid: int, status: int | None) -> str:
+    if status is None:
+        return f"reader pid={pid} exit status unavailable"
+    if os.WIFSIGNALED(status):
+        signum = os.WTERMSIG(status)
+        try:
+            name = signal.Signals(signum).name
+        except ValueError:                          # pragma: no cover - kernel
+            name = "unknown"
+        return f"reader pid={pid} signal {signum} ({name})"
+    if os.WIFEXITED(status):
+        return f"reader pid={pid} exit code {os.WEXITSTATUS(status)}"
+    return f"reader pid={pid} unexpected wait status {status}"
+
+
+def _write_reader_payload(write_fd: int, payload: bytes) -> None:
+    """Complete a pipe write even after a short write or interrupted syscall."""
+    pending = memoryview(payload)
+    while pending:
+        try:
+            written = os.write(write_fd, pending)
+        except InterruptedError:
+            continue
+        if written <= 0:
+            raise OSError("reader pipe write made no progress")
+        pending = pending[written:]
 
 
 def _isolate_child_fds(write_fd: int) -> int:
@@ -3245,23 +3278,36 @@ def _bounded_reader(section: str, read, *, deadline: Deadline, abandoned: list,
         raise
     if pid == 0:                                   # child
         code = 1
+        stage = "close_read_fd"
         try:
             os.close(read_fd)
             # Before the section runs, and before anything can block in it:
             # what this child still holds is what it holds for as long as it
             # lives, and this is the child the parent may have to abandon.
+            stage = "isolate_fds"
             write_fd = _isolate_child_fds(write_fd)
+            stage = "read"
+            value = read()
+            stage = "serialize"
+            payload = json.dumps({"status": "ok", "value": value}).encode("utf-8")
+            stage = "write"
+            _write_reader_payload(write_fd, payload)
+            # A failed write must not masquerade as an exit-0 empty reply.
+            code = 0
+        except BaseException as exc:               # noqa: BLE001 - child boundary
             try:
-                payload = json.dumps({"status": "ok", "value": read()})
-                code = 0
-            except Exception as exc:               # noqa: BLE001 - diagnostic
+                try:
+                    detail = str(exc)[:4096]
+                except BaseException:              # even a broken __str__ has a type
+                    detail = "exception message unavailable"
                 payload = json.dumps({"status": "error",
                                       "type": type(exc).__name__,
-                                      "error": str(exc)})
-                code = 0
-            os.write(write_fd, payload.encode("utf-8"))
-        except BaseException:                      # noqa: BLE001 - last resort
-            pass
+                                      "error": f"stage={stage}: {detail}"})
+                _write_reader_payload(write_fd, payload.encode("utf-8"))
+            except BaseException:
+                # A broken IPC channel cannot carry its own diagnosis. The
+                # parent still observes the nonzero exit or terminating signal.
+                pass
         finally:
             try:
                 os.close(write_fd)
@@ -3305,17 +3351,25 @@ def _bounded_reader(section: str, read, *, deadline: Deadline, abandoned: list,
         # the pipe buffer, so "some bytes arrived" is compatible with a child that
         # is still writing, and reporting that as a parse error would file a mount
         # timeout under the wrong cause.
-        if saw_eof and chunks:
-            reaped = _reap_within(pid, KILL_GRACE_S)
-            try:
-                return json.loads(b"".join(chunks).decode("utf-8"))
-            except ValueError as exc:
-                return {"status": "error", "type": "ValueError",
-                        "error": f"unreadable {section} payload: {exc}"}
         if saw_eof:
-            reaped = _reap_within(pid, KILL_GRACE_S)
-            return {"status": "error", "type": "RuntimeError",
-                    "error": f"the {section} reader exited without a payload"}
+            if chunks:
+                try:
+                    result = json.loads(b"".join(chunks).decode("utf-8"))
+                except ValueError as exc:
+                    result = {"status": "error", "type": "ValueError",
+                              "error": f"unreadable {section} payload: {exc}"}
+            else:
+                result = {"status": "error", "type": "RuntimeError",
+                          "error": f"the {section} reader exited without a payload"}
+            if isinstance(result, dict) and result.get("status") == "error":
+                reaped, status = _reap_status_within(pid, KILL_GRACE_S)
+                result["error"] = (f"{result.get('error', '')}; "
+                                   f"{_reader_exit_detail(pid, status)}")
+            else:
+                # A complete snapshot is still valid if its writer has not
+                # exited yet (#906); preserve the existing cleanup path.
+                reaped = _reap_within(pid, KILL_GRACE_S)
+            return result
 
         return {"status": "timed_out", "elapsed_s": round(elapsed, 3), "started": True}
     finally:

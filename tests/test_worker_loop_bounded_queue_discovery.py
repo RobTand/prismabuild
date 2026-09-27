@@ -182,6 +182,30 @@ def test_discovery_error_is_a_skip_not_an_empty_queue(worker) -> None:
     assert "OSError" in result.error, result
 
 
+def test_child_base_exception_explains_failure_and_does_not_fence_recovery(
+    worker, queue: pool.PoolQueue, monkeypatch,
+) -> None:
+    """#1214: explain the failed poll without treating it as an empty queue."""
+    def fail():
+        raise SystemExit(73)
+
+    abandoned = []
+    monkeypatch.setattr(queue, "ready_items", fail)
+    result = worker.discover_ready_snapshot(queue, budget_s=5.0,
+                                            abandoned=abandoned)
+    assert result.status == "failed"
+    assert result.snapshot is None
+    assert "SystemExit" in result.error and "73" in result.error
+    assert "stage=read" in result.error and "exit code 1" in result.error
+    assert abandoned == []
+
+    monkeypatch.setattr(queue, "ready_items", lambda: [])
+    result = worker.discover_ready_snapshot(queue, budget_s=5.0,
+                                            abandoned=abandoned)
+    assert result.status == "ready" and result.snapshot == []
+    assert abandoned == []
+
+
 def test_retained_reader_fences_the_next_poll_and_recovers(
     worker, tmp_path: Path, monkeypatch,
 ) -> None:
