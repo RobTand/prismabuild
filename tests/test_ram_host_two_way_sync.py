@@ -168,3 +168,134 @@ def test_a_failed_host_transfer_is_heard_and_healed(
     assert host.holder_tokens("ram-host:" + grant) == {}
     reasons = {event.get("reason") for event in verdict["events"]}
     assert "orphan_ram_host_hold" in reasons
+
+
+# --- round 3 (#1245 review): the adjustment is a delta, never a re-take ---
+
+def test_a_failed_topup_keeps_the_half_it_already_holds(
+        tmp_path: Path, monkeypatch) -> None:
+    """R4: a row admission landing between the sync's steps must not be
+    able to take the half the mirror already holds."""
+
+    queue = _queue(tmp_path)
+    mover = "a" * 64
+    _mover_row(queue, tmp_path, mover)
+    _claim_path_take(queue, mover, {"ram_gib": 100})
+    host = queue.ledger(HOST)
+    mirror = "ram-host:" + mover
+    competitor = "e" * 64
+    # The mirror already holds 60 of its 100; 196 stay free.
+    assert host.acquire(mirror, {"mem_gb": 60}) is True
+
+    real_acquire = pool.ResourceLedger.acquire
+
+    def racing_acquire(self, action_key, demand, **kwargs):
+        if action_key == mirror:
+            # A row admits between the sync's steps and takes almost
+            # everything the buggy release just freed.
+            assert real_acquire(self, competitor, {"mem_gb": 190}) is True
+        return real_acquire(self, action_key, demand, **kwargs)
+
+    monkeypatch.setattr(pool.ResourceLedger, "acquire", racing_acquire)
+    verdict = queue.reconcile_ram_host_holds(RAM_TIER, ())
+    monkeypatch.undo()
+
+    # The half already held survives the failed top-up intact...
+    assert host.holder_tokens(mirror) == {"mem_gb": 60}
+    # ...the competitor keeps what it legitimately took...
+    assert host.holder_tokens(competitor) == {"mem_gb": 190}
+    # ...and the miss is still named and unconverged.
+    assert verdict["converged"] is False
+    reasons = [event.get("reason") for event in verdict["events"]]
+    assert "ram-host-hold-missing" in reasons
+
+
+def test_the_mirror_never_drops_below_what_it_already_holds(
+        tmp_path: Path, monkeypatch) -> None:
+    """R4: observed at every step, the mirror never falls below the half
+    it started with -- not even on the success path."""
+
+    queue = _queue(tmp_path)
+    mover = "a" * 64
+    _mover_row(queue, tmp_path, mover)
+    _claim_path_take(queue, mover, {"ram_gib": 100})
+    host = queue.ledger(HOST)
+    mirror = "ram-host:" + mover
+    competitor = "e" * 64
+    assert host.acquire(mirror, {"mem_gb": 60}) is True
+
+    observations: list[int] = []
+    real_acquire = pool.ResourceLedger.acquire
+
+    def observing_acquire(self, action_key, demand, **kwargs):
+        if action_key == mirror:
+            observations.append(
+                int(self.holder_tokens(mirror).get("mem_gb", 0)))
+            assert real_acquire(self, competitor, {"mem_gb": 150}) is True
+            observations.append(
+                int(self.holder_tokens(mirror).get("mem_gb", 0)))
+        return real_acquire(self, action_key, demand, **kwargs)
+
+    monkeypatch.setattr(pool.ResourceLedger, "acquire", observing_acquire)
+    verdict = queue.reconcile_ram_host_holds(RAM_TIER, ())
+    monkeypatch.undo()
+
+    assert min(observations) >= 60
+    assert host.holder_tokens(mirror) == {"mem_gb": 100}
+    assert verdict["converged"] is True
+
+
+def test_an_unguarded_host_read_refuses_instead_of_aborting(
+        tmp_path: Path, monkeypatch) -> None:
+    """R6: a host ledger that will not answer mid-loop refuses the cycle
+    (converged false) instead of raising out of the sync."""
+
+    queue = _queue(tmp_path)
+    mover = "a" * 64
+    _mover_row(queue, tmp_path, mover)
+    _claim_path_take(queue, mover, {"ram_gib": 100})
+    mirror = "ram-host:" + mover
+    real_holder_tokens = pool.ResourceLedger.holder_tokens
+
+    def failing_holder_tokens(self, action_key):
+        if action_key == mirror:
+            raise OSError("boom: host ledger unreadable")
+        return real_holder_tokens(self, action_key)
+
+    monkeypatch.setattr(pool.ResourceLedger, "holder_tokens",
+                        failing_holder_tokens)
+    verdict = queue.reconcile_ram_host_holds(RAM_TIER, ())  # must not raise
+    monkeypatch.undo()
+
+    assert verdict["converged"] is False
+
+
+def test_only_the_ram_occupancy_kind_is_mirrored(tmp_path: Path) -> None:
+    """R7: the mirror is the RAM occupancy kind by name; a foreign
+    non-rate kind on the tier ledger cannot silently become host GiB."""
+
+    queue = _queue(tmp_path)
+    tier = queue.tier_ledger(RAM_TIER)
+    tier.ensure_capacity({"foreign_gib": 16})
+    mover = "b" * 64
+    _mover_row(queue, tmp_path, mover)
+    _claim_path_take(
+        queue, mover, {"ram_gib": 100, "foreign_gib": 7})
+
+    verdict = queue.reconcile_ram_host_holds(RAM_TIER, ())
+
+    assert verdict["converged"] is True
+    assert queue.ledger(HOST).holder_tokens(
+        "ram-host:" + mover) == {"mem_gb": 100}
+
+
+def test_a_fresh_loop_refuses_growth_until_its_first_sync(
+        tmp_path: Path) -> None:
+    """R5: no previous verdict is not evidence of a clean mirror; a
+    freshly restarted loop reads no rows number until it converges."""
+
+    queue = _queue(tmp_path)
+    assert tier_loop._RAM_HOST_SYNC_DEFAULT is False
+    fresh = tier_loop._RAM_HOST_SYNC.get(
+        "nobody", tier_loop._RAM_HOST_SYNC_DEFAULT)
+    assert tier_loop.rows_held_for_gate(queue, HOST, fresh) is None
