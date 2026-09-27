@@ -94,6 +94,7 @@ def _process(proc: Path, pid: int, argv: list[str], *,
         entries.append(f"{supervise.OWNERSHIP_ENV}={mark}")
     (directory / "environ").write_bytes(
         b"".join(entry.encode() + b"\0" for entry in entries))
+    (directory / "stat").write_text(f"{pid} (python) S 1 {pid} {pid}\n")
     task = directory / "task" / str(pid)
     task.mkdir(parents=True)
     (task / "children").write_text(

@@ -271,7 +271,7 @@ def _role_process(proc: Path, pid: int, argv: list[str], *,
     (directory / "environ").write_bytes(
         b"".join(entry.encode() + b"\0" for entry in entries))
     (directory / "stat").write_bytes(
-        f"{pid} (prewarm_loop.py) S 1 1 1".encode())
+        f"{pid} (prewarm_loop.py) S 1 {pid} {pid}".encode())
     return pid
 
 

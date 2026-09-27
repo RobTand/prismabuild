@@ -112,6 +112,8 @@ def _process(proc: Path, pid: int, argv: list[str], *,
         entries.append(f"{supervise.OWNERSHIP_ENV}={mark}")
     (directory / "environ").write_bytes(
         b"".join(entry.encode() + b"\0" for entry in entries))
+    # Both supervisor launch paths use start_new_session=True.
+    (directory / "stat").write_text(f"{pid} (python) S 1 {pid} {pid}\n")
     if cwd is not None:
         (directory / "cwd").symlink_to(cwd)
     return pid
@@ -273,9 +275,11 @@ def test_the_supervisor_marks_every_loop_it_spawns(
         def __init__(self, argv, **kwargs):
             captured["argv"] = argv
             captured["env"] = kwargs.get("env")
+            captured["start_new_session"] = kwargs.get("start_new_session")
 
     monkeypatch.setattr(supervise.subprocess, "Popen", FakePopen)
 
     assert supervise._spawn(["--gpu-slots", "2"], 0) == 4242
+    assert captured["start_new_session"] is True
     assert captured["env"][supervise.OWNERSHIP_ENV] == HOST
     assert captured["env"]["PATH"], "the rest of the environment must survive"

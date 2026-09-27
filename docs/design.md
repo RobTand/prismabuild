@@ -4129,6 +4129,18 @@ bounded tick, spawning is amortized, and monotonically allocated log slots
 preserve append evidence across shrink and growth. `--loops` explicitly selects
 fixed mode, while `--once` tops up only to the configured floor.
 
+Ownership requires an interpreter/script in a proven runtime, the supervisor's
+host ownership environment, **and kernel session/process-group leadership**
+(`PID == PGRP == SID`, #1214). Both worker and auxiliary-role launch paths
+already establish that identity with `start_new_session=True`. A bounded reader
+fork inherits its parent's argv and environment, but not leadership; it must
+neither inflate the loop census nor be selected for elastic shrink, stale-role
+replacement or shutdown. Missing/malformed `/proc/<pid>/stat` is not ownership
+proof. PPid is not required to match the current supervisor, preserving re-exec
+and adoption of legitimate roles. This is a local classifier correction, not a
+new queue field or admission capability; old supervisors remain vulnerable until
+they re-exec into the corrected runtime.
+
 The supervisor owns reaping its exited direct children across runtime re-exec.
 Before each cycle's re-exec check and census, it makes at most 256 nonblocking
 `waitpid(-1, WNOHANG)` calls, stopping when no exited child is available. The
