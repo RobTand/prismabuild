@@ -12589,7 +12589,16 @@ the check read:
 `.export.lock` before it takes the namespace's `.reservation.lock`, so a
 re-pin's read never holds every other group's reservation. The read costs
 one pass over the file, only on this mismatch; `rehash_s` records it.
-`commit_origin_group` then commits against the re-pinned identities.
+`commit_origin_group` then commits against the re-pinned identities. Its
+successful, nonduplicate answer includes the receipt's poll-site re-pins in
+its existing `landed_repins` list (#1179), with each destination path and the
+existing identity/digest/timing evidence, followed by any commit-site re-pins.
+Earlier polls count too, even when the commit's poll needs no new hash. The
+caller can retain that answer after spool namespace retirement deletes the
+receipt. Duplicate commits report no old re-pins again; failed commits do not
+claim them as committed evidence. No origin identity, stored receipt schema,
+commitment, lifetime or retirement decision changes, and gathering the answer
+adds no payload read.
 
 The re-pin is sound because the check it replaces was a proxy for the bytes:
 the sha256 is the digest the export verified while it copied, so a file with
