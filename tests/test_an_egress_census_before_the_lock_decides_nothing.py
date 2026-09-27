@@ -18,7 +18,9 @@ from __future__ import annotations
 import hashlib
 import os
 from pathlib import Path
+import shutil
 import sys
+import tempfile
 
 import pytest
 
@@ -46,17 +48,61 @@ OTHER_CONSUMER = _key("other-consumer")
 OTHER_MOVER = _key("other-mover")
 
 
+def _filesystem_type(path: Path) -> str | None:
+    """The type ``/proc/self/mountinfo`` names for ``path``'s device."""
+
+    device = os.stat(path).st_dev
+    wanted = f"{os.major(device)}:{os.minor(device)}"
+    with open("/proc/self/mountinfo") as stream:
+        for line in stream:
+            fields = line.split()
+            if len(fields) > 2 and fields[2] == wanted and " - " in line:
+                return line.split(" - ", 1)[1].split()[0]
+    return None
+
+
+#: Filesystems whose file versions the census may keep (``stage_move``).
+LOCAL_CLOCK = {"zfs", "ext4", "xfs", "btrfs", "tmpfs"}
+
+
+def _clock_root(tmp_path: Path) -> Path:
+    """A fresh fixture directory on a local-clock filesystem.
+
+    The lock-scope assertions compare parsed counts across the hint and the
+    held census, which the memo can reuse only where a file version may be
+    kept.  On a box whose own ``tmp_path`` is not named by the mount table
+    (dl380g10's /home/rob/tmp is not), every fragment is parsed twice by
+    construction; ``/dev/shm`` and ``/tmp`` are tried first so the tests run
+    on any Linux worker.
+    """
+
+    for candidate in (Path("/dev/shm"), Path("/tmp"), tmp_path):
+        try:
+            if not candidate.is_dir() or not os.access(candidate, os.W_OK):
+                continue
+        except OSError:
+            continue
+        if _filesystem_type(candidate) in LOCAL_CLOCK:
+            return Path(tempfile.mkdtemp(prefix="pb-egress-census-",
+                                         dir=candidate))
+    pytest.skip("no writable local-clock filesystem for the fixture")
+
+
 @pytest.fixture()
 def fleet(tmp_path: Path):
-    queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
-    queue.mint_tier_capacity(TIER, {"stage_gib": 8})
-    stage = tmp_path / "stage"
-    stage.mkdir()
-    stage = stage.resolve()
-    assert stage_release.register_stage_root(
-        queue, tier_id=TIER, stage_root=stage) == "registered"
-    return queue, stage, queue.root / pool.RESIDENCY
+    root = _clock_root(tmp_path)
+    try:
+        queue = pool.PoolQueue(root / "pb-queue")
+        queue.ensure_layout()
+        queue.mint_tier_capacity(TIER, {"stage_gib": 8})
+        stage = root / "stage"
+        stage.mkdir()
+        stage = stage.resolve()
+        assert stage_release.register_stage_root(
+            queue, tier_id=TIER, stage_root=stage) == "registered"
+        yield queue, stage, queue.root / pool.RESIDENCY
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
 
 
 def _staged(stage: Path, number: int) -> Path:

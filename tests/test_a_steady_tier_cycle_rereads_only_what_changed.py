@@ -40,7 +40,9 @@ import argparse
 import json
 import os
 from pathlib import Path
+import shutil
 import sys
+import tempfile
 import time
 
 import pytest
@@ -169,21 +171,44 @@ def _filesystem_type(path: Path) -> str | None:
 LOCAL_CLOCK = {"zfs", "ext4", "xfs", "btrfs", "tmpfs"}
 
 
+def _clock_root(tmp_path: Path) -> Path:
+    """A fresh fixture directory on a local-clock filesystem.
+
+    The stamps the index keeps are trusted only where the mount table names
+    zfs/ext4/xfs/btrfs/tmpfs; on a box whose own ``tmp_path`` is not one of
+    those (dl380g10's /home/rob/tmp is not), the test would measure the
+    fallback.  ``/dev/shm`` and ``/tmp`` are tried first so the suite runs on
+    any Linux worker.
+    """
+
+    for candidate in (Path("/dev/shm"), Path("/tmp"), tmp_path):
+        try:
+            if not candidate.is_dir() or not os.access(candidate, os.W_OK):
+                continue
+        except OSError:
+            continue
+        if _filesystem_type(candidate) in LOCAL_CLOCK:
+            return Path(tempfile.mkdtemp(prefix="pb-tier-cycle-",
+                                         dir=candidate))
+    pytest.skip("no writable local-clock filesystem for the fixture")
+
+
 @pytest.fixture()
 def loop(tmp_path: Path) -> _Loop:
-    built = _Loop(tmp_path)
-    assert built.counts[pool.DONE] == 30000
-    assert built.counts["receipts"] == 6000
-    namespaces = [entry for entry in os.scandir(
-        built.queue.residency_fragment_root()) if entry.is_dir()
-        and len(entry.name) == 64]
-    assert len(namespaces) >= 400, len(namespaces)
-    # The stamps the index keeps are trusted only on a filesystem whose
-    # directory times come from this kernel's clock; the fixture must be on
-    # one, or the test below measures the fallback instead of the index.
-    assert _filesystem_type(tmp_path) in LOCAL_CLOCK, (
-        _filesystem_type(tmp_path))
-    return built
+    root = _clock_root(tmp_path)
+    try:
+        built = _Loop(root)
+        assert built.counts[pool.DONE] == 30000
+        assert built.counts["receipts"] == 6000
+        namespaces = [entry for entry in os.scandir(
+            built.queue.residency_fragment_root()) if entry.is_dir()
+            and len(entry.name) == 64]
+        assert len(namespaces) >= 400, len(namespaces)
+        assert _filesystem_type(root) in LOCAL_CLOCK, (
+            _filesystem_type(root))
+        yield built
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
 
 
 def test_a_steady_cycle_reads_only_what_changed(

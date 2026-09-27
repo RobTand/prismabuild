@@ -5350,6 +5350,43 @@ set, which the cycle hands to every step as one snapshot, is listed through
 `DirectoryRecords.names`, so it is listed again only when a marker was
 added, removed or renamed.
 
+**A done plan is read only when a marker can cover it (#992).** The live
+queue held 452 filed plans (141 MB) on 2026-09-26, 450 of them terminal and
+none superseded, and `withdraw_dead_consumer_movers` read and re-hashed
+every body to learn no marker covered it (2.48 s in
+`residency_plan.superseded` plus 1.46 s in `read_filed` in one 10 s cycle).
+One names-only snapshot of the supersession marker directory is now taken
+per pass, through `DirectoryRecords.names` when a cycle is running
+(`stage_release.queue_records_reader`). A `done/` consumer whose key no
+marker name carries is refused before its plan is read; a marker written
+after the snapshot is seen on the next pass. A key the snapshot names runs
+the existing locked checks unchanged, as does an unreadable listing or a
+name the parser cannot classify: unknown is never read as no marker. The
+parser accepts only the active address
+`{key}.{sha256}.superseded.json` (both strict 64 lowercase hex); retired
+markers (`...marker.json`), reaped plan bodies (`{key}.{secs}.{micros}.
+{slug}.json`) and publication temporaries are recognized archive names, not
+absence.
+
+**The reconcile's stage walk keeps what did not move (#992).** The live
+`/stage/prewarm` held 50,303 prewarm-marked files (302 GB) that the
+reconcile re-walked and re-probed every cycle, deleting none (2.81 s of the
+same cycle). `CensusIndex` now keeps each stage directory under
+`_trusted_directory_stamp` and each file's `(version, kind, mover)` under
+`_keepable_version` (#1045): a directory whose stamp holds is not listed
+again, and a file whose version holds is not probed again. Every entry is
+still `lstat`-ed -- a `setxattr` or an in-place write moves a file's ctime
+without moving its parent -- and the caller's `attributed`/`named` sets and
+live pins are read fresh, so a reused listing decides nothing by itself.
+`mark_unanswerable` and an unreadable directory are never kept, and a
+stamp or version that cannot be trusted (a network mount, the tick a
+directory changed in) falls back to the old walk. A name attribution
+covered is remembered so a later pass that no longer covers it still judges
+it; a directory that left its parent drops its listing and its
+descendants'. The cycle line's `reads` carries
+`census_walk_listed`/`census_walk_kept`/`census_walk_probed`/
+`census_walk_reused`.
+
 **The fill-supply fold is remembered, not bounded.** `ReceiptCache.fill_supply`
 remembers `storage_tiers.fill_supply_from_records` per pool identity and
 per generation of the receipt directories, a number that moves whenever a

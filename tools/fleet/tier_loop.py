@@ -2032,6 +2032,104 @@ def fan_out_shared_ranges(queue: pool.PoolQueue,
     return events
 
 
+#: The suffix a supersession marker's address ends with: the marker is
+#: ``{consumer_action_key}.{plan_sha256}.superseded.json`` beside the filed
+#: plan (``residency_plan._superseded_path``).
+_SUPERSEDED_MARKER_SUFFIX = ".superseded.json"
+
+#: The characters a reaped plan body's reason slug is built from
+#: (``residency_plan._retired_slug``).
+_SLUG_CHARACTERS = frozenset(
+    "abcdefghijklmnopqrstuvwxyz0123456789-")
+
+
+def _is_hex64(value: str) -> bool:
+    return (len(value) == 64
+            and all(character in "0123456789abcdef" for character in value))
+
+
+def _active_marker_key(name: str) -> str | None:
+    """The consumer key an active supersession marker name carries, or ``None``.
+
+    The address is ``{key}.{plan_sha256}.superseded.json``, both 64 lowercase
+    hex characters.  Any other name is not an active marker; the caller tells
+    a known archive name from an unrecognized one.
+    """
+
+    if not name.endswith(_SUPERSEDED_MARKER_SUFFIX):
+        return None
+    stem = name[:-len(_SUPERSEDED_MARKER_SUFFIX)]
+    key, separator, digest = stem.partition(".")
+    if not separator or "." in digest:
+        return None
+    if not _is_hex64(key) or not _is_hex64(digest):
+        return None
+    return key
+
+
+def _archived_supersession_name(name: str) -> bool:
+    """Whether one marker-directory name is a known archive entry.
+
+    ``residency_plan`` archives a reaped plan body as
+    ``{key}.{seconds}.{micros}.{reason-slug}.json`` and retires an active
+    marker beside it as
+    ``{key}.{digest}.{filing}.{seconds}.{micros}.marker.json``; a
+    publication temporary is ``.{name}.{random}.tmp``.  None of these can be
+    the address an active marker is read at, so a directory holding them
+    still answers which keys have one.  Anything else is unrecognized, and
+    the caller treats the whole listing as unknown.
+    """
+
+    if name.startswith("."):
+        return True
+    if name.endswith(".marker.json"):
+        parts = name[:-len(".marker.json")].split(".")
+        return (len(parts) == 5 and _is_hex64(parts[0]) and _is_hex64(parts[1])
+                and all(part.isdigit() for part in parts[2:]))
+    if name.endswith(".json"):
+        parts = name[:-len(".json")].split(".")
+        return (len(parts) == 4 and _is_hex64(parts[0])
+                and parts[1].isdigit() and parts[2].isdigit()
+                and bool(parts[3])
+                and all(character in _SLUG_CHARACTERS
+                        for character in parts[3]))
+    return False
+
+
+def _supersession_marker_keys(queue: pool.PoolQueue,
+                              ) -> frozenset[str] | None:
+    """The consumer keys an active supersession marker names, or ``None``.
+
+    One names-only listing of the marker directory per sweep (#992), read
+    through the cycle's kept records when one is running so an unchanged
+    directory is not listed again.  ``None`` means the listing or a name in
+    it could not be classified: an unknown answer is never read as "no
+    marker", and the caller falls back to the locked per-plan checks.  A
+    marker written after this snapshot is seen by the next sweep.
+    """
+
+    directory = (Path(queue.root) / pool.RESIDENCY_PLANS
+                 / residency_plan.SUPERSEDED)
+    reader = stage_release.queue_records_reader()
+    try:
+        if reader is None:
+            names: Iterable[str] = os.listdir(directory)
+        else:
+            names = reader.names(directory, select=lambda _name: True)
+    except FileNotFoundError:
+        return frozenset()
+    except OSError:
+        return None
+    keys: set[str] = set()
+    for name in names:
+        key = _active_marker_key(name)
+        if key is not None:
+            keys.add(key)
+        elif not _archived_supersession_name(name):
+            return None
+    return frozenset(keys)
+
+
 def withdraw_dead_consumer_movers(queue: pool.PoolQueue) -> list[dict[str, object]]:
     """Withdraw the still-queued movers of consumers that already failed (#620).
 
@@ -2069,9 +2167,22 @@ def withdraw_dead_consumer_movers(queue: pool.PoolQueue) -> list[dict[str, objec
     publishes its consumer under the same lock, and the window publishes the
     lead under it too, so a stale pass cannot reach the new generation's rows; a live or unreadable consumer
     defers the sweep to the next cycle (#708 review).
+
+    One names-only snapshot of the supersession markers is taken per pass
+    (#992).  A ``done/`` consumer no marker names is refused before its plan
+    body is read at all -- the plan can only matter if a marker covers it,
+    and a marker written after the snapshot is seen on the next pass.  A key
+    the snapshot does name, or a listing or name it could not classify, runs
+    the existing locked checks unchanged: the plan is read, the marker's
+    identity and filing are compared, and a marker for another filing
+    supersedes nothing.
     """
 
     events: list[dict[str, object]] = []
+    # The marker snapshot is not a decision: every check the sweep made
+    # before is still made under the consumer's lock when a marker can cover
+    # the plan, and unknown is never read as "no marker".
+    marker_keys = _supersession_marker_keys(queue)
     # Only a filed plan can attribute work to a dead consumer. Discover these
     # positive candidates before inspecting terminal history: live_state's
     # safe absence check lists the live queue, so doing it for every historical
@@ -2101,12 +2212,13 @@ def withdraw_dead_consumer_movers(queue: pool.PoolQueue) -> list[dict[str, objec
             except OSError:
                 break
             _sweep_dead_consumer(queue, key=key, state=state, path=path,
-                                 events=events)
+                                 events=events, marker_keys=marker_keys)
     return events
 
 
 def _sweep_dead_consumer(queue: pool.PoolQueue, *, key: str, state: str,
-                         path: Path, events: list[dict[str, object]]) -> None:
+                         path: Path, events: list[dict[str, object]],
+                         marker_keys: frozenset[str] | None = None) -> None:
     """One terminal record's sweep, inside the consumer's transition lock.
 
     The terminal and the no-live-parent observation are made outside the
@@ -2151,12 +2263,13 @@ def _sweep_dead_consumer(queue: pool.PoolQueue, *, key: str, state: str,
                             step="dead-consumer") as owned:
         if owned:
             _sweep_dead_consumer_owned(queue, key=key, state=state, path=path,
-                                       events=events)
+                                       events=events, marker_keys=marker_keys)
 
 
 def _sweep_dead_consumer_owned(queue: pool.PoolQueue, *, key: str, state: str,
                                path: Path,
-                               events: list[dict[str, object]]) -> None:
+                               events: list[dict[str, object]],
+                               marker_keys: frozenset[str] | None = None) -> None:
     """:func:`_sweep_dead_consumer`'s body, with the consumer's lock held."""
 
     item = pool._read_json(path)
@@ -2167,6 +2280,12 @@ def _sweep_dead_consumer_owned(queue: pool.PoolQueue, *, key: str, state: str,
         # Resubmitted under the same key: a new generation, live work.
         # A queue that cannot be read is uncertainty, not absence, and
         # defers the sweep exactly as it defers a handoff.
+        return
+    if (state == pool.DONE and marker_keys is not None
+            and key not in marker_keys):
+        # The snapshot names no marker for this consumer, so no marker can
+        # cover this filing and the plan body decides nothing.  A marker
+        # written after the snapshot is seen by the next sweep (#992).
         return
     plan, incarnation = residency_plan.read_filed(queue, key)
     if plan is None:
@@ -9421,7 +9540,8 @@ def _read_counts(receipts: ReceiptCache) -> dict[str, int]:
         # checkpoint passed over, and those censused (#1056); a skip files
         # no receipt, so this line is where it is counted.
         for field in ("listed", "kept", "parsed", "parses", "reuses",
-                      "stale_skipped", "stale_censused"):
+                      "walk_listed", "walk_kept", "walk_probed",
+                      "walk_reused", "stale_skipped", "stale_censused"):
             value = getattr(source, field, None)
             if isinstance(value, int):
                 counts[f"{prefix}_{field}"] = value

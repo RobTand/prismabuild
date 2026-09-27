@@ -596,6 +596,22 @@ class CensusIndex(_CensusMemo):
 
     def __init__(self) -> None:
         super().__init__()
+        #: Stage directory (as ``str``) -> ``(stamp, children, entries)`` for
+        #: :func:`_unattributed_candidates`.  ``stamp`` is
+        #: :func:`stage_move._trusted_directory_stamp`'s version, or ``None``
+        #: when no listing of the directory may be reused; ``children`` are
+        #: the real subdirectories the walk recursed into; ``entries`` maps a
+        #: file name to ``(version, kind, mover)``, its classification from
+        #: the last probe.  A stale entry is a probe hint only: the directory
+        #: is listed again, and a file's classification is reused only while
+        #: its own version holds (#1045).
+        self.stage_walk: dict[str, tuple[
+            tuple | None, tuple[str, ...],
+            dict[str, tuple[tuple | None, str, str]]]] = {}
+        self.walk_listed = 0    # stage directories listed
+        self.walk_kept = 0      # stage directories whose listing was reused
+        self.walk_probed = 0    # stage files whose marks were read
+        self.walk_reused = 0    # stage files whose classification was reused
         #: Namespace directory -> ``(stamp, [(mover, document)], file keys)``.
         self.namespaces: dict[str, tuple[tuple, list[tuple[str, dict[str, object]]],
                                          frozenset[str]]] = {}
@@ -622,6 +638,88 @@ class CensusIndex(_CensusMemo):
 
         self.pins = _PinMemo()
         return self.pins
+
+    def stage_hit(self, directory: str,
+                  ) -> tuple[tuple[str, ...],
+                             dict[str, tuple[tuple | None, str, str]]] | None:
+        """One stage directory's listing, when its stamp still holds.
+
+        ``None`` for a directory never listed, one whose stamp cannot be
+        trusted, or one whose version moved: the caller lists it again.
+        """
+
+        kept = self.stage_walk.get(directory)
+        if kept is None or kept[0] is None:
+            return None
+        if _current_directory_version(directory) != kept[0]:
+            return None
+        self.walk_kept += 1
+        return kept[1], kept[2]
+
+    def stage_memo(self, directory: str,
+                   ) -> tuple[tuple | None, tuple[str, ...],
+                              dict[str, tuple[tuple | None, str, str]]] | None:
+        """A stage directory's last listing, stale stamps included.
+
+        A probe hint only: the caller that cannot reuse the listing reads
+        the directory again and compares each file's version before reusing
+        its classification.
+        """
+
+        return self.stage_walk.get(directory)
+
+    def remember_stage(self, directory: str, stamp: tuple | None,
+                       children: "list[str]",
+                       entries: dict[str, tuple[tuple | None, str, str]],
+                       previous_children: "list[str] | None" = None, *,
+                       retry: bool = False) -> None:
+        """Record one stage listing, and drop what left it.
+
+        The stamp is kept only while a fresh ``lstat`` still returns it, and
+        only when it was trusted before the listing; otherwise ``None``,
+        which carries the entries as a probe hint and nothing more.  A
+        ``retry`` listing -- one where a name could not be stat-ed -- never
+        keeps its stamp, because the failure did not move the directory's
+        version and the name must be tried again rather than lost.  A child
+        directory that is no longer in the listing loses its own listing and
+        every descendant's, so the memo owns no name that is not on disk.
+        """
+
+        self.walk_listed += 1
+        name = str(directory)
+        if previous_children is not None:
+            for gone in set(previous_children) - set(children):
+                self.forget_stage(gone)
+        if (retry or stamp is None
+                or _current_directory_version(directory) != stamp):
+            stamp = None
+        self.stage_walk[name] = (stamp, tuple(children), entries)
+
+    def refresh_stage(self, directory: str,
+                      entries: dict[str, tuple[tuple | None, str, str]],
+                      *, retry: bool = False,
+                      ) -> None:
+        """Replace a reused listing's per-file classifications.
+
+        ``retry`` drops the stamp, so a name whose ``lstat`` failed is listed
+        again on the next pass instead of being hidden by the listing that
+        could not read it.
+        """
+
+        kept = self.stage_walk.get(str(directory))
+        if kept is not None:
+            self.stage_walk[str(directory)] = (None if retry else kept[0],
+                                               kept[1], entries)
+
+    def forget_stage(self, directory: str) -> None:
+        """Drop one stage directory's listing and every descendant's."""
+
+        name = str(directory)
+        self.stage_walk.pop(name, None)
+        prefix = name.rstrip(os.sep) + os.sep
+        for known in [path for path in self.stage_walk
+                      if path.startswith(prefix)]:
+            self.stage_walk.pop(known, None)
 
     def namespace_hit(self, directory: Path,
                       ) -> list[tuple[str, dict[str, object]]] | None:
@@ -1070,6 +1168,20 @@ def queue_records_from(reader: "DirectoryRecords"):
         yield reader
     finally:
         _QUEUE_RECORDS.reset(token)
+
+
+def queue_records_reader() -> "DirectoryRecords | None":
+    """The cycle's :class:`DirectoryRecords`, or ``None`` outside a cycle.
+
+    A step that needs a listing rather than a record -- the names in
+    ``withdrawn/``, or the names in the supersession marker directory --
+    reads it from the same reader the cycle already keeps, so a directory
+    nothing was filed in since its last listing is not listed again (#992).
+    Outside :func:`queue_records_from` there is no reader and the caller
+    takes a plain listing.
+    """
+
+    return _QUEUE_RECORDS.get()
 
 
 def _queue_record_bytes(path: Path) -> bytes | None:
@@ -5395,7 +5507,7 @@ def _is_mover_partial(name: str) -> bool:
     return name.startswith(PARTIAL_PREFIX) and name.endswith(PARTIAL_SUFFIX)
 
 
-def _marked_by_the_prewarm_stage(path: Path) -> bool | None:
+def _marked_by_the_prewarm_stage(path: Path | str) -> bool | None:
     """Whether this file is a prewarm stage object, or ``None`` if unanswerable.
 
     The prewarm loop stages into the same pool, and its objects carry
@@ -5418,7 +5530,7 @@ def _marked_by_the_prewarm_stage(path: Path) -> bool | None:
     return True
 
 
-def _stage_mark(path: Path) -> tuple[str, str]:
+def _stage_mark(path: Path | str) -> tuple[str, str]:
     """Which kind of unattributed file this is, by its marks (#1088).
 
     Returns ``(kind, mover)``, the kind one of :data:`RECONCILE_DELETED_KINDS`
@@ -5663,8 +5775,15 @@ def reconcile(queue: pool.PoolQueue, *, tier_id: str, stage_root: str,
         queue, None, residency_root=residency_root, memo=memo.pins)
     hinted |= set(hint_pins)
     hinted_named |= set(hint_pins)
-    candidates, walk_errors = _unattributed_candidates(
-        stage, stage_resolved, hinted, hinted_named)
+    walk_memo = index if isinstance(index, CensusIndex) else None
+    if walk_memo is None:
+        # The old call shape, so a caller's stand-in walk that knows nothing
+        # of the memo still serves a reconcile with no census to keep.
+        candidates, walk_errors = _unattributed_candidates(
+            stage, stage_resolved, hinted, hinted_named)
+    else:
+        candidates, walk_errors = _unattributed_candidates(
+            stage, stage_resolved, hinted, hinted_named, memo=walk_memo)
     if any(one[2] == "mover_residue" for one in candidates):
         # Mover residue's promotion census once as a hint (#1088): it fills
         # the memo with each promotion's derived source legs, so the one
@@ -5870,7 +5989,8 @@ def _under_resolved(path: Path, stage: Path, stage_resolved: Path) -> str:
 
 def _unattributed_candidates(stage: Path, stage_resolved: Path,
                              attributed: set[str],
-                             named: set[str] | None = None,
+                             named: set[str] | None = None, *,
+                             memo: "CensusIndex | None" = None,
                              ) -> tuple[list[tuple[Path, tuple | None, str,
                                                    int, str]],
                                         list[str]]:
@@ -5895,6 +6015,18 @@ def _unattributed_candidates(stage: Path, stage_resolved: Path,
     captures the identity: a directory swapped for a symlink before that
     ``lstat`` is caught here, and one swapped after it changes the identity
     the locked re-check compares, which never re-checks containment.
+
+    ``memo`` is the tier loop's census (:class:`CensusIndex`).  With one, a
+    directory whose trusted stamp still holds is not listed again, and a
+    file whose version still holds is not probed again: its classification
+    from the last pass is reused.  Every entry is still ``lstat``-ed, and
+    attribution and pins are re-read by the caller, so a reused listing
+    decides nothing by itself.  ``mark_unanswerable`` and a directory that
+    cannot be read are never reused -- the next pass probes them again --
+    and where no stamp or version can be kept (a network mount, the tick a
+    directory changed in) the walk runs as it always did.  Without a memo
+    nothing is kept at all.
+
     Returns ``(candidates, errors)``: each candidate as ``(path, identity,
     kind, size, mover)`` where ``identity`` is the ``lstat`` version the
     caller must see again under the lock, or ``None`` for a file left
@@ -5911,54 +6043,205 @@ def _unattributed_candidates(stage: Path, stage_resolved: Path,
     # ``stage_resolved in resolved.parents``, as a string test: the resolved
     # path lies strictly below the resolved stage.
     inside = os.path.join(str(stage_resolved), "")
-    for base, _directories, names in os.walk(stage):
+    root = os.path.normpath(os.fspath(stage))
+    #: A name the prewarm loop owns: never a candidate, and decided by the
+    #: name alone, so no mark is read for it.
+    temporary = "prewarm-temporary"
+    #: A name attribution covered on the last pass.  It is remembered so a
+    #: reused listing still sees it when the fragment that covered it ends,
+    #: and it carries no mark probe while it stays attributed.
+    attributed_mark = "attributed"
+    #: A name whose ``lstat`` failed.  It is not classified and not kept; the
+    #: directory's listing is refused instead, so the name is tried again
+    #: even though the failure did not move the directory's version.
+    unreadable = object()
+
+    def classify(name: str, path: str) -> tuple[str, str]:
+        if _is_mover_partial(name):
+            return "partial", ""
+        if prewarm_loop._STAGE_TEMPORARY.search(name):
+            return temporary, ""
+        return _stage_mark(path)
+
+    def judge(name: str, path: str, info: os.stat_result,
+              kind: str, mover: str) -> None:
+        """The per-file rules, exactly as before (#1088, #1073)."""
+
+        normalized = os.path.normpath(path)
+        if kind == temporary:
+            # The prewarm loop reaps its own, once per process, and a live
+            # one belongs to a copy in flight.
+            return
+        if kind == "mover_residue" and normalized in named:
+            # Some fragment names this copy, wanted or not: its owner is
+            # retired with that fragment and its material by the key-driven
+            # passes, never from under them.
+            return
+        if kind in ("source_mark_only", "mark_unanswerable"):
+            candidates.append((Path(path), None, kind, int(info.st_size), ""))
+            return
+        try:
+            if not os.path.realpath(path).startswith(inside):
+                return
+        except OSError as exc:
+            errors.append(f"{name}: {exc}")
+            return
+        candidates.append((Path(path), _metadata_version(info), kind,
+                           int(info.st_size), mover))
+
+    def skipped_name(directory: str, name: str) -> bool:
+        return (directory == root
+                and name in (STAGE_ROOT_MARKER, storage_tiers.RAM_EPOCH_MARKER))
+
+    def read_entry(directory: str, name: str, previous: dict | None,
+                   fence: int | None,
+                   ) -> "tuple[os.stat_result, str, str, tuple | None] | None | object":
+        """One name's lstat and classification, reused when its version holds.
+
+        ``unreadable`` for a name that could not be stat-ed: the caller must
+        refuse the directory's listing, not drop the name from it.
+        """
+
+        path = os.path.join(directory, name)
+        try:
+            info = os.lstat(path)
+            if not statmod.S_ISREG(info.st_mode):
+                return None
+        except OSError as exc:
+            errors.append(f"{name}: {exc}")
+            return unreadable
+        version = _keepable_version(info, fence)
+        if os.path.normpath(path) in attributed:
+            # Attribution decides first and reads no mark; the name is kept
+            # so a later pass that no longer attributes it can judge it.
+            return info, attributed_mark, "", version
+        old = previous.get(name) if previous is not None else None
+        if (old is not None and old[0] is not None and old[0] == version
+                and old[1] not in (temporary, "mark_unanswerable",
+                                   attributed_mark)):
+            kind, mover = old[1], old[2]
+            if memo is not None:
+                memo.walk_reused += 1
+        else:
+            kind, mover = classify(name, path)
+            if memo is not None:
+                memo.walk_probed += 1
+        judge(name, path, info, kind, mover)
+        return info, kind, mover, version
+
+    def fresh(directory: str, previous: dict | None,
+              ) -> tuple[list[str], dict[str, tuple], bool] | None:
+        """List and classify one stage directory; the caller keeps the memo.
+
+        ``None`` for a directory that cannot be read: ``os.walk`` skipped it
+        silently, and unknown ownership is never cached or recursed into.
+        The third answer says a name could not be stat-ed, so the directory
+        must be listed again next pass.
+        """
+
+        children: list[str] = []
+        entries: dict[str, tuple] = {}
+        retry = False
+        fence = _version_fence()
+        try:
+            with os.scandir(directory) as scanned:
+                listed = list(scanned)
+        except OSError:
+            return None
+        names: list[str] = []
+        for entry in listed:
+            try:
+                is_dir = entry.is_dir()
+            except OSError:
+                is_dir = False
+            if is_dir:
+                if not entry.is_symlink():
+                    children.append(entry.path)
+            else:
+                names.append(entry.name)
         for name in sorted(names):
-            path = Path(base) / name
-            if name == STAGE_ROOT_MARKER and Path(base) == stage:
-                # The root's own ownership marker: unmarked by the prewarm
-                # stage and named by no fragment, so without this line the
-                # sweep would delete the fact that lets it sweep.
+            if skipped_name(directory, name):
                 continue
-            if (name == storage_tiers.RAM_EPOCH_MARKER and Path(base) == stage):
-                # The ram root's epoch marker, same rule one tier over
-                # (#640): unmarked, unnamed, and the one file that dates
-                # every ram range this queue admits.  Deleting it would mint
-                # a new epoch and drop every resident range the tmpfs still
-                # holds.
+            read = read_entry(directory, name, previous, fence)
+            if read is None:
                 continue
-            try:
-                info = os.lstat(path)
-                if not statmod.S_ISREG(info.st_mode):
-                    continue
-            except OSError as exc:
-                errors.append(f"{path.name}: {exc}")
+            if read is unreadable:
+                retry = True
                 continue
-            normalized = os.path.normpath(str(path))
-            if normalized in attributed:
-                continue
-            kind, mover = "partial", ""
-            if not _is_mover_partial(name):
-                if prewarm_loop._STAGE_TEMPORARY.search(name):
-                    # The prewarm loop reaps its own, once per process, and a
-                    # live one belongs to a copy in flight.
+            _info, kind, mover, version = read
+            entries[name] = (version, kind, mover)
+        return children, entries, retry
+
+    def visit(directory: str) -> None:
+        kept = memo.stage_hit(directory) if memo is not None else None
+        if kept is not None:
+            children, entries = kept
+            refreshed: dict[str, tuple] = {}
+            retry = False
+            fence = _version_fence()
+            for name, (version, kind, mover) in entries.items():
+                if skipped_name(directory, name):
                     continue
-                kind, mover = _stage_mark(path)
-                if kind == "mover_residue" and normalized in named:
-                    # Some fragment names this copy, wanted or not: its
-                    # owner is retired with that fragment and its material
-                    # by the key-driven passes, never from under them.
+                path = os.path.join(directory, name)
+                try:
+                    info = os.lstat(path)
+                    if not statmod.S_ISREG(info.st_mode):
+                        continue
+                except OSError as exc:
+                    errors.append(f"{name}: {exc}")
+                    retry = True
                     continue
-                if kind in ("source_mark_only", "mark_unanswerable"):
-                    candidates.append((path, None, kind, int(info.st_size), ""))
+                normalized = os.path.normpath(path)
+                if kind == attributed_mark:
+                    if normalized in attributed:
+                        refreshed[name] = (version, kind, mover)
+                        continue
+                    # Attribution ended: judge the file on this pass.
+                    kind, mover = classify(name, path)
+                    if memo is not None:
+                        memo.walk_probed += 1
+                    version = _keepable_version(info, fence)
+                    refreshed[name] = (version, kind, mover)
+                    judge(name, path, info, kind, mover)
                     continue
-            try:
-                if not str(path.resolve()).startswith(inside):
+                if normalized in attributed:
+                    refreshed[name] = (None, attributed_mark, "")
                     continue
-            except OSError as exc:
-                errors.append(f"{path.name}: {exc}")
-                continue
-            candidates.append((path, _metadata_version(info), kind,
-                               int(info.st_size), mover))
+                if (version is not None
+                        and _metadata_version(info) == version
+                        and kind not in (temporary, "mark_unanswerable")):
+                    if memo is not None:
+                        memo.walk_reused += 1
+                else:
+                    kind, mover = classify(name, path)
+                    if memo is not None:
+                        memo.walk_probed += 1
+                    version = _keepable_version(info, fence)
+                refreshed[name] = (version, kind, mover)
+                judge(name, path, info, kind, mover)
+            if memo is not None:
+                memo.refresh_stage(directory, refreshed, retry=retry)
+        else:
+            previous_kept = (memo.stage_memo(directory) if memo is not None
+                             else None)
+            previous = previous_kept[2] if previous_kept is not None else None
+            previous_children = (list(previous_kept[1])
+                                 if previous_kept is not None else None)
+            stamp = (_trusted_directory_stamp(Path(directory))
+                     if memo is not None else None)
+            scanned = fresh(directory, previous)
+            if scanned is None:
+                if memo is not None:
+                    memo.forget_stage(directory)
+                return
+            children, entries, retry = scanned
+            if memo is not None:
+                memo.remember_stage(directory, stamp, children, entries,
+                                    previous_children, retry=retry)
+        for child in children:
+            visit(child)
+
+    visit(root)
     return candidates, errors
 
 def _scope_for_range(cas_root: str, manifest_sha256: str,
