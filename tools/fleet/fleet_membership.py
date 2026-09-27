@@ -40,7 +40,9 @@ import hashlib
 import json
 import os
 import platform as _platform
+import pwd
 import socket
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -714,6 +716,44 @@ def _declared_demand(host: str, roster_path: Path | None) -> dict[str, int]:
     return demand
 
 
+def _probe_once(root: Path, host: str) -> None:
+    """Write, read back and remove one probe file in the shared queue."""
+    probe = root / f".membership-probe-{os.getpid()}"
+    try:
+        probe.write_text(json.dumps({"host": host, "unix": _utc()}))
+        if json.loads(probe.read_text())["host"] != host:
+            raise ValueError("shared queue probe read back another host")
+    finally:
+        probe.unlink(missing_ok=True)
+
+
+def _probe_shared_namespace(root: Path, host: str) -> None:
+    """Prove this host reads and writes the shared queue namespace.
+
+    NFS root_squash maps root to nobody on the shared mount, and the broker
+    admits maintenance only from uid 0, so a root join cannot write the probe
+    itself (#1223). It probes as the queue's unprivileged owner instead, in a
+    child that permanently drops to that uid, the way
+    ``upgrade_client.post_as_reader`` writes rollout markers.
+    """
+    if os.geteuid() != 0:
+        _probe_once(root, host)
+        return
+    owner = root.stat().st_uid
+    if owner <= 0:
+        raise OSError(f"shared queue {root} has no unprivileged owner to probe as")
+    result = subprocess.run(
+        [sys.executable, "-I", "-c",
+         "import sys; from pathlib import Path; sys.path.insert(0, sys.argv[1]); "
+         "import fleet_membership; fleet_membership._probe_once(Path(sys.argv[2]), sys.argv[3])",
+         str(TOOL_DIR), str(root), host],
+        user=owner, group=pwd.getpwuid(owner).pw_gid, extra_groups=[],
+        capture_output=True, text=True, timeout=120)
+    if result.returncode != 0:
+        raise OSError(f"shared queue probe as owner uid {owner} failed: "
+                      f"{result.stderr.strip()[-400:]}")
+
+
 def qualify_host(
     host: str,
     *,
@@ -750,13 +790,10 @@ def qualify_host(
         return {"ok": False, "reason": mount_info.get("reason", "not shared"),
                 "checks": checks}
     root = Path(queue_root)
-    probe = root / f".membership-probe-{os.getpid()}"
     try:
-        probe.write_text(json.dumps({"host": host, "unix": _utc()}))
-        assert json.loads(probe.read_text())["host"] == host
-        probe.unlink()
+        _probe_shared_namespace(root, host)
         checks["shared_namespace_rw"] = True
-    except (OSError, ValueError, AssertionError) as exc:
+    except (OSError, ValueError, KeyError, subprocess.SubprocessError) as exc:
         checks["shared_namespace_rw"] = False
         return {"ok": False, "reason": f"shared queue not writable: {exc}",
                 "checks": checks}
