@@ -964,6 +964,8 @@ def read_pool(queue_root: str | Path) -> dict:
             if _valid_pool_item(key, record):
                 path = queue.passes_path(key) if state == pool.READY else queue.lease_path(key)
                 sidecars[state, key] = _pool_sidecar(path)
+    prewarms = {key: _pool_sidecar(queue.prewarm_path(key))
+                for key, record in ready.items() if _valid_pool_item(key, record)}
     denial_records, denial_notes = _pool_claim_denials(queue)
     now = time.time()
     notes = [*worker_notes, *ready_notes, *claim_notes, *denial_notes]
@@ -1071,6 +1073,25 @@ def read_pool(queue_root: str | Path) -> dict:
                     row['reason'] = ('no fresh worker offers; placement unknown' if not live
                                      else 'no matching live worker' if not hosts
                                      else 'awaiting admission; matching worker capacity is not a grant')
+                    warm = prewarms.get(key)
+                    if isinstance(warm, dict) and (
+                            warm.get('schema') != pool.POOL_PREWARM_SCHEMA_V1
+                            or warm.get('action_key') != key
+                            or not isinstance(warm.get('errors', []), list)):
+                        warm = ValueError('invalid prewarm receipt')
+                    if isinstance(warm, Exception):
+                        message = f'prewarm evidence unreadable for {key[:12]}: {warm}'
+                        row['reason'] += '; ' + message
+                        notes.append(message)
+                        unreadable.append(message)
+                    elif isinstance(warm, dict) and warm.get('errors'):
+                        # This is an observation, not terminal authority: a
+                        # prewarm receipt has no bound producer/retry-death
+                        # proof, and can even predate a recompute generation.
+                        errors = '; '.join(str(error) for error in warm['errors'][:3])
+                        row['reason'] += (
+                            f"; recorded prewarm input errors (permanence unproven, "
+                            f"finished_unix={warm.get('finished_unix')}): {errors}")
                     row['preempted_by'] = record.get('preempted_by')
                     if row['preempted_by']:
                         # This row is a requeue, not a first submission, and an

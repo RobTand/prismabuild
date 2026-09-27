@@ -4414,6 +4414,17 @@ under SLURM before any row is submitted.
 
 ## Storage prewarm pacing
 
+READY diagnostics expose recorded prewarm input errors, including missing
+files, with the receipt's finish time and `permanence unproven` (#1184).
+Unreadable prewarm evidence makes the diagnostic census incomplete, never a
+claim of absence. This is the issue's visibility slice only: it does not
+terminalize dependents or alter admission. The prewarm receipt does not bind
+its errors to a producer's exhausted retry contract or even to an exact queue
+generation; a data-manifest entry names a path/range/digest, not that lifecycle
+edge. Terminalizing from ENOENT, an arbitrary poll threshold, or unknown state
+would invent authority. The terminalization repair remains proposed pending
+an explicit identity-bound death proof and serialized transition contract.
+
 The data-manifest prewarmer is described in
 [`data_manifest_prewarm.md`](data_manifest_prewarm.md).  A storage-role warm
 requires complete fresh disk telemetry for every discovered data-vdev member:
