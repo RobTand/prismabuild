@@ -6844,6 +6844,22 @@ overlaps it (#1063, below), and decides:
   its nonce, so an older read can only defer a retirement to the next cycle,
   never cause one.
 
+**One commitments parse per scope.** The decision is taken from the tick's own
+parse of the scope's commitments (`_TickReads.batches`, #992), re-read inside
+the output-prefix locks only when the file's trusted version moved: an
+unchanged document is parsed once per tick rather than once per due batch, and
+a write that landed before the locks were taken still answers. The version is
+kept only under the fleet's trusted file-version rule (a coarse-clock fence
+read before the stat, on a filesystem whose times come from this kernel's
+clock); a version that cannot be vouched for -- a network filesystem's, a
+same-tick replacement's -- is re-read, and a document that cannot be read or
+parsed remains unknown state that refuses. Each write of the document drops
+the tick's parse first, so a decision a failed write did not file cannot
+answer a later batch. The output-prefix lock order is derived once per
+template listing and keyed by that listing's content, so a template filed
+between two asks is never missed. Lock scope, decision order, writer
+serialization and the retirement policy are unchanged.
+
 **The delete.** The tick first stats the instance's output prefix. If the
 prefix is not a directory on this host, it refuses
 (`output-prefix-unreachable`) and keeps the batch, because an absent file
