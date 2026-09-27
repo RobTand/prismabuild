@@ -115,6 +115,64 @@ def row_request(cas_root: Path, action_key: str) -> dict | None:
     return body if isinstance(body, dict) else None
 
 
+def movement_template_of(queue: pool.PoolQueue,
+                          request: Mapping[str, object],
+                          key: str) -> dict | None:
+    """The movement template a manifest row's movers seal off.
+
+    The writer lane's shape (`produced_output._producer_movement_template`):
+    the row's task, inputs, closure, environment and execution scope, its own
+    sealed checkout addressing, its ``cwd``, and the manifest parameter the
+    sealing path stages -- plus the two fleet fields a submission template
+    carries and a row request does not: the container-ownership marker root
+    under this queue, and the checkout identity the owner digest binds to.
+    ``None`` refuses -- an unreadable template is a refusal, never a guess.
+    """
+
+    params_source = request.get("params")
+    if not isinstance(params_source, Mapping):
+        return None
+    manifest_param = params_source.get("data_manifest")
+    if not isinstance(manifest_param, Mapping) \
+            or not isinstance(manifest_param.get("input"), Mapping):
+        return None
+    inputs = [dict(entry) for entry in request.get("inputs") or ()
+              if isinstance(entry, Mapping)]
+    params: dict[str, object] = {
+        "cwd": str(params_source.get("cwd") or "."),
+        "data_manifest": dict(manifest_param),
+    }
+    snapshot_sha256 = ""
+    raw_snapshot = params_source.get("checkout_snapshot")
+    if raw_snapshot is not None:
+        try:
+            snapshot = pb.validate_pbrun_checkout_snapshot(raw_snapshot)
+        except pb.ActionContractError:
+            return None
+        snapshot_input = snapshot["input"]
+        assert isinstance(snapshot_input, Mapping)
+        if snapshot_input not in inputs:
+            return None
+        params["checkout_snapshot"] = snapshot
+        snapshot_sha256 = str(snapshot_input["sha256"])
+    if not snapshot_sha256:
+        # The ownership namespace keeps the historical digest over the first
+        # inherited input, else the consumer's own key.
+        snapshot_sha256 = next(
+            (str(entry.get("sha256")) for entry in inputs
+             if isinstance(entry.get("sha256"), str)), key)
+    return {
+        "task": dict(request["task"]),
+        "inputs": inputs,
+        "code_closure": request["code_closure"],
+        "environment": request["environment"],
+        "execution_scope": request["execution_scope"],
+        "params": params,
+        "marker_root": Path(queue.root) / pool.CONTAINER_OWNERS,
+        "checkout_identity": {"checkout_snapshot": snapshot_sha256},
+    }
+
+
 def declares_data_manifest(request: Mapping[str, object] | None) -> bool:
     """Whether a sealed request carries a ``pbcampaign.data-manifest`` input.
 
@@ -170,6 +228,14 @@ def promote_ready_manifest_rows(
             outcome["outcome"] = "stands_down"
             outcomes.append(outcome)
             continue
+        template = movement_template_of(queue, request, key)
+        if template is None:
+            outcome["outcome"] = "refused"
+            outcome["reason"] = "no movement template off the sealed request"
+            outcomes.append(outcome)
+            _record_tier_receipt(queue, key, status="refused",
+                                 detail="no movement template")
+            continue
         try:
             # The submitter's ownership transaction, verbatim (#708 review):
             # seal and file under the consumer's transition lock, so a
@@ -177,7 +243,7 @@ def promote_ready_manifest_rows(
             # its adoption.
             with queue._transition_locked(key):
                 staged = pbrun.residency_stage_rows(
-                    dict(request), consumer_action_key=key,
+                    template, consumer_action_key=key,
                     tier=dict(stage_tier), args=planner_args(),
                     queue=queue, cas=cas)
                 if not staged.get("reused_frozen_plan"):
