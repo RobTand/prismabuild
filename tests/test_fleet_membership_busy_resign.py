@@ -1690,3 +1690,38 @@ def test_shape_only_cancellation_is_never_revived(
     assert out["status"] == "refused", out
     assert out["phase"] == "unsettled-unknown", out
     assert json.loads(gate.read_text())["draining"] is True
+
+
+def test_a_root_join_probes_the_shared_queue_as_its_unprivileged_owner(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """NFS root_squash maps root to nobody on the shared queue, and the broker
+    admits maintenance only from uid 0 (#1223). A root join therefore proves
+    the shared namespace as the queue's owner, in a child that drops to that
+    uid, and leaves no probe behind."""
+    import subprocess
+
+    host = socket.gethostname()
+    _incarnation(monkeypatch)
+    roster = _busy_roster(tmp_path, host, ["--class", "x86", "--mem-gb", "96"],
+                          monkeypatch)
+    root = _busy_queue(monkeypatch, tmp_path)
+    owner = root.stat().st_uid
+    real_run = subprocess.run
+    dropped = []
+
+    def run_as_owner(cmd, **kwargs):
+        dropped.append((kwargs.pop("user"), kwargs.pop("group"), kwargs.pop("extra_groups")))
+        return real_run(cmd, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", run_as_owner)
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    checks = fm.qualify_host(host, queue_root=root, roster_path=roster,
+                             broker_call=_healthy_broker(),
+                             runtime_root=_busy_runtime(tmp_path),
+                             held={}, mem_gb=10)
+    assert [d[0] for d in dropped] == [owner], "a root join wrote its probe as root"
+    assert dropped[0][2] == []
+    assert checks["checks"]["shared_namespace_rw"] is True, checks
+    assert checks["ok"] is True, checks
+    assert not list(root.glob(".membership-probe-*"))
