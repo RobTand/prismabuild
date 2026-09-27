@@ -130,13 +130,20 @@ def _producer(tmp_path: Path, monkeypatch, *, measurement: bool = False,
 
 
 def _running(spool, monkeypatch, *, psi: float, cpu_per_s: float = PRODUCER_CPU_PER_S,
-             telemetry_age_s: float = 0.) -> None:
-    """The producer is running: its pinned CPUs are loaded, CPU 0 and CPU 1
-    run housekeeping, and its worker's sampler reports what it burns (fresh
-    to ~2 s for every live holder on both Sparks, 2026-09-23).
+             telemetry_age_s: float = 0.,
+             busy_housekeeping: tuple[int, ...] = (1,)) -> None:
+    """The producer is running: its pinned CPUs are loaded, the named free
+    CPUs run housekeeping, and its worker's sampler reports what it burns
+    (fresh to ~2 s for every live holder on both Sparks, 2026-09-23).
 
     ``telemetry_age_s`` ages the sampler's last record instead: the producer
     was admitted a minute ago, and its record is that many seconds old.
+
+    ``busy_housekeeping`` names the free fallback CPUs that run housekeeping.
+    The default keeps the historical single busy CPU for the tests that only
+    need something to refuse; since #1210 a claim that fits an idle eligible
+    CPU is never refused for a busy one, so a test that needs a foreign
+    action genuinely refused must leave it no idle free CPU at all.
     """
 
     queue, owner = spool.queue, spool.owner
@@ -146,10 +153,8 @@ def _running(spool, monkeypatch, *, psi: float, cpu_per_s: float = PRODUCER_CPU_
         adaptive_cpu.write_json(queue.ledger().held_dir / owner / adaptive_cpu.METADATA, meta)
     pinned = meta["allocation"]["preferred"] + meta["allocation"]["fallback"]
     load = {cpu: cpu_per_s / len(pinned) for cpu in pinned}
-    # CPU 1 is set busy too, so the foreign action the tests offer beside the
-    # export (its first free CPU is 1 once CPU 0 is the producer's) meets the
-    # unchanged pressure gate with something to refuse.
-    _sample(monkeypatch, psi=psi, per_cpu={0: HOUSEKEEPING, 1: HOUSEKEEPING, **load})
+    housekeeping = {cpu: HOUSEKEEPING for cpu in busy_housekeeping}
+    _sample(monkeypatch, psi=psi, per_cpu={0: HOUSEKEEPING, **load, **housekeeping})
     base = adaptive_cpu.local_state_base(queue.ledger().base)
     current = {"action_key": owner, "complete": True, "nonce": "live",
                "sampled_unix": time.time() - telemetry_age_s, "wall_seconds": 15.,
@@ -226,13 +231,16 @@ def _assert_on_allowance(spool, export_key: str) -> None:
 def test_host_pressure_on_the_producers_cpus_does_not_refuse_its_export(
         tmp_path, monkeypatch) -> None:
     """The live wedge: ``psi_some`` 0.12 from the producer's pinned CPUs, and
-    CPU 0 at 7%.  A foreign 1-CPU action ahead of the export is still refused
-    ``host_pressure``; the export is claimed in the same pass."""
+    every free fallback CPU at 7% housekeeping.  A foreign 1-CPU action ahead
+    of the export is still refused ``host_pressure`` -- since #1210 that
+    refusal needs no idle eligible CPU to exist, not merely a busy first one
+    -- and the export is claimed in the same pass."""
 
     spool, cas = _producer(tmp_path, monkeypatch)
     foreign = _foreign(spool, cas, "one-cpu", {"cpu": 1, "mem_gb": 1})
     export_key = _export(spool, "g0")
-    _running(spool, monkeypatch, psi=0.12)
+    _running(spool, monkeypatch, psi=0.12,
+             busy_housekeeping=tuple(range(1, 15)))
 
     claim = _claim(spool.queue, spool.host)
     if claim is None or claim["action_key"] != export_key:
