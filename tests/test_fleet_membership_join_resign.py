@@ -465,3 +465,42 @@ def test_resign_never_releases_on_heartbeat_loss(queue: pool.PoolQueue, tmp_path
                     broker_call=lambda p: (_ for _ in ()).throw(AssertionError("no call")))
     assert out["status"] == "refused"
     assert queue.ready_items() != []
+
+
+def test_a_root_join_reads_the_queue_only_as_its_unprivileged_owner(
+    tmp_path: Path, monkeypatch, authority
+) -> None:
+    """NFS root_squash maps root to nobody on the shared queue, and the
+    broker admits maintenance only from uid 0 (#1223, #1225). A root join
+    runs every shared-queue read and write -- the probe and the owed
+    census -- in a child that drops to the queue's owner; only the broker
+    mutation stays root."""
+    import subprocess
+
+    host = socket.gethostname()
+    me = (f"{host}:supervisor-{os.getpid()}:"
+          f"{broker_mod._proc_starttime(os.getpid())}")
+    monkeypatch.setattr(fm, "supervisor_incarnation", lambda: (me, None))
+    roster = _active_roster(tmp_path, host, monkeypatch)
+    queue_root = _shared_queue(monkeypatch, tmp_path)  # empty: nothing owed
+    authority.admin(0, {"op": "maintenance_begin", "reason": "t", "owner": me})
+    gate = Path(authority.maintenance_path)
+    owner = queue_root.stat().st_uid
+    real_run = subprocess.run
+    calls: list[tuple[int, str]] = []
+
+    def run_as_owner(cmd, **kwargs):
+        assert kwargs.pop("extra_groups") == []
+        kwargs.pop("group")
+        calls.append((kwargs.pop("user"), cmd[5]))
+        return real_run(cmd, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", run_as_owner)
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    out = fm.join(host, reason="root join", roster_path=roster,
+                  queue_root=queue_root, gate=gate,
+                  runtime_root=_runtime_root(tmp_path),
+                  broker_call=lambda payload: authority.admin(0, dict(payload)))
+    assert calls == [(owner, "_probe_once"), (owner, "_owed_census")], calls
+    assert out["status"] == "joined", out
+    assert fm.read_gate(gate) is None
