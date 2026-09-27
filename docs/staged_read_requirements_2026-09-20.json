@@ -289,6 +289,13 @@
     "state": "yes"
    },
    "id": "ID-09",
+   "scoped_repair_1106": {
+    "target": "Canary waits/unknown observations never become passes or generation-defect verdicts.",
+    "implementation": "astra/pb-1106 proposes typed observation/staging waits and nonzero not_run rollout status; per-leg keys and reasons retained. Not merged; verdict/envelope changes require owner review.",
+    "validation": "CPU RED 1dd885185db095e3dd180541132e83f426bedfe0367f3975176957a69623d4ab: 4 failed/4 passed. Final GREEN 42219d9189565c5f9777d19825020ab8f33a8df2501aef700591e199b69a4c63: 133 passed/no skips; receipt 44d514987752fe8c4335c3579d720bb5bedead496fe061610771abc7bd5a01e2. Terminal and claim/payload checks verified; no full-attestation claim from MCP.",
+    "deployment": "not deployed; no runtime publish or live canary performed",
+    "workload_proof": "unknown; #1171 historical chunk-mover starvation hypothesis not established"
+   },
    "implementation": {
     "commit": "PB:ca0f5555; 2026-09-23 update (snapshot 13:50Z): PB:cd7e1b97e5dc (#831) reads a generation's ending from its immutable attempts; 44098612105d (#887) counts a claim whose finish is in flight as outstanding.",
     "path": "src/prismabuild/pool.py terminal records + CAS receipts (a-c); (d) application-side, referenced",

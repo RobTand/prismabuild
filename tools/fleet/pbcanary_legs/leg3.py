@@ -146,6 +146,10 @@ class _StagedReadRefusal(RuntimeError):
     """The staged-read gate refused; there is no origin fallback."""
 
 
+class _StagedReadWaitExpired(_StagedReadRefusal):
+    """Retryable staged availability exhausted its budget, without a verdict."""
+
+
 def _seed(index: int) -> bytes:
     return b"/leg3/chunk%d" % index
 
@@ -556,7 +560,10 @@ class _StagedWindow:
             refusal = str(prepared.get("refusal") or "unreadable")
             if (refusal not in LEG3_RETRYABLE_REFUSALS
                     or time.monotonic() >= deadline):
-                raise _StagedReadRefusal(
+                refusal_type = (_StagedReadWaitExpired
+                                if refusal in LEG3_RETRYABLE_REFUSALS
+                                else _StagedReadRefusal)
+                raise refusal_type(
                     "leg3 staged-read refusal: no staged coverage for "
                     f"{entry['path']!r} at offset {entry['offset']}: {refusal}")
             time.sleep(LEG3_WAIT_POLL_S)
@@ -704,6 +711,9 @@ def run_action() -> int:
             "pin_ids": [chunk["serving"]["pin_id"] for chunk in observed],
         }
         envelope["ok"] = True
+    except _StagedReadWaitExpired as exc:
+        envelope["not_verified"] = "staging_wait"
+        envelope["error"] = f"{type(exc).__name__}: {exc}"
     except Exception as exc:  # Fail-closed: report, never traceback-only.
         envelope["error"] = f"{type(exc).__name__}: {exc}"
     sys.stdout.write(canonical_json(envelope) + "\n")
