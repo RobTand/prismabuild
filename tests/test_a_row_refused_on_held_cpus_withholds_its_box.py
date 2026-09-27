@@ -166,7 +166,10 @@ def test_a_gpu_row_refused_on_held_cpus_withholds_until_they_drain(
     # The row's last two CPUs, not the CPU-only row's first two: that row's
     # own CPUs are idle and unheld, so only a withhold keeps it off the box.
     borrowed = predicted[-2:]
-    _borrow(queue, shards[-1], borrowed)
+    # #1210 can use later eligible tokens. Cover those too, so this fixture
+    # still proves a real shortage rather than relying on head-of-line blocking.
+    later = queue.ledger().free_cpu_allocation(CPUS - 6, TIERS)[9:]
+    _borrow(queue, shards[-1], borrowed + later)
 
     host["psi_some"] = .2
     gpu_row = _publish(queue, clock, _key("stage-b-row"), {"cpu": 9, "gpu": 1, "mem_gb": 96})
@@ -218,7 +221,8 @@ def test_a_held_cpu_holder_that_does_not_drain_soon_is_not_withheld_for(
     clock[0] = T0
     predicted = queue.ledger().free_cpu_allocation(9, TIERS)
     assert predicted is not None
-    _borrow(queue, key, predicted[-1:])
+    later = queue.ledger().free_cpu_allocation(CPUS - 2, TIERS)[9:]
+    _borrow(queue, key, predicted[-1:] + later)
 
     host["psi_some"] = .2
     gpu_row = _publish(queue, clock, _key("stage-b-row"), {"cpu": 9, "gpu": 1, "mem_gb": 96})
@@ -249,7 +253,8 @@ def test_busy_cpus_no_pool_holder_holds_do_not_withhold(
     predicted = queue.ledger().free_cpu_allocation(9, TIERS)
     assert predicted is not None
     foreign = predicted[-1]
-    host["busy"] = {foreign: 1.}
+    later = queue.ledger().free_cpu_allocation(CPUS - 6, TIERS)[9:]
+    host["busy"] = {cpu: 1. for cpu in [foreign] + later}
     if held:
         _borrow(queue, shards[-1], [predicted[-2]])
 

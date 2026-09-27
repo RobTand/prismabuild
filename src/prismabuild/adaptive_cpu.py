@@ -21,6 +21,7 @@ import time
 import uuid
 
 from . import adaptive_snapshot
+from .control_cpu import attributed_ticks, control_plane_counters
 
 #: A CPU is treated as idle for admission corroboration when it was busy for
 #: at most this fraction of the fresh sampling interval.  Small on purpose: a
@@ -777,10 +778,10 @@ class Controller:
     def write_state(self, name, value):
         write_json(self.base / name, value)
 
-    def _predicted_cpus(self, need: int) -> list[int] | None:
+    def _predicted_cpus(self, need: int, *, eligible_cpus=None) -> list[int] | None:
         """The CPUs this claim's tokens would represent, by the ledger's rule.
 
-        ``ResourceLedger.begin_acquire`` takes the first ``need`` free
+        ``ResourceLedger.begin_acquire`` takes the first ``need`` eligible free
         ``cpu-*`` tokens in sorted-name order and maps each token ordinal to
         ``(preferred + fallback)[ordinal]``.  The ordinal is a token index,
         never a CPU ID, so this asks the ledger for that same answer instead of
@@ -789,7 +790,7 @@ class Controller:
         ordinal outside the configured topology -- and the caller treats that
         as unknown rather than as idle.
         """
-        return self.ledger.free_cpu_allocation(need, self.tiers)
+        return self.ledger.free_cpu_allocation(need, self.tiers, eligible_cpus=eligible_cpus)
 
     @contextmanager
     def locked(self):
@@ -870,11 +871,16 @@ class Controller:
                 adaptive_snapshot.publish(self.base, self.ledger.base / 'adaptive')
 
     def sample(self):
+        path = self.base / 'cpu-sample.json'
+        previous = read_json(path)
+        # No proc census for each candidate inside the same sampling interval.
+        if 0 <= time.time() - previous.get('sampled_unix', 0) < MIN_INTERVAL_S:
+            return previous.get('observation', {})
+        control_before = control_plane_counters(set(self.cpus))
         current = counters(set(self.cpus))
         if current is None:
             return {}
-        path = self.base / 'cpu-sample.json'
-        previous = read_json(path)
+        current['control_threads'] = control_plane_counters(set(self.cpus))
         elapsed = current['sampled_unix'] - previous.get('sampled_unix', 0)
         if 0 <= elapsed < MIN_INTERVAL_S:
             return previous.get('observation', {})
@@ -890,6 +896,13 @@ class Controller:
                                'cpu_count': len(self.cpus), 'interval_s': elapsed,
                                'per_cpu_busy': {key: busy / total for key, (busy, total)
                                                 in zip(current['cpus'], deltas)}}
+                excluded = attributed_ticks(previous.get('control_threads', {}), control_before,
+                                            {key: busy for key, (busy, _) in zip(current['cpus'], deltas)})
+                observation['control_plane_busy'] = {
+                    key: excluded[key] / total for key, (_, total) in zip(current['cpus'], deltas)}
+                observation['foreign_per_cpu_busy'] = {
+                    key: (busy - excluded[key]) / total
+                    for key, (busy, total) in zip(current['cpus'], deltas)}
         current['observation'] = observation
         self.write_state('cpu-sample.json', current)
         return observation
@@ -1012,6 +1025,7 @@ class Controller:
         # claim's real selection in step: the lending path below can hand a
         # claim a *held* CPU, which that proof never saw.
         pressure_override = False
+        eligible_cpus = None
         # The exclusive needs are judged on PSI by the idle baseline below,
         # which carries ``psi_some``: a pinned neighbour's local contention, or
         # the host's own housekeeping, is not a reason to refuse them unless it
@@ -1026,8 +1040,8 @@ class Controller:
             # CPUs this claim would actually be given are not idle.
             #
             # "Would actually be given" is the ledger's own rule, not a count:
-            # ``begin_acquire`` takes the first ``need`` free ``cpu-*`` tokens
-            # in ``_glob`` (sorted) order, and ``cpu_allocation`` maps a token
+            # ``begin_acquire`` takes the first ``need`` eligible free tokens
+            # in ledger order, and ``cpu_allocation`` maps a token
             # ordinal through ``preferred + fallback`` -- the ordinal is NOT a
             # CPU ID, so tiers such as preferred [8, 10] / fallback [2, 4] make
             # token 0 CPU 8.  Held CPUs come from ``cpu_allocation`` as well,
@@ -1046,11 +1060,28 @@ class Controller:
                 # pressure; a learned cheap cost and an all-zero reading do
                 # not reopen it.
                 return refuse("host_pressure", fresh=fresh)
+            # Raw occupancy remains the saturation/projected-cost gate. Only
+            # verified control-thread work is not *foreign* load (#1210).
+            # Old samples have no attribution and retain their conservative
+            # raw interpretation during a rolling upgrade.
+            foreign_cpu = sample.get('foreign_per_cpu_busy', per_cpu)
+            if (not isinstance(foreign_cpu, dict) or set(foreign_cpu) != set(per_cpu)
+                    or any(type(value) not in (int, float) or not math.isfinite(value)
+                           or not 0 <= value <= per_cpu[cpu] for cpu, value in foreign_cpu.items())):
+                return refuse('host_pressure_unproven', fresh=fresh)
             held = set()
             for holder in holders:
                 allocation = self.ledger.cpu_allocation(holder.name, self.tiers)
                 held.update(allocation['preferred'] + allocation['fallback'])
-            predicted = self._predicted_cpus(declared)
+            eligible_cpus = [cpu for cpu in self.cpus if cpu not in held
+                             and foreign_cpu[str(cpu)] <= IDLE_BUSY_FRACTION]
+            predicted = self._predicted_cpus(declared, eligible_cpus=eligible_cpus)
+            eligible_proven = predicted is not None
+            if predicted is None:
+                # Keep the existing held/foreign denial evidence when there
+                # isn't enough eligible room. Never wait on the first busy
+                # token when a later idle one can satisfy this whole claim.
+                predicted = self._predicted_cpus(declared)
             if predicted is None:
                 return refuse("host_pressure_unproven", fresh=fresh)
             # Held and foreign are recorded apart (#1160): a CPU a pool holder
@@ -1059,11 +1090,13 @@ class Controller:
             # pool does not own, which no drain clears.
             held_busy = sorted(cpu for cpu in predicted if cpu in held)
             foreign_busy = sorted(cpu for cpu in predicted if cpu not in held
-                                  and per_cpu[str(cpu)] > IDLE_BUSY_FRACTION)
+                                  and foreign_cpu[str(cpu)] > IDLE_BUSY_FRACTION)
             busy = sorted(held_busy + foreign_busy)
             if busy:
                 return refuse("host_pressure", fresh=fresh, cpus=busy[:8],
                               held_cpus=held_busy, foreign_cpus=foreign_busy)
+            if not eligible_proven:
+                return refuse('host_pressure_unproven', fresh=fresh)
             pressure_override = True
         # With holders present the sample measures them too: above the
         # host's idle history it refuses here, as the fixed line did, and
@@ -1257,6 +1290,7 @@ class Controller:
                 'idle_baseline': idle if exclusive_need and fresh else None,
                 'admitted_unix': now,
                 'preferred_borrow': preferred_borrow,
+                'eligible_cpus': eligible_cpus,
                 'sampled_unix': sample.get('sampled_unix', 0), 'borrowing': borrowing,
                 'host_busy_cpus': sample.get('busy_cpus'), 'host_psi_some': sample.get('psi_some'),
                 'active_cpu_cost': active_cost, 'pending_cpu_cost': pending,
