@@ -14,11 +14,12 @@ import json
 from pathlib import Path
 import sys
 
+import prismabuild.core as pb
 import prismabuild.storage_tiers as storage_tiers  # noqa: F401
 from prismabuild import residency_plan
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
-from prewarm_fixture import Fleet, phase_table  # noqa: E402
+from prewarm_fixture import Fleet, data_manifest, phase_table  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import manifest_promotion  # noqa: E402
 
@@ -50,9 +51,65 @@ def _ready_item(fleet: Fleet, key: str) -> dict:
 
 def _manifest_row(fleet: Fleet, seed: str, *, annotations=None,
                   files=None) -> str:
+    """Seal and publish a READY manifest row that carries a checkout snapshot.
+
+    The movers a plan names materialize the consumer's sealed snapshot, so
+    the row the planner feeds them must address one exactly as a snapshot
+    submitter's does.
+    """
+
     files = files if files is not None else [
         fleet.file(name, size) for name, size in NAMED_FILES]
-    return fleet.action(seed, files, annotations=annotations)
+    manifest = data_manifest(files, prefix=str(fleet.mount),
+                             annotations=annotations)
+    manifest = pb.validate_data_manifest(manifest)
+    blob = fleet.root / f"{seed}.manifest.json"
+    blob.write_text(json.dumps(manifest))
+    entry, _ = fleet.cas.ingest_input(
+        blob, input_id=pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID)
+    snap = fleet.root / f"{seed}.snapshot.json"
+    snap.write_text("{}")
+    snap_entry, _ = fleet.cas.ingest_input(
+        snap, input_id="pbrun.checkout-snapshot")
+    snapshot = {
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "commit": "0" * 40, "input": snap_entry, "parent": "0" * 40,
+        "refs": {}, "subdirectory": ".",
+    }
+    action = pb.seal_action({
+        "schema": pb.ACTION_SCHEMA_V2,
+        "task": {"definition_id": "fleet/tests", "definition_version": "v1",
+                 "task_class": "generation", "determinism": "stochastic",
+                 "artifact_family": "generic", "artifact_kind": "generic",
+                 "argv": ["/bin/true", seed], "working_directory": ".",
+                 "result_path": "result"},
+        "inputs": [entry, snap_entry],
+        "code_closure": fleet.code_closure,
+        "params": {
+            "command": ["/bin/true", seed], "cwd": str(fleet.root),
+            "demand": {"cpu": 1}, "placement": {"required_tags": []},
+            "retry_policy": {"max_attempts": 1},
+            "data_manifest": {
+                "input": entry, "mount_prefix": manifest["mount_prefix"],
+                "entry_count": manifest["entry_count"],
+                "total_bytes": manifest["total_bytes"],
+            },
+            "checkout_snapshot": snapshot,
+        },
+        "environment": {"variables": {"PATH": "/usr/bin"}, "toolchain": {}},
+        "execution_scope": {"portability": "portable",
+                            "platform_key": None, "host_class": None},
+    })
+    key = str(action["action_key"])
+    request = (fleet.cas_root / "requests" / key[:2]
+               / f"{key}.json")
+    request.parent.mkdir(parents=True, exist_ok=True)
+    request.write_text(json.dumps(action))
+    fleet.queue.publish(
+        action_key=key, cas_root=fleet.cas_root,
+        worker_script=str(fleet.root / "worker.py"),
+        checkout_root=str(fleet.root))
+    return key
 
 
 def test_a_declaring_row_gains_a_filed_plan_and_a_tier_receipt(tmp_path):

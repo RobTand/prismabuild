@@ -151,17 +151,21 @@ def movement_template_of(queue: pool.PoolQueue,
     }
     snapshot_sha256 = ""
     raw_snapshot = params_source.get("checkout_snapshot")
-    if raw_snapshot is not None:
-        try:
-            snapshot = pb.validate_pbrun_checkout_snapshot(raw_snapshot)
-        except pb.ActionContractError:
-            return None
-        snapshot_input = snapshot["input"]
-        assert isinstance(snapshot_input, Mapping)
-        if snapshot_input not in inputs:
-            return None
-        params["checkout_snapshot"] = snapshot
-        snapshot_sha256 = str(snapshot_input["sha256"])
+    if raw_snapshot is None:
+        # A mover materializes its consumer's sealed checkout; a row without
+        # one cannot name the tree its movers run from, and a guess here
+        # would seal nodes no worker can start.
+        return None
+    try:
+        snapshot = pb.validate_pbrun_checkout_snapshot(raw_snapshot)
+    except pb.ActionContractError:
+        return None
+    snapshot_input = snapshot["input"]
+    assert isinstance(snapshot_input, Mapping)
+    if snapshot_input not in inputs:
+        return None
+    params["checkout_snapshot"] = snapshot
+    snapshot_sha256 = str(snapshot_input["sha256"])
     if not snapshot_sha256:
         # The ownership namespace keeps the historical digest over the first
         # inherited input, else the consumer's own key.
@@ -238,7 +242,9 @@ def promote_ready_manifest_rows(
         template = movement_template_of(queue, request, key)
         if template is None:
             outcome["outcome"] = "refused"
-            outcome["reason"] = "no movement template off the sealed request"
+            outcome["reason"] = ("no movement template off the sealed request "
+                                 "(a mover needs the row's sealed checkout "
+                                 "snapshot beside its manifest)")
             outcomes.append(outcome)
             _record_tier_receipt(queue, key, status="refused",
                                  detail="no movement template")
