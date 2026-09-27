@@ -43,6 +43,7 @@ import fcntl
 import hashlib
 import importlib.util
 import json
+import inspect
 import math
 import os
 from pathlib import Path
@@ -267,11 +268,9 @@ EXCLUDED: tuple[tuple[str, str], ...] = (
 #: published with the generation that implements it.
 CANARY_DEFAULT_ENABLED = True
 #: Rollout-record statuses. ``pending`` is written before the driver is
-#: invoked and rewritten to ``verified`` or ``failed`` on its verdict;
-#: ``not_run`` is the skip record. There is no separate error state: a canary
-#: that could not verify the generation (missing driver, refusal, crash) is
-#: ``failed`` with the reason in ``detail``, because "did not test" is never
-#: "passed".
+#: invoked and rewritten on its verdict. ``not_run`` with exit 2 means
+#: incomplete verification (including observation/staging waits), not a pass;
+#: with no exit it records an explicit skip. Driver crashes remain failed.
 CANARY_STATUSES = ("pending", "verified", "failed", "not_run")
 CANARY_RECORD_SCHEMA = "prismaquant.prismabuild.canary_status.v1"
 
@@ -834,8 +833,12 @@ def _invoke_canary_driver(generation_name: str) -> tuple[int, str]:
     """Run the driver against the just-activated generation; return (code, detail)."""
 
     entry = _load_canary_driver()
+    report: dict = {}
     try:
-        result = entry(generation=generation_name)
+        # Older retained drivers implement the original generation-only API.
+        # New drivers return their durable per-leg identities through report.
+        options = {"report": report} if "report" in inspect.signature(entry).parameters else {}
+        result = entry(generation=generation_name, **options)
     except SystemExit as exc:
         code = exc.code
         if code is None:
@@ -857,8 +860,10 @@ def _invoke_canary_driver(generation_name: str) -> tuple[int, str]:
     detail = {
         0: "every leg executed and every receipt verified",
         1: "a leg failed its contract; the driver names the leg and the refusing check",
-        2: "precondition refused: the canary did not test this generation",
+        2: "canary not verified: precondition refused or observation/staging budget exhausted",
     }.get(result, f"unrecognized driver exit code: {result}")
+    if report:
+        detail += "; " + json.dumps(report, sort_keys=True)
     return result, detail
 
 
@@ -900,7 +905,8 @@ def _run_rollout_canary(
     """Record the canary outcome for an activated generation; return the process exit.
 
     Exit 0 means the rollout record says ``verified`` (canary ran green) or
-    ``not_run`` (gate off or skipped). Exit 1 means it says ``failed``. A
+    ``not_run`` (explicit skip). Exit 2 means ``not_run`` with incomplete
+    verification (including starvation); it is not a pass. Exit 1 means ``failed``. A
     failure marks the record and exits nonzero; it never rolls anything back
     and never touches admission -- campaign-primacy (issue #688 non-goals).
     """
@@ -933,11 +939,12 @@ def _run_rollout_canary(
                              shape_gate=shape_gate, status="verified", exit_code=code, detail=detail)
         print(f"canary verified for {generation_name}: {detail}")
         return 0
+    status = "not_run" if code == 2 else "failed"
     _write_canary_record(record, generation=generation_name, commit=commit,
-                         shape_gate=shape_gate, status="failed", exit_code=code, detail=detail)
-    print(f"canary failed for {generation_name} (exit {code}): {detail}; "
+                         shape_gate=shape_gate, status=status, exit_code=code, detail=detail)
+    print(f"canary {status} for {generation_name} (exit {code}): {detail}; "
           "activation stands, nothing was rolled back", file=sys.stderr)
-    return 1
+    return 2 if code == 2 else 1
 
 
 def _rollout_reason(rollout: str, reason: str | None) -> str | None:

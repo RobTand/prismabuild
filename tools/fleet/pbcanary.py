@@ -512,11 +512,53 @@ class _SideFailed(Exception):
     """One submitted action executed but broke its contract (exit 1 class)."""
 
 
+class _SideUnverified(Exception):
+    """Observation or staged availability exhausted its budget, not a verdict."""
+
+    def __init__(self, message: str, action_key: str, reason: str) -> None:
+        super().__init__(message)
+        self.action_key = action_key
+        self.reason = reason
+
+
+def staging_wait_evidence(paths: dict, action_key: str, generation) -> bool | None:
+    """Recognize only the submitted attempt's typed leg-3 wait expiry.
+
+    A failed action has no success CAS receipt. Its immutable attempt stdout
+    is the existing evidence carrier; never inspect another generation or
+    infer starvation from arbitrary error text.
+    """
+    if type(generation) not in (int, float) or not math.isfinite(generation):
+        return None
+    import pbrun
+    from pbcanary_legs import leg3
+    try:
+        q = pbrun.pool.PoolQueue(Path(paths["queue_root"]))
+        landed, observed_generation = pbrun.bounded_outcome_observation(
+            q, action_key, generation, budget_s=pbrun.OUTCOME_READ_TIMEOUT_S)
+        if landed is None or observed_generation != generation:
+            return None
+        rendered = pbrun.bounded_outcome_render(
+            q, landed[0], landed[1], budget_s=pbrun.OUTCOME_READ_TIMEOUT_S)
+        summary = rendered["summary"]
+        if summary["status"] != "failed" or summary["action_key"] != action_key:
+            return None
+        attempts = rendered["attempts"]
+        stdout = (attempts[-1].get("stdout") if attempts
+                  else summary["detail"].get("stdout"))
+        _, envelope, _ = leg3._extract_envelope({"stdout": stdout})
+        return bool(envelope and envelope.get("ok") is False
+                    and envelope.get("not_verified") == "staging_wait")
+    except (OSError, ValueError, KeyError, pbrun.OutcomeReadUnavailable,
+            pbrun.UnreadableTerminal):
+        return None
+
+
 #: Keys a per-leg ``results`` row may carry into the verdict. The verdict
 #: reads only leg/ok/reason/receipt_ref plus leg-4 digest fields; anything
 #: else stays in the per-leg files.
-_ENTRY_KEYS = ("leg", "ok", "reason", "receipt_ref",
-               "artifact_digest", "digest_a", "digest_b")
+_ENTRY_KEYS = ("leg", "ok", "reason", "receipt_ref", "action_key", "action_keys",
+               "not_verified", "artifact_digest", "digest_a", "digest_b")
 
 
 def _record_entry(leg_dir: Path, entry: dict, results: list,
@@ -580,13 +622,31 @@ def _execute_side(
     write_json(leg_dir / f"detach{file_tag}.json", detach)
     short = action_key[:12]
 
-    waited = wait_leg(paths, leg, action_key, int(wait_s))
+    try:
+        waited = wait_leg(paths, leg, action_key, int(wait_s))
+    except subprocess.TimeoutExpired as exc:
+        raise _SideUnverified(
+            f"{label} outcome observation timed out for {action_key}: {exc}",
+            action_key, "outcome_unobserved") from exc
     write_json(leg_dir / f"pbwait{file_tag}.json",
                {"returncode": waited["returncode"],
                 "record": waited["record"],
                 "stderr_tail": waited["stderr"].strip().splitlines()[-3:]})
     if waited["returncode"] != 0:
         tail = (waited["stderr"].strip().splitlines() or ["no stderr"])[-1]
+        if waited["returncode"] in (74, 75):
+            reason = ("outcome_unobserved" if waited["returncode"] == 74
+                      else "wait_budget_exhausted")
+            raise _SideUnverified(
+                f"{label} not verified: pbwait exit {waited['returncode']} "
+                f"after {wait_s}s for {action_key}: {tail}", action_key, reason)
+        if leg == "leg-3" and waited["returncode"] == 1:
+            staging = staging_wait_evidence(paths, action_key, detach.get("published_unix"))
+            if staging is not False:
+                reason = "staging_wait" if staging else "outcome_unobserved"
+                raise _SideUnverified(
+                    f"{label} not verified: {reason} for {action_key}",
+                    action_key, reason)
         raise _SideFailed(
             f"{label} wait failed: pbwait exit {waited['returncode']} "
             f"after {wait_s}s for {short}: {tail}"
@@ -654,6 +714,11 @@ def _run_single_leg(
             manifest=manifest, wait_s=int(spec.get("wait_s", 300)),
         )
         entry["action_key"] = action_key
+    except _SideUnverified as exc:
+        _record_entry(leg_dir, {**entry, "reason": str(exc),
+                      "not_verified": exc.reason, "action_key": exc.action_key},
+                      results, stderr=True)
+        return
     except PreconditionRefused as exc:
         _record_entry(leg_dir, {**entry, "reason": str(exc)},
                       results, stderr=True)
@@ -706,6 +771,11 @@ def _run_fanout_leg(
                 wait_s=int(spec.get("wait_s", 300)),
             )
             entry.setdefault("action_keys", {})[side] = action_key
+        except _SideUnverified as exc:
+            entry.setdefault("action_keys", {})[side] = exc.action_key
+            _record_entry(leg_dir, {**entry, "reason": str(exc),
+                          "not_verified": exc.reason}, results, stderr=True)
+            return
         except PreconditionRefused as exc:
             _record_entry(leg_dir, {**entry, "reason": str(exc)},
                           results, stderr=True)
@@ -747,14 +817,14 @@ def write_summary_dir(summary_dir: str | Path, run_id: str, results: list,
     write_json(out / "canary-result.json", payload)
     lines = [f"pbcanary {run_id}"]
     for row in results:
-        status = "ok" if row.get("ok") else "FAIL"
+        status = "ok" if row.get("ok") else ("NOT VERIFIED" if row.get("not_verified") else "FAIL")
         lines.append(f"{row.get('leg')}: {status}: {row.get('reason')}")
     (out / "summary.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
     return out
 
 
 def run_canary(args: argparse.Namespace | None = None,
-               *, generation: str | None = None) -> int:
+               *, generation: str | None = None, report: dict | None = None) -> int:
     """Submit the requested legs through the real queue and verify them.
 
     ``args`` is the CLI namespace from :func:`main`; programmatic callers
@@ -851,13 +921,16 @@ def run_canary(args: argparse.Namespace | None = None,
 
     exit_code, summary = verdict(results)
     summary["sealed"] = True
+    if report is not None:
+        report.update(run_id=run_id, namespace=str(namespace), results=results,
+                      verdict=summary)
     write_json(namespace / "canary-result.json",
                {"run_id": run_id, "generation": generation,
                 "results": results, "verdict": summary})
     if summary_dir:
         write_summary_dir(summary_dir, run_id, results, summary)
     for row in results:
-        status = "ok" if row["ok"] else "FAIL"
+        status = "ok" if row["ok"] else ("NOT VERIFIED" if row.get("not_verified") else "FAIL")
         print(f"pbcanary: {row['leg']}: {status}: {row['reason']}")
     message = str(summary.get("stderr_message") or "")
     if exit_code == 0:

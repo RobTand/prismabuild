@@ -33,8 +33,9 @@ Exit codes:
     refusing check, and carries a ``stderr_message`` line the driver prints
     to stderr in that shape.
 *   2 -- precondition refused (queue unreachable, generation root absent,
-    runner misconfigured) or no leg results at all. "Did not test" is never
-    reported as passed.
+    runner misconfigured), an explicitly typed unobserved/staging wait, or no
+    leg results at all. Missing evidence is never reported as passed. A real
+    contract failure outranks another leg's typed wait.
 
 A precondition refusal anywhere dominates a leg failure: a run that never
 became a valid test answers 2, not 1.
@@ -203,6 +204,9 @@ def verdict(results: list[dict]) -> tuple[int, dict]:
                     "ok": bool(entry.get("ok", False)),
                     "reason": entry.get("reason"),
                     "receipt_ref": entry.get("receipt_ref"),
+                    "not_verified": entry.get("not_verified"),
+                    "action_key": entry.get("action_key"),
+                    "action_keys": entry.get("action_keys"),
                 }
             else:
                 legs[f"entry-{index}"] = {
@@ -249,9 +253,11 @@ def verdict(results: list[dict]) -> tuple[int, dict]:
                 ),
             )
 
-    # Exit 1: any leg whose contract check failed, naming leg and check.
+    unverified_reasons = ("outcome_unobserved", "wait_budget_exhausted", "staging_wait")
+    # A real failure outranks another leg's missing observation. Only the
+    # driver's closed typed reasons suppress a defect verdict, never prose.
     for label, info in legs.items():
-        if not info["ok"]:
+        if not info["ok"] and info.get("not_verified") not in unverified_reasons:
             check = _infer_check(info["reason"])
             return summary(
                 1,
@@ -261,6 +267,14 @@ def verdict(results: list[dict]) -> tuple[int, dict]:
                 stderr_message=(
                     f"pbcanary: leg {label} failed ({check}): {info['reason']}"
                 ),
+            )
+
+    for label, info in legs.items():
+        if info.get("not_verified") in unverified_reasons:
+            return summary(
+                2, failed_leg=label, failed_check=info["not_verified"],
+                detail=info["reason"],
+                stderr_message=f"pbcanary: leg {label} not verified: {info['reason']}",
             )
 
     # Every entry so far is ok. Missing required legs still fail the contract.

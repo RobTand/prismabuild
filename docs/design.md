@@ -3108,8 +3108,22 @@ worker's accepted cumulative progress (issue #784), not digest equality on
 originally opened paths; see the rollout runbook's leg-3 gate section.
 `--no-canary` is the skip, and the outcome lands in the generation's sibling
 rollout record (`verified`/`failed`/`not_run`). A failed canary marks `failed`
-and exits nonzero; it never rolls back the activation or touches admission. The
-running fleet adopts this default only when a generation carrying it is
+and exits nonzero; it never rolls back the activation or touches admission.
+An observation timeout (74), exhausted queue wait (75), or leg 3's typed
+retryable staged-availability expiry is instead **not verified** (#1106/#1171):
+the driver returns 2 and the rollout records `not_run` with exit 2, never
+`verified` or a generation-defect verdict. This does not assert that an
+unobserved action never ran, or that a specific higher-priority holder caused
+its wait. Real integrity/contract failures remain exit 1 and outrank another
+leg's typed wait. Historical free-text failures are not reclassified.
+The leg-3 classification requires the exact submitted generation's verified
+immutable attempt stdout and its explicit `staging_wait` marker. The driver
+retains per-leg action keys and reasons in its run summary; a supporting
+publisher carries that summary in rollout detail. Bounded waits, progress,
+admission and activation are unchanged. No wait or missing evidence passes.
+This change requires rollout-verdict/interface review before merge/publication;
+source/component validation establishes neither deployment nor a live canary.
+The running fleet adopts these semantics only when a carrying generation is
 published.
 
 The source delivery keeps `FINAL_BARRIER_QUALIFICATION_GUARD` enabled. Every
