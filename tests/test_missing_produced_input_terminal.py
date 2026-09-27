@@ -4,6 +4,7 @@ All queue/CAS/origin paths are private tmp_path fixtures. No stage mover is
 executed and no real mountpoint is read or removed.
 """
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -193,10 +194,12 @@ def test_a_crashed_dead_input_transition_is_recovered_by_the_sweep(
         tmp_path, monkeypatch):
     """#1202 review finding 4: a crash mid-transition must not lose the row.
 
-    The ending files FAILED last; a crash (or a failed atomic write) before
-    it leaves the captured bytes in ``ready-transitions/`` under the
-    ``dead-input`` kind, and ``sweep_ready_transitions`` must recover it
-    exactly as it recovers the origin-released kind.
+    An in-process write failure is guarded (#1202 review round 2): the row
+    is restored at once and the pass records why.  A real crash between the
+    capture and the filing leaves the captured bytes in
+    ``ready-transitions/`` under the ``dead-input`` kind, and
+    ``sweep_ready_transitions`` must recover it exactly as it recovers the
+    origin-released kind.
     """
     world = _World(tmp_path)
     Path(world.descs[0]["path"]).unlink()
@@ -204,18 +207,24 @@ def test_a_crashed_dead_input_transition_is_recovered_by_the_sweep(
     item = json.loads(world.q.item_path(pool.READY, world.mover).read_text())
 
     def crash(*args, **kwargs):
-        raise OSError("simulated crash before the ending was filed")
+        raise OSError("simulated write fault before the ending was filed")
 
     monkeypatch.setattr(pool, "_write_json_atomic", crash)
-    try:
-        world.q.fail_dead_input_dependency(item, world.mover)
-    except OSError:
-        pass
+    # The guard restores the row instead of raising out of the pass.
+    assert world.q.fail_dead_input_dependency(item, world.mover) is False
     monkeypatch.undo()
-    captured = list((world.q.root / "ready-transitions").glob("*.dead-input.json"))
-    assert captured, "the crashed transition left no captured bytes"
-    assert not world.q.item_path(pool.READY, world.mover).exists()
+    assert world.q.item_path(pool.READY, world.mover).exists(), (
+        "a failed ending write did not restore the row")
+    assert not world.q.item_path(pool.FAILED, world.mover).exists()
 
+    # A real crash -- the process dies between the capture and the filing --
+    # leaves the captured bytes behind; the sweep recovers them.
+    captured_dir = world.q.root / "ready-transitions"
+    captured_dir.mkdir(parents=True, exist_ok=True)
+    captured = (captured_dir / f"{world.mover}.1790000000000000."
+                f"{'0' * 32}.dead-input.json")
+    os.link(world.q.item_path(pool.READY, world.mover), captured)
+    world.q.item_path(pool.READY, world.mover).unlink()
     assert world.q.sweep_ready_transitions(grace_s=0.0) == [world.mover]
     assert world.q.item_path(pool.READY, world.mover).exists(), (
         "the dead-input kind was not recovered by the sweep")
@@ -276,3 +285,129 @@ def test_claim_fails_the_mover_before_any_admission(tmp_path):
     assert ending["status"] == "failed"
     assert ending["detail"]["termination_reason"] == "input_dependency_failed"
     assert ending["detail"].get("action_returncode") is None  # never executed
+
+
+def test_a_malformed_template_does_not_end_the_claim_pass(tmp_path):
+    """#1202 review N1: a null or non-object template body must not raise.
+
+    ``dict()`` on a non-mapping raises TypeError out of the claim pass, and
+    every later pass re-raises on the same READY row.  validate_template
+    refuses a non-mapping itself; the proof answers None and the row stays
+    READY.
+    """
+    world = _World(tmp_path)
+    Path(world.descs[0]["path"]).unlink()
+    world.fail_the_producer()
+    template_file = (world.q.root / "residency" / "produced-output-templates"
+                     / f"{world.inst['template_id']}.json")
+    template_file.write_text("null")
+    # Neither the prewarm cycle nor the claim pass raises; the row stays.
+    _warm(world, tmp_path)
+    assert world.q.item_path(pool.READY, world.mover).exists()
+    assert not world.q.item_path(pool.FAILED, world.mover).exists()
+    claimed = world.q.claim(owner="w-mover", tags=[_tier_host(world.q)])
+    assert claimed is None or claimed["action_key"] != world.mover
+
+
+def test_a_live_producer_pays_no_transition_lock(tmp_path, monkeypatch):
+    """#1202 review N2: the hint is consulted before the mover's lock.
+
+    A mover of a LIVE producer is the common case; its dead-input check must
+    take no transition lock at all, or every READY produced mover pays a
+    second NFS lock cycle per pass on top of the claim's own.
+    """
+    import hashlib
+    world = _World(tmp_path)          # the producer stays LIVE
+    lock_of = lambda key: (world.q.root / "transition-locks" / (
+        hashlib.sha256(key.encode()).hexdigest() + ".lock"))
+    taken = []
+    original = world.q._transition_locked
+
+    def counting(key, **kwargs):
+        if key == world.mover and lock_of(key).exists():
+            taken.append(key)
+        return original(key, **kwargs)
+
+    monkeypatch.setattr(world.q, "_transition_locked", counting)
+    _warm(world, tmp_path)
+    assert world.q.item_path(pool.READY, world.mover).exists()
+    assert taken == [], f"the live-producer check took the mover's lock {len(taken)}x"
+
+
+def test_the_dead_input_hold_is_timed_into_the_pass(tmp_path, monkeypatch):
+    """#1202 review N2 / finding 3: the proof's hold is timed (#1029).
+
+    With a dead hint the check takes the key's lock through the pass's timed
+    hold, so a slow proof under it is visible in ``last_claim_pass`` instead
+    of hiding inside a raw lock.
+    """
+    import time as _time
+    world = _World(tmp_path)
+    Path(world.descs[0]["path"]).unlink()
+    world.fail_the_producer()
+    real = pool.PoolQueue.claim
+
+    def slowed(self, **kwargs):
+        original_proof = po.dead_input_dependency
+
+        def slow_proof(queue, item):
+            _time.sleep(0.5)
+            return original_proof(queue, item)
+
+        import prismabuild.produced_output as po_mod
+        po_mod.dead_input_dependency = slow_proof
+        try:
+            return real(self, **kwargs)
+        finally:
+            po_mod.dead_input_dependency = original_proof
+
+    monkeypatch.setattr(pool.PoolQueue, "claim", slowed)
+    claimed = world.q.claim(owner="w-mover", tags=[_tier_host(world.q)])
+    assert claimed is None
+    monkeypatch.undo()
+    summary = world.q.last_claim_pass or {}
+    assert summary.get("transition_held_s", 0.0) >= 0.4, summary
+    assert summary.get("transition_holds", 0) >= 1, summary
+
+
+def test_a_transient_funding_read_fault_retries_instead_of_stranding(
+        tmp_path, monkeypatch):
+    """#1202 review N3: one ESTALE inside the ending must not strand the token.
+
+    A read fault while releasing the funding restores the row and records a
+    denial instead of filing FAILED: a FAILED row makes the public release
+    refuse forever, so the token would strand.  The next pass, with the
+    fault gone, files the ending and releases.
+    """
+    world = _World(tmp_path)
+    Path(world.descs[0]["path"]).unlink()
+    world.fail_the_producer()
+    faults = {"left": 1}
+
+    real_state = world.q.output_funding_file_state
+    real_read = world.q.read_output_funding
+
+    def faulty_state(*args, **kwargs):
+        if faults["left"]:
+            faults["left"] -= 1
+            raise OSError("simulated ESTALE on the funding record")
+        return real_state(*args, **kwargs)
+
+    def faulty_read(*args, **kwargs):
+        if faults["left"]:
+            faults["left"] -= 1
+            return None
+        return real_read(*args, **kwargs)
+
+    monkeypatch.setattr(world.q, "output_funding_file_state", faulty_state)
+    monkeypatch.setattr(world.q, "read_output_funding", faulty_read)
+    _warm(world, tmp_path)
+    assert world.q.item_path(pool.READY, world.mover).exists(), (
+        "a transient funding read fault filed a permanent ending")
+    assert not world.q.item_path(pool.FAILED, world.mover).exists()
+
+    monkeypatch.undo()
+    _warm(world, tmp_path)
+    assert world.q.item_path(pool.FAILED, world.mover).exists()
+    funding = world.q.read_output_funding(world.mover, TIER)
+    assert funding is not None and funding["state"] == "released", funding
