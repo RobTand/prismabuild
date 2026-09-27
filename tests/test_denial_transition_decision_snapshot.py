@@ -78,6 +78,12 @@ def test_a_damped_repeat_keeps_the_first_snapshot(tmp_path, monkeypatch):
     monkeypatch.setattr(pool, "_now", lambda: clock[0])
 
     _refuse_once(queue, item, HOST_PRESSURE_DECISION, clock)
+    # A same-verdict second pass in ONE process answers from the in-process
+    # memo with no I/O at all (the #991 design: a starved row's reason is
+    # the same for hours).  A damped repeat -- count on an existing entry --
+    # arises across loops or after a restart, so retire the memo the way
+    # _retire_denial_memo would before the second pass sees the file.
+    pool._DENIAL_SEEN.clear()
     # A later pass sees a different foreign set but the same verdict word.
     later = dict(HOST_PRESSURE_DECISION, foreign_cpus=[17], cpus=[17])
     _refuse_once(queue, item, later, clock)
