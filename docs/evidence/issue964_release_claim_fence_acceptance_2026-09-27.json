@@ -1,0 +1,84 @@
+{
+ "complete": {
+  "status": "not-this-step"
+ },
+ "contract_commit": "37b72cc431b876b6dc4889fa1f5889dd1656b97d",
+ "deploy": {
+  "status": "not-this-step"
+ },
+ "exceptions": [],
+ "ledger_commit": "31ddc0d7dbe8a83df43f8088020e9077e41f77c2",
+ "merge": {
+  "branch": "maintenance/964-20260927",
+  "issue": "https://github.com/RobTand/prismabuild/issues/964",
+  "note": "Prepared for root review; this executor did not merge, deploy or claim completion. Race fixtures stay portable (focused runs were green on dl380g10/x86); the broad sweep was placed on sparky per the issue's --tag sparky acceptance because the fs-trust tests need a local tmp. A superseded pre-_is_hex64 shard (a5c3f9325c67) was withdrawn through PB, release pending on its claiming worker.",
+  "remaining_gaps": [
+   "No deployment: source-only on this branch; older running generations keep the stale-listing window until adoption (design.md limit).",
+   "Storage and prewarm loops still list the index once per cycle and confirm only listed keys; scoped out of #964 (design.md limit).",
+   "The release index is never pruned, so the per-candidate fresh listing is O(entries ever released); live footprint measured 0 entries on 2026-09-27.",
+   "Legacy #945-era release records without an index entry stay invisible to the claim until the release command is run again.",
+   "Pre-existing failure not attributable to this diff: tests/test_a_terminal_receipt_retires_behind_a_covered_fold.py::test_a_tampered_projection_after_a_warm_cache_is_never_reused fails identically on base 464b97989523 (action b54fa8b94599aa3a7c52b6305d59d2037ea69f40ddeec546c46b5ae3100fcc36, 1 failed/30 passed) and on the fix (action 06a514f23641bff757636ae5759d70a5825b9f3a5970a6c5fdfdd32afdad06de, 1 failed/30 passed).",
+   "dl380g10 environment failures on /home/rob/tmp (unrecognized filesystem): test_pbmetrics_kept_reads*, test_stale_mention_co_owner_cache and test_an_egress_holds_the_stage_lock_only_for_its_act fail on unmodified base too (base actions cf6848b81b8cedff47b5d596b41986c8035c45681d37be4f2ef68fb4df79dddd, 13eb3389ac6a6cf585473cfa66e572707ac3adab279e8bfad9cbbc45f39274a0, 06aa6becc0884d7c8ce4deb6a42ea3ac425ca12c91231189f29599540a196721, 0688e6f077a713298620d39588294c8109e804b0fee935e7f4a08c844736fc32); the same files are green on sparky."
+  ],
+  "validated_repairs": [
+   {
+    "actions": [
+     "747e8795d596fba303e86510f167622ebf7c7e1b75dbb4d56b29c69d78b6afe6",
+     "7e831648e260a6bc1228bc7fa644fdfacf404dc66d8c2c4f099e35bba2126016",
+     "47adc102f4cb2552a8bf348e9b48b69086ef8b2f5bd2abbe125b611192aa360b",
+     "c5e214b5621aa8319e5423fa24f5b00a0bd0cdb08125a97a8b9f2c2b8464187a",
+     "bf168f147248860d4ac228937c8974267b806aa4f521593b3a693ffcdb8f2f14",
+     "5b1136805f805d91be80658df1d3bd9c1752a8e6ef4b3be13624864373ff7391",
+     "dc199ad7eebf4d05a4a4a3ebf84af89daf0905489edde43cdddeabe1ee0f7e87",
+     "d7c3c96b2094406e2764fa868946da34a891b922b618a562eceadbc0143bf05c",
+     "e82e02c2cd63aae7c2ecfcf1d14456698a056e693504a5ef062825bf70aa7061",
+     "85f1126a05eee72d009c2e560edc80abf3246d63b61e4f01bc4eb517b49fe031",
+     "ab774902eaa63a197bd23551395bc5aa49f633684d4c8319146ff87fd373c42b",
+     "f6d64719e191a133bb1e98a5c8aef723b67c917120c8e637d09416d327c66c31",
+     "e5ba6de3fcc85d472cffa559562f771873f9f315102ab02c65d41a6b2c2ea327",
+     "b53d5d35cbb276a1de5f7c540f4cbb6f2d41bf595b5bf43e81006dc58bd529f5",
+     "e82aaaf924893fa3bb94216b1f63ebdf3c6a65a166c38cc655b49d216db7e971",
+     "65625be299596011e9dfaa8444a85564d945c7ceebb53320ae79bed74c38798c",
+     "c9a9a9175abb4ba4a6fdc6af043e572f5847e1be019a44953978905f65870df5",
+     "a43c9ab657ad8447b6272107d4e530c2721a94f4f178dba754bbdef1b3579bc4",
+     "7a496a77b16bb7d73142cf62f3d958b3d083aefa72583c6abe91814da118cf2f",
+     "987fdf11169351def14c8853aa68b200e7cb84a4de9130f9d39cb13326583f15",
+     "231e5b5d78ea891a76c351c9269849d0b43600eef583170590a02215dc72e8b7",
+     "d2653438fea8705368b1f84c5e9a4172627b6a8625dcd42c6499d6b93f65382e",
+     "6cf7fd283364b28e9cce32b552377c329e0bcf38b1ce2d6296585d8146682ef5",
+     "e7e8f7d8bb4f0eb56a77bb3ba7f7105a57f9c05c20c9ac6b692eb0159bb58bb1",
+     "8f1da1d189ffde64c1251238ab64b4e9492e283dc6ab5f476ec094eb49ceae98"
+    ],
+    "id": "SM-01",
+    "outcome": "All shards terminal. Focused release/declaration/supersession/claim set: 7/7 shards green, 45 passed (actions 747e8795, 7e831648, 47adc102, c5e214b5, bf168f14, 5b113680, dc199ad7) -- run before the _is_hex64 gate; the final source re-verified the race file (e82e02c2, 3 passed) and the supervisor/spool file (d7c3c96b, 41 passed), and the broad adjacent sweep includes the race file in its green shard 3. Adjacent sweep on sparky: 15/16 shards green, 5370 tests collected/ran, 5376 outcomes; the one failure is pre-existing (see remaining_gaps). CAS receipts present; pb_verify_claim on d7c3c96b claim 110fb1c58c4fda9fdc4bf9c6595b9a66005fc368ce1750c194b7f10815b8e9e3 reported checks_passed true (payload 10883 B sha256 7333cc4ed45fc11c0c666a4f8492910c241c98c70d7544026886caaf0f25ded5)."
+   },
+   {
+    "actions": [
+     "e82e02c2cd63aae7c2ecfcf1d14456698a056e693504a5ef062825bf70aa7061",
+     "747e8795d596fba303e86510f167622ebf7c7e1b75dbb4d56b29c69d78b6afe6",
+     "7a496a77b16bb7d73142cf62f3d958b3d083aefa72583c6abe91814da118cf2f"
+    ],
+    "id": "INV-07",
+    "outcome": "Claim handoff re-confirms the release index under the same key transition lock a release holds across its entry and record; both race fixtures are green and no lock-order change was introduced (transition -> ownership unchanged). Component tests only."
+   },
+   {
+    "actions": [
+     "7a496a77b16bb7d73142cf62f3d958b3d083aefa72583c6abe91814da118cf2f",
+     "b53d5d35cbb276a1de5f7c540f4cbb6f2d41bf595b5bf43e81006dc58bd529f5"
+    ],
+    "id": "PO-07",
+    "outcome": "Adjacent retirement/egress files green except the pre-existing terminal-receipt tamper failure reproduced on base. The fence adds no output-prefix lock to the claim and leaves retirement's output-prefix-only order untouched."
+   }
+  ]
+ },
+ "prelaunch": {
+  "status": "not-this-step"
+ },
+ "schema": "pb.staged_read_acceptance.v1",
+ "scope": [
+  "SM-01",
+  "INV-07",
+  "PO-07"
+ ],
+ "step": "merge"
+}

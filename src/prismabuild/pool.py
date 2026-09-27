@@ -981,10 +981,12 @@ RESIDENCY = "residency"
 RESIDENCY_PLANS = "residency-plans"
 
 #: The queue-wide index of consumers an operator released from an origin
-#: batch (#954): one file per released key and batch, listed once per claim
-#: scan the way ``withdrawn/`` is.  Filed by
+#: batch (#954): one file per released key and batch.  Filed by
 #: ``produced_output.release_origin_consumer``; an entry is confirmed by the
 #: release record it names (``produced_output.origin_consumer_release``).
+#: The claim keeps its scan-time listing only as the placement-bypass hint;
+#: the refusal itself lists the directory fresh under the key's transition
+#: lock (#964), so an entry filed after the scan listed it is still seen.
 RELEASED_ORIGIN_CONSUMERS = "released-origin-consumers"
 
 #: How long each rung of a withdrawal's signal ladder waits before escalating.
@@ -17407,8 +17409,9 @@ class PoolQueue:
         # by hand.  Read once per scan, not once per item.
         withdrawn = self.withdrawn_keys()
         # The same listing for keys an operator released from an origin batch
-        # (#954).  Membership is only a lead; the guard below confirms it
-        # against the release record under the key's transition lock.
+        # (#954).  Membership is only the placement-bypass hint below; the
+        # guard lists the index fresh under the key's transition lock (#964),
+        # so a release that lands after this scan listed it is still seen.
         released = self.released_origin_consumer_keys()
         # One offer snapshot per scan, read only if something asks for it.
         # The cross-resource preference is the only caller and it asks on the
@@ -17601,10 +17604,17 @@ class PoolQueue:
                         or _claimed_blocks(claimed_marks, key)):
                     self.record_denial(item, "already_claimed")
                     continue
-                if key in released and self._refuse_released_origin_consumer(
+                if _is_hex64(key) and self._refuse_released_origin_consumer(
                         item, key):
                     # Before placement: failing the row is queue bookkeeping,
-                    # not execution, so any box's scan may do it (#954).
+                    # not execution, so any box's scan may do it (#954).  The
+                    # guard reads the index fresh here, under this key's
+                    # transition lock, which a release holds while it files
+                    # the entry and the record: the scan's earlier listing is
+                    # a hint, never the authority (#964).  Only a 64-hex key
+                    # can be named by the release index; an empty or foreign
+                    # key takes the path it always took, without turning the
+                    # confirmation into a malformed-record denial.
                     continue
                 if not key or not self._placement_matches(item, tags=tagset, has_gpu=has_gpu):
                     if key:
@@ -21691,11 +21701,15 @@ class PoolQueue:
     def released_origin_consumer_keys(self) -> frozenset[str]:
         """Every consumer key with an entry in the release index (#954).
 
-        Listed, not stat-ed, and loud on anything but absence, for the reasons
-        :meth:`withdrawn_keys` gives: a guard that could not see a release
-        would run a row whose batch may already be deleted.  An entry is a
-        lead, not a release: ``produced_output.origin_consumer_release``
-        confirms it against the release record it names.
+        The claim's placement bypass asks this once per scan, so a released
+        key reaches the lock on a box that cannot place the row and any box
+        may file the refusal.  It is deliberately **not** the refusal's
+        authority: a release that lands after this listing would be missed,
+        so :meth:`_refuse_released_origin_consumer` lists the directory
+        fresh under the key's transition lock (#964).  An entry is a lead,
+        never a release: ``produced_output.origin_consumer_release``
+        confirms it against the release record it names, and an unreadable
+        listing or entry is unknown, not absence.
         """
 
         try:
@@ -21720,10 +21734,13 @@ class PoolQueue:
         ``withdrawn/superseded/``.
 
         The caller holds the key's transition lock, which a release also
-        holds while it files its index entry and record, so the two are
-        either both there, neither is, or only the entry is (a release that
-        stopped before its record, which is no release).  The release binds
-        the key, not one generation: any ready row of it reads the batch.
+        holds while it files its index entry and record, and the confirmation
+        lists the index fresh here rather than trusting the scan's earlier
+        snapshot (#964): a release that completed before this lock is always
+        seen, one in flight holds the lock so this claim cannot pass, and one
+        that never completes leaves an entry with no record, which is no
+        release.  The release binds the key, not one generation: any ready
+        row of it reads the batch.
 
         Returns ``True`` when the row must not be claimed: it was filed, or
         its release could not be read (a denial, ``origin_consumer_release_

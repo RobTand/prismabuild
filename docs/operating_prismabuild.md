@@ -3647,8 +3647,11 @@ To let the batch go, use one of these (#926):
   again is refused with `origin-consumer-released`. A row for it that an
   older `pbrun` still publishes is failed at claim with the same refusal
   (status `origin_consumer_released`), and nothing is staged for it (#954).
-  For a release filed before #954, run the same command again: it answers
-  `"released": false` and files the index entry the claim reads.
+  The claim confirms the index fresh under the key's transition lock (#964),
+  so a row published after the release's state read but before its record
+  lands is failed by the same refusal too, not claimed. For a release filed
+  before #954, run the same command again: it answers `"released": false` and
+  files the index entry the claim reads.
 
   A consumer the stall line names `unpublished` was declared and never
   queued, usually because its submitter died. Release it the same way (#945).
