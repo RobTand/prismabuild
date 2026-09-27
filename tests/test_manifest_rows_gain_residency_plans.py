@@ -167,7 +167,8 @@ def test_a_row_without_a_manifest_is_not_the_planners(tmp_path):
     """A plain READY row is examined and passed over, never refused."""
 
     fleet = Fleet(tmp_path)
-    key = fleet.action("row-c", FILES, with_manifest=False)
+    files = [fleet.file(name, size) for name, size in NAMED_FILES]
+    key = fleet.action("row-c", files, with_manifest=False)
 
     outcomes = manifest_promotion.promote_ready_manifest_rows(
         fleet.queue, fleet.cas_root, _stage_tier(fleet),
