@@ -1,4 +1,22 @@
-"""The real idle loop records its stop before sleep and never touches admission."""
+"""The real idle loop records its stop before announcing, sleeping or admitting.
+
+A parked loop leaves its park marker before anything else it does that poll,
+and it must never reach admission.  Since #1204 the drain branch also
+republishes an advisory offer -- a queue *write* that reserves nothing -- so
+the fixture allows exactly that announce (as a stub, so the bounded writer's
+helper processes and their sleeps never enter this loop's poll count) and
+still fails the test on any other queue operation.
+
+The three orderings this pins, in one poll:
+
+* park before announce: the marker is on disk when the advisory record would
+  be published;
+* park before sleep: the marker is on disk when the loop sleeps;
+* the loop's own sleeps are the whole poll count, asserted exactly, with a
+  bounded stop predicate so an unexpected extra sleep can only fail the test,
+  never spin it.
+"""
+
 from __future__ import annotations
 
 import importlib.util
@@ -17,8 +35,8 @@ import pytest
     ('absent', "unknown", True),
     ('{"draining": true, "changed_unix": 100.5}', "100.5", False),
 ])
-def test_park_precedes_sleep_and_queue_access(tmp_path, monkeypatch,
-                                             contents, stamp, make_root):
+def test_park_precedes_announce_sleep_and_queue_access(tmp_path, monkeypatch,
+                                                       contents, stamp, make_root):
     gate = tmp_path / "maintenance.json"
     if contents == 'absent':
         pass
@@ -42,6 +60,11 @@ def test_park_precedes_sleep_and_queue_access(tmp_path, monkeypatch,
     monkeypatch.setattr(loop, "published_commit", lambda: "test")
     monkeypatch.setattr(loop, "_generation_at", lambda path: "test")
     monkeypatch.setattr(loop.cpu_topology, "inherited_tiers", lambda: None)
+    # Capability probes are not this fixture's subject; make them inert so
+    # nothing they do can be mistaken for a poll.
+    monkeypatch.setattr(loop.container_images.InventoryCache, "get",
+                        lambda self, *a, **k: None)
+    monkeypatch.setattr(loop.box_capacity, "ipv4_addresses", lambda: None)
 
     class UntouchableQueue:
         def __init__(self, root):
@@ -61,6 +84,19 @@ def test_park_precedes_sleep_and_queue_access(tmp_path, monkeypatch,
     starttime = Path("/proc/self/stat").read_text().rpartition(")")[2].split()[19]
     expected = parked / f"{os.getpid()}-{starttime}-{stamp}"
     polls = []
+    announces = []
+
+    def publish(announce, **kwargs):
+        # The deliberate advisory announce is allowed (#1204), and it must
+        # follow the park.  The real bounded writer forks helper processes
+        # whose sleeps and locks are not this loop's polls, so the fixture
+        # substitutes its verdict rather than running them.
+        if make_root:
+            assert expected.is_file(), "loop announced before leaving park evidence"
+        announces.append(announce)
+        return loop.PublicationResult("published", 0.0, None, "")
+
+    monkeypatch.setattr(loop, "publish_offer", publish)
 
     def sleeping(seconds):
         if make_root:
@@ -75,6 +111,7 @@ def test_park_precedes_sleep_and_queue_access(tmp_path, monkeypatch,
     monkeypatch.setattr(loop.time, "sleep", sleeping)
     monkeypatch.setattr(sys, "argv", ["worker_loop.py", "--all-cores",
                                      "--cpu-slots", "1", "--poll-s", "0"])
-    assert loop._run_loop(lambda: len(polls) == 2) == 0
-    assert len(polls) == 2
+    assert loop._run_loop(lambda: len(polls) >= 2) == 0
+    assert len(polls) == 2, "the loop took exactly its own two poll sleeps"
+    assert len(announces) == 2, "one advisory announce per parked poll"
     assert polls[0] == polls[1], "the second poll rewrote the marker"

@@ -93,6 +93,7 @@ import errno
 import fcntl
 import hashlib
 import json
+import math
 import os
 import socket
 import signal
@@ -234,6 +235,47 @@ def read_maintenance_gate() -> dict | None:
 
 def maintenance_requested() -> bool:
     return read_maintenance_gate() is not None
+
+
+#: The longest owner and reason this loop copies out of the maintenance gate.
+#: The gate is root-written data this process does not control and every field
+#: in it is optional; the broker already truncates owner at 200 and reason at
+#: 1000, and a reader of the offer should never have to parse an unbounded
+#: string out of a JSON record.
+_DRAIN_OWNER_LIMIT = 200
+_DRAIN_REASON_LIMIT = 1000
+
+
+def drain_offer_fields(gate: dict) -> dict:
+    """The offer fields that keep a parked loop visible in the census (#1204).
+
+    ``read_maintenance_gate`` returns a gate for every state that means
+    "closed" -- including a missing or unparsable file, where it synthesizes
+    the reason -- so ``state`` is always ``draining`` here.  ``owner``,
+    ``reason`` and ``changed_unix`` are copied only when they have the shape a
+    reader can use, and are bounded; a missing or malformed field is omitted
+    rather than rendered, and the record still says the box is draining.
+    ``changed_unix`` names one drain, which is what lets a reader match this
+    offer to the gate that produced it; ``reason`` is descriptive text and is
+    deliberately not identity.
+    """
+
+    fields = {"state": "draining"}
+    owner = gate.get("owner")
+    if isinstance(owner, str) and owner:
+        fields["drain_owner"] = owner[:_DRAIN_OWNER_LIMIT]
+    reason = gate.get("reason")
+    if isinstance(reason, str) and reason:
+        fields["drain_reason"] = reason[:_DRAIN_REASON_LIMIT]
+    stamp = gate.get("changed_unix")
+    if type(stamp) in (int, float):
+        try:
+            stamp = float(stamp)
+        except OverflowError:
+            stamp = None
+        if stamp is not None and math.isfinite(stamp):
+            fields["drain_changed_unix"] = stamp
+    return fields
 
 
 def _proc_starttime(pid: int) -> str:
@@ -1305,6 +1347,15 @@ def _run_loop(stop_requested):
     served = 0
     errors = 0
     announced: dict[str, int] | None = None
+    #: The declared capability the last open-gate poll published, as
+    #: ``placeable`` reads it, carried across polls so a drain can go on
+    #: declaring what this box could run (#1204).  It starts at the configured
+    #: bootstrap and is replaced by every open poll's stable declaration.  The
+    #: drain branch must not shrink it -- a supervisor spool refresh can raise
+    #: the live figure above the startup base, and a submission that fits the
+    #: box must not become unplaceable because the gate closed afterwards --
+    #: and must not re-read the ledger to recompute it.
+    last_declared: dict[str, int] = {"gpu": known_physical_gpus, **base_declared}
     #: Publishers ``pbstatus.bounded`` could not reap after SIGKILL, as
     #: ``(pid, starttime)`` identities.  While one survives, this loop does not
     #: launch another writer: the survivor is what holds the publication lock.
@@ -1418,6 +1469,88 @@ def _run_loop(stop_requested):
             except Exception as exc:                             # noqa: BLE001
                 print(f"[{host}] membership reconciliation skipped in drain: "
                       f"{type(exc).__name__}: {exc}", flush=True)
+            # Keep the parked box visible (#1204).  A loop that waits without
+            # announcing leaves its last offer to expire, and then a
+            # deliberately drained box and a dead worker read identically:
+            # same state, same reason, only a root-owned gate file on the box
+            # tells them apart.  So each drain poll republishes an offer that
+            # says the box is draining and names the gate's holder, reason and
+            # change time.  Staleness means the loop stopped again, which is
+            # what a reader needs it to mean.
+            #
+            # The record keeps the declared capability (tags, host, the last
+            # open poll's declared capacity, image inventory) because that
+            # answers "could any box ever run this", and dropping it would
+            # turn a submission that is merely waiting on the drain into a
+            # refusal.
+            # The live figure is zero on every declared kind, so the two
+            # bounded placement preferences -- the only admission readers of
+            # another box's offer -- cannot wait for a box that will not
+            # claim, and no reader sees admittable capacity that is not there.
+            # Publication goes through the ordinary bounded writer: it is the
+            # one queue write that reserves nothing, and a poll that cannot
+            # publish leaves the old offer to expire rather than admitting on
+            # an advertisement nobody can read.
+            try:
+                loops = len(box_capacity.worker_loops())
+            except OSError:
+                loops = None
+            # Both probes are diagnostics and individually bounded; a failure
+            # in either reads as unknown and must not stop the parked offer,
+            # which is the one thing this poll exists to publish.
+            try:
+                addresses = box_capacity.ipv4_addresses()
+            except Exception:                                    # noqa: BLE001
+                addresses = None
+            try:
+                observed_images = inventory.get()
+            except Exception:                                    # noqa: BLE001
+                observed_images = None
+            drain_fields = drain_offer_fields(gate)
+            # What the last open poll declared, not a fresh ledger read: the
+            # spool figure ``stable_host_capacity`` holds up survives the gate
+            # closing, and a drain poll adds no queue read.  The declared
+            # capability is what ``placeable`` answers from, so preserving it
+            # keeps a waiting submission queueable; the zero live figure below
+            # is what stops any admission reading this box as admittable.
+            drain_capacity = dict(last_declared)
+
+            def announce_drain(queue=queue, host=host, tags=offered,
+                               has_gpu=gpu_capable, capacity=drain_capacity,
+                               runtime_commit=loaded_commit, cpu_tiers=cpu_tiers,
+                               timeout_s=args.timeout_s, loops=loops,
+                               addresses=addresses, observed_images=observed_images,
+                               fields=drain_fields):
+                """The exact parked record this poll offers the queue.
+
+                A closure, not a kwargs dict, so the publisher's child runs
+                the ordinary :meth:`PoolQueue.announce` with the fields this
+                poll computed -- one publication path, like the open-gate
+                offer the loop publishes when the gate reopens.
+                """
+
+                queue.announce(
+                    host=host, tags=tags, has_gpu=has_gpu,
+                    capacity=capacity,
+                    observed_capacity={kind: 0 for kind in capacity},
+                    runtime_commit=runtime_commit, cpu_tiers=cpu_tiers,
+                    loops=loops, timeout_ceiling_s=timeout_s,
+                    progress_contracts=[pb.PROGRESS_RECORD_SCHEMA_V1],
+                    addresses=addresses, observed_images=observed_images,
+                    **fields)
+
+            publication = publish_offer(
+                announce_drain, budget_s=OFFER_PUBLISH_TIMEOUT_S,
+                retry_s=OFFER_PUBLISH_RETRY_S, abandoned=abandoned_publishers)
+            if publication.status != "published":
+                identity = (f" retained writer pid={publication.retained[0]}"
+                            f" starttime={publication.retained[1]}"
+                            if publication.retained else "")
+                print(f"[{host}] drain offer publication {publication.status} "
+                      f"after {publication.elapsed_s:g}s "
+                      f"({publication.error or 'no reason'}; result unknown"
+                      f"{identity}); the previous offer is left to expire",
+                      flush=True)
             if args.once:
                 return 0
             time.sleep(args.poll_s)
@@ -1437,6 +1570,9 @@ def _run_loop(stop_requested):
         declared = {"gpu": known_physical_gpus,
                     **live_host_capacity(base_declared, queue.ledger())}
         placeable_capacity = stable_host_capacity(declared, base_declared)
+        # The declaration a drain will carry forward if the gate closes
+        # before the next poll (#1204).
+        last_declared = placeable_capacity
 
         # The announcement records the stable physical capability while the
         # ledger receives only the capacity justified at this claim boundary.
