@@ -10820,22 +10820,31 @@ class PoolQueue:
     #: subtract exactly those holds.
     RAM_HOST_MEMORY_PREFIX = "ram-host:"
 
-    def hold_tier_host_memory(self, host: str, grant: str, gib: int) -> bool:
+    def hold_tier_host_memory(self, host: str, grant: str,
+                              gib: int) -> tuple[str, str]:
         """A RAM fill takes host ``mem_gb`` tokens under its grant (#1222).
 
         One pool, two consumers: rows and tier fills acquire from the same
         host ledger, so a fill that cannot fit beside the rows is refused
         here, at plan time, before any bytes move.  The hold lives under
-        :attr:`RAM_HOST_MEMORY_PREFIX` plus the mover grant, and is returned
-        by :meth:`release_tier_host_memory` on evict, egress or reap.
+        :attr:`RAM_HOST_MEMORY_PREFIX` plus the mover grant.
+
+        Tri-state (#1245 review B3): ``("taken", "")`` when the hold
+        landed, ``("short", ...)`` when the pool refused it, and
+        ``("unknown", ...)`` when the ledger could not be asked -- an
+        unreadable pool is never mistaken for a free one, and the detail
+        names the error so the caller can defer with evidence.
         """
 
         try:
-            return bool(self.ledger(host).acquire(
+            taken = bool(self.ledger(host).acquire(
                 self.RAM_HOST_MEMORY_PREFIX + str(grant),
                 {"mem_gb": int(gib)}))
-        except (OSError, PoolContractError, ValueError):
-            return False
+        except (OSError, PoolContractError, ValueError) as exc:
+            return "unknown", f"host mem ledger unreadable: {exc!r}"
+        if taken:
+            return "taken", ""
+        return "short", "host mem pool refused the hold"
 
     def release_tier_host_memory(self, host: str, grant: str) -> int:
         """Return every host ``mem_gb`` token a RAM fill holds (#1222).
@@ -10850,27 +10859,147 @@ class PoolQueue:
         except (OSError, PoolContractError, ValueError):
             return 0
 
-    def rows_host_memory_held(self, host: str,
-                              fill_grants: Iterable[str]) -> int | None:
+    def _ram_tier_host(self, tier_id: str) -> str:
+        """The host a RAM tier id belongs to (``ram:dl380g10``)."""
+
+        return str(tier_id).split(":", 1)[1]
+
+    def take_tier_advance(self, tier_id: str, grant: str, gib: int,
+                          kind: str) -> tuple[str, str]:
+        """Take an advance from both pools it must answer to (#1245 B1).
+
+        One primitive for the whole take: on the RAM tier a fill holds
+        host ``mem_gb`` tokens under the *same holder name* as its tier
+        tokens, so the two ledgers cannot drift apart at a call site this
+        method does not cover.  Host first -- a tier take without its host
+        hold would leave the window saying room the host pool has already
+        spent -- and the host half rolls back if the tier half fails.
+
+        Tri-state verdicts: ``("taken", "")``, ``("host-short", ...)``
+        when the host pool refused, ``("tier-short", ...)`` when the tier
+        ledger did, and ``("unknown", ...)`` when either ledger could not
+        be asked (#1245 review B3).
+        """
+
+        ram = storage_tiers.tier_kind_of(str(tier_id)) == "ram"
+        if ram:
+            host_state, host_detail = self.hold_tier_host_memory(
+                self._ram_tier_host(str(tier_id)), grant, gib)
+            if host_state == "unknown":
+                return "unknown", host_detail
+            if host_state == "short":
+                return "host-short", host_detail
+        try:
+            taken = bool(self.tier_ledger(tier_id).acquire(
+                str(grant), {str(kind): int(gib)}))
+        except (OSError, PoolContractError, ValueError) as exc:
+            if ram:
+                self.release_tier_host_memory(
+                    self._ram_tier_host(str(tier_id)), grant)
+            return "unknown", f"tier ledger unreadable: {exc!r}"
+        if not taken:
+            if ram:
+                self.release_tier_host_memory(
+                    self._ram_tier_host(str(tier_id)), grant)
+            return "tier-short", "tier pool refused the take"
+        return "taken", ""
+
+    def cancel_tier_fence(self, tier_id: str, holder: str) -> dict[str, int]:
+        """Release a fence from both pools it answers to (#1245 B1).
+
+        The tier tokens go through ``window_credit.cancel`` as before; on
+        the RAM tier the fill's host hold returns under the same holder
+        name in the same step, so a cancelled fence leaves neither pool
+        holding its half.  Safe twice, like the cancel it wraps.
+        """
+
+        outcome = window_credit.cancel(self.tier_ledger(tier_id), str(holder))
+        if storage_tiers.tier_kind_of(str(tier_id)) == "ram":
+            self.release_tier_host_memory(
+                self._ram_tier_host(str(tier_id)), str(holder))
+        return outcome
+
+    def release_tier_holder(self, tier_id: str, holder: str) -> int:
+        """Release one holder's whole tier take, both pools (#1245 B1).
+
+        For sweeps and ghost-token reaping that release by key: the tier
+        ledger's release as before, plus the RAM-tier host hold under the
+        same name when this tier is the RAM tier.  Returns the tier token
+        count released; the host release is a side effect.
+        """
+
+        try:
+            released = int(self.tier_ledger(tier_id).release(str(holder)))
+        except (OSError, PoolContractError, ValueError):
+            released = 0
+        if storage_tiers.tier_kind_of(str(tier_id)) == "ram":
+            self.release_tier_host_memory(
+                self._ram_tier_host(str(tier_id)), str(holder))
+        return released
+
+    def reconcile_ram_host_holds(
+            self, tier_id: str,
+            expected_holders: Iterable[str]) -> list[dict[str, object]]:
+        """Return orphan RAM host holds whose tier holder is gone (#1245 B1).
+
+        The crash window this heals is the one between the host take and
+        the tier take inside :meth:`take_tier_advance` (or between the
+        tier transfer and the host transfer inside
+        :meth:`transfer_tier_reservation`): the host half of an advance
+        can outlive its tier half.  Every ``ram-host:*`` holder that is
+        neither live in the tier ledger nor named in ``expected_holders``
+        (in-flight grants a later pass will decide about) is released by
+        name, and each heal is reported as an event.  Unreadable ledgers
+        reconcile nothing -- no verdict is not evidence of an orphan.
+        """
+
+        if storage_tiers.tier_kind_of(str(tier_id)) != "ram":
+            return []
+        host = self._ram_tier_host(str(tier_id))
+        try:
+            tier_live = set(self.tier_ledger(tier_id).held_keys())
+            holders = self.ledger(host).held_keys()
+        except (OSError, PoolContractError, ValueError):
+            return []
+        expected = {str(name) for name in expected_holders}
+        events: list[dict[str, object]] = []
+        prefix = self.RAM_HOST_MEMORY_PREFIX
+        for holder in holders:
+            if not holder.startswith(prefix):
+                continue
+            suffix = holder[len(prefix):]
+            if suffix in tier_live or suffix in expected:
+                continue
+            released = self.release_tier_host_memory(host, suffix)
+            if released:
+                events.append({"reason": "orphan_ram_host_hold",
+                               "holder": holder, "released_gib": released})
+        return events
+
+    def rows_host_memory_held(self, host: str) -> int | None:
         """Host ``mem_gb`` tokens held by rows, not by RAM fills (#1222).
 
-        The total the host ledger holds, less every fill hold named in
-        ``fill_grants`` (holders this box prefixed itself, so legacy fills
-        that hold no host tokens simply subtract nothing).  ``None`` when
-        the ledger will not say: no verdict is not evidence of no rows,
-        and the caller refuses fail-closed on it.
+        The total the host ledger holds, less every hold filed under
+        :attr:`RAM_HOST_MEMORY_PREFIX` -- found by prefix scan, not by a
+        handed-in list, so a fill hold under any name this tree mints is
+        accounted (#1245 review B1).  ``None`` when the ledger will not
+        say: no verdict is not evidence of no rows, and the caller
+        refuses fail-closed on it.
         """
 
         try:
             ledger = self.ledger(host)
             held = ledger.held()
+            holders = ledger.held_keys()
         except (OSError, PoolContractError):
             return None
         total = int(held.get("mem_gb", 0))
-        for grant in fill_grants:
+        prefix = self.RAM_HOST_MEMORY_PREFIX
+        for holder in holders:
+            if not holder.startswith(prefix):
+                continue
             try:
-                tokens = ledger.holder_tokens(
-                    self.RAM_HOST_MEMORY_PREFIX + str(grant))
+                tokens = ledger.holder_tokens(holder)
             except (OSError, PoolContractError):
                 return None
             total -= int(tokens.get("mem_gb", 0))
@@ -10909,9 +11038,23 @@ class PoolQueue:
         the tier's occupancy is the same number at every instant of the hand-
         over -- which is the invariant the stage reservation rests on, stated
         for a transfer rather than for a release.
+
+        On the RAM tier the host ``mem_gb`` hold moves with it, under the
+        same new name (#1245 review B1): tier first, then host, so a crash
+        between the two leaves the host half under the old name -- the
+        shape :meth:`reconcile_ram_host_holds` heals by name next cycle.
         """
 
-        return self.tier_ledger(tier_id).transfer(str(from_key), str(to_key))
+        moved = self.tier_ledger(tier_id).transfer(str(from_key), str(to_key))
+        if storage_tiers.tier_kind_of(str(tier_id)) == "ram":
+            host = self._ram_tier_host(str(tier_id))
+            try:
+                self.ledger(host).transfer(
+                    self.RAM_HOST_MEMORY_PREFIX + str(from_key),
+                    self.RAM_HOST_MEMORY_PREFIX + str(to_key))
+            except (OSError, PoolContractError, ValueError):
+                pass
+        return moved
 
     # -- advance-credit funding records (window progress protection) --------
 
@@ -14528,6 +14671,15 @@ class PoolQueue:
                      for kind, count in destroy.items()
                      if int(count) - int(destroyed.get(kind, 0)) > 0}
         released = ledger.release_count(action_key, free)
+        # The RAM tier's host hold settles with the tokens it mirrored
+        # (#1245 review B1) -- but only when the settle completed: a
+        # destroy shortfall keeps tokens held, and the bytes it stands
+        # for keep their host half too, so the retry converges on the
+        # same pair of pools.
+        if (not shortfall
+                and storage_tiers.tier_kind_of(str(tier_id)) == "ram"):
+            self.release_tier_host_memory(
+                self._ram_tier_host(str(tier_id)), action_key)
         return {"destroyed": destroyed, "released": released,
                 "shortfall": shortfall}
 

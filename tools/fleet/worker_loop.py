@@ -1196,14 +1196,18 @@ def declared_host_capacity(args: argparse.Namespace, *, cores: int) -> dict[str,
     return declared
 
 
-def _ram_tier_mem_roof() -> int | None:
-    """The RAM tier policy's measured roof for this box, or ``None``.
+def _ram_tier_mem_roof() -> tuple[int | None, str]:
+    """The RAM tier policy's measured roof for this box, with its source.
 
     The policy file sits beside this loop like it sits beside the tier
     loop, published with the runtime; the ARC and ``MemTotal`` are read
-    per call so the observer re-measures the roof every poll.  Any
-    unreadable input answers ``None``, and the observer then keeps the
-    declared ``--mem-gb`` -- the fail-closed fallback (#1222).
+    per call so the observer re-measures the roof every poll.  The
+    answer is a ``(roof, source)`` pair the observer stamps into
+    ``observed_detail`` every poll (#1245 review B2): a measured roof
+    with ``"measured"``, and any unreadable input as ``None`` with its
+    fallback reason, so the worker record always says which roof is in
+    force and a silent fall back to the declared ``--mem-gb`` is
+    observable (#1222).
     """
 
     here = Path(__file__).resolve().parent
@@ -1213,8 +1217,12 @@ def _ram_tier_mem_roof() -> int | None:
             policy_path=candidate, arcstats_path=storage_tiers.ARCSTATS,
             meminfo_path="/proc/meminfo")
         if roof is not None:
-            return roof
-    return None
+            return roof, "measured"
+        if not candidate.exists():
+            continue
+        # The policy is here but its inputs will not read: name it.
+        return None, "fallback:roof_unreadable"
+    return None, "fallback:policy_missing"
 
 
 def live_host_capacity(declared: dict[str, int], ledger) -> dict[str, int]:

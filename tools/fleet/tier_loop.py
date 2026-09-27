@@ -369,20 +369,6 @@ def tier_host(tier_id: str) -> str:
     return str(tier_id).split(":", 1)[1]
 
 
-def _release_fill_host_memory(queue, tier_id: str, holder: str) -> None:
-    """Return a RAM fill's host ``mem_gb`` tokens beside its fence (#1222).
-
-    Called wherever a fence is cancelled for a tier that turns out to be
-    the RAM tier: the fill that held host tokens under this grant is
-    ending, so the one pool both consumers acquire from gets its tokens
-    back exactly when the tier ledger does.  Safe twice, like the cancel
-    it follows; non-RAM tiers hold no host tokens and release nothing.
-    """
-
-    if storage_tiers.tier_kind_of(str(tier_id)) == "ram":
-        queue.release_tier_host_memory(tier_host(str(tier_id)), str(holder))
-
-
 def _prefill_depth(policy: Mapping[str, object] | None) -> int | None:
     """The policy's declared run-ahead cap, or ``None`` for the #633 semantics."""
 
@@ -1198,7 +1184,7 @@ def drop_prior_ram_epochs(
                 # one -- an order nothing else in the tree takes, and one
                 # the "mint is a leaf" analysis does not cover.
                 try:
-                    released = ledger.release(key)
+                    released = queue.release_tier_holder(tier_id, key)
                 except (OSError, pool.PoolContractError):
                     released = 0
             # Guard dropped.  A holder reaches one tier, so the rest is
@@ -1210,7 +1196,7 @@ def drop_prior_ram_epochs(
                 if other_tier == tier_id:
                     continue
                 try:
-                    released += queue.tier_ledger(other_tier).release(key)
+                    released += queue.release_tier_holder(other_tier, key)
                 except (OSError, pool.PoolContractError, ValueError):
                     continue
             events.append({"event": "ram-ghost-tokens-released",
@@ -6624,11 +6610,11 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                      if other_tier == tier_id and other != key
                      and permit.get("mover") == mover and permit.get("grant")),
                     None)
-            if owner is not None and owner != key:
-                if held_grant > 0:
-                    # A second fence for one shared advance: give it back.
-                    released = window_credit.cancel(ledger, grant)["released"]
-                    _release_fill_host_memory(queue, tier_id, grant)
+                if owner is not None and owner != key:
+                    if held_grant > 0:
+                        # A second fence for one shared advance: give it back.
+                        released = queue.cancel_tier_fence(
+                            tier_id, grant)["released"]
                     if released:
                         held_total -= released
                         events.append({"event": "advance-released",
@@ -6778,8 +6764,8 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                 if (record is None
                         or str(record.get("consumer_action_key")) != key
                         or str(record.get("plan_sha256")) != live_digest):
-                    released = window_credit.cancel(ledger, grant)["released"]
-                    _release_fill_host_memory(queue, tier_id, grant)
+                    released = queue.cancel_tier_fence(
+                        tier_id, grant)["released"]
                     if released:
                         held_total -= released
                     if record is not None and record.get("state") in (
@@ -6816,8 +6802,8 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                     need_gib=demand,
                     mover_holds_need=(mover_holds and not target_fence_live))
                 if due is not None:
-                    released = window_credit.cancel(ledger, grant)["released"]
-                    _release_fill_host_memory(queue, tier_id, grant)
+                    released = queue.cancel_tier_fence(
+                        tier_id, grant)["released"]
                     if released:
                         held_total -= released
                     record = queue.read_funding(mover, tier_id)
@@ -7005,15 +6991,23 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                 # mem_gb tokens under the same grant before it takes tier
                 # tokens, so rows that cannot fit beside the fill are
                 # refused at plan time and the fill is refused here when
-                # the rows are already there.  Host first, because a tier
-                # take without its host hold would leave the window saying
-                # room that the host pool has already spent.
-                ram_fill = storage_tiers.tier_kind_of(tier_id) == "ram"
-                host_hold = True
-                if ram_fill:
-                    host_hold = queue.hold_tier_host_memory(
-                        tier_host(tier_id), grant, int(deficit))
-                if not host_hold:
+                # the rows are already there.  One primitive takes both
+                # halves -- host tokens under the same holder name as the
+                # tier tokens -- and answers tri-state, so an unreadable
+                # pool defers with its error rather than reading as a
+                # free one (#1245 review B1/B3).
+                state, take_detail = queue.take_tier_advance(
+                    tier_id, grant, int(deficit), kind)
+                if state == "unknown":
+                    events.append({"event": "advance-deferred-unknown-evidence",
+                                   "tier_id": tier_id, "leg": mover_role,
+                                   "error": f"advance take unknown: "
+                                            f"{take_detail}"})
+                    if added_extra:
+                        running_extra -= added_extra
+                        admitted_newcomers.discard(key)
+                    continue
+                if state == "host-short":
                     gated[(key, tier_id)] = {
                         "reason": window_credit.REASON_STALL,
                         "permanent": False, "need_gib": cur,
@@ -7022,21 +7016,14 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                                          else "") + "host mem pool full",
                     }
                     if added_extra:
-                        running_extra -= next_gib
+                        running_extra -= added_extra
                         admitted_newcomers.discard(key)
                     continue
-                try:
-                    taken = bool(ledger.acquire(
-                        grant, {kind: int(deficit)}))
-                except (OSError, pool.PoolContractError, ValueError):
-                    taken = False
-                if ram_fill and not taken:
-                    queue.release_tier_host_memory(tier_host(tier_id), grant)
-                if not taken and claim_permit is not None:
+                if state != "taken" and claim_permit is not None:
                     permitted[(key, tier_id)] = _claim_order_permit(
                         tier_id, mover_role, mover, demand, claim_permit)
                     continue
-                if not taken:
+                if state != "taken":
                     gated[(key, tier_id)] = {
                         "reason": window_credit.REASON_STALL,
                         "permanent": False, "need_gib": cur,
@@ -7167,13 +7154,24 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                            "error": "grant census unreadable: cleanup withheld"})
             continue
         for grant in dangling:
-            released = window_credit.cancel(ledger, grant)["released"]
-            _release_fill_host_memory(queue, tier_id, grant)
+            released = queue.cancel_tier_fence(tier_id, grant)["released"]
             if released:
                 events.append({"event": "advance-released",
                                "consumer": None, "tier_id": tier_id,
                                "leg": mover_role, "reason": "dangling-grant",
                                "released_gib": released})
+        # Per-cycle reconciliation (#1245 review B1): every ram-host hold
+        # whose tier holder is gone -- the crash window inside the take
+        # and the transfer -- returns here by name.  The same complete-
+        # census guard covers it: with evidence withheld, reconcile
+        # nothing, because no verdict is not evidence of an orphan.
+        for healed in queue.reconcile_ram_host_holds(
+                tier_id, expected_grants):
+            events.append({"event": "ram-host-hold-reconciled",
+                           "tier_id": tier_id, "leg": mover_role,
+                           "reason": str(healed.get("reason")),
+                           "holder": healed.get("holder"),
+                           "released_gib": healed.get("released_gib")})
     # The census this pass admitted on, and what it would be taken over, so
     # the stage window can report on the same one (#930).
     return {"gated": gated, "protected": protected, "grants": grants,
@@ -7332,8 +7330,7 @@ def _settle_terminal_fence(queue: pool.PoolQueue, ledger, *, tier_id: str,
                                "error": f"holder census unreadable: {exc!r}"})
                 return events
             if mover_names == bound_names:
-                released = window_credit.cancel(ledger, mover)["released"]
-                _release_fill_host_memory(queue, tier_id, mover)
+                released = queue.cancel_tier_fence(tier_id, mover)["released"]
                 if released:
                     events.append({"event": "advance-released",
                                    "consumer": consumer,
@@ -7420,8 +7417,8 @@ def _settle_protected(queue: pool.PoolQueue,
                     # the fence; the exact unspent fence is decided in
                     # _settle_terminal_fence (unknown evidence defers there).
                     if held_grant > 0:
-                        released = window_credit.cancel(ledger, grant)["released"]
-                        _release_fill_host_memory(queue, tier_id, grant)
+                        released = queue.cancel_tier_fence(
+                            tier_id, grant)["released"]
                         if released:
                             events.append({"event": "advance-released",
                                            "consumer": key,
@@ -9865,18 +9862,15 @@ def _cycle(
     # is picked up by the statvfs read inside the same cycle (#640).
     ram_policy = load_ram_policy()
     # The floor guard's rows-held term, read fresh like the policy: what
-    # the host ledger says rows hold, less this tier's own fill holds
-    # (#1222).  One pool, two consumers -- the fills take host tokens
-    # beside their fences, and the window gate checks the rows' side of
-    # the same ledger.  ``None`` when the ledger will not say, which the
+    # the host ledger says rows hold.  One pool, two consumers -- the
+    # fills take host tokens beside their fences under the ram-host
+    # prefix, and the rows-held read subtracts every one of them by
+    # prefix, so no caller needs to hand it the fill names (#1222,
+    # #1245 review B1).  ``None`` when the ledger will not say, which the
     # admission refuses on rather than admitting a window beside rows it
     # cannot see.
     ram_tier_id = storage_tiers.tier_id("ram", host)
-    try:
-        fill_holders = window_credit.held_grants(queue.tier_ledger(ram_tier_id))
-    except (OSError, ValueError, TypeError):
-        fill_holders = []
-    rows_held_gib = queue.rows_host_memory_held(host, fill_holders)
+    rows_held_gib = queue.rows_host_memory_held(host)
     tiers = discover(host=host, source_pool=source_pool, fill_records=fill_records,
                      now=now, ram_policy=ram_policy,
                      rows_held_gib=rows_held_gib)

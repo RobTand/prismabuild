@@ -634,15 +634,35 @@ class CapacityObserver:
         **overrides: object,
     ) -> dict[str, int]:
         wanted = {str(kind): int(value) for kind, value in declared.items()}
+        # #1222/#1245 review B2: the roof in force, stamped into the
+        # observation every poll so a silent fall back to the static
+        # declaration is observable after deploy.  The callable may answer
+        # an int (measured, readable-API shorthand) or a
+        # ``(roof, source)`` pair carrying its own fallback reason.
+        roof_source = "fallback:not_configured"
+        roof_value: int | None = None
         if self._mem_roof is not None and "mem_gb" in wanted:
             # Measured once per offer, not once per process: the roof follows
             # the ARC and the policy between polls (#1222).
             try:
                 roof = self._mem_roof()
-            except Exception:
-                roof = None
-            if isinstance(roof, int) and not isinstance(roof, bool) and roof >= 0:
-                wanted["mem_gb"] = roof
+            except Exception as exc:
+                roof = (None, f"fallback:roof_error:{type(exc).__name__}")
+            if isinstance(roof, tuple):
+                value, source = roof
+                roof_source = str(source)
+                roof_value = (int(value)
+                              if isinstance(value, int)
+                              and not isinstance(value, bool) and value >= 0
+                              else None)
+            elif (isinstance(roof, int) and not isinstance(roof, bool)
+                    and roof >= 0):
+                roof_value = roof
+                roof_source = "measured"
+            if roof_value is None and not isinstance(roof, tuple):
+                roof_source = "fallback:roof_unreadable"
+            if roof_value is not None:
+                wanted["mem_gb"] = roof_value
         if not self._seeded:
             # Seed the window once, so a worker's first reading is never
             # decisive on its own -- from the ledger's standing total where
@@ -658,6 +678,13 @@ class CapacityObserver:
                 self._history.append(dict(seed))
             self._seeded = True
         seen = observe(wanted, held, margin_gb=self.margin_gb, **overrides)  # type: ignore[arg-type]
+        if "mem_gb" in wanted:
+            # The roof in force this poll, before the honest clamp: the
+            # declaration itself when no measurement was used (#1245
+            # review B2).
+            seen.detail["mem_roof_gib"] = (
+                roof_value if roof_value is not None else int(wanted["mem_gb"]))
+            seen.detail["mem_roof_source"] = roof_source
         self.last = seen
         sample = dict(seen.capacity)
         if self._cap is not None:

@@ -109,18 +109,18 @@ def test_fills_hold_host_tokens_and_rows_read_what_is_left(tmp_path):
     grant = "a" * 64
 
     # A tier fill takes 40 GiB of host tokens under the ram-prefixed name.
-    assert queue.hold_tier_host_memory(HOST, grant, 40) is True
+    assert queue.hold_tier_host_memory(HOST, grant, 40) == ("taken", "")
     # A row takes 48 GiB under its own action key.
     assert ledger.acquire("b" * 64, {"mem_gb": 48}) is True
-    # Rows held = total mem held (88) minus the fill's 40.
-    assert queue.rows_host_memory_held(HOST, [grant]) == 48
+    # Rows held = total mem held (88) minus the fill's 40, found by prefix.
+    assert queue.rows_host_memory_held(HOST) == 48
     # The budget is one pool: 256 - 88 = 168 free; 170 does not fit.
-    assert queue.hold_tier_host_memory(HOST, "c" * 64, 170) is False
+    assert queue.hold_tier_host_memory(HOST, "c" * 64, 170)[0] == "short"
     # Evicting the fill returns its host tokens.
     assert queue.release_tier_host_memory(HOST, grant) == 40
-    assert queue.hold_tier_host_memory(HOST, "c" * 64, 170) is True
+    assert queue.hold_tier_host_memory(HOST, "c" * 64, 170) == ("taken", "")
     # c's 170 is a fill hold too: rows held is the total less every fill.
-    assert queue.rows_host_memory_held(HOST, ["c" * 64]) == 48
+    assert queue.rows_host_memory_held(HOST) == 48
 
 
 def test_a_host_memory_shortfall_is_returned_by_release_not_eviction(
@@ -145,7 +145,7 @@ def test_a_host_memory_shortfall_is_returned_by_release_not_eviction(
     ledger.ensure_capacity({"cpu": 80, "mem_gb": 256})
     # A cold fill holds 250 of 256; an 8 GiB shard row needs host memory.
     grant = "d" * 64
-    assert queue.hold_tier_host_memory(HOST, grant, 250) is True
+    assert queue.hold_tier_host_memory(HOST, grant, 250) == ("taken", "")
     shard = "e" * 64
     queue.publish(
         action_key=shard, cas_root=tmp_path / "cas",

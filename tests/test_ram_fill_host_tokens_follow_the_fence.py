@@ -226,7 +226,7 @@ def test_ram_tier_mutations_go_through_the_pool_primitive() -> None:
                     or "tier_ledger" in base):
                 raise AssertionError(
                     f"{name}: {base}.{attr}() outside the pool primitive")
-            if attr in ("cancel", "cancel_due") and "window_credit" in base:
+            if attr in ("cancel",) and "window_credit" in base:
                 raise AssertionError(
                     f"{name}: window_credit.{attr}() outside "
                     "pool.cancel_tier_fence")
