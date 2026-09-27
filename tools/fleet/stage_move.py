@@ -3327,7 +3327,8 @@ class _Copier:
                  owner: str = "",
                  namespace: str | None = None,
                  source_stage_root: Path | str | None = None,
-                 publisher: _StagedPublisher | None = None) -> None:
+                 publisher: _StagedPublisher | None = None,
+                 fill_mb_s: int = 0) -> None:
         self.mounts = mounts
         self.pacer = pacer
         self.stage_root = stage_root
@@ -3337,6 +3338,12 @@ class _Copier:
         self.workers = max(1, workers)
         self.owner = str(owner or "")
         self.publisher = publisher
+        #: The pool share this mover's claim declared (MB/s), 0 when none:
+        #: the bound of #1235's never-held rule, set by ``run`` per window.
+        self.fill_mb_s = int(fill_mb_s or 0)
+        #: Whether this window's whole copy is too small to matter to the
+        #: pool it paces against (#1235); ``run`` decides it once.
+        self.never_held = False
         #: Per-phase thread-seconds for the receipt, shared with the
         #: publisher so one clock sees the copy and its publication (#981).
         self.clock = publisher.clock if publisher is not None else _PhaseClock()
@@ -3512,10 +3519,11 @@ class _Copier:
                         break
                     try:
                         if self.pacer is not None:
-                            if plan is not None and plan.exempt():
-                                # Never held (#1091), still measured: the
-                                # pacer samples the pool, so the receipt
-                                # carries the delivery the cap is folded from.
+                            if (plan is not None and plan.exempt()) or self.never_held:
+                                # Never held (#1091, and #1235's tiny window),
+                                # still measured: the pacer samples the pool,
+                                # so the receipt carries the delivery the cap
+                                # is folded from.
                                 sample = getattr(self.pacer, "sample", None)
                                 if sample is not None:
                                     sample()
@@ -3634,6 +3642,24 @@ class _Copier:
         # at the blocked consumer's expense (#1091).
         self.limit = (paced if plan is None
                       else (lambda: self.workers if plan.exempt() else paced()))
+        # #1235: a copy whose whole window its own reserved share delivers
+        # within ONE PACER SAMPLE INTERVAL is never held.  The bound is the
+        # live pacer's own time resolution (``sample_s``, read off the
+        # object, never a copied constant): such a window completes before
+        # the pacer can observe its contribution, so a hold cannot be a
+        # response to anything the copy caused, while the hold's cost (85 s
+        # of consumer latency behind recurring streams, measured) is all
+        # the copy waits for.  Its token bucket bounds its pool load to the
+        # same share anyway.  Still measured, never held, exactly as
+        # #1091's consumer-blocked copy.  A window with no declared share
+        # stays held as before, and so does every window bigger than the
+        # bound: the large fills' rationing is untouched.
+        window_bytes = sum(int(entry["bytes"]) for entry in entries)
+        sample_s = float(getattr(self.pacer, "sample_s", 0.0) or 0.0)
+        self.never_held = (self.pacer is not None and self.fill_mb_s > 0
+                           and sample_s > 0.0 and 0 < window_bytes
+                           and window_bytes
+                           <= self.fill_mb_s * 1_000_000 * sample_s)
         work: queuelib.Queue = queuelib.Queue()
         for entry in entries:
             work.put(entry)
@@ -4736,7 +4762,8 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
     copier = _Copier(
         mounts=mounts, pacer=pacer, stage_root=Path(args.stage_root),
         mount_prefix=mount_prefix, block=args.block, workers=args.max_readers,
-        owner=str(args.action_key), publisher=publisher, namespace=namespace)
+        owner=str(args.action_key), publisher=publisher, namespace=namespace,
+        fill_mb_s=int(getattr(args, "fill_mb_s_pool_side", 0) or 0))
     # The tier's reader plan (#1091): this copy goes first when a consumer is
     # blocked on it, and stands aside while one is blocked on another.
     copier.reader_plan = _ReaderPlan(
