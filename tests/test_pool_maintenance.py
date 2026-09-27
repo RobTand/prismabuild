@@ -76,6 +76,10 @@ def test_maintenance_gate_blocks_claims_before_queue_reads(tmp_path, monkeypatch
     monkeypatch.setattr(worker, 'MAINTENANCE_GATE', gate, raising=False)
     monkeypatch.setattr(worker, 'loaded_runtime_commit', lambda: 'same')
     monkeypatch.setattr(worker, 'published_commit', lambda: 'same')
+    # The drain poll republishes its advisory offer (#1204), so it now takes
+    # the host-local publication lock; keep that lock inside the test rather
+    # than letting it contend with a live loop or a sibling pytest worker.
+    monkeypatch.setattr(worker, 'PUBLICATION_LOCK_ROOT', tmp_path / 'publish-lock')
     class Untouchable:
         def __getattr__(self, name):
             raise AssertionError('maintenance worker touched queue: ' + name)
