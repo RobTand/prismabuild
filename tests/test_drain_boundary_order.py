@@ -142,6 +142,41 @@ def test_the_room_survives_a_holder_that_releases_mid_pass(tmp_path, monkeypatch
     assert queue.claim(capacity=CAPACITY)["action_key"] == KEY_A
 
 
+def test_a_malformed_busy_row_keeps_no_room_and_ends_no_pass(tmp_path, monkeypatch):
+    """A busy row outside ``gpu_first`` has its demand read on the busy path.
+
+    The loop holding it will refuse it as malformed; this pass must neither
+    keep a room for it nor end on its contract error -- every row behind it
+    is still decided.
+    """
+    queue = pool.PoolQueue(tmp_path / "queue")
+    ledger = queue.ledger()
+    ledger.ensure_capacity(CAPACITY)
+    assert ledger.acquire(KEY_H, {"cpu": 6, "gpu": 1, "mem_gb": 69})
+    publish(queue, KEY_A, priority=-9, resources={"cpu": 6, "gpu": 1, "mem_gb": 64})
+    publish(queue, KEY_B, priority=-10, resources={"cpu": 6, "gpu": 1, "mem_gb": 69})
+    demand_of = queue.demand_of
+
+    def malformed(item):
+        if item.get("action_key") == KEY_A:
+            raise pool.PoolContractError("pool item resources must be an object")
+        return demand_of(item)
+
+    original = queue._transition_locked
+
+    def contested(key, **kwargs):
+        if key == KEY_A:
+            ledger.release(KEY_H)
+            return _unheld()
+        return original(key, **kwargs)
+
+    monkeypatch.setattr(queue, "demand_of", malformed)
+    monkeypatch.setattr(queue, "_transition_locked", contested)
+    claimed = queue.claim(capacity=CAPACITY)
+    assert claimed is not None and claimed["action_key"] == KEY_B
+    assert "gpu_room_kept" not in _record_for(queue, KEY_A)["evidence"]
+
+
 def test_a_cpu_row_fills_beside_a_binds_all_room(tmp_path, monkeypatch):
     """#1230 review: a CPU row that fits beside the kept room still runs.
 
