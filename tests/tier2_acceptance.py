@@ -202,7 +202,7 @@ def main() -> int:
         for arm in arms:
             mode = None if arm == "unprofiled" else arm
             outcome = _run(root, profile=mode, nonce=f"o-{arm}-{repeat}")
-            if outcome["status"] not in {"published", "canonical_result_reused"}:
+            if outcome["status"] not in {"published", "execution_result_published"}:
                 report["overhead"][f"{arm}_failure"] = outcome
                 continue
             timings[arm].append(float(outcome["wall_s"]))

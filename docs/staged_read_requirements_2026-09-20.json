@@ -106,6 +106,13 @@
     "state": "unknown"
    },
    "id": "ID-02",
+   "scoped_repair_1187": {
+    "target": "Execution receipt read-back names this attempt's output, not another execution's canonical cache result.",
+    "implementation": "astra/pb-1187: core retains execution receipts by digest; immutable attempt stdout binds the returned receipt. Canonical action lookup remains first-writer-wins. Proposed PR, not merged.",
+    "validation": "CPU component RED 3ac77e7f885760fd0bd4513fa07c00c9303218a4dbec7421a372cf6a14d5ed05: 1 failed (second receipt reads first payload). GREEN 05f38dbe6fe8596272fa21e828a891171415781b9bade42cd86baa32661ed648: 13 passed, 157 deselected, no skips. CAS receipt 0e42f0463a280236fbd195ecfc4099819902bbd19b2d9fa5d9f02b4d0d43ec2e; checks_passed for claim/payload digest, not a full attestation verification.",
+    "deployment": "not deployed; requires review of new namespace/worker result status before merge and publish",
+    "workload_proof": "unknown; no live recompute or campaign qualification"
+   },
    "implementation": {
     "commit": "PB:e9f0ec176b8c63e462150fdcda2b37123424ed5b",
     "path": "src/prismabuild/pool.py nonce/scope plumbing; core._reader_identity_environment and explicit retained runtime carry through resource_scope.wrap_argv (PR750)",

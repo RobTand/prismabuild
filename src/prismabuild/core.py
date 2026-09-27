@@ -4569,6 +4569,29 @@ class PrismaBuildCAS:
         self._verify_blob(receipt["result"])  # type: ignore[arg-type]
         return receipt
 
+    def _execution_receipt_path(self, receipt_sha256: str) -> Path:
+        digest = _sha256(receipt_sha256, where="execution receipt digest")
+        return self.root / "executions" / "v1" / digest[:2] / f"{digest}.json"
+
+    def lookup_execution(
+        self, action: object, receipt_sha256: str
+    ) -> dict[str, object]:
+        """Verify the receipt named by an execution, never the action's winner.
+
+        The immutable pool attempt binds this digest through its worker output.
+        Missing or mismatched evidence refuses; there is no canonical fallback.
+        """
+        normalized = validate_action(action)
+        raw = self._load_receipt_bytes(self._execution_receipt_path(receipt_sha256))
+        receipt = self._validate_receipt(
+            _decode_strict_json(raw, where="execution receipt"), action=normalized
+        )
+        if (receipt["receipt_sha256"] != receipt_sha256
+                or raw != _canonical_file_bytes(receipt)):
+            raise CASTamperError("execution receipt differs from the requested digest")
+        self._verify_blob(receipt["result"])
+        return receipt
+
     def _verified_receipt_result_path(self, receipt: Mapping[str, object]) -> Path:
         """Return the blob path after ``lookup`` has already verified it."""
 
@@ -4589,11 +4612,15 @@ class PrismaBuildCAS:
         attestation: object,
         precommit_verify: Callable[[], None] | None = None,
         staging_namespace: str | None = None,
+        return_execution_receipt: bool = False,
     ) -> tuple[dict[str, object], bool]:
         """Publish a result and return ``(canonical_receipt, won_publication)``.
 
         A losing deterministic producer must reproduce the winner byte-for-byte;
         a stochastic producer accepts the already-published canonical result.
+        With ``return_execution_receipt``, retain and return this execution's
+        receipt instead, including when another result owns the canonical key.
+        The boolean still reports whether canonical publication was won.
         ``precommit_verify`` runs after the payload copy and temporary receipt
         fsync. Local workers use it for their action-specific closure checks;
         the worker core and optional script launcher are rechecked after that
@@ -4655,7 +4682,6 @@ class PrismaBuildCAS:
                     raise CASTamperError(
                         "published CAS receipt failed canonical readback"
                     )
-                return canonical, True
             task = normalized["task"]
             assert isinstance(task, Mapping)
             canonical_result = canonical["result"]
@@ -4669,7 +4695,20 @@ class PrismaBuildCAS:
                 raise CASConflictError(
                     "deterministic recomputation differs from the canonical CAS result"
                 )
-            return canonical, False
+            if return_execution_receipt:
+                execution_path = self._execution_receipt_path(
+                    str(candidate["receipt_sha256"])
+                )
+                _atomic_publish(
+                    execution_path, _canonical_file_bytes(candidate),
+                    prelink_verify=verify_publication_provenance,
+                )
+                # The payload was already verified above. Check the immutable
+                # receipt read-back without another full payload pass.
+                if self._load_receipt_bytes(execution_path) != _canonical_file_bytes(candidate):
+                    raise CASTamperError("execution receipt failed publication readback")
+                return candidate, won
+            return canonical, won
         finally:
             _unlink_nofollow(staging, where="CAS staging file")
 
@@ -7835,12 +7874,13 @@ def run_local_action(
             attestation=attestation,
             precommit_verify=verify_publication_provenance,
             staging_namespace=str(claim["claim_sha256"]),
+            return_execution_receipt=True,
         )
     result = {
-        "status": "published" if won else "canonical_result_reused",
+        "status": "published" if won else "execution_result_published",
         "receipt": receipt,
         # ``publish_result`` has already consumed or identity-proved the exact
-        # canonical blob.  Returning its name must not trigger a fourth full
+        # execution blob. Returning its name must not trigger a fourth full
         # read of a large result; public lookups remain content-verifying.
         "payload_path": str(cas._verified_receipt_result_path(receipt)),
         "recovered_declared_result": recovered_declared_result,
