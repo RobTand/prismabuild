@@ -8141,9 +8141,11 @@ class PoolQueue:
                     document[name] = dict(newest[:limit])
             cpu_admission.write_json(path, document)
             cpu_admission.adaptive_snapshot.publish(base, ledger.base / "adaptive")
-        except (OSError, ValueError, TypeError, OverflowError, PoolContractError):
+        except (OSError, ValueError, TypeError, OverflowError, RuntimeError,
+                PoolContractError):
             # In particular, a finally-path flush cannot replace the claim's
-            # original answer or exception.
+            # original answer or exception.  ``RuntimeError`` is
+            # ``local_state_base``'s refusal of an unusable state directory.
             return
         finally:
             if descriptor is not None:
