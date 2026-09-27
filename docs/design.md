@@ -425,7 +425,15 @@ read (`residency_lead_record_unreadable`), #1143 -- the row still withholds
 for that pass if this host's latest verdict for it is a withhold whose
 episode is inside `WITHHOLD_CEILING_S`; the denial it records carries that
 episode's start (`withhold_carried`), and the next such pass reads it back
-off any of those reasons, so a run of them never renews it. None of them is a
+off any of those reasons, so a run of them never renews it. For a GPU row
+whose transition lock another loop holds, the protection does not depend on
+the carry (#1217): when no live episode is on file -- the row was never
+evaluated here, or its episode outlived `WITHHOLD_CEILING_S`, as a long
+drain can -- the room the busy row keeps binds every row for the rest of
+the pass, the GPU-demanding with the rest (`gpu_room_binds_all` in the
+denial), so nothing sorting behind it claims the boundary it waited for;
+CPU-only rows still fill the box beside the room, and the next pass
+re-reads the row, or another box has decided it. None of them is a
 verdict, and none releases the drain: without the carry, every pass that met
 an unknown inventory admitted the rows behind an image-pinned GPU row into
 the drain it was waiting on (#1143, the #1125 livelock again). The row is
