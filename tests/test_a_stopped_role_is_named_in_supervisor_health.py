@@ -163,7 +163,7 @@ def test_only_proven_owned_roles_enter_the_health_census(
         (directory / "environ").write_bytes(
             b"".join(entry.encode() + b"\0" for entry in entries))
         (directory / "stat").write_bytes(
-            f"{pid} (prewarm_loop.py) S 1 1 1".encode())
+            f"{pid} (prewarm_loop.py) S 1 {pid} {pid}".encode())
         return pid
 
     owned = _process(7001, [

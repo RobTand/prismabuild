@@ -1002,16 +1002,44 @@ def _script_of(pid: int, argv: list[str], proc_root: Path) -> Path | None:
         return None
 
 
+def _is_session_leader(pid: int, proc_root: Path) -> bool:
+    """Prove the kernel identity established by both supervisor spawn paths.
+
+    ``start_new_session=True`` makes the launched role its own session and
+    process-group leader. A forked reader inherits argv and the ownership
+    environment, but retains its parent's session/group IDs (#1214). Neither
+    childlessness nor the ownership environment distinguishes that reader.
+    Missing/malformed stat data is not authority to count or signal a PID.
+    PPid is deliberately irrelevant: supervisor re-exec/adoption is supported.
+    """
+    raw = _proc_field(pid, "stat", proc_root)
+    if raw is None or pid <= 0:
+        return False
+    opening, closing = raw.find(b"("), raw.rfind(b")")
+    if opening <= 0 or closing < opening:
+        return False
+    # comm may itself contain spaces and ')'; fields begin after its last ')'.
+    fields = raw[closing + 1:].split()
+    if len(fields) < 4:
+        return False
+    try:
+        return (int(raw[:opening].strip()) == pid
+                and int(fields[2]) == pid and int(fields[3]) == pid)
+    except ValueError:
+        return False
+
+
 def _is_fleet_loop(pid: int, roots: list[Path],
                    proc_root: Path | None = None,
                    script_name: str = LOOP_SCRIPT) -> bool:
     """True when this pid is a worker loop this box's supervisor launched.
 
-    Three facts, none of them a name: an interpreter is running the script as
-    an argument, the script resolves inside a proven runtime root, and the
-    process carries this supervisor's ownership mark for this box.  A process
-    that fails any of them is neither counted toward the box's target nor
-    signalled, which is the whole of issue #87.
+    Four facts, none of them a name: an interpreter is running the script as
+    an argument, the script resolves inside a proven runtime root, the
+    process carries this supervisor's ownership mark for this box, and it is
+    a kernel session/group leader as launched by this supervisor. A forked
+    reader inherits the first three but not the fourth (#1214). A process
+    failing any proof is neither counted toward the target nor signalled.
     """
 
     proc_root = PROC if proc_root is None else proc_root
@@ -1032,7 +1060,8 @@ def _is_fleet_loop(pid: int, roots: list[Path],
     for entry in environ.split(b"\0"):
         name, sep, value = entry.partition(b"=")
         if sep and name.decode("utf-8", "replace") == OWNERSHIP_ENV:
-            return value.decode("utf-8", "replace") == socket.gethostname()
+            return (value.decode("utf-8", "replace") == socket.gethostname()
+                    and _is_session_leader(pid, proc_root))
     return False
 
 
