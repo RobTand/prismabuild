@@ -5083,15 +5083,25 @@ a shrink gate keeps `tier_loop` and `stage_release` from mutating either
 ledger outside these primitives. The crash windows between the two
 halves — inside the take, and inside the transfer — are healed by
 `reconcile_ram_host_holds` every cycle, which is a two-way sync (#1245
-review r2): every live tier holder's `ram-host:*` hold is made equal to
+review r2, r3): every live tier holder's `ram-host:*` hold is made equal to
 its occupancy tokens — covering the claim path's bare tier takes, which
 hold no host half of their own — and each hold whose tier holder is
 neither live nor an expected in-flight grant is released by name, as an
-event. Rate kinds never mirror into host GiB: the take primitive
-refuses one loudly, and the sync sums occupancy kinds only. A host half
-that cannot land is named (`ram-host-hold-missing`) and the sync reports
+event. The adjustment is a delta, never a release and a re-take (r3
+R4): a missing half is topped up by `target − current` — acquire merges
+into the existing holder, so the half already held is never freed for a
+concurrent row admission to take, and a failed top-up leaves it exactly
+as it was — and an excess is trimmed by name through `release_count`.
+Rate kinds never mirror into host GiB: the take primitive refuses one
+loudly, and the sync mirrors the RAM occupancy kind by name only (r3
+R7), so a kind added to the tier ledger later cannot silently become
+host GiB. A host half that cannot land — or a host read that fails
+mid-loop (r3 R6) — is named (`ram-host-hold-missing`) and the sync reports
 it unconverged, which the window gate reads as refusal — no rows number
-at all — until the next cycle lands it; a failed host transfer is named
+at all — until the next cycle lands it; a freshly restarted loop has
+no verdict and refuses the same way for its first cycle (r3 R5: the
+gate reads the previous cycle's verdict, because `discover` runs before
+`_protect_tier_advances`); a failed host transfer is named
 (`ram_host_transfer_failed`) rather than swallowed, and the sync heals
 the misfiled half by name. Every site that cancels a fence for the RAM tier
 returns the fill's host tokens in the same step; and the window gate

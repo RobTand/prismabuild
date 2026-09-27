@@ -10953,15 +10953,19 @@ class PoolQueue:
         Claim-path takes straight off the tier ledger hold no
         ``ram-host:`` tokens, so the single writer makes every live tier
         holder's host hold *equal* to its occupancy tokens each cycle:
-        the excess is released (the orphan case, the crash window between
-        the two halves of a take or a transfer), and what is missing is
-        acquired.  Rate kinds are never mirrored -- only occupancy GiB
-        crosses to the host pool.  A host half that cannot land is named
-        (``ram-host-hold-missing``) and reported unconverged, so the
-        window gate refuses growth until the sync lands it; unreadable
-        ledgers reconcile nothing and also report unconverged -- no
-        verdict is not evidence of a clean mirror.  Holders named in
-        ``expected_holders`` are in flight and left for a later pass.
+        the excess is trimmed by name, and what is missing is topped
+        up.  The adjustment is always a delta, never a release and a
+        re-take: a row admission that lands between two steps must not
+        be able to take the half the mirror already holds (r3 R4), so a
+        failed top-up leaves the existing half exactly as it was.  Rate
+        kinds are never mirrored -- the RAM occupancy kind crosses by
+        name, and nothing else (r3 R7).  A host half that cannot land is
+        named (``ram-host-hold-missing``) and reported unconverged, so
+        the window gate refuses growth until the sync lands it;
+        unreadable ledgers reconcile nothing and also report
+        unconverged -- no verdict is not evidence of a clean mirror.
+        Holders named in ``expected_holders`` are in flight and left for
+        a later pass.
         """
 
         if storage_tiers.tier_kind_of(str(tier_id)) != "ram":
@@ -10987,36 +10991,57 @@ class PoolQueue:
             except (OSError, PoolContractError, ValueError):
                 converged = False
                 continue
-            # Occupancy GiB only: rate kinds never cross to the host pool.
-            target = int(sum(int(v) for kind, v in tokens.items()
-                             if kind not in TIER_RATE_KINDS))
+            # The RAM occupancy kind by name, and nothing else: a kind
+            # added to the tier ledger later cannot silently become
+            # host GiB (r3 R7).
+            target = int(tokens.get(storage_tiers.RAM_CAPACITY_KIND, 0))
             mirror = prefix + holder
-            current = int(host_ledger.holder_tokens(
-                mirror).get("mem_gb", 0))
+            try:
+                current = int(host_ledger.holder_tokens(
+                    mirror).get("mem_gb", 0))
+            except (OSError, PoolContractError, ValueError):
+                # An unguarded read would abort the whole cycle (r3 R6).
+                converged = False
+                continue
             if current == target:
                 continue
-            released = self.release_tier_host_memory(host, holder)
-            if current > target and released:
-                # The unsafe direction healed: the host half outlived part
-                # of its tier half, and the excess returns by name.
-                events.append({"reason": "ram-host-hold-trimmed",
-                               "holder": mirror,
-                               "released_gib": released})
-            if target <= 0:
+            if current < target:
+                # Top up by the delta only: acquire merges into
+                # held/<mirror> through commit_acquire, so the half
+                # already held is never released while a concurrent row
+                # admission takes the freed tokens (r3 R4).  A failed
+                # top-up leaves ``current`` exactly as it was.
+                try:
+                    taken = host_ledger.acquire(
+                        mirror, {"mem_gb": target - current})
+                except (OSError, PoolContractError, ValueError) as exc:
+                    taken = False
+                    detail = repr(exc)
+                else:
+                    detail = str(host_ledger.last_token_shortage or "")
+                if not taken:
+                    converged = False
+                    events.append({"reason": "ram-host-hold-missing",
+                                   "holder": mirror, "gib": target,
+                                   "detail": detail})
                 continue
+            # current > target: trim the excess by name; the surviving
+            # half stays held.  The unsafe direction healed: the host
+            # half outlived part of its tier half.
             try:
-                taken = host_ledger.acquire(
-                    mirror, {"mem_gb": target})
+                released_counts = host_ledger.release_count(
+                    mirror, {"mem_gb": current - target})
             except (OSError, PoolContractError, ValueError) as exc:
-                taken = False
-                detail = repr(exc)
-            else:
-                detail = str(host_ledger.last_token_shortage or "")
-            if not taken:
                 converged = False
                 events.append({"reason": "ram-host-hold-missing",
                                "holder": mirror, "gib": target,
-                               "detail": detail})
+                               "detail": f"trim failed: {exc!r}"})
+            else:
+                released = int(released_counts.get("mem_gb", 0))
+                if released:
+                    events.append({"reason": "ram-host-hold-trimmed",
+                                   "holder": mirror,
+                                   "released_gib": released})
         for holder in holders:
             if not holder.startswith(prefix):
                 continue

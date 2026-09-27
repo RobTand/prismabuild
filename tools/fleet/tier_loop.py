@@ -6200,7 +6200,14 @@ def _shared_advance_fences(queue: pool.PoolQueue, tier_wants: list, *,
 # ``False`` while the two-way sync has a host half it could not land,
 # which the window gate reads as "refuse growth" until the next cycle
 # converges.  Written only from the single writer's reconcile pass.
+# The default is refusal: a freshly restarted loop has no verdict, and
+# no verdict is not evidence of a clean mirror -- claim-path takes may
+# have landed while it was down (#1245 r3 R5).  The gate therefore
+# reads the *previous* cycle's verdict, because ``discover`` runs
+# before ``_protect_tier_advances`` in the same cycle; the cost is one
+# refused-growth cycle at start.
 _RAM_HOST_SYNC: dict[str, bool] = {}
+_RAM_HOST_SYNC_DEFAULT: bool = False
 
 
 def rows_held_for_gate(queue: pool.PoolQueue, host: str,
@@ -9900,7 +9907,7 @@ def _cycle(
     # has not converged the gate refuses growth instead of reading a
     # rows number with host bytes the mirror has not landed (#1245 r2).
     rows_held_gib = rows_held_for_gate(
-        queue, host, _RAM_HOST_SYNC.get(host, True))
+        queue, host, _RAM_HOST_SYNC.get(host, _RAM_HOST_SYNC_DEFAULT))
     tiers = discover(host=host, source_pool=source_pool, fill_records=fill_records,
                      now=now, ram_policy=ram_policy,
                      rows_held_gib=rows_held_gib)
