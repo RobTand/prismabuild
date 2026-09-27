@@ -119,7 +119,8 @@ def test_fills_hold_host_tokens_and_rows_read_what_is_left(tmp_path):
     # Evicting the fill returns its host tokens.
     assert queue.release_tier_host_memory(HOST, grant) == 40
     assert queue.hold_tier_host_memory(HOST, "c" * 64, 170) is True
-    assert queue.rows_host_memory_held(HOST, [grant]) == 48
+    # c's 170 is a fill hold too: rows held is the total less every fill.
+    assert queue.rows_host_memory_held(HOST, ["c" * 64]) == 48
 
 
 def test_a_host_memory_shortfall_is_returned_by_release_not_eviction(
@@ -148,6 +149,7 @@ def test_a_host_memory_shortfall_is_returned_by_release_not_eviction(
     shard = "e" * 64
     queue.publish(
         action_key=shard, cas_root=tmp_path / "cas",
+        checkout_root=tmp_path / "checkout",
         worker_script=tmp_path / "worker.py", tags=["x86"],
         resources={"cpu": 2, "mem_gb": 8})
     # The shortfall is real -- the row cannot take 8 from 6 free...
