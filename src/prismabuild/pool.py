@@ -17708,8 +17708,15 @@ class PoolQueue:
                         if ledger is not None and (
                                 key in gpu_first
                                 or (carried is None and not whole_box_held)):
-                            host_demand, _tiers = storage_tiers.split_demand(
-                                self.demand_of(item))
+                            # Unlike a ``gpu_first`` row, this one's demand
+                            # was never read this pass: a row the loop holding
+                            # it will refuse as malformed keeps no room here,
+                            # and must not end this pass for every row.
+                            try:
+                                host_demand, _tiers = storage_tiers.split_demand(
+                                    self.demand_of(item))
+                            except (TypeError, ValueError, pb.PrismaBuildError):
+                                host_demand = {}
                             if host_demand.get("gpu"):
                                 room = self._ready_gpu_row_room(
                                     item, ledger=ledger, total=total,
