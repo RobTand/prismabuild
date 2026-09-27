@@ -752,9 +752,23 @@ class ProducedSpool:
                 return {"ok": False, "refusal": "descriptors-are-not-the-export"}
             landed = {str(proof["destination_path"]): proof["identity"]
                       for proof in receipt["entries"]}
-        return po.commit_origin_batch(self.queue, self.instance, self.template,
-                                      sealed, batch_id=batch_id, landed=landed,
-                                      lifetime=lifetime)
+            # Include earlier polls too: this poll may find the already
+            # re-pinned identity and perform no read. The validated receipt
+            # owns the evidence until retirement removes the namespace.
+            poll_repins = [dict(repin, path=str(proof["destination_path"]))
+                           for proof in receipt["entries"]
+                           for repin in proof.get("repinned", [])
+                           if repin["where"] == "poll"]
+        answer = po.commit_origin_batch(self.queue, self.instance, self.template,
+                                        sealed, batch_id=batch_id, landed=landed,
+                                        lifetime=lifetime)
+        if answer.get("ok") and not answer.get("duplicate") and poll_repins:
+            # A duplicate commitment did no new work and must not count the
+            # same poll again. No identity/commitment record is rewritten.
+            commit_repins = answer.get("landed_repins", [])
+            assert isinstance(commit_repins, list)
+            answer = {**answer, "landed_repins": [*poll_repins, *commit_repins]}
+        return answer
 
     def release_group(self, batch_id):
         group = self._group(batch_id)

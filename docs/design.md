@@ -1258,6 +1258,18 @@ entry. `receipt_path` is `PrismaBuildCAS.receipt_path` under the fleet CAS when
 a file is there and `null` otherwise, located and not verified. A SLURM
 submission line still names a prefix, so its shards record no key.
 
+`pbtest` can recover an unobserved outcome (exit 74) without submitting the
+shard again (#1033). The original pool submission line includes its exact
+`published_unix`; after that submitter exits, one read-only pbrun renderer
+follows that key and generation under the shard's original monotonic deadline.
+It recovers the actual stdout and recorder before normal reconciliation, so
+only complete passing evidence turns green. A failure stays failed. An expired
+budget, an unstamped older submitter, or any retained-reader notice stays
+unobserved: recovery never starts beside a possibly kernel-blocked reader.
+Recovery is not a new attempt and cannot extend the deadline. Queue records,
+claim protocol, action keys and admission are unchanged; this is client-side
+reporting and does not establish deployment.
+
 `pbtest` resubmits a shard whose `pbrun` refused it with a worker-offer
 discovery timeout (#1102), by the rule `pbcampaign --max-inflight` applies to a
 row (#560). `pbtest` runs `pbrun` as a subprocess, so it recognizes the refusal
@@ -12591,7 +12603,16 @@ the check read:
 `.export.lock` before it takes the namespace's `.reservation.lock`, so a
 re-pin's read never holds every other group's reservation. The read costs
 one pass over the file, only on this mismatch; `rehash_s` records it.
-`commit_origin_group` then commits against the re-pinned identities.
+`commit_origin_group` then commits against the re-pinned identities. Its
+successful, nonduplicate answer includes the receipt's poll-site re-pins in
+its existing `landed_repins` list (#1179), with each destination path and the
+existing identity/digest/timing evidence, followed by any commit-site re-pins.
+Earlier polls count too, even when the commit's poll needs no new hash. The
+caller can retain that answer after spool namespace retirement deletes the
+receipt. Duplicate commits report no old re-pins again; failed commits do not
+claim them as committed evidence. No origin identity, stored receipt schema,
+commitment, lifetime or retirement decision changes, and gathering the answer
+adds no payload read.
 
 The re-pin is sound because the check it replaces was a proxy for the bytes:
 the sha256 is the digest the export verified while it copied, so a file with

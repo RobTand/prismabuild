@@ -8306,7 +8306,8 @@ def main() -> int:
     # The one line that names the full key, so a caller can cite the action
     # rather than a prefix of it; ``pbtest`` records it per shard (#1012).
     # Every later line names it by prefix, which is what ``--withdraw`` takes.
-    print(f"pbrun: {verb} {key} tags={tags} demand={demand}{masked}",
+    print(f"pbrun: {verb} {key} tags={tags} demand={demand}{masked} "
+          f"published_unix={generation}",
           file=sys.stderr, flush=True)
 
     if args.detach:
