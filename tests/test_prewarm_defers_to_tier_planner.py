@@ -71,6 +71,8 @@ def test_room_left_means_warm():
 
 def test_an_unreadable_tiers_directory_answers_no_ram_tier(tmp_path):
     queue = _queue_at(tmp_path)
+    import shutil
+    shutil.rmtree(queue.root / "tiers")
     (queue.root / "tiers").symlink_to(str(tmp_path / "nowhere"))
 
     assert prewarm_loop.ram_tier_announced(queue) is False
