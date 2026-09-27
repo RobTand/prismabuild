@@ -15,9 +15,11 @@ snapshot of what it read (`_TickReads`).  Two paths re-read it:
 
 Read counts, not timings: each owner key is read once per tick, each sibling
 record once per tick, and the next tick reads them again (a cycle's snapshot
-is not carried into the next one).  The instance's own commitments are read
-again under its output-prefix lock by design -- a read-modify-write that must
-see every write made before the lock was taken -- and are not counted here.
+is not carried into the next one).  The instance's own commitments are the
+tick's one read per scope too: the retirement under its output-prefix lock
+reuses that parse while the file's trusted version holds, and re-reads it
+when the version moved, which is the read-modify-write the lock exists for
+(#992, `_TickReads.batches`).
 
 Fixture concessions: owners are published, claimed and finished through the
 real ``PoolQueue``; run with the ``nobroker_plugin`` like the #914 tests.
@@ -87,6 +89,14 @@ def _scope(queue, instance) -> Path:
     return po.instance_dir(queue.root, instance)
 
 
+def _version_keepable(path: Path) -> bool:
+    """Whether this host can vouch for a version of this file (#1045)."""
+
+    trusted = po._trusted_version_facilities()
+    return (trusted is not None
+            and trusted[0](path.stat(), trusted[1]()) is not None)
+
+
 def test_a_running_producers_key_is_read_once_for_all_its_due_batches(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """#914: three consumed batches, no consumer yet, one owner-key read."""
@@ -142,10 +152,15 @@ def test_an_ended_attempts_sweep_and_retirement_share_one_snapshot(
     # Each owner key once.
     assert reads.of("_key_generation", ended["owner_action_key"]) == 1
     assert reads.of("_key_generation", sibling["owner_action_key"]) == 1
-    # Each sibling record once: its commitments and its prewrite record.
+    # Each sibling record once where the host can vouch for its version:
+    # the tick's scan parse is reused (`_TickReads.batches`, #992).  On a
+    # filesystem that cannot (a network mount), that parse is not kept
+    # (`stage_move._keepable_version`), so `owned` reads the document once
+    # for itself after the scan read it: two, never one per asker.
     sibling_scope = _scope(queue, sibling)
+    expected = 1 if _version_keepable(sibling_scope / "commitments.json") else 2
     assert reads.of("_read_commitments",
-                    sibling_scope / "commitments.json") == 1
+                    sibling_scope / "commitments.json") == expected
     assert reads.of("_read_prewrite",
                     sibling_scope / "prewrites" / "next.prewrite.json") == 1
     # The next cycle reads each again, once.
@@ -153,4 +168,4 @@ def test_an_ended_attempts_sweep_and_retirement_share_one_snapshot(
     po.origin_retirement_tick(queue)
     assert reads.of("_key_generation", sibling["owner_action_key"]) == 1
     assert reads.of("_read_commitments",
-                    sibling_scope / "commitments.json") == 1
+                    sibling_scope / "commitments.json") == expected

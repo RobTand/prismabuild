@@ -3185,6 +3185,36 @@ again. Each run writes a JSON receipt to `<queue>/gc-receipts/`, or to
 `--receipt`, with the counts per kind, the reasons it kept each entry, and the
 survey and sweep seconds.
 
+`--queue-root` also surveys *movement receipts* (#992): a `movers/<key>.json`
+whose consumer is terminal under the same lease-timeout rule, whose mover is
+not ready or claimed, and whose tier holds no capacity token for that mover.
+The token rule is re-checked under the tier's mint lock just before the
+receipt is archived and again just before it is unlinked, so a holder that
+appears after the survey keeps it active.
+Removing one is not a delete: the full receipt is archived under its content
+digest (`movers-archive/`), its compact projection is merged into the
+`movers-retired/` checkpoint once per sweep, and only then is the active file
+unlinked, after the file's exact version and bytes are re-checked. Every
+pricing read merges those projections with the active receipts, an active
+record of the same key winning, so no fold, price or direct evidence lookup
+changes. The sweep captures a checkpoint baseline first and initializes an
+exact empty checkpoint when no earlier retired history exists, so a reader
+that runs while the batch is archiving sees a valid checkpoint rather than
+archives without one; a checkpoint that moves under a prepared batch refuses
+the whole commit and nothing is unlinked.
+
+Movement-receipt retirement is a separate explicit opt-in, because a reader
+generation that predates the merge cannot see the retirement store and would
+silently price from a shorter history:
+
+    tools/fleet/pb_gc.py --queue-root /mnt/shared/prismabuild-fleet/pb-queue --apply --all-lock-takers-verify --retire-movement-receipts
+
+Run it only after every reader -- the tier loop, pbrun, pbcampaign, the
+produced-output exporter and `pbstatus`/`pbmcp` -- is on a generation that
+merges `movers-retired/`, and keep it off until one such sweep has been
+observed to fold with the store. A sweep without the flag reports the
+candidates and retires none of them.
+
 ## Read the spool retirements
 
 A killed or withdrawn producer's host spool is retired by the worker loops on

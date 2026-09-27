@@ -9,6 +9,14 @@ from `tests/fixtures/r13_1053_dead_instance.json.gz` (436 committed batches,
 files, under a synthetic prefix; `tests/r13_1053_replay.py`), and runs the
 real `tier_loop.cycle`: one cold cycle, then steady ones.
 
+``--write-only-scopes`` adds #992's live shape beside R13: N stage-B
+handoff scopes, each M consumed origin-only batches whose succeeded
+write-only producer declared no consumer, with each entry padded to the
+live document width.  Every due batch reaches the retirement's producer
+check and stops there, so the tick's cost is its commitments reads and
+output-prefix lock orders -- the two asks RC1 removes per due batch -- and
+the ``commitments_read`` and ``lock_order`` counters show them.
+
 It counts the filesystem calls each cycle makes -- ``stat``/``lstat``,
 ``open``, ``listdir``/``scandir`` and the rename/unlink calls -- in total and
 inside the two steps #1053 changes, ``stage_release.sweep`` and
@@ -54,10 +62,12 @@ from __future__ import annotations
 import argparse
 import builtins
 import collections
+import hashlib
 import io
 import json
 import os
 from pathlib import Path
+import secrets
 import shutil
 import socket
 import subprocess
@@ -88,6 +98,8 @@ _COUNTED = {
     # retirement's cost that does not depend on the box (#1072).
     "commitments_read": [(po, "_read_commitments")],
     "commitments_write": [(po, "_write_commitments")],
+    # The output-prefix lock order the retirement derived (#992).
+    "lock_order": [(po, "_output_prefix_lock_order")],
 }
 
 #: The sampler's own reads, taken before the counter wraps anything, so the
@@ -219,6 +231,119 @@ def _discover_record(stage: Path, host: str) -> dict[str, object]:
     record = bench_tier_cycle._tier_record(stage)
     record["host"] = host
     return record
+
+
+# ---- the write-only handoff shape RC1 is about (#992) -----------------------
+
+#: The live 23:35Z shape, scaled by the caller: stage-B handoff scopes whose
+#: consumed origin-only batches all wait for a consumer that never comes,
+#: because their write-only producer succeeded.  Every due batch reaches
+#: `_retire_consumed_batch` and stops at the producer check, so the tick's
+#: cost is its commitments reads and lock-order derivations, nothing else.
+WRITE_ONLY_TEMPLATE_ID = "bench-write-only-handoff-v1"
+
+
+def _write_only_template(prefix: Path) -> dict:
+    return po.validate_template({
+        "schema": po.TEMPLATE_SCHEMA_V1, "version": 1,
+        "template_id": WRITE_ONLY_TEMPLATE_ID,
+        "output_prefix": str(prefix),
+        "slots": {"s0": {"class": "payload"}},
+        "durable_maxima": {"payload_max_bytes": 1 << 20,
+                           "checkpoint_max_bytes": 1 << 20,
+                           "temp_max_bytes": 1 << 20},
+        "working_demands": {bench_tier_cycle.TIER:
+                            {"minimum_gib": 0, "window_gib": 0}},
+        "permitted_tiers": [bench_tier_cycle.TIER],
+        "write_only": True})
+
+
+def _bind_owner(queue: pool.PoolQueue, template: dict, owner: str) -> dict:
+    """Publish, claim and bind one write-only instance.
+
+    The claimed record gets the broker control the binding validates, with
+    the scope id's broker formula (`produced_output._broker_scope_id`), as
+    the pool's real broker issues it.  The template is declared first, as a
+    producer's submission does.
+    """
+
+    queue.publish(action_key=owner, cas_root="/cas",
+                  worker_script=str(ROOT / "tools" / "prismabuild_worker.py"),
+                  checkout_root=str(Path(queue.root).parent / "bench-checkout"),
+                  resources={"cpu": 1, "mem_gb": 1}, max_attempts=1,
+                  produced_output_template=template)
+    claimed = queue.claim(owner="bench-write-only")
+    assert claimed is not None and claimed["action_key"] == owner
+    nonce = secrets.token_hex(16)
+    control = {"action_key": owner, "nonce": nonce,
+               "scope_id": po._broker_scope_id(owner, nonce)}
+    path = queue.item_path(pool.CLAIMED, owner)
+    live = pool._read_json(path)
+    assert live is not None
+    live["resource_scope"] = control
+    pool._write_json_atomic(path, live)
+    env = {"PRISMABUILD_ACTION_KEY": owner,
+           "PRISMABUILD_ACTION_NONCE": nonce,
+           "PRISMABUILD_ACTION_SCOPE": str(control["scope_id"])}
+    po.declare_template(queue.root, template)
+    instance = po.bind_instance(queue, template, owner_action_key=owner,
+                                claim_snapshot=claimed, env=env)
+    po.declare_instance(queue.root, instance)
+    assert po.admit_instance(queue, instance, template)["ok"] is True
+    return instance
+
+
+def build_write_only_scopes(queue: pool.PoolQueue, root: Path, *,
+                            scopes: int, batches: int, path_pad: int
+                            ) -> list[str]:
+    """Install ``scopes`` quiet write-only handoff scopes under ``root``.
+
+    Each has ``batches`` consumed origin-only entries, its producer finished
+    ``executed`` and no declared consumer: the predecessor shape of the
+    2026-09-26 live queue, where 39 scopes x 33 batches reached the same
+    producer check every cycle.  ``path_pad`` pads each entry with planned
+    paths, so a document approaches the live 414,649 B.  No origin file is
+    created: a quiet retirement reads the commitments and the owner's
+    terminal record and touches neither a path nor a batch record.
+
+    Returns the installed scope directories.  The instances are bound
+    through the real publish/claim/bind path (`_bind_owner`), so the shape
+    is the one a producer files, not a hand-written record.
+    """
+
+    prefix = root / "handoff"
+    template = _write_only_template(prefix)
+    found: list[str] = []
+    for index in range(scopes):
+        owner = hashlib.sha256(
+            f"bench-write-only-{index}".encode()).hexdigest()
+        instance = _bind_owner(queue, template, owner)
+        entries: dict[str, dict] = {}
+        for number in range(batches):
+            batch_id = f"b{number:02d}"
+            digest = hashlib.sha256(
+                f"{owner}:{batch_id}".encode()).hexdigest()
+            entries[batch_id] = {
+                "manifest_digest": digest,
+                "batch_namespace": f"bench-{digest[:16]}",
+                "tier": bench_tier_cycle.TIER,
+                "mover_key": hashlib.sha256(
+                    f"mover:{owner}:{batch_id}".encode()).hexdigest(),
+                "class_bytes": {"payload": 8, "checkpoint": 0, "temp": 0},
+                "paths": [str(prefix / f"p{index}-{number}-{pad}.bin")
+                          for pad in range(path_pad)],
+                "retired": False,
+                "origin_reclaimed": False,
+                "origin_only": True,
+                "lifetime": po.ORIGIN_LIFETIME_CONSUMED,
+            }
+        path = po._commitments_path(queue.root, instance)
+        admission = po._read_commitments(path)["admission"]
+        po._write_commitments(path, {"batches": entries,
+                                     "admission": admission})
+        queue.finish(owner, status="executed")
+        found.append(str(po.instance_dir(queue.root, instance)))
+    return found
 
 
 # ---- the cycles (the child when profiled) ----------------------------------
@@ -449,6 +574,15 @@ def main(argv: list[str] | None = None) -> int:
                              "first cycle censused 50 owners")
     parser.add_argument("--dead-entries", type=int, default=1680,
                         help="entries in each dead owner's fragment")
+    parser.add_argument("--write-only-scopes", type=int, default=0,
+                        help="write-only handoff scopes to install (#992): "
+                             "consumed origin-only batches whose succeeded "
+                             "producer declared no consumer (the live 39)")
+    parser.add_argument("--write-only-batches", type=int, default=33,
+                        help="consumed batches per write-only scope")
+    parser.add_argument("--write-only-paths", type=int, default=120,
+                        help="planned paths padded into each batch entry, so "
+                             "a document approaches the live 414,649 B")
     parser.add_argument("--py-spy", default="",
                         help="py-spy executable; empty runs unprofiled")
     parser.add_argument("--rate", type=int, default=100,
@@ -524,6 +658,15 @@ def main(argv: list[str] | None = None) -> int:
                 replay.prewrite_paths.values()))[0]).parent)
     shape["r13_instances"] = len(scopes)
     shape["r13_unretired"] = unretired
+    if args.write_only_scopes:
+        write_only = build_write_only_scopes(
+            queue, work / "write-only", scopes=args.write_only_scopes,
+            batches=args.write_only_batches, path_pad=args.write_only_paths)
+        shape["write_only_scopes"] = len(write_only)
+        shape["write_only_batches"] = args.write_only_batches
+        shape["write_only_paths"] = args.write_only_paths
+    else:
+        shape["write_only_scopes"] = 0
     setup_s = time.monotonic() - built
     (work / "setup.json").write_text(json.dumps({
         "host": host, "scopes": scopes, "writer_dir": writer_dir}))
@@ -572,10 +715,14 @@ def main(argv: list[str] | None = None) -> int:
     print(json.dumps({
         "returncode": code, "shape": shape,
         "child_log_tail": summary.get("child_log_tail"),
-        "cycles": [{key: row.get(key) for key in
-                    ("kind", "wall_s", "cpu_s", "retired",
-                     "tick_s_per_retirement", "oldest_tier_age_s",
-                     "tick_events")} for row in rows],
+        "cycles": [{
+            **{key: row.get(key) for key in
+               ("kind", "wall_s", "cpu_s", "retired", "oldest_tier_age_s")},
+            "phases": (row.get("last_cycle") or {}).get("phases"),
+            "total": (row.get("calls") or {}).get("total"),
+            "origin_tick": (row.get("calls") or {}).get(
+                "steps", {}).get("origin_retirement_tick"),
+        } for row in rows],
         "phases_cold": (rows[0].get("last_cycle") or {}).get("phases")
         if rows else None,
         "r13_unretired_after": summary["r13_unretired_after"],

@@ -837,6 +837,32 @@ PREWARM_RECEIPT_RETENTION_S = 7 * 24 * 3600.0
 #: mover's receipt is the pool-side rate the tier mints its fill tokens from.
 MOVERS = "movers"
 
+#: The retired movement-receipt store (#992 item 2), beside ``movers/``.
+#: ``pb_gc --queue-root`` moves a terminal consumer's receipt here instead of
+#: deleting its history: the full body is archived under its content digest
+#: (``movers-archive/<sha256>.json``) and a compact projection -- every field
+#: the pricing folds read -- is written into an atomically replaced
+#: checkpoint that binds each entry to its key, receipt schema, archive
+#: digest and projection digest.  Reads merge those projections with the
+#: active receipts, an active record of the same key overriding the retired
+#: one, so ``move_records``, the fill and cap folds and direct
+#: ``move_record`` evidence all answer exactly as if the receipt were still
+#: in ``movers/``.  The metadata is O(history) and small; the full payloads
+#: leave the active directory.  A state marker beside the checkpoint proves a
+#: retirement happened, so a later missing or truncated checkpoint refuses
+#: instead of reading as "no retirements".
+MOVERS_RETIRED = "movers-retired"
+MOVERS_RETIREMENT_CHECKPOINT = "checkpoint.json"
+MOVERS_RETIREMENT_STATE = "state.json"
+MOVERS_RETIREMENT_LOCK = "checkpoint.lock"
+MOVERS_ARCHIVE = "movers-archive"
+#: One checkpoint document names its own digest over the canonical body with
+#: the digest field removed; the state marker names the revision it followed.
+MOVER_RETIREMENT_CHECKPOINT_SCHEMA_V1 = (
+    "prismabuild.mover_retirement_checkpoint.v1")
+MOVER_RETIREMENT_STATE_SCHEMA_V1 = "prismabuild.mover_retirement_state.v1"
+
+
 #: The pricing log beside ``movers/`` (#1044): one line per filed receipt,
 #: holding only the fields a next submission prices from, so
 #: :meth:`PoolQueue.move_records` opens one file instead of every receipt.
@@ -849,7 +875,7 @@ MOVERS_PRICING_LOCK = "receipts.lock"
 #: The first field of every log line.  A line with any other tag is not
 #: read, so changing :data:`MOVE_PRICING_FIELDS` means changing this tag:
 #: every receipt is then read once more and logged in the new shape.
-MOVE_PRICING_LOG_TAG = b"pricing.v1"
+MOVE_PRICING_LOG_TAG = b"pricing.v2"
 #: What a pricing read keeps of each receipt.  Every field the three
 #: pricing readers of :meth:`PoolQueue.move_records` consult, and nothing
 #: else: ``storage_tiers.usable_mover_receipts``,
@@ -859,17 +885,25 @@ MOVE_PRICING_LOG_TAG = b"pricing.v1"
 #: window-concurrency count.  ``disk_pacing`` keeps only
 #: :data:`MOVE_PRICING_PACING_FIELDS`.  A field is kept only when the
 #: receipt has it, so "absent" and "present" price exactly as before.
+#:
+#: ``fill_supply_from_records`` and ``mover_cap_from_records`` read the same
+#: projections when a receipt has been retired (#992 item 2), so the fields
+#: they read are kept too: ``fill_demand_mb_s_pool_side`` (a shortfall's
+#: seal) and the pacing's ``held_seconds``/``yielded_seconds``.
 MOVE_PRICING_FIELDS = (
     "schema", "action_key", "unix", "tier_id", "pool_identity", "refusal",
     "seconds", storage_tiers.MOVER_CPU_FIELD, storage_tiers.MOVER_RSS_FIELD,
     "consumer_action_key", "manifest_sha256", "complete", "bytes_staged",
     "mb_per_s_file_side", storage_tiers.MOVER_CONCURRENCY_FIELD,
+    storage_tiers.MOVER_FILL_DEMAND_FIELD,
     "disk_pacing",
     # An egress receipt's terms (``movement_actions._EGRESS_TIMINGS``).
     "stage_root", "entries_judged", "census_s", "census_validate_s",
     "lock_held_s", "unlink_s", "prune_s",
 )
-MOVE_PRICING_PACING_FIELDS = ("pool_read_bytes", storage_tiers.POOL_FILL_FIELD)
+MOVE_PRICING_PACING_FIELDS = ("pool_read_bytes", storage_tiers.POOL_FILL_FIELD,
+                              "held_seconds", storage_tiers.YIELDED_FIELD)
+
 
 
 def move_pricing_projection(record: Mapping[str, object]) -> dict[str, object]:
@@ -2364,6 +2398,161 @@ def _read_json_fresh(path: Path) -> dict[str, object] | None:
         return None
     os.close(descriptor)
     return _read_json(path)
+
+
+def _is_hex64(value: object) -> bool:
+    return (isinstance(value, str) and len(value) == 64
+            and all(character in "0123456789abcdef" for character in value))
+
+
+def _write_bytes_atomic(path: Path, data: bytes) -> None:
+    """Publish exact bytes by rename, with the same sync policy as JSON records."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.parent / f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+    os.replace(temporary, path)
+
+
+def _read_optional_document(path: Path
+                            ) -> tuple[bool, dict[str, object] | None]:
+    """``(present, document)``; invalid JSON raises, an empty file is present/None."""
+
+    try:
+        os.lstat(path)
+    except FileNotFoundError:
+        return False, None
+    return True, _read_json(path)
+
+
+def _retirement_checkpoint_digest(body: Mapping[str, object]) -> str:
+    """The self-consistency digest of one checkpoint body, digest field excluded."""
+
+    return hashlib.sha256(pb._canonical_bytes(
+        {name: value for name, value in body.items()
+         if name != "checkpoint_sha256"})).hexdigest()
+
+
+def _projection_sha256(projection: Mapping[str, object]) -> str:
+    return hashlib.sha256(pb._canonical_bytes(dict(projection))).hexdigest()
+
+
+def _retirement_archives_present(archive_root: Path) -> bool:
+    """Whether any archived body exists, the proof history was retired.
+
+    A missing directory is false; any entry is true.  An entry-containing
+    directory that cannot be read raises: it may hide the proof.
+    """
+
+    try:
+        with os.scandir(archive_root) as listing:
+            return next(iter(listing), None) is not None
+    except FileNotFoundError:
+        return False
+
+
+def _validate_mover_retirements(checkpoint_present: bool,
+                                checkpoint: dict[str, object] | None,
+                                state_present: bool,
+                                state: dict[str, object] | None,
+                                *, archive_root: Path,
+                                writer: bool = False,
+                                ) -> tuple[dict[str, dict[str, object]], bool]:
+    """Validated retirement entries by key, and whether its marker is complete.
+
+    A missing store is only "no retirement" when nothing else proves one: a
+    state marker (even an empty file) without a checkpoint, a
+    present-but-empty checkpoint, or any archived body with no checkpoint all
+    refuse.  A present checkpoint is checked against its own canonical digest
+    and every entry binds its key, receipt schema, archive digest and
+    projection digest.  A state marker at the checkpoint's revision must name
+    that checkpoint's digest; a marker behind it (or absent) is an interrupted
+    transaction -- readable, because the checkpoint is complete, but not a
+    licence to unlink: ``incomplete`` says the next commit must finish it.  A
+    marker ahead of the checkpoint is a rollback and refuses.  Unknown history
+    is never read as a shorter history.
+
+    ``writer`` is true only for the retirement lock holder, whose own
+    archive-without-commit prefix is judged by
+    :meth:`PoolQueue._orphan_archives_refusal` instead of the blanket
+    archive-presence refusal; the reader always refuses that shape.
+    """
+
+    if not checkpoint_present:
+        if state_present:
+            raise PoolContractError(
+                "movement retirement state is present but its checkpoint is "
+                "missing; retired history cannot be read")
+        if not writer and _retirement_archives_present(archive_root):
+            raise PoolContractError(
+                "movement retirement archives are present but the checkpoint "
+                "is missing; retired history cannot be read")
+        return {}, True
+    if checkpoint is None:
+        raise PoolContractError(
+            "movement retirement checkpoint is empty or unreadable")
+    if checkpoint.get("schema") != MOVER_RETIREMENT_CHECKPOINT_SCHEMA_V1:
+        raise PoolContractError(
+            "movement retirement checkpoint has an unknown schema")
+    revision = checkpoint.get("revision")
+    entries = checkpoint.get("entries")
+    if (isinstance(revision, bool) or not isinstance(revision, int)
+            or revision < 0 or not isinstance(entries, dict)):
+        raise PoolContractError(
+            "movement retirement checkpoint is malformed")
+    digest = checkpoint.get("checkpoint_sha256")
+    if not _is_hex64(digest) or digest != _retirement_checkpoint_digest(checkpoint):
+        raise PoolContractError(
+            "movement retirement checkpoint fails its own digest")
+    incomplete = True
+    if state_present:
+        if state is None:
+            raise PoolContractError(
+                "movement retirement state is empty or unreadable")
+        if state.get("schema") != MOVER_RETIREMENT_STATE_SCHEMA_V1:
+            raise PoolContractError(
+                "movement retirement state has an unknown schema")
+        state_revision = state.get("revision")
+        if (isinstance(state_revision, bool)
+                or not isinstance(state_revision, int) or state_revision < 0
+                or not _is_hex64(state.get("checkpoint_sha256"))):
+            raise PoolContractError("movement retirement state is malformed")
+        if state_revision > revision:
+            raise PoolContractError(
+                "movement retirement checkpoint is older than its state; "
+                "the checkpoint may have been rolled back")
+        if state_revision == revision:
+            if state.get("checkpoint_sha256") != digest:
+                raise PoolContractError(
+                    "movement retirement state names another checkpoint")
+            incomplete = False
+    out: dict[str, dict[str, object]] = {}
+    for key, entry in entries.items():
+        if (not _is_hex64(key) or not isinstance(entry, Mapping)
+                or str(entry.get("action_key") or "") != str(key)
+                or entry.get("receipt_schema") not in POOL_MOVEMENT_RECEIPT_SCHEMAS
+                or not _is_hex64(entry.get("archive_sha256"))
+                or not _is_hex64(entry.get("projection_sha256"))):
+            raise PoolContractError(
+                f"movement retirement entry {key!r} is not self-bound")
+        projection = entry.get("projection")
+        if (not isinstance(projection, dict)
+                or str(projection.get("action_key") or "") != str(key)
+                or projection.get("schema") != entry.get("receipt_schema")
+                or _projection_sha256(projection) != entry.get("projection_sha256")):
+            raise PoolContractError(
+                f"movement retirement entry {key!r} does not bind its "
+                f"projection to its key and schema")
+        out[str(key)] = dict(entry)
+    return out, incomplete
 
 
 def worker_argv(
@@ -6768,18 +6957,548 @@ class PoolQueue:
         finished egress (#1158).  The keys differ, so a mover's key never
         reads an egress receipt.
 
+        A receipt ``pb_gc --queue-root`` has retired (#992 item 2) is read
+        from its archive, but only when the active path is **absent**.  A
+        present file that is empty, malformed or not a movement receipt
+        answers exactly as it did before retirement -- ``None`` for the empty
+        and wrong-schema cases, a raise for malformed JSON -- and never falls
+        back to an older archived body, which must not pass as the current
+        execution's evidence.
+
         Every caller is asking whether a mover on another box has filed yet,
         and most of them poll, so the read revalidates before answering no
         (``_read_json_fresh``): a stale "not yet" held a produced-output owner
         for 26 s after a 4 s copy (#808).
         """
 
-        record = _read_json_fresh(self.move_path(action_key))
-        if not isinstance(record, dict):
+        path = self.move_path(action_key)
+        try:
+            os.lstat(path)
+            present = True
+        except FileNotFoundError:
+            present = False
+        record = _read_json_fresh(path)       # malformed JSON raises, as before
+        if record is not None:
+            if record.get("schema") in POOL_MOVEMENT_RECEIPT_SCHEMAS:
+                return record
             return None
-        if record.get("schema") not in POOL_MOVEMENT_RECEIPT_SCHEMAS:
+        if present:
+            return None           # present but empty/unknown: no stale fallback
+        return self.recover_archived_move(action_key)
+
+    def mover_retirement_checkpoint_path(self) -> Path:
+        """The atomically replaced compact checkpoint of retired projections."""
+
+        return self.root / MOVERS_RETIRED / MOVERS_RETIREMENT_CHECKPOINT
+
+    def mover_retirement_state_path(self) -> Path:
+        """The persistent marker proving at least one retirement committed."""
+
+        return self.root / MOVERS_RETIRED / MOVERS_RETIREMENT_STATE
+
+    def mover_retirement_lock(self) -> Path:
+        """Serializes the checkpoint's read-modify-write across GC runs."""
+
+        return self.root / MOVERS_RETIRED / MOVERS_RETIREMENT_LOCK
+
+    def mover_archive_dir(self) -> Path:
+        """Where retired receipts' full bodies live, named by content digest."""
+
+        return self.root / MOVERS_ARCHIVE
+
+    def _read_mover_retirement_entries(
+            self, *, writer: bool = False,
+            ) -> tuple[dict[str, dict[str, object]], bool]:
+        """The validated entries and whether the state marker is complete.
+
+        Read fresh on every call: a bare stat tuple is not the trusted-version
+        discipline the repository uses for kept documents.  ``ReceiptCache``
+        reads the same documents through its trusted ``DirectoryRecords`` when
+        it needs them per cycle, and remembers the validated entries by that
+        generation.  A missing store with no marker and no archived body is
+        the only empty answer; everything else validates or raises.
+        """
+
+        checkpoint_present, checkpoint = _read_optional_document(
+            self.mover_retirement_checkpoint_path())
+        state_present, state = _read_optional_document(
+            self.mover_retirement_state_path())
+        return _validate_mover_retirements(
+            checkpoint_present, checkpoint, state_present, state,
+            archive_root=self.mover_archive_dir(), writer=writer)
+
+    def read_mover_retirements(self) -> dict[str, dict[str, object]]:
+        """The projection of every retired movement receipt, by key.
+
+        The merge source for :meth:`move_records` and the tier loop's folds:
+        an active receipt of the same key overrides a retired one (the
+        caller's rule).  The returned mappings are read-only shared
+        documents; callers copy what they keep.  Raises
+        ``PoolContractError`` when the store is corrupt, truncated or
+        missing after a retirement: corrupt history is never read as a
+        shorter history.
+        """
+
+        entries, _incomplete = self._read_mover_retirement_entries()
+        return {key: entry["projection"]  # type: ignore[return-value]
+                for key, entry in entries.items()}
+
+    def recover_archived_move(self, action_key: str) -> dict[str, object] | None:
+        """A retired receipt's full body, or ``None`` when none was retired.
+
+        Fail closed: an entry naming an archive that is missing, whose bytes
+        do not hash to the recorded digest, whose body names another key or
+        schema, or whose projection no longer hashes to the checkpoint's
+        recorded digest raises rather than answering with wrong evidence.
+        """
+
+        entries, _incomplete = self._read_mover_retirement_entries()
+        entry = entries.get(str(action_key))
+        if entry is None:
             return None
+        digest = str(entry["archive_sha256"])
+        path = self.mover_archive_dir() / f"{digest}.json"
+        try:
+            raw = path.read_bytes()
+        except OSError as exc:
+            raise PoolContractError(
+                f"retired receipt {action_key} has no readable archive "
+                f"{path}: {exc}") from None
+        if hashlib.sha256(raw).hexdigest() != digest:
+            raise PoolContractError(
+                f"retired receipt {action_key} archive {path} does not hash "
+                f"to its recorded digest")
+        try:
+            record = json.loads(raw)
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise PoolContractError(
+                f"retired receipt {action_key} archive is not JSON: "
+                f"{exc}") from None
+        if (not isinstance(record, dict)
+                or record.get("schema") != entry.get("receipt_schema")
+                or str(record.get("action_key") or "") != str(action_key)):
+            raise PoolContractError(
+                f"retired receipt {action_key} archive names another record")
+        if _projection_sha256(move_pricing_projection(record)) != str(
+                entry.get("projection_sha256")):
+            raise PoolContractError(
+                f"retired receipt {action_key} archive does not match the "
+                f"projection its checkpoint carries")
         return record
+
+    def _receipt_version(self, path: Path) -> tuple | None:
+        """The active receipt's version tuple, or ``None`` when absent.
+
+        Any other stat failure propagates: an unreadable receipt is never
+        read as an absent one.
+        """
+
+        try:
+            info = os.stat(path)
+        except FileNotFoundError:
+            return None
+        return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns,
+                int(getattr(info, "st_ctime_ns", 0)))
+
+    def _archive_move_body(self, record: Mapping[str, object]
+                           ) -> tuple[str, str]:
+        """Archive the full body by content digest; ``(digest, "")`` or a reason."""
+
+        body = pb._canonical_bytes(record)
+        digest = hashlib.sha256(body).hexdigest()
+        archive = self.mover_archive_dir() / f"{digest}.json"
+        try:
+            present = archive.read_bytes()
+        except FileNotFoundError:
+            present = None
+        except OSError as exc:
+            return "", f"archive is unreadable: {exc}"
+        if present != body:
+            try:
+                _write_bytes_atomic(archive, body)
+            except OSError as exc:
+                return "", f"archive cannot be written: {exc}"
+        return digest, ""
+
+    def prepare_move_retirement(self, action_key: str,
+                                *, expected_version: tuple
+                                ) -> dict[str, object] | str:
+        """Archive one receipt without unlinking it; its entry, or a reason.
+
+        Runs under the receipt's tier mint lock when it names one, the leaf
+        lock :meth:`record_move` files under.  A named tier whose mint lock
+        cannot be derived or taken retains the receipt: an unknown lock is
+        never run unlocked.  The active file and version are re-read under
+        that lock, so a receipt replaced after the survey is left alone.
+        """
+
+        path = self.move_path(action_key)
+        try:
+            version = self._receipt_version(path)
+        except OSError as exc:
+            return f"cannot stat the receipt: {exc}"
+        if version is None:
+            return "already gone"
+        if version != tuple(expected_version):
+            return "replaced since the survey"
+        try:
+            record = _read_json(path)
+        except PoolContractError as exc:
+            return f"receipt is unreadable: {exc}"
+        if record is None:
+            return "receipt is empty or unreadable"
+        if record.get("schema") not in POOL_MOVEMENT_RECEIPT_SCHEMAS:
+            return "not a movement receipt"
+        if str(record.get("action_key") or "") != str(action_key):
+            return "receipt is filed under another key"
+        tier_id = record.get("tier_id")
+        if not (isinstance(tier_id, str) and tier_id):
+            return self._prepared_move_entry(action_key, record,
+                                             expected_version)
+        try:
+            lock = self.tier_mint_lock(tier_id)
+        except (PoolContractError, OSError) as exc:
+            return f"cannot derive its tier mint lock: {exc}"
+        try:
+            with lock:
+                return self._prepared_move_entry(action_key, record,
+                                                 expected_version)
+        except OSError as exc:
+            return f"cannot take its tier mint lock: {exc}"
+
+    def _prepared_move_entry(self, action_key: str,
+                             record: dict[str, object],
+                             expected_version: tuple
+                             ) -> dict[str, object] | str:
+        """The entry for one receipt, re-read under its mint lock."""
+
+        path = self.move_path(action_key)
+        try:
+            version = self._receipt_version(path)
+        except OSError as exc:
+            return f"cannot stat the receipt: {exc}"
+        if version is None:
+            return "already gone"
+        try:
+            current = _read_json(path)
+        except PoolContractError as exc:
+            return f"receipt is unreadable: {exc}"
+        if current != record or version != tuple(expected_version):
+            return "replaced since the survey"
+        tier_id = record.get("tier_id")
+        if isinstance(tier_id, str) and tier_id:
+            holder = self._tier_holder_refusal(tier_id, action_key)
+            if holder:
+                return holder
+        digest, reason = self._archive_move_body(record)
+        if reason:
+            return reason
+        projection = move_pricing_projection(record)
+        return {
+            "action_key": str(action_key),
+            "receipt_schema": record.get("schema"),
+            "archive_sha256": digest,
+            "projection_sha256": _projection_sha256(projection),
+            "projection": projection,
+        }
+
+    def _state_document(self, revision: int, digest: str) -> bytes:
+        return pb._canonical_bytes({
+            "schema": MOVER_RETIREMENT_STATE_SCHEMA_V1,
+            "revision": revision, "checkpoint_sha256": digest,
+            "retired_unix": time.time()})
+
+    def _tier_holder_refusal(self, tier_id: str, action_key: str) -> str:
+        """``""`` when no capacity token on ``tier_id`` is held for ``action_key``.
+
+        The survey refuses a receipt whose mover holds tokens, but a holder
+        can be acquired or restored after the survey; this is re-asked under
+        the tier's mint lock immediately before the archive and again before
+        the unlink, so the documented no-held-token rule is enforced at the
+        moments it protects.  An unreadable ledger refuses: unknown holders
+        are never read as none.
+        """
+
+        try:
+            held = held_names_visible(self.tier_ledger(tier_id), action_key)
+        except (OSError, PoolContractError) as exc:
+            return f"cannot read its tier ledger: {exc}"
+        if held:
+            return "its mover holds tokens on its tier"
+        return ""
+
+    def _orphan_archives_refusal(self) -> str:
+        """``""`` when every archived body is an exact active receipt's bytes.
+
+        The only writer that may see archives without a checkpoint is one
+        whose own crash landed an archive before the commit; its active
+        receipt is still filed, byte for byte.  Any archive that no active
+        receipt reproduces may be already-retired history, and starting from
+        an empty checkpoint would silently reset it, so it refuses.  The
+        listing is an explicit ``os.scandir``: ``Path.glob`` suppresses some
+        listing failures, and an archive directory that cannot be read is
+        unknown history, never empty history.  An entry that is not a
+        plain ``<sha256>.json`` regular file is refused conservatively too.
+        """
+
+        root = self.mover_archive_dir()
+        try:
+            with os.scandir(root) as listing:
+                entries = sorted(listing, key=lambda entry: entry.name)
+        except FileNotFoundError:
+            return ""
+        except OSError as exc:
+            return f"cannot list the retirement archives: {exc}"
+        for entry in entries:
+            if (not entry.name.endswith(".json")
+                    or not _is_hex64(entry.name[:-len(".json")])):
+                return f"unexpected entry in the retirement archives: {entry.name}"
+            try:
+                if not entry.is_file(follow_symlinks=False):
+                    return ("an archived entry is not a regular file: "
+                            f"{entry.name}")
+                body = Path(entry.path).read_bytes()
+            except OSError as exc:
+                return f"an archived body is unreadable: {exc}"
+            try:
+                record = json.loads(body)
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                return f"an archived body is not JSON: {entry.name}"
+            key = record.get("action_key") if isinstance(record, dict) else None
+            if not isinstance(key, str) or not key:
+                return f"an archived body names no key: {entry.name}"
+            try:
+                active = self.move_path(key).read_bytes()
+            except OSError:
+                return ("an archived body is not covered by an active "
+                        "receipt; retired history may be missing")
+            if active != body:
+                return ("an archived body differs from its active receipt; "
+                        "retired history may be missing")
+        return ""
+
+    def begin_mover_retirement_batch(self) -> tuple[int, str]:
+        """Validate the store and return the CAS baseline for one batch.
+
+        The baseline is the checkpoint's ``(revision, checkpoint_sha256)``.
+        When no checkpoint exists and no earlier retired history does either,
+        an empty checkpoint and its marker are written *before* the batch's
+        first archive: a preparation window that leaves archives without a
+        checkpoint would otherwise make every reader refuse for its duration.
+        When archives exist with no checkpoint, they are accepted as the
+        batch's own crash prefix only if every one is an exact active
+        receipt's bytes (:meth:`_orphan_archives_refusal`); anything else
+        refuses, so a lost checkpoint is never reset over retired history.
+        The retirement lock is a leaf: no transition or mint lock is held
+        here, and the caller prepares and commits after this returns.
+        """
+
+        checkpoint_path = self.mover_retirement_checkpoint_path()
+        state_path = self.mover_retirement_state_path()
+        checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+        with posix_lock.held(self.mover_retirement_lock()) as got:
+            if not got:
+                raise PoolContractError(
+                    "retirement checkpoint is held by another writer")
+            checkpoint_present, checkpoint = _read_optional_document(
+                checkpoint_path)
+            state_present, state = _read_optional_document(state_path)
+            if checkpoint_present:
+                _entries, _incomplete = _validate_mover_retirements(
+                    True, checkpoint, state_present, state,
+                    archive_root=self.mover_archive_dir(), writer=True)
+                return (int(checkpoint["revision"]),  # type: ignore[index]
+                        str(checkpoint["checkpoint_sha256"]))
+            if state_present:
+                raise PoolContractError(
+                    "movement retirement state is present but its checkpoint "
+                    "is missing; retired history cannot be read")
+            reason = self._orphan_archives_refusal()
+            if reason:
+                raise PoolContractError(
+                    f"cannot start a retirement batch: {reason}")
+            body = {"schema": MOVER_RETIREMENT_CHECKPOINT_SCHEMA_V1,
+                    "revision": 0, "written_unix": time.time(),
+                    "entries": {}}
+            digest = _retirement_checkpoint_digest(body)
+            _write_bytes_atomic(checkpoint_path, pb._canonical_bytes(
+                {**body, "checkpoint_sha256": digest}))
+            _write_bytes_atomic(state_path, self._state_document(0, digest))
+            return 0, digest
+
+    def commit_move_retirements(
+            self, entries: Sequence[Mapping[str, object]], *,
+            expected_baseline: tuple[int, str]
+            ) -> tuple[list[str], tuple[int, str] | None, str]:
+        """Merge prepared entries into the checkpoint once, under its lock.
+
+        The retirement lock is a leaf: no transition or mint lock is taken
+        while it is held.  ``expected_baseline`` is the identity
+        :meth:`begin_mover_retirement_batch` returned for this batch; a
+        checkpoint whose identity differs has moved under the prepared
+        entries (another sweep committed a newer filing of a key), so the
+        whole batch is refused rather than replacing it -- nothing is
+        unlinked, and a later run prepares again.  Entries already present
+        are not rewritten, and a checkpoint whose state marker is behind it
+        (an interrupted transaction) has its marker completed here, so a
+        retry after a crash between the checkpoint and the state finishes the
+        same transaction without losing earlier entries or double counting.
+
+        Returns the keys the checkpoint now covers, the identity the commit
+        left behind (the state marker's binding, for
+        :meth:`unlink_retired_move`), and a reason when it was refused.
+        """
+
+        requested = [dict(entry) for entry in entries]
+        if not requested:
+            return [], None, ""
+        checkpoint_path = self.mover_retirement_checkpoint_path()
+        state_path = self.mover_retirement_state_path()
+        checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+        with posix_lock.held(self.mover_retirement_lock()) as got:
+            if not got:
+                return [], None, ("retirement checkpoint is held by another "
+                                  "writer")
+            checkpoint_present, checkpoint = _read_optional_document(
+                checkpoint_path)
+            state_present, state = _read_optional_document(state_path)
+            if not checkpoint_present:
+                return [], None, ("the retirement checkpoint is missing; the "
+                                  "batch baseline no longer holds")
+            entries_by_key, incomplete = _validate_mover_retirements(
+                True, checkpoint, state_present, state,
+                archive_root=self.mover_archive_dir(), writer=True)
+            revision = int(checkpoint["revision"])  # type: ignore[index]
+            current = (revision, str(checkpoint["checkpoint_sha256"]))
+            if current != tuple(expected_baseline):
+                return [], None, ("the retirement checkpoint changed since "
+                                  "the batch baseline; retry the sweep")
+            changed = False
+            for entry in requested:
+                key = str(entry["action_key"])
+                if entries_by_key.get(key) != entry:
+                    entries_by_key[key] = entry
+                    changed = True
+            if changed:
+                body = {"schema": MOVER_RETIREMENT_CHECKPOINT_SCHEMA_V1,
+                        "revision": revision + 1, "written_unix": time.time(),
+                        "entries": entries_by_key}
+                digest = _retirement_checkpoint_digest(body)
+                _write_bytes_atomic(checkpoint_path, pb._canonical_bytes(
+                    {**body, "checkpoint_sha256": digest}))
+                _write_bytes_atomic(state_path,
+                                    self._state_document(revision + 1, digest))
+                identity = (revision + 1, digest)
+            elif incomplete:
+                digest = str(checkpoint["checkpoint_sha256"])
+                _write_bytes_atomic(state_path,
+                                    self._state_document(revision, digest))
+                identity = (revision, digest)
+            else:
+                identity = current
+        return ([str(entry["action_key"]) for entry in requested], identity, "")
+
+    def unlink_retired_move(self, action_key: str, *, expected_version: tuple,
+                            entry: Mapping[str, object],
+                            commit_identity: tuple[int, str]) -> str:
+        """Remove one active receipt whose entry is already committed.
+
+        The caller has committed the entry and passes the identity that
+        commit left behind.  This re-reads the state marker -- one small
+        document, not the whole checkpoint -- and refuses when it no longer
+        names that identity, so a batch whose commit another sweep has since
+        superseded unlinks nothing.  It then re-checks the active file's
+        exact version and bytes against the committed archive digest under
+        the receipt's mint lock, so a receipt replaced or re-filed after the
+        commit stays active and its newer body keeps overriding the retired
+        projection.
+        """
+
+        path = self.move_path(action_key)
+        digest = str(entry.get("archive_sha256") or "")
+
+        def unlink_locked() -> str:
+            state_present, state = _read_optional_document(
+                self.mover_retirement_state_path())
+            if not state_present or not isinstance(state, Mapping):
+                return "the retirement commit marker is not readable"
+            if (state.get("revision"), state.get("checkpoint_sha256")
+                    ) != tuple(commit_identity):
+                return ("the retirement checkpoint changed since the commit; "
+                        "the receipt stays active")
+            if isinstance(tier_id, str) and tier_id:
+                holder = self._tier_holder_refusal(tier_id, action_key)
+                if holder:
+                    return holder
+            try:
+                version = self._receipt_version(path)
+            except OSError as exc:
+                return f"cannot stat the receipt: {exc}"
+            if version is None:
+                return ""                     # already gone
+            if version != tuple(expected_version):
+                return "replaced since the commit"
+            if not _is_hex64(digest):
+                return "prepared entry is not self-bound"
+            try:
+                body = path.read_bytes()
+            except OSError as exc:
+                return f"cannot read the receipt: {exc}"
+            if hashlib.sha256(body).hexdigest() != digest:
+                return "replaced since the commit"
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                return f"unlink failed: {exc}"
+            return ""
+
+        tier_id = None
+        projection = entry.get("projection")
+        if isinstance(projection, Mapping):
+            tier_id = projection.get("tier_id")
+        if not (isinstance(tier_id, str) and tier_id):
+            return unlink_locked()
+        try:
+            lock = self.tier_mint_lock(tier_id)
+        except (PoolContractError, OSError) as exc:
+            return f"cannot derive its tier mint lock: {exc}"
+        try:
+            with lock:
+                return unlink_locked()
+        except OSError as exc:
+            return f"cannot take its tier mint lock: {exc}"
+
+    def retire_move_receipt(self, action_key: str, *, expected_version: tuple,
+                            ) -> str:
+        """Prepare, commit and unlink one movement receipt; ``""`` or why not.
+
+        The single-receipt form of the sweep's transaction, for a caller that
+        has one candidate.  It takes the batch baseline first (which
+        initializes an empty checkpoint when none exists), then archives,
+        CAS-commits against that baseline and unlinks only with the commit's
+        identity.  The caller holds the consumer's and the mover's transition
+        locks (parent before child).
+        """
+
+        try:
+            baseline = self.begin_mover_retirement_batch()
+        except (OSError, PoolContractError) as exc:
+            return f"cannot begin the retirement: {exc}"
+        prepared = self.prepare_move_retirement(
+            action_key, expected_version=expected_version)
+        if isinstance(prepared, str):
+            return prepared
+        _committed, identity, reason = self.commit_move_retirements(
+            [prepared], expected_baseline=baseline)
+        if reason or identity is None:
+            return reason or "the retirement commit left no identity"
+        return self.unlink_retired_move(action_key,
+                                        expected_version=expected_version,
+                                        entry=prepared,
+                                        commit_identity=identity)
+
 
     def movers_claimed_on_tier(self, tier_id: str) -> list[str]:
         """Mover keys holding a claim on this tier at this instant.
@@ -6901,19 +7620,27 @@ class PoolQueue:
         :data:`MOVE_PRICING_FIELDS` names, which are every field those
         prices read.
 
-        The set of receipts is still every ``movers/*.json`` on disk: one
-        names-only listing decides it.  What is no longer paid per receipt is
-        the read (#1044).  Each name the pricing log covers is taken from the
-        log, which is one file; only a name it does not cover is read
-        itself -- a receipt filed by a writer that predates the log, or one
-        whose line was lost -- and its line is appended so the next read does
-        not read it again.  With no log at all this is the old full read,
-        once.  Appending is best effort under a non-blocking lock: a read
-        that cannot append still answers.
+        The set of receipts is every ``movers/*.json`` on disk **plus** the
+        projections in the retirement store (#992 item 2): one names-only
+        listing decides the active side, and a retired receipt of a key whose
+        active file is gone is read from its compact projection, so retiring
+        a terminal consumer's receipt changes no price.  An active record of
+        the same key overrides the retired one.  What is no longer paid per
+        active receipt is the read (#1044).  Each active name the pricing log
+        covers is taken from the log, which is one file; only a name it does
+        not cover is read itself -- a receipt filed by a writer that predates
+        the log, or one whose line was lost -- and its line is appended so
+        the next read does not read it again.  With no log at all this is the
+        old full read, once.  Appending is best effort under a non-blocking
+        lock: a read that cannot append still answers.
 
         A record that is unreadable or not a move receipt is skipped, never
         raised: a submission must not fail because one older receipt was
-        truncated.  The order is the old one: by name, then by ``unix``.
+        truncated.  The retirement store is the exception: a corrupt line
+        raises, because it is the only carrier of the history it holds.  The
+        order is the old one: by name, then by ``unix`` -- and the retired
+        projections are merged by key before that sort, so equal-``unix``
+        ties keep their original name order.
 
         ``schemas`` widens the read to other receipts filed in the same
         directory: pbrun asks for egress receipts too
@@ -6955,8 +7682,16 @@ class PoolQueue:
                 self._append_move_pricing(missing, since=since, blocking=False)
             except OSError:
                 pass
-        out.sort(key=lambda r: float(r.get("unix", 0.0) or 0.0))
-        return out
+        merged: dict[str, dict[str, object]] = {
+            str(key): dict(record)
+            for key, record in self.read_mover_retirements().items()}
+        for record in out:
+            merged[str(record.get("action_key") or "")] = record
+        ordered = [record for record in merged.values()
+                   if record.get("schema") in schemas]
+        ordered.sort(key=lambda r: str(r.get("action_key") or ""))
+        ordered.sort(key=lambda r: float(r.get("unix", 0.0) or 0.0))
+        return ordered
 
     def record_move(self, action_key: str, record: Mapping[str, object]) -> Path:
         """File one movement result.

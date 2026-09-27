@@ -171,25 +171,36 @@ def _snapshot(stage: Path) -> set[str]:
 
 
 # ---- a directory that resolves outside the stage ---------------------------
-
 @pytest.fixture()
 def swapped(tmp_path: Path, monkeypatch):
     """A stage whose walk meets a directory that resolves outside it.
 
-    ``os.walk`` does not follow directory symlinks, so a directory seen as a
-    symlink by the walk is one swapped for a symlink while the walk ran.
-    Following links in the walk stands in for that race: the walk yields
-    ``stage/swapped`` while every path under it resolves to ``outside``.
+    The parent's listing sees a real directory; it is replaced by a symlink
+    to ``outside`` before the walk reads it -- the race the containment
+    check guards.  The files the walk then yields under ``stage/swapped``
+    resolve outside the stage, and nothing under them may carry an identity
+    or be deleted.
     """
 
     queue, stage = _fleet(tmp_path)
     outside = tmp_path / "outside"
     outside.mkdir()
-    os.symlink(outside, stage / "swapped")
-    real_walk = os.walk
-    monkeypatch.setattr(stage_release.os, "walk",
-                        lambda top, **kwargs: real_walk(
-                            top, **{**kwargs, "followlinks": True}))
+    planted = stage / "swapped"
+    planted.mkdir()
+    planted_path = os.path.normpath(str(planted))
+    real_scandir = os.scandir
+
+    def racing_scandir(path):
+        try:
+            current = os.path.normpath(os.fspath(path))
+        except TypeError:
+            current = ""
+        if current == planted_path and not os.path.islink(planted):
+            shutil.rmtree(planted)
+            os.symlink(outside, planted)
+        return real_scandir(path)
+
+    monkeypatch.setattr(stage_release.os, "scandir", racing_scandir)
     return queue, stage, outside
 
 

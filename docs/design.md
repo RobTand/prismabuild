@@ -1258,6 +1258,18 @@ entry. `receipt_path` is `PrismaBuildCAS.receipt_path` under the fleet CAS when
 a file is there and `null` otherwise, located and not verified. A SLURM
 submission line still names a prefix, so its shards record no key.
 
+`pbtest` can recover an unobserved outcome (exit 74) without submitting the
+shard again (#1033). The original pool submission line includes its exact
+`published_unix`; after that submitter exits, one read-only pbrun renderer
+follows that key and generation under the shard's original monotonic deadline.
+It recovers the actual stdout and recorder before normal reconciliation, so
+only complete passing evidence turns green. A failure stays failed. An expired
+budget, an unstamped older submitter, or any retained-reader notice stays
+unobserved: recovery never starts beside a possibly kernel-blocked reader.
+Recovery is not a new attempt and cannot extend the deadline. Queue records,
+claim protocol, action keys and admission are unchanged; this is client-side
+reporting and does not establish deployment.
+
 `pbtest` resubmits a shard whose `pbrun` refused it with a worker-offer
 discovery timeout (#1102), by the rule `pbcampaign --max-inflight` applies to a
 row (#560). `pbtest` runs `pbrun` as a subprocess, so it recognizes the refusal
@@ -3126,8 +3138,22 @@ worker's accepted cumulative progress (issue #784), not digest equality on
 originally opened paths; see the rollout runbook's leg-3 gate section.
 `--no-canary` is the skip, and the outcome lands in the generation's sibling
 rollout record (`verified`/`failed`/`not_run`). A failed canary marks `failed`
-and exits nonzero; it never rolls back the activation or touches admission. The
-running fleet adopts this default only when a generation carrying it is
+and exits nonzero; it never rolls back the activation or touches admission.
+An observation timeout (74), exhausted queue wait (75), or leg 3's typed
+retryable staged-availability expiry is instead **not verified** (#1106/#1171):
+the driver returns 2 and the rollout records `not_run` with exit 2, never
+`verified` or a generation-defect verdict. This does not assert that an
+unobserved action never ran, or that a specific higher-priority holder caused
+its wait. Real integrity/contract failures remain exit 1 and outrank another
+leg's typed wait. Historical free-text failures are not reclassified.
+The leg-3 classification requires the exact submitted generation's verified
+immutable attempt stdout and its explicit `staging_wait` marker. The driver
+retains per-leg action keys and reasons in its run summary; a supporting
+publisher carries that summary in rollout detail. Bounded waits, progress,
+admission and activation are unchanged. No wait or missing evidence passes.
+This change requires rollout-verdict/interface review before merge/publication;
+source/component validation establishes neither deployment nor a live canary.
+The running fleet adopts these semantics only when a carrying generation is
 published.
 
 The source delivery keeps `FINAL_BARRIER_QUALIFICATION_GUARD` enabled. Every
@@ -5356,6 +5382,43 @@ set, which the cycle hands to every step as one snapshot, is listed through
 `DirectoryRecords.names`, so it is listed again only when a marker was
 added, removed or renamed.
 
+**A done plan is read only when a marker can cover it (#992).** The live
+queue held 452 filed plans (141 MB) on 2026-09-26, 450 of them terminal and
+none superseded, and `withdraw_dead_consumer_movers` read and re-hashed
+every body to learn no marker covered it (2.48 s in
+`residency_plan.superseded` plus 1.46 s in `read_filed` in one 10 s cycle).
+One names-only snapshot of the supersession marker directory is now taken
+per pass, through `DirectoryRecords.names` when a cycle is running
+(`stage_release.queue_records_reader`). A `done/` consumer whose key no
+marker name carries is refused before its plan is read; a marker written
+after the snapshot is seen on the next pass. A key the snapshot names runs
+the existing locked checks unchanged, as does an unreadable listing or a
+name the parser cannot classify: unknown is never read as no marker. The
+parser accepts only the active address
+`{key}.{sha256}.superseded.json` (both strict 64 lowercase hex); retired
+markers (`...marker.json`), reaped plan bodies (`{key}.{secs}.{micros}.
+{slug}.json`) and publication temporaries are recognized archive names, not
+absence.
+
+**The reconcile's stage walk keeps what did not move (#992).** The live
+`/stage/prewarm` held 50,303 prewarm-marked files (302 GB) that the
+reconcile re-walked and re-probed every cycle, deleting none (2.81 s of the
+same cycle). `CensusIndex` now keeps each stage directory under
+`_trusted_directory_stamp` and each file's `(version, kind, mover)` under
+`_keepable_version` (#1045): a directory whose stamp holds is not listed
+again, and a file whose version holds is not probed again. Every entry is
+still `lstat`-ed -- a `setxattr` or an in-place write moves a file's ctime
+without moving its parent -- and the caller's `attributed`/`named` sets and
+live pins are read fresh, so a reused listing decides nothing by itself.
+`mark_unanswerable` and an unreadable directory are never kept, and a
+stamp or version that cannot be trusted (a network mount, the tick a
+directory changed in) falls back to the old walk. A name attribution
+covered is remembered so a later pass that no longer covers it still judges
+it; a directory that left its parent drops its listing and its
+descendants'. The cycle line's `reads` carries
+`census_walk_listed`/`census_walk_kept`/`census_walk_probed`/
+`census_walk_reused`.
+
 **The fill-supply fold is remembered, not bounded.** `ReceiptCache.fill_supply`
 remembers `storage_tiers.fill_supply_from_records` per pool identity and
 per generation of the receipt directories, a number that moves whenever a
@@ -6338,6 +6401,100 @@ the log, under a name the log already covers, prices off the older line until
 that name is filed again. Retiring old receipts is a separate decision that
 this change does not make.
 
+### Retired movement receipts: a compact checkpoint over immutable archives (#992)
+
+`pb_gc --queue-root --retire-movement-receipts` retires a terminal consumer's
+movement receipt out of `movers/` without removing its history. The
+transaction, in `pool.PoolQueue`, is:
+
+1. **Baseline** (`begin_mover_retirement_batch`): once per sweep, under the
+   retirement leaf lock, the store is validated and the checkpoint's
+   `(revision, checkpoint_sha256)` is returned as the batch's CAS baseline.
+   When no checkpoint exists and no earlier retired history does either, an
+   exact empty checkpoint and marker are written here, *before the first
+   archive*: a preparation window that left archives without a checkpoint
+   would make every concurrent reader refuse for its duration.  Archived
+   bodies with no checkpoint are accepted only when every one is an exact
+   active receipt's bytes (the batch's own crash prefix); anything else
+   refuses, so a lost checkpoint is never reset over retired history.
+2. **Prepare** (`prepare_move_retirement`): under the receipt's tier mint
+   lock (a named tier whose lock cannot be derived or taken retains), the
+   active file and its version are re-read, the full body is archived under
+   its content digest at `movers-archive/<sha256>.json`, and the receipt's
+   `move_pricing_projection` -- `MOVE_PRICING_FIELDS`, extended with
+   `fill_demand_mb_s_pool_side` and the pacing's `held_seconds` and
+   `yielded_seconds` so `fill_supply_from_records` and
+   `mover_cap_from_records` fold it exactly -- becomes a self-bound entry.
+3. **Commit** (`commit_move_retirements`): once per sweep, under the
+   retirement leaf lock, the entries are merged into
+   `movers-retired/checkpoint.json` and its marker
+   `movers-retired/state.json`, both replaced atomically.  The commit
+   refuses the whole batch when the checkpoint's identity no longer equals
+   the baseline, so a sweep that prepared a stale filing cannot replace a
+   newer retirement another sweep committed; nothing is unlinked and a later
+   run prepares again.  No transition or mint lock is held across this leaf
+   lock, so N retirements cost one checkpoint write, not N.
+4. **Unlink** (`unlink_retired_move`): under the same parent/mover/mint
+   locks, the state marker is re-read (one small document, not the whole
+   checkpoint) and must still name the identity the commit returned; then
+   the active file's exact version and bytes are re-checked against the
+   committed archive digest before it is removed.  A receipt replaced or
+   re-filed after the commit stays active and overrides the retired
+   projection in every merge.
+
+The checkpoint binds each entry to its key, receipt schema, archive digest
+and projection digest, and carries a digest over its own canonical body; the
+state marker carries the revision and checkpoint digest. Reads merge the
+retired projections with the active receipts, an active record of the same
+key overriding the retired one, in the original (name, then `unix`) order, so
+`PoolQueue.move_records`, the tier loop's `ReceiptCache.fill_supply` and
+`mover_cap`, `move_record` evidence recovery and `egress_price` all answer
+exactly as they did before the retirement. The metadata is O(compact
+history); the full payloads leave the active directory.
+
+Fault rules, tested in `tests/test_a_terminal_receipt_retires_behind_a_covered_fold.py`:
+
+- A missing store is "nothing retired" only when there is no state marker
+  and no archived body at all. A marker (even empty), a present-but-empty
+  checkpoint, or any archive with no checkpoint refuses: lost history is
+  never read as shorter history.
+- A checkpoint whose state marker is behind it is an interrupted
+  transaction: readable, because the checkpoint is complete, and completed
+  by the next commit -- which also repairs a crash between the checkpoint
+  and the state before anything is unlinked.
+- The writer starts an empty checkpoint over archives only when every
+  archived body is byte-for-byte an active receipt's file: its own
+  first-write crash prefix. An archive no active receipt reproduces refuses,
+  so a lost checkpoint cannot be reset over already-retired history.
+- A corrupt checkpoint or archive raises; direct lookup never falls back to
+  an archived body while an active file is present but empty, malformed or
+  foreign.
+- The no-held-token rule is re-checked under the tier's mint lock
+  immediately before the archive and again before the unlink, so a capacity
+  token acquired or restored after the survey keeps the receipt active
+  (`held_names_visible`); an unreadable ledger refuses.  The archive store's
+  listing is an explicit `os.scandir` whose failures and unexpected entries
+  refuse: an unlistable archive directory is unknown history, never empty
+  history (`Path.glob` can suppress listing failures).
+- `move_record` recovers the archived body only when the active path is
+  absent, validating the digest, key, schema and the projection digest the
+  checkpoint carries.
+
+Two limits remain. The checkpoint and its merge are O(retired receipts), so a
+submission's pricing read pays that history (bounded by the retirement rate,
+not the filing rate), and `ReceiptCache` validates a changed checkpoint once
+per trusted document generation rather than per cycle; on a mount whose
+stamps cannot be trusted it re-validates every read, which is the
+conservative direction. Durability across a host or power loss is not
+established: the writes fsync their temporary file and rename, but the
+parent directory is not fsynced and the queue datasets' sync policy is
+unchanged, so the rules above are process-interruption recovery only.
+Finally, retirement is explicit
+operator work: `--apply --all-lock-takers-verify` alone retires no receipt;
+`--retire-movement-receipts` is the separate opt-in, because a reader
+generation that predates the merge cannot see the retirement store and a
+rolling publish must not start retiring receipts under it.
+
 ### The residency map
 
 `prismabuild.residency_map` is what a consumer reads to find its staged bytes;
@@ -6849,6 +7006,22 @@ overlaps it (#1063, below), and decides:
   an attempt that ended, `dead` or `done` by itself, never runs again under
   its nonce, so an older read can only defer a retirement to the next cycle,
   never cause one.
+
+**One commitments parse per scope.** The decision is taken from the tick's own
+parse of the scope's commitments (`_TickReads.batches`, #992), re-read inside
+the output-prefix locks only when the file's trusted version moved: an
+unchanged document is parsed once per tick rather than once per due batch, and
+a write that landed before the locks were taken still answers. The version is
+kept only under the fleet's trusted file-version rule (a coarse-clock fence
+read before the stat, on a filesystem whose times come from this kernel's
+clock); a version that cannot be vouched for -- a network filesystem's, a
+same-tick replacement's -- is re-read, and a document that cannot be read or
+parsed remains unknown state that refuses. Each write of the document drops
+the tick's parse first, so a decision a failed write did not file cannot
+answer a later batch. The output-prefix lock order is derived once per
+template listing and keyed by that listing's content, so a template filed
+between two asks is never missed. Lock scope, decision order, writer
+serialization and the retirement policy are unchanged.
 
 **The delete.** The tick first stats the instance's output prefix. If the
 prefix is not a directory on this host, it refuses
@@ -12595,7 +12768,16 @@ the check read:
 `.export.lock` before it takes the namespace's `.reservation.lock`, so a
 re-pin's read never holds every other group's reservation. The read costs
 one pass over the file, only on this mismatch; `rehash_s` records it.
-`commit_origin_group` then commits against the re-pinned identities.
+`commit_origin_group` then commits against the re-pinned identities. Its
+successful, nonduplicate answer includes the receipt's poll-site re-pins in
+its existing `landed_repins` list (#1179), with each destination path and the
+existing identity/digest/timing evidence, followed by any commit-site re-pins.
+Earlier polls count too, even when the commit's poll needs no new hash. The
+caller can retain that answer after spool namespace retirement deletes the
+receipt. Duplicate commits report no old re-pins again; failed commits do not
+claim them as committed evidence. No origin identity, stored receipt schema,
+commitment, lifetime or retirement decision changes, and gathering the answer
+adds no payload read.
 
 The re-pin is sound because the check it replaces was a proxy for the bytes:
 the sha256 is the digest the export verified while it copied, so a file with
