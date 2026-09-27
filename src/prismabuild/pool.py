@@ -17918,12 +17918,19 @@ class PoolQueue:
                             "required_tags": item.get("tags"), "needs_gpu": item.get("needs_gpu"),
                         })
                     continue
+                canary_exempt = False
                 if ("publication_canary" in item
                         or publication_canary.CAPABILITY in (item.get("tags") or [])):
                     if (not publication_canary.verified(self.root, item)
                             or item["publication_canary"]["host"] != socket.gethostname()):
                         self.record_denial(item, "publication_canary_authority_invalid")
                         continue
+                    # The scan has already validated the exact generation
+                    # this row's grant names (#1213).  That verified row, and
+                    # only it, crosses foreign CPU load (#1239): the canary's
+                    # verdict is correctness-only, and delaying it behind
+                    # load no drain clears is the boundary loss.
+                    canary_exempt = True
                 declared_images = item.get("container_images")
                 item_tags = item.get("tags")
                 if (not declared_images and isinstance(item_tags, list)
@@ -18209,7 +18216,8 @@ class PoolQueue:
                             if controller is not None:
                                 adaptive = controller.decision(
                                     item, demand, identity=identity, owner=dependent_owner,
-                                    allowance=allowance)
+                                    allowance=allowance,
+                                    foreign_load_exempt=canary_exempt)
                                 cpu_decision = getattr(controller, "last_decision", None)
                                 refused = adaptive is None
                                 if refused:

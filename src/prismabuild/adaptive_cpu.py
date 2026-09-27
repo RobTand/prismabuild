@@ -1034,7 +1034,8 @@ class Controller:
         return {'cpus': spare[:need_cpu], 'mem_gb': need_mem,
                 'owner_measurement': bool(meta_of_owner.get('measurement'))}, None
 
-    def decision(self, item, demand, *, identity=None, owner=_UNREAD, allowance=None):
+    def decision(self, item, demand, *, identity=None, owner=_UNREAD, allowance=None,
+                 foreign_load_exempt=False):
         """Decide under admission; callers may pre-read sealed action identity.
 
         ``owner`` is the producer a dependent serves, when the caller knows it
@@ -1162,8 +1163,15 @@ class Controller:
             for holder in holders:
                 allocation = self.ledger.cpu_allocation(holder.name, self.tiers)
                 held.update(allocation['preferred'] + allocation['fallback'])
+            # A verified publication canary crosses foreign load (#1239):
+            # its verdict is correctness-only -- receipts, envelopes, bitwise
+            # equality -- so foreign CPU load cannot corrupt it, only delay
+            # it, and that delay is the boundary loss.  Held CPUs stay
+            # ineligible either way: a held CPU is token accounting, not
+            # load, and the canary still needs its free tokens.
             eligible_cpus = [cpu for cpu in self.cpus if cpu not in held
-                             and foreign_cpu[str(cpu)] <= IDLE_BUSY_FRACTION]
+                             and (foreign_load_exempt
+                                  or foreign_cpu[str(cpu)] <= IDLE_BUSY_FRACTION)]
             predicted = self._predicted_cpus(declared, eligible_cpus=eligible_cpus)
             eligible_proven = predicted is not None
             if predicted is None:
@@ -1180,7 +1188,14 @@ class Controller:
             held_busy = sorted(cpu for cpu in predicted if cpu in held)
             foreign_busy = sorted(cpu for cpu in predicted if cpu not in held
                                   and foreign_cpu[str(cpu)] > IDLE_BUSY_FRACTION)
-            busy = sorted(held_busy + foreign_busy)
+            if foreign_load_exempt:
+                # #1239: the exemption's own half.  The foreign split stays
+                # in the evidence, but only held CPUs refuse the exempted
+                # probe; every other gate above -- raw saturation, unproven
+                # evidence, the GPU side -- already stood.
+                busy = held_busy
+            else:
+                busy = sorted(held_busy + foreign_busy)
             if busy:
                 return refuse("host_pressure", fresh=fresh, cpus=busy[:8],
                               held_cpus=held_busy, foreign_cpus=foreign_busy)

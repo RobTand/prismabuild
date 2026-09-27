@@ -3239,6 +3239,22 @@ running quantum. An ineligible/unknown resource state is not permission to run;
 the slot gets the next free boundary at which its safety requirements hold.
 Ordinary standalone canaries retain ordinary admission and cannot mint slots.
 
+**Verified-canary foreign-load exemption (#1239; approved 2026-09-27).**
+A row the scan has already validated as this host's verified publication
+canary — the #1213 grant, exact generation — and only that row crosses
+**foreign** CPU load in the admission corroboration: its eligibility is not
+limited to foreign-quiet CPUs, and only held CPUs refuse it. The canary's
+verdict is correctness-only — receipts, envelopes, bitwise equality — so
+foreign CPU load cannot corrupt it, only delay it, and a delay no drain
+clears is the #1239 boundary loss (1072 passes behind operator load while
+an ordinary row took the boundary). Token accounting is unchanged: the
+row still needs its free CPU/GPU/memory tokens, held CPUs stay ineligible,
+the raw `.95` saturation gate and every evidence-validity gate still refuse
+it, and the foreign split stays in the refusal evidence. An ordinary
+payload row in the same state keeps the full `host_pressure` refusal with
+the foreign CPUs named: payload performance is still what the gate
+protects.
+
 Only the process owning the publisher's existing POSIX publication lock
 **authorizes** a mint. A bounded private socket handoff receives the exact sealed
 action from the published pbrun subprocess and authorizes it **before** CAS/READY
