@@ -239,8 +239,8 @@ def test_host_pressure_on_the_producers_cpus_does_not_refuse_its_export(
     spool, cas = _producer(tmp_path, monkeypatch)
     foreign = _foreign(spool, cas, "one-cpu", {"cpu": 1, "mem_gb": 1})
     export_key = _export(spool, "g0")
-    _running(spool, monkeypatch, psi=0.12,
-             busy_housekeeping=tuple(range(1, 15)))
+    _running(spool, monkeypatch, psi=0.12, busy_housekeeping=tuple(
+        cpu for cpu in CPU_TIERS["fallback"] if cpu != 0))
 
     claim = _claim(spool.queue, spool.host)
     if claim is None or claim["action_key"] != export_key:
