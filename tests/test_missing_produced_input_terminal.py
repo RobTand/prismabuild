@@ -249,10 +249,14 @@ def test_one_claim_pass_reads_each_owner_state_once(tmp_path, monkeypatch):
         return real(queue, key)
 
     monkeypatch.setattr(po, "_key_generation", counting)
-    claimed = world.q.claim(owner="w-mover", tags=[_tier_host(world.q)])
-    assert claimed is not None and claimed["action_key"] in (world.mover, mover2)
+    # One prewarm pass scans every READY row: both movers' checks share one
+    # owner-state read.
+    _warm(world, tmp_path)
     owner_reads = [key for key in calls if key == world.owner]
     assert len(owner_reads) == 1, calls
+    for mover in (world.mover, mover2):
+        assert world.q.item_path(pool.READY, mover).exists()
+        assert not world.q.item_path(pool.FAILED, mover).exists()
 
 
 def test_claim_fails_the_mover_before_any_admission(tmp_path):
