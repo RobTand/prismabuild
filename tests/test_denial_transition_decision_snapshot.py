@@ -99,7 +99,8 @@ def test_a_damped_repeat_keeps_the_first_snapshot(tmp_path, monkeypatch):
         "adaptive_cpu_refused", "measurement_holder"], history
     repeat = history[0]
     assert repeat["count"] == 2
-    assert repeat["last_unix"] == clock[0]
+    # _refuse_once ticks the clock once past the refusal it recorded.
+    assert repeat["last_unix"] == clock[0] - 1.0
     # The snapshot is the first one: the entry is the record of how the
     # starvation began, not a rolling latest-only view (that record exists
     # separately and overwrites every pass).
