@@ -44,6 +44,17 @@ def _mover_row(queue: pool.PoolQueue, tmp_path: Path, key: str) -> None:
         resources={"cpu": 1, "mem_gb": 2})
 
 
+def _claim_path_take(queue: pool.PoolQueue, mover: str,
+                      demand: dict[str, int]) -> None:
+    """The claim path exactly: a private take, then the winner's commit."""
+
+    tier = queue.tier_ledger(RAM_TIER)
+    handle = tier.begin_acquire(mover, demand)
+    assert handle is not None, "fixture: the claim-path take must succeed"
+    assert tier.commit_acquire(mover, handle) > 0, \
+        "fixture: the claim must commit its tokens"
+
+
 def test_claim_path_ram_takes_gain_their_host_half(tmp_path: Path) -> None:
     """Unfenced and partial-fence movers both mirror after one cycle."""
 
@@ -57,11 +68,11 @@ def test_claim_path_ram_takes_gain_their_host_half(tmp_path: Path) -> None:
     # A row holds 48 beside the whole story.
     assert host.acquire("d" * 64, {"mem_gb": 48}) is True
     # The claim path: the whole demand, straight off the tier ledger.
-    assert tier.begin_acquire(bare, {"ram_gib": 100}) is not None
+    _claim_path_take(queue, bare, {"ram_gib": 100})
     # A partial fence: 40 fenced, handed to the mover, 60 claimed beside it.
     assert queue.take_tier_advance(RAM_TIER, grant, 40, "ram_gib")[0] == "taken"
     assert queue.transfer_fence(RAM_TIER, grant, fenced) == 40
-    assert tier.begin_acquire(fenced, {"ram_gib": 60}) is not None
+    _claim_path_take(queue, fenced, {"ram_gib": 60})
 
     verdict = queue.reconcile_ram_host_holds(RAM_TIER, ())
 
@@ -79,8 +90,8 @@ def test_rate_tokens_are_never_mirrored(tmp_path: Path) -> None:
     tier = queue.tier_ledger(RAM_TIER)
     mover = "a" * 64
     _mover_row(queue, tmp_path, mover)
-    assert tier.begin_acquire(
-        mover, {"ram_gib": 100, storage_tiers.FILL_KIND: 31}) is not None
+    _claim_path_take(queue, mover,
+                     {"ram_gib": 100, storage_tiers.FILL_KIND: 31})
 
     verdict = queue.reconcile_ram_host_holds(RAM_TIER, ())
 
@@ -103,7 +114,7 @@ def test_a_missing_host_mirror_refuses_window_growth(tmp_path: Path) -> None:
     _mover_row(queue, tmp_path, mover)
     # The row leaves the host pool no room: 240 of 256.
     assert queue.ledger(HOST).acquire("d" * 64, {"mem_gb": 240}) is True
-    assert tier.begin_acquire(mover, {"ram_gib": 100}) is not None
+    _claim_path_take(queue, mover, {"ram_gib": 100})
 
     verdict = queue.reconcile_ram_host_holds(RAM_TIER, ())
 
