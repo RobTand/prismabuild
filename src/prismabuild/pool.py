@@ -363,9 +363,13 @@ DENIAL_RING_EXEMPT_REASONS = frozenset({
 #: each carries this host's live withhold for the row, and records it as
 #: ``withhold_carried``, which :meth:`PoolQueue._carried_withhold` reads back
 #: off any of them.  A run of such passes therefore keeps the episode's start
-#: and never renews it.  A read that succeeded and says no -- an absent
-#: image, a lead that is not resident, a row this box cannot place -- is a
-#: verdict and carries nothing.
+#: and never renews it.  When a busy row has no live episode to carry --
+#: none ever was, or it expired past ``WITHHOLD_CEILING_S`` -- the room the
+#: busy GPU row keeps binds every row for the rest of the pass, not only
+#: rows that demand no GPU (#1217): nothing sorting behind it may claim the
+#: boundary it waited for.  A read that
+#: succeeded and says no -- an absent image, a lead that is not resident, a
+#: row this box cannot place -- is a verdict and carries nothing.
 WITHHOLD_CARRYING_REASONS = frozenset({
     "transition_busy", "container_image_presence_unknown",
     "residency_lead_record_unreadable"})
@@ -6480,8 +6484,11 @@ class PoolQueue:
                        demand: Mapping[str, int]) -> dict[str, object] | None:
         """The first kept room ``demand`` would stop fitting in this box's free tokens.
 
-        Called under host admission, just before a row that demands no GPU
-        takes its tokens (#1169).  A room that no longer fits the free tokens
+        Called under host admission, just before a row takes its tokens,
+        for the rooms it is bound by: every kept room when the row demands
+        no GPU (#1169), and the rooms a busy row with no live withhold
+        carry marked ``binds: all`` when it demands one (#1217).  A room that
+        no longer fits the free tokens
         without the row -- the GPU row's own claim or a sibling's admission
         has taken them since -- is left to that row's own verdict.  ``None``
         when the row fits beside every kept room, and when the free tokens do
@@ -17604,6 +17611,11 @@ class PoolQueue:
         #: This host's latest verdicts, read once, at the pass's first row it
         #: could not evaluate (#1085, #1143).
         host_verdicts: Mapping[str, object] | None = None
+        #: Whether a row this pass already withheld the whole box for (#1230
+        #: review): ``carry_withhold``'s None then means "held elsewhere in
+        #: this pass", not "no live carry", and the busy-row room must not
+        #: read it as an expired episode to bind every row.
+        whole_box_held = False
 
         def withhold(key: str, kinds: frozenset[str] | None) -> None:
             nonlocal withheld_for, withheld_kinds
@@ -17622,8 +17634,9 @@ class PoolQueue:
             # as ``withhold_carried`` in its denial, so the next such pass
             # reads the same start.  Read before that denial overwrites the
             # host's record.
-            nonlocal host_verdicts
+            nonlocal host_verdicts, whole_box_held
             if withheld_for is not None and withheld_kinds is None:
+                whole_box_held = True
                 return None                 # the whole box is held already
             if host_verdicts is None:
                 host_verdicts = self._host_denial_records()
@@ -17689,22 +17702,61 @@ class PoolQueue:
                         # for this pass (#1085): the loop holding the lock is
                         # this box's sibling deciding the same row, or another
                         # box deciding it for itself, and neither ends the
-                        # drain this box is holding it for.
+                        # drain this box is holding it for.  When no live
+                        # episode is on file -- it expired past the carry
+                        # ceiling, as a long drain can, or none was ever
+                        # filed -- the row's kept room binds every row for
+                        # the rest of this pass, not only rows that demand
+                        # no GPU (#1217): a later row claiming now would take
+                        # the boundary it waited for, which is the inversion
+                        # the pool's band order exists to prevent.
                         carried = carry_withhold(item, key)
                         # A GPU row moved ahead for the free GPU keeps its
                         # room for the rows behind it (#1169): the loop
-                        # deciding it may be about to claim it.
-                        room = (self._ready_gpu_row_room(
-                            item, ledger=ledger, total=total, controller=controller,
-                            gpu_controller=gpu_controller, observed_images=observed_images)
-                            if key in gpu_first and ledger is not None else None)
+                        # deciding it may be about to claim it.  A busy GPU
+                        # row with no live carry keeps its room whether or
+                        # not the pass moved it ahead (#1217, #1230 review):
+                        # ``gpu_first`` is read once, at the pass's start, and
+                        # is empty while a quantum holder still holds the
+                        # GPU -- a holder that releases mid-pass, exactly the
+                        # drain-boundary incident, must not strip the row of
+                        # the room its own claim would take.  The whole-box
+                        # signal is kept apart (#1230 review): a None carry
+                        # from a pass-wide withhold is not an expired
+                        # episode and binds nothing extra.  The room reads
+                        # only live facts -- free tokens, GPU sample, images,
+                        # residency -- so a row that does not fit answers
+                        # None on its own.
+                        room = None
+                        if ledger is not None and (
+                                key in gpu_first
+                                or (carried is None and not whole_box_held)):
+                            # Unlike a ``gpu_first`` row, this one's demand
+                            # was never read this pass: a row the loop holding
+                            # it will refuse as malformed keeps no room here,
+                            # and must not end this pass for every row.
+                            try:
+                                host_demand, _tiers = storage_tiers.split_demand(
+                                    self.demand_of(item))
+                            except (TypeError, ValueError, pb.PrismaBuildError):
+                                host_demand = {}
+                            if host_demand.get("gpu"):
+                                room = self._ready_gpu_row_room(
+                                    item, ledger=ledger, total=total,
+                                    controller=controller,
+                                    gpu_controller=gpu_controller,
+                                    observed_images=observed_images)
                         if room is not None:
+                            if carried is None and not whole_box_held:
+                                room["binds"] = "all"
                             gpu_rooms.append(room)
                         busy_evidence: dict[str, object] = {}
                         if carried is not None:
                             busy_evidence["withhold_carried"] = carried
                         if room is not None:
                             busy_evidence["gpu_room_kept"] = room["room"]
+                            if room.get("binds") == "all":
+                                busy_evidence["gpu_room_binds_all"] = True
                         self.record_denial(item, "transition_busy", busy_evidence or None)
                     continue
                 if claimed_listed is None:
@@ -18055,12 +18107,23 @@ class PoolQueue:
                                 refusal_source = "deferred_behind_withholding"
                                 adaptive = None
                             if (not refused and gpu_rooms and ledger is not None
-                                    and not int(reservation_demand.get("gpu", 0) or 0)):
+                                    and (not int(reservation_demand.get("gpu", 0) or 0)
+                                         or any(kept.get("binds") == "all" for kept in gpu_rooms))):
                                 # A GPU row ahead of this one that fits the
                                 # free GPU could not be decided this pass
                                 # (#1169): admit this row only beside it.
+                                # A room kept for a row whose withhold carry
+                                # is gone binds every row, the GPU-demanding
+                                # with the rest (#1217): nothing sorting
+                                # behind the busy row may take the boundary
+                                # it waited for.
+                                demanding_gpu = bool(
+                                    int(reservation_demand.get("gpu", 0) or 0))
+                                bound = ([kept for kept in gpu_rooms
+                                          if kept.get("binds") == "all"]
+                                         if demanding_gpu else list(gpu_rooms))
                                 room_taken = self._room_taken_by(
-                                    ledger, gpu_rooms, reservation_demand)
+                                    ledger, bound, reservation_demand)
                                 if room_taken is not None:
                                     refused = True
                                     refusal_source = "deferred_for_ready_gpu_row"

@@ -428,7 +428,24 @@ passes batch their denial records and flush once after the pass (#1221), so a
 sibling loop's first withhold of a new episode is visible here one pass
 late); the denial it records carries that
 episode's start (`withhold_carried`), and the next such pass reads it back
-off any of those reasons, so a run of them never renews it. None of them is a
+off any of those reasons, so a run of them never renews it. For a GPU row
+whose transition lock another loop holds, the protection does not depend on
+the carry (#1217): when no live episode is on file -- the row was never
+evaluated here, or its episode outlived `WITHHOLD_CEILING_S`, as a long
+drain can -- the room the busy row keeps binds every row for the rest of
+the pass, the GPU-demanding with the rest (`gpu_room_binds_all` in the
+denial), so nothing sorting behind it claims the boundary it waited for;
+CPU-only rows still fill the box beside the room, and the next pass
+re-reads the row, or another box has decided it. The room is kept for a
+busy GPU row whether or not the pass moved it ahead for the free GPU
+(#1230 review): `gpu_first` is read once, at the pass's start, and is
+empty while a quantum holder still holds the GPU token -- a holder that
+releases mid-pass, exactly the drain-boundary incident, must not strip the
+row of the room its own claim would take, and `_ready_gpu_row_room` re-reads
+only live facts (free tokens, GPU sample, images, residency), so a row
+that no longer fits answers None on its own. A `None` carry because a row
+this pass already withheld the whole box is not an expired episode and
+binds nothing extra. None of them is a
 verdict, and none releases the drain: without the carry, every pass that met
 an unknown inventory admitted the rows behind an image-pinned GPU row into
 the drain it was waiting on (#1143, the #1125 livelock again). The row is
