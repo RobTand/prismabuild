@@ -3933,20 +3933,27 @@ decision feeds it:
   attribution can, and the measurement gate uses it (#1231, fixed
   2026-09-27): a CPU a pool holder holds carries the pool's own work, which
   that holder draining clears, while foreign busy on an unheld CPU is load
-  no drain ever clears. When every held CPU reads quiet below the idle
-  fraction and the busy above it is all on unheld CPUs, the excess would
-  survive every holder draining, so the refusal is
-  `measurement_foreign_load` naming the foreign CPUs and the item starves
-  (`_starved`, visible under `pbstatus --starvation`) instead of
-  withholding: withholding for load the pool does not own would only cut
-  the box to one admission per sample window while the foreign load stays
-  (#1160's held-vs-foreign separation applied to the measurement gate; the
-  2026-09-27 incident had 211 ready rows stalled behind such a refusal on
-  sparky until the coordinator withdrew the measurement by hand). A sample
+  no drain ever clears. The excess that survives every holder draining is
+  at least the attributed busy on unheld CPUs -- PB preserves each
+  holder's `cpu_allocation` affinity -- so that sum, `S`, is re-judged by
+  the idle verdict's own rule (#1233, fixed 2026-09-27): the same
+  `_judge_idle`, the same baseline or prior (the reference and prior rule
+  `Controller.idle` used, cached so the re-judgement cannot drift from the
+  window's own choice), with `busy_cpus := S` and every unattributable
+  field reading as its quietest. When that alone exceeds, whatever the
+  held CPUs do, the refusal is `measurement_foreign_load` naming `S`, the
+  re-judged verdict and the held CPUs, and the item starves (`_starved`,
+  visible under `pbstatus --starvation`) instead of withholding:
+  withholding for load the pool does not own would only cut the box to
+  one admission per drain while the foreign load stays (#1160's held-vs-
+  foreign separation applied to the measurement gate; the 2026-09-27
+  incident had 211 ready rows stalled behind such a refusal on sparky
+  until the coordinator withdrew the measurement by hand). A sample
   without attribution keeps the conservative `measurement_host_not_idle`
-  refusal, exactly as before (#1210's rolling-upgrade rule), and a busy
-  held CPU keeps the #924 withhold-then-admit behavior: that drain is
-  really pending.
+  refusal, exactly as before (#1210's rolling-upgrade rule); PSI cannot be
+  attributed to a CPU, so a verdict exceeded only on `psi_some` keeps it;
+  and a holder-only excess keeps the #924 withhold-then-admit behavior:
+  that drain is really pending.
 
 The GPU controller applies the same judgement to a measurement's host pressure
 (`memory_pressure_some`, `memory_pressure_full`, `cpu_pressure_some`, the

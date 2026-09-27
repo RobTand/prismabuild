@@ -626,6 +626,39 @@ def _judge_idle(verdict, reference, current, fields, prior_rule):
     return bool(prior_rule(current))
 
 
+def _idle_samples(state, fields=IDLE_FIELDS):
+    """The window's remembered samples, filtered exactly as `idle_judgement` keeps them."""
+    return [s for s in state.get('samples', []) if isinstance(s, dict)
+            and all(type(s.get(k)) in (int, float) and math.isfinite(s[k])
+                    for k in ('sampled_unix',) + tuple(fields))]
+
+
+def _idle_reference(samples, *, now, excursion_unix):
+    """The samples one idle sample is judged against, and its excursion run.
+
+    The no-holder half of #997's rule: every sample before this one, less an
+    ongoing excursion's own run (a run that has outlived what the window
+    remembers reads as unexceptional again, so the excursion is over).
+    Pure, so `Controller.idle` can cache the very reference a verdict used
+    and #1233's re-judgement cannot drift from `idle_judgement`'s choice.
+    """
+
+    prior = [s for s in samples if s['sampled_unix'] < now]
+    run = excursion_unix
+    run = float(run) if type(run) in (int, float) and math.isfinite(run) else None
+    if run is not None:
+        before = [s for s in prior if s['sampled_unix'] < run]
+        # From the oldest remembered sample to when the run started, not
+        # between the remembered samples themselves: that is zero with a
+        # single one of them, which read every run as having already
+        # outlived the window on its very first pass (#1014).
+        span = (run - before[0]['sampled_unix']) if before else 0.
+        if before and now - run < span:
+            return before, run
+        return prior, None
+    return prior, None
+
+
 def idle_judgement(state, sample, *, holders, identity, fields=IDLE_FIELDS, interval_s=None,
                    prior_rule=None):
     """Judge one host sample against the host's own idle history (#997).
@@ -685,9 +718,7 @@ def idle_judgement(state, sample, *, holders, identity, fields=IDLE_FIELDS, inte
     if state.get('schema') != IDLE_BASELINE_SCHEMA or state.get('identity') != identity:
         # A changed CPU topology or device is a different host for this purpose.
         state = {'schema': IDLE_BASELINE_SCHEMA, 'identity': identity, 'samples': []}
-    samples = [s for s in state.get('samples', []) if isinstance(s, dict)
-               and all(type(s.get(k)) in (int, float) and math.isfinite(s[k])
-                       for k in ('sampled_unix',) + tuple(fields))]
+    samples = _idle_samples(state, fields)
     now = sample.get('sampled_unix')
     seen = state.get('holders_seen_unix')
     seen = float(seen) if type(seen) in (int, float) and math.isfinite(seen) else None
@@ -704,21 +735,8 @@ def idle_judgement(state, sample, *, holders, identity, fields=IDLE_FIELDS, inte
         verdict.update(state='holder_tail', exceeds=True, holders_seen_unix=seen,
                        interval_start_unix=started)
         return verdict, state
-    prior = [s for s in samples if s['sampled_unix'] < now]
-    run = state.get('excursion_unix')
-    run = float(run) if type(run) in (int, float) and math.isfinite(run) else None
-    reference = prior
-    if run is not None:
-        before = [s for s in prior if s['sampled_unix'] < run]
-        # From the oldest remembered sample to when the run started, not
-        # between the remembered samples themselves: that is zero with a
-        # single one of them, which read every run as having already
-        # outlived the window on its very first pass (#1014).
-        span = (run - before[0]['sampled_unix']) if before else 0.
-        if before and now - run < span:
-            reference = before
-        else:
-            run = None
+    reference, run = _idle_reference(samples, now=now,
+                                     excursion_unix=state.get('excursion_unix'))
     verdict['state'] = 'idle'
     exceeds = verdict['exceeds'] = _judge_idle(verdict, reference, current, fields, prior_rule)
     if run is not None and exceeds:
@@ -772,8 +790,48 @@ class Controller:
                                           identity=cpus, prior_rule=prior_rule)
         if updated != state:
             self.write_state(IDLE_BASELINE, updated)
-        self._idle = (key, verdict)
+        # The reference THIS verdict judged against, from the pre-update
+        # state (a sample that seeds the window is judged against what came
+        # before it), kept beside it so #1233's re-judgement reads the same
+        # baseline rather than a copy of the rule that could drift.
+        samples = _idle_samples(state)
+        if holders:
+            reference = samples
+        else:
+            reference = _idle_reference(
+                samples, now=sample.get('sampled_unix'),
+                excursion_unix=state.get('excursion_unix'))[0]
+        self._idle = (key, verdict, reference, prior_rule)
         return verdict
+
+    def rejudge_idle_foreign(
+            self, sample, holders, *, busy_cpus: float) -> dict[str, object]:
+        """The idle verdict re-judged on the busy that survives every drain (#1233).
+
+        Unheld CPUs carry no holder work -- PB preserves each holder's
+        ``cpu_allocation`` affinity -- so the attributed busy on them is load
+        no drain of the pool's holders can remove.  This re-judges that part
+        alone, ``busy_cpus := busy_cpus``, through the same :func:`_judge_idle`
+        against the same baseline or prior this pass's verdict used (the
+        cached reference and prior rule from :meth:`idle`; a verdict with no
+        cached pass never exceeds).  PSI cannot be attributed, so it
+        contributes nothing here: a verdict that exceeded only on
+        ``psi_some`` stays conservative.  The answer is evidence, never
+        persisted, and never seeds the window.
+        """
+
+        if self._idle is None:
+            return {'state': 'no-verdict', 'exceeds': False}
+        reference, prior_rule = self._idle[2], self._idle[3]
+        # PSI cannot be attributed to a CPU, so only the re-judged busy can
+        # exceed: every other field reads as its quietest, zero.
+        current = {field: 0.0 for field in IDLE_FIELDS}
+        current['busy_cpus'] = float(busy_cpus)
+        rejudged: dict[str, object] = {'window_bound': IDLE_WINDOW,
+                                       'state': 'foreign-rejudged'}
+        rejudged['exceeds'] = _judge_idle(rejudged, reference, current,
+                                         IDLE_FIELDS, prior_rule)
+        return rejudged
 
     def write_state(self, name, value):
         write_json(self.base / name, value)
@@ -1103,19 +1161,23 @@ class Controller:
         # otherwise the holder loop below refuses the measurement
         # ``measurement_holder`` (naming ``isolated_by``, #982).
         if measurement and (not fresh or idle['exceeds']):
-            # #1231: the idle verdict cannot tell whose load exceeded it.
-            # A fresh sample's attribution can: a CPU a pool holder holds
-            # carries the pool's own work, which that holder draining
-            # clears, while foreign busy on an unheld CPU is load no drain
-            # ever clears.  When every held CPU reads quiet below the idle
-            # fraction and the busy above it is all on unheld CPUs, the
-            # excess would survive every holder draining, so withholding
-            # the box for it would only cut the box to one admission per
-            # sample window while the foreign load stays (#1160's held-vs-
-            # foreign separation applied to the measurement gate).  The
-            # refusal names the foreign CPUs and the item starves instead.
-            # A sample without attribution keeps the conservative refusal,
-            # exactly as before (#1210's rolling-upgrade rule).
+            # #1231/#1233: the idle verdict cannot tell whose load exceeded
+            # it.  A fresh sample's attribution can: a CPU a pool holder
+            # holds carries the pool's own work, which that holder draining
+            # clears, while the attributed busy on unheld CPUs is load no
+            # drain ever clears -- PB preserves each holder's
+            # cpu_allocation affinity, so the excess that survives every
+            # drain is at least that sum.  It is re-judged by the idle
+            # verdict's own rule (the same baseline or prior, the same
+            # _judge_idle), so a thin spread across quiet CPUs counts and a
+            # busy holder no longer masks a foreign excess of its own; when
+            # that alone exceeds, withholding the box for it would only cut
+            # the box to one admission per drain while the foreign load
+            # stays, and the refusal names the sum, the re-judged verdict
+            # and the held CPUs, and the item starves.  A sample without
+            # attribution keeps the conservative refusal, exactly as before
+            # (#1210's rolling-upgrade rule), and PSI stays conservative
+            # because it cannot be attributed to a CPU.
             if fresh and idle['exceeds']:
                 per_cpu = sample.get('per_cpu_busy')
                 foreign_cpu = sample.get('foreign_per_cpu_busy', per_cpu)
@@ -1140,10 +1202,16 @@ class Controller:
                     held_busy = sorted(
                         cpu for cpu in self.cpus if cpu in held
                         and per_cpu[str(cpu)] > IDLE_BUSY_FRACTION)
-                    if foreign_busy and not held_busy:
+                    surviving = sum(foreign_cpu[str(cpu)]
+                                    for cpu in self.cpus if cpu not in held)
+                    rejudged = self.rejudge_idle_foreign(
+                        sample, holders, busy_cpus=surviving)
+                    if rejudged.get('exceeds'):
                         return refuse("measurement_foreign_load", fresh=fresh,
                                       baseline=idle, foreign_cpus=foreign_busy[:8],
-                                      held_cpus=held_busy)
+                                      held_cpus=held_busy,
+                                      foreign_busy_cpus=round(surviving, 3),
+                                      foreign_idle=rejudged)
             return refuse("measurement_host_not_idle", fresh=fresh, baseline=idle)
         if full_width and fresh and not holders and idle['exceeds']:
             # A reservation of every CPU needs the host idle too.
