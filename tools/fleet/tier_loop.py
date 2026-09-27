@@ -10205,6 +10205,34 @@ def _cycle(
     # the tier's *current* free capacity covers, so it must see this cycle's
     # supply rather than the last one's.
     announced_tiers = {str(record["tier_id"]): record for record in announced}
+    # READY manifest rows gain their residency plans here, before this
+    # cycle's planned-consumers walk, so a plan filed now is adopted by the
+    # same cycle rather than the next (#1247).  The planner is the
+    # submitter's own sealing path invoked by the loop: it files plans and
+    # never publishes movers -- the adoption and window passes below own
+    # that, exactly as they do for a ``--residency stage`` submission.  A
+    # stage tier is the gate: no stage, no planner, and a box that announces
+    # no ram tier still plans (the sealing path's ram leg is ``auto`` and
+    # simply seals no promotion nodes when none sits in front of the stage).
+    stage_for_manifests = next(
+        (dict(record) for record in announced
+         if record.get("tier") == "stage"), None)
+    if stage_for_manifests is not None:
+        try:
+            for outcome in manifest_promotion.promote_ready_manifest_rows(
+                    queue, prewarm_loop.SH / "cas", stage_for_manifests):
+                _emit(queue, host,
+                      {"event": "manifest-row-promotion", **outcome},
+                      tier_consumers=tier_consumers)
+        except (OSError, pool.PoolContractError, ValueError) as exc:
+            # The planner is fail-closed per row; this is the loop-level
+            # guard for what a row cannot catch (a queue read, say).  One
+            # cycle without new plans is the ordinary cost of a refusal.
+            _emit(queue, host,
+                  {"event": "manifest-row-promotion-refused",
+                   "reason": repr(exc)},
+                  tier_consumers=tier_consumers)
+    phases.lap("manifest_promotion")
     # The epoch drop before anything reads a fragment: a prior epoch's range
     # is not resident, so the adoption, the pressure, the sweep and the maps
     # below all see a world that no longer contains it (#640).  The drop is

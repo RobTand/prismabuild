@@ -7979,25 +7979,67 @@ class PoolQueue:
         """
 
         residency = item.get("residency") if isinstance(item, Mapping) else None
-        if not isinstance(residency, Mapping) or not residency.get("leads"):
-            return {}
+        if isinstance(residency, Mapping) and residency.get("leads"):
+            key = item.get("action_key")
+            if not isinstance(key, str):
+                return {}
+            try:
+                path = self.residency_map_path(key)
+            except PoolContractError:
+                return {}
+            try:
+                present = path.exists()
+            except OSError:
+                # Same containment as the gate: a stat that raises says nothing
+                # about the file, and naming a map this process could not stat
+                # would hand the action a path it may not be able to open either.
+                # Unset is the honest answer, and it is the one the action already
+                # knows how to act on.
+                return {}
+            return {pb.RESIDENCY_MAP_ENV: str(path)} if present else {}
+        return self._declared_manifest_map_environment(item)
+
+    def _declared_manifest_map_environment(
+            self, item: Mapping[str, object]) -> dict[str, str]:
+        """The #1247 branch: a manifest-declaring row with a composed map.
+
+        Caller has already established the item carries no sealed residency
+        block.  The map must exist *and* the row must declare a
+        ``pbcampaign.data-manifest`` input -- either alone is not an opt-in,
+        and the declaration is the row's own statement of its input set
+        (review-approved Option 1).  The two reads are ordered cheapest
+        first: the map is one lstat, and the request is read only when a map
+        is standing there waiting to be named.  Any failure answers nothing
+        -- fail-closed to the declared path, never a guess.
+        """
+
         key = item.get("action_key")
         if not isinstance(key, str):
             return {}
         try:
             path = self.residency_map_path(key)
-        except PoolContractError:
-            return {}
-        try:
             present = path.exists()
-        except OSError:
-            # Same containment as the gate: a stat that raises says nothing
-            # about the file, and naming a map this process could not stat
-            # would hand the action a path it may not be able to open either.
-            # Unset is the honest answer, and it is the one the action already
-            # knows how to act on.
+        except (OSError, PoolContractError):
             return {}
-        return {pb.RESIDENCY_MAP_ENV: str(path)} if present else {}
+        if not present:
+            return {}
+        cas_root = item.get("cas_root")
+        if not isinstance(cas_root, str) or not cas_root:
+            return {}
+        request_path = (Path(cas_root) / "requests" / key[:2]
+                        / f"{key}.json")
+        try:
+            with open(request_path, "rb") as handle:
+                body = json.loads(handle.read().decode("utf-8"))
+        except (OSError, UnicodeError, ValueError):
+            return {}
+        if not isinstance(body, dict):
+            return {}
+        for entry in body.get("inputs") or ():
+            if isinstance(entry, Mapping) and str(entry.get("id")) == \
+                    pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID:
+                return {pb.RESIDENCY_MAP_ENV: str(path)}
+        return {}
 
     def record_pass(self, action_key: str) -> int:
         """Count one admission denial.
