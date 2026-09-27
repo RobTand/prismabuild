@@ -300,6 +300,7 @@ def test_a_malformed_template_does_not_end_the_claim_pass(tmp_path):
     world.fail_the_producer()
     template_file = (world.q.root / "residency" / "produced-output-templates"
                      / f"{world.inst['template_id']}.json")
+    template_file.chmod(0o644)          # filed immutable; the tamper is ours
     template_file.write_text("null")
     # Neither the prewarm cycle nor the claim pass raises; the row stays.
     _warm(world, tmp_path)

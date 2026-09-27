@@ -4439,10 +4439,16 @@ one of those descriptors' origin paths under the producer's output prefix
 whose `lstat` answered `ENOENT` (only ENOENT is missing; EACCES, ESTALE
 and EIO are unreadable, and unreadable is unknown, never gone).
 `PoolQueue.fail_dead_input_dependency` then fails the row under the key's
-transition lock, taken non-blocking (a foreign holder is a timed
-`transition_busy` denial, never a wait, #1115), before any warm or
-admission -- on the claim path after the placement match, in the prewarm
-cycle before the manifest read: status `failed` with
+transition lock, taken non-blocking through the pass's timed hold (#1029;
+a foreign holder answers not-acquired and the claim path's own hold on the
+same key records the `transition_busy` denial -- never a wait, #1115), and
+only after the pass's memoized hint says the owner attempt is dead, so a
+live producer's movers pay no lock round trip at all. A release the
+funding check cannot decide -- a transient read fault -- restores the row
+and records a denial instead of filing the terminal, because a terminal
+row makes the public release refuse forever; the next pass retries. This
+runs before any warm or admission -- on the claim path after the
+placement match, in the prewarm cycle before the manifest read: status `failed` with
 `termination_reason=input_dependency_failed` naming the owner nonce and
 the missing path, `published_unix` preserved, and the ready bytes kept
 under `withdrawn/superseded/`. Before the ending is filed the mover's

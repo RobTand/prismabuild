@@ -7913,8 +7913,35 @@ def _producer_attempt_state(queue, instance: Mapping[str, object]) -> str:
         str(attempt["nonce"]))
 
 
+def dead_input_hint(queue, item: Mapping[str, object], hints) -> bool:
+    """The pass's memoized gate: does this mover's owner attempt read dead?
+
+    #1202 review N2: the gate the caller consults BEFORE taking the mover
+    key's transition lock, so a live producer's movers pay no lock round
+    trip at all.  One ``_key_generation`` read per distinct owner per pass
+    (the caller's memo); the answer is only a gate -- a ``dead`` hint still
+    pays for the full proof, which re-reads every fact fresh under the
+    lock, never trusting the memo.  Anything unprovable answers False.
+    """
+
+    ref = item.get("produced_output_batch")
+    if not isinstance(ref, Mapping):
+        return False
+    try:
+        owner = _hex64(str(ref.get("owner_action_key") or ""),
+                       where="reference owner_action_key")
+        nonce = _hex32(str(ref.get("owner_nonce") or ""),
+                       where="reference nonce")
+    except ProducedOutputError:
+        return False
+    generation = hints.get(owner)
+    if generation is None:
+        generation = hints[owner] = _key_generation(queue, owner)
+    return _attempt_state(generation, nonce) == "dead"
+
+
 def dead_input_dependency(
-        queue, item: Mapping[str, object], hints=None
+        queue, item: Mapping[str, object]
 ) -> dict[str, object] | None:
     """The proof that a ready mover's producer-owned input is gone (#1184).
 
@@ -7974,12 +8001,6 @@ def dead_input_dependency(
                          where="reference batch_id")
     except ProducedOutputError:
         return None
-    if hints is not None:
-        generation = hints.get(owner)
-        if generation is None:
-            generation = hints[owner] = _key_generation(queue, owner)
-        if _attempt_state(generation, nonce) != "dead":
-            return None
     try:
         raw = json.loads(
             (Path(queue.root) / "residency" / OUTPUT_SCOPES_SUBDIR / owner
@@ -7990,9 +8011,9 @@ def dead_input_dependency(
         return None
     try:
         instance = validate_instance(dict(raw))
-        template = validate_template(dict(json.loads(
+        template = validate_template(json.loads(
             (Path(queue.root) / "residency" / OUTPUT_TEMPLATES_SUBDIR
-             / f"{instance['template_id']}.json").read_text())))
+             / f"{instance['template_id']}.json").read_text()))
     except (OSError, ValueError, ProducedOutputError):
         return None
     attempt = instance["owner_attempt"]

@@ -13310,13 +13310,17 @@ class PoolQueue:
         with self.mover_transition_lock(mover, blocking=False) as acquired:
             if not acquired:
                 return False
-            return self._release_never_started_funding_locked(
+            # The public API answers a bool: an undecided read fault is a
+            # non-release for it, never a strand (#1202 review N3 makes the
+            # distinction only for the dead-input ending, which retries).
+            released = self._release_never_started_funding_locked(
                 mover, str(tier_id), generation=generation)
+            return released is True
 
     def _release_never_started_funding_locked(
             self, mover_action_key: str, tier_id: str, *,
             generation: str | None = None,
-            dead_input: Mapping[str, object] | None = None) -> bool:
+            dead_input: Mapping[str, object] | None = None) -> bool | None:
         """Retire an output intent only when mover nonexecution is proven (R2).
 
         The lock-free body of :meth:`release_output_funding`; the caller
@@ -13332,12 +13336,26 @@ class PoolQueue:
         claimed, no receipt/lease/terminal) retires credit once via
         reserved|transferring -> released. Tokens stay where they are;
         ordinary owner/mover release then frees them.
+
+        The answer is a tri-state (#1202 review N3): ``True`` released,
+        ``False`` refused on proof (the mover started, the record is
+        foreign, absent, or already settled), and ``None`` undecided -- a
+        read fault anywhere inside.  A caller that files a terminal on the
+        strength of this answer must treat ``None`` as "retry", never as a
+        refusal, because a terminal row makes the public release refuse
+        forever and strands the token.
         """
 
         mover = str(mover_action_key)
-        current = self.read_output_funding(mover, str(tier_id))
-        if current is None:
-            return False
+        try:
+            current, file_state = self.output_funding_file_state(
+                mover, str(tier_id))
+        except (OSError, ValueError, PoolContractError):
+            return None                    # a read fault is undecided
+        if file_state == "absent":
+            return False                   # nothing to release is a settled answer
+        if file_state != "ok" or not isinstance(current, Mapping):
+            return None                    # an unreadable record is undecided
         if (generation is not None
                 and str(current.get("generation")) != str(generation)):
             return False
@@ -13366,14 +13384,14 @@ class PoolQueue:
                     and self._output_batch_authority(current)):
                 return False
         except (OSError, PoolContractError, ValueError):
-            return False
+            return None
         exp_gen = str(current.get("generation"))
         # Durable claim: CLAIMED row of any shape means the mover may hold
         # the fence while the consumed marker failed.
         try:
             claimed = _read_json(self.item_path(CLAIMED, mover))
         except (OSError, PoolContractError):
-            return False
+            return None
         if isinstance(claimed, Mapping):
             return False
         # Terminals: DONE or FAILED of any status means the mover started
@@ -13384,7 +13402,7 @@ class PoolQueue:
             try:
                 terminal = _read_json(self.item_path(terminal_state, mover))
             except (OSError, PoolContractError):
-                return False
+                return None
             if not isinstance(terminal, Mapping):
                 continue
             # Any terminal for this key is proof of execution start.
@@ -13394,7 +13412,7 @@ class PoolQueue:
         try:
             receipt = self.move_record(mover)
         except (OSError, PoolContractError, ValueError):
-            return False
+            return None
         if isinstance(receipt, Mapping):
             try:
                 staged = receipt.get("bytes_staged")
@@ -13408,13 +13426,18 @@ class PoolQueue:
         try:
             lease = _read_json(self.lease_path(mover))
         except (OSError, PoolContractError):
-            return False
+            return None
         if isinstance(lease, Mapping):
             return False
         _ = exp_gen
-        return self._advance_output_funding_state_locked(
-            mover, str(tier_id), expect=state, advance_to="released",
-            generation=str(current.get("generation")))
+        if self._advance_output_funding_state_locked(
+                mover, str(tier_id), expect=state, advance_to="released",
+                generation=str(current.get("generation"))):
+            return True
+        # Every proven refusal answered above; a False here is a read or
+        # write fault under the advance's own idempotence, which the next
+        # pass retries (#1202 review N3).
+        return None
 
     def output_census_for_owner(self, owner_key: str) -> tuple[list[dict], bool]:
         """Outstanding output intents for owner + census-unknown flag (R2).
@@ -17701,7 +17724,8 @@ class PoolQueue:
             if (isinstance(item.get("produced_output_batch"), Mapping)
                     and key
                     and self.fail_dead_input_dependency(item, key,
-                                                        hints=dead_input_hints)):
+                                                        hints=dead_input_hints,
+                                                        holds=holds)):
                 # Before the hold and any admission (#1184): the method
                 # serializes its own transition under this key's lock, so a
                 # concurrent publisher or claimant cannot interleave with
@@ -21952,7 +21976,7 @@ class PoolQueue:
         return True
 
     def fail_dead_input_dependency(self, item: Mapping[str, object],
-                                   key: str, hints=None) -> bool:
+                                   key: str, hints=None, holds=None) -> bool:
         """Fail a ready mover whose dead producer's bound origin is gone (#1184).
 
         A mover's sealed ``produced_output_batch`` reference names the
@@ -21980,19 +22004,24 @@ class PoolQueue:
 
         if not isinstance(item.get("produced_output_batch"), Mapping):
             return False
-        started = _now()
-        with self._transition_locked(key, blocking=False) as acquired:
+        # #1202 review N2: the hint is consulted BEFORE the key's lock, so
+        # a live producer's movers pay no lock round trip at all, and the
+        # lock is taken only on a dead hint -- through the pass's timed
+        # hold (#1029), so its cost is visible -- where the full proof
+        # re-reads every fact fresh, never trusting the memo.  A caller
+        # with no memo (a direct check) skips straight to that proof.
+        if (hints is not None
+                and not produced_mod.dead_input_hint(self, item, hints)):
+            return False
+        with self._timed_transition_hold(key, holds) as acquired:
             if not acquired:
-                # #1202 review finding 3: a claim pass must never wait on a
-                # foreign holder of the key (#1115 class); the attempt is
-                # timed (#1029) and reported, and the next pass retries.
-                self.record_denial(item, "transition_busy", {
-                    "hold_s": round(_now() - started, 3),
-                    "checking": "dead-input-dependency"})
+                # Not held, so nothing was decided: the claim path's own
+                # hold on the same key records the busy denial with its
+                # carry, and the prewarm cycle retries next pass (#1202
+                # review N2).
                 return False
             try:
-                proof = produced_mod.dead_input_dependency(self, item,
-                                                           hints=hints)
+                proof = produced_mod.dead_input_dependency(self, item)
             except (produced_mod.ProducedOutputError, OSError,
                     PoolContractError) as exc:
                 # Unreadable queue state is unknown state: it invents no
@@ -22026,8 +22055,20 @@ class PoolQueue:
                 # can never come) and binds the funding to that batch -- so
                 # the stage token and the transferring record do not
                 # outlive the ending and the dead-producer sweep retires.
+                # #1202 review N3: a release that could not be decided -- a
+                # transient read fault anywhere inside -- restores the row
+                # and records the denial instead of filing FAILED, because
+                # a FAILED row makes the public release refuse forever and
+                # strands the token.  The next pass retries.
                 funding_released = self._release_never_started_funding_locked(
                     key, str(proof["tier_id"]), dead_input=proof)
+                if funding_released is None:
+                    self._restore_ready_transition(captured, key)
+                    self.record_denial(item, "dead_input_funding_unreadable", {
+                        "reason": "the funding record could not be read; "
+                                  "the row stays ready and the next pass "
+                                  "retries"})
+                    return False
                 record.update({
                     "schema": POOL_OUTCOME_SCHEMA_V1,
                     "action_key": key,
@@ -22048,7 +22089,16 @@ class PoolQueue:
                 })
                 # Replaced, as ``finish`` files an outcome: an earlier
                 # generation's ending under this key is not this row's.
-                _write_json_atomic(self.item_path(FAILED, key), record)
+                # A failed write restores the row rather than ending the
+                # pass (#1202 review round 2, non-blocking: the sweep
+                # recovers a real crash; this is the in-process guard).
+                try:
+                    _write_json_atomic(self.item_path(FAILED, key), record)
+                except OSError as exc:
+                    self._restore_ready_transition(captured, key)
+                    self.record_denial(item, "dead_input_dependency_unreadable",
+                                       {"error": str(exc)})
+                    return False
             self._finish_ready_transition(captured)
             return True
 
