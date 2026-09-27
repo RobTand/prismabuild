@@ -8093,7 +8093,8 @@ class PoolQueue:
         if reason not in DENIAL_RING_EXEMPT_REASONS:
             self._record_denial_transition(
                 item, host=host, reason=reason,
-                decision_reason=decision_reason if isinstance(decision_reason, str) else None)
+                decision_reason=decision_reason if isinstance(decision_reason, str) else None,
+                decision=decision if isinstance(decision, Mapping) else None)
         try:
             key = str(item.get("action_key", ""))
             identity = f"{key}:{repr(float(item['published_unix']))}"
@@ -8188,6 +8189,7 @@ class PoolQueue:
     def _record_denial_transition(
         self, item: Mapping[str, object], *, host: str, reason: str,
         decision_reason: str | None,
+        decision: Mapping[str, object] | None = None,
     ) -> None:
         """Append to the key's ring when this host's reason changed (#991),
         damping a flap back to an already-seen reason onto its own entry
@@ -8223,6 +8225,18 @@ class PoolQueue:
         cut to the newest :data:`MAX_DENIAL_TRANSITIONS` entries -- unchanged
         for a key whose reasons never repeat (the #991 acceptance: three
         distinct reasons in three passes all still land, in order).
+
+        Each *new* entry also stores the bounded ``decision`` snapshot that
+        produced it (#1239, request 1).  The ring used to hold only the
+        verdict word, so the #1239 incident -- a canary starved through 1072
+        passes of ``host_pressure`` -- could not be diagnosed from it after
+        the fact: the foreign/held CPU split and measured pressure lived only
+        in the latest-only record, which overwrites itself every pass.  The
+        snapshot passes through :meth:`_bounded_denial_value` exactly like
+        the latest-only evidence, so an entry stays within the cost the ring
+        already pays per key; a damped repeat keeps the first snapshot, on
+        the same principle as #1006 -- the transition that matters is where
+        the starvation began, and the latest verdict has its own record.
 
         Survives contention by construction.  It shares no lock with the
         latest-only file's ``flock``; pool callers hold the key's transition lock.
@@ -8270,6 +8284,8 @@ class PoolQueue:
             else:
                 ring.append({"unix": now, "host": host, "reason": reason,
                             "decision_reason": decision_reason,
+                            "decision": (self._bounded_denial_value(decision)
+                                         if isinstance(decision, Mapping) else None),
                             "published_unix": generation, "count": 1,
                             "last_unix": now})
                 ring = ring[-MAX_DENIAL_TRANSITIONS:]
