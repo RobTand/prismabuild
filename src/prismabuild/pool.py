@@ -4863,6 +4863,33 @@ class _TransitionHolds:
 MAX_CLAIM_PASS_LOOPS = 64
 
 
+def _diagnostic_stamp(record: object, field: str) -> float:
+    value = record.get(field, 0) if isinstance(record, Mapping) else 0
+    return float(value) if isinstance(value, (int, float)) else 0.0
+
+
+class _ClaimDiagnostics:
+    """Bounded, context-local latest observations, never reason-ring state."""
+
+    def __init__(self, queue: object) -> None:
+        self.queue = queue
+        self.denials: dict[str, dict[str, object]] = {}
+        self.passes: dict[str, dict[str, object]] = {}
+
+    def add_denial(self, identity: str, record: dict[str, object]) -> None:
+        self.denials[identity] = record
+        if len(self.denials) > MAX_CLAIM_DENIALS:
+            # Reverse ties match stable newest-first truncation: an older
+            # insertion survives a new equally timestamped observation.
+            oldest = min(reversed(self.denials), key=lambda key:
+                         _diagnostic_stamp(self.denials[key], "denied_unix"))
+            del self.denials[oldest]
+
+
+_CLAIM_DIAGNOSTICS: contextvars.ContextVar[_ClaimDiagnostics | None] = (
+    contextvars.ContextVar("pool_claim_diagnostics", default=None))
+
+
 class PoolQueue:
     """A directory on a shared filesystem that two or more boxes pull from."""
 
@@ -7970,7 +7997,10 @@ class PoolQueue:
         first = prior.get("first_unix")
         if not isinstance(first, (int, float)):
             first = now
-        count = self.passes(action_key) + 1
+        # Reuse the same sidecar version for both count and drain clocks.
+        # The write remains here, under the caller's existing ownership.
+        value = prior.get("passes", 0)
+        count = (int(value) if isinstance(value, (int, float)) else 0) + 1
         record: dict[str, object] = {"action_key": action_key, "passes": count,
                                      "first_unix": float(first), "updated_unix": now}
         # The drain observations the withhold verdict keeps (#924) ride
@@ -8014,7 +8044,10 @@ class PoolQueue:
           latest verdict for an action generation locally; the independent
           snapshot publisher copies this bounded file no more than once a
           second.  A contended local diagnostics lock drops the observation
-          rather than delaying or changing a claim, and every pass overwrites
+          rather than delaying or changing a claim; inside a claim pass the
+          latest verdict is buffered and committed once at the pass's end
+          (#1221), so a peer loop may read this host's verdicts one pass
+          staler.  Every pass overwrites
           the one before it.  This file is never the only evidence of a
           decision: the reason ring below keeps each change.
         * **Reason transitions, kept (#991).**  :meth:`_record_denial_transition`
@@ -8041,73 +8074,48 @@ class PoolQueue:
             self._record_denial_transition(
                 item, host=host, reason=reason,
                 decision_reason=decision_reason if isinstance(decision_reason, str) else None)
-        ledger = self.ledger()
-        ledger_name = str(ledger.base)
-        base = self._claim_denial_bases.get(ledger_name)
-        if base is None:
-            try:
-                base = cpu_admission.local_state_base(ledger.base)
-            except (OSError, ValueError, TypeError):
-                return
-            self._claim_denial_bases[ledger_name] = base
-        lock = base / "claim-denials.lock"
-        descriptor = None
         try:
-            descriptor = os.open(lock, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
-            try:
-                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                return
-            path = base / CLAIM_DENIALS
-            existing = cpu_admission.read_json(path)
-            records = existing.get("records", {})
-            if not isinstance(records, Mapping):
-                records = {}
             key = str(item.get("action_key", ""))
-            generation = repr(float(item["published_unix"]))
-            identity = f"{key}:{generation}"
-            now = _now()
-            records = dict(records)
+            identity = f"{key}:{repr(float(item['published_unix']))}"
             evidence = dict(evidence or {})
             if item.get("dependent_of") is not None:
-                # Every refusal of a producer's export names the producer, so a
-                # starved producer's evidence reads in one place (#985).
                 evidence.setdefault("dependent_of", item.get("dependent_of"))
-            records[identity] = {
+            record = {
                 "action_key": key, "published_unix": float(item["published_unix"]),
-                "host": host, "reason": reason, "evidence": self._bounded_denial_value(evidence),
-                "denied_unix": now,
-            }
-            newest = sorted(records.items(), key=lambda entry: (
-                float(entry[1].get("denied_unix", 0))
-                if isinstance(entry[1], Mapping) and isinstance(entry[1].get("denied_unix", 0), (int, float))
-                else 0.0), reverse=True)
-            document: dict[str, object] = {
-                "schema": CLAIM_DENIALS_SCHEMA_V1,
-                "records": dict(newest[:MAX_CLAIM_DENIALS])}
-            passes = existing.get("claim_passes")
-            if isinstance(passes, Mapping):
-                document["claim_passes"] = dict(passes)
-            cpu_admission.write_json(path, document)
-            # This starts only a local child and coalesces shared copies at 1 Hz.
-            cpu_admission.adaptive_snapshot.publish(base, ledger.base / "adaptive")
-        except (OSError, ValueError, TypeError):
+                "host": host, "reason": reason,
+                "evidence": self._bounded_denial_value(evidence), "denied_unix": _now()}
+            batch = _CLAIM_DIAGNOSTICS.get()
+            if batch is not None and batch.queue is self:
+                batch.add_denial(identity, record)
+            else:
+                self._write_claim_diagnostics({identity: record}, {})
+        except (OSError, ValueError, TypeError, OverflowError):
             return
-        finally:
-            if descriptor is not None:
-                os.close(descriptor)
 
     def _record_claim_pass(self, summary: Mapping[str, object]) -> None:
-        """File one claim pass's transition holds in ``claim-denials.json`` (#1029).
+        """Latest-only per-loop summary, committed with this pass's denials."""
+        try:
+            record = {**dict(summary), "host": socket.gethostname(),
+                      "pid": os.getpid(), "passed_unix": _now()}
+            batch = _CLAIM_DIAGNOSTICS.get()
+            if batch is not None and batch.queue is self:
+                batch.passes[str(os.getpid())] = record
+            else:
+                self._write_claim_diagnostics({}, {str(os.getpid()): record})
+        except (OSError, ValueError, TypeError, OverflowError, PoolContractError):
+            return
 
-        Under ``claim_passes``, keyed by this loop's pid, beside the denial
-        records and under the same local diagnostics lock: latest-only per
-        loop, the newest :data:`MAX_CLAIM_PASS_LOOPS` loops kept, and
-        best-effort exactly as :meth:`record_denial` is -- a contended lock
-        or an unwritable file drops the observation and never delays or
-        changes a claim.  The snapshot publisher copies it with the denials.
+    def _write_claim_diagnostics(self, denials: Mapping[str, object],
+                                 summaries: Mapping[str, object]) -> None:
+        """Merge once under the existing best-effort diagnostics lock.
+
+        Claim-pass flushes run after their admission/transition holds end.
+        A peer may have flushed while this pass was evaluating. Preserve its
+        newer observations and unrelated records, then apply the old caps.
+        Standalone callers use this same writer immediately.
         """
-
+        if not denials and not summaries:
+            return
         descriptor = None
         try:
             ledger = self.ledger()
@@ -8124,25 +8132,27 @@ class PoolQueue:
                 return
             path = base / CLAIM_DENIALS
             existing = cpu_admission.read_json(path)
-            records = existing.get("records", {})
-            passes = existing.get("claim_passes", {})
-            passes = dict(passes) if isinstance(passes, Mapping) else {}
-            passes[str(os.getpid())] = {
-                **dict(summary), "host": socket.gethostname(),
-                "pid": os.getpid(), "passed_unix": _now()}
-            newest = sorted(passes.items(), key=lambda entry: (
-                float(entry[1].get("passed_unix", 0))
-                if isinstance(entry[1], Mapping)
-                and isinstance(entry[1].get("passed_unix", 0), (int, float))
-                else 0.0), reverse=True)
-            cpu_admission.write_json(path, {
-                "schema": CLAIM_DENIALS_SCHEMA_V1,
-                "records": dict(records) if isinstance(records, Mapping) else {},
-                "claim_passes": dict(newest[:MAX_CLAIM_PASS_LOOPS])})
+            document: dict[str, object] = {"schema": CLAIM_DENIALS_SCHEMA_V1}
+            for name, updates, stamp, limit in (
+                    ("records", denials, "denied_unix", MAX_CLAIM_DENIALS),
+                    ("claim_passes", summaries, "passed_unix", MAX_CLAIM_PASS_LOOPS)):
+                prior = existing.get(name)
+                records = dict(prior) if isinstance(prior, Mapping) else {}
+                for identity, record in updates.items():
+                    if (identity not in records or _diagnostic_stamp(record, stamp)
+                            >= _diagnostic_stamp(records[identity], stamp)):
+                        records[identity] = record
+                if name == "records" or records or isinstance(prior, Mapping):
+                    newest = sorted(records.items(), key=lambda entry:
+                                    _diagnostic_stamp(entry[1], stamp), reverse=True)
+                    document[name] = dict(newest[:limit])
+            cpu_admission.write_json(path, document)
             cpu_admission.adaptive_snapshot.publish(base, ledger.base / "adaptive")
-        except (OSError, ValueError, TypeError, PoolContractError):
-            # A diagnostic: it must not replace the pass's own answer or
-            # raise, which it would from the ``finally`` that files it.
+        except (OSError, ValueError, TypeError, OverflowError, RuntimeError,
+                PoolContractError):
+            # In particular, a finally-path flush cannot replace the claim's
+            # original answer or exception.  ``RuntimeError`` is
+            # ``local_state_base``'s refusal of an unusable state directory.
             return
         finally:
             if descriptor is not None:
@@ -17396,12 +17406,18 @@ class PoolQueue:
         """
 
         holds = _TransitionHolds()
+        batch = _ClaimDiagnostics(self)
+        token = _CLAIM_DIAGNOSTICS.set(batch)
         try:
             return self._claim_pass(holds=holds, **kwargs)
         finally:
-            self.last_claim_pass = holds.summary()
-            if holds.count:
-                self._record_claim_pass(self.last_claim_pass)
+            try:
+                self.last_claim_pass = holds.summary()
+                if holds.count:
+                    self._record_claim_pass(self.last_claim_pass)
+            finally:
+                _CLAIM_DIAGNOSTICS.reset(token)
+                self._write_claim_diagnostics(batch.denials, batch.passes)
 
     def _claim_pass(
         self,

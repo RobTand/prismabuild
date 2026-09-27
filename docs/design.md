@@ -423,7 +423,10 @@ transient reason -- another loop holds its transition lock
 (`container_image_presence_unknown`), or its residency lead record does not
 read (`residency_lead_record_unreadable`), #1143 -- the row still withholds
 for that pass if this host's latest verdict for it is a withhold whose
-episode is inside `WITHHOLD_CEILING_S`; the denial it records carries that
+episode is inside `WITHHOLD_CEILING_S` (the latest *flushed* verdict: claim
+passes batch their denial records and flush once after the pass (#1221), so a
+sibling loop's first withhold of a new episode is visible here one pass
+late); the denial it records carries that
 episode's start (`withhold_carried`), and the next such pass reads it back
 off any of those reasons, so a run of them never renews it. None of them is a
 verdict, and none releases the drain: without the carry, every pass that met
