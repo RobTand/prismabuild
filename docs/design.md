@@ -456,8 +456,16 @@ refusal whose drain classification names a drain of the pool's holders
 `holder_telemetry_unavailable`, `max_actions`, the SW-cap-idle and
 host-pressure drains; never one that names foreign load), and every token
 shortage. It is kept whatever the verdict -- withholding, `_starved`,
-`_past_ceiling` -- and binds every row behind it (`gpu_room_kept`,
-`gpu_room_binds_all` in the refused row's denial). Before #1240 a `_starved`
+`_past_ceiling` -- but only when the row's reservation does not fit the free
+tokens read under admission at the refusal (`PoolQueue._room_fits`, the test
+`_room_taken_by` binds on): then the holders' tokens are what stand between
+the row and its claim, and the room binds exactly when they release. It
+binds every row behind it (`gpu_room_kept`, `gpu_room_binds_all` in the
+refused row's denial). A room that already fit when the row was refused --
+measured pressure or a device state refused it, with the GPU free -- is not
+kept (`gpu_room_fit_at_refusal`), and the verdict stands alone as before: a
+room there would bind every GPU row behind a starved row on every pass while
+the measurement lasts, idling the GPU (#1241 review). Before #1240 a `_starved`
 verdict withheld nothing: on 2026-09-27 a priority +1 exclusive row, placeable
 only on sparklina, was refused `exclusive_holder` behind a holder `holder_bound`
 read `long`; the holder finished mid-pass, and 90 ms later the same pass

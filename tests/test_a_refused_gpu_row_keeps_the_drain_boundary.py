@@ -321,3 +321,104 @@ def test_a_refused_room_binds_nothing_while_its_holder_still_holds(box) -> None:
     tick()
     assert claim() == shard, "a room that does not fit yet held CPU work back"
     assert _denial(queue, ldlq)["reason"] == "adaptive_gpu_refused_starved"
+
+
+# -- a measured refusal with the GPU tokens free keeps no room ---------------
+
+
+def _sealed_holder(tmp_path: Path, name: str, *, timeout_s: int):
+    from prismabuild import core as pb
+    checkout = tmp_path / f"checkout-{name}"
+    checkout.mkdir()
+    (checkout / "task.py").write_text("print('fixture')\n")
+    action = pb.seal_action({
+        "schema": pb.ACTION_SCHEMA_V2,
+        "task": {"definition_id": f"tests/{name}", "definition_version": "v1",
+                 "task_class": "generation", "determinism": "deterministic",
+                 "artifact_family": "generic", "artifact_kind": "generic",
+                 "argv": [sys.executable, "task.py"], "working_directory": ".",
+                 "result_path": "result"},
+        "inputs": [], "code_closure": pb.build_code_closure(checkout, ["task.py"]),
+        "params": {"execution_timeout_s": timeout_s},
+        "environment": {"variables": {}, "toolchain": {}},
+        "execution_scope": {"portability": "portable", "platform_key": None,
+                            "host_class": None},
+    })
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    cas.publish_action_request(action)
+    return action["action_key"], str(cas.root), str(checkout)
+
+
+def test_a_measured_refusal_with_the_gpu_free_does_not_defer_a_lower_gpu_row(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """#1241 review: the room binds only at the drain boundary.
+
+    A +1 GPU row is refused ``adaptive_cpu_refused`` / ``host_pressure`` on
+    CPUs a long pool holder holds (#1160), and is starved (#924).  The GPU
+    token is free and its whole reservation fits the free tokens, so tokens
+    are not what refused it: its room would bind every GPU row behind it on
+    every pass while the measured refusal lasts, idling the GPU behind a row
+    starved by definition.  It keeps no room, and the -10 GPU row claims.
+    """
+
+    import json
+
+    cpus = 20
+    tiers = {"preferred": list(range(cpus)), "fallback": []}
+    capacity = {"cpu": cpus, "gpu": 1, "mem_gb": 120}
+    now = [T0]
+    monkeypatch.setattr(pool, "_now", lambda: now[0])
+    monkeypatch.setattr(adaptive_cpu.time, "time", lambda: now[0])
+    monkeypatch.setattr(adaptive_cpu, "action_identity", lambda item: ("shape", False))
+    host = {"psi_some": 0.}
+
+    def sample(self):
+        return {"sampled_unix": now[0], "cpu_count": cpus, "interval_s": 1.,
+                "psi_some": host["psi_some"], "busy_cpus": 0.,
+                "per_cpu_busy": {str(cpu): 0. for cpu in range(cpus)}}
+
+    monkeypatch.setattr(adaptive_cpu.Controller, "sample", sample)
+    queue = pool.PoolQueue(tmp_path / "pb-queue")
+    queue.ensure_layout()
+
+    def publish(key, resources, **kw):
+        now[0] += 0.001
+        queue.publish(action_key=key, cas_root=kw.pop("cas_root", "/cas"),
+                      checkout_root=kw.pop("checkout_root", "/co"),
+                      worker_script="/w.py", resources=resources, **kw)
+        return key
+
+    def claim():
+        item = queue.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True)
+        return None if item is None else item["action_key"]
+
+    # A CPU holder past the transient line with its declared end a day off.
+    key, cas_root, checkout = _sealed_holder(tmp_path, "long-shard", timeout_s=86_400)
+    now[0] = T0 - 2 * pool.WITHHOLD_CEILING_S
+    publish(key, {"cpu": 2, "mem_gb": 5}, cas_root=cas_root, checkout_root=checkout)
+    assert claim() == key
+    now[0] = T0
+    # Its allocation names CPUs the +1 row's free tokens map to: a borrow
+    # whose lender left, as #1160's fixture writes it.
+    predicted = queue.ledger().free_cpu_allocation(9, tiers)
+    later = queue.ledger().free_cpu_allocation(cpus - 2, tiers)[9:]
+    path = queue.ledger().held_dir / key / adaptive_cpu.METADATA
+    metadata = json.loads(path.read_text())
+    metadata["allocation"]["preferred"] = sorted(
+        set(metadata["allocation"]["preferred"]) | set(predicted[-1:] + later))
+    metadata["borrowed_cpu"] = len(predicted[-1:] + later)
+    path.write_text(json.dumps(metadata))
+
+    host["psi_some"] = .2
+    row = publish(_key("plus-one-gpu-row"), {"cpu": 9, "gpu": 1, "mem_gb": 96}, priority=1)
+    lower = publish(_key("minus-ten-gpu-row"), {"cpu": 2, "gpu": 1, "mem_gb": 5}, priority=-10)
+
+    assert claim() == lower, (
+        "a room kept for a measured refusal with the GPU tokens free idled "
+        "the GPU behind a starved row")
+    refused = _denial(queue, row)
+    assert refused["reason"] == "adaptive_cpu_refused_starved"
+    assert refused["evidence"]["decision"]["reason"] == "host_pressure"
+    assert "gpu_room_kept" not in refused["evidence"]
+    assert refused["evidence"]["gpu_room_fit_at_refusal"] is True
