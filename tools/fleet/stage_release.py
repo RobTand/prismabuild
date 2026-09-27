@@ -970,12 +970,26 @@ class DirectoryRecords:
               checkpoint=None, readers: int = 1) -> list[tuple[Path, object]]:
         name = str(directory)
         kept = self._directories.get(name)
-        if (kept is not None and kept[0] is not None
-                and _current_directory_version(directory) == kept[0]):
+        current = None
+        if kept is not None:
+            current = _current_directory_version(directory)
+        if kept is not None and kept[0] is not None and current == kept[0]:
             self.kept += 1
             return [(directory / child, record)
                     for child, (_version, record) in sorted(kept[1].items())]
         previous = kept[1] if kept is not None else {}
+        if kept is not None and current is None:
+            # The kept listing's proof left with its filesystem's trust
+            # (#1208): its stamp was only sound while the directory's times
+            # came from this kernel's clock.  What it parsed is then no
+            # evidence for any entry, even one whose bare stat still reads the
+            # same, so every entry is read again -- as a plain read on that
+            # filesystem reads it -- and the fresh parses are kept only if
+            # the fence below lets them.  A stamp refused for the tick the
+            # directory changed in leaves ``current`` non-None: the
+            # filesystem still answers for its clock, so the entries' own
+            # versions are evidence and are reused.
+            previous = {}
         stamp = _trusted_directory_stamp(directory)
         # Read before any entry is stat-ed: a version whose ctime is not
         # strictly before it is not kept (#1045, :func:`_keepable_version`).

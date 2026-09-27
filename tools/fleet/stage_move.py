@@ -647,10 +647,18 @@ def _keepable_version(info: "os.stat_result", fence: int | None, *,
 
 
 def _current_directory_version(path: Path) -> tuple[int, int, int, int] | None:
-    """The same four fields as :func:`_trusted_directory_stamp`, unguarded.
+    """The same four fields as :func:`_trusted_directory_stamp`, trust re-checked.
 
     What a remembered stamp is compared with.  ``None`` for anything that is
-    not a directory or cannot be stat-ed, which never equals a stamp.
+    not a directory or cannot be stat-ed, and for a directory whose device is
+    not currently on a filesystem in :data:`_LOCAL_CLOCK_FILESYSTEMS`; none of
+    those ever equals a stamp.  The trust re-check is what keeps the stamp's
+    proof across a mount change (#1208): a remembered stamp was only sound
+    while the directory's times came from this kernel's clock, so a comparison
+    that skipped the check would go on reusing a listing after its filesystem
+    left :data:`_LOCAL_CLOCK_FILESYSTEMS`.  :func:`_filesystem_type` remembers
+    the answer per device only until the kernel says the mount table changed,
+    so an unchanged table costs a memo lookup, not a mount-table read.
     """
 
     return _directory_version_at(os.fspath(path))
@@ -660,7 +668,8 @@ def _directory_version_at(name: str) -> tuple[int, int, int, int] | None:
     """:func:`_current_directory_version` of a path already a string.
 
     The census compares one of these per directory per decision, so the
-    comparison costs a bare ``lstat`` and no path object.
+    comparison costs a bare ``lstat``, the device's remembered filesystem
+    answer, and no path object.
     """
 
     try:
@@ -668,6 +677,8 @@ def _directory_version_at(name: str) -> tuple[int, int, int, int] | None:
     except OSError:
         return None
     if not statmod.S_ISDIR(info.st_mode):
+        return None
+    if _filesystem_type(info.st_dev) not in _LOCAL_CLOCK_FILESYSTEMS:
         return None
     return (info.st_dev, info.st_ino, info.st_mtime_ns,
             int(getattr(info, "st_ctime_ns", 0)))
