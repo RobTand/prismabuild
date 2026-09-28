@@ -15461,16 +15461,27 @@ class PoolQueue:
         while the export runs the tier's pool traffic can exceed its offer by
         at most what the family lent -- the family's own work, never a
         stranger's.  Each token is lent once at a time (#1292): a lender's
-        holdings count toward a borrow only beyond what live borrows on the
-        same tier already drew from it, read from the borrowing rows'
-        ``lent`` maps in ``claimed/``, so concurrent family exports do not
-        each draw the same tokens and stack past the offer; the tokens are
-        lendable again when the borrowing row leaves ``claimed/``.  The
-        record also names the lenders that were mid-copy at borrow time
-        (``lenders_mid_copy``, from their #1090 landing reports) so the
-        transient overcommit can be attributed without waiting for the end.
-        Returns the borrow record the claim files
-        (``tier_fill_borrowed``), or ``None`` with ``handles`` left empty.
+        holdings count toward a borrow
+        only beyond what live borrows on the same tier already drew from it
+        -- the borrow records the draw, not the lender's balance, largest
+        lendable first and ties by name -- so a smaller borrow leaves the
+        rest of a lender's balance lendable to the family's next export, and
+        the tokens are lendable again when the borrowing row leaves
+        ``claimed/``.  The once bound holds among claims the queue shows:
+        the draw is computed at admission and becomes visible to other boxes
+        only when the claimed row carrying it is persisted, and the per-key
+        transition lock that orders the rename serializes rows, not each
+        other.  Two boxes admitting family exports of the same family and
+        tier inside that window can both draw the same tokens; a claim pass
+        admits one row, so at most one borrowing admission is in flight per
+        box, every draw is recorded in full in its own claimed row, no token
+        is taken, and each borrow's end annotation still measures what its
+        lenders held (#1293).  The record also names the lenders that were
+        mid-copy at borrow time (``lenders_mid_copy``, from their #1090
+        landing reports) so the transient overcommit can be attributed
+        without waiting for the end.  Returns the borrow record the claim
+        files (``tier_fill_borrowed``), or ``None`` with ``handles`` left
+        empty.
         """
 
         family, children = self._producer_family(owner)
@@ -15503,11 +15514,24 @@ class PoolQueue:
             borrowed = need - taken
             if borrowed > sum(lendable.values()):
                 return None
+            # Record the draw, not the balance (#1293): each lender is named
+            # with what this borrow took -- largest lendable first, ties by
+            # name -- so a smaller borrow leaves the rest of a lender's
+            # balance lendable to the family's next export.
+            draw: dict[str, int] = {}
+            remaining = borrowed
+            for holder, count in sorted(lendable.items(),
+                                        key=lambda item: (-item[1], item[0])):
+                if remaining <= 0:
+                    break
+                take = min(count, remaining)
+                draw[holder] = take
+                remaining -= take
             record[tier_id] = {
                 "kind": storage_tiers.FILL_KIND, "demand": need, "taken_free": taken,
                 "borrowed": borrowed,
-                "funded_by": sorted(holder for holder, count in lendable.items() if count),
-                "lent": {holder: count for holder, count in lendable.items() if count},
+                "funded_by": sorted(draw),
+                "lent": draw,
                 "lenders_mid_copy": sorted(
                     holder for holder in lenders if self._lender_mid_copy(holder)),
                 "owner": owner, "plan_children": children, "borrowed_unix": _now()}

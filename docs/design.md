@@ -4387,9 +4387,18 @@ all (an unparseable queue entry, a widowed lease beside a record already
 gone) stays unannotated. Each token is lent once at a time (#1292): a
 lender's holdings count toward a borrow only beyond what live borrows on the
 same tier already drew from it, read from the borrowing rows' `lent` maps in
-`claimed/`, so concurrent family exports cannot each draw the same tokens
-and stack the tier past its offer by multiples of what the family lent; the
-tokens are lendable again when the borrowing row leaves `claimed/`. The
+`claimed/`; the borrow records the draw, not the lender's balance — largest
+lendable first, ties by name (#1293) — so a smaller borrow leaves the rest
+of a lender's balance lendable to the family's next export, and the tokens
+are lendable again when the borrowing row leaves `claimed/`. The once bound
+holds among claims the queue shows: the draw is computed at admission and
+becomes visible to other boxes only when the claimed row carrying it is
+persisted, and the per-key transition lock that orders the rename serializes
+rows, not each other. Two boxes admitting family exports of the same family
+and tier inside that window can both draw the same tokens; a claim pass
+admits one row, so at most one borrowing admission is in flight per box,
+every draw is recorded in full in its own claimed row, and no token is
+taken — a bounded transient, not a silent stack past the offer. The
 borrow record also names the lenders that were mid-copy at borrow time
 (`lenders_mid_copy`, from their #1090 landing reports, a report predating
 its lender's claim not counting), so the transient overcommit is
