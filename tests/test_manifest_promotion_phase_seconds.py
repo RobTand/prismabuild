@@ -37,7 +37,11 @@ def test_the_planner_phase_cost_on_a_ready_backlog(tmp_path):
                       files=[fleet.file(f"m{index}-{name}", size)
                              for name, size in NAMED_FILES])
         for index in range(6)]
-    ready = [_ready_item(fleet, key) for key in plain + manifest_rows]
+    # Manifest rows sit just inside the examination bound, the way the live
+    # G2 backlog does (nearly every GPU row declares): 63 plain rows ahead of
+    # the first manifest row, the rest behind it.
+    ordered = plain[:63] + manifest_rows + plain[63:]
+    ready = [_ready_item(fleet, key) for key in ordered]
     tier = _stage_tier(fleet)
 
     started = time.monotonic()
