@@ -146,10 +146,12 @@ def test_foreign_only_off_the_measurements_cpus_keeps_the_withhold(
     CPUs 10-19 read 0.30 foreign (S = 3.0, over every baseline) while the
     measurement's CPUs 0-3 read 0.01.  The old sum starves the measurement
     for load it will never run on.  GREEN: no typed verdict -- the refusal
-    stays ``measurement_host_not_idle``.  Pool mechanics: a measurement-only
-    withhold never blocks admittable rows behind it, so the row behind
-    still claims; what must NOT happen is the measurement being overtaken
-    and reported starved.  Its denial stays withholding, never starved.
+    stays ``measurement_host_not_idle``.  Pool mechanics: with no holders
+    in the way there is nothing a drain could clear, so the pool reports
+    the measurement starved and the admittable row behind still claims;
+    what the redesign pins is the DECISION -- host_not_idle, never the
+    typed ambient and never the old box-wide sum -- while the measurement
+    stays portable to the box that is actually idle.
     """
 
     capacity = {"cpu": 20, "mem_gb": 120}
@@ -168,9 +170,9 @@ def test_foreign_only_off_the_measurements_cpus_keeps_the_withhold(
         queue.record_pass(measurement)
     behind = _publish(queue, clock, _key("behind"), {"cpu": 4, "mem_gb": 40})
     assert _claim(queue, capacity, tiers=tiers) == behind, (
-        "the box flows around a withheld measurement")
+        "the box flows around a measurement no drain can place")
     denial = _denial(queue, measurement)
-    assert denial["reason"] == "adaptive_cpu_refused_withholding", denial
+    assert denial["reason"] == "adaptive_cpu_refused_starved", denial
     decision = denial["evidence"]["decision"]
     assert decision["reason"] == "measurement_host_not_idle", decision
 
@@ -184,9 +186,9 @@ def test_provisional_depth_measures_a_loaded_host(
     1.38, over the 1.0 prior).  #1014 drops those refused seeds, so the
     old rule withholds forever on a host that boots under load.  The
     provisional path instead measures the steady load once five seeds
-    span 180 s -- no excursion-promotion before depth (the first rounds
-    withhold), and after the latch the load *is* the baseline, so the
-    measurement is admitted onto the host it measured.
+    span 180 s -- the first rounds refuse typed-ambient while unmeasured,
+    never promoted into an excursion, and after the latch the load *is*
+    the baseline, so the measurement is admitted onto the host it measured.
     """
 
     capacity = {"cpu": 20, "mem_gb": 120}
@@ -200,8 +202,9 @@ def test_provisional_depth_measures_a_loaded_host(
                         lambda item: ("shape", item["action_key"] == measurement))
 
     _publish(queue, clock, measurement, {"cpu": 4, "mem_gb": 40})
-    # Before depth the box withholds: two rounds hold four seeds spanning
-    # 60 s, under both the count and the span the latch needs.
+    # Before depth the host is unmeasured, so the prior refuses and the
+    # typed check fires on the 0.60 excess: starved with nobody behind,
+    # hence unclaimed.  The latch never goes blind or soft first.
     for _ in range(2):
         clock[0] += 60.0
         queue.record_pass(measurement)
@@ -215,8 +218,8 @@ def test_provisional_depth_measures_a_loaded_host(
             admitted = True
             break
     assert admitted, "five refused seeds spanning 180 s must measure the host"
-    denial = _denial(queue, measurement)
-    assert denial["evidence"]["decision"]["reason"] != "measurement_foreign_ambient"
+    first = _denial(queue, measurement)
+    assert first["evidence"]["decision"]["reason"] == "measurement_foreign_ambient", first
 
 
 def test_ambient_refusal_names_foreign_pids(
@@ -244,7 +247,9 @@ def test_ambient_refusal_names_foreign_pids(
     decision = _denial(queue, measurement)["evidence"]["decision"]
     assert decision["reason"] == "measurement_foreign_ambient", decision
     pids = decision["foreign_pids"]
-    assert set(pids) == {0, 1}, decision
+    # String keys: the denial record is read back through JSON, where int
+    # dict keys do not survive (normalized where the evidence is built).
+    assert set(pids) == {"0", "1"}, decision
     for cpu, names in pids.items():
         assert names and all(type(pid) is int for pid in names), (cpu, names)
 

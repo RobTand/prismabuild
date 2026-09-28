@@ -968,8 +968,13 @@ class Controller:
                     'held_cpus': sorted(held),
                     'foreign_cpus': excess}
         if excess:
-            evidence['foreign_pids'] = self._foreign_pids(
-                set(excess), sample.get('sampled_unix'))
+            # String keys: this evidence is read back through the CAS JSON
+            # denial record, where int dict keys do not survive.  Every
+            # excess CPU is present; an empty list means the census found
+            # nobody there, never that the CPU is clean.
+            census = self._foreign_pids(set(excess), sample.get('sampled_unix'))
+            evidence['foreign_pids'] = {str(cpu): list(census.get(cpu, []))
+                                        for cpu in excess}
         return {'exceeds': bool(excess), 'evidence': evidence}
 
     def write_state(self, name, value):

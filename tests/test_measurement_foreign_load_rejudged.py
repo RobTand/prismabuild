@@ -131,11 +131,12 @@ def test_thin_foreign_spread_below_the_per_cpu_line_withholds(
     measured baseline maximum 0.3 while no CPU crosses the per-CPU line, so
     the typed check does not fire and the refusal stays
     ``measurement_host_not_idle``.  Pool mechanics (see the off-CPUs test):
-    the withhold stops the measurement, never the admittable row behind it,
-    which still claims; the measurement's denial stays withholding, never
-    starved.  The #1233 sum is retired by design: sub-line foreign is
-    contention-unknown, and withholding the measurement is the conservative
-    answer (#1185).
+    with no holders to drain, the pool reports the measurement starved and
+    the admittable row behind still claims; the redesign pins the DECISION
+    -- host_not_idle, never the typed ambient and never the retired sum.
+    The #1233 sum is retired by design: sub-line foreign is
+    contention-unknown, and refusing the measurement (not the box) is the
+    conservative answer (#1185).
     """
 
     capacity = {"cpu": 20, "mem_gb": 120}
@@ -162,9 +163,9 @@ def test_thin_foreign_spread_below_the_per_cpu_line_withholds(
         queue.record_pass(measurement)
     behind = _publish(queue, clock, _key("behind"), {"cpu": 4, "mem_gb": 40})
     assert claim() == behind, (
-        "the box flows around a withheld measurement")
+        "the box flows around a measurement no drain can place")
     denial = _denial(queue, measurement)
-    assert denial["reason"] == "adaptive_cpu_refused_withholding", denial
+    assert denial["reason"] == "adaptive_cpu_refused_starved", denial
     decision = denial["evidence"]["decision"]
     assert decision["reason"] == "measurement_host_not_idle", decision
 
