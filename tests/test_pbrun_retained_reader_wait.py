@@ -270,6 +270,13 @@ def test_a_failed_reader_that_cannot_be_reaped_still_ends_at_once(
 
     monkeypatch.setattr(pbrun, "outcome_poll", broken)
     readers = Readers(monkeypatch)
+    # A reader that raised is reaped on the error path by
+    # ``_reap_status_within`` (#1216 keeps its exit status for the
+    # diagnostic); the cleanup path still asks ``_reap_within``.  Both must
+    # fail, or this test drives a reaped reader and proves nothing about an
+    # unreaped one.
+    monkeypatch.setattr(pbrun.pbstatus, "_reap_status_within",
+                        lambda pid, grace_s: (False, None))
     monkeypatch.setattr(pbrun.pbstatus, "_reap_within", lambda pid, grace_s: False)
     try:
         started = time.monotonic()
@@ -277,11 +284,13 @@ def test_a_failed_reader_that_cannot_be_reaped_still_ends_at_once(
             pbrun.RECORD_WRITE_FAILED_EXIT
         assert time.monotonic() - started < 3
         err = capsys.readouterr().err
-        assert "the mount answered EIO" in err
         # #1216 diagnostics ride along: the read stage and the failed
-        # reader's identity are named instead of a bare message.
-        assert "stage=read:" in err
-        assert "reader pid=" in err
+        # reader's identity are named inside the failure, and the failure
+        # still says its reader could not be reaped -- the fact this test is
+        # about.
+        assert re.search(
+            r"failed \(RuntimeError: stage=read: the mount answered EIO; "
+            r"reader pid=\d+.*\) and its reader could not be reaped", err), err
         assert "when the terminal re-read ended" in err
         assert "still retained" not in err
         assert len(readers.forked) == 2
