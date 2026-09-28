@@ -141,3 +141,89 @@ def test_a_refusal_that_is_not_generation_pending_stands(tmp_path, monkeypatch):
             checkout=tmp_path, run_id="r", generation=NEW_GEN, priority=-10,
             fleet_root=tmp_path, leg_dir=tmp_path, side=None,
             extra_flags=[], extra_env={}, manifest=None, wait_s=600)
+
+
+# A leg that mints the generation's one publication-canary slot cannot
+# resubmit: pbrun mints the slot before its placement check, so a refused
+# submission has already spent it, and the retry collides with its own slot
+# ("output already exists").  The 2026-09-28 08:54Z publish of 9098f84c872b
+# refused leg-2 exactly that way.
+
+MINTING_PATHS = {"published_src": "", "publication_canary_authorizer": object()}
+
+
+def _run_minting_side(tmp_path, monkeypatch, *, pending, submit_leg, clock):
+    monkeypatch.setattr(pbcanary, "submit_leg", submit_leg)
+    monkeypatch.setattr(pbcanary, "generation_pending", pending)
+    monkeypatch.setattr(pbcanary.time, "sleep", lambda s: None)
+    monkeypatch.setattr(pbcanary.time, "monotonic", clock)
+
+    def unobserved(paths, leg, action_key, wait_s):
+        raise pbcanary.subprocess.TimeoutExpired(cmd="pbwait", timeout=wait_s)
+
+    monkeypatch.setattr(pbcanary, "wait_leg", unobserved)
+    return pbcanary._execute_side(
+        {**MINTING_PATHS, "queue_root": tmp_path},
+        leg="leg-2", spec=SPEC, argv=["/bin/true"],
+        checkout=tmp_path, run_id="r", generation=NEW_GEN, priority=-10,
+        fleet_root=tmp_path, leg_dir=tmp_path, side=None,
+        extra_flags=[], extra_env={}, manifest=None, wait_s=600)
+
+
+def test_a_minting_leg_waits_for_the_generation_before_submitting(
+        tmp_path, monkeypatch):
+    import pytest
+    state = {"pending": 3}
+    submitted_while_pending: list[bool] = []
+
+    def pending(*args, **kwargs):
+        state["pending"] -= 1
+        return state["pending"] >= 0
+
+    def submit_leg(*args, **kwargs):
+        submitted_while_pending.append(state["pending"] >= 0)
+        return "9" * 64, {"action_key": "9" * 64}
+
+    with pytest.raises(pbcanary._SideUnverified):
+        _run_minting_side(tmp_path, monkeypatch, pending=pending,
+                          submit_leg=submit_leg, clock=lambda: 0.0)
+    assert submitted_while_pending == [False]
+
+
+def test_a_minting_leg_never_resubmits_after_a_refusal(tmp_path, monkeypatch):
+    import pytest
+    calls: list[int] = []
+    ticks = iter(range(0, 10_000, 100))
+
+    def submit_leg(*args, **kwargs):
+        calls.append(1)
+        raise pbcanary.PreconditionRefused(
+            "precondition refused (leg-2): pbrun submission refused")
+
+    # The box looked rolled when the leg submitted; the refusal then reads
+    # as generation-pending again (a race, or another blocker).  The slot
+    # is spent either way, so the refusal stands.
+    with pytest.raises(pbcanary.PreconditionRefused):
+        _run_minting_side(tmp_path, monkeypatch,
+                          pending=lambda *a, **k: bool(calls),
+                          submit_leg=submit_leg,
+                          clock=lambda: float(next(ticks)))
+    assert calls == [1]
+
+
+def test_a_minting_leg_still_pending_at_its_deadline_does_not_submit(
+        tmp_path, monkeypatch):
+    import pytest
+    calls: list[int] = []
+    ticks = iter(range(0, 10_000, 100))
+
+    def submit_leg(*args, **kwargs):
+        calls.append(1)
+        return "9" * 64, {"action_key": "9" * 64}
+
+    with pytest.raises(pbcanary.PreconditionRefused, match="did not test"):
+        _run_minting_side(tmp_path, monkeypatch,
+                          pending=lambda *a, **k: True,
+                          submit_leg=submit_leg,
+                          clock=lambda: float(next(ticks)))
+    assert calls == []
