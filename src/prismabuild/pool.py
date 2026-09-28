@@ -15338,8 +15338,12 @@ class PoolQueue:
         returned it to the free pool while the export still wrote on it, so
         for that interval the tier carried the borrowed rate on top of its
         offer.  The record names each such lender and the overcommit it left.
-        Best effort: a lender this cannot read is named as unread, and the
-        reapers' conclusions do not annotate.
+        Best effort: a lender this cannot read is named as unread.  Called by
+        ``finish`` on the record it files, and by ``reap_stale`` on the
+        terminal record it files for a lease the claimant lost -- the borrow
+        lives in the claim record both of them file.  A conclusion that
+        cannot read the record at all (an unparseable queue entry, a widowed
+        lease beside a record already gone) stays unannotated.
         """
 
         borrowed = record.get("tier_fill_borrowed")
@@ -20415,6 +20419,15 @@ class PoolQueue:
                     # first-writer-wins, so leaving now costs the key nothing.
                     continue
                 self.lease_path(key).unlink(missing_ok=True)
+                if disposition in {DONE, FAILED} and record.get("tier_fill_borrowed"):
+                    # The reaper files the terminal record the claimant never
+                    # could (#999), so it owns the same pre-release question
+                    # ``finish`` asks: which lenders left while the borrow
+                    # still wrote.  Requeue branches skip this -- a live retry
+                    # re-borrows, and its own ``finish`` will answer.  Best
+                    # effort, as in ``finish``.
+                    with suppress(Exception):
+                        self.note_fill_borrow_end(record)
                 # Whatever the outcome, the dead claimant's capacity goes back.  A
                 # reservation outliving its holder is the starvation bug's shape.
                 self._release_reservation(
