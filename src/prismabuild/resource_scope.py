@@ -412,10 +412,13 @@ class ResourceScope:
         return True
 
     def _adopt_created_scope(self, response: dict) -> None:
+        from prismabuild.produced_output import (
+            _broker_scope_id as _expected_scope_id,
+        )
         unit = response.get('scope_id', '')
         token = response.get('token', '')
         path = Path(response.get('cgroup_path', ''))
-        expected = 'prismabuild-job' + hashlib.sha256((self.action_key + self.nonce).encode()).hexdigest()[:32] + '.slice'
+        expected = _expected_scope_id(self.action_key, self.nonce)
         if (not isinstance(unit, str) or unit != expected
                 or not isinstance(token, str) or re.fullmatch('[a-f0-9]{64}', token) is None
                 or path != Path('/sys/fs/cgroup/prismabuild.slice') / unit):
