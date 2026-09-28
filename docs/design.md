@@ -3400,6 +3400,13 @@ through ordinary duplicate handling. Retain spent records for as long as their
 published generation remains addressable; namespace/run GC does not remove them.
 Growth is one small grant and persistent lock inode per host/generation.
 
+pbrun mints the grant **before** its placement check, so a refused submission
+has already spent it. The leg-2 submission therefore waits for the
+image-holding box to re-offer on the new generation **before** it submits
+(#1239's wait) and submits once; still pending at the leg's deadline, it
+refuses without minting, and the slot stays unspent (#1278). Other legs keep
+#1239's wait-and-resubmit.
+
 The worker advertises `publication-canary-slot-v1` and
 `runtime-generation:<loaded immutable generation>` only from its loaded runtime,
 not the moving repo symlink. Both tags are required by the sealed slot. Old
