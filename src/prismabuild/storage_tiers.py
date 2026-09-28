@@ -87,13 +87,16 @@ PROC_PRESSURE_IO = "/proc/pressure/io"
 #: record's ``sampled_unix`` says when it was read) (#1248).
 PRESSURE_WINDOW_S = 60
 
-#: The admitter-readable pool-read pressure block on a tier record (#1248):
+#: The admitter-readable host IO pressure block on a tier record (#1248):
 #: ``{"io_psi_some": {"avg10": .., "avg60": .., "avg300": ..},
-#: "window_s": PRESSURE_WINDOW_S, "source": "proc_pressure_io"}`` — or
-#: ``io_psi_some: None`` with an ``unavailable_reason`` when the kernel's
-#: pressure file would not answer.  Additive and observable only; no
-#: admission term reads it without its own ruling.
-POOL_PRESSURE_FIELD = "pool_read_pressure"
+#: "window_s": PRESSURE_WINDOW_S, "scope": "host",
+#: "source": "proc_pressure_io"}`` — or ``io_psi_some: None`` with an
+#: ``unavailable_reason`` when the kernel's pressure file would not answer.
+#: ``/proc/pressure/io`` is host-wide: every device, reads and writes.  On
+#: dl380g10 the pool dominates host IO, which is why #1248's measured 74%
+#: ``some`` is this number; the name claims nothing beyond that.  Additive
+#: and observable only; no admission term reads it without its own ruling.
+HOST_IO_PRESSURE_FIELD = "host_io_pressure"
 GIB = 1 << 30
 MB = 1_000_000
 #: ``zpool status`` groups whose members are not the data path.
@@ -1264,9 +1267,9 @@ def read_io_pressure_some(path: str = PROC_PRESSURE_IO) -> dict[str, float] | No
     return None
 
 
-def pool_read_pressure_from_records(
+def host_io_pressure_from_records(
         records: Iterable[Mapping[str, object]]) -> float | None:
-    """The newest readable pool-read pressure (PSI ``some avg60"), or ``None``.
+    """The newest readable host IO pressure (PSI ``some avg60"), or ``None``.
 
     The admitter-side fold over announced tier records, in the shape of
     :func:`fill_rate_from_records` but taking the *newest* record rather than
@@ -1290,7 +1293,7 @@ def pool_read_pressure_from_records(
         best_unix, newest = float(sampled), record
     if newest is None:
         return None
-    block = newest.get(POOL_PRESSURE_FIELD)
+    block = newest.get(HOST_IO_PRESSURE_FIELD)
     if not isinstance(block, Mapping):
         return None
     share = block.get("io_psi_some")
@@ -2462,6 +2465,7 @@ def discover_tiers(
         pressure_block: dict[str, object] = {
             "io_psi_some": dict(pressure),
             "window_s": PRESSURE_WINDOW_S,
+            "scope": "host",
             "source": "proc_pressure_io",
         }
     else:
@@ -2471,6 +2475,7 @@ def discover_tiers(
         pressure_block = {
             "io_psi_some": None,
             "window_s": PRESSURE_WINDOW_S,
+            "scope": "host",
             "source": "proc_pressure_io",
             "unavailable_reason": "io pressure file unreadable or unparseable",
         }
@@ -2530,7 +2535,7 @@ def discover_tiers(
                            if source_pool else None),
             },
             FILL_RECORD_FIELD: fill,
-            POOL_PRESSURE_FIELD: pressure_block,
+            HOST_IO_PRESSURE_FIELD: pressure_block,
             "sampled_unix": sampled,
         }
     arc_stats = read_arcstats(arcstats_path)
@@ -2545,7 +2550,7 @@ def discover_tiers(
             "source_pool": source_pool,
             "source_members": members,
             FILL_RECORD_FIELD: fill,
-            POOL_PRESSURE_FIELD: pressure_block,
+            HOST_IO_PRESSURE_FIELD: pressure_block,
             "sampled_unix": sampled,
         }
     if ram_policy is not None:
@@ -2564,9 +2569,9 @@ __all__ = [
     "POOL_FILL_FIELD",
     "PROC_PRESSURE_IO",
     "PRESSURE_WINDOW_S",
-    "POOL_PRESSURE_FIELD",
+    "HOST_IO_PRESSURE_FIELD",
     "read_io_pressure_some",
-    "pool_read_pressure_from_records",
+    "host_io_pressure_from_records",
     "POOL_MEASUREMENT_MIN_SHARE",
     "MOVER_FILL_DEMAND_FIELD",
     "MOVER_CONCURRENCY_FIELD",
