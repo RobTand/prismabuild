@@ -1172,6 +1172,75 @@ and campaign rows still refuse every name outside `cpu`, `gpu`, `mem_gb` and
 `disk_metadata`, so no fleet-command submission can carry one. See
 [Cluster-scoped storage tiers](#cluster-scoped-storage-tiers-583).
 
+## Client SDK
+
+PrismaBuild stands alone: it imports no client, and a client reaches it only
+through its public interfaces. Those are the fleet tools (`pbrun`, `pbtest`,
+`pbcampaign`), the progress helper (`prismabuild.progress`), and the client SDK,
+`prismabuild.client` (#1254). Every other module under `prismabuild` is
+internal. It can change in any release, and a client that imports it takes on
+that risk alone.
+
+**Versioning.** `client.SDK_VERSION` names the contract; it is `1`.
+`tests/test_client_sdk_surface.py` pins everything the SDK exports: the set of
+names, each callable's parameters (name, kind, default), each constant's value,
+and, for each re-exported name, that it is the internal object itself. An
+internal refactor that would change any of these fails that test. Changing the
+contract, including adding a name, bumps `SDK_VERSION` and updates this section
+in the same change.
+
+**How a client loads it.** Inside an action, PrismaBuild injects
+`PRISMABUILD_READER_HELPER_ROOT`, the immutable root of the executing runtime
+generation. A client imports `prismabuild.client` from `<root>/src`, so the
+SDK and the runtime that launched the action are one generation. The variable
+names the generation root, never `src`; the client appends `src` itself.
+
+**The surface (version 1).**
+
+| Area | Names |
+|---|---|
+| Reader leases (`reader-lease-v1`) | `injected_context`, `acquire_for`, `open_pinned`, `release`, `covers_for_keys`, `leases_root`, `live_for`, `containment_certificate_ok`, `READER_LEASE_TAG` |
+| The sealed data manifest | `read_data_manifest`, `DATA_MANIFEST_MAX_BYTES`, `manifest_read_entries` |
+| The queue | `PoolQueue`, `CLAIMED`, `RESIDENCY`, `POOL_OUTCOME_SCHEMA_V1`, `read_claimed_record` |
+| Produced output | `declared_template`, `validate_template`, `bind_declared_instance`, `declare_instance`, `admit_instance`, `validate_instance`, `instance_dir`, `checked_instance_maxima`, `owner_demand_terms`, `admit_funded_window`, `refill_window`, `require_prewrite`, `abort_prewrite`, `validate_descriptor`, `output_manifest_sha256`, `batch_namespace`, `output_fragment_root`, `publish_prepaid_batch`, `commit_batch`, `commit_origin_batch`, `retire_batch`, `reclaim_origin`, `recover_batches`, `due_mover_rows`, `materialization_state`, `ensure_batch_materialized`, `safe_release_instance`, `release_produced_instance`, `TEMPLATE_SCHEMA_V1`, `DESCRIPTOR_SCHEMA_V2` |
+| Residency maps | `validate_residency_map`, `read_residency_map`, `read_residency_fragments`, `compose_residency_map`, `write_residency_map`, `residency_map_key`, `ResidencyMapError`, `RESIDENCY_MAP_ENV`, `RESIDENCY_MAP_SCHEMA_V1`, `RESIDENCY_MAP_FRAGMENT_SCHEMA_V1`, `RESIDENCY_LANDING_SCHEMA_V1`, `LANDING_STATES` |
+| Receipts | `cas_receipt_self_check`, `RECEIPT_REFUSALS`, `CAS_RECEIPT_SCHEMA_V3`, `WORKER_ATTESTATION_SCHEMA_V2` |
+| Identifiers and digests | `ID_PATTERN`, `ENV_NAME_PATTERN`, `canonical_sha256` |
+| Liveness | `TIER_LOOP_LIVENESS_S`, `TIER_RECORD_SCHEMA` |
+| Capabilities | `CAPABILITIES`, `DECOMPOSITION_TAG` |
+
+Most names are the internal objects, re-exported unchanged. The SDK defines
+three functions of its own, each because the behaviour a client needed had no
+public name:
+
+- `read_claimed_record(queue, action_key)` returns an action's claimed-queue
+  record, or `None` when the action is not claimed. A record that exists but
+  is not a JSON object raises, so a broken mount never reads as "not claimed".
+  An action reads its own `cas_root` and `residency` block from it.
+- `release_produced_instance(queue, instance, template)` is
+  `safe_release_instance` with this tree's reader-lease module as its
+  `lease_sdk`. `safe_release_instance` accepts only the exact module the fleet
+  imports, which a client cannot name without importing an internal module.
+- `cas_receipt_self_check(receipt)` checks that a `cas_receipt.v3` agrees with
+  its own digests. It returns `None`, or the first failing check from
+  `RECEIPT_REFUSALS`: `cas-receipt-shape` (not exactly the six v3 fields, or
+  the wrong schema), `cas-receipt-digest` (`receipt_sha256` is not the digest
+  of the body), or `worker-attestation-digest` (the producer is not a
+  `worker_attestation.v2` of the same action that agrees with its
+  `attestation_sha256`). It does not re-derive the attestation from the sealed
+  action, as a CAS lookup does, so the reader still binds the action key,
+  inputs and result it expects.
+
+`TIER_LOOP_LIVENESS_S` is the bound the pool applies to a tier loop's record
+(`pool.OFFER_TIMEOUT_S`); every landing record carries the same value as
+`tier_loop_liveness_s`, and a reader should prefer the record's value.
+
+`CAPABILITIES` names what this tree supports: `reader-lease-v1`,
+`progress-v1`, and `decomposition-v1` (`pbcampaign` can decompose a logical
+request, #517/#518). A client asks for a capability by tag, never by probing
+files or function names. The surface test fails if a tag is advertised
+without the code behind it.
+
 ## Work decomposition boundary
 
 Rob's 2026-09-11 design decision is to partition logical requests into small,
