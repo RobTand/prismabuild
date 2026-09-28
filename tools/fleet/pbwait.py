@@ -199,12 +199,7 @@ def recorded_action(cas, key: str):
     ``cache_hit`` without a terminal record.
     """
 
-    path = Path(cas.root) / "requests" / key[:2] / f"{key}.json"
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    return value if isinstance(value, dict) else None
+    return cas.read_action_request(key)
 
 
 def _bounded_observation_value(q, key: str, cas, generation, *, lane_root=None):
