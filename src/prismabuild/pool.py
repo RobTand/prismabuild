@@ -5494,17 +5494,20 @@ class PoolQueue:
                 str(t) for t in (offer.get("tags") or [])}]
         if not capable:
             return "unknown"
-        answered = False
+        unanimous_absent = True
         for offer in capable:
             answers = offer.get("interpreters")
             if isinstance(answers, list) and interpreter in {
                     str(entry) for entry in answers}:
                 return "present"
             missing = offer.get("interpreters_absent")
-            if isinstance(missing, list) and interpreter in {
-                    str(entry) for entry in missing}:
-                answered = True
-        return "absent" if answered else "unknown"
+            if not (isinstance(missing, list) and interpreter in {
+                    str(entry) for entry in missing}):
+                # A capable box that has not answered for the path may still
+                # have it: offers are written at different moments, so one
+                # absent beside a silent box is unknown (#1266 review r2).
+                unanimous_absent = False
+        return "absent" if unanimous_absent else "unknown"
 
     def placeable(
         self, item: Mapping[str, object], *, max_age_s: float = OFFER_TIMEOUT_S

@@ -349,6 +349,30 @@ def test_a_unanimous_absent_is_refused_naming_the_path(tmp_path):
     assert PQ_PYTHON in message
 
 
+def test_one_absent_answer_while_another_box_is_silent_is_unknown(tmp_path):
+    """Absent must be unanimous (#1266 review r2).
+
+    Boxes write their offers at different moments.  A box that has not yet
+    answered for a new path may still have it -- the tf516 venv lives on both
+    Sparks and not on dl380g10, and dl380g10's poll can land first -- so one
+    absent answer beside a silent capable box is unknown, never a refusal.
+    """
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]
+                           / "tools" / "fleet"))
+    import pbtest
+
+    queue = _queue_at(tmp_path)
+    _announce_live(queue, "dl380g10", absent=[TF516_PYTHON])
+    _announce_live(queue, "sparky")
+
+    kind, message = pbtest.interpreter_refusal(
+        queue, TF516_PYTHON, tags=[], resources={"cpu": 1}, needs_gpu=False)
+
+    assert kind == "notice"
+    assert TF516_PYTHON in message
+
+
 def test_one_present_answer_beats_every_absent_one(tmp_path):
     """A split fleet answers present somewhere: the row is placeable."""
 
