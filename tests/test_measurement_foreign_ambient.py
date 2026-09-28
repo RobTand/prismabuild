@@ -254,6 +254,44 @@ def test_ambient_refusal_names_foreign_pids(
         assert names and all(type(pid) is int for pid in names), (cpu, names)
 
 
+def test_foreign_pid_census_is_capped_and_reads_stat_field_39(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """The PID census pins without /proc: cap, keys, field (#1310 review).
+
+    Six foreign pids on CPU 0 keep four; one on CPU 1 keeps one; the
+    non-numeric entry never opens.  The CPU comes from stat field 39 --
+    index 36 of the fields after ``(comm)`` -- so the filler around it is
+    distinct from the answer.
+    """
+    import io
+    from types import SimpleNamespace
+
+    on_cpu = {"11": 0, "12": 0, "13": 0, "14": 0, "15": 0, "16": 0,
+              "17": 1}
+
+    def fake_stat(pid: str) -> bytes:
+        fields = [b"R"] + [b"7"] * 35 + [str(on_cpu[pid]).encode()]
+        return pid.encode() + b" (fake) " + b" ".join(fields) + b" 0 0"
+
+    monkeypatch.setattr(adaptive_cpu.os, "listdir",
+                        lambda path: [*on_cpu, "self"])
+    real_open = open
+
+    def fake_open(path, mode="r", *args, **kwargs):
+        if (isinstance(path, str) and path.startswith("/proc/")
+                and path.endswith("/stat")):
+            return io.BytesIO(fake_stat(path.split("/")[2]))
+        return real_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", fake_open)
+    ledger = SimpleNamespace(base=tmp_path / "ledger")
+    controller = adaptive_cpu.Controller(
+        ledger, {"preferred": [0, 1], "fallback": []})
+    found = controller._foreign_pids({0, 1}, 1234.0)
+    assert found == {0: [11, 12, 13, 14], 1: [17]}, found
+
+
 def test_refused_seeds_join_provisional_and_measure_at_depth() -> None:
     """RED: an unmeasured host under load still accumulates evidence.
 
@@ -290,3 +328,13 @@ def test_refused_seeds_join_provisional_and_measure_at_depth() -> None:
     # The latching verdict judges against the four provisional seeds; the
     # fifth joins them as the measured baseline at once.
     assert verdicts[4]["samples"] == 4, verdicts
+    # The completing pass strips every provisional flag (#1310 review: the
+    # strip used to sit only in the refused-seed branch, which a completing
+    # pass never takes, so four flags persisted and the baseline read as
+    # one sample).  The next verdict measures against all five seeds.
+    assert not any(s.get("provisional") for s in state["samples"]), state
+    later, state, _ = adaptive_cpu.idle_judgement_with_reference(
+        state, sample(0.10), holders=[], identity="host",
+        prior_rule=prior_rule)
+    assert later["basis"] == "measured", later
+    assert later["samples"] >= 5, later

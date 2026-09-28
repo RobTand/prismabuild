@@ -804,6 +804,15 @@ def idle_judgement_with_reference(
     # default always exceeds, and still seeds, since the window has to start
     # somewhere.
     refused_seed = verdict['basis'] == 'unmeasured' and exceeds and prior_rule is not None
+    if completes:
+        # The gate just passed: every seed becomes measured evidence at
+        # once.  The strip lives here, above the branch split, because a
+        # completing pass takes the first branch below (its reference is
+        # non-empty, so the sample is not a refused seed) -- keying the
+        # strip to the refused-seed branch left the earlier flags in place
+        # forever and the baseline at one sample (#1310 review).
+        for s in samples:
+            s.pop('provisional', None)
     if not refused_seed and all(s['sampled_unix'] != now for s in samples):
         samples.append({'sampled_unix': now, **current})
         state['samples'] = samples[-IDLE_WINDOW:]
@@ -815,12 +824,9 @@ def idle_judgement_with_reference(
         # A refused seed still joins, flagged provisional (#1185): dropping
         # it leaves a host that boots under load unmeasured forever.  The
         # gate above keeps it out of every reference until enough of them
-        # span long enough; completing the gate strips every flag, so the
-        # load they record becomes the measured baseline at once.
+        # span long enough; the strip above fires when the gate completes,
+        # so the load they record becomes the measured baseline at once.
         samples.append({'sampled_unix': now, **current, 'provisional': True})
-        if completes:
-            for s in samples:
-                s.pop('provisional', None)
         state['samples'] = samples[-IDLE_WINDOW:]
         if not completes:
             state.pop('excursion_unix', None)
