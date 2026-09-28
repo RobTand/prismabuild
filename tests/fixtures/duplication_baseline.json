@@ -1,0 +1,668 @@
+{
+ "must_differ": [],
+ "near_duplicates": [
+  [
+   "src/prismabuild/produced_output.py::_broker_scope_id",
+   "tools/fleet/resource_broker.py::scope_id"
+  ],
+  [
+   "src/prismabuild/storage_tiers.py::pool_mountpoint",
+   "tools/fleet/prewarm_loop.py::pool_mountpoint"
+  ],
+  [
+   "src/prismabuild/storage_tiers.py::read_arcstats",
+   "tools/fleet/prewarm_loop.py::arcstats"
+  ],
+  [
+   "src/prismabuild/storage_tiers.py::whole_disk_of",
+   "tools/fleet/prewarm_loop.py::whole_disk_of"
+  ],
+  [
+   "src/prismabuild/storage_tiers.py::zfs_binary",
+   "tools/fleet/prewarm_loop.py::zfs_binary"
+  ],
+  [
+   "src/prismabuild/storage_tiers.py::zfs_binary",
+   "tools/fleet/prewarm_loop.py::zpool_binary"
+  ],
+  [
+   "src/prismabuild/storage_tiers.py::zpool_binary",
+   "tools/fleet/prewarm_loop.py::zfs_binary"
+  ],
+  [
+   "src/prismabuild/storage_tiers.py::zpool_binary",
+   "tools/fleet/prewarm_loop.py::zpool_binary"
+  ],
+  [
+   "tools/fleet/fleet_membership.py::_membership_owner_parts",
+   "tools/fleet/resource_broker.py::_supervisor_owner_parts"
+  ],
+  [
+   "tools/fleet/fleet_membership.py::read_gate",
+   "tools/fleet/worker_loop.py::read_maintenance_gate"
+  ],
+  [
+   "tools/fleet/pbcanary_legs/leg3.py::_returncode",
+   "tools/fleet/pbcanary_legs/leg4.py::_returncode"
+  ],
+  [
+   "tools/fleet/ram_promote.py::main",
+   "tools/fleet/stage_move.py::main"
+  ],
+  [
+   "tools/fleet/resource_broker.py::_proc_starttime",
+   "tools/fleet/worker_loop.py::_proc_starttime"
+  ],
+  [
+   "tools/fleet/stage_move.py::own_action_key",
+   "tools/fleet/stage_release.py::own_action_key"
+  ]
+ ],
+ "primitive_digest_sites": [
+  "hashlib:src/prismabuild/action_edges.py::pending_id_of",
+  "hashlib:src/prismabuild/adaptive_cpu.py::action_identity",
+  "hashlib:src/prismabuild/adaptive_cpu.py::box_identity",
+  "hashlib:src/prismabuild/adaptive_cpu.py::record_completion",
+  "hashlib:src/prismabuild/container_images.py::content_ref",
+  "hashlib:src/prismabuild/decomposition.py::document_sha256",
+  "hashlib:src/prismabuild/movement_actions.py::container_owner",
+  "hashlib:src/prismabuild/pool.py::PoolQueue._archive_move_body",
+  "hashlib:src/prismabuild/pool.py::PoolQueue._scope_from_record",
+  "hashlib:src/prismabuild/pool.py::PoolQueue._transition_locked",
+  "hashlib:src/prismabuild/pool.py::PoolQueue.archive_attempt",
+  "hashlib:src/prismabuild/pool.py::PoolQueue.attempt_outcomes",
+  "hashlib:src/prismabuild/pool.py::PoolQueue.recover_archived_move",
+  "hashlib:src/prismabuild/pool.py::PoolQueue.tier_mint_lock",
+  "hashlib:src/prismabuild/pool.py::PoolQueue.unlink_retired_move.unlink_locked",
+  "hashlib:src/prismabuild/pool.py::_projection_sha256",
+  "hashlib:src/prismabuild/pool.py::_retirement_checkpoint_digest",
+  "hashlib:src/prismabuild/pool.py::_stage_ownership_name",
+  "hashlib:src/prismabuild/pool_reconcile.py::_cleanup",
+  "hashlib:src/prismabuild/pool_reconcile.py::reconcile",
+  "hashlib:src/prismabuild/produced_output.py::_DeadStagedReports.refused",
+  "hashlib:src/prismabuild/produced_output.py::_broker_scope_id",
+  "hashlib:src/prismabuild/produced_output.py::_release_index_path",
+  "hashlib:src/prismabuild/produced_output.py::_retire_consumed_batch_locked",
+  "hashlib:src/prismabuild/produced_output.py::_retire_consumed_batch_locked.report",
+  "hashlib:src/prismabuild/produced_output.py::_sweep_ended_prewrites",
+  "hashlib:src/prismabuild/produced_output.py::_unfiled_report",
+  "hashlib:src/prismabuild/produced_output.py::batch_namespace",
+  "hashlib:src/prismabuild/produced_output.py::instance_namespace",
+  "hashlib:src/prismabuild/produced_output.py::manifest_object_set_id",
+  "hashlib:src/prismabuild/produced_output.py::origin_retirement_tick",
+  "hashlib:src/prismabuild/produced_output.py::output_manifest_sha256",
+  "hashlib:src/prismabuild/produced_output.py::template_sha256",
+  "hashlib:src/prismabuild/produced_spool.py::_export_entry",
+  "hashlib:src/prismabuild/produced_spool.py::_file_digest",
+  "hashlib:src/prismabuild/produced_spool.py::_read",
+  "hashlib:src/prismabuild/publication_canary.py::slot_path",
+  "hashlib:src/prismabuild/reader_lease.py::content_identity",
+  "hashlib:src/prismabuild/reader_lease.py::pin_id_for",
+  "hashlib:src/prismabuild/reader_lease.py::ref_id_for",
+  "hashlib:src/prismabuild/residency_plan.py::plan_sha256",
+  "hashlib:src/prismabuild/resource_scope.py::ResourceScope.recover_create",
+  "hashlib:src/prismabuild/resource_scope.py::_sha256_file",
+  "hashlib:src/prismabuild/slurm_lane.py::submit",
+  "hashlib:src/prismabuild/window_credit.py::grant_key",
+  "hashlib:tools/duplication_inventory.py::_shingles",
+  "hashlib:tools/fleet/bench_failed_mover_reclaim.py::_Reclaim.__init__",
+  "hashlib:tools/fleet/bench_failed_mover_reclaim.py::_key",
+  "hashlib:tools/fleet/bench_failed_mover_reclaim.py::collision_scenario",
+  "hashlib:tools/fleet/bench_ram_promote_restart.py::_key",
+  "hashlib:tools/fleet/bench_ram_promote_restart.py::make_range",
+  "hashlib:tools/fleet/bench_stage_adopt.py::_key",
+  "hashlib:tools/fleet/bench_stage_adopt.py::make_window",
+  "hashlib:tools/fleet/bench_stage_egress.py::_key",
+  "hashlib:tools/fleet/bench_tier_cycle.py::_key",
+  "hashlib:tools/fleet/bench_tier_cycle_r13.py::build_write_only_scopes",
+  "hashlib:tools/fleet/deferred_release.py::_report_once",
+  "hashlib:tools/fleet/fleet_membership.py::worker_evidence",
+  "hashlib:tools/fleet/pb_gc.py::transition_lock_name",
+  "hashlib:tools/fleet/pbcanary.py::_run_fanout_leg",
+  "hashlib:tools/fleet/pbcanary.py::_run_single_leg",
+  "hashlib:tools/fleet/pbcanary.py::terminal_progress_observation",
+  "hashlib:tools/fleet/pbcanary_legs/common.py::deterministic_bytes",
+  "hashlib:tools/fleet/pbcanary_legs/common.py::deterministic_stream",
+  "hashlib:tools/fleet/pbcanary_legs/common.py::sha256_file_hex",
+  "hashlib:tools/fleet/pbcanary_legs/common.py::sha256_hex",
+  "hashlib:tools/fleet/pbcanary_legs/common.py::sha256_stream_hex",
+  "hashlib:tools/fleet/pbcanary_legs/leg1.py::<module>",
+  "hashlib:tools/fleet/pbcanary_legs/leg1.py::verify",
+  "hashlib:tools/fleet/pbcanary_legs/leg2.py::<module>",
+  "hashlib:tools/fleet/pbcanary_legs/leg2.py::verify",
+  "hashlib:tools/fleet/pbcanary_legs/leg3.py::_hash_fd",
+  "hashlib:tools/fleet/pbcanary_legs/leg3.py::run_action",
+  "hashlib:tools/fleet/pbmcp.py::_blob_identity",
+  "hashlib:tools/fleet/pbrun.py::build_stamp_closure",
+  "hashlib:tools/fleet/pbrun.py::require_deployed_read_plan_storage",
+  "hashlib:tools/fleet/pbrun.py::result_and_stamp_names",
+  "hashlib:tools/fleet/pbrun.py::verify_retained_wrapper",
+  "hashlib:tools/fleet/pbsnapshot.py::verified_stamp",
+  "hashlib:tools/fleet/pbtest_pins.py::verify_install",
+  "hashlib:tools/fleet/publish_runtime.py::_agent_definitions",
+  "hashlib:tools/fleet/publish_runtime.py::_coordinator_sha256",
+  "hashlib:tools/fleet/publish_runtime.py::_sha256",
+  "hashlib:tools/fleet/qualify_claim_recovery.py::digest",
+  "hashlib:tools/fleet/qualify_claim_recovery.py::original",
+  "hashlib:tools/fleet/qualify_resource_scope.py::qualify",
+  "hashlib:tools/fleet/qualify_rollout.py::sha256",
+  "hashlib:tools/fleet/resource_broker.py::Authority._maintenance_status",
+  "hashlib:tools/fleet/resource_broker.py::main",
+  "hashlib:tools/fleet/resource_broker.py::scope_id",
+  "hashlib:tools/fleet/shape_gate.py::ShapeGate._template",
+  "hashlib:tools/fleet/shape_gate.py::ShapeGate.read_phase",
+  "hashlib:tools/fleet/shape_gate.py::main",
+  "hashlib:tools/fleet/shape_gate.py::write_sources",
+  "hashlib:tools/fleet/stage_move.py::_Copier._copy_one",
+  "hashlib:tools/fleet/stage_move.py::_StagedPublisher._content_proof",
+  "hashlib:tools/fleet/supervise.py::_sha256",
+  "hashlib:tools/fleet/upgrade_client.py::digest",
+  "hashlib:tools/fleet/worker_loop.py::record_generation_drift",
+  "hashlib:tools/prismabuild_worker.py::_capture_launched_source",
+  "sorted-json:src/prismabuild/action_edges.py::_canonical",
+  "sorted-json:src/prismabuild/adaptive_cpu.py::action_identity",
+  "sorted-json:src/prismabuild/container_images.py::InventoryCache._refresh",
+  "sorted-json:src/prismabuild/container_images.py::content_ref",
+  "sorted-json:src/prismabuild/dagster.py::ActionSpec.__init__",
+  "sorted-json:src/prismabuild/movement_actions.py::container_owner",
+  "sorted-json:src/prismabuild/pool.py::PoolQueue.write_stage_ownership_holder",
+  "sorted-json:src/prismabuild/produced_output.py::_DeadStagedReports.refused",
+  "sorted-json:src/prismabuild/produced_output.py::_index_attempt",
+  "sorted-json:src/prismabuild/produced_output.py::_publish_prewrite_record",
+  "sorted-json:src/prismabuild/produced_output.py::_release_index_body",
+  "sorted-json:src/prismabuild/produced_output.py::_release_index_path",
+  "sorted-json:src/prismabuild/produced_output.py::_release_origin_consumer_locked",
+  "sorted-json:src/prismabuild/produced_output.py::_retire_consumed_batch_locked.report",
+  "sorted-json:src/prismabuild/produced_output.py::_sweep_ended_prewrites",
+  "sorted-json:src/prismabuild/produced_output.py::_unfiled_report",
+  "sorted-json:src/prismabuild/produced_output.py::_write_commitments",
+  "sorted-json:src/prismabuild/produced_output.py::bind_instance",
+  "sorted-json:src/prismabuild/produced_output.py::commit_batch",
+  "sorted-json:src/prismabuild/produced_output.py::commit_origin_batch",
+  "sorted-json:src/prismabuild/produced_output.py::declare_instance",
+  "sorted-json:src/prismabuild/produced_output.py::declare_origin_consumer",
+  "sorted-json:src/prismabuild/produced_output.py::declare_template",
+  "sorted-json:src/prismabuild/produced_output.py::origin_retirement_tick",
+  "sorted-json:src/prismabuild/produced_output.py::output_manifest_sha256",
+  "sorted-json:src/prismabuild/produced_output.py::template_sha256",
+  "sorted-json:src/prismabuild/produced_spool.py::_append_line",
+  "sorted-json:src/prismabuild/produced_spool.py::_file_refusal",
+  "sorted-json:src/prismabuild/produced_spool.py::_write",
+  "sorted-json:src/prismabuild/produced_spool.py::_write_tick",
+  "sorted-json:src/prismabuild/produced_spool.py::export_group",
+  "sorted-json:src/prismabuild/produced_spool.py::main",
+  "sorted-json:src/prismabuild/progress.py::_write",
+  "sorted-json:src/prismabuild/reader_lease.py::_canonical_pin_body",
+  "sorted-json:src/prismabuild/reader_lease.py::_file_release_failure",
+  "sorted-json:src/prismabuild/resource_scope.py::_atomic_json",
+  "sorted-json:src/prismabuild/slurm_lane.py::LivenessMonitor._append",
+  "sorted-json:tools/duplication_inventory.py::main",
+  "sorted-json:tools/fleet/bench_failed_mover_reclaim.py::main",
+  "sorted-json:tools/fleet/bench_tier_cold_start.py::main",
+  "sorted-json:tools/fleet/bench_tier_cycle_r13.py::main",
+  "sorted-json:tools/fleet/deferred_release.py::_report_once",
+  "sorted-json:tools/fleet/fleet_membership.py::main",
+  "sorted-json:tools/fleet/mount_latency.py::append_record",
+  "sorted-json:tools/fleet/mount_latency.py::main",
+  "sorted-json:tools/fleet/pb_gc.py::write_queue_receipt",
+  "sorted-json:tools/fleet/pbcampaign.py::main",
+  "sorted-json:tools/fleet/pbcanary.py::write_json",
+  "sorted-json:tools/fleet/pbcanary_legs/common.py::canonical_json",
+  "sorted-json:tools/fleet/pbmcp.py::_content",
+  "sorted-json:tools/fleet/pbmetrics.py::_refusal_record",
+  "sorted-json:tools/fleet/pbrun.py::_bounded_pool_read",
+  "sorted-json:tools/fleet/pbrun.py::await_outcome",
+  "sorted-json:tools/fleet/pbrun.py::bounded_offer_snapshot",
+  "sorted-json:tools/fleet/pbrun.py::detach_line",
+  "sorted-json:tools/fleet/pbrun.py::freeze_action_template",
+  "sorted-json:tools/fleet/pbrun.py::release_origin_consumer_cli",
+  "sorted-json:tools/fleet/pbrun.py::result_and_stamp_names",
+  "sorted-json:tools/fleet/pbrun.py::submit_deferred",
+  "sorted-json:tools/fleet/pbrun.py::wait_out_retained_readers.waiting",
+  "sorted-json:tools/fleet/pbsnapshot.py::main",
+  "sorted-json:tools/fleet/pbstatus.py::_stop_reader",
+  "sorted-json:tools/fleet/pbstatus.py::blocked_origin_remedies",
+  "sorted-json:tools/fleet/pbstatus.py::main",
+  "sorted-json:tools/fleet/pbsweep.py::main",
+  "sorted-json:tools/fleet/pbtest_pins.py::check_pins",
+  "sorted-json:tools/fleet/pbwait.py::main",
+  "sorted-json:tools/fleet/pbwait.py::wait_one",
+  "sorted-json:tools/fleet/profile_finish_census.py::main",
+  "sorted-json:tools/fleet/publish_runtime.py::_invoke_canary_driver",
+  "sorted-json:tools/fleet/publish_runtime.py::_invoke_canary_driver.authorize",
+  "sorted-json:tools/fleet/publish_runtime.py::_run_publication",
+  "sorted-json:tools/fleet/publish_runtime.py::_wait_barrier",
+  "sorted-json:tools/fleet/qualify_claim_recovery.py::main",
+  "sorted-json:tools/fleet/qualify_resource_scope.py::main",
+  "sorted-json:tools/fleet/qualify_rollout.py::canonical",
+  "sorted-json:tools/fleet/qualify_rollout.py::coordinator_actor",
+  "sorted-json:tools/fleet/qualify_rollout.py::emit_manifest",
+  "sorted-json:tools/fleet/ram_promote.py::main",
+  "sorted-json:tools/fleet/require_pool.py::_record_sighting",
+  "sorted-json:tools/fleet/runtime_process_census.py::main",
+  "sorted-json:tools/fleet/shape_gate.py::main",
+  "sorted-json:tools/fleet/shape_gate.py::table_bytes",
+  "sorted-json:tools/fleet/stage_move.py::main",
+  "sorted-json:tools/fleet/stage_release.py::main",
+  "sorted-json:tools/fleet/tier_loop.py::ReceiptCache.fill_supply",
+  "sorted-json:tools/fleet/tier_loop.py::ReceiptCache.mover_cap",
+  "sorted-json:tools/fleet/upgrade_client.py::Upgrader.attest",
+  "sorted-json:tools/fleet/upgrade_client.py::Upgrader.report",
+  "sorted-json:tools/fleet/upgrade_client.py::canonical_json"
+ ],
+ "same_name_helpers": {
+  "_absent": [
+   "src/prismabuild/pool_reconcile.py",
+   "tools/fleet/pbmcp.py"
+  ],
+  "_absolute_path": [
+   "src/prismabuild/dagster.py",
+   "src/prismabuild/slurm.py"
+  ],
+  "_action_key": [
+   "src/prismabuild/residency_map.py",
+   "src/prismabuild/residency_plan.py"
+  ],
+  "_assert_directory_identity": [
+   "src/prismabuild/core.py",
+   "src/prismabuild/slurm.py"
+  ],
+  "_cell": [
+   "tools/fleet/pbstatus.py",
+   "tools/fleet/pbwait.py"
+  ],
+  "_check_pinned": [
+   "tools/fleet/pbcanary_legs/leg3.py",
+   "tools/fleet/pbcanary_legs/leg4.py"
+  ],
+  "_emit": [
+   "tools/fleet/mount_latency.py",
+   "tools/fleet/tier_loop.py"
+  ],
+  "_entries": [
+   "src/prismabuild/residency_map.py",
+   "tools/fleet/pb_gc.py"
+  ],
+  "_exact_mapping": [
+   "src/prismabuild/core.py",
+   "src/prismabuild/dagster.py",
+   "src/prismabuild/slurm.py"
+  ],
+  "_execution_checkout": [
+   "src/prismabuild/materialize.py",
+   "src/prismabuild/pool.py"
+  ],
+  "_extract_envelope": [
+   "tools/fleet/pbcanary_legs/leg3.py",
+   "tools/fleet/pbcanary_legs/leg4.py"
+  ],
+  "_fail": [
+   "src/prismabuild/core.py",
+   "src/prismabuild/dagster.py"
+  ],
+  "_git": [
+   "src/prismabuild/core.py",
+   "tools/fleet/pbsnapshot.py",
+   "tools/fleet/seal_and_publish.py",
+   "tools/fleet/shape_gate.py"
+  ],
+  "_hex64": [
+   "src/prismabuild/action_edges.py",
+   "src/prismabuild/produced_output.py"
+  ],
+  "_host": [
+   "src/prismabuild/gpu_memory.py",
+   "tools/fleet/pbmetrics.py"
+  ],
+  "_identity": [
+   "src/prismabuild/control_cpu.py",
+   "src/prismabuild/produced_spool.py",
+   "tools/fleet/pb_gc.py"
+  ],
+  "_is_action_key": [
+   "tools/fleet/stage_move.py",
+   "tools/fleet/stage_release.py"
+  ],
+  "_is_hex64": [
+   "src/prismabuild/pool.py",
+   "tools/fleet/tier_loop.py"
+  ],
+  "_keepable_version": [
+   "src/prismabuild/produced_output.py",
+   "tools/fleet/stage_move.py"
+  ],
+  "_key": [
+   "tools/fleet/bench_failed_mover_reclaim.py",
+   "tools/fleet/bench_ram_promote_restart.py",
+   "tools/fleet/bench_stage_adopt.py",
+   "tools/fleet/bench_stage_egress.py",
+   "tools/fleet/bench_tier_cycle.py"
+  ],
+  "_landing_horizon": [
+   "src/prismabuild/residency_map.py",
+   "tools/fleet/tier_loop.py"
+  ],
+  "_matches": [
+   "src/prismabuild/produced_spool.py",
+   "tools/fleet/pbmcp.py"
+  ],
+  "_metadata_version": [
+   "src/prismabuild/produced_output.py",
+   "tools/fleet/stage_move.py"
+  ],
+  "_name": [
+   "src/prismabuild/action_edges.py",
+   "src/prismabuild/produced_output.py"
+  ],
+  "_nonnegative_integer": [
+   "src/prismabuild/core.py",
+   "src/prismabuild/dagster.py",
+   "src/prismabuild/slurm.py"
+  ],
+  "_now": [
+   "src/prismabuild/materialize.py",
+   "src/prismabuild/slurm_lane.py"
+  ],
+  "_number": [
+   "src/prismabuild/adaptive_gpu.py",
+   "src/prismabuild/box_capacity.py",
+   "src/prismabuild/box_window.py",
+   "src/prismabuild/gpu_capacity.py",
+   "src/prismabuild/pool_reconcile.py",
+   "tools/fleet/pbmetrics.py",
+   "tools/fleet/upgrade_client.py"
+  ],
+  "_observe": [
+   "src/prismabuild/produced_spool.py",
+   "tools/fleet/stage_move.py"
+  ],
+  "_open_directory_nofollow": [
+   "src/prismabuild/core.py",
+   "src/prismabuild/slurm.py"
+  ],
+  "_parser": [
+   "tools/fleet/prewarm_loop.py",
+   "tools/fleet/tier_loop.py"
+  ],
+  "_path": [
+   "src/prismabuild/action_edges.py",
+   "src/prismabuild/produced_spool.py"
+  ],
+  "_positive": [
+   "src/prismabuild/produced_spool.py",
+   "src/prismabuild/residency_map.py"
+  ],
+  "_positive_finite": [
+   "src/prismabuild/core.py",
+   "src/prismabuild/dagster.py",
+   "src/prismabuild/slurm.py"
+  ],
+  "_positive_integer": [
+   "src/prismabuild/core.py",
+   "src/prismabuild/dagster.py",
+   "src/prismabuild/slurm.py"
+  ],
+  "_proc_starttime": [
+   "tools/fleet/resource_broker.py",
+   "tools/fleet/worker_loop.py"
+  ],
+  "_read": [
+   "src/prismabuild/action_edges.py",
+   "src/prismabuild/adaptive_snapshot.py",
+   "src/prismabuild/pool_reconcile.py",
+   "src/prismabuild/produced_spool.py",
+   "tools/fleet/retire_worker.py"
+  ],
+  "_read_claim": [
+   "src/prismabuild/reader_lease.py",
+   "tools/fleet/pbmetrics.py"
+  ],
+  "_require": [
+   "src/prismabuild/pool_reconcile.py",
+   "tools/fleet/pbsnapshot.py"
+  ],
+  "_returncode": [
+   "tools/fleet/pbcanary_legs/leg3.py",
+   "tools/fleet/pbcanary_legs/leg4.py"
+  ],
+  "_row": [
+   "tools/fleet/bench_tier_cycle.py",
+   "tools/fleet/pbmcp.py",
+   "tools/fleet/pbwait.py"
+  ],
+  "_run": [
+   "src/prismabuild/slurm_lane.py",
+   "src/prismabuild/storage_tiers.py"
+  ],
+  "_scan": [
+   "src/prismabuild/pool.py",
+   "tools/fleet/require_pool.py"
+  ],
+  "_seed": [
+   "tools/fleet/pbcanary_legs/leg3.py",
+   "tools/fleet/pbcanary_legs/leg4.py"
+  ],
+  "_serve": [
+   "tools/fleet/pbmetrics.py",
+   "tools/fleet/prewarm_loop.py",
+   "tools/fleet/tier_loop.py"
+  ],
+  "_sha256": [
+   "src/prismabuild/core.py",
+   "src/prismabuild/slurm.py",
+   "tools/fleet/publish_runtime.py",
+   "tools/fleet/supervise.py"
+  ],
+  "_start": [
+   "tools/fleet/bench_tier_cold_start.py",
+   "tools/fleet/tier_loop.py"
+  ],
+  "_text": [
+   "src/prismabuild/core.py",
+   "src/prismabuild/dagster.py",
+   "tools/fleet/pbstatus.py"
+  ],
+  "_version_fence": [
+   "src/prismabuild/produced_output.py",
+   "tools/fleet/stage_move.py"
+  ],
+  "_write": [
+   "src/prismabuild/adaptive_snapshot.py",
+   "src/prismabuild/produced_spool.py",
+   "src/prismabuild/progress.py"
+  ],
+  "analyze": [
+   "tools/fleet/bench_ram_promote_restart.py",
+   "tools/fleet/bench_stage_adopt.py",
+   "tools/fleet/bench_stage_egress.py",
+   "tools/fleet/bench_stage_reconcile.py",
+   "tools/fleet/bench_tier_cycle.py",
+   "tools/fleet/bench_tier_cycle_r13.py"
+  ],
+  "build": [
+   "tools/fleet/pbcanary_legs/leg1.py",
+   "tools/fleet/pbcanary_legs/leg2.py",
+   "tools/fleet/pbcanary_legs/leg3.py",
+   "tools/fleet/pbcanary_legs/leg4.py"
+  ],
+  "build_plan": [
+   "src/prismabuild/decomposition.py",
+   "src/prismabuild/residency_plan.py"
+  ],
+  "by_id_names": [
+   "src/prismabuild/storage_tiers.py",
+   "tools/fleet/prewarm_loop.py"
+  ],
+  "cancel": [
+   "src/prismabuild/slurm_lane.py",
+   "src/prismabuild/window_credit.py"
+  ],
+  "canonical_json": [
+   "tools/fleet/pbcanary_legs/common.py",
+   "tools/fleet/upgrade_client.py"
+  ],
+  "classify": [
+   "src/prismabuild/cpu_topology.py",
+   "tools/fleet/bench_ram_promote_restart.py",
+   "tools/fleet/bench_stage_adopt.py",
+   "tools/fleet/bench_tier_cycle.py",
+   "tools/fleet/bench_tier_cycle_r13.py"
+  ],
+  "collect": [
+   "src/prismabuild/gpu_capacity.py",
+   "src/prismabuild/gpu_memory.py"
+  ],
+  "container_owner": [
+   "src/prismabuild/movement_actions.py",
+   "tools/fleet/pbrun.py"
+  ],
+  "current_fill_offer": [
+   "src/prismabuild/storage_tiers.py",
+   "tools/fleet/pbrun.py"
+  ],
+  "cycle": [
+   "tools/fleet/prewarm_loop.py",
+   "tools/fleet/tier_loop.py"
+  ],
+  "digest": [
+   "tools/fleet/qualify_claim_recovery.py",
+   "tools/fleet/upgrade_client.py"
+  ],
+  "load": [
+   "src/prismabuild/publication_canary.py",
+   "tools/fleet/qualify_rollout.py"
+  ],
+  "load_manifest": [
+   "tools/fleet/pbcampaign.py",
+   "tools/fleet/prewarm_loop.py",
+   "tools/fleet/stage_move.py"
+  ],
+  "manifest_read_entries": [
+   "src/prismabuild/storage_tiers.py",
+   "tools/fleet/prewarm_loop.py"
+  ],
+  "mint_generation": [
+   "src/prismabuild/produced_output.py",
+   "src/prismabuild/reader_lease.py"
+  ],
+  "movement_tools": [
+   "src/prismabuild/movement_actions.py",
+   "tools/fleet/pbrun.py"
+  ],
+  "observe": [
+   "src/prismabuild/box_capacity.py",
+   "src/prismabuild/container_images.py"
+  ],
+  "own_action_key": [
+   "tools/fleet/stage_move.py",
+   "tools/fleet/stage_release.py"
+  ],
+  "parse": [
+   "tools/fleet/admission_shared_io.py",
+   "tools/fleet/pbtest_outcomes.py"
+  ],
+  "pool_member_devices": [
+   "src/prismabuild/storage_tiers.py",
+   "tools/fleet/prewarm_loop.py"
+  ],
+  "pool_member_paths": [
+   "src/prismabuild/storage_tiers.py",
+   "tools/fleet/prewarm_loop.py"
+  ],
+  "pool_mountpoint": [
+   "src/prismabuild/storage_tiers.py",
+   "tools/fleet/prewarm_loop.py"
+  ],
+  "promote": [
+   "src/prismabuild/publication_canary.py",
+   "tools/fleet/ram_promote.py"
+  ],
+  "published_commit": [
+   "tools/fleet/pbrun.py",
+   "tools/fleet/worker_loop.py"
+  ],
+  "read_disk_stat": [
+   "src/prismabuild/storage_tiers.py",
+   "tools/fleet/prewarm_loop.py"
+  ],
+  "reconcile": [
+   "src/prismabuild/pool_reconcile.py",
+   "tools/fleet/pbtest_outcomes.py",
+   "tools/fleet/stage_release.py"
+  ],
+  "recorded_action": [
+   "src/prismabuild/slurm_lane.py",
+   "tools/fleet/pbwait.py"
+  ],
+  "report_action_progress": [
+   "src/prismabuild/core.py",
+   "src/prismabuild/progress.py"
+  ],
+  "retire": [
+   "src/prismabuild/posix_lock.py",
+   "tools/fleet/retire_worker.py"
+  ],
+  "run": [
+   "src/prismabuild/slurm_lane.py",
+   "tools/fleet/bench_tier_cold_start.py"
+  ],
+  "run_action": [
+   "tools/fleet/pbcanary_legs/leg3.py",
+   "tools/fleet/pbcanary_legs/leg4.py"
+  ],
+  "run_cycles": [
+   "tools/fleet/bench_tier_cycle.py",
+   "tools/fleet/bench_tier_cycle_r13.py"
+  ],
+  "seal_movement_action": [
+   "src/prismabuild/movement_actions.py",
+   "tools/fleet/pbrun.py"
+  ],
+  "submit": [
+   "src/prismabuild/slurm_lane.py",
+   "tools/fleet/fleet_submit.py",
+   "tools/fleet/pbcampaign.py",
+   "tools/fleet/pbcanary_submission.py"
+  ],
+  "sweep": [
+   "src/prismabuild/slurm_lane.py",
+   "tools/fleet/pb_gc.py",
+   "tools/fleet/stage_release.py"
+  ],
+  "validate_plan": [
+   "src/prismabuild/decomposition.py",
+   "src/prismabuild/residency_plan.py"
+  ],
+  "verdict": [
+   "tools/fleet/pbcanary_verdict.py",
+   "tools/fleet/pbwait.py"
+  ],
+  "verify": [
+   "tools/fleet/pbcanary_legs/leg1.py",
+   "tools/fleet/pbcanary_legs/leg2.py",
+   "tools/fleet/pbcanary_legs/leg3.py",
+   "tools/fleet/pbcanary_legs/leg4.py",
+   "tools/fleet/pbsnapshot.py"
+  ],
+  "wait": [
+   "src/prismabuild/slurm_lane.py",
+   "tools/fleet/qualify_claim_recovery.py"
+  ],
+  "whole_disk_of": [
+   "src/prismabuild/storage_tiers.py",
+   "tools/fleet/prewarm_loop.py"
+  ],
+  "write_json": [
+   "src/prismabuild/adaptive_cpu.py",
+   "tools/fleet/pbcanary.py"
+  ],
+  "zfs_binary": [
+   "src/prismabuild/storage_tiers.py",
+   "tools/fleet/prewarm_loop.py"
+  ],
+  "zpool_binary": [
+   "src/prismabuild/storage_tiers.py",
+   "tools/fleet/prewarm_loop.py"
+  ]
+ }
+}
