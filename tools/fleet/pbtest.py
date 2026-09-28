@@ -386,6 +386,33 @@ import pbtest_outcomes  # noqa: E402
 NON_GPU_UNREQUESTED_CEILING_CAP_S = 2 * pool.WITHHOLD_CEILING_S
 
 
+def interpreter_refusal(queue, python: str, *, tags, resources,
+                       needs_gpu: bool) -> str | None:
+    """Why no recorded worker can run this interpreter, or ``None`` (#1263).
+
+    The same matcher the shards' ``pbrun`` will refuse through, asked once for
+    the whole suite.  ``None`` means at least one recorded worker reports the
+    path -- or that nobody has said anything, which stays a warning a
+    per-shard ``pbrun`` will answer with evidence rather than a guess.
+    """
+
+    probe = {
+        "tags": [*tags, pbrun.pb.INTERPRETER_TAG],
+        "interpreter": python,
+        "resources": dict(resources),
+        "needs_gpu": bool(needs_gpu),
+    }
+    if queue.placeable(
+            probe, max_age_s=pbrun.RECORDED_OFFER_MAX_AGE_S) is False:
+        return (
+            "pbtest: no recorded worker reports the interpreter "
+            f"{python}. Install it on a box that offers these tags and let "
+            "its worker's next poll answer for the path; submitting now "
+            "would queue shards that die with 127 on the first box to claim "
+            "them.")
+    return None
+
+
 def announced_ceilings(tags: list[str]) -> dict[str, float | None]:
     """What each live worker able to take these shards says its ceiling is.
 
@@ -1037,6 +1064,17 @@ def main() -> int:
     # Say nothing instead and let ``pbrun`` answer; it pins to this box.
     tags = args.tag or ([] if pool.is_box_local_path(RUNTIME_ROOT) else
                         ["gb10" if args.gpu else "x86"])
+    # One placement question before any shard is sealed (#1263): the
+    # interpreter every shard names is a requirement, and if no recorded
+    # worker reports the path, every shard's pbrun would refuse identically.
+    # Answering it once here fails the whole submission fast, naming the path.
+    refusal = interpreter_refusal(
+        pool.PoolQueue(pbrun.SH / "pb-queue"), args.python,
+        tags=tags, resources={"cpu": args.cpus, "mem_gb": args.mem_gb},
+        needs_gpu=bool(args.gpu))
+    if refusal is not None:
+        sys.stderr.write(refusal + "\n")
+        return 2
     sizes = [len(b) for b in buckets]
     print(f"{len(files)} files -> {len(buckets)} shards "
           f"(min {min(sizes)}, max {max(sizes)} files per shard), tags={tags}, "

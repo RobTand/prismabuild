@@ -5331,6 +5331,12 @@ def freeze_action_template(
         "checkout_snapshot": checkout_snapshot,
         "retry_policy": retry_policy,
     }
+    declared_interpreter = interpreter_of(command)
+    if declared_interpreter is not None:
+        # The placement requirement travels in the sealed body (#1263), so
+        # the row, the matcher and the claim all read one authority: the
+        # exact path this action will exec.
+        params["interpreter"] = declared_interpreter
     if data_manifest_summary is not None:
         # A summary, not the list: the prewarm budget and the ARC check read
         # these two numbers every poll, and making them fetch and parse a
@@ -7337,6 +7343,12 @@ def announce_placement(
         # The sealed requirement, so every verdict below -- placeable,
         # placement_hosts, the refusal -- reads the same matcher a claim does.
         intent["container_images"] = list(params["container_images"])
+    if params.get("interpreter"):
+        # Same authority for the interpreter (#1263): the probe carries the
+        # sealed path and the capability tag publish will add, so placeable
+        # answers for the row it is about to write.
+        intent["interpreter"] = str(params["interpreter"])
+        intent["tags"] = [*tags, pb.INTERPRETER_TAG]
     # Say how wide this action is before saying it was queued.  A pin is a
     # consequence of the checkout path, and nothing used to report it, so a
     # submitter narrowed the fleet to one box without being told.
@@ -7432,6 +7444,19 @@ def announce_placement(
             image_line = (
                 "  container images: " + ", ".join(intent["container_images"])
                 + f" (no eligible worker offers {pb.CONTAINER_IMAGE_TAG})\n")
+        interpreter_line = ""
+        if intent.get("interpreter"):
+            without_interpreter = {
+                name: value for name, value in intent.items()
+                if name != "interpreter"}
+            without_interpreter["tags"] = [
+                tag for tag in without_interpreter.get("tags") or []
+                if tag != pb.INTERPRETER_TAG]
+            if queue.placeable(without_interpreter,
+                               max_age_s=RECORDED_OFFER_MAX_AGE_S) is True:
+                interpreter_line = (
+                    "  interpreter:    " + str(intent["interpreter"])
+                    + " (no recorded eligible worker reports it)\n")
         capacity_line = ("" if image_blocked or capability_blocked else
                          placement_capacity_notice(queue, intent))
         remedy = (
@@ -7448,10 +7473,19 @@ def announce_placement(
             remedy = (f"Start a worker offering {pb.CONTAINER_IMAGE_TAG} "
                       "on an eligible box; its image inventory must then "
                       "report the declared reference.")
+        if interpreter_line:
+            remedy = (
+                "The interpreter path is part of the action's placement: a "
+                "worker must report it in its offer before the action can "
+                "run there. Install the interpreter on a box that offers "
+                "these tags, let its worker's next poll answer for the path, "
+                "and resubmit; submitting anyway would only queue a command "
+                "that dies with 127 on the first box to claim it.")
         raise SystemExit(
             f"pbrun: no recorded worker can run this action.\n"
             f"  required tags: {tags or '(any box)'}\n"
             f"{image_line}"
+            f"{interpreter_line}"
             f"  demand:        {demand}\n"
             f"{capacity_line}"
             f"  offered on record: "
@@ -7490,6 +7524,26 @@ def announce_placement(
         queue, intent, requested=args.timeout_s if progress_policy is None else None)
     if ceiling_notice:
         print(ceiling_notice, file=sys.stderr, flush=True)
+
+
+def interpreter_of(command: Sequence[str]) -> str | None:
+    """The absolute interpreter a command names, when it names one (#1263).
+
+    ``argv[0]`` that is an absolute path to a ``python*`` binary.  Nothing is
+    guessed from a wrapper, a venv name or a tag: the item declares exactly
+    the bytes it will exec, and the fleet answers for that path or not at
+    all.  ``None`` keeps today's behaviour byte for byte.
+    """
+
+    if not command:
+        return None
+    first = str(command[0])
+    if not first.startswith("/"):
+        return None
+    name = first.rsplit("/", 1)[-1]
+    if not name.startswith("python"):
+        return None
+    return first
 
 
 def publication_row(
@@ -7543,6 +7597,8 @@ def publication_row(
         # Derived from the sealed body, never re-read from the caller: the row
         # describes the action, so the action's own params are the authority.
         row["container_images"] = list(params["container_images"])
+    if params.get("interpreter"):
+        row["interpreter"] = str(params["interpreter"])
     # The repo checkout can advance just before the atomic runtime generation
     # rolls.  The previous PoolQueue already accepts the safety-critical bound,
     # so keep that mixed window usable; add the explanatory annotation once the

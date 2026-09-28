@@ -72,6 +72,19 @@ universal setting. Use `pbtest.py` for suite fanout and `pbcampaign.py` for a
 manifest of independent actions. Prefer portable placement; add a host tag only
 for a real dependency or a controlled measurement.
 
+An absolute interpreter in the command is itself the placement requirement
+(#1263): `pbrun` seals the path into the action, the item requires the
+`interpreter-path-v1` worker capability, and a box is eligible exactly when
+its offer positively reports the path. Do **not** add `--tag gb10` (or any
+host tag) to pin portable CPU work onto a box that happens to have the venv --
+name the interpreter and let the pool place the row wherever the interpreter
+lives, which is how CPU work reaches dl380g10 while the Sparks' CPUs stay
+with the GPU rows. A path no recorded worker reports is refused at submission,
+naming the path, rather than dying with 127 on the first box to claim it.
+During a rolling publish, workers of the older generation offer neither the
+capability nor the answers, so interpreter-naming work waits for a
+new-generation box -- fail closed, by design.
+
 A container image the action needs must already be local on the claiming box:
 declare it with `pbrun --container-image REF` (`container_images` on a campaign
 row), where `REF` is `sha256:<64 hex>` (image ID), `repository@sha256:<64 hex>`

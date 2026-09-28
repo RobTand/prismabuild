@@ -975,6 +975,26 @@ def _retained_reader(abandoned: list) -> tuple[int, str] | None:
     return _retained_publisher(abandoned)
 
 
+def interpreter_lookup(items) -> list[str]:
+    """The interpreter paths READY items name that this box can positively run.
+
+    The lookup design (#1263): no directory scan and no configured roots --
+    the offer answers exactly the paths the queue asks about, each with one
+    stat.  Present is positive evidence only: a path that does not resolve
+    here is simply absent from the list, and a poll that could not read the
+    queue publishes no list at all, which the matcher reads as unknown.
+    """
+
+    paths = sorted({
+        str(item.get("interpreter"))
+        for item in items
+        if isinstance(item, Mapping)
+        and isinstance(item.get("interpreter"), str)})
+    return [
+        path for path in paths
+        if os.path.isfile(path) and os.access(path, os.X_OK)]
+
+
 def discover_ready_snapshot(queue, *, budget_s: float,
                             abandoned: list,
                             placement: tuple | None = None) -> DiscoveryResult:
@@ -1373,6 +1393,12 @@ def _run_loop(stop_requested):
         # check then finds presence unknown and refuses, leaving the item
         # ready for a box that can see it.
         tags.append(pb.CONTAINER_IMAGE_TAG)
+        # Same fence for a named interpreter (#1263): this loop's claim checks
+        # the item's absolute path on this box before it spends an attempt,
+        # and its offer answers for the paths READY items name.  A loop from
+        # before the field offers neither, so an interpreter-naming item waits
+        # for a box that can run it instead of dying with 127 there.
+        tags.append(pb.INTERPRETER_TAG)
         if loaded_generation:
             tags.extend((publication_canary.CAPABILITY,
                          f"runtime-generation:{loaded_generation}"))
@@ -1709,13 +1735,21 @@ def _run_loop(stop_requested):
         # now, and an item that declares images is not placeable here without
         # it.
         observed_images = inventory.get()
+        # The interpreter answers (#1263): exactly the paths this poll's ready
+        # snapshot asks about, statted on this box.  One bounded set per poll;
+        # a snapshot that could not be read publishes nothing, which is the
+        # fail-closed answer rather than a guess.
+        offered_interpreters = interpreter_lookup(discovery.snapshot or [])
 
         def announce_offer(queue=queue, host=host, tags=offered,
                            has_gpu=gpu_capable, declared=placeable_capacity,
                            capacity=capacity, observer=observer, loops=loops,
                            runtime_commit=loaded_commit, cpu_tiers=cpu_tiers,
                            timeout_s=args.timeout_s, addresses=addresses,
-                           observed_images=observed_images):
+                           observed_images=observed_images,
+                           interpreters=offered_interpreters):
+            # (``interpreters`` binds the poll's lookup; the announce call
+            # below receives it under that closure-local name.)
             """The exact advisory record this poll offers the queue.
 
             A closure, not a kwargs dict, so the publisher's child runs the
@@ -1751,6 +1785,11 @@ def _run_loop(stop_requested):
                 # it could not look.  An image-pinned item reads both as
                 # not-here at claim and as not-placeable here at dispatch.
                 observed_images=observed_images,
+                # Which named interpreters this box can positively run
+                # (#1263): the paths this poll's ready items ask about, statted
+                # here.  Absent says it could not answer, and an item naming
+                # an interpreter reads that as unknown, never capable.
+                interpreters=interpreters,
             )
 
         publication = publish_offer(
