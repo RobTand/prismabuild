@@ -492,6 +492,45 @@ def _silenced(call: Callable[[], object]) -> tuple[object, str]:
     return value, buffer.getvalue()
 
 
+def storage_host_worker_offer(
+        facts_dir: Path, *, policy: Mapping[str, object],
+        profile: Mapping[str, object] = HOST_PROFILE) -> dict[str, int]:
+    """The storage host worker's offer, as that worker computes it.
+
+    Since #1222 the storage host's worker runs with
+    ``--mem-gb-ram-tier-roof``: its ``mem_gb`` offer is the RAM policy's
+    measured roof, and every RAM fill holds host ``mem_gb`` tokens beside
+    its tier tokens in that worker's ledger.  The roof is read by the
+    worker's own ``box_capacity.ram_policy_mem_roof`` over the host's
+    unscaled facts, written under ``facts_dir``; it answers whole GiB, and
+    GiB counts are used as they are (#1253).  A roof that does not read
+    refuses rather than falling back, because a gate or fixture that
+    silently offers the fallback tests a host production does not run.
+    """
+
+    worker = profile["worker"]
+    assert isinstance(worker, Mapping)
+    offer = {"cpu": int(worker["cpu"]), "mem_gb": int(worker["mem_gb"])}
+    if not worker.get("mem_gb_ram_tier_roof"):
+        return offer
+    facts = Path(facts_dir)
+    facts.mkdir(parents=True, exist_ok=True)
+    (facts / "meminfo").write_text(
+        f"MemTotal: {int(profile['mem_total_bytes']) // 1024} kB\n")  # type: ignore[arg-type]
+    (facts / "arcstats").write_text(
+        f"c_max 4 {int(profile['arc_c_max_bytes'])}\n")  # type: ignore[arg-type]
+    (facts / "ram_policy.json").write_text(json.dumps(dict(policy)))
+    roof = box_capacity.ram_policy_mem_roof(
+        policy_path=facts / "ram_policy.json",
+        arcstats_path=facts / "arcstats", meminfo_path=facts / "meminfo")
+    if roof is None or roof <= 0:
+        raise ShapeGateFailure(
+            "no_worker_roof",
+            f"the storage host worker's measured roof did not read: {roof!r}")
+    offer["mem_gb"] = roof
+    return offer
+
+
 class ShapeGate:
     """One run of the gate over one scaled shape, on the caller's roots."""
 
@@ -574,35 +613,9 @@ class ShapeGate:
         self.arc = {"c_max": int(self.profile["arc_c_max_bytes"]) // self.scale,  # type: ignore[arg-type]
                     "size": int(self.profile["arc_size_bytes"]) // self.scale,  # type: ignore[arg-type]
                     "arc_meta_used": int(self.profile["arc_meta_used_bytes"]) // self.scale}  # type: ignore[arg-type]
-        if self.profile["worker"].get("mem_gb_ram_tier_roof"):  # type: ignore[union-attr]
-            self.capacity["mem_gb"] = self._worker_mem_roof()
-
-    def _worker_mem_roof(self) -> int:
-        """The storage host worker's ``mem_gb`` offer: the measured roof.
-
-        Since #1222 the worker offers the RAM policy's roof, and every RAM
-        fill holds host ``mem_gb`` tokens beside its tier tokens, so a gate
-        that offers the static fallback cannot mirror a full window and
-        stalls on ``host mem pool full`` (#1253).  The roof is read by the
-        worker's own function over the host's unscaled facts: it answers
-        whole GiB, and GiB counts are used as they are here.
-        """
-
-        facts = self.host_dir / "worker"
-        facts.mkdir(parents=True, exist_ok=True)
-        (facts / "meminfo").write_text(
-            f"MemTotal: {int(self.profile['mem_total_bytes']) // 1024} kB\n")  # type: ignore[arg-type]
-        (facts / "arcstats").write_text(
-            f"c_max 4 {int(self.profile['arc_c_max_bytes'])}\n")  # type: ignore[arg-type]
-        (facts / "ram_policy.json").write_text(json.dumps(self.ram_policy))
-        roof = box_capacity.ram_policy_mem_roof(
-            policy_path=facts / "ram_policy.json",
-            arcstats_path=facts / "arcstats", meminfo_path=facts / "meminfo")
-        if roof is None or roof <= 0:
-            raise ShapeGateFailure(
-                "no_worker_roof",
-                f"the storage host worker's measured roof did not read: {roof!r}")
-        return roof
+        self.capacity = storage_host_worker_offer(
+            self.host_dir / "worker", policy=self.ram_policy,
+            profile=self.profile)
 
     def discover(self, *, host, source_pool, fill_records, now, ram_policy,
                  rows_held_gib):

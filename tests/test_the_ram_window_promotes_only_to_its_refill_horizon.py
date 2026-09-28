@@ -51,6 +51,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from prismabuild import pool, reader_lease, residency_map, residency_plan  # noqa: E402
 from prismabuild import storage_tiers  # noqa: E402
+from storage_host_ledger import mint_storage_host_ledger  # noqa: E402
 import stage_release  # noqa: E402
 import tier_loop  # noqa: E402
 from test_a_resident_range_is_adopted_rather_than_recopied import (  # noqa: E402
@@ -207,6 +208,8 @@ class Box:
                 self.queue, tier_id=tier_id, stage_root=root) == "registered"
         self.queue.mint_tier_capacity(TIER, {"stage_gib": stage_gib})
         self.queue.mint_tier_capacity(RAM_TIER, {"ram_gib": ram_gib})
+        # A RAM fill's host half lands in the storage host's ledger (#1258).
+        mint_storage_host_ledger(self.queue)
         self.queue.announce_tier(self.ram_record())
 
     def ram_record(self) -> dict[str, object]:

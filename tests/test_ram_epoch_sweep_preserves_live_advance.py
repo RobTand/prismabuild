@@ -1,6 +1,7 @@
 """Epoch cleanup must not turn a live advance promise into free capacity."""
 import pytest
 import test_the_nonfinal_window_fences_its_advance as base
+from storage_host_ledger import STORAGE_HOST
 
 
 def blind_window(tmp_path):
@@ -231,9 +232,22 @@ def test_reclaim_completes_while_another_tier_mint_is_held(tmp_path):
         assert ledger.holder_tokens(grant) == {}, (
             'RAM reclaim did not complete while another tier mint was held: '
             'the sweep is waiting on that tier while holding this one')
-        # The guarded section is over, so this tier's mint is free again.
-        with queue.tier_mint_lock(base.RAM_TIER, blocking=False) as acquired:
-            assert acquired, 'sweep still holds the RAM mint after releasing it'
+        # The guarded section ends after the holder's host half returns too
+        # (#1245 B1: ``release_tier_holder`` releases the tier tokens, then
+        # the storage host's ``ram-host:`` hold, both under this tier's
+        # mint), so the tier tokens reading empty is not yet the end of it.
+        # The RAM mint must come free while the other tier's is still held
+        # -- bounded, not instantaneous (#1258).
+        acquired = False
+        deadline = time.monotonic() + 10
+        while not acquired and time.monotonic() < deadline:
+            with queue.tier_mint_lock(base.RAM_TIER, blocking=False) as acquired:
+                pass
+            if not acquired:
+                time.sleep(0.05)
+        assert acquired, 'sweep still holds the RAM mint after releasing it'
+        assert queue.ledger(STORAGE_HOST).holder_tokens(
+            queue.RAM_HOST_MEMORY_PREFIX + grant) == {}
     finally:
         let_go.set()
         other.join(10)
