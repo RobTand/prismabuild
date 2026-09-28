@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Callable, Mapping, Sequence
-from typing import NoReturn
 from contextlib import contextmanager, suppress
 import errno
 import fcntl
@@ -39,6 +38,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from typing import NoReturn
 import zlib
 
 ACTION_SCHEMA_V1 = "prismaquant.prismabuild.action.v1"
@@ -586,7 +586,7 @@ class _FileLinkCountError(CASTamperError):
     """A stable file did not have the required single canonical link."""
 
 
-def _fail(message: str) -> None:
+def _fail(message: str) -> NoReturn:
     raise ActionContractError(message)
 
 
