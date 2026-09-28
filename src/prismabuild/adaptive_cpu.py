@@ -21,6 +21,7 @@ import time
 import uuid
 
 from . import adaptive_snapshot
+from .storage_tiers import RAM_HOST_MEMORY_PREFIX
 from .control_cpu import attributed_ticks, control_plane_counters
 
 #: A CPU is treated as idle for admission corroboration when it was busy for
@@ -1074,7 +1075,13 @@ class Controller:
         # already keeps per CPU.  The host-wide saturation gate is unchanged and
         # stands alone; what follows only decides whether a high "some" reading
         # is this action's problem or a pinned neighbour's local contention.
-        holders = [p for p in self.ledger.held_dir.iterdir() if p.is_dir()]
+        # A RAM fill's host memory hold (#1222) is a mirror of tmpfs bytes, not
+        # an action: it holds ``mem_gb`` tokens, which the ledger already
+        # counts, and runs nothing on a CPU.  Read as a holder it has no
+        # declared CPU and non-empty content, so it refused every row on the
+        # storage host as ``holder_reservation_unknown`` (#1260).
+        holders = [p for p in self.ledger.held_dir.iterdir()
+                   if p.is_dir() and not p.name.startswith(RAM_HOST_MEMORY_PREFIX)]
         # Resolved once, before the pressure decision reads the demand.  The
         # caller may have pre-read the sealed identity, and the measurement and
         # ownership paths below all need the same answer rather than a second

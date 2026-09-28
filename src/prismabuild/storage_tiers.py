@@ -104,6 +104,11 @@ FILL_KIND = "fill_mb_s_pool_side"
 #: The record field the tier publishes it under, same spelling as the token.
 FILL_RECORD_FIELD = "fill_mb_s_pool_side"
 TIER_DEMAND_SEPARATOR = "@"
+#: Host-ledger holder prefix for a RAM-tier fill's memory hold (#1222).  The
+#: holder takes host ``mem_gb`` tokens and nothing else: it is a mirror of
+#: bytes resident in the tmpfs, never an action, and runs no process.  The
+#: memory census counts it; the CPU and GPU censuses must not (#1260).
+RAM_HOST_MEMORY_PREFIX = "ram-host:"
 
 #: The explicit RAM tier (#640): a tmpfs the operator mounts on the storage
 #: box, filled and evicted by the DAG.  Its id is ``ram:<host>``, and the
