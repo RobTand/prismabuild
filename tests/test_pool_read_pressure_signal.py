@@ -60,6 +60,19 @@ def test_an_unreadable_signal_is_never_a_quiet_pool(tmp_path: Path) -> None:
     assert block["unavailable_reason"]
 
 
+def test_a_stale_newest_record_reads_as_unknown_not_quiet() -> None:
+    # If the tier loop dies, its last sample must not read as a quiet host
+    # forever: a newest record older than the caller's bound answers None.
+    stale = {"sampled_unix": 100.0, "host_io_pressure": {
+        "io_psi_some": {"avg60": 3.0}, "window_s": 60}}
+    fresh = {"sampled_unix": 900.0, "host_io_pressure": {
+        "io_psi_some": {"avg60": 5.0}, "window_s": 60}}
+    assert st.host_io_pressure_from_records(
+        [stale], now=1000.0, max_age_s=120.0) is None
+    assert st.host_io_pressure_from_records(
+        [fresh], now=1000.0, max_age_s=120.0) == 5.0
+
+
 def test_pressure_fold_takes_the_newest_record_not_the_worst() -> None:
     old = {"sampled_unix": 1.0, "host_io_pressure": {
         "io_psi_some": {"avg60": 95.0}, "window_s": 60}}
