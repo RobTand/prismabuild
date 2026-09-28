@@ -1812,7 +1812,7 @@ def test_atomic_publish_syncs_readonly_mode_after_chmod(
 
     monkeypatch.setattr(ps.os, "fchmod", recording_fchmod)
     monkeypatch.setattr(ps.os, "fsync", recording_fsync)
-    assert ps._atomic_publish_nofollow(target, b"{}\n", where="test claim")
+    assert pb._atomic_publish(target, b"{}\n", where="test claim")
 
     assert events[0][0] == "fchmod"
     assert events[1] == ("fsync", events[0][1])
@@ -1841,7 +1841,11 @@ def test_state_publish_rejects_parent_swapped_to_symlink_after_validation(
             path.symlink_to(outside, target_is_directory=True)
 
     monkeypatch.setattr(ps, "_ensure_real_directory", ensure_then_swap)
-    with pytest.raises(pb.CASTamperError, match="without following links"):
+    # Pair 1 (#1295) unified the publish on core's helpers with
+    # create_parent=False (slurm's no-create history): the refusal is the
+    # same CASTamperError at the same fail-closed point, only the
+    # diagnostic text follows core's spelling now.
+    with pytest.raises(pb.CASTamperError, match="ancestor is not a real directory"):
         adapter._publish_state_file(target, {"hostile": True})
     assert not (outside / target.name).exists()
 

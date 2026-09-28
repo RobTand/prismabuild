@@ -26,7 +26,6 @@ import shlex
 import stat
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 from typing import Literal
@@ -1002,10 +1001,11 @@ def publish_action_request(action: object, *, cas_root: str | Path) -> Path:
     )
     request_path = root / "requests" / action_key[:2] / f"{action_key}.json"
     raw = pb._canonical_file_bytes(normalized)
-    _atomic_publish_nofollow(
+    pb._atomic_publish(
         request_path,
         raw,
         where="PrismaBuild action request",
+        create_parent=False,
     )
     observed = SlurmAdapter._read_state_bytes(
         request_path, where="PrismaBuild action request"
@@ -1186,48 +1186,6 @@ def _assert_directory_identity(descriptor: int, path: Path, *, where: str) -> No
             )
     finally:
         os.close(current)
-
-
-def _atomic_publish_nofollow(path: Path, raw: bytes, *, where: str) -> bool:
-    """First-writer-publish relative to a held, no-follow parent directory FD."""
-
-    directory_fd = _open_directory_nofollow(path.parent, where=where)
-    temporary_name: str | None = None
-    try:
-        descriptor, temporary_raw = tempfile.mkstemp(
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-            dir=f"/proc/self/fd/{directory_fd}",
-        )
-        temporary_name = Path(temporary_raw).name
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(raw)
-            handle.flush()
-            os.fchmod(handle.fileno(), 0o444)
-            os.fsync(handle.fileno())
-        try:
-            os.link(
-                temporary_name,
-                path.name,
-                src_dir_fd=directory_fd,
-                dst_dir_fd=directory_fd,
-                follow_symlinks=False,
-            )
-            won = True
-        except FileExistsError:
-            won = False
-        os.fsync(directory_fd)
-        _assert_directory_identity(directory_fd, path.parent, where=where)
-        return won
-    except OSError as exc:
-        raise pb.CASUnavailableError(f"cannot publish {where}: {path}: {exc}") from exc
-    finally:
-        if temporary_name is not None:
-            try:
-                os.unlink(temporary_name, dir_fd=directory_fd)
-            except FileNotFoundError:
-                pass
-        os.close(directory_fd)
 
 
 class SlurmAdapter:
@@ -1486,10 +1444,11 @@ class SlurmAdapter:
             root=self.cas_root,
             where="SLURM durable state",
         )
-        return _atomic_publish_nofollow(
+        return pb._atomic_publish(
             path,
             raw,
             where="SLURM durable state",
+            create_parent=False,
         )
 
     def _load_submission_intent(

@@ -2969,12 +2969,39 @@ def _atomic_publish(
     raw: bytes,
     *,
     prelink_verify: Callable[[], None] | None = None,
+    where: str | None = None,
+    create_parent: bool = True,
 ) -> bool:
-    """Publish immutable bytes relative to a held no-follow parent FD."""
+    """Publish immutable bytes relative to a held no-follow parent FD.
 
-    path = _absolute_nofollow_path(path, where="publication path")
+    ``where`` names the publication for the directory-identity asserts and
+    for OSError mapping.  ``None`` keeps this module's historical spellings
+    (``"publication path"`` / ``"publication directory"``) and lets OSError
+    propagate raw, which the pool/core/slurm_lane callers rely on.  A string
+    threads the caller's name through instead and maps OSError to
+    CASUnavailableError -- exactly the contract slurm's retired
+    ``_atomic_publish_nofollow`` offered its two callers.
+
+    ``create_parent`` selects the historical parent-open mode.  ``True`` is
+    this module's mkdir walk; ``False`` skips creation because the caller
+    pre-ensured its parents -- slurm's mode, where auto-creating CAS
+    structure would mask a wiped mount.  One owner, two named parameters,
+    each preserving one side's history.
+
+    The directory diagnostics now come from this module's helpers on every
+    path: same exception types at every fail-closed point, but the message
+    text follows core's spellings (slurm's local _open/_assert helpers,
+    which differ in more than messages, stay in place for a follow-on
+    slice -- see issue #1295).
+    """
+
+    path = _absolute_nofollow_path(
+        path, where="publication path" if where is None else where
+    )
     directory_fd = _open_directory_nofollow(
-        path.parent, where="publication directory", create=True
+        path.parent,
+        where="publication directory" if where is None else where,
+        create=create_parent,
     )
     temporary_name: str | None = None
     try:
@@ -3028,9 +3055,17 @@ def _atomic_publish(
                     f"published file changed before readback: {path}"
                 )
         _assert_directory_identity(
-            directory_fd, path.parent, where="publication directory"
+            directory_fd,
+            path.parent,
+            where="publication directory" if where is None else where,
         )
         return won
+    except OSError as exc:
+        if where is None:
+            raise
+        raise CASUnavailableError(
+            f"cannot publish {where}: {path}: {exc}"
+        ) from exc
     finally:
         if temporary_name is not None:
             try:
