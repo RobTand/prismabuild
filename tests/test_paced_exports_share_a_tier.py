@@ -227,3 +227,50 @@ def test_a_finished_export_files_its_rate_and_prices_the_next_seal(tmp_path):
     assert filed["held_seconds"] > 0.0
     spool.submit_group("b2", base.prepare(spool, "b2", ceiling=1 << 20)[2])
     assert sealed(spool, "b2")["params"]["demand"][FILL_DEMAND] == 2
+
+
+def test_export_measured_mb_s_prices_only_writer_bound_runs():
+    """Unit pin of the pricing rule the seal reads.
+
+    The newest well-formed receipt for the owner and tier decides; a
+    pacer-bound newest (``held_seconds`` above zero, or one that cannot
+    say) prices nothing rather than falling back to an older writer-bound
+    rate, and malformed records are skipped as before.
+    """
+
+    def receipt(unix, rate, *, held=0.0, owner="owner-a", tier=fx.TIER,
+                key=None):
+        return {"action_key": key or f"{unix:07.0f}", "unix": unix,
+                "tier_id": tier, "owner": owner, "rate_mb_s": 60,
+                "bytes": 600_000_000, "seconds": 10.0,
+                "held_seconds": held, "flushes": 3,
+                "mb_per_s_file_side": rate}
+
+    read = storage_tiers.export_measured_mb_s
+    assert read([], tier_id=fx.TIER, owner="owner-a") is None
+    assert read([receipt(2000.0, 60.0)], tier_id=fx.TIER, owner="owner-a") == 60
+    # Not this owner, not this tier: not the producer's history.
+    assert read([receipt(2000.0, 60.0, owner="owner-b")],
+                tier_id=fx.TIER, owner="owner-a") is None
+    assert read([receipt(2000.0, 60.0, tier="elsewhere")],
+                tier_id=fx.TIER, owner="owner-a") is None
+    # A run the pacer held proves only an "at least": it prices nothing,
+    # with no fallback to an older writer-bound rate.
+    assert read([receipt(2000.0, 60.0, held=30.0)],
+                tier_id=fx.TIER, owner="owner-a") is None
+    assert read([receipt(1000.0, 60.0), receipt(2000.0, 60.0, held=0.5)],
+                tier_id=fx.TIER, owner="owner-a") is None
+    assert read([receipt(2000.0, 60.0),
+                 receipt(1000.0, 40.0, held=9.0)],
+                tier_id=fx.TIER, owner="owner-a") == 60
+    # A receipt that cannot say which side bounded the run fails closed.
+    assert read([{"unix": 2000.0, "tier_id": fx.TIER, "owner": "owner-a",
+                  "bytes": 1, "seconds": 1.0, "mb_per_s_file_side": 60.0}],
+                tier_id=fx.TIER, owner="owner-a") is None
+    assert read([receipt(2000.0, 60.0, held="0.0")],
+                tier_id=fx.TIER, owner="owner-a") is None
+    # Malformed records are skipped, not fatal; newest well-formed wins.
+    assert read([receipt(2000.0, 0.2), receipt(1000.0, 40.0)],
+                tier_id=fx.TIER, owner="owner-a") == 40
+    assert read([receipt(2000.0, 60.0), receipt(1000.0, 40.0)],
+                tier_id=fx.TIER, owner="owner-a") == 60

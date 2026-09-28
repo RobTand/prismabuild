@@ -1570,28 +1570,41 @@ def export_measured_mb_s(records: Iterable[Mapping[str, object]], *,
     newest filed export receipt on this tier
     (:meth:`pool.PoolQueue.export_records`), priced at its achieved
     file-side rate ``mb_per_s_file_side`` -- bytes over seconds for the
-    whole export, a rate the export's own pacer held it to, so it is a
-    lower bound on what the producer can write and a pacer-bound export
-    re-seals at about its seal.  Newest valid record only, never a
-    statistic over the whole history: the recency rule of
-    :func:`mover_fill_price`'s latest window, without the median a mover
-    needs, because an export prices only its own producer's behaviour.
+    whole export.  Newest well-formed record only, never a statistic over
+    the whole history: the recency rule of :func:`mover_fill_price`'s
+    latest window, without the median a mover needs, because an export
+    prices only its own producer's behaviour.
+
+    A receipt prices only a run its **writer** bounded.  The pacer's own
+    held/slept accounting says which side did: ``ExportPacer.wrote``
+    returns without sleeping when the copy is behind its schedule and
+    records a hold only when it actually sleeps
+    (``time.sleep(ahead); self.held += ahead``), so a filed
+    ``held_seconds`` above zero means the pacer held the run to its seal.
+    Such a run proves only an "at least" -- the writer could have gone
+    faster, and the achieved rate is the seal, not the writer -- so
+    pricing it would ratchet the producer's seal down forever (every
+    later run is paced at the lower rate and can never measure more).  A
+    pacer-bound newest receipt therefore prices nothing, and the caller's
+    seal falls back to the tier's whole offer.  The record's own rounding
+    (``round(self.held, 3)``) is the accounting's resolution: any hold it
+    can state is at least a millisecond, and none smaller is a hold.
 
     A record that is not this owner's or not this tier's is not the
     producer's history; an incomplete one (``bytes`` or ``seconds`` not
     positive) wrote nothing measurable; one slower than 1 MB/s prices
     nothing, as a mover receipt under 1 MB/s does -- the ledger counts
-    whole MB/s.  Invalid records are skipped, not fatal, and the newest
-    *valid* record wins: a degenerate latest export (a tiny group that
-    measured under the floor) does not erase the real rate the producer
-    wrote at before it.  ``None`` means no measurement, and the caller's
-    seal falls back to the tier's whole offer, which runs one export at a
-    time: the missing signal fails closed and never admits a second
-    writer.
+    whole MB/s.  Those records are skipped, not fatal, and the newest
+    *well-formed* record wins: a degenerate latest export (a tiny group
+    that measured under the floor) does not erase the real rate the
+    producer wrote at before it.  ``None`` means no measurement, and the
+    caller's seal falls back to the tier's whole offer, which runs one
+    export at a time: the missing signal fails closed and never admits a
+    second writer.
     """
 
     best_key: tuple[float, str] | None = None
-    best_rate: float | None = None
+    best: Mapping[str, object] | None = None
     for record in records:
         if not isinstance(record, Mapping):
             continue
@@ -1615,10 +1628,14 @@ def export_measured_mb_s(records: Iterable[Mapping[str, object]], *,
                 and not isinstance(when, bool) else 0.0)
         key = (when, str(record.get("action_key") or ""))
         if best_key is None or key > best_key:
-            best_key, best_rate = key, float(rate)
-    if best_rate is None:
+            best_key, best = key, record
+    if best is None:
         return None
-    return int(best_rate)
+    held = best.get("held_seconds")
+    if (isinstance(held, bool) or not isinstance(held, (int, float))
+            or float(held) > 0.0):
+        return None            # the pacer bounded the run: it proves an "at least"
+    return int(float(best["mb_per_s_file_side"]))
 
 
 def mover_fill_demand_from_receipts(

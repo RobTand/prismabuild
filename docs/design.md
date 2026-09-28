@@ -13541,13 +13541,21 @@ price:
   (`exports/<action_key>.json`, `prismaquant.prismabuild.pool_export.v1`,
   the pacing record plus its identity), and the producer's next export
   reserves that rate capped at the tier's offer instead of the whole offer.
-  Two exports of one producer then run beside each other, and the tier
-  ledger still bounds their summed declared rates at the offer. A rate the
-  pacer held the export to is a lower bound on what the producer can write,
-  so a pacer-bound export re-seals at about its seal and the seal cannot
-  ratchet up on its own. 1:1 remains the first export's price -- and the
-  fallback whenever no receipt prices the producer -- so a missing signal
-  fails closed and never admits a second writer.
+  Two producers' exports then run beside each other, and the tier
+  ledger still bounds their summed declared rates at the offer.  Only a
+  run the **writer** bounded is priced: the receipt carries the pacer's own
+  held/slept accounting (`held_seconds`, the same counter `ExportPacer.wrote`
+  raises only when it actually sleeps), and a run the pacer held proves
+  only that the writer can do at least the seal -- its achieved rate is
+  the seal, not the writer -- so it prices nothing and the seal stays the
+  whole offer.  One congested run therefore cannot ratchet the producer's
+  seal down forever: every later run is paced at the seal it re-proves, and
+  only a writer-bound run -- the pacer never held, the achieved rate is
+  the writer's real rate -- can lower it, and only to what the writer
+  actually did. 1:1 remains the first export's price -- and the fallback
+  whenever no receipt prices the producer, or the newest receipt is
+  pacer-bound -- so a missing or held signal fails closed and never admits
+  a second writer.
 
 The
 pace, not the reservation, bounds what an export does to the spindles.

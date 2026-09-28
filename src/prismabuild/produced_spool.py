@@ -360,12 +360,17 @@ def export_fill(queue, tier_id, owner=None):
     ``storage_tiers.current_fill_offer``.
 
     The measured side is the producer's own newest complete export receipt
-    on this tier (#1014 item 3): the rate its last paced export actually
-    wrote at -- bytes over seconds on the file side, a rate that export's own
-    pacer held it to, so a pacer-bound export re-seals at about its seal and
-    a second export of the same producer can reserve beside the first
-    instead of waiting for the whole offer.  With no owner, or no receipt
-    that prices one, the measured side is ``None`` and the price is the
+    on this tier (#1014 item 3), priced at its achieved file-side rate
+    only when that run's **writer** bounded it: the pacer's own held
+    accounting says which side did (``ExportPacer.wrote`` sleeps and
+    records a hold only when the copy runs ahead of its schedule), and a
+    run the pacer held proves only that the writer can do at least the
+    seal, so it prices nothing and the seal stays the whole offer -- one
+    congested run cannot ratchet the producer's seal down forever.  A
+    writer-bound run's achieved rate is the writer's real rate, and the
+    next export reserves that beside its siblings instead of waiting for
+    the whole offer.  With no owner, or no receipt that prices one, the
+    measured side is ``None`` and the price is the
     tier's current offer: one read MB per written MB, which over-charges a
     write (the same bins displace about 0.4 read MB per written MB) and so
     errs toward the movers -- the stated bound, which runs one export at a
