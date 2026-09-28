@@ -719,7 +719,12 @@ def test_a_wait_says_what_the_scheduler_says_while_it_waits(
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.ensure_layout()
-    key = "cd" * 32
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    # A sealed action: since #1313 the waiter validates the CAS request, so
+    # the fixture must hold a real one -- a bare action_key stub now reads
+    # as absent and the row reports unreadable instead of waiting.
+    action = _runnable_action(tmp_path, cas)
+    key = str(action["action_key"])
     directory = slurm_lane.lane_directory(key, root=tmp_path / "lane")
     directory.mkdir(parents=True)
     (directory / "latest.json").write_text(json.dumps({
@@ -727,10 +732,9 @@ def test_a_wait_says_what_the_scheduler_says_while_it_waits(
         "action_key": key, "attempt": 1, "job_id": "1007",
         "directory": str(directory), "published_unix": 5.0,
     }), encoding="utf-8")
-    cas = pb.PrismaBuildCAS(tmp_path / "cas")
     request = Path(cas.root) / "requests" / key[:2] / f"{key}.json"
-    request.parent.mkdir(parents=True)
-    request.write_text(json.dumps({"action_key": key}), encoding="utf-8")
+    request.parent.mkdir(parents=True, exist_ok=True)
+    request.write_bytes(pb._canonical_file_bytes(action))
 
     def resume(submission, **kwargs):
         kwargs["on_notice"](

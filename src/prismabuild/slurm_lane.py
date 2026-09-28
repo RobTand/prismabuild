@@ -2265,14 +2265,7 @@ def recorded_action(
     fleet: a missing lookup, not a failure.
     """
 
-    key = str(action_key)
-    path = Path(cas.root) / "requests" / key[:2] / f"{key}.json"
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-        value = pb.validate_action(value)
-    except (OSError, ValueError):
-        return None
-    return value if value["action_key"] == key else None
+    return cas.read_action_request(action_key)
 
 
 def recorded_submission(

@@ -4545,6 +4545,25 @@ class PrismaBuildCAS:
             )
         return path
 
+    def read_action_request(self, action_key: str) -> dict[str, object] | None:
+        """The sealed action published for this key, or ``None``.
+
+        The single reader for the ``requests/`` file: the body is validated
+        and its key is checked against the file it was read from, so a stale
+        or invalid action reads as absent instead of present.  Absent means
+        the CAS was cleared or the key was never submitted from this fleet:
+        a missing lookup, not a failure.
+        """
+
+        key = str(action_key)
+        path = self.root / "requests" / key[:2] / f"{key}.json"
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+            value = validate_action(value)
+        except (OSError, ValueError):
+            return None
+        return value if value["action_key"] == key else None
+
     def _load_receipt_bytes(self, path: Path) -> bytes:
         try:
             return _read_regular_file_nofollow(
