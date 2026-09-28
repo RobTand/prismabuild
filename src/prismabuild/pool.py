@@ -10818,7 +10818,7 @@ class PoolQueue:
     #: holder names a mover grant, so eviction and reaping can release
     #: exactly the tokens the fill took, and the rows-held read can
     #: subtract exactly those holds.
-    RAM_HOST_MEMORY_PREFIX = "ram-host:"
+    RAM_HOST_MEMORY_PREFIX = storage_tiers.RAM_HOST_MEMORY_PREFIX
 
     def hold_tier_host_memory(self, host: str, grant: str,
                               gib: int) -> tuple[str, str]:

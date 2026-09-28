@@ -531,7 +531,10 @@ class Controller:
         # samples the pool's own work did not load.
         occupied = False
         for holder in self.ledger.held_dir.iterdir():
-            if not holder.is_dir():
+            # A RAM fill's memory hold runs no process (#1260): it neither
+            # occupies the host nor holds a GPU.
+            if (not holder.is_dir()
+                    or holder.name.startswith(adaptive_cpu.RAM_HOST_MEMORY_PREFIX)):
                 continue
             occupied = True
             meta = adaptive_cpu.read_json(holder / METADATA)
