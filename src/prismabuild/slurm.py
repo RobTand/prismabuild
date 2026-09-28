@@ -246,30 +246,19 @@ def _absolute_path(value: str | Path, *, where: str, root_ok: bool = False) -> P
 
 
 def _token(value: object, *, where: str, pattern: re.Pattern[str]) -> str:
-    if type(value) is not str or pattern.fullmatch(value) is None:
-        raise pb.ActionContractError(f"{where} has an invalid value")
-    return value
+    return pb._text(value, where=where, pattern=pattern)
 
 
 def _positive_integer(value: object, *, where: str) -> int:
-    if type(value) is not int or value <= 0:
-        raise pb.ActionContractError(f"{where} must be a positive integer")
-    return value
+    return pb._positive_integer(value, where=where)
 
 
 def _nonnegative_integer(value: object, *, where: str) -> int:
-    if type(value) is not int or value < 0:
-        raise pb.ActionContractError(f"{where} must be a non-negative integer")
-    return value
+    return pb._nonnegative_integer(value, where=where)
 
 
 def _positive_finite(value: object, *, where: str) -> float:
-    if type(value) not in {int, float}:
-        raise pb.ActionContractError(f"{where} must be a positive finite number")
-    normalized = float(value)
-    if normalized <= 0 or not math.isfinite(normalized):
-        raise pb.ActionContractError(f"{where} must be a positive finite number")
-    return normalized
+    return pb._positive_finite(value, where=where)
 
 
 def _poll_interval(value: object, *, where: str) -> float:
@@ -442,9 +431,7 @@ def _exact_mapping(
 
 
 def _sha256(value: object, *, where: str) -> str:
-    if type(value) is not str or re.fullmatch(r"[0-9a-f]{64}", value) is None:
-        raise pb.ActionContractError(f"{where} must be a lowercase SHA-256 digest")
-    return value
+    return pb._sha256(value, where=where)
 
 
 def _path_string(value: object, *, where: str, root_ok: bool = False) -> str:
