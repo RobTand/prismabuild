@@ -54,12 +54,14 @@ try:
     from pbcanary_legs.common import (
         canonical_json,
         deterministic_bytes,
+        extract_envelope,
         sha256_hex,
     )
 except ImportError:  # Worker runs the file directly: sibling import.
     from common import (  # type: ignore[no-redef]
         canonical_json,
         deterministic_bytes,
+        extract_envelope,
         sha256_hex,
     )
 
@@ -222,39 +224,7 @@ def _extract_envelope(receipt: object) -> tuple[str | None, dict | None, str]:
     ``receipt["detail"]["stdout"]``. Stdout is scanned for the last line
     that parses as a JSON object with this leg's schema marker.
     """
-    if not isinstance(receipt, dict):
-        return None, None, ""
-    candidate = receipt.get("envelope")
-    if isinstance(candidate, str):
-        try:
-            parsed = json.loads(candidate)
-        except ValueError:
-            return None, None, "receipt[envelope]"
-        if isinstance(parsed, dict) and parsed.get("schema") == LEG4_SCHEMA:
-            return candidate.strip(), parsed, "receipt[envelope]"
-        return None, None, "receipt[envelope]"
-    if isinstance(candidate, dict) and candidate.get("schema") == LEG4_SCHEMA:
-        return None, candidate, "receipt[envelope]"
-    for where in ("stdout", "detail.stdout"):
-        node: object = receipt
-        for key in where.split("."):
-            node = node.get(key) if isinstance(node, dict) else None
-        if not isinstance(node, str):
-            continue
-        found = None
-        for line in node.splitlines():
-            line = line.strip()
-            if not line.startswith("{"):
-                continue
-            try:
-                parsed = json.loads(line)
-            except ValueError:
-                continue
-            if isinstance(parsed, dict) and parsed.get("schema") == LEG4_SCHEMA:
-                found = (line, parsed)
-        if found is not None:
-            return found[0], found[1], f"receipt[{where}]"
-    return None, None, ""
+    return extract_envelope(receipt, schema=LEG4_SCHEMA)
 
 
 def _returncode(receipt: dict) -> int | None:
