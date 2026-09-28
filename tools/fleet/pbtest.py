@@ -397,41 +397,39 @@ def fleet_queue():
 
 
 def interpreter_refusal(queue, python: str, *, tags, resources,
-                       needs_gpu: bool) -> str | None:
-    """Why no recorded worker can run this interpreter, or ``None`` (#1263).
+                       needs_gpu: bool) -> tuple[str | None, str | None]:
+    """The pre-flight's answer for one interpreter (#1263, #1266 review).
 
-    The same matcher the shards' ``pbrun`` will refuse through, asked once for
-    the whole suite.  ``None`` means at least one recorded worker reports the
-    path -- or that nobody has said anything, which stays a warning a
-    per-shard ``pbrun`` will answer with evidence rather than a guess.
+    ``(None, None)`` -- run.  ``("refusal", why)`` -- exit 2 before any shard
+    is sealed: every capable eligible offer answered, and every answer named
+    the path absent.  ``("notice", line)`` -- run, saying so: the path is
+    unknown (a first submission is unknown by construction -- no READY row
+    named it when the offers were written), the claim-time stat stays the
+    guard everywhere, and the fleet's next poll answers for it.
     """
 
     probe = {
-        "tags": [*tags, pbrun.pb.INTERPRETER_TAG],
+        "tags": list(tags),
         "interpreter": python,
         "resources": dict(resources),
         "needs_gpu": bool(needs_gpu),
     }
-    if queue.placeable(
-            probe, max_age_s=pbrun.RECORDED_OFFER_MAX_AGE_S) is False:
-        # Ask first whether anybody can even see the requirement.  During a
-        # rolling publish -- or against a fixture fleet whose offers predate
-        # the field -- no offer carries the capability, and the pre-flight
-        # stays a warning: each shard's own pbrun refusal is the fail-closed
-        # answer there, with the evidence, not a suite-wide guess here.
-        capable = any(
-            pbrun.pb.INTERPRETER_TAG in {
-                str(entry) for entry in (offer.get("tags") or [])}
-            for offer in queue.offers(
-                max_age_s=pbrun.RECORDED_OFFER_MAX_AGE_S))
-        if capable:
-            return (
-                "pbtest: no recorded worker reports the interpreter "
-                f"{python}. Install it on a box that offers these tags and "
-                "let its worker's next poll answer for the path; submitting "
-                "now would queue shards that die with 127 on the first box "
-                "to claim them.")
-    return None
+    verdict = queue.interpreter_placement_verdict(
+        probe, python, max_age_s=pbrun.RECORDED_OFFER_MAX_AGE_S)
+    if verdict == "absent":
+        return ("refusal",
+                "pbtest: every recorded worker that could take these shards "
+                f"names the interpreter absent: {python}. Install it on a "
+                "box that offers these tags and let its worker's next poll "
+                "answer for the path; submitting now would queue shards "
+                "that die with 127 on the first box to claim them.")
+    if verdict == "unknown":
+        return ("notice",
+                f"pbtest: no worker has answered for the interpreter "
+                f"{python} yet; the shards publish, the claim-time check "
+                "guards every box, and the fleet's next poll places them "
+                "where the path lives.")
+    return (None, None)
 
 
 def announced_ceilings(tags: list[str]) -> dict[str, float | None]:
@@ -1089,12 +1087,13 @@ def main() -> int:
     # interpreter every shard names is a requirement, and if no recorded
     # worker reports the path, every shard's pbrun would refuse identically.
     # Answering it once here fails the whole submission fast, naming the path.
-    refusal = interpreter_refusal(
+    kind, message = interpreter_refusal(
         fleet_queue(), args.python,
         tags=tags, resources={"cpu": 1, "mem_gb": args.mem_gb},
         needs_gpu=bool(args.gpu))
-    if refusal is not None:
-        sys.stderr.write(refusal + "\n")
+    if message is not None:
+        sys.stderr.write(message + "\n")
+    if kind == "refusal":
         return 2
     sizes = [len(b) for b in buckets]
     print(f"{len(files)} files -> {len(buckets)} shards "

@@ -7417,9 +7417,29 @@ def announce_placement(
     # recorded eligible offer positively reports is exactly as unplaceable as
     # a tag no box offers, and it fails here instead of in the container
     # (#714).
-    live_verdict = queue.placeable(intent)
+    # The interpreter's own verdict first (#1266 review): absent raises below
+    # with the path named; unknown publishes with a notice and probes the
+    # rest of the intent WITHOUT the interpreter requirement, because the
+    # first submission of any path is unknown by construction and refusing it
+    # would deadlock the tool on its own first use -- the claim-time stat is
+    # the guard, and the fleet's next poll answers for the path.
+    probe_intent = intent
+    if intent.get("interpreter"):
+        verdict, path = interpreter_submission_verdict(queue, intent)
+        if verdict == "unknown":
+            print(f"pbrun: no worker has answered for the interpreter "
+                  f"{path} yet; the action publishes, the claim-time check "
+                  "guards every box, and the fleet's next poll places it "
+                  "where the path lives.", file=sys.stderr, flush=True)
+            probe_intent = {
+                name: value for name, value in intent.items()
+                if name != "interpreter"}
+            probe_intent["tags"] = [
+                tag for tag in probe_intent.get("tags") or []
+                if tag != pb.INTERPRETER_TAG]
+    live_verdict = queue.placeable(probe_intent)
     capability_verdict = queue.placeable(
-        intent, max_age_s=RECORDED_OFFER_MAX_AGE_S)
+        probe_intent, max_age_s=RECORDED_OFFER_MAX_AGE_S)
     if capability_verdict is False:
         without_images = {name: value for name, value in intent.items()
                           if name != "container_images"}
@@ -7446,17 +7466,16 @@ def announce_placement(
                 + f" (no eligible worker offers {pb.CONTAINER_IMAGE_TAG})\n")
         interpreter_line = ""
         if intent.get("interpreter"):
-            without_interpreter = {
-                name: value for name, value in intent.items()
-                if name != "interpreter"}
-            without_interpreter["tags"] = [
-                tag for tag in without_interpreter.get("tags") or []
-                if tag != pb.INTERPRETER_TAG]
-            if queue.placeable(without_interpreter,
-                               max_age_s=RECORDED_OFFER_MAX_AGE_S) is True:
+            # Absent is unanimous and final (#1266 review): every capable
+            # eligible offer answered, and every answer named the path
+            # missing.  Anything less is unknown, which publishes with a
+            # notice instead of refusing -- a first submission is unknown by
+            # construction, and the claim-time stat remains the guard.
+            verdict, _path = interpreter_submission_verdict(queue, intent)
+            if verdict == "absent":
                 interpreter_line = (
                     "  interpreter:    " + str(intent["interpreter"])
-                    + " (no recorded eligible worker reports it)\n")
+                    + " (every recorded eligible worker names it absent)\n")
         capacity_line = ("" if image_blocked or capability_blocked else
                          placement_capacity_notice(queue, intent))
         remedy = (
@@ -7524,6 +7543,23 @@ def announce_placement(
         queue, intent, requested=args.timeout_s if progress_policy is None else None)
     if ceiling_notice:
         print(ceiling_notice, file=sys.stderr, flush=True)
+
+
+def interpreter_submission_verdict(queue, intent: Mapping[str, object]):
+    """``("present"|"absent"|"unknown", detail)`` for the sealed path (#1266).
+
+    One rule, asked where the caller is still watching: absent raises, naming
+    the path; unknown publishes with a notice, because a first submission is
+    unknown by construction and refusing it would deadlock the tool on its
+    own first use -- the claim-time stat remains the guard on every box.
+    """
+
+    interpreter = str(intent.get("interpreter") or "")
+    verdict = queue.interpreter_placement_verdict(
+        {name: value for name, value in intent.items()
+         if name != "interpreter"},
+        interpreter, max_age_s=RECORDED_OFFER_MAX_AGE_S)
+    return verdict, interpreter
 
 
 def interpreter_of(command: Sequence[str]) -> str | None:

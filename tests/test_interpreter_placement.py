@@ -187,7 +187,10 @@ def test_the_lookup_answers_exactly_the_paths_items_ask_about(tmp_path):
         {},
     ]
 
-    assert worker_loop.interpreter_lookup(items) == [present_a, present_b]
+    present, absent = worker_loop.interpreter_lookup(items)
+    assert present == [present_a, present_b]
+    assert absent == [str(tmp_path / "missing" / "bin" / "python"),
+                      "relative/bin/python"]
 
 
 def test_the_claim_denies_an_interpreter_this_box_does_not_have(tmp_path):

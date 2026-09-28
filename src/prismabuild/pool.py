@@ -5167,6 +5167,7 @@ class PoolQueue:
         addresses: Sequence[str] | None = None,
         observed_images: Sequence[str] | None = None,
         interpreters: Sequence[str] | None = None,
+        interpreters_absent: Sequence[str] | None = None,
         state: str | None = None,
         drain_owner: str | None = None,
         drain_reason: str | None = None,
@@ -5315,6 +5316,14 @@ class PoolQueue:
             # list, and an item that names an interpreter reads that absence
             # as unknown, never as capable (the #714 rule).
             record["interpreters"] = sorted({str(p) for p in interpreters})
+        if interpreters_absent is not None:
+            # The paths this box was asked about and does not have (#1266
+            # review): the submission-time verdict refuses only on a
+            # unanimous absent, so a first submission -- a path no READY row
+            # named when the offers were written -- is unknown and publishes
+            # with a notice rather than a deadlock.
+            record["interpreters_absent"] = sorted(
+                {str(p) for p in interpreters_absent})
         if state is not None:
             record["state"] = str(state)
         if drain_owner is not None:
@@ -5458,6 +5467,44 @@ class PoolQueue:
                 continue          # this box can never fit it, however idle
             matches.append(offer)
         return matches
+
+    def interpreter_placement_verdict(
+            self, item: Mapping[str, object], interpreter: str, *,
+            max_age_s: float = OFFER_TIMEOUT_S,
+    ) -> str:
+        """``"present"``, ``"absent"`` or ``"unknown"`` for one path (#1266).
+
+        Asked over the offers that could run ``item`` otherwise (tags, GPU,
+        images, demand) and carry the interpreter capability.  Present
+        anywhere wins; absent means every capable eligible offer answered
+        and every answer named the path missing; anything else -- no capable
+        offer, or one that has not answered either way -- is unknown, which
+        the submission tools publish with a notice rather than refuse,
+        because the first submission of any path is unknown by construction
+        and refusing it would deadlock the tool on its own first use.
+        """
+
+        eligible = self._matching_offers(
+            {name: value for name, value in item.items()
+             if name not in ("interpreter",)},
+            live=self.offers(max_age_s=max_age_s))
+        capable = [
+            offer for offer in eligible
+            if pb.INTERPRETER_TAG in {
+                str(t) for t in (offer.get("tags") or [])}]
+        if not capable:
+            return "unknown"
+        answered = False
+        for offer in capable:
+            answers = offer.get("interpreters")
+            if isinstance(answers, list) and interpreter in {
+                    str(entry) for entry in answers}:
+                return "present"
+            missing = offer.get("interpreters_absent")
+            if isinstance(missing, list) and interpreter in {
+                    str(entry) for entry in missing}:
+                answered = True
+        return "absent" if answered else "unknown"
 
     def placeable(
         self, item: Mapping[str, object], *, max_age_s: float = OFFER_TIMEOUT_S
@@ -18164,6 +18211,7 @@ class PoolQueue:
         #: instead of two per mover.  A non-dead hint only skips the check;
         #: a dead hint still pays for the full proof under the key's lock.
         dead_input_hints: dict[str, tuple[str, dict[str, object] | None]] = {}
+        interpreter_cache: dict[str, bool] = {}
         for item in ready:
             key = str(item.get("action_key", ""))
             held_back = withheld_for is not None and (
@@ -18325,8 +18373,16 @@ class PoolQueue:
                         self.record_denial(item, "malformed_interpreter", {
                             "interpreter": item.get("interpreter")})
                         continue
-                    if not (os.path.isfile(declared_interpreter)
-                            and os.access(declared_interpreter, os.X_OK)):
+                    # One stat per distinct path per pass (#1266 review): the
+                    # venvs live on NFS in practice, and a wide pbtest would
+                    # otherwise pay a stat per candidate per pass per box.
+                    runs_here = interpreter_cache.get(declared_interpreter)
+                    if runs_here is None:
+                        runs_here = bool(
+                            os.path.isfile(declared_interpreter)
+                            and os.access(declared_interpreter, os.X_OK))
+                        interpreter_cache[declared_interpreter] = runs_here
+                    if not runs_here:
                         # This box cannot run the command; another box may.
                         # The denial names the path so a submitter reading
                         # the ring sees which interpreter was missing where.
