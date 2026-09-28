@@ -359,7 +359,12 @@ compatible box and is then claimed anyway. It never refuses or strands work,
 and a `deferred_for_cross_resource_placement` denial is that bounded wait, not
 starvation. A `deferred_for_ready_gpu_row` denial is a CPU-only action held
 back for one pass so it does not take the room a ready GPU action needs on a
-free GPU (#1169); it expires by itself. Nothing here measures temperature or throughput.
+free GPU (#1169); it expires by itself. A `deferred_for_cpu_only_host` denial
+(#1262) is a GPU host leaving a CPU-only action to a matching host without a
+GPU that fits it now; it has no timer and ends when that host claims the action
+or passes on it, after which the GPU host claims it. So submit CPU-only work
+untagged (or with the tag its architecture truly needs), never `--tag gb10` just
+to get it placed. Nothing here measures temperature or throughput.
 
 Use `--measurement` for measurements: the pool defaults to the submitting host,
 seals platform/toolchain identity, admits only against a fresh near-idle host, and

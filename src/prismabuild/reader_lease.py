@@ -1816,7 +1816,7 @@ def _cached_cover_docs(root: Path, consumer_action_key: str, mover: str,
     exactly as fresh as the unconditional re-read it replaces, and a file is
     read and validated again only when the identity of the descriptor just
     opened differs from the one validated (:func:`_read_cover_doc`).
-    PrismaQuant passes a fresh ``context`` on every call, so before #893 each
+    A client passes a fresh ``context`` on every call, so before #893 each
     call re-read and re-validated every mover's documents: 19 MB and 13,956
     fragment entries on R11, two or three times per staged entry.
 

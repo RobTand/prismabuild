@@ -72,7 +72,7 @@ from prismabuild import window_credit  # noqa: E402
 from prismabuild.core import _sigterm_unwinds_this_process  # noqa: E402
 
 #: Where the fleet keeps the queue both transports file their endings in.  The
-#: same spelling ``pbrun``, ``pool_reset`` and ``tessera_status`` use.
+#: same spelling ``pbrun`` and ``pool_reset`` use.
 SHARED_ROOT = Path("/mnt/shared/prismabuild-fleet")
 DEFAULT_QUEUE_ROOT = SHARED_ROOT / "pb-queue"
 

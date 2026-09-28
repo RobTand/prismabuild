@@ -1172,6 +1172,75 @@ and campaign rows still refuse every name outside `cpu`, `gpu`, `mem_gb` and
 `disk_metadata`, so no fleet-command submission can carry one. See
 [Cluster-scoped storage tiers](#cluster-scoped-storage-tiers-583).
 
+## Client SDK
+
+PrismaBuild stands alone: it imports no client, and a client reaches it only
+through its public interfaces. Those are the fleet tools (`pbrun`, `pbtest`,
+`pbcampaign`), the progress helper (`prismabuild.progress`), and the client SDK,
+`prismabuild.client` (#1254). Every other module under `prismabuild` is
+internal. It can change in any release, and a client that imports it takes on
+that risk alone.
+
+**Versioning.** `client.SDK_VERSION` names the contract; it is `1`.
+`tests/test_client_sdk_surface.py` pins everything the SDK exports: the set of
+names, each callable's parameters (name, kind, default), each constant's value,
+and, for each re-exported name, that it is the internal object itself. An
+internal refactor that would change any of these fails that test. Changing the
+contract, including adding a name, bumps `SDK_VERSION` and updates this section
+in the same change.
+
+**How a client loads it.** Inside an action, PrismaBuild injects
+`PRISMABUILD_READER_HELPER_ROOT`, the immutable root of the executing runtime
+generation. A client imports `prismabuild.client` from `<root>/src`, so the
+SDK and the runtime that launched the action are one generation. The variable
+names the generation root, never `src`; the client appends `src` itself.
+
+**The surface (version 1).**
+
+| Area | Names |
+|---|---|
+| Reader leases (`reader-lease-v1`) | `injected_context`, `acquire_for`, `open_pinned`, `release`, `covers_for_keys`, `leases_root`, `live_for`, `containment_certificate_ok`, `READER_LEASE_TAG` |
+| The sealed data manifest | `read_data_manifest`, `DATA_MANIFEST_MAX_BYTES`, `manifest_read_entries` |
+| The queue | `PoolQueue`, `CLAIMED`, `RESIDENCY`, `POOL_OUTCOME_SCHEMA_V1`, `read_claimed_record` |
+| Produced output | `declared_template`, `validate_template`, `bind_declared_instance`, `declare_instance`, `admit_instance`, `validate_instance`, `instance_dir`, `checked_instance_maxima`, `owner_demand_terms`, `admit_funded_window`, `refill_window`, `require_prewrite`, `abort_prewrite`, `validate_descriptor`, `output_manifest_sha256`, `batch_namespace`, `output_fragment_root`, `publish_prepaid_batch`, `commit_batch`, `commit_origin_batch`, `retire_batch`, `reclaim_origin`, `recover_batches`, `due_mover_rows`, `materialization_state`, `ensure_batch_materialized`, `safe_release_instance`, `release_produced_instance`, `TEMPLATE_SCHEMA_V1`, `DESCRIPTOR_SCHEMA_V2` |
+| Residency maps | `validate_residency_map`, `read_residency_map`, `read_residency_fragments`, `compose_residency_map`, `write_residency_map`, `residency_map_key`, `ResidencyMapError`, `RESIDENCY_MAP_ENV`, `RESIDENCY_MAP_SCHEMA_V1`, `RESIDENCY_MAP_FRAGMENT_SCHEMA_V1`, `RESIDENCY_LANDING_SCHEMA_V1`, `LANDING_STATES` |
+| Receipts | `cas_receipt_self_check`, `RECEIPT_REFUSALS`, `CAS_RECEIPT_SCHEMA_V3`, `WORKER_ATTESTATION_SCHEMA_V2` |
+| Identifiers and digests | `ID_PATTERN`, `ENV_NAME_PATTERN`, `canonical_sha256` |
+| Liveness | `TIER_LOOP_LIVENESS_S`, `TIER_RECORD_SCHEMA` |
+| Capabilities | `CAPABILITIES`, `DECOMPOSITION_TAG` |
+
+Most names are the internal objects, re-exported unchanged. The SDK defines
+three functions of its own, each because the behaviour a client needed had no
+public name:
+
+- `read_claimed_record(queue, action_key)` returns an action's claimed-queue
+  record, or `None` when the action is not claimed. A record that exists but
+  is not a JSON object raises, so a broken mount never reads as "not claimed".
+  An action reads its own `cas_root` and `residency` block from it.
+- `release_produced_instance(queue, instance, template)` is
+  `safe_release_instance` with this tree's reader-lease module as its
+  `lease_sdk`. `safe_release_instance` accepts only the exact module the fleet
+  imports, which a client cannot name without importing an internal module.
+- `cas_receipt_self_check(receipt)` checks that a `cas_receipt.v3` agrees with
+  its own digests. It returns `None`, or the first failing check from
+  `RECEIPT_REFUSALS`: `cas-receipt-shape` (not exactly the six v3 fields, or
+  the wrong schema), `cas-receipt-digest` (`receipt_sha256` is not the digest
+  of the body), or `worker-attestation-digest` (the producer is not a
+  `worker_attestation.v2` of the same action that agrees with its
+  `attestation_sha256`). It does not re-derive the attestation from the sealed
+  action, as a CAS lookup does, so the reader still binds the action key,
+  inputs and result it expects.
+
+`TIER_LOOP_LIVENESS_S` is the bound the pool applies to a tier loop's record
+(`pool.OFFER_TIMEOUT_S`); every landing record carries the same value as
+`tier_loop_liveness_s`, and a reader should prefer the record's value.
+
+`CAPABILITIES` names what this tree supports: `reader-lease-v1`,
+`progress-v1`, and `decomposition-v1` (`pbcampaign` can decompose a logical
+request, #517/#518). A client asks for a capability by tag, never by probing
+files or function names. The surface test fails if a tag is advertised
+without the code behind it.
+
 ## Work decomposition boundary
 
 Rob's 2026-09-11 design decision is to partition logical requests into small,
@@ -1535,13 +1604,17 @@ matters). Rules:
   submitting-host placement pin by default. An explicit pool `--host-class`
   instead seals class placement plus matching platform/ABI/device models.
   SLURM seals an explicit `host_class_keyed`
-  action; the gold path remains pinned to `gb10`. Codebook generation is also
-  nonportable because D29 records cross-architecture row-scale byte drift.
+  action; the gold path remains pinned to `gb10`. Any other portability
+  constraint is the submitter's to declare: a producer whose bytes drift
+  across architectures seals a keyed scope itself (#1076).
 - **Artifact family is explicit** — action schema
-  `prismaquant.prismabuild.action.v2` requires the closed
-  `task.artifact_family` value `generic` or `codebook`. `artifact_kind` remains
-  a descriptive identifier and never drives portability by substring. V1 is
-  not reinterpreted: callers must redeclare the family and reseal the action.
+  `prismaquant.prismabuild.action.v2` requires a `task.artifact_family`
+  identifier token. It is a submitter-chosen label, hashed into the key and
+  never interpreted by core (#1076; core closed it to `generic`/`codebook`
+  and refused portable `codebook` actions until then, and every key sealed
+  under that rule is unchanged). `artifact_kind` remains a descriptive
+  identifier and never drives portability by substring. V1 is not
+  reinterpreted: callers must redeclare the family and reseal the action.
 - **Deterministic vs stochastic** task classes: deterministic entries may be
   verified by recompute; stochastic (probe backward is recorded
   non-bit-reproducible) get run-once / first-result-wins.
@@ -1747,9 +1820,12 @@ miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
   checked again before publication. Nonportable actions must bind that digest
   and byte count as `environment.toolchain.{argv0.sha256,argv0.bytes}`, plus
   the exact system, machine, and libc ABI fields. Their
-  toolchain may contain only preflight-backed fields (`python`, `torch`,
-  `transformers`, `vllm`, `gridbook`, OS/machine/libc, CUDA capability, NVIDIA
-  driver, and the executable identity); every declared field must verify.
+  toolchain may contain only preflight-backed fields: the platform set
+  (`python`, OS/machine/libc, CUDA capability, NVIDIA driver, accelerator
+  models and the executable identity) and any field named like a Python
+  distribution, which the worker probes through the action's own interpreter
+  by exactly the declared names. Core keeps no list of distributions (#1076);
+  every declared field the worker observes must verify.
   NVIDIA workers additionally require the CUDA capability and driver fields.
 - The worker implementation is a separate closed
   `prismaquant.prismabuild.worker_runtime.v1` object. It binds the exact
@@ -1824,8 +1900,8 @@ miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
   task work into a retry. The worker preflight requires the private tree to be
   clean at the sealed commit, to carry the recorded parent, and to resolve
   every recorded branch to its recorded id. This snapshot proof applies to
-  every definition carrying `params.checkout_snapshot`, including Tessera
-  producers; only the closure-stamp proof is specific to `fleet/pbrun`.
+  every definition carrying `params.checkout_snapshot`, including producers
+  that seal their own actions; only the closure-stamp proof is specific to `fleet/pbrun`.
   Thus `HEAD~1` and `BASE...HEAD`
   are facts a diff-derived gate can rely on rather than a
   `fatal: ambiguous argument`. Absolute submitter-repository paths in argv or
@@ -3891,6 +3967,24 @@ directions. The work is never refused, never starved and never placed where it
 could not run; the only effect is a bounded wait that a better placement may
 or may not win. With no alternative, a stale reading on either side, or no
 GPU-power evidence, there is no preference at all.
+
+CPU-only work on a GPU host is governed by a placement rule ahead of that
+preference, and the rule has no timer (#1262). A GPU host's CPUs and memory
+feed its GPU; CPU-only rows it admits leave GPU rows arriving behind them to be
+refused on CPU (on 2026-09-28 both GB10s idled for 100 minutes that way). So a
+GPU host does not claim a CPU-only row while a live, matching host without a
+GPU fits the whole demand now -- free ledger tokens, free preferred CPUs and
+observed capacity -- and has not passed on the row. "Passed on" is evidence
+that host already evaluated the row and did not take it: its published latest
+denial for the generation (`reservations/<host>/adaptive/claim-denials.json`),
+any reason but `transition_busy`, or, when that file is at its record cap, an
+entry of that host in the row's reason ring. The GPU host records
+`deferred_for_cpu_only_host`, ages nothing, and claims the row as before once
+no such host remains, so CPU-only work still overflows onto GPU hosts when the
+CPU host is full or refuses. A host without a GPU never yields, so no two hosts
+wait on each other, and a row whose tags exclude every host without a GPU is
+unaffected. Remote reads are made once per host per claim pass and each yield
+charges that view, so a pass never leaves a host more rows than it fits.
 
 It is not a thermal control and nothing here measures temperature or
 throughput. The GPU side reads drawn power against a reference, because
@@ -12810,17 +12904,6 @@ could be evicted. The order is the oldest receipt first, which is deterministic
 and is not a ranking — there is no read-ahead model saying a later artifact is
 more likely to want one range than another, and inventing one would be a
 heuristic where no measurement exists.
-
-## Model-level Tessera dispatch
-
-The [full-model dispatcher](tessera_model_dispatch.md) owns decomposition into
-Tessera's whole-layer serving-part domain. It delegates admission/distribution
-to the existing campaign interface, seals the producer/source/plan/scale/image
-identity, and admits assembly only behind an exact complete CAS-receipt barrier.
-The assembler uses the producer's checked merge and revalidates part bytes.
-Per-worker source-hash reuse requires unchanged filesystem identity and matching
-expected digests, with before/after export checks. It is cooperative cache
-validation, not a claim of hostile-writer immutability or cross-action residency.
 
 ### Status census completeness
 

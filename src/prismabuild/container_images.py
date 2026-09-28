@@ -78,7 +78,7 @@ schema, timestamp, reference syntax and entry count are all validated.  A
 malformed or replaced record is unknown, so it can never authorize a claim.
 
 Archive-backed containers stay the consumer's own behavior.  A spec that loads
-its image from an archive at run time (PrismaQuant's ``container.archive``)
+its image from an archive at run time (a client's ``container.archive``)
 establishes presence *inside* the action, so it must not declare
 ``container_images``: PB would refuse the claim before the loader ever ran.
 Declare only images that are already local when the action is claimed.

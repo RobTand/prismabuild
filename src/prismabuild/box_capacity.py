@@ -507,7 +507,7 @@ def observe(
             #     python3 -m pytest tests/ -q            (claimed)
             #     python3 -m pytest tests/test_matched_reach.py -q  (claimed)
             #     python -u experiments/refit_trailing_pair.py      (claimed)
-            #     python -u experiments/export_tessera_serving.py   (claimed)
+            #     python -u experiments/export_serving.py           (claimed)
             #
             # Clamping on that reading takes a busy-with-our-own-work box from
             # ten cpu slots to zero.  That is the double-charge the ledger

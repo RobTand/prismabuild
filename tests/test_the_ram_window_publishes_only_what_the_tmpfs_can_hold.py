@@ -18,6 +18,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import pool, residency_plan, storage_tiers  # noqa: E402
+from storage_host_ledger import mint_storage_host_ledger  # noqa: E402
 
 import residency_publication  # noqa: E402
 import tier_loop  # noqa: E402
@@ -106,6 +107,8 @@ def _fixture(tmp_path: Path, *, ram_capacity_gib: int,
         "manifest_sha256": MANIFEST, "manifest_bytes": 6 * GIB,
         "leads": residency_plan.leads_for(plan)})
     queue.mint_tier_capacity(RAM_TIER, {"ram_gib": ram_capacity_gib})
+    # A RAM fill's host half lands in the storage host's ledger (#1258).
+    mint_storage_host_ledger(queue)
     queue.mint_tier_capacity(STAGE_TIER, {"stage_gib": 64})
     start = 0
     for ordinal in range(landed):

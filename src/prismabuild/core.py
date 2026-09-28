@@ -9,9 +9,9 @@ links.
 
 Portable actions omit machine identity from their key.  Platform- and
 host-class-keyed actions bind the corresponding explicit execution scope.
-Measurement actions are never portable.  Explicit codebook-family generation
-is also never portable because D29 records cross-architecture row-scale byte
-drift.
+Measurement actions are never portable.  Any other portability constraint is
+the submitter's to declare in ``execution_scope``: ``artifact_family`` is a
+submitter-chosen label that core records and hashes but does not interpret.
 """
 
 from __future__ import annotations
@@ -464,7 +464,6 @@ _HOSTNAME_RE = re.compile(
 _PORTABILITY = frozenset({"portable", "platform_keyed", "host_class_keyed"})
 _TASK_CLASSES = frozenset({"generation", "measurement"})
 _DETERMINISM = frozenset({"deterministic", "stochastic"})
-_ARTIFACT_FAMILIES = frozenset({"generic", "codebook"})
 _PROCESS_GROUP_GRACE_SECONDS = 5.0
 
 #: How often the bounded group-exit wait re-probes group membership.
@@ -485,15 +484,16 @@ _STABLE_FILE_READ_ATTEMPTS = 3
 # reader reads again through a fresh resolution, at most this many times;
 # a name that moves under every one of them is still refused.
 _REPLACED_RECORD_READ_ATTEMPTS = 8
-_ATTESTABLE_TOOLCHAIN_KEYS = frozenset(
+#: Toolchain fields a worker attests from the executable and the platform.
+#: Every other declared field names a Python distribution the action's
+#: interpreter must carry, and the worker probes exactly the names declared.
+#: Core keeps no list of distributions: which runtime an action depends on is
+#: the submitter's fact, not the scheduler's (#1076).
+_PLATFORM_TOOLCHAIN_KEYS = frozenset(
     {
         "argv0.sha256",
         "argv0.bytes",
         "python",
-        "torch",
-        "transformers",
-        "vllm",
-        "gridbook",
         "system",
         "machine",
         "libc",
@@ -502,7 +502,15 @@ _ATTESTABLE_TOOLCHAIN_KEYS = frozenset(
         "accelerator_models.sha256",
     }
 )
-_PYTHON_DISTRIBUTIONS = frozenset({"torch", "transformers", "vllm", "gridbook"})
+#: A Python distribution name as PEP 508 spells one.  A declared toolchain
+#: field outside the platform set must be one, or no worker can probe it.
+_DISTRIBUTION_NAME_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?\Z")
+
+
+def _declared_distributions(toolchain: Mapping[str, object]) -> list[str]:
+    """The Python distributions a toolchain declares, sorted."""
+
+    return sorted(set(toolchain) - _PLATFORM_TOOLCHAIN_KEYS)
 
 
 class PrismaBuildError(RuntimeError):
@@ -1576,14 +1584,24 @@ def live_platform_toolchain_contract(
     return fields
 
 
-def _probe_python_toolchain(executable: Path) -> dict[str, str]:
+def _probe_python_toolchain(
+    executable: Path, distributions: Sequence[str] = ()
+) -> dict[str, str]:
+    """The interpreter's version and the declared distributions it carries.
+
+    The names travel as one JSON argument, never inside the script text, so a
+    submitter-declared name is data to ``metadata.version`` and nothing else.
+    A distribution the interpreter does not carry is absent from the result.
+    """
+
     script = "\n".join(
         (
             "import importlib.metadata as metadata",
             "import json",
             "import platform",
+            "import sys",
             "out = {'python': platform.python_version()}",
-            "for name in ('torch', 'transformers', 'vllm', 'gridbook'):",
+            "for name in json.loads(sys.argv[1]):",
             "    try:",
             "        out[name] = metadata.version(name)",
             "    except metadata.PackageNotFoundError:",
@@ -1593,7 +1611,7 @@ def _probe_python_toolchain(executable: Path) -> dict[str, str]:
     )
     try:
         completed = subprocess.run(
-            [str(executable), "-I", "-c", script],
+            [str(executable), "-I", "-c", script, json.dumps(list(distributions))],
             shell=False,
             check=False,
             capture_output=True,
@@ -2210,7 +2228,7 @@ def _verify_pbrun_checkout_identity(
 
     Keying the whole function on the definition id conflated them, so every
     action a producer sealed itself skipped the snapshot proof.
-    ``fleet_submit`` seals a snapshot for ``tessera/*`` on the SLURM lane, and
+    ``fleet_submit`` seals a snapshot for a producer's own tree on the SLURM lane, and
     those nodes ran a materialized tree nothing had checked.
     """
 
@@ -2691,14 +2709,14 @@ def _normalize_task(value: object) -> dict[str, object]:
     determinism = _text(task["determinism"], where="action.task.determinism")
     if determinism not in _DETERMINISM:
         _fail(f"action.task.determinism must be one of {sorted(_DETERMINISM)}")
+    # A submitter-declared label, hashed into the key and never interpreted
+    # here: a family that must not be portable says so in its own
+    # execution_scope, the way every other action does (#1076).
     artifact_family = _text(
-        task["artifact_family"], where="action.task.artifact_family"
+        task["artifact_family"],
+        where="action.task.artifact_family",
+        pattern=_ID_RE,
     )
-    if artifact_family not in _ARTIFACT_FAMILIES:
-        _fail(
-            "action.task.artifact_family must be one of "
-            f"{sorted(_ARTIFACT_FAMILIES)}"
-        )
     return {
         "definition_id": _text(
             task["definition_id"],
@@ -2792,14 +2810,6 @@ def _normalize_action_body(value: object) -> dict[str, object]:
     scope = _normalize_scope(body["execution_scope"])
     if task["task_class"] == "measurement" and scope["portability"] == "portable":
         _fail("measurement actions must be platform_keyed or host_class_keyed")
-    if (
-        task["artifact_family"] == "codebook"
-        and scope["portability"] == "portable"
-    ):
-        _fail(
-            "codebook actions cannot be portable: D29 records cross-architecture "
-            "row-scale byte drift"
-        )
     params = body["params"]
     if not isinstance(params, Mapping):
         _fail("action.params must be an object with string keys")
@@ -2864,11 +2874,13 @@ def _normalize_action_body(value: object) -> dict[str, object]:
         _sha256(toolchain["accelerator_models.sha256"],
                 where="action.environment.toolchain.accelerator_models.sha256")
     if scope["portability"] != "portable":
-        unknown = set(toolchain) - _ATTESTABLE_TOOLCHAIN_KEYS
+        unknown = [name for name in _declared_distributions(toolchain)
+                   if _DISTRIBUTION_NAME_RE.match(name) is None]
         if unknown:
             _fail(
                 "nonportable action toolchain contains fields with no worker "
-                f"preflight: {sorted(unknown)}"
+                f"preflight: {sorted(unknown)}; a field outside the platform "
+                "set must name a Python distribution"
             )
         required = {
             "argv0.sha256",
@@ -4034,10 +4046,10 @@ def _verified_toolchain(
             observed["cuda_compute_capability"] = next(iter(capabilities))
         if len(drivers) == 1:
             observed["nvidia_driver"] = next(iter(drivers))
-    python_keys = set(declared) & ({"python"} | _PYTHON_DISTRIBUTIONS)
-    if python_keys:
+    distributions = _declared_distributions(declared)
+    if "python" in declared or distributions:
         observed.update(
-            _probe_python_toolchain(Path(str(executable["path"])))
+            _probe_python_toolchain(Path(str(executable["path"])), distributions)
         )
     verified: dict[str, str] = {}
     for key, expected in declared.items():

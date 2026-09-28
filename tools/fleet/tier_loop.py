@@ -6644,11 +6644,15 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                      if other_tier == tier_id and other != key
                      and permit.get("mover") == mover and permit.get("grant")),
                     None)
-                if owner is not None and owner != key:
-                    if held_grant > 0:
-                        # A second fence for one shared advance: give it back.
-                        released = queue.cancel_tier_fence(
-                            tier_id, grant)["released"]
+            # Outside the ``fenced_by`` branch, as before #1245: only a
+            # range fenced by ANOTHER consumer is shared.  A consumer's own
+            # fence (owner == key) and an unfenced mover fall through to
+            # the bind below (#1259).
+            if owner is not None and owner != key:
+                if held_grant > 0:
+                    # A second fence for one shared advance: give it back.
+                    released = queue.cancel_tier_fence(
+                        tier_id, grant)["released"]
                     if released:
                         held_total -= released
                         events.append({"event": "advance-released",

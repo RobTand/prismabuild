@@ -80,12 +80,60 @@ PBRUN = str(
 #
 # Anything else -- nvidia-smi, a CPU python, a git command -- is none of this
 # hook's business.
-CONTENDS = re.compile(
-    r"venvs/prismaquant-cu130/bin/python"
-    r"|/gpuslot\.sh"
+#
+# Which interpreter is "the CUDA interpreter" is configuration, not a name this
+# hook knows (#1076).  ``fleet_boxes.json`` lists it under ``gpu_interpreters``:
+# the file the supervisor starts the loops from, published beside this hook.
+# A loop's own ``--python`` is not that list -- sparky's loops name none, and
+# a box's worker launcher may be the system interpreter -- so the list is
+# declared rather than inferred.
+FLEET_BOXES = fleet_tool("fleet_boxes.json", root=_RUNTIME_ROOT)
+INTERPRETERS_FIELD = "gpu_interpreters"
+LOCK_WRAPPERS = (
+    r"/gpuslot\.sh"
     r"|/gpulock\.sh"
     r"|flock\s[^|;]*\.gpu\.lock"
 )
+
+
+def interpreter_signature(path: str) -> str:
+    """The part of ``path`` a command spells whatever its home directory.
+
+    From the venv's parent directory on -- ``venvs/<name>/bin/python`` for
+    ``/home/<user>/<dir>/venvs/<name>/bin/python`` -- so an absolute, a
+    ``~``-relative and a ``$HOME``-relative spelling all match, as the single
+    literal this replaced did.
+    """
+
+    parts = Path(path).parts
+    return "/".join(parts[-4:]) if len(parts) > 4 else path
+
+
+def contends_pattern(boxes: dict) -> re.Pattern[str]:
+    """The refusal pattern: the configured GPU interpreters and the wrappers.
+
+    With no interpreter configured, only the wrappers are refused: this hook
+    runs before every command, and refusing everything because a data file is
+    absent would lock out the edit that restores it.
+    """
+
+    declared = boxes.get(INTERPRETERS_FIELD) or ()
+    interpreters = "|".join(sorted(
+        re.escape(interpreter_signature(path))
+        for path in declared if isinstance(path, str) and path
+    ))
+    return re.compile(f"{interpreters}|{LOCK_WRAPPERS}" if interpreters else LOCK_WRAPPERS)
+
+
+def _configured_boxes() -> dict:
+    try:
+        document = json.loads(FLEET_BOXES.read_text()) if FLEET_BOXES else {}
+    except (OSError, ValueError):
+        return {}
+    return document if isinstance(document, dict) else {}
+
+
+CONTENDS = contends_pattern(_configured_boxes())
 
 
 #: Commands that never start GPU work, whatever their text contains.  A commit
@@ -467,7 +515,7 @@ def _prose_start(segment: str) -> int | None:
 
     The index returned is that of the first word past the script path.  The
     interpreter and the script path themselves are never elided, so a quoted
-    command word -- ``'/…/prismaquant-cu130/bin/python' train.py`` -- is still
+    command word -- ``'/…/venvs/gpu/bin/python' train.py`` -- is still
     read as the command it is.
     """
 

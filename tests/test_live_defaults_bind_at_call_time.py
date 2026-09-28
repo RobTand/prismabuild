@@ -41,7 +41,6 @@ FLEET_TOOLS = (
     "fleet_submit", "pool_reset", "pbrun", "pbstatus", "pbsweep", "pbwait",
     "pbcampaign", "pbmcp",
     "pbtest", "worker_loop", "supervise", "require_pool", "seal_and_publish",
-    "tessera_status",
 )
 
 

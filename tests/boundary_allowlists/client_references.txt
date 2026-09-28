@@ -1,11 +1,3 @@
 # Shrink-only allowlist for tests/test_client_boundary.py: client imports, loads and literals in PB core and
 # the published tools. Step 4 (#1076) empties it.
 # One line per occurrence. Delete lines; never add.
-src/prismabuild/tessera_model.py	import	tessera.serving_parts
-src/prismabuild/tessera_model.py	literal	src/tessera/
-src/prismabuild/tessera_model.py	load	run_path
-src/prismabuild/tessera_model.py	load	spec_from_file_location
-tools/fleet/dispatch_tessera_ladder.py	literal	prismaquant-cu130
-tools/fleet/dispatch_tessera_shards.py	literal	prismaquant-cu130
-tools/fleet/render_identity.py	import	prismaquant.production_weight_cache
-tools/fleet/require_pool.py	literal	prismaquant-cu130

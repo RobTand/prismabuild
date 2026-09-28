@@ -15,7 +15,12 @@ prefers not to spend a busy box's GPU power on work that can go elsewhere, and
 `deferred_for_ready_gpu_row`, which keeps CPU-only work out of the room a
 ready GPU row needs on a free GPU for the pass in which the scan cannot
 evaluate that row (#1169). A deferral expires by itself; do not read one as a
-refusal, and do not retag or resubmit to defeat it.
+refusal, and do not retag or resubmit to defeat it. One placement rule is not
+a preference and has no timer: `deferred_for_cpu_only_host` (#1262), where a
+GPU host leaves a CPU-only row to a matching host without a GPU that fits it
+now, until that host claims it or passes on it. Do not tag CPU-only work to a
+GPU host to get it placed; leave it untagged unless it truly needs that
+architecture.
 
 Everything vLLM is exempt, universally (Rob, 2026-09-07): a serve, a census, a
 routing run, a benchmark against a live endpoint, its GPU containers. Run it

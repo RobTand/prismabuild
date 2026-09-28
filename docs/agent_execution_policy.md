@@ -48,7 +48,10 @@ read as a refusal: `deferred_for_preferred_cpu`, and
 resource from taking work for the other one when a freer compatible box
 exists. Each expires on its own after 20 seconds and the work is then claimed
 anyway. They are best effort, they measure nothing thermal, and they are not a
-reason to retag or resubmit.
+reason to retag or resubmit. `deferred_for_cpu_only_host` (#1262) is a placement
+rule rather than a preference: a GPU host leaves a CPU-only row to a matching
+host without a GPU that fits it now, until that host claims it or passes on it.
+Do not tag CPU-only work to a GPU host to get it placed.
 
 Every worker loop kills an action at its own safety ceiling, **7200 s by
 default**, and that ceiling is applied as a silent `min` against `--timeout-s`.
@@ -325,8 +328,9 @@ image reference, so an image named for the NCCL it carries
 shell running a script file is read one level in, and work inside it refuses
 naming the file; a clean or unreadable script is recorded in
 `require_pool_sightings.log` beside the flag file rather than passing
-silently. Claude Code installs it as a
-`PreToolUse` Bash hook. Other agents must follow their global instructions;
+silently. The GPU interpreters it refuses are the `gpu_interpreters` list in
+`fleet_boxes.json`, published beside the hook, not a name in its code (#1076).
+Claude Code installs it as a `PreToolUse` Bash hook. Other agents must follow their global instructions;
 this command parser is a guard, not an operating-system security boundary or a
 proof of arbitrary program behavior.
 
