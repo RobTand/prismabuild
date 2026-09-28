@@ -316,9 +316,19 @@ def test_pbrun_publishes_a_first_submission_with_a_notice(tmp_path, capsys):
     _announce_live(queue, "sparklina")
 
     verdict = pbrun.interpreter_submission_verdict(
-        queue, PQ_PYTHON, tags=[])
+        queue, {"tags": [], "interpreter": PQ_PYTHON,
+                "resources": {"cpu": 1, "mem_gb": 1}})
 
-    assert verdict[0] in ("unknown", "present"), verdict
+    assert verdict[0] == "unknown", verdict
+
+    # And the unanimous-absent fleet raises through the same verdict.
+    refused = _queue_at(tmp_path / "refused")
+    _announce_live(refused, "sparky", absent=[PQ_PYTHON])
+    _announce_live(refused, "sparklina", absent=[PQ_PYTHON])
+    verdict = pbrun.interpreter_submission_verdict(
+        refused, {"tags": [], "interpreter": PQ_PYTHON,
+                  "resources": {"cpu": 1, "mem_gb": 1}})
+    assert verdict[0] == "absent", verdict
 
 
 def test_a_unanimous_absent_is_refused_naming_the_path(tmp_path):
