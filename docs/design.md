@@ -1604,13 +1604,17 @@ matters). Rules:
   submitting-host placement pin by default. An explicit pool `--host-class`
   instead seals class placement plus matching platform/ABI/device models.
   SLURM seals an explicit `host_class_keyed`
-  action; the gold path remains pinned to `gb10`. Codebook generation is also
-  nonportable because D29 records cross-architecture row-scale byte drift.
+  action; the gold path remains pinned to `gb10`. Any other portability
+  constraint is the submitter's to declare: a producer whose bytes drift
+  across architectures seals a keyed scope itself (#1076).
 - **Artifact family is explicit** — action schema
-  `prismaquant.prismabuild.action.v2` requires the closed
-  `task.artifact_family` value `generic` or `codebook`. `artifact_kind` remains
-  a descriptive identifier and never drives portability by substring. V1 is
-  not reinterpreted: callers must redeclare the family and reseal the action.
+  `prismaquant.prismabuild.action.v2` requires a `task.artifact_family`
+  identifier token. It is a submitter-chosen label, hashed into the key and
+  never interpreted by core (#1076; core closed it to `generic`/`codebook`
+  and refused portable `codebook` actions until then, and every key sealed
+  under that rule is unchanged). `artifact_kind` remains a descriptive
+  identifier and never drives portability by substring. V1 is not
+  reinterpreted: callers must redeclare the family and reseal the action.
 - **Deterministic vs stochastic** task classes: deterministic entries may be
   verified by recompute; stochastic (probe backward is recorded
   non-bit-reproducible) get run-once / first-result-wins.
@@ -1816,9 +1820,12 @@ miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
   checked again before publication. Nonportable actions must bind that digest
   and byte count as `environment.toolchain.{argv0.sha256,argv0.bytes}`, plus
   the exact system, machine, and libc ABI fields. Their
-  toolchain may contain only preflight-backed fields (`python`, `torch`,
-  `transformers`, `vllm`, `gridbook`, OS/machine/libc, CUDA capability, NVIDIA
-  driver, and the executable identity); every declared field must verify.
+  toolchain may contain only preflight-backed fields: the platform set
+  (`python`, OS/machine/libc, CUDA capability, NVIDIA driver, accelerator
+  models and the executable identity) and any field named like a Python
+  distribution, which the worker probes through the action's own interpreter
+  by exactly the declared names. Core keeps no list of distributions (#1076);
+  every declared field the worker observes must verify.
   NVIDIA workers additionally require the CUDA capability and driver fields.
 - The worker implementation is a separate closed
   `prismaquant.prismabuild.worker_runtime.v1` object. It binds the exact
