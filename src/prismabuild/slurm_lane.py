@@ -83,6 +83,7 @@ import uuid
 from . import core as pb
 from . import posix_lock
 from . import pool
+from .materialize import _write_json_atomic
 
 SUBMISSION_SCHEMA_V1 = "prismaquant.prismabuild.slurm_lane_submission.v1"
 
@@ -462,7 +463,7 @@ def write_cache_hit(
         "result_digest": result_digest,
         "found_unix": _now(),
         "found_host": socket.gethostname(),
-    })
+    }, trailing_newline=True)
 
 
 def read_cache_hit(path: str | Path) -> dict[str, object]:
@@ -862,39 +863,6 @@ def _publish_record(path: Path, payload: Mapping[str, object]) -> None:
         )
 
 
-def _write_latest(path: Path, payload: Mapping[str, object]) -> None:
-    """Point at the newest attempt by rename, so a reader sees one or the other.
-
-    The temp name carries a UUID and is created ``O_EXCL``, which is the shape
-    ``materialize._write_json_atomic`` uses and for the reason this lane needs
-    it: a lane directory is on the shared mount and two boxes submitting one
-    action key write into it.  A pid is unique only within a box, so
-    ``.latest.json.<pid>.tmp`` was one file for both of them -- the first
-    writer renamed it away and the second's ``os.replace`` raised
-    ``FileNotFoundError`` after its own ``sbatch`` had been accepted, leaving a
-    queued job with nothing in ``latest.json`` for ``--withdraw`` to resolve.
-
-    Flushed and fsynced before the rename, so the bytes a reader on another box
-    sees after this returns are the whole record rather than a hole.  The temp
-    file is removed if anything goes wrong on the way, because a lane directory
-    an operator reads should not accumulate the debris of failed writes.
-    """
-
-    raw = pb._canonical_file_bytes(dict(payload))
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.parent / f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
-    descriptor = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
-    try:
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(raw)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp, path)
-    except BaseException:
-        tmp.unlink(missing_ok=True)
-        raise
-
-
 def _now() -> float:
     return time.time()
 
@@ -956,23 +924,6 @@ def _publish_json_if_absent(path: Path, payload: Mapping[str, object]) -> bool:
 
     return _publish_bytes_if_absent(
         path, pb._canonical_file_bytes(dict(payload)))
-
-
-def _write_json_atomic(path: Path, payload: Mapping[str, object]) -> None:
-    """Replace a terminal record whole, the way ``pool._write_json_atomic`` does.
-
-    Same writer as ``_write_latest`` above, which is where the uniqueness of
-    the temp name, the fsync and the cleanup live.
-
-    The mutable summary is a pointer, not an audit log: the queue rewrites it on
-    every retry and so must this.  First-writer-wins belongs to the *immutable*
-    records -- the submission records above -- and ``_land_summary`` is what
-    keeps two writers of one key from overwriting each other: it compares
-    generations before this call and re-reads after it, so an older waiter
-    cannot leave its ending standing over a later run's.
-    """
-
-    _write_latest(path, payload)
 
 
 def job_script_text(
@@ -1106,8 +1057,8 @@ def submit(
     # name.  It is not what any job executes and nothing derives a submission
     # from it: ``sbatch`` is handed the immutable path above and the record
     # names it with its digest.  The temp name carries a UUID for the reason
-    # ``_write_latest`` gives: a lane directory is on the shared mount and a
-    # pid is unique only within a box.
+    # ``materialize._write_json_atomic`` gives: a lane directory is on the
+    # shared mount and a pid is unique only within a box.
     pointer = directory / "job.sh"
     tmp = directory / f".job.sh.{os.getpid()}.{uuid.uuid4().hex}.tmp"
     try:
@@ -1271,7 +1222,9 @@ def submit(
     )
     with _naming_job(job_id):
         _publish_record(record_path, record)
-        _write_latest(directory / "latest.json", record)
+        _write_json_atomic(
+            directory / "latest.json", record, trailing_newline=True
+        )
     return SubmittedJob(
         action_key=key,
         job_id=job_id,
@@ -2713,7 +2666,7 @@ def _land_summary_locked(
                 and (refuse_same_generation or "detail" in existing)
             ):
                 return False
-            _write_json_atomic(path, payload)
+            _write_json_atomic(path, payload, trailing_newline=True)
         after = _read_json_object(path)
         standing = None if after is None else _record_generation(after)
         if standing is None or standing >= floor:
@@ -3001,7 +2954,7 @@ def publish_withdrawal(
         "withdrawn_by": str(by),
         "reason": str(reason),
     })
-    _write_json_atomic(path, filed)
+    _write_json_atomic(path, filed, trailing_newline=True)
     return path, filed
 
 
@@ -3128,7 +3081,7 @@ def supersede_withdrawal(
         "superseded_unix": when,
         "superseded_host": socket.gethostname(),
     })
-    _write_json_atomic(archive, kept)
+    _write_json_atomic(archive, kept, trailing_newline=True)
     return claimed
 
 
