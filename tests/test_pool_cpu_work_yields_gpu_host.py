@@ -106,7 +106,7 @@ def test_the_wait_has_no_timer(fleet, monkeypatch):
 
 
 @pytest.mark.parametrize('reason', ['reservation_unavailable', 'adaptive_cpu_refused',
-                                    'placement_mismatch'])
+                                    'placement_mismatch', 'deferred_behind_withheld_row'])
 def test_once_the_cpu_host_passes_on_it_the_gpu_host_claims(fleet, reason):
     """Overflow: a CPU host that looked and did not take the row releases it."""
     queue, announce, publish, claim = fleet

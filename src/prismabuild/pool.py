@@ -17205,7 +17205,11 @@ class PoolQueue:
         records, so when it is full and names nothing for this generation the
         row's own reason ring is read as well: a host's refusal appends there
         when its reason changes, and the ring is per key, never crowded out by
-        other rows.
+        other rows.  The ring skips :data:`DENIAL_RING_EXEMPT_REASONS`, which
+        costs nothing here: ``placement_mismatch`` is a looser test than the
+        :meth:`_matching_offers` that chose this host, and a row held back
+        behind a withhold is re-recorded on every pass, so it stays among the
+        newest records.
         """
 
         published = item.get("published_unix")
@@ -18242,6 +18246,12 @@ class PoolQueue:
                 or self._demands_withheld_kind(item, withheld_kinds))
             producer = held_back and self._may_serve_a_producer(item)
             if held_back and withheld_kinds is None and not producer:
+                # Held back unevaluated behind the whole-box withhold.
+                # Recorded: this host has passed on the row for now, and a
+                # GPU host leaving CPU-only work to it reads that here
+                # (#1262 review).  Buffered once per pass, off the ring.
+                self.record_denial(item, "deferred_behind_withheld_row", {
+                    "withheld_for": withheld_for, "withheld_kinds": None})
                 continue
             if (key and key not in released
                     and not self._placement_matches(item, tags=tagset, has_gpu=has_gpu)):
