@@ -386,6 +386,16 @@ import pbtest_outcomes  # noqa: E402
 NON_GPU_UNREQUESTED_CEILING_CAP_S = 2 * pool.WITHHOLD_CEILING_S
 
 
+def fleet_queue():
+    """The queue every shard is submitted to, read the way the tools do.
+
+    One construction for the ceilings read and the interpreter pre-flight
+    alike, so the two questions cannot drift onto different roots.
+    """
+
+    return pool.PoolQueue(pbrun.SH / "pb-queue")
+
+
 def interpreter_refusal(queue, python: str, *, tags, resources,
                        needs_gpu: bool) -> str | None:
     """Why no recorded worker can run this interpreter, or ``None`` (#1263).
@@ -444,7 +454,7 @@ def announced_ceilings(tags: list[str]) -> dict[str, float | None]:
     """
 
     try:
-        offers = pool.PoolQueue(pbrun.SH / "pb-queue").offers()
+        offers = fleet_queue().offers()
     except Exception:
         return {}
     required = set(tags)
@@ -1080,7 +1090,7 @@ def main() -> int:
     # worker reports the path, every shard's pbrun would refuse identically.
     # Answering it once here fails the whole submission fast, naming the path.
     refusal = interpreter_refusal(
-        pool.PoolQueue(pbrun.SH / "pb-queue"), args.python,
+        fleet_queue(), args.python,
         tags=tags, resources={"cpu": 1, "mem_gb": args.mem_gb},
         needs_gpu=bool(args.gpu))
     if refusal is not None:
