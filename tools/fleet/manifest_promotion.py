@@ -47,6 +47,7 @@ from pathlib import Path
 import sys
 
 from prismabuild import core as pb
+from prismabuild import movement_actions
 from prismabuild import pool
 from prismabuild import residency_plan
 from prismabuild import storage_tiers
@@ -194,17 +195,15 @@ def read_request(cas_root: Path, action_key: str) -> tuple[dict | None, bool]:
     return body, isinstance(body, dict)
 
 
-#: The fleet's movement-node scripts.  A mover or egress row carries its
-#: consumer's manifest as its own input (the mover stages it), so a planner
-#: that judged rows by their manifest alone would try to plan the tier's own
-#: machinery -- sealing a plan for a phase-0 egress of somebody else's
-#: window.  A row whose sealed command runs one of these is a movement node,
-#: not a consumer, whatever it declares.
-_MOVEMENT_SCRIPTS = ("stage_move.py", "stage_release.py", "ram_promote.py")
-
-
 def is_movement_row(request: Mapping[str, object] | None) -> bool:
-    """Whether this sealed request is one of the tier's own movement nodes."""
+    """Whether this sealed request is one of the tier's own movement nodes.
+
+    A mover or egress row carries its consumer's manifest as its own input
+    (the mover stages it), so a planner that judged rows by their manifest
+    alone would try to plan the tier's own machinery -- sealing a plan for a
+    phase-0 egress of somebody else's window.  The script names come from
+    :data:`movement_actions.MOVEMENT_SCRIPTS`, their one home (REVIEW-1252-r4).
+    """
 
     if not isinstance(request, Mapping):
         return False
@@ -213,29 +212,34 @@ def is_movement_row(request: Mapping[str, object] | None) -> bool:
                if isinstance(params, Mapping) else None)
     if not isinstance(command, Sequence) or isinstance(command, (str, bytes)):
         return False
-    return any(str(part).endswith(_MOVEMENT_SCRIPTS) for part in command)
+    return any(str(part).endswith(movement_actions.MOVEMENT_SCRIPTS)
+               for part in command)
 
 
-def has_plan_history(queue: pool.PoolQueue, key: str) -> bool:
-    """Whether a consumer carries ANY residency-plan history (#708 safety).
+def superseded_consumers(queue: pool.PoolQueue) -> set[str] | None:
+    """The consumers with live retirement markers, or ``None`` when unknown.
 
-    A filed plan answers before this is ever asked; what this catches is the
-    consumer whose plan was superseded and reaped -- its retirement markers
-    are still live under ``residency-plans/superseded/``, and the owner that
-    withdrew it owns its reseal (``handoff_safe`` checks the markers this
-    planner must not retire).  Such a row stands down: the planner advises
-    bare rows, never a lifecycle another flow is driving.
+    One listing of ``residency-plans/superseded/`` per call, not per row
+    (REVIEW-1252-r4 [P2]): the live directory holds hundreds of markers and
+    the loop runs every few seconds, so the membership question is answered
+    from one set.  A filed plan answers before this is ever asked; what the
+    set catches is the consumer whose plan was superseded and reaped -- its
+    markers are still live, and the owner that withdrew it owns its reseal
+    (``handoff_safe`` checks the markers this planner must not retire).  Such
+    a row stands down: the planner advises bare rows, never a lifecycle
+    another flow is driving.  ``None`` is the fail-closed answer -- a
+    directory that cannot be listed is history nobody can see, and every row
+    stands down for that cycle.
     """
 
-    directory = (queue.residency_plan_path(key).parent
+    first_ready_key = "0" * 64
+    directory = (queue.residency_plan_path(first_ready_key).parent
                  / residency_plan.SUPERSEDED)
     try:
-        for marker in pool._scan(directory):
-            if marker.name.startswith(f"{key}."):
-                return True
+        return {marker.name.split(".", 1)[0]
+                for marker in pool._scan(directory)}
     except (OSError, ValueError):
-        return True          # unknown history is history: stand down
-    return False
+        return None
 
 
 def declares_data_manifest(request: Mapping[str, object] | None) -> bool:
@@ -294,6 +298,7 @@ def promote_ready_manifest_rows(
         for stale in [key for key in table if key not in live]:
             del table[stale]
     counters = {"fresh": 0, "replayed": 0, "stands_down": 0, "examined": 0}
+    history = superseded_consumers(queue)
     outcomes: list[dict[str, object]] = []
     planned = 0
     examined = 0
@@ -309,7 +314,7 @@ def promote_ready_manifest_rows(
         # item 3): one lstat against a CAS request fetch, and a row another
         # submitter sealed residency for is never the planner's.
         if residency_plan.read(queue, key) is not None or \
-                has_plan_history(queue, key):
+                (history is None or key in history):
             counters["stands_down"] += 1
             outcomes.append({"action_key": key, "outcome": "stands_down",
                              "fresh": False})

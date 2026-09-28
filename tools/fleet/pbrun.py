@@ -5936,7 +5936,7 @@ def residency_stage_rows(
                 f"pbrun: ram tier {ram_tier_id} announces no mountpoint to "
                 f"promote into")
         ram_python, ram_tool, ram_egress_tool = movement_tools(
-            ram_tier, mover="ram_promote.py")
+            ram_tier, mover=movement_actions.RAM_PROMOTE_SCRIPT)
 
     # Every chunk of both legs is cut here, before a single node is sealed or
     # published: an entry that no chunk of a tier can hold refuses the whole

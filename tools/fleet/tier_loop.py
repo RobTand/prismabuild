@@ -6210,6 +6210,11 @@ def _shared_advance_fences(queue: pool.PoolQueue, tier_wants: list, *,
 _RAM_HOST_SYNC: dict[str, bool] = {}
 _RAM_HOST_SYNC_DEFAULT: bool = False
 
+#: The last manifest-promotion summary triple this loop emitted
+#: (REVIEW-1252-r4 nit): an unchanged cycle appends nothing, the same
+#: content gate the planner's receipts use.
+_MANIFEST_SUMMARY_LAST: tuple[int, int, int] | None = None
+
 
 def rows_held_for_gate(queue: pool.PoolQueue, host: str,
                        converged: bool) -> int | None:
@@ -10231,12 +10236,18 @@ def _cycle(
                           {"event": "manifest-row-promotion", **outcome},
                           tier_consumers=tier_consumers)
             if stats:
-                _emit(queue, host,
-                      {"event": "manifest-row-promotion-summary",
-                       "replayed": int(stats.get("replayed", 0)),
-                       "stands_down": int(stats.get("stands_down", 0)),
-                       "examined": int(stats.get("examined", 0))},
-                      tier_consumers=tier_consumers)
+                triple = (int(stats.get("replayed", 0)),
+                          int(stats.get("stands_down", 0)),
+                          int(stats.get("examined", 0)))
+                global _MANIFEST_SUMMARY_LAST
+                if triple != _MANIFEST_SUMMARY_LAST:
+                    _MANIFEST_SUMMARY_LAST = triple
+                    _emit(queue, host,
+                          {"event": "manifest-row-promotion-summary",
+                           "replayed": triple[0],
+                           "stands_down": triple[1],
+                           "examined": triple[2]},
+                          tier_consumers=tier_consumers)
         except Exception as exc:  # REVIEW-1252 item 1: advisory, never fatal
             # The planner is fail-closed per row; this is the loop-level
             # guard for what a row cannot catch (a queue read, say).  Total,

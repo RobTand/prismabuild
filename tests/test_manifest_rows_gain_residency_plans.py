@@ -471,12 +471,14 @@ def test_remembered_rows_emit_one_summary_line_per_cycle(tmp_path):
         return [line for line in lines
                 if "manifest-row-promotion-summary" in line]
 
-    # A replayed answer is not an event: no fresh line, exactly one summary.
+    # A replayed answer is not an event: no fresh line, exactly one summary,
+    # and an identical cycle appends nothing at all (r4 nit: the summary is
+    # content-gated on its triple like the receipts are).
     assert fresh_lines(first) == [], fresh_lines(first)
     assert len(summary_lines(first)) == 1
     assert fresh_lines(second) == []
-    assert len(summary_lines(second)) - len(summary_lines(first)) == 1
-    summary = summary_lines(second)[-1]
+    assert len(summary_lines(second)) == len(summary_lines(first))
+    summary = summary_lines(first)[-1]
     assert '"replayed": 150' in summary
 
 
@@ -537,3 +539,33 @@ def test_a_movement_row_is_machinery_not_a_consumer(tmp_path):
             fleet.queue, fleet.cas_root, _stage_tier(fleet), ready=[item])
         assert outcomes[0]["outcome"] == "no_manifest", outcomes[0]
         assert residency_plan.read(fleet.queue, child) is None
+
+
+def test_the_superseded_directory_is_listed_once_per_call(tmp_path, monkeypatch):
+    """REVIEW-1252-r4 [P2]: one listing answers every row's history question.
+
+    The directory holds ~500 markers live and the loop runs every 5 s; a
+    per-row listing would sort ~78k entries between two cycles.
+    """
+
+    fleet = Fleet(tmp_path)
+    files = [fleet.file(name, size) for name, size in NAMED_FILES]
+    keys = [fleet.action(f"r4-plain-{index}", files, with_manifest=False)
+            for index in range(5)]
+    listings: list[str] = []
+    real_scan = pool_scan = __import__("prismabuild.pool", fromlist=["_scan"])._scan
+
+    def counting(directory):
+        listings.append(str(directory))
+        return real_scan(directory)
+
+    monkeypatch.setattr(
+        __import__("prismabuild.pool", fromlist=["_scan"]), "_scan", counting)
+
+    outcomes = manifest_promotion.promote_ready_manifest_rows(
+        fleet.queue, fleet.cas_root, _stage_tier(fleet),
+        ready=[_ready_item(fleet, key) for key in keys])
+
+    assert {outcome["outcome"] for outcome in outcomes} == {"no_manifest"}
+    superseded = [name for name in listings if name.endswith("superseded")]
+    assert len(superseded) == 1, superseded
