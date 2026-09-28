@@ -607,7 +607,8 @@ def default_duration(known: dict[str, float]) -> float | None:
 
 
 def shard(files: list[str], count: int, *, durations: dict[str, float] | None = None,
-          ceiling: float | None = None) -> list[list[str]]:
+          ceiling: float | None = None,
+          model_default: float | None = None) -> list[list[str]]:
     """Round-robin without measurements; measured packing with them (#1246).
 
     ``durations`` maps each measured file to its predicted seconds, and
@@ -622,9 +623,13 @@ def shard(files: list[str], count: int, *, durations: dict[str, float] | None = 
     * the rest pack longest-processing-time first into the remaining
       shards, largest prediction onto the least-loaded bucket.
 
-    Files with no measurement take ``default_duration`` of the measured
-    ones.  With no measurement at all the answer is the rotation.
-    Deterministic throughout: ties break by bucket index, then file name.
+    Files with no measurement take the model's default: ``model_default``
+    -- the median over ALL history that ``main()`` prints and reports
+    (files outside this run included) -- falling back to
+    ``default_duration`` of this run's measured files when no model
+    default is passed.  With no measurement at all the answer is the
+    rotation.  Deterministic throughout: ties break by bucket index, then
+    file name.
     """
 
     count = max(1, min(count, len(files)))
@@ -633,7 +638,8 @@ def shard(files: list[str], count: int, *, durations: dict[str, float] | None = 
     known = {name: durations[name] for name in files if name in durations}
     if not known:
         return _round_robin(files, count)
-    default = default_duration(known)
+    default = (model_default if model_default is not None
+               else default_duration(known))
     assert default is not None
     predicted = {name: known.get(name, default) for name in files}
     ordered = sorted(files, key=lambda name: (-predicted[name], name))
@@ -1326,7 +1332,7 @@ def main() -> int:
         assert model_default is not None
         default = model_default
         buckets = shard(files, args.shards, durations=predicted,
-                        ceiling=sealed_s)
+                        ceiling=sealed_s, model_default=model_default)
         measured = sum(1 for name in files if name in predicted)
         print(f"pbtest: duration model from {len(args.history)} history "
               f"file(s): {measured}/{len(files)} files measured, the rest "

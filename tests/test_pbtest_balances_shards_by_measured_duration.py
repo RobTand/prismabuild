@@ -252,6 +252,33 @@ def test_the_printed_default_is_the_packing_default():
     assert pbtest.default_duration({}) is None
 
 
+def test_shard_uses_mains_default_when_history_holds_outside_files():
+    """The packing default is main()'s model default, not the run's (#1303).
+
+    History holds files outside this run, so the median over ALL history
+    (what main() prints and reports) differs from the median of this
+    run's files alone.  shard() must pack the unseen file on main()'s
+    default; without a passed model_default it falls back to the run's.
+    """
+
+    files = ["tests/test_a.py", "tests/test_b.py", "tests/test_new.py"]
+    predicted = {"tests/test_a.py": 10.0, "tests/test_b.py": 20.0,
+                 "tests/test_gone_x.py": 1000.0,
+                 "tests/test_gone_y.py": 1000.0,
+                 "tests/test_gone_z.py": 1000.0}
+    model_default = pbtest.default_duration(predicted)
+    assert model_default == 1000.0
+    assert pbtest.default_duration(
+        {name: predicted[name] for name in files if name in predicted}) == 15.0
+    packed = pbtest.shard(files, 2, durations=dict(predicted), ceiling=300.0,
+                          model_default=model_default)
+    assert packed == [["tests/test_new.py"],
+                      ["tests/test_b.py", "tests/test_a.py"]]
+    fallback = pbtest.shard(files, 2, durations=dict(predicted), ceiling=300.0)
+    assert fallback == [["tests/test_b.py"],
+                        ["tests/test_new.py", "tests/test_a.py"]]
+
+
 def test_shard_packing_properties():
     """No drop or duplicate, the count is a ceiling, and history is stable."""
 
