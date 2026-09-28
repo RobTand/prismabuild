@@ -693,9 +693,8 @@ def idle_judgement_with_reference(
     while PrismaBuild ran nothing, with the evidence a refusal records,
     ``state`` is the history to persist (unchanged when ``state is`` the
     returned one), and ``reference`` is the baseline window the verdict was
-    actually judged against -- the whole remembered window with holders
-    present, the window before this sample less an ongoing excursion
-    without them, and ``None`` where the verdict judged against nothing at
+    actually judged against -- the whole remembered window less unlatched
+    provisional seeds, with holders present or not, and ``None`` where the verdict judged against nothing at
     all: a forced holder tail, or the fresh empty window an identity reset
     judges against (empty, not None -- the reset state carries no samples
     to re-derive, #1233 review).  The
@@ -762,10 +761,14 @@ def idle_judgement_with_reference(
     current = {field: float(sample[field]) for field in fields}
     if holders:
         verdict['state'] = 'holders_present'
-        verdict['exceeds'] = _judge_idle(verdict, samples, current, fields, prior_rule)
+        # Provisional seeds judge nothing here either (#1185): they are the
+        # same refused load the main path holds out of its reference, and
+        # comparing against them would let that load mask itself as "not
+        # exceeding" whenever a holder is present.
+        verdict['exceeds'] = _judge_idle(verdict, firm, current, fields, prior_rule)
         if type(now) in (int, float) and (seen is None or now > seen):
             state['holders_seen_unix'] = now
-        return verdict, state, samples
+        return verdict, state, firm
     started = now - (sample['interval_s'] if interval_s is None else interval_s)
     if seen is not None and started <= seen:
         verdict.update(state='holder_tail', exceeds=True, holders_seen_unix=seen,

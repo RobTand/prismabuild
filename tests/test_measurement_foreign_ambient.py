@@ -102,18 +102,18 @@ def test_foreign_excess_on_the_measurements_own_cpus_is_typed_ambient(
     """RED: a hot neighbour on the CPUs the measurement would be given.
 
     The measurement needs 4 CPUs -- the ledger's first four free tokens,
-    CPUs 0-3 -- and CPUs 0-1 read 0.20 foreign while the other 18 read
-    0.01.  The old box-wide sum (0.42 + 0.18 = 0.60) stays under the
-    unmeasured prior (1.0), so the old rule seeds the window and admits
-    the measurement onto loaded CPUs.  GREEN: the refusal is typed
-    ``measurement_foreign_ambient``, names those CPUs and their readings,
-    starves (the row behind claims), and never drains.
+    CPUs 0-3 -- and CPUs 0-1 read 0.60 foreign (busy 1.38, over the 1.0
+    unmeasured prior) while the other 18 read 0.01.  The old rule refuses
+    ``measurement_host_not_idle`` and withholds the whole box for load no
+    drain clears, so the row behind never claims.  GREEN: the refusal is
+    typed ``measurement_foreign_ambient``, names those CPUs and their
+    readings, starves (the row behind claims), and never drains.
     """
 
     capacity = {"cpu": 20, "mem_gb": 120}
     tiers = {"preferred": list(range(20)), "fallback": []}
     per_cpu = _flat(0.01)
-    per_cpu["0"] = per_cpu["1"] = 0.20
+    per_cpu["0"] = per_cpu["1"] = 0.60
     monkeypatch.setattr(adaptive_cpu.Controller, "sample",
                         lambda self: _sample(clock, per_cpu=per_cpu))
     measurement = _key("measurement")
@@ -135,7 +135,7 @@ def test_foreign_excess_on_the_measurements_own_cpus_is_typed_ambient(
     decision = denial["evidence"]["decision"]
     assert decision["reason"] == "measurement_foreign_ambient", decision
     assert decision["foreign_cpus"] == [0, 1], decision
-    assert decision["per_cpu_ambient_max"] == pytest.approx(0.10), decision
+    assert decision["per_cpu_foreign_max"] == pytest.approx(0.10), decision
 
 
 def test_foreign_only_off_the_measurements_cpus_keeps_the_withhold(
@@ -162,33 +162,37 @@ def test_foreign_only_off_the_measurements_cpus_keeps_the_withhold(
                         lambda item: ("shape", item["action_key"] == measurement))
 
     _publish(queue, clock, measurement, {"cpu": 4, "mem_gb": 40})
+    for _ in range(pool.STARVATION_FLOOR - 1):
+        queue.record_pass(measurement)
     behind = _publish(queue, clock, _key("behind"), {"cpu": 4, "mem_gb": 40})
     got = _claim(queue, capacity, tiers=tiers)
-    assert got != behind, (
+    assert got is None, (
         "foreign load off the measurement's CPUs must not starve it: "
         f"the row behind claimed as {got}")
     denial = _denial(queue, measurement)
+    assert denial["reason"] == "adaptive_cpu_refused_withholding", denial
     decision = denial["evidence"]["decision"]
     assert decision["reason"] == "measurement_host_not_idle", decision
 
 
-def test_persistent_excess_on_predicted_cpus_never_promotes(
+def test_provisional_depth_measures_a_loaded_host(
     queue: pool.PoolQueue, clock, monkeypatch,
 ) -> None:
-    """RED: an excess that outlives the window still refuses.
+    """GREEN: refused seeds latch into a baseline at depth, never before.
 
-    Foreign 0.20 sits on the measurement's CPUs pass after pass.  The old
-    rule seeds the first sample (0.58 under the 1.0 prior) and reads every
-    later one as its own baseline, admitting the measurement onto loaded
-    CPUs.  GREEN: every pass refuses ``measurement_foreign_ambient`` -- the typed
-    check is absolute against measured ambient, not window-relative, so
-    there is nothing for the excursion to promote.
+    Foreign 0.60 sits on the measurement's CPUs pass after pass (busy
+    1.38, over the 1.0 prior).  #1014 drops those refused seeds, so the
+    old rule withholds forever on a host that boots under load.  The
+    provisional path instead measures the steady load once five seeds
+    span 180 s -- no excursion-promotion before depth (the first rounds
+    withhold), and after the latch the load *is* the baseline, so the
+    measurement is admitted onto the host it measured.
     """
 
     capacity = {"cpu": 20, "mem_gb": 120}
     tiers = {"preferred": list(range(20)), "fallback": []}
     per_cpu = _flat(0.01)
-    per_cpu["0"] = per_cpu["1"] = 0.20
+    per_cpu["0"] = per_cpu["1"] = 0.60
     monkeypatch.setattr(adaptive_cpu.Controller, "sample",
                         lambda self: _sample(clock, per_cpu=per_cpu))
     measurement = _key("measurement")
@@ -196,14 +200,23 @@ def test_persistent_excess_on_predicted_cpus_never_promotes(
                         lambda item: ("shape", item["action_key"] == measurement))
 
     _publish(queue, clock, measurement, {"cpu": 4, "mem_gb": 40})
-    for _ in range(12):
-        clock[0] += 120.0
+    # Before depth the box withholds: two rounds hold four seeds spanning
+    # 60 s, under both the count and the span the latch needs.
+    for _ in range(2):
+        clock[0] += 60.0
         queue.record_pass(measurement)
-        got = _claim(queue, capacity, tiers=tiers)
-        assert got != measurement, (
-            f"measurement admitted onto foreign-loaded CPUs at t={clock[0]}")
+        assert _claim(queue, capacity, tiers=tiers) is None
+    # Past depth the steady load is the baseline: the measurement runs.
+    admitted = False
+    for _ in range(4):
+        clock[0] += 60.0
+        queue.record_pass(measurement)
+        if _claim(queue, capacity, tiers=tiers) == measurement:
+            admitted = True
+            break
+    assert admitted, "five refused seeds spanning 180 s must measure the host"
     denial = _denial(queue, measurement)
-    assert denial["evidence"]["decision"]["reason"] == "measurement_foreign_ambient"
+    assert denial["evidence"]["decision"]["reason"] != "measurement_foreign_ambient"
 
 
 def test_ambient_refusal_names_foreign_pids(
@@ -219,7 +232,7 @@ def test_ambient_refusal_names_foreign_pids(
     capacity = {"cpu": 20, "mem_gb": 120}
     tiers = {"preferred": list(range(20)), "fallback": []}
     per_cpu = _flat(0.01)
-    per_cpu["0"] = per_cpu["1"] = 0.20
+    per_cpu["0"] = per_cpu["1"] = 0.60
     monkeypatch.setattr(adaptive_cpu.Controller, "sample",
                         lambda self: _sample(clock, per_cpu=per_cpu))
     measurement = _key("measurement")
@@ -247,6 +260,9 @@ def test_refused_seeds_join_provisional_and_measure_at_depth() -> None:
     """
     state: dict = {}
     now = [T0]
+    # The prior refuses everything, as an unmeasured host's fixed line
+    # refuses load: only then are the refused samples seeds at all.
+    prior_rule = lambda current: True
 
     def sample(level):
         now[0] += 60.0
@@ -261,7 +277,8 @@ def test_refused_seeds_join_provisional_and_measure_at_depth() -> None:
     verdicts = []
     for _ in range(5):
         verdict, state, _ = adaptive_cpu.idle_judgement_with_reference(
-            state, sample(0.10), holders=[], identity="host")
+            state, sample(0.10), holders=[], identity="host",
+            prior_rule=prior_rule)
         verdicts.append(verdict)
     assert all(v["basis"] == "unmeasured" for v in verdicts[:4]), verdicts
     assert verdicts[4]["basis"] == "measured", verdicts
