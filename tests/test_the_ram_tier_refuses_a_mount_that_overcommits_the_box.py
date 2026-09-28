@@ -34,7 +34,7 @@ def _ram_tier(tmp_path: Path, *, size_gib: int, memtotal_gib: int = 294,
               arc_c_max_gib: int = 22, arc_meta_gib: int = 5,
               arc_floor_gib: int = 20, reserve_gib: int = 16,
               ceiling_max_gib: int = 256,
-               worker_mem_gb: int | None = None):
+               rows_held_gib: int | None = None):
     mount = tmp_path / "ram"
     mount.mkdir(exist_ok=True)
     proc = tmp_path / "proc"
@@ -65,7 +65,7 @@ def _ram_tier(tmp_path: Path, *, size_gib: int, memtotal_gib: int = 294,
             "system_reserve_gib": reserve_gib, "prefill_depth": None,
         },
         statvfs=statvfs, proc_mounts=str(proc / "mounts"),
-        meminfo_path=str(proc / "meminfo"), worker_mem_gb=worker_mem_gb)
+        meminfo_path=str(proc / "meminfo"), rows_held_gib=rows_held_gib)
     return tiers[storage_tiers.tier_id("ram", HOST)]
 
 
@@ -105,9 +105,9 @@ def test_a_shrunk_arc_admits_the_ceiling(tmp_path: Path) -> None:
     """The runbook's own arithmetic: 256 + 22 + 16 = 294, exactly the box."""
 
     tier = _ram_tier(tmp_path, size_gib=256, arc_c_max_gib=22, arc_meta_gib=5,
-                     # The fixture box offers no jobs; the window guard's own
-                     # tests cover a nonzero offer (#645).
-                     worker_mem_gb=0)
+                     # No rows hold host tokens beside the tier; the window guard's own
+                     # tests cover nonzero holds (#645, #1222).
+                     rows_held_gib=0)
 
     assert tier["ram_admission"]["admissible"] is True
     assert storage_tiers.tier_tokens(tier) == {
