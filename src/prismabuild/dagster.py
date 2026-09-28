@@ -18,10 +18,9 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 import importlib
 import json
-import math
 from pathlib import Path
 import re
-from typing import Any, Protocol
+from typing import Any, NoReturn, Protocol
 
 from . import core as pb
 from . import slurm as ps
@@ -113,7 +112,7 @@ def _exact_mapping(
     return value
 
 
-def _fail(message: str) -> None:
+def _fail(message: str) -> NoReturn:
     raise DagsterGraphError(message)
 
 

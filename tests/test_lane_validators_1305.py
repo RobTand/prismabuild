@@ -1,10 +1,14 @@
-"""Lane validators refuse NUL/control text like the core owner (issue #1305).
+"""Lane validators report like the core owner (issue #1305).
 
 The slurm and dagster lanes used to validate text with a pattern-only check,
 while ``core._text`` hardened (NUL/control refusal, issue #21). Both lanes now
-delegate to the core owner, so the hardened rule applies to them too -- a
-deliberate behaviour change. These tests pin the new refusal per lane, plus
-the preserved agreement on valid input and the lane error types.
+delegate to the core owner. This is not an observable behaviour change on
+accepted input -- every lane pattern is a full match over a class with no
+control characters, so the old code already refused those strings. What
+changed is the message and check order (control characters now report the
+NUL/control refusal; non-str/empty report must-be-non-empty instead of
+invalid-value). These tests pin the new messages per lane, plus the preserved
+agreement on valid input and the lane error types.
 """
 
 from __future__ import annotations
