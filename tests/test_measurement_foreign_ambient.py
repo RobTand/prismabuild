@@ -265,4 +265,6 @@ def test_refused_seeds_join_provisional_and_measure_at_depth() -> None:
         verdicts.append(verdict)
     assert all(v["basis"] == "unmeasured" for v in verdicts[:4]), verdicts
     assert verdicts[4]["basis"] == "measured", verdicts
-    assert verdicts[4]["samples"] == 5, verdicts
+    # The latching verdict judges against the four provisional seeds; the
+    # fifth joins them as the measured baseline at once.
+    assert verdicts[4]["samples"] == 4, verdicts

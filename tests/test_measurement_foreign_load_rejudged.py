@@ -1,23 +1,16 @@
-"""The foreign-load starve rule derives from the idle verdict itself (#1233).
+"""The measurement verdict on foreign load is typed per-CPU (#1185).
 
-#1232 judged a measurement's foreign excess with a per-CPU yardstick
-(``foreign_cpu[cpu] > IDLE_BUSY_FRACTION``) and only when every held CPU
-read quiet.  Both halves were stricter than the invariant they served --
-"the excess would survive every holder draining" (#1231):
+#1233's box-wide surviving-sum is retired: it let foreign load far from the
+measurement's own CPUs overtake a row no drain could ever place.  The rule
+now checks only the measurement's own predicted CPUs against
+``PER_CPU_FOREIGN_MAX`` (0.10, sparklina-derived), excluding PB-held busy:
 
-* a busy holder plus a foreign excess that alone exceeds the verdict still
-  withheld the whole box (sparky's steady state: one admission per row
-  boundary for as long as the measurement is queued), and
-* foreign load spread thinly can exceed the host's idle verdict with no
-  single CPU above ``.05``.
-
-The rule now re-judges the idle verdict on the foreign busy that survives
-every drain -- ``S = sum(foreign_per_cpu_busy[c] for c not in held)``,
-judged by the same :func:`_judge_idle` against the same baseline or prior
--- and starves whenever that alone exceeds, whatever the held CPUs do.  PSI
-cannot be attributed and stays conservative: a verdict exceeded only on
-``psi_some`` withholds as before, and holder-only busy keeps the #924
-withhold-then-admit behavior.
+* foreign above the line on those CPUs refuses ``measurement_foreign_ambient``
+  and starves (no drain clears it; the rows behind keep claiming),
+* anything else -- sub-threshold foreign, load off those CPUs, a sample
+  that cannot answer the question -- refuses ``measurement_host_not_idle``
+  and withholds, exactly as before,
+* holder-only busy keeps the #924 withhold-then-admit behavior.
 """
 from __future__ import annotations
 
@@ -89,16 +82,16 @@ def _flat(level, *, quiet=()):
     return {str(cpu): (0. if cpu in quiet else level) for cpu in range(20)}
 
 
-def test_a_busy_holder_with_a_foreign_excess_of_its_own_still_starves(
+def test_a_busy_holder_with_subthreshold_foreign_withholds(
     queue: pool.PoolQueue, clock, monkeypatch,
 ) -> None:
-    """The mixed shape (#1233 case 1): held CPU busy AND foreign-alone excess.
+    """The mixed shape (#1233 case 1, retired): held CPU busy AND foreign.
 
-    RED (the defect): the foreign busy on unheld CPUs alone exceeds the
-    unmeasured prior (19 x .06 = 1.14 > 1.0), but a busy held CPU made
-    #1232's gate keep the conservative whole-box withhold, so the row behind
-    stayed unclaimed.  GREEN: draining the holder cannot clear the foreign
-    excess, so the measurement starves and the row behind claims.
+    The foreign 0.06 on the measurement's predicted CPUs sits under the
+    0.10 per-CPU line, so the typed check does not fire: the refusal stays
+    ``measurement_host_not_idle`` and the box withholds behind the busy
+    holder.  Above-line foreign on those same CPUs starves instead -- see
+    ``test_measurement_foreign_ambient.py``.
     """
 
     capacity = {"cpu": 20, "mem_gb": 120}
@@ -120,28 +113,26 @@ def test_a_busy_holder_with_a_foreign_excess_of_its_own_still_starves(
     for _ in range(pool.STARVATION_FLOOR - 1):
         queue.record_pass(measurement)
     behind = _publish(queue, clock, _key("behind"), {"cpu": 4, "mem_gb": 40})
-    assert claim() == behind, (
-        "a foreign excess that survives the holder draining still withheld "
-        "the box behind a busy holder")
+    assert claim() is None, (
+        "sub-threshold foreign on the measurement's CPUs is not proven "
+        "ambient: the box withholds behind the busy holder")
     denial = _denial(queue, measurement)
-    assert denial["reason"] == "adaptive_cpu_refused_starved", denial
+    assert denial["reason"] == "adaptive_cpu_refused_withholding", denial
     decision = denial["evidence"]["decision"]
-    assert decision["reason"] == "measurement_foreign_load"
-    assert decision["foreign_busy_cpus"] == pytest.approx(1.14), decision
-    assert decision["held_cpus"] == [0], decision
-    assert decision["foreign_idle"]["exceeds"] is True, decision
+    assert decision["reason"] == "measurement_host_not_idle", decision
 
 
-def test_thin_foreign_spread_exceeding_the_verdict_with_no_cpu_above_the_fraction(
+def test_thin_foreign_spread_below_the_per_cpu_line_withholds(
     queue: pool.PoolQueue, clock, monkeypatch,
 ) -> None:
-    """The thin shape (#1233 case 2): every CPU under .05, S over the baseline.
+    """The thin shape (#1233 case 2, retired): every CPU under the line.
 
-    The host's idle window is seeded at busy 0.3 (measured, no holders), then
-    foreign busy spreads 0.04 across all 20 CPUs: S = 0.8 exceeds the
-    measured baseline maximum 0.3 while no CPU crosses .05, so no per-CPU
-    yardstick ever fires.  GREEN: the re-judged verdict starves the
-    measurement and names S.
+    Foreign busy spreads 0.04 across all 20 CPUs: S = 0.8 exceeds the
+    measured baseline maximum 0.3 while no CPU crosses the per-CPU line, so
+    the typed check does not fire and the refusal stays
+    ``measurement_host_not_idle`` with the box withheld.  The #1233 sum is
+    retired by design: sub-line foreign is contention-unknown, and
+    withholding it is the conservative answer (#1185).
     """
 
     capacity = {"cpu": 20, "mem_gb": 120}
@@ -167,14 +158,13 @@ def test_thin_foreign_spread_exceeding_the_verdict_with_no_cpu_above_the_fractio
     for _ in range(pool.STARVATION_FLOOR - 1):
         queue.record_pass(measurement)
     behind = _publish(queue, clock, _key("behind"), {"cpu": 4, "mem_gb": 40})
-    assert claim() == behind
+    assert claim() is None, (
+        "a thin foreign spread under the per-CPU line withholds, "
+        "never starves")
     denial = _denial(queue, measurement)
-    assert denial["reason"] == "adaptive_cpu_refused_starved", denial
+    assert denial["reason"] == "adaptive_cpu_refused_withholding", denial
     decision = denial["evidence"]["decision"]
-    assert decision["reason"] == "measurement_foreign_load", decision
-    assert decision["foreign_busy_cpus"] == pytest.approx(0.8), decision
-    assert decision["foreign_idle"]["basis"] == "measured", decision
-    assert decision["foreign_idle"]["exceeds"] is True, decision
+    assert decision["reason"] == "measurement_host_not_idle", decision
 
 
 def test_holder_only_busy_with_foreign_below_the_verdict_keeps_the_withhold(
@@ -222,89 +212,3 @@ def test_holder_only_busy_with_foreign_below_the_verdict_keeps_the_withhold(
     state["busy"] = False
     clock[0] += adaptive_cpu.MAX_INTERVAL_S + adaptive_cpu.MAX_SAMPLE_AGE_S + 1
     assert claim() == measurement
-
-
-def _controller(queue):
-    ledger = queue.ledger()
-    return adaptive_cpu.Controller(ledger, {"preferred": list(range(20)),
-                                            "fallback": []})
-
-
-def _sample_at(unix, *, busy, psi=0.034, interval=1.0, holders=None):
-    return {"sampled_unix": unix, "cpu_count": 20, "interval_s": interval,
-            "psi_some": psi, "busy_cpus": busy}
-
-
-def test_an_identity_change_rejudges_on_the_fresh_window(tmp_path):
-    """#1236 review: the reset verdict judged against nothing, not old samples.
-
-    A changed CPU topology is a different host: the verdict is judged on a
-    fresh empty window, and the re-judgement must not read the old-identity
-    samples the pass's state file still carries.
-    """
-    queue = pool.PoolQueue(tmp_path / "q")
-    queue.ensure_layout()
-    controller = _controller(queue)
-    seed = _sample_at(2000000.0, busy=0.3)
-    assert controller.idle(seed, [])["basis"] == "unmeasured"
-    grew = _sample_at(2000001.0, busy=0.3)
-    assert controller.idle(grew, [])["basis"] == "measured"
-
-    # A topology change under the controller: the state file still carries
-    # the old-identity samples, but the next judgement resets the window.
-    state = adaptive_cpu.read_json(controller.base / adaptive_cpu.IDLE_BASELINE)
-    state["identity"] = 999
-    adaptive_cpu.write_json(controller.base / adaptive_cpu.IDLE_BASELINE, state)
-    controller._idle = None
-    after = _sample_at(2000002.0, busy=2.0)
-    verdict = controller.idle(after, [])
-    assert verdict["state"] == "idle" and verdict["basis"] == "unmeasured"
-
-    rejudged = controller.rejudge_idle_foreign(after, [], busy_cpus=0.5)
-    assert rejudged["exceeds"] is False, rejudged
-    assert rejudged["basis"] == "unmeasured", rejudged
-
-
-def test_a_holder_tail_rejudges_against_nothing(tmp_path):
-    """#1236 review: a forced holder tail must not re-judge as foreign load.
-
-    The tail verdict is forced ``exceeds`` and judges against no reference at
-    all; a re-judgement that read the remembered window could read a holder's
-    own tail as load no drain clears -- and in that state no CPU is held, so
-    every tail CPU counts as unheld -- starving the measurement.
-    """
-    queue = pool.PoolQueue(tmp_path / "q")
-    queue.ensure_layout()
-    controller = _controller(queue)
-    seed = _sample_at(2000000.0, busy=0.3, interval=100.0)
-    assert controller.idle(seed, [])["basis"] == "unmeasured"
-    grew = _sample_at(2000001.0, busy=0.3, interval=100.0)
-    assert controller.idle(grew, [])["basis"] == "measured"
-    # A holder is seen inside the next sample's interval, then leaves.
-    controller.idle(_sample_at(2000050.0, busy=1.0), ["holder"])
-    tail = _sample_at(2000050.5, busy=2.0, interval=1.0)
-    verdict = controller.idle(tail, [])
-    assert verdict["state"] == "holder_tail" and verdict["exceeds"] is True
-
-    rejudged = controller.rejudge_idle_foreign(tail, [], busy_cpus=2.0)
-    assert rejudged["exceeds"] is False, rejudged
-
-
-def test_a_stale_cache_key_does_not_rejudge(tmp_path):
-    """#1236 review: the re-judgement is bound to this sample and holder state.
-
-    The cached verdict belongs to ``(sampled_unix, holders)``; a different
-    sample must not be re-judged against it.
-    """
-    queue = pool.PoolQueue(tmp_path / "q")
-    queue.ensure_layout()
-    controller = _controller(queue)
-    seed = _sample_at(2000000.0, busy=0.3)
-    assert controller.idle(seed, [])["basis"] == "unmeasured"
-    grew = _sample_at(2000001.0, busy=0.3)
-    assert controller.idle(grew, [])["basis"] == "measured"
-
-    other = _sample_at(2000006.0, busy=2.0)
-    rejudged = controller.rejudge_idle_foreign(other, [], busy_cpus=2.0)
-    assert rejudged["state"] == "stale-verdict", rejudged
-    assert rejudged["exceeds"] is False, rejudged

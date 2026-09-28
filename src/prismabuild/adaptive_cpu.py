@@ -595,6 +595,29 @@ IDLE_FIELDS = ('busy_cpus', 'psi_some')
 #: the bound also keeps that write to a few kilobytes.
 IDLE_WINDOW = 256
 
+#: Provisional seeding gate (#1185): holder-free samples an empty window's
+#: prior refuses still join, flagged provisional, and the window measures
+#: once PROVISIONAL_MIN_SAMPLES of them span PROVISIONAL_MIN_SPAN_S.
+#: Without this a host that boots under foreign load never seeds (#1014
+#: drops the refused seed) and stays ``basis: unmeasured`` forever.
+#: Derived from sparklina's 2026-09-28 probe series (15 live samples over
+#: 650 s at ~43 s cadence, evidence.json ``issue_1185_probe_series``):
+#: ambient lag-1 autocorrelation 0.673, so rho < 0.2 at ~4 lags ~= 175 s,
+#: hence the 180 s span; depth 5 covers the span at loaded cadence plus
+#: one.  An admitted seed still measures at once, as before -- only
+#: refused seeds wait out the gate, and the window judges ``unmeasured``
+#: (the prior still refuses) until it does.
+PROVISIONAL_MIN_SAMPLES = 5
+PROVISIONAL_MIN_SPAN_S = 180.0
+#: The per-CPU foreign line for a measurement's own CPUs (#1185): the same
+#: series' ambient per-CPU foreign peaks at 0.080 while the incident's
+#: loaded CPUs read 0.14-0.28, so 0.10 clears both populations.
+#: Sparklina-derived; per-host learning is follow-up work.  PSI stays
+#: window-relative (stable at 0.0029 +/- 0.0003 ambient, and the idle gate
+#: already judges it) -- only per-CPU foreign moves to the absolute line,
+#: which is where the box-wide sum was the defect.
+PER_CPU_FOREIGN_MAX = 0.10
+
 
 def _idle_statistics(samples, field):
     values = [float(s[field]) for s in samples]
@@ -730,6 +753,8 @@ def idle_judgement_with_reference(
         # A changed CPU topology or device is a different host for this purpose.
         state = {'schema': IDLE_BASELINE_SCHEMA, 'identity': identity, 'samples': []}
     samples = _idle_samples(state, fields)
+    firm = [s for s in samples if not s.get('provisional')]
+    pending = [s for s in samples if s.get('provisional')]
     now = sample.get('sampled_unix')
     seen = state.get('holders_seen_unix')
     seen = float(seen) if type(seen) in (int, float) and math.isfinite(seen) else None
@@ -749,8 +774,21 @@ def idle_judgement_with_reference(
         # would let #1233's re-judgement read a holder's own tail as foreign
         # load and starve the measurement (#1236 review).
         return verdict, state, None
-    reference, run = _idle_reference(samples, now=now,
-                                     excursion_unix=state.get('excursion_unix'))
+    if firm:
+        completes = False
+        reference, run = _idle_reference(firm, now=now,
+                                         excursion_unix=state.get('excursion_unix'))
+    else:
+        # No measured history: provisional samples judge nothing until the
+        # gate passes (#1185).  ``pending[0]`` is the oldest -- samples
+        # append in time order -- so the span is now less the first
+        # provisional seed; a lone first seed spans nothing and cannot
+        # complete the gate on its own.
+        completes = (len(pending) + 1 >= PROVISIONAL_MIN_SAMPLES
+                       and bool(pending)
+                       and type(now) in (int, float)
+                       and now - pending[0]['sampled_unix'] >= PROVISIONAL_MIN_SPAN_S)
+        reference, run = (list(pending), None) if completes else ([], None)
     verdict['state'] = 'idle'
     exceeds = verdict['exceeds'] = _judge_idle(verdict, reference, current, fields, prior_rule)
     if run is not None and exceeds:
@@ -769,6 +807,19 @@ def idle_judgement_with_reference(
         if exceeds and reference:
             state['excursion_unix'] = run if run is not None else now
         else:
+            state.pop('excursion_unix', None)
+    elif refused_seed and all(s['sampled_unix'] != now for s in samples):
+        # A refused seed still joins, flagged provisional (#1185): dropping
+        # it leaves a host that boots under load unmeasured forever.  The
+        # gate above keeps it out of every reference until enough of them
+        # span long enough; completing the gate strips every flag, so the
+        # load they record becomes the measured baseline at once.
+        samples.append({'sampled_unix': now, **current, 'provisional': True})
+        if completes:
+            for s in samples:
+                s.pop('provisional', None)
+        state['samples'] = samples[-IDLE_WINDOW:]
+        if not completes:
             state.pop('excursion_unix', None)
     return verdict, state, reference
 
@@ -797,6 +848,10 @@ class Controller:
         self.base = local_state_base(ledger.base)
         self._host_sample = None
         self._idle = None
+        # The (sampled_unix, {cpu: [pids]}) foreign-PID census, recomputed
+        # at most once per sample (#1185): it names the suspects in a
+        # measurement_foreign_ambient refusal, never a decision input.
+        self._foreign_pid_cache = None
 
     def idle(self, sample, holders):
         """This pass's :func:`idle_judgement`, persisted host-local (#997).
@@ -829,41 +884,90 @@ class Controller:
         self._idle = (key, verdict, reference, prior_rule)
         return verdict
 
-    def rejudge_idle_foreign(
-            self, sample, holders, *, busy_cpus: float) -> dict[str, object]:
-        """The idle verdict re-judged on the busy that survives every drain (#1233).
+    def _held_cpus(self, holders) -> set:
+        """The CPUs this host's own rows hold, from the same ledger rows
+        the admission path holds and releases (#1185)."""
+        held = set()
+        for holder in holders or []:
+            allocation = self.ledger.cpu_allocation(holder.name, self.tiers)
+            held.update(allocation['preferred'] + allocation['fallback'])
+        return held
 
-        Unheld CPUs carry no holder work -- PB preserves each holder's
-        ``cpu_allocation`` affinity -- so the attributed busy on them is load
-        no drain of the pool's holders can remove.  This re-judges that part
-        alone, ``busy_cpus := busy_cpus``, through the same :func:`_judge_idle`
-        against the same baseline or prior this pass's verdict used (the
-        cached reference and prior rule from :meth:`idle`).  The cache is
-        keyed by this sample and holder state, and a mismatch -- or a
-        verdict that judged against no reference at all, a forced holder
-        tail -- answers a non-exceeding state, so the conservative refusal
-        stands (#1236 review).  PSI cannot be attributed, so it
-        contributes nothing here: a verdict that exceeded only on
-        ``psi_some`` stays conservative.  The answer is evidence, never
-        persisted, and never seeds the window.
-        """
+    def _foreign_pids(self, cpus, sampled_unix) -> dict:
+        """Up to four foreign PIDs per CPU, for refusal evidence only.
 
-        if self._idle is None:
-            return {'state': 'no-verdict', 'exceeds': False}
-        if self._idle[0] != (sample.get('sampled_unix'), bool(holders)):
-            return {'state': 'stale-verdict', 'exceeds': False}
-        reference, prior_rule = self._idle[2], self._idle[3]
-        if reference is None:
-            return {'state': 'no-reference', 'exceeds': False}
-        # PSI cannot be attributed to a CPU, so only the re-judged busy can
-        # exceed: every other field reads as its quietest, zero.
-        current = {field: 0.0 for field in IDLE_FIELDS}
-        current['busy_cpus'] = float(busy_cpus)
-        rejudged: dict[str, object] = {'window_bound': IDLE_WINDOW,
-                                       'state': 'foreign-rejudged'}
-        rejudged['exceeds'] = _judge_idle(rejudged, reference, current,
-                                         IDLE_FIELDS, prior_rule)
-        return rejudged
+        Reads each numeric ``/proc`` entry's main-thread current CPU (stat
+        field 39) once per sample; anything unreadable or vanished is
+        skipped, and an empty map means the census found nobody, never
+        that the CPUs are clean.  Never consulted by the verdict -- the
+        per-CPU busy numbers in the sample decide, this only names
+        suspects for the operator.  (#1185)"""
+        key = (sampled_unix, tuple(sorted(cpus)))
+        if self._foreign_pid_cache is not None and self._foreign_pid_cache[0] == key:
+            return self._foreign_pid_cache[1]
+        found: dict = {}
+        try:
+            entries = os.listdir('/proc')
+        except OSError:
+            entries = []
+        for entry in entries:
+            if not entry.isdigit():
+                continue
+            try:
+                with open(f'/proc/{entry}/stat', 'rb') as fh:
+                    fields = fh.read().split(b')')[-1].split()
+                cpu = int(fields[36])
+            except (OSError, ValueError, IndexError):
+                continue
+            if cpu in cpus and len(found.setdefault(cpu, [])) < 4:
+                found[cpu].append(int(entry))
+                if all(len(found[c]) >= 4 for c in cpus):
+                    break
+        self._foreign_pid_cache = (key, found)
+        return found
+
+    def _measurement_foreign_ambient(self, sample, holders, declared):
+        """The typed per-CPU ambient check for a measurement (#1185).
+
+        Returns ``None`` when the question cannot be asked on this sample
+        (stale sample, no per-CPU attribution, or the demand's CPUs
+        unknowable); the caller then falls through to the conservative
+        host_not_idle path.  Otherwise ``{'exceeds': bool, 'evidence':
+        {...}}`` where exceeds is true only when a foreign busy reading on
+        one of the measurement's own predicted CPUs tops
+        :data:`PER_CPU_FOREIGN_MAX`.  Held (PB-owned) busy on those CPUs
+        is ours and never fires this; load anywhere else never fires this.
+        PSI stays window-relative and is not consulted here."""
+        if type(sample.get('sampled_unix')) not in (int, float):
+            return None
+        # The attribution rides top-level on the observation
+        # (``Controller.sample`` returns the observation dict itself).
+        foreign = sample.get('foreign_per_cpu_busy')
+        if not isinstance(foreign, dict) or not foreign:
+            return None
+        predicted = self._predicted_cpus(declared) if declared else None
+        if not predicted:
+            return None
+        held = self._held_cpus(holders)
+        readings = {}
+        for cpu in predicted:
+            value = foreign.get(cpu, foreign.get(str(cpu)))
+            if type(value) in (int, float) and math.isfinite(value):
+                readings[cpu] = value
+        if not readings:
+            return None
+        excess = sorted(cpu for cpu, value in readings.items()
+                        if cpu not in held and value > PER_CPU_FOREIGN_MAX)
+        evidence = {'predicted_cpus': list(predicted),
+                    'per_cpu_foreign_busy': {cpu: round(readings[cpu], 6)
+                                             for cpu in sorted(readings)},
+                    'per_cpu_foreign_max': PER_CPU_FOREIGN_MAX,
+                    'held_cpus': sorted(held),
+                    'foreign_cpus': excess}
+        if excess:
+            evidence['foreign_pids'] = self._foreign_pids(
+                set(excess), sample.get('sampled_unix'))
+        return {'exceeds': bool(excess), 'evidence': evidence}
 
     def write_state(self, name, value):
         write_json(self.base / name, value)
@@ -1214,57 +1318,23 @@ class Controller:
         # otherwise the holder loop below refuses the measurement
         # ``measurement_holder`` (naming ``isolated_by``, #982).
         if measurement and (not fresh or idle['exceeds']):
-            # #1231/#1233: the idle verdict cannot tell whose load exceeded
-            # it.  A fresh sample's attribution can: a CPU a pool holder
-            # holds carries the pool's own work, which that holder draining
-            # clears, while the attributed busy on unheld CPUs is load no
-            # drain ever clears -- PB preserves each holder's
-            # cpu_allocation affinity, so the excess that survives every
-            # drain is at least that sum.  It is re-judged by the idle
-            # verdict's own rule (the same baseline or prior, the same
-            # _judge_idle), so a thin spread across quiet CPUs counts and a
-            # busy holder no longer masks a foreign excess of its own; when
-            # that alone exceeds, withholding the box for it would only cut
-            # the box to one admission per drain while the foreign load
-            # stays, and the refusal names the sum, the re-judged verdict
-            # and the held CPUs, and the item starves.  A sample without
-            # attribution keeps the conservative refusal, exactly as before
-            # (#1210's rolling-upgrade rule), and PSI stays conservative
-            # because it cannot be attributed to a CPU.
+            # A measurement reads the machine it runs on, so load on the
+            # CPUs it would actually occupy is ambient contamination, not
+            # contention (#1185): the typed per-CPU check runs first, on the
+            # measurement's own predicted CPUs, with PB-held busy excluded
+            # and load anywhere else out of scope.  When the sample cannot
+            # answer that question -- stale, unattributed, or an unknowable
+            # prediction -- the conservative host_not_idle below stands.
+            # (#1233's box-wide surviving-sum is retired: it let foreign
+            # load far from the measurement's CPUs overtake a row no drain
+            # could ever place, and its re-judge re-armed an unproven
+            # window on the same unproven load.)
             if fresh and idle['exceeds']:
-                per_cpu = sample.get('per_cpu_busy')
-                foreign_cpu = sample.get('foreign_per_cpu_busy', per_cpu)
-                if (isinstance(per_cpu, dict)
-                        and set(per_cpu) == {str(cpu) for cpu in self.cpus}
-                        and isinstance(foreign_cpu, dict)
-                        and set(foreign_cpu) == set(per_cpu)
-                        and all(type(busy) in (int, float) and math.isfinite(busy)
-                                and 0 <= busy <= 1 for busy in per_cpu.values())
-                        and all(type(value) in (int, float) and math.isfinite(value)
-                                and 0 <= value <= per_cpu[cpu]
-                                for cpu, value in foreign_cpu.items())):
-                    held = set()
-                    for holder in holders:
-                        allocation = self.ledger.cpu_allocation(
-                            holder.name, self.tiers)
-                        held.update(allocation['preferred']
-                                    + allocation['fallback'])
-                    foreign_busy = sorted(
-                        cpu for cpu in self.cpus if cpu not in held
-                        and foreign_cpu[str(cpu)] > IDLE_BUSY_FRACTION)
-                    held_busy = sorted(
-                        cpu for cpu in self.cpus if cpu in held
-                        and per_cpu[str(cpu)] > IDLE_BUSY_FRACTION)
-                    surviving = sum(foreign_cpu[str(cpu)]
-                                    for cpu in self.cpus if cpu not in held)
-                    rejudged = self.rejudge_idle_foreign(
-                        sample, holders, busy_cpus=surviving)
-                    if rejudged.get('exceeds'):
-                        return refuse("measurement_foreign_load", fresh=fresh,
-                                      baseline=idle, foreign_cpus=foreign_busy[:8],
-                                      held_cpus=held_busy,
-                                      foreign_busy_cpus=round(surviving, 3),
-                                      foreign_idle=rejudged)
+                ambient = self._measurement_foreign_ambient(sample, holders,
+                                                            declared)
+                if ambient is not None and ambient['exceeds']:
+                    return refuse("measurement_foreign_ambient", fresh=fresh,
+                                  baseline=idle, **ambient['evidence'])
             return refuse("measurement_host_not_idle", fresh=fresh, baseline=idle)
         if full_width and fresh and not holders and idle['exceeds']:
             # A reservation of every CPU needs the host idle too.

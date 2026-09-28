@@ -4193,7 +4193,12 @@ decision feeds it:
   the same rule as the unmeasured export slot count (#999): with no
   measurement, the previous value applies and says so. A refusal reads
   `basis: unmeasured` on every pass until a sample the line does not refuse
-  arrives, however many passes that takes.
+  arrives, however many passes that takes -- unless enough refused seeds
+  accumulate to measure the load itself: holder-free refused seeds join
+  flagged provisional, and once PROVISIONAL_MIN_SAMPLES of them span
+  PROVISIONAL_MIN_SPAN_S the flags strip and the window is measured at
+  once (#1185, 2026-09-28; sparklina-derived). Without this a host that
+  boots under load stays unmeasured forever.
 * With holders present the sample measures them too. It is judged against
   the whole window (`state: holders_present`) and never joins it: above the
   history it refuses the measurement `measurement_host_not_idle`, as the
@@ -4202,32 +4207,19 @@ decision feeds it:
   refusal, because only there can the lending path place it and the
   baseline cannot say which part of the load is the holders'.
 * The idle verdict cannot tell *whose* load exceeded it. A fresh sample's
-  attribution can, and the measurement gate uses it (#1231, fixed
-  2026-09-27): a CPU a pool holder holds carries the pool's own work, which
-  that holder draining clears, while foreign busy on an unheld CPU is load
-  no drain ever clears. The excess that survives every holder draining is
-  at least the attributed busy on unheld CPUs -- PB preserves each
-  holder's `cpu_allocation` affinity -- so that sum, `S`, is re-judged by
-  the idle verdict's own rule (#1233, fixed 2026-09-27): the same
-  `_judge_idle`, the same baseline or prior -- the reference
-  `idle_judgement_with_reference` hands back, the very window the verdict
-  judged against, never a re-derived choice -- with `busy_cpus := S` and
-  every unattributable field reading as its quietest. A verdict that
-  judged against no reference at all (a forced holder tail, a fresh
-  window after an identity reset), or a cache keyed to another sample or
-  holder state, answers a non-exceeding state and the conservative
-  refusal stands (#1236 review). When that alone exceeds, whatever the
-  held CPUs do, the refusal is `measurement_foreign_load` naming `S`, the
-  re-judged verdict and the held CPUs, and the item starves (`_starved`,
-  visible under `pbstatus --starvation`) instead of withholding:
-  withholding for load the pool does not own would only cut the box to
-  one admission per drain while the foreign load stays (#1160's held-vs-
-  foreign separation applied to the measurement gate; the 2026-09-27
-  incident had 211 ready rows stalled behind such a refusal on sparky
-  until the coordinator withdrew the measurement by hand). A sample
-  without attribution keeps the conservative `measurement_host_not_idle`
-  refusal, exactly as before (#1210's rolling-upgrade rule); PSI cannot be
-  attributed to a CPU, so a verdict exceeded only on `psi_some` keeps it;
+  attribution can, and the measurement gate checks only the CPUs the
+  measurement would actually occupy (#1185, supersedes #1231/#1233
+  2026-09-28): foreign busy above `PER_CPU_FOREIGN_MAX` (0.10,
+  sparklina-derived) on the measurement's own predicted CPUs -- PB-held
+  busy excluded, load anywhere else out of scope -- refuses
+  `measurement_foreign_ambient`, naming the CPUs, their readings, and the
+  foreign PIDs, and the item starves (`_starved`, visible under
+  `pbstatus --starvation`) instead of withholding. Anything less refuses
+  the conservative `measurement_host_not_idle`: sub-threshold foreign,
+  a sample without attribution (#1210's rolling-upgrade rule), and a
+  verdict exceeded only on `psi_some`, which cannot be attributed to a
+  CPU. (#1233's box-wide surviving-sum is retired: foreign load far from
+  the measurement's CPUs overtook rows no drain could place.)
   and a holder-only excess keeps the #924 withhold-then-admit behavior:
   that drain is really pending.
 

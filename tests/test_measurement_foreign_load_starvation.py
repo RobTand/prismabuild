@@ -1,4 +1,4 @@
-"""A measurement's foreign-load excess starves it, never withholding (#1231).
+"""A measurement's proven-ambient excess starves it, never withholding (#1185).
 
 The 2026-09-27 incident: a priority-1 GPU measurement reached the head of
 sparky's walk just after a campaign quantum finished.  Every pass refused it
@@ -11,15 +11,16 @@ the action by hand.
 
 The busy CPUs were foreign load, not pool holders: no holder drain could
 clear them.  #1160 already separates held from foreign CPUs for
-``host_pressure``; the measurement-idle gate now uses the same separation.
-When a fresh sample's attribution proves the excess busy is on CPUs no
-holder holds -- every held CPU quiet, foreign busy above the idle fraction
-on unheld ones -- the measurement is refused ``measurement_foreign_load``
-and starves: it keeps its place, the denial is visible under
-``pbstatus --starvation`` with the foreign CPUs named, and the rows behind
-it keep claiming.  A drain that is really pending -- the busy is on a held
-CPU -- keeps the #924 withhold-then-admit behavior, and a sample without
-attribution keeps the conservative refusal exactly as before.
+``host_pressure``; the measurement-idle gate now uses the same separation in
+typed form.  When a fresh sample's attribution proves foreign excess above
+``PER_CPU_FOREIGN_MAX`` on the measurement's own predicted CPUs -- PB-held
+busy excluded, load anywhere else out of scope -- the measurement is refused
+``measurement_foreign_ambient`` and starves: it keeps its place, the denial
+is visible under ``pbstatus --starvation`` with the foreign CPUs and their
+PIDs named, and the rows behind it keep claiming.  Anything less --
+sub-threshold foreign, unattributed samples -- keeps the #924
+withhold-then-admit behavior, and a drain that is really pending -- the busy
+is on a held CPU -- admits after the drain as before.
 """
 from __future__ import annotations
 
@@ -104,9 +105,11 @@ def test_foreign_busy_with_a_transient_holder_starves_the_measurement(
 
     RED (the defect): the measurement withheld the whole box behind a
     transient holder whose CPU read quiet, so the lower-priority row stayed
-    unclaimed.  GREEN: the attribution proves no drain clears the busy, the
-    measurement is refused ``measurement_foreign_load`` and starves, and the
-    row behind it claims on the same poll.
+    unclaimed.  GREEN: the attribution proves foreign excess above the
+    per-CPU line on the measurement's own predicted CPUs (the holder's
+    CPU 0 is quiet and excluded), so the measurement is refused
+    ``measurement_foreign_ambient`` and starves, and the row behind it
+    claims on the same poll.
     """
 
     capacity = {"cpu": 20, "mem_gb": 120}
@@ -132,8 +135,11 @@ def test_foreign_busy_with_a_transient_holder_starves_the_measurement(
         "behind a holder whose CPU read quiet")
     denial = _denial(queue, measurement)
     assert denial["reason"] == "adaptive_cpu_refused_starved", denial
-    assert denial["evidence"]["decision"]["reason"] == "measurement_foreign_load"
-    assert denial["evidence"]["decision"]["foreign_cpus"], denial
+    decision = denial["evidence"]["decision"]
+    assert decision["reason"] == "measurement_foreign_ambient", decision
+    assert decision["foreign_cpus"] == [1, 2, 3, 4], decision
+    assert decision["per_cpu_foreign_busy"]["1"] == pytest.approx(0.43), decision
+    assert decision["held_cpus"] == [0], decision
     assert denial["evidence"]["starved"]["why"] == "foreign_load"
 
 
@@ -166,9 +172,10 @@ def test_foreign_busy_with_no_holders_names_the_foreign_cpus(
     assert claim() == behind
     denial = _denial(queue, measurement)
     assert denial["reason"] == "adaptive_cpu_refused_starved", denial
-    assert denial["evidence"]["decision"]["reason"] == "measurement_foreign_load"
-    assert denial["evidence"]["decision"]["foreign_cpus"][0] == 1, denial
-    assert denial["evidence"]["decision"]["baseline"]["basis"] == "unmeasured"
+    decision = denial["evidence"]["decision"]
+    assert decision["reason"] == "measurement_foreign_ambient", decision
+    assert decision["foreign_cpus"][0] == 1, decision
+    assert decision["baseline"]["basis"] == "unmeasured"
 
 
 def test_holder_busy_keeps_the_withhold_then_admits(
