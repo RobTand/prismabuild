@@ -289,13 +289,75 @@ def test_only_the_ram_occupancy_kind_is_mirrored(tmp_path: Path) -> None:
         "ram-host:" + mover) == {"mem_gb": 100}
 
 
-def test_a_fresh_loop_refuses_growth_until_its_first_sync(
+def _first_cycle(queue: pool.PoolQueue,
+                 mirror: str | None = None) -> list[object]:
+    """One cycle of a freshly started loop; returns what the gate read.
+
+    With ``mirror``, also what the host ledger held for that holder at the
+    moment discovery ran, so the order is observed rather than inferred.
+    """
+
+    seen: list[object] = []
+
+    def discover(*, host, source_pool, fill_records, now, ram_policy,
+                 rows_held_gib):
+        seen.append(rows_held_gib)
+        if mirror is not None:
+            seen.append(queue.ledger(HOST).holder_tokens(mirror))
+        return {}
+
+    tier_loop.cycle(queue, host=HOST, source_pool="testpool",
+                    receipts=tier_loop.ReceiptCache(), discover=discover)
+    return seen
+
+
+def test_a_fresh_loop_gates_its_first_cycle_on_its_own_sync(
         tmp_path: Path) -> None:
-    """R5: no previous verdict is not evidence of a clean mirror; a
-    freshly restarted loop reads no rows number until it converges."""
+    """R5 without the refused cycle (#1253): a take that landed while the
+    loop was down gains its host half before the first gate reads rows,
+    so the first cycle decides on a verdict it gathered itself."""
 
     queue = _queue(tmp_path)
-    assert tier_loop._RAM_HOST_SYNC_DEFAULT is False
-    fresh = tier_loop._RAM_HOST_SYNC.get(
-        "nobody", tier_loop._RAM_HOST_SYNC_DEFAULT)
-    assert tier_loop.rows_held_for_gate(queue, HOST, fresh) is None
+    mover = "a" * 64
+    _mover_row(queue, tmp_path, mover)
+    assert queue.ledger(HOST).acquire("d" * 64, {"mem_gb": 40}) is True
+    _claim_path_take(queue, mover, {"ram_gib": 100})
+    # The loop was down: no host half yet.
+    assert queue.ledger(HOST).holder_tokens("ram-host:" + mover) == {}
+
+    assert _first_cycle(queue, "ram-host:" + mover) == [40, {"mem_gb": 100}]
+
+
+def test_a_fresh_loop_refuses_when_its_first_sync_cannot_land(
+        tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """R5 still holds: a host half the sync cannot land refuses the gate
+    on that same cycle, and the refusal is named on the host sink."""
+
+    queue = _queue(tmp_path)
+    mover = "a" * 64
+    _mover_row(queue, tmp_path, mover)
+    assert queue.ledger(HOST).acquire("d" * 64, {"mem_gb": 240}) is True
+    _claim_path_take(queue, mover, {"ram_gib": 100})
+
+    assert _first_cycle(queue) == [None]
+    out = capsys.readouterr().out
+    assert '"ram-host-hold-reconciled"' in out
+    assert '"ram-host-hold-missing"' in out
+    assert '"pre-discover"' in out
+
+
+def test_the_pre_discovery_sync_leaves_orphans_to_the_census(
+        tmp_path: Path) -> None:
+    """The sync half never releases a host hold the tier does not name:
+    without the census it cannot tell an orphan from a grant in flight."""
+
+    queue = _queue(tmp_path)
+    in_flight = "f" * 64
+    assert queue.ledger(HOST).acquire(
+        "ram-host:" + in_flight, {"mem_gb": 8}) is True
+
+    verdict = tier_loop.sync_ram_host_mirror(queue, HOST)
+
+    assert verdict["converged"] is True
+    assert queue.ledger(HOST).holder_tokens(
+        "ram-host:" + in_flight) == {"mem_gb": 8}

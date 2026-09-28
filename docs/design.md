@@ -5083,7 +5083,7 @@ a shrink gate keeps `tier_loop` and `stage_release` from mutating either
 ledger outside these primitives. The crash windows between the two
 halves — inside the take, and inside the transfer — are healed by
 `reconcile_ram_host_holds` every cycle, which is a two-way sync (#1245
-review r2, r3): every live tier holder's `ram-host:*` hold is made equal to
+review r2, r3) run in two halves (#1253): every live tier holder's `ram-host:*` hold is made equal to
 its occupancy tokens — covering the claim path's bare tier takes, which
 hold no host half of their own — and each hold whose tier holder is
 neither live nor an expected in-flight grant is released by name, as an
@@ -5098,10 +5098,24 @@ R7), so a kind added to the tier ledger later cannot silently become
 host GiB. A host half that cannot land — or a host read that fails
 mid-loop (r3 R6) — is named (`ram-host-hold-missing`) and the sync reports
 it unconverged, which the window gate reads as refusal — no rows number
-at all — until the next cycle lands it; a freshly restarted loop has
-no verdict and refuses the same way for its first cycle (r3 R5: the
-gate reads the previous cycle's verdict, because `discover` runs before
-`_protect_tier_advances`); a failed host transfer is named
+at all — until a sync lands it. The verdict depends on the tier and host
+ledgers alone, so the tier loop runs the sync half
+(`tier_loop.sync_ram_host_mirror`, `release_orphans=False`: top-up and
+trim, no orphan release) *before* `discover`, and the gate decides on
+the verdict that same cycle gathered (#1253). A freshly restarted loop
+therefore admits on its first cycle when the mirror lands — a take that
+landed while the loop was down gains its host half before the rows read
+(r3 R5) — and refuses that cycle, with `ram-host-hold-missing` on the
+host sink, when it does not. The orphan release waits for the full
+reconcile inside `_protect_tier_advances`, where the consumer census
+names the grants still in flight. (Between #1245 and #1253 the gate read
+the previous cycle's verdict from a module global with a refusing
+default, so every fresh loop — every runtime publish — refused RAM
+admission for one cycle, and the publish shape gate, which runs one
+cycle and requires RAM tokens, failed.) A refused cycle mints no
+`ram_gib`: `mint_tier_capacity` retires the tier's free RAM tokens and
+keeps every held one, and the epoch, read from the tmpfs marker, does
+not change. A failed host transfer is named
 (`ram_host_transfer_failed`) rather than swallowed, and the sync heals
 the misfiled half by name. Every site that cancels a fence for the RAM tier
 returns the fill's host tokens in the same step; and the window gate

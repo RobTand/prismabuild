@@ -6196,18 +6196,23 @@ def _shared_advance_fences(queue: pool.PoolQueue, tier_wants: list, *,
     return out
 
 
-# The RAM host mirror's per-cycle verdict, by host (#1245 review r2):
-# ``False`` while the two-way sync has a host half it could not land,
-# which the window gate reads as "refuse growth" until the next cycle
-# converges.  Written only from the single writer's reconcile pass.
-# The default is refusal: a freshly restarted loop has no verdict, and
-# no verdict is not evidence of a clean mirror -- claim-path takes may
-# have landed while it was down (#1245 r3 R5).  The gate therefore
-# reads the *previous* cycle's verdict, because ``discover`` runs
-# before ``_protect_tier_advances`` in the same cycle; the cost is one
-# refused-growth cycle at start.
-_RAM_HOST_SYNC: dict[str, bool] = {}
-_RAM_HOST_SYNC_DEFAULT: bool = False
+def sync_ram_host_mirror(queue: pool.PoolQueue,
+                         host: str) -> dict[str, object]:
+    """This cycle's RAM host mirror verdict, gathered before discovery.
+
+    The sync half of :meth:`pool.PoolQueue.reconcile_ram_host_holds`: every
+    live RAM tier holder's ``ram-host:`` hold is made equal to its
+    occupancy tokens, which lands any claim-path take made while the loop
+    was down (#1245 r3 R5), and ``converged`` says whether every half
+    landed.  The verdict reads the two ledgers and nothing ``discover``
+    produces, so the window gate decides on evidence this cycle gathered
+    -- a fresh loop admits on its first cycle when the mirror lands, and
+    refuses only when it does not (#1253).  The orphan release is left to
+    the in-cycle pass, which alone knows the holders still in flight.
+    """
+
+    return queue.reconcile_ram_host_holds(
+        storage_tiers.tier_id("ram", host), (), release_orphans=False)
 
 
 def rows_held_for_gate(queue: pool.PoolQueue, host: str,
@@ -7196,9 +7201,10 @@ def _protect_tier_advances(queue: pool.PoolQueue,
         # released by name.  The same complete-census guard covers it:
         # with evidence withheld, reconcile nothing, because no verdict
         # is not evidence of a clean mirror.
+        # The window gate's verdict is gathered before discovery by
+        # ``sync_ram_host_mirror`` (#1253); this pass heals what landed
+        # since and releases orphans, which needs the census above.
         verdict = queue.reconcile_ram_host_holds(tier_id, expected_grants)
-        _RAM_HOST_SYNC[str(tier_id).split(":", 1)[1]] = bool(
-            verdict.get("converged"))
         for healed in verdict.get("events") or []:
             events.append({"event": "ram-host-hold-reconciled",
                            "tier_id": tier_id, "leg": mover_role,
@@ -9906,8 +9912,23 @@ def _cycle(
     # One pool, two consumers -- and one mirror: while the two-way sync
     # has not converged the gate refuses growth instead of reading a
     # rows number with host bytes the mirror has not landed (#1245 r2).
+    # The sync runs here, before discovery, so the verdict is this
+    # cycle's own: a fresh loop has no earlier verdict to lean on, and a
+    # verdict carried over from the previous cycle refused every first
+    # cycle after a restart -- every runtime publish (#1253).
+    mirror = sync_ram_host_mirror(queue, host)
+    for healed in mirror.get("events") or []:
+        _emit(queue, host, {"event": "ram-host-hold-reconciled",
+                            "tier_id": ram_tier_id, "leg": "pre-discover",
+                            "reason": str(healed.get("reason")),
+                            "holder": healed.get("holder"),
+                            "gib": healed.get("gib"),
+                            "released_gib": healed.get("released_gib"),
+                            "detail": healed.get("detail")},
+              tier_consumers=tier_consumers)
+    phases.lap("sync_ram_host_mirror")
     rows_held_gib = rows_held_for_gate(
-        queue, host, _RAM_HOST_SYNC.get(host, _RAM_HOST_SYNC_DEFAULT))
+        queue, host, bool(mirror.get("converged")))
     tiers = discover(host=host, source_pool=source_pool, fill_records=fill_records,
                      now=now, ram_policy=ram_policy,
                      rows_held_gib=rows_held_gib)

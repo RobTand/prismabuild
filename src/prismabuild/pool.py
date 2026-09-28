@@ -10947,7 +10947,8 @@ class PoolQueue:
 
     def reconcile_ram_host_holds(
             self, tier_id: str,
-            expected_holders: Iterable[str]) -> dict[str, object]:
+            expected_holders: Iterable[str], *,
+            release_orphans: bool = True) -> dict[str, object]:
         """Two-way sync of the RAM host mirror (#1245 review r1/r2).
 
         Claim-path takes straight off the tier ledger hold no
@@ -10966,6 +10967,14 @@ class PoolQueue:
         unconverged -- no verdict is not evidence of a clean mirror.
         Holders named in ``expected_holders`` are in flight and left for
         a later pass.
+
+        ``release_orphans=False`` runs the sync half alone: the top-up and
+        trim of live tier holders, which read the two ledgers and nothing
+        else, and which alone decide ``converged``.  The tier loop runs
+        that half before discovery, so the window gate decides on a
+        verdict this cycle gathered (#1253); the
+        orphan release waits for the in-cycle pass, where the consumer
+        census names the holders still in flight.
         """
 
         if storage_tiers.tier_kind_of(str(tier_id)) != "ram":
@@ -11042,6 +11051,8 @@ class PoolQueue:
                     events.append({"reason": "ram-host-hold-trimmed",
                                    "holder": mirror,
                                    "released_gib": released})
+        if not release_orphans:
+            return {"events": events, "converged": converged}
         for holder in holders:
             if not holder.startswith(prefix):
                 continue
