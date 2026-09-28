@@ -1253,6 +1253,12 @@ public name:
   action, as a CAS lookup does, so the reader still binds the action key,
   inputs and result it expects.
 
+Two read-only answers are published outside the SDK, as module-level names
+that are not internal: `produced_output.batch_record` and `batch_records`
+([Reading a batch record](#produced-output-admission-working-window-not-the-corpus), #955), and
+`produced_spool.check_export_receipt`
+([Checking a receipt from outside PB](#a-destination-whose-timestamps-alone-moved-1096), #1286).
+
 `TIER_LOOP_LIVENESS_S` is the bound the pool applies to a tier loop's record
 (`pool.OFFER_TIMEOUT_S`); every landing record carries the same value as
 `tier_loop_liveness_s`, and a reader should prefer the record's value.
@@ -13414,6 +13420,22 @@ the sha256 is the digest the export verified while it copied, so a file with
 that digest at the same inode and size is the file the export landed. It is
 not a weaker check: a same-size rewrite whose timestamps also moved is caught
 by the digest, which the stat comparison alone could not catch either.
+
+**Checking a receipt from outside PB (#1286).**
+`produced_spool.check_export_receipt(receipt, manifest, record)` is the
+public, read-only form of `_check_receipt`, for a reader outside PB such as
+PQ's forward-recovery loader. It answers one question: does this receipt
+prove this manifest's export, with every destination still the inode the
+export landed? It returns `None`. It raises `SpoolError` when the receipt is
+not bound to the record's `export_key` and `manifest_sha256` or a copy proof
+is corrupt, and `SpoolIdentityRefusal` (`export-destination-changed`) when a
+destination is absent, unreadable or another file. It is
+`_check_receipt(receipt, manifest, record)` with the defaults
+`destinations=True, repin=None`, so it takes no lock, writes nothing and
+re-pins nothing. A destination whose timestamps alone moved is refused too,
+with a `detail` that says so, never the internal `_RepinNeeded`: only a check
+that holds the group's `.export.lock` may settle that mismatch by content,
+and PB's own `poll_group` does. `_check_receipt` stays private.
 
 #### A committed origin whose timestamps alone moved (#1111)
 

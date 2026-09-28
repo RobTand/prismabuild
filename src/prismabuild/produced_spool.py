@@ -961,6 +961,35 @@ def _check_receipt(receipt, manifest, record, *, destinations=True, repin=None):
     return repinned
 
 
+def check_export_receipt(receipt, manifest, record):
+    """Whether ``receipt`` proves ``manifest``'s export, for a reader outside PB (#1286).
+
+    The published, read-only form of `_check_receipt`: the receipt must be
+    bound to ``record`` (its ``export_key`` and ``manifest_sha256``), carry
+    one complete copy proof per manifest entry, and every destination must
+    still be the inode the export landed.  Returns ``None``; raises
+    `SpoolError` when the receipt is not bound to the record or a proof is
+    corrupt, and `SpoolIdentityRefusal` (``export-destination-changed``)
+    when a destination is absent, unreadable or not the landed file.
+
+    It takes no lock, writes nothing and re-pins nothing.  A destination
+    whose timestamps alone moved (#1096) is refused too, with ``detail``
+    saying so: only a check that holds the group's ``.export.lock`` may
+    settle that by content, and PB's own ``poll_group`` does.
+    """
+
+    try:
+        _check_receipt(receipt, manifest, record)
+    except _RepinNeeded as needed:
+        index = needed.args[0]
+        path = manifest["entries"][index]["destination_path"]
+        raise SpoolIdentityRefusal(
+            "export-destination-changed", entry_index=index, path=path,
+            recorded=receipt["entries"][index]["identity"], observed=_observe(path),
+            detail="only the timestamps moved; a reader without the group's "
+                   ".export.lock cannot re-pin it (#1096)") from None
+
+
 # ---------------------------------------------------------------------------
 # A canonical destination another attempt's records name (#1097)
 # ---------------------------------------------------------------------------
