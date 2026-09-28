@@ -37,7 +37,10 @@ read as a refusal: `deferred_for_preferred_cpu`, and
 resource from taking work for the other one when a freer compatible box
 exists. Each expires on its own after 20 seconds and the work is then claimed
 anyway. They are best effort, they measure nothing thermal, and they are not a
-reason to retag or resubmit.
+reason to retag or resubmit. `deferred_for_cpu_only_host` (#1262) is a placement
+rule rather than a preference: a GPU host leaves a CPU-only row to a matching
+host without a GPU that fits it now, until that host claims it or passes on it.
+Do not tag CPU-only work to a GPU host to get it placed.
 
 Every worker loop kills an action at its own safety ceiling, **7200 s by
 default**, and that ceiling is applied as a silent `min` against `--timeout-s`.

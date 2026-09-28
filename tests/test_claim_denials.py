@@ -187,3 +187,29 @@ def test_shortage_uses_acquired_tokens_and_resets_on_the_next_attempt(tmp_path, 
     assert handle is not None
     assert ledger.last_token_shortage is None
     ledger.abandon_acquire(handle)
+
+
+def test_a_row_behind_a_whole_box_withhold_says_so(tmp_path):
+    """The whole-box withhold names each row it holds back (#1262 review).
+
+    A GPU host leaves a CPU-only row to a host without a GPU until that host
+    passes on it, and it reads that host's latest denials to know.  A row held
+    back unevaluated behind the whole-box withhold used to be skipped with no
+    record, so the GPU host kept waiting for a host that was holding its box
+    shut for an earlier row.
+    """
+
+    queue = pool.PoolQueue(tmp_path / "queue")
+    publish(queue, KEY_A, resources={"mem_gb": 4})
+    publish(queue, KEY_B, resources={"mem_gb": 1})
+    ledger = queue.ledger()
+    ledger.ensure_capacity({"mem_gb": 4})
+    assert ledger.acquire("0" * 64, {"mem_gb": 2})
+    for _ in range(pool.STARVATION_FLOOR - 1):
+        queue.record_pass(KEY_A)
+    assert queue.claim(capacity={"mem_gb": 4}) is None
+    records = {value["action_key"]: value for value in local_records(queue).values()}
+    assert records[KEY_A]["reason"] == "reservation_unavailable_withholding"
+    assert records[KEY_B]["reason"] == "deferred_behind_withheld_row"
+    assert records[KEY_B]["evidence"]["withheld_for"] == KEY_A
+    assert not queue.passes_path(KEY_B).exists()      # held back, not refused
