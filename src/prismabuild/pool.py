@@ -15575,7 +15575,9 @@ class PoolQueue:
             return True
         return started >= float(claimed)
 
-    def _outstanding_family_loans(self, tier_id: str) -> dict[str, int]:
+    def _outstanding_family_loans(
+        self, tier_id: str, *, exclude: str | None = None,
+    ) -> dict[str, int]:
         """Fill tokens each holder has already lent a live borrow on ``tier_id`` (#1292).
 
         The ``lent`` maps are read out of the claimed rows' borrow records:
@@ -15584,12 +15586,17 @@ class PoolQueue:
         terminal record -- takes its loan out of the count with no second
         mutable state to maintain.  Returns holder -> lent tokens; a
         holder's loans count only while its borrowing row is claimed.
+        ``exclude`` names a row whose draw the caller is accounting itself
+        (``note_fill_borrow_end`` adds this record's own draw), so it is
+        not double-counted while that row is still claimed.
         """
 
         out: dict[str, int] = {}
         for path in _glob(self.dir(CLAIMED), "*.json"):
             row = _read_json(path)
             if not isinstance(row, Mapping):
+                continue
+            if exclude is not None and row.get("action_key") == exclude:
                 continue
             borrowed = row.get("tier_fill_borrowed")
             if not isinstance(borrowed, dict):
@@ -15611,10 +15618,14 @@ class PoolQueue:
         """Say which lenders released before a borrowing export ended (#999).
 
         Called by ``finish`` on the record it files, before the export's own
-        tokens go back.  A lender that no longer holds the fill it lent has
-        returned it to the free pool while the export still wrote on it, so
-        for that interval the tier carried the borrowed rate on top of its
-        offer.  The record names each such lender and the overcommit it left.
+        tokens go back.  A lender is judged against the family's combined
+        live draws (#1292): this borrow's draw plus what the other claimed
+        rows still owe it (``_outstanding_family_loans``, this row's own
+        draw excluded wherever its lifecycle stands).  A lender that no
+        longer holds that sum has returned fill to the free pool while the
+        export still wrote on it, so for that interval the tier carried the
+        borrowed rate on top of its offer.  The record names each such
+        lender and the uncovered rest, capped at this borrow's own draw.
         Best effort: a lender this cannot read is named as unread.  Called by
         ``finish`` on the record it files, and by ``reap_stale`` on the
         terminal record it files for a lease the claimant lost -- the borrow
@@ -15635,15 +15646,20 @@ class PoolQueue:
             except (OSError, PoolContractError, ValueError):
                 entry["lenders_unread"] = sorted(entry["lent"])
                 continue
+            own_key = record.get("action_key")
+            others = self._outstanding_family_loans(
+                str(tier_id),
+                exclude=own_key if isinstance(own_key, str) else None)
             for lender, count in sorted(entry["lent"].items()):
                 try:
                     held = ledger.holder_tokens(str(lender)).get(storage_tiers.FILL_KIND, 0)
                 except OSError:
                     unread.append(lender)
                     continue
-                if held < int(count):
+                owed = int(count) + int(others.get(str(lender), 0))
+                if held < owed:
                     released.append(lender)
-                    overcommit += int(count) - held
+                    overcommit += owed - held
             entry["lenders_released_before_end"] = released
             entry["overcommit_mb_s"] = min(overcommit, int(entry.get("borrowed", 0)))
             if unread:

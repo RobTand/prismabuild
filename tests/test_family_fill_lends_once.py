@@ -178,3 +178,46 @@ def test_a_lender_cannot_fund_two_borrows_at_once(tmp_path, monkeypatch) -> None
     assert third is not None and third["action_key"] == second
     ended = pool._read_json(queue.item_path(pool.DONE, first))
     assert ended["tier_fill_borrowed"][fx.TIER]["borrowed"] == fam.OFFER
+
+
+def test_an_end_flags_a_release_below_the_combined_draws(
+        tmp_path, monkeypatch) -> None:
+    """The end annotation judges a lender against the family's combined
+    live draws (#1292), not this borrow's draw alone.
+
+    Two overlapping borrows of 30 each are live against a lender that holds
+    100.  The lender releases to 50 while both run: 50 still covers this
+    borrow's own 30, but not the combined 60, so the first borrow's end
+    names the lender and the 10 it left uncovered.  Judged against this
+    draw alone the lender would look solvent and the overcommit would hide."""
+
+    spool, _cas = fam._paced_producer(tmp_path, monkeypatch)
+    queue = spool.queue
+    paced.offer_fill(queue, 100)
+    ledger = queue.tier_ledger(fx.TIER)
+    held = int(ledger.available().get(fam.FILL, 0))
+    assert held >= 100
+    assert ledger.acquire(fam.MOVER, {fam.FILL: held})
+    assert ledger.available().get(fam.FILL, 0) == 0
+
+    _announce_fill(queue, 30)
+    first = al._export(spool, "g0")
+    second = al._export(spool, "g1")
+    al._running(spool, monkeypatch, psi=0.)
+    claim = al._claim(queue, spool.host)
+    assert claim is not None and claim["action_key"] == first
+    assert claim["tier_fill_borrowed"][fx.TIER]["lent"] == {fam.MOVER: 30}
+    other = al._claim(queue, spool.host)
+    assert other is not None and other["action_key"] == second
+    assert other["tier_fill_borrowed"][fx.TIER]["lent"] == {fam.MOVER: 30}
+
+    # The lender keeps only half of what the two live borrows drew.
+    assert ledger.release(fam.MOVER) == held
+    assert ledger.acquire(fam.MOVER, {fam.FILL: 50})
+    assert ledger.holder_tokens(fam.MOVER).get(fam.FILL) == 50
+
+    queue.finish(first, status="executed", claim_snapshot=claim)
+    ended = pool._read_json(queue.item_path(pool.DONE, first))
+    entry = ended["tier_fill_borrowed"][fx.TIER]
+    assert entry["lenders_released_before_end"] == [fam.MOVER], entry
+    assert entry["overcommit_mb_s"] == 10, entry
