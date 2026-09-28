@@ -1171,9 +1171,7 @@ def reference_nodes() -> list[str]:
 
 
 def _git(checkout: Path, *argv: str) -> str:
-    completed = subprocess.run(
-        ["git", "-C", str(checkout), *argv], capture_output=True, text=True,
-        timeout=300)
+    completed = pb._git_run(checkout, *argv, timeout=300)
     if completed.returncode != 0:
         raise ShapeGateFailure(
             "receipt_refused",

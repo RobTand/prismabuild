@@ -241,12 +241,7 @@ def git_repository_root(cwd: Path) -> Path | None:
     """Return the worktree root, or ``None`` when it cannot be snapshotted."""
 
     try:
-        completed = subprocess.run(
-            ["git", "-C", str(cwd), "rev-parse", "--show-toplevel"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
+        completed = pb._git_run(cwd, "rev-parse", "--show-toplevel", timeout=30)
     except (OSError, subprocess.TimeoutExpired):
         return None
     if completed.returncode != 0:
@@ -269,12 +264,10 @@ def _snapshot_git(
     strip: bool = True,
 ) -> str:
     try:
-        completed = subprocess.run(
-            ["git", "-C", str(cwd), *argv],
+        completed = pb._git_run(
+            cwd, *argv,
             env=environment,
-            input=input_text,
-            capture_output=True,
-            text=True,
+            input_text=input_text,
             errors="surrogateescape",
             timeout=120,
         )
@@ -1499,9 +1492,7 @@ def keep_droppings_out_of_git(cwd: Path) -> Path | None:
     except pb.ActionContractError as exc:
         raise SystemExit(f"pbrun: {exc}") from exc
     try:
-        out = subprocess.run(["git", "-C", str(cwd), "rev-parse",
-                              "--git-common-dir"],
-                             capture_output=True, text=True, timeout=30)
+        out = pb._git_run(cwd, "rev-parse", "--git-common-dir", timeout=30)
     except (OSError, subprocess.SubprocessError) as exc:
         raise SystemExit(
             f"pbrun: cannot inspect local Git excludes: {exc}"

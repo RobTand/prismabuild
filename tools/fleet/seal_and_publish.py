@@ -44,10 +44,13 @@ COMMIT_ENVIRONMENT = {
 def _git(root: Path, argv: list[str]) -> subprocess.CompletedProcess:
     environment = dict(os.environ)
     environment.update(COMMIT_ENVIRONMENT)
-    return subprocess.run(
-        ["git", "-C", str(root), *argv],
-        capture_output=True, text=True, env=environment,
-    )
+    try:
+        return pb._git_run(root, *argv, timeout=30, env=environment)
+    except subprocess.TimeoutExpired as exc:
+        raise SystemExit(
+            f"seal_and_publish: cannot run Git {' '.join(argv)} "
+            f"in {root}: {exc}"
+        )
 
 
 def ensure_snapshottable_checkout(checkout: Path) -> None:
