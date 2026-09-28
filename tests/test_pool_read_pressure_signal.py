@@ -55,12 +55,6 @@ def test_an_unreadable_signal_is_never_a_quiet_pool(tmp_path: Path) -> None:
     assert block["unavailable_reason"]
 
 
-def test_the_signal_window_is_the_tier_loop_cycle() -> None:
-    # The window is not picked: it is the tier loop's own cycle length, and
-    # the kernel's avg60 covers exactly the interval the loop just waited.
-    assert st.PRESSURE_WINDOW_S == 60
-
-
 def test_pressure_fold_takes_the_newest_record_not_the_worst() -> None:
     old = {"sampled_unix": 1.0, "pool_read_pressure": {
         "io_psi_some": {"avg60": 95.0}, "window_s": 60}}

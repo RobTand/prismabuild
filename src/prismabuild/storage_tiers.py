@@ -79,10 +79,12 @@ SYSFS_BLOCK = "/sys/class/block"
 BY_ID = "/dev/disk/by-id"
 PROC_PRESSURE_IO = "/proc/pressure/io"
 
-#: The window the pool-read pressure signal names, in seconds.  This is not
-#: picked: it is ``tier_loop.CYCLE_INTERVAL_S``, the cadence the tier loop
-#: already samples on, and the kernel's PSI ``avg60`` accumulator covers
-#: exactly the interval the loop just waited between two records (#1248).
+#: The averaging window the IO-pressure block names, in seconds: the
+#: kernel's own PSI ``avg60`` window, a kernel constant, not a loop cadence
+#: (``tier_loop.CYCLE_INTERVAL_S`` is only a default ``_serve`` overrides
+#: from ``--interval-s``; the live dl380g10 loop runs 5 s, so a 60 s window
+#: spans many cycles — which is fine: the window is the kernel's, and the
+#: record's ``sampled_unix`` says when it was read) (#1248).
 PRESSURE_WINDOW_S = 60
 
 #: The admitter-readable pool-read pressure block on a tier record (#1248):
