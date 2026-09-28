@@ -115,6 +115,13 @@ def read_claimed_record(queue, action_key: str) -> dict[str, object] | None:
         return None
     record = _pool._read_json(path)
     if record is None:
+        try:
+            if not path.exists():
+                # Completed between the stat and the read: the row moved to
+                # done/, which is "not claimed", not a torn write (#1271).
+                return None
+        except OSError:
+            pass
         # ``_read_json`` answers ``None`` for absent and for empty; only the
         # absent is "not claimed".  An empty row is a torn write or a broken
         # mount holding an opinion, and the reader that asked by key holds no
