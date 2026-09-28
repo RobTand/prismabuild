@@ -84,6 +84,28 @@ def test_no_mkdir_leaves_the_missing_directory_missing():
             raise AssertionError("make_parent=False created a directory")
 
 
+def test_pid_temp_truncates_a_stale_temp_left_by_a_dead_writer():
+    """A SIGKILLed writer's stale pid temp must not wedge the path (#1331).
+
+    The migrated writers used ``write_text``/``open(\"w\")``, which
+    truncate: with ``O_EXCL`` a stale ``.<name>.<pid>.tmp`` (and PIDs get
+    reused, especially in containers) makes every later write raise
+    ``FileExistsError`` -- silently swallowed by the status sidecars,
+    and progress records feed stall detection, so a healthy row could
+    be withdrawn as stalled.  ``tmp=\"pid\"`` keeps ``O_TRUNC``.
+    """
+
+    import os
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "r.json"
+        stale = Path(tmp) / f".r.json.{os.getpid()}.tmp"
+        stale.write_bytes(b"{stale")
+        materialize._write_json_atomic(path, {"a": 1}, text="sorted_lf",
+                                       tmp="pid", fsync=False)
+        assert _read(path) == b'{"a": 1}\n'
+
+
 def test_bytes_twin_keeps_the_pool_policy():
     """``pool._write_bytes_atomic``'s contract beside the owner."""
 
