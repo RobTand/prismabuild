@@ -1562,18 +1562,54 @@ def current_fill_offer(tier: Mapping[str, object],
     return offer, offer, "tier-offer-cap"
 
 
-def export_measured_mb_s(records: Iterable[Mapping[str, object]], *,
-                           tier_id: str, owner: str) -> int | None:
+def export_receipt_measurable(record: object) -> bool:
+    """Whether one export receipt carries a rate a seal can price.
+
+    ONE predicate, shared by the writer and the reader (#1014 item 3,
+    round 3): :meth:`pool.PoolQueue.record_export` files a record only
+    when this is true -- so a degenerate newer export cannot erase the
+    priced record before it -- and :func:`export_measured_mb_s` accepts
+    one only when it is, so the two can never disagree about which
+    records carry a rate.  A receipt measured a rate when its whole
+    export wrote positive ``bytes`` over positive ``seconds`` at a
+    finite file-side rate of at least 1 MB/s, the floor a mover receipt
+    under is priced nothing at (the ledger counts whole MB/s).
+
+    The pacer's bound state (``held_seconds``) is NOT part of this test:
+    a pacer-bound run is a complete, well-formed receipt that prices
+    nothing -- it still replaces the sidecar file, and the reader prices
+    it as ``None``.
+    """
+
+    if not isinstance(record, Mapping):
+        return False
+    total = record.get("bytes")
+    seconds = record.get("seconds")
+    rate = record.get("mb_per_s_file_side")
+    return not (
+        isinstance(total, bool) or not isinstance(total, (int, float))
+        or float(total) <= 0.0
+        or isinstance(seconds, bool) or not isinstance(seconds, (int, float))
+        or float(seconds) <= 0.0
+        or isinstance(rate, bool) or not isinstance(rate, (int, float))
+        or not math.isfinite(float(rate)) or float(rate) < 1.0)
+
+
+def export_measured_mb_s(record: Mapping[str, object] | None, *,
+                          tier_id: str, owner: str) -> int | None:
     """The rate one producer's newest complete export wrote at, or ``None``.
 
-    The measured side of an export's fill seal (#1014 item 3): the owner's
-    newest filed export receipt on this tier
-    (:meth:`pool.PoolQueue.export_records`), priced at its achieved
-    file-side rate ``mb_per_s_file_side`` -- bytes over seconds for the
-    whole export.  Newest well-formed record only, never a statistic over
-    the whole history: the recency rule of :func:`mover_fill_price`'s
-    latest window, without the median a mover needs, because an export
-    prices only its own producer's behaviour.
+    The measured side of an export's fill seal (#1014 item 3), pure over
+    ONE record: the single file the queue keeps for the producer and
+    tier (``exports/<owner>/<tier_id>.json``, read by
+    :meth:`pool.PoolQueue.export_receipt`), which holds the newest
+    well-formed receipt the producer's exports on that tier filed -- the
+    recency rule of :func:`mover_fill_price`'s latest window, without
+    the median a mover needs, because an export prices only its own
+    producer's behaviour.  A record that is not this owner's or not this
+    tier's is not the producer's history; one that is not
+    :func:`export_receipt_measurable` measured nothing and prices
+    nothing.
 
     A receipt prices only a run its **writer** bounded.  The pacer's own
     held/slept accounting says which side did: ``ExportPacer.wrote``
@@ -1590,52 +1626,24 @@ def export_measured_mb_s(records: Iterable[Mapping[str, object]], *,
     (``round(self.held, 3)``) is the accounting's resolution: any hold it
     can state is at least a millisecond, and none smaller is a hold.
 
-    A record that is not this owner's or not this tier's is not the
-    producer's history; an incomplete one (``bytes`` or ``seconds`` not
-    positive) wrote nothing measurable; one slower than 1 MB/s prices
-    nothing, as a mover receipt under 1 MB/s does -- the ledger counts
-    whole MB/s.  Those records are skipped, not fatal, and the newest
-    *well-formed* record wins: a degenerate latest export (a tiny group
-    that measured under the floor) does not erase the real rate the
-    producer wrote at before it.  ``None`` means no measurement, and the
-    caller's seal falls back to the tier's whole offer, which runs one
-    export at a time: the missing signal fails closed and never admits a
-    second writer.
+    ``None`` means no measurement, and the caller's seal falls back to
+    the tier's whole offer, which runs one export at a time: the missing
+    signal fails closed and never admits a second writer.
     """
 
-    best_key: tuple[float, str] | None = None
-    best: Mapping[str, object] | None = None
-    for record in records:
-        if not isinstance(record, Mapping):
-            continue
-        if str(record.get("tier_id") or "") != str(tier_id):
-            continue
-        if str(record.get("owner") or "") != str(owner):
-            continue
-        total = record.get("bytes")
-        seconds = record.get("seconds")
-        if (isinstance(total, bool) or not isinstance(total, (int, float))
-                or float(total) <= 0.0
-                or isinstance(seconds, bool) or not isinstance(seconds, (int, float))
-                or float(seconds) <= 0.0):
-            continue
-        rate = record.get("mb_per_s_file_side")
-        if (isinstance(rate, bool) or not isinstance(rate, (int, float))
-                or not math.isfinite(float(rate)) or float(rate) < 1.0):
-            continue
-        when = record.get("unix")
-        when = (float(when) if isinstance(when, (int, float))
-                and not isinstance(when, bool) else 0.0)
-        key = (when, str(record.get("action_key") or ""))
-        if best_key is None or key > best_key:
-            best_key, best = key, record
-    if best is None:
+    if not isinstance(record, Mapping):
         return None
-    held = best.get("held_seconds")
+    if str(record.get("tier_id") or "") != str(tier_id):
+        return None
+    if str(record.get("owner") or "") != str(owner):
+        return None
+    if not export_receipt_measurable(record):
+        return None
+    held = record.get("held_seconds")
     if (isinstance(held, bool) or not isinstance(held, (int, float))
             or float(held) > 0.0):
         return None            # the pacer bounded the run: it proves an "at least"
-    return int(float(best["mb_per_s_file_side"]))
+    return int(float(record["mb_per_s_file_side"]))
 
 
 def mover_fill_demand_from_receipts(
@@ -2666,6 +2674,7 @@ __all__ = [
     "PROMOTION_CHUNKS_PER_WINDOW",
     "fill_supply_from_records",
     "mover_fill_demand_from_receipts",
+    "export_receipt_measurable",
     "export_measured_mb_s",
     "mover_fill_price",
     "manifest_phase_ranges",

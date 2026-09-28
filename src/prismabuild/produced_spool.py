@@ -370,17 +370,24 @@ def export_fill(queue, tier_id, owner=None):
     writer-bound run's achieved rate is the writer's real rate, and the
     next export reserves that beside its siblings instead of waiting for
     the whole offer.  With no owner, or no receipt that prices one, the
-    measured side is ``None`` and the price is the
-    tier's current offer: one read MB per written MB, which over-charges a
-    write (the same bins displace about 0.4 read MB per written MB) and so
-    errs toward the movers -- the stated bound, which runs one export at a
-    time and never admits a second writer on a missing signal.  A tier that
-    announces no fill offer prices nothing, and the export stays unreserved
-    and unpaced exactly as before.
+    measured side is ``None`` and the price is the tier's current offer:
+    one read MB per written MB, which over-charges a write (the same bins
+    displace about 0.4 read MB per written MB) and so errs toward the
+    movers -- the stated bound, which runs one export at a time and
+    never admits a second writer on a missing signal.  A tier that
+    announces no fill offer prices nothing, and the export stays
+    unreserved and unpaced exactly as before.
+
+    The receipt is read directly, not scanned for: the queue keeps ONE
+    sidecar per (producer action, tier)
+    (``exports/<owner>/<tier_id>.json``, :meth:`PoolQueue.export_receipt`),
+    the newest well-formed receipt the producer's exports on that tier
+    filed, so this costs one read however long the campaign runs.
     """
 
     measured = (storage_tiers.export_measured_mb_s(
-                    queue.export_records(), tier_id=tier_id, owner=owner)
+                    queue.export_receipt(owner, tier_id),
+                    tier_id=tier_id, owner=owner)
                 if owner else None)
     for record in queue.tiers():
         if isinstance(record, dict) and str(record.get("tier_id")) == str(tier_id):
@@ -1522,14 +1529,15 @@ def _export_claimed_group(queue, group, manifest, record, manifest_sha256, expor
     _write(group / "receipt.json", receipt)
     if pacer is not None:
         # The rate this producer's next export seals from, filed queue-side
-        # so it survives this group's retirement tick (#1014 item 3).  Best
-        # effort: the export has succeeded and its receipt is written, so a
-        # failed sidecar write costs the next seal its measured rate -- it
-        # falls back to the whole offer, which fails closed -- and not this
-        # export its result.
+        # so it survives this group's retirement tick (#1014 item 3).  One
+        # sidecar per (producer action, tier), replaced when it measured a
+        # rate; best effort: the export has succeeded and its receipt is
+        # written, so a failed sidecar write costs the next seal its
+        # measured rate -- it falls back to the whole offer, which fails
+        # closed -- and not this export its result.
         pacing = receipt["pacing"]
         try:
-            queue.record_export(export_key, {
+            queue.record_export({
                 "schema": pool.POOL_EXPORT_SCHEMA_V1,
                 "action_key": export_key,
                 "unix": time.time(),

@@ -13537,10 +13537,17 @@ price:
   compression, times 4/3 for raidz1 parity, plus metadata. This is an
   estimate from one day's windows, not a measurement of an export.
 * An export's seal is priced by its own producer's receipts (#1014 item 3):
-  each finished export files its achieved file-side rate queue-side
-  (`exports/<action_key>.json`, `prismaquant.prismabuild.pool_export.v1`,
-  the pacing record plus its identity), and the producer's next export
-  reserves that rate capped at the tier's offer instead of the whole offer.
+  each finished export files its achieved file-side rate queue-side, ONE
+  sidecar per (producer action, tier)
+  (`exports/<owner>/<tier_id>.json`, `prismaquant.prismabuild.pool_export.v1`,
+  the pacing record plus its identity), replaced atomically whenever the
+  new receipt measured a rate -- so a degenerate newer export cannot
+  erase the real rate, and retention is the replacement itself: the
+  store stays one small file per (producer action, tier), whatever the
+  campaign files (no reaper is needed; retired producer directories are
+  plain files a future cleanup could prune, and none is built here). The
+  producer's next export reads that one file directly and reserves that
+  rate capped at the tier's offer instead of the whole offer.
   Two producers' exports then run beside each other, and the tier
   ledger still bounds their summed declared rates at the offer.  Only a
   run the **writer** bounded is priced: the receipt carries the pacer's own
