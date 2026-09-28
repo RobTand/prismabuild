@@ -67,12 +67,18 @@ def sealed(spool, batch) -> dict:
 
 
 def file_prior_receipt(queue, owner, *, rate=60.0, unix=2000.0,
-                       key=PRIOR_EXPORT_KEY, tier=fx.TIER) -> None:
-    """File one completed export's queue-side receipt, as the export will."""
+                       key=PRIOR_EXPORT_KEY, tier=fx.TIER, held=0.0,
+                       seal=60) -> None:
+    """File one completed export's queue-side receipt, as the export will.
+
+    ``held`` is the pacer's own held/slept accounting
+    (``ExportPacer.wrote`` records a hold only when it actually sleeps),
+    and ``seal`` the rate that run was sealed at.
+    """
 
     record = {"schema": EXPORT_RECEIPT_SCHEMA, "action_key": key, "unix": unix,
-              "tier_id": tier, "owner": owner, "rate_mb_s": 60,
-              "bytes": 600_000_000, "seconds": 10.0, "held_seconds": 0.0,
+              "tier_id": tier, "owner": owner, "rate_mb_s": seal,
+              "bytes": 600_000_000, "seconds": 10.0, "held_seconds": held,
               "flushes": 3, "mb_per_s_file_side": rate}
     exports = Path(queue.root) / "exports"
     exports.mkdir(exist_ok=True)
@@ -95,14 +101,14 @@ def second_paced_write(spool, mb_s: int) -> str:
 def test_two_paced_exports_from_two_producers_share_the_tier(tmp_path):
     """Each measured well under half the offer: both claim, and the offer bounds them.
 
-    The producer's prior export wrote at 60 MB/s on a tier offering 164,
-    so its next export seals at 60 instead of the whole offer.  A second
-    producer's paced write, likewise measured at 60, claims beside it --
-    the two exports run together, which the whole-offer seal refused --
-    and the tier ledger keeps their summed rate at the offer: 44 tokens
-    stay free.  Without the measured rate the seal is the whole offer,
-    free is zero, and the second producer waits for the first to end --
-    the serialization this file pins away.
+    The producer's prior export was writer-bound at 60 MB/s on a tier
+    offering 164 (its pacer never held: the writer itself was the slow
+    side), so its next export seals at 60 instead of the whole offer.  A
+    second producer's paced write, likewise writer-bound at 104, claims
+    beside it and fills the offer exactly -- the two exports run together,
+    which the whole-offer seal refused.  Without a writer-bound rate the
+    seal is the whole offer, free is zero, and the second producer waits
+    for the first to end -- the serialization this file pins away.
     """
 
     spool = base.world(tmp_path, env={ps.PACED_EXPORT_ENV: "1"})
@@ -114,14 +120,46 @@ def test_two_paced_exports_from_two_producers_share_the_tier(tmp_path):
     claimed_first = claim(spool)
     assert claimed_first is not None and claimed_first["action_key"] == first["export_key"]
 
-    foreign = second_paced_write(spool, 60)
+    foreign = second_paced_write(spool, 104)
     claimed_second = claim(spool)
     assert claimed_second is not None and claimed_second["action_key"] == foreign
 
     ledger = spool.queue.tier_ledger(fx.TIER)
     assert ledger.holder_tokens(first["export_key"]).get(FILL) == 60
-    assert ledger.holder_tokens(foreign).get(FILL) == 60
-    assert ledger.available().get(FILL, 0) == 44     # the offer bounds the sum
+    assert ledger.holder_tokens(foreign).get(FILL) == 104
+    assert ledger.available().get(FILL, 0) == 0      # the offer bounds the sum
+
+
+def test_a_pacer_bound_receipt_does_not_price_below_the_offer(tmp_path):
+    """A run the pacer held proves only an "at least", and prices nothing.
+
+    The prior export was sealed at the whole 164 MB/s offer and its pacer
+    held it for 30 s: the writer could have gone faster, and the achieved
+    60 MB/s says nothing about what it can do.  That receipt must not
+    lower the next seal -- one congested run would otherwise ratchet the
+    producer's seal down forever, because every later run is paced at the
+    lower rate and can never measure more.  A pacer-bound receipt prices
+    as no measurement: the next seal is the whole offer, and a second
+    producer's writer-bound 60 MB/s write still waits behind it.
+    """
+
+    spool = base.world(tmp_path, env={ps.PACED_EXPORT_ENV: "1"})
+    offer_fill(spool.queue, 164)
+    file_prior_receipt(spool.queue, spool.owner, rate=60.0, held=30.0,
+                       seal=164)
+    first = spool.submit_group("b1", base.prepare(spool, "b1")[2])
+    assert sealed(spool, "b1")["params"]["demand"][FILL_DEMAND] == 164
+    assert sealed(spool, "b1")["params"]["command"][-4:] == \
+        ["--pace-mb-s", "164", "--pace-tier", fx.TIER]
+
+    claimed = claim(spool)
+    assert claimed is not None and claimed["action_key"] == first["export_key"]
+
+    foreign = second_paced_write(spool, 60)
+    assert claim(spool) is None         # a held run seals the whole offer
+    assert spool.queue.item_path(pool.READY, foreign).exists()
+    denial = al._denial(spool.queue, foreign)
+    assert denial["reason"] == "tier_reservation_unavailable", denial
 
 
 def test_an_export_with_no_measured_rate_takes_the_whole_offer(tmp_path):
@@ -183,9 +221,9 @@ def test_a_finished_export_files_its_rate_and_prices_the_next_seal(tmp_path):
     assert filed["bytes"] == len(payload) and filed["seconds"] == pacing["seconds"]
     assert filed["mb_per_s_file_side"] == pacing["mb_per_s_file_side"]
     assert 1.0 <= filed["mb_per_s_file_side"] <= 2.1   # held to its seal
-
-    # The next seal is the filed rate capped by the offer.
-    measured = int(filed["mb_per_s_file_side"])
-    expected = min(measured, 2) if measured >= 1 else 2
+    # The pacer held this run (the copy outran its 2 MB/s schedule), so the
+    # receipt is pacer-bound and the next seal is the whole offer, not the
+    # achieved rate: a held run never lowers the seal.
+    assert filed["held_seconds"] > 0.0
     spool.submit_group("b2", base.prepare(spool, "b2", ceiling=1 << 20)[2])
-    assert sealed(spool, "b2")["params"]["demand"][FILL_DEMAND] == expected
+    assert sealed(spool, "b2")["params"]["demand"][FILL_DEMAND] == 2
