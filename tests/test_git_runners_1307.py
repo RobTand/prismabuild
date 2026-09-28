@@ -14,29 +14,41 @@ from __future__ import annotations
 from pathlib import Path
 import subprocess
 import sys
+from typing import NoReturn
 
 REPOSITORY = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPOSITORY / "src"))
 sys.path.insert(0, str(REPOSITORY / "tools" / "fleet"))
 
+import pytest  # noqa: E402
+
 from prismabuild import core as pb  # noqa: E402
+
+
+class _Refused(Exception):
+    """Sentinel a fail factory raises: fail must not return."""
+
+
+def _refuse(message: str) -> NoReturn:
+    raise _Refused(message)
 
 
 def test_owner_returns_stdout():
     out = pb._git(REPOSITORY, "rev-parse", "--verify", "HEAD")
-    assert out.strip() == out.strip() and len(out.strip()) == 40
+    expected = subprocess.run(
+        ["git", "-C", str(REPOSITORY), "rev-parse", "--verify", "HEAD"],
+        capture_output=True, text=True, timeout=30,
+    ).stdout
+    assert out == expected and len(out.strip()) == 40
 
 
 def test_owner_maps_failure_through_fail():
-    seen = []
-    try:
+    with pytest.raises(_Refused, match=r"^Git rev-parse --verify"):
         pb._git(
-            REPOSITORY, "rev-parse", "--verify", "refs/heads/does-not-exist-1307",
-            fail=seen.append,
+            REPOSITORY, "rev-parse", "--verify",
+            "refs/heads/does-not-exist-1307",
+            fail=_refuse,
         )
-    except Exception:
-        raise AssertionError("custom fail factory was not used")
-    assert seen and seen[0].startswith("Git rev-parse --verify")
 
 
 def test_owner_default_fail_raises_contract(tmp_path):
@@ -89,3 +101,62 @@ def test_pbrun_snapshot_git_returns_str():
 
     out = pbrun._snapshot_git(REPOSITORY, ["rev-parse", "--verify", "HEAD"])
     assert isinstance(out, str) and len(out.strip()) == 40
+
+
+def test_owner_maps_transport_error(monkeypatch):
+    def _boom(*args, **kwargs):
+        raise OSError("boom")
+
+    monkeypatch.setattr(subprocess, "run", _boom)
+    with pytest.raises(_Refused, match=r"^Git rev-parse HEAD failed: boom"):
+        pb._git(REPOSITORY, "rev-parse", "HEAD", fail=_refuse)
+
+
+def test_owner_maps_timeout(monkeypatch):
+    def _hang(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=args[0], timeout=kwargs["timeout"])
+
+    monkeypatch.setattr(subprocess, "run", _hang)
+    with pytest.raises(_Refused, match=r"timed out after 30"):
+        pb._git(REPOSITORY, "rev-parse", "HEAD", fail=_refuse)
+
+
+def test_owner_accepts_configured_returncode(monkeypatch):
+    def _rc1(*args, **kwargs):
+        return subprocess.CompletedProcess(args[0], 1, stdout="x", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", _rc1)
+    out = pb._git(
+        REPOSITORY, "diff", "--quiet",
+        accepted_returncodes=(0, 1), fail=_refuse,
+    )
+    assert out == "x"
+
+
+def test_seal_git_uses_core_default_timeout(monkeypatch):
+    import seal_and_publish as seal
+
+    captured = {}
+
+    def _capture(*args, **kwargs):
+        captured.update(kwargs)
+        return subprocess.CompletedProcess(args[0], 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", _capture)
+    seal._git(REPOSITORY, ["rev-parse", "--verify", "HEAD"])
+    assert captured["timeout"] == 30
+    assert captured["env"]["GIT_COMMITTER_DATE"] == "2000-01-01T00:00:00+00:00"
+
+
+def test_seal_git_maps_timeout_to_system_exit(monkeypatch):
+    import seal_and_publish as seal
+
+    def _hang_on_init(*args, **kwargs):
+        if "init" in args[0]:
+            raise subprocess.TimeoutExpired(
+                cmd=args[0], timeout=kwargs["timeout"])
+        return subprocess.CompletedProcess(args[0], 1, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", _hang_on_init)
+    with pytest.raises(SystemExit, match="seal_and_publish: cannot"):
+        seal.ensure_snapshottable_checkout(REPOSITORY / "no-such-dir-1307")

@@ -68,7 +68,14 @@ def ensure_snapshottable_checkout(checkout: Path) -> None:
         return
     inside = _git(checkout, ["rev-parse", "--is-inside-work-tree"])
     if inside.returncode != 0 or inside.stdout.strip() != "true":
-        initialized = _git(checkout, ["init", "-q"])
+        try:
+            initialized = _git(checkout, ["init", "-q"])
+        except subprocess.TimeoutExpired as exc:
+            raise SystemExit(
+                f"seal_and_publish: cannot make {checkout} a Git checkout, "
+                "which the SLURM lane needs to seal it: "
+                f"Git init timed out: {exc}"
+            )
         if initialized.returncode != 0:
             raise SystemExit(
                 f"seal_and_publish: cannot make {checkout} a Git checkout, "
@@ -80,7 +87,13 @@ def ensure_snapshottable_checkout(checkout: Path) -> None:
         ["commit", "-q", "-m", "PrismaBuild fleet smoke closure member",
          "--", closure_member],
     ):
-        completed = _git(checkout, argv)
+        try:
+            completed = _git(checkout, argv)
+        except subprocess.TimeoutExpired as exc:
+            raise SystemExit(
+                f"seal_and_publish: cannot commit {closure_member} in "
+                f"{checkout}: Git {' '.join(argv)} timed out: {exc}"
+            )
         if completed.returncode != 0:
             raise SystemExit(
                 f"seal_and_publish: cannot commit {closure_member} in "
