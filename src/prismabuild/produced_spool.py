@@ -349,7 +349,7 @@ def _export_record(group, owner):
     return record
 
 
-def export_fill(queue, tier_id):
+def export_fill(queue, tier_id, owner=None):
     """The pool-side fill one export reserves on ``tier_id``, or ``None`` (#747).
 
     An export writes into the pool the stage movers read from, and the
@@ -357,17 +357,41 @@ def export_fill(queue, tier_id):
     dl380g10: member reads fell from 175 to 92 MB/s under 150-300 MB/s of
     member writes, and to 19 MB/s above that).  So the export reserves on the
     tier ledger the movers reserve from, by the one rule they are priced by,
-    ``storage_tiers.current_fill_offer``.  No export receipt prices a pool
-    write yet, so the measured side is ``None`` and the price is the tier's
-    current offer: one read MB per written MB, which over-charges a write
-    (the same bins displace about 0.4 read MB per written MB) and so errs
-    toward the movers.  A tier that announces no fill offer prices nothing,
-    and the export stays unreserved and unpaced exactly as before.
+    ``storage_tiers.current_fill_offer``.
+
+    The measured side is the producer's own newest complete export receipt
+    on this tier (#1014 item 3), priced at its achieved file-side rate
+    only when that run's **writer** bounded it: the pacer's own held
+    accounting says which side did (``ExportPacer.wrote`` sleeps and
+    records a hold only when the copy runs ahead of its schedule), and a
+    run the pacer held proves only that the writer can do at least the
+    seal, so it prices nothing and the seal stays the whole offer -- one
+    congested run cannot ratchet the producer's seal down forever.  A
+    writer-bound run's achieved rate is the writer's real rate, and the
+    next export reserves that beside its siblings instead of waiting for
+    the whole offer.  With no owner, or no receipt that prices one, the
+    measured side is ``None`` and the price is the tier's current offer:
+    one read MB per written MB, which over-charges a write (the same bins
+    displace about 0.4 read MB per written MB) and so errs toward the
+    movers -- the stated bound, which runs one export at a time and
+    never admits a second writer on a missing signal.  A tier that
+    announces no fill offer prices nothing, and the export stays
+    unreserved and unpaced exactly as before.
+
+    The receipt is read directly, not scanned for: the queue keeps ONE
+    sidecar per (producer action, tier)
+    (``exports/<owner>/<tier_id>.json``, :meth:`PoolQueue.export_receipt`),
+    the newest well-formed receipt the producer's exports on that tier
+    filed, so this costs one read however long the campaign runs.
     """
 
+    measured = (storage_tiers.export_measured_mb_s(
+                    queue.export_receipt(owner, tier_id),
+                    tier_id=tier_id, owner=owner)
+                if owner else None)
     for record in queue.tiers():
         if isinstance(record, dict) and str(record.get("tier_id")) == str(tier_id):
-            fill, _offer, _basis = storage_tiers.current_fill_offer(record, None)
+            fill, _offer, _basis = storage_tiers.current_fill_offer(record, measured)
             return int(fill) if fill else None
     return None
 
@@ -623,7 +647,8 @@ class ProducedSpool:
             # is sealed in the command, so it is part of the export's
             # identity.  Not opted in, the export is sealed as before.
             tier_id = str(prewrite.get("tier") or "")
-            fill = export_fill(self.queue, tier_id) if paced and tier_id else None
+            fill = (export_fill(self.queue, tier_id, self.owner)
+                    if paced and tier_id else None)
             if fill:
                 demand[f"{storage_tiers.FILL_KIND}{storage_tiers.TIER_DEMAND_SEPARATOR}{tier_id}"] = fill
                 command += ["--pace-mb-s", str(fill), "--pace-tier", tier_id]
@@ -1531,6 +1556,31 @@ def _export_claimed_group(queue, group, manifest, record, manifest_sha256, expor
         receipt["pacing"] = pacer.record(pace_tier)
     _check_receipt(receipt, manifest, record, repin="export")
     _write(group / "receipt.json", receipt)
+    if pacer is not None:
+        # The rate this producer's next export seals from, filed queue-side
+        # so it survives this group's retirement tick (#1014 item 3).  One
+        # sidecar per (producer action, tier), replaced when it measured a
+        # rate; best effort: the export has succeeded and its receipt is
+        # written, so a failed sidecar write costs the next seal its
+        # measured rate -- it falls back to the whole offer, which fails
+        # closed -- and not this export its result.
+        pacing = receipt["pacing"]
+        try:
+            queue.record_export({
+                "schema": pool.POOL_EXPORT_SCHEMA_V1,
+                "action_key": export_key,
+                "unix": time.time(),
+                "tier_id": pacing["tier_id"],
+                "owner": manifest["owner"],
+                "rate_mb_s": pacing["rate_mb_s"],
+                "bytes": pacing["bytes"],
+                "seconds": pacing["seconds"],
+                "held_seconds": pacing["held_seconds"],
+                "flushes": pacing["flushes"],
+                "mb_per_s_file_side": pacing["mb_per_s_file_side"],
+            })
+        except OSError:
+            pass
     answer = {"ok": True, "entries": len(landed)}
     adopted = sum(1 for proof in landed if "adopted" in proof)
     if adopted or others.retired:
