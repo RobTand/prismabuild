@@ -46,15 +46,11 @@ def _item_of(queue, key):
 
 
 def _denials(queue):
-    base = adaptive_cpu_local(queue)
-    records = json.loads((base / pool.CLAIM_DENIALS).read_text()) \
-        if (base / pool.CLAIM_DENIALS).exists() else {}
-    return list(records.values())
-
-
-def adaptive_cpu_local(queue):
     from prismabuild import adaptive_cpu
-    return adaptive_cpu.local_state_base(queue.ledger().base)
+    base = adaptive_cpu.local_state_base(queue.ledger().base)
+    records = adaptive_cpu.read_json(base / pool.CLAIM_DENIALS).get(
+        "records", {})
+    return list(records.values())
 
 
 # --------------------------------------------------------------------------
@@ -237,7 +233,10 @@ def test_pbtest_refuses_a_path_no_recorded_worker_reports(tmp_path, capsys):
     import pbtest
 
     queue = _queue_at(tmp_path)
-    _announce(queue, "dl380g10", tags=(), interpreters=[PQ_PYTHON])
+    # A fleet with the new generation on it: one box answers paths, so the
+    # question "does anybody report this one" is a real no.
+    _announce(queue, "dl380g10", tags=(pb.INTERPRETER_TAG,),
+              interpreters=[PQ_PYTHON])
 
     refusal = pbtest.interpreter_refusal(
         queue, "/no/such/venv/bin/python",
@@ -248,3 +247,12 @@ def test_pbtest_refuses_a_path_no_recorded_worker_reports(tmp_path, capsys):
     fine = pbtest.interpreter_refusal(
         queue, PQ_PYTHON, tags=[], resources={"cpu": 1}, needs_gpu=False)
     assert fine is None
+
+    # A fleet whose offers predate the field offers no capability, so the
+    # pre-flight stays a warning rather than a suite-wide guess: the
+    # per-shard pbrun refusal is the fail-closed answer there.
+    legacy = _queue_at(tmp_path / "legacy")
+    _announce(legacy, "old-box", tags=(), interpreters=None)
+    assert pbtest.interpreter_refusal(
+        legacy, "/no/such/venv/bin/python",
+        tags=[], resources={"cpu": 1}, needs_gpu=False) is None

@@ -404,12 +404,23 @@ def interpreter_refusal(queue, python: str, *, tags, resources,
     }
     if queue.placeable(
             probe, max_age_s=pbrun.RECORDED_OFFER_MAX_AGE_S) is False:
-        return (
-            "pbtest: no recorded worker reports the interpreter "
-            f"{python}. Install it on a box that offers these tags and let "
-            "its worker's next poll answer for the path; submitting now "
-            "would queue shards that die with 127 on the first box to claim "
-            "them.")
+        # Ask first whether anybody can even see the requirement.  During a
+        # rolling publish -- or against a fixture fleet whose offers predate
+        # the field -- no offer carries the capability, and the pre-flight
+        # stays a warning: each shard's own pbrun refusal is the fail-closed
+        # answer there, with the evidence, not a suite-wide guess here.
+        capable = any(
+            pbrun.pb.INTERPRETER_TAG in {
+                str(entry) for entry in (offer.get("tags") or [])}
+            for offer in queue.offers(
+                max_age_s=pbrun.RECORDED_OFFER_MAX_AGE_S))
+        if capable:
+            return (
+                "pbtest: no recorded worker reports the interpreter "
+                f"{python}. Install it on a box that offers these tags and "
+                "let its worker's next poll answer for the path; submitting "
+                "now would queue shards that die with 127 on the first box "
+                "to claim them.")
     return None
 
 
