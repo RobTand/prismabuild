@@ -71,18 +71,20 @@ def file_prior_receipt(queue, owner, *, rate=60.0, unix=2000.0,
                        seal=60) -> None:
     """File one completed export's queue-side receipt, as the export will.
 
-    ``held`` is the pacer's own held/slept accounting
-    (``ExportPacer.wrote`` records a hold only when it actually sleeps),
-    and ``seal`` the rate that run was sealed at.
+    One small file per (producer action, tier), replaced by each
+    well-formed later export of the same producer on the same tier
+    (``exports/<owner>/<tier_id>.json``).  ``held`` is the pacer's own
+    held/slept accounting (``ExportPacer.wrote`` records a hold only when
+    it actually sleeps), and ``seal`` the rate that run was sealed at.
     """
 
     record = {"schema": EXPORT_RECEIPT_SCHEMA, "action_key": key, "unix": unix,
               "tier_id": tier, "owner": owner, "rate_mb_s": seal,
               "bytes": 600_000_000, "seconds": 10.0, "held_seconds": held,
               "flushes": 3, "mb_per_s_file_side": rate}
-    exports = Path(queue.root) / "exports"
-    exports.mkdir(exist_ok=True)
-    pool._write_json_atomic(exports / f"{key}.json", record)
+    exports = Path(queue.root) / "exports" / owner
+    exports.mkdir(parents=True, exist_ok=True)
+    pool._write_json_atomic(exports / f"{tier}.json", record)
 
 
 def claim(spool):
@@ -213,7 +215,8 @@ def test_a_finished_export_files_its_rate_and_prices_the_next_seal(tmp_path):
     spool.queue.finish(first["export_key"], status="executed")
 
     pacing = ps._read(spool._group("b1") / "receipt.json")["pacing"]
-    filed_path = Path(spool.queue.root) / "exports" / f"{first['export_key']}.json"
+    filed_path = (Path(spool.queue.root) / "exports" / spool.owner
+                  / f"{fx.TIER}.json")
     filed = json.loads(filed_path.read_text())
     assert filed["schema"] == EXPORT_RECEIPT_SCHEMA
     assert filed["action_key"] == first["export_key"]
@@ -232,45 +235,91 @@ def test_a_finished_export_files_its_rate_and_prices_the_next_seal(tmp_path):
 def test_export_measured_mb_s_prices_only_writer_bound_runs():
     """Unit pin of the pricing rule the seal reads.
 
-    The newest well-formed receipt for the owner and tier decides; a
-    pacer-bound newest (``held_seconds`` above zero, or one that cannot
-    say) prices nothing rather than falling back to an older writer-bound
-    rate, and malformed records are skipped as before.
+    The reader is pure over ONE record -- the single file the sidecar
+    keeps for (owner, tier): owner/tier scoping, the measurable predicate
+    (positive bytes over positive seconds at a finite rate of at least
+    1 MB/s), and the writer-bound rule -- a pacer-bound record
+    (``held_seconds`` above zero) or one that cannot say prices nothing.
     """
 
-    def receipt(unix, rate, *, held=0.0, owner="owner-a", tier=fx.TIER,
-                key=None):
-        return {"action_key": key or f"{unix:07.0f}", "unix": unix,
+    def receipt(rate, *, held=0.0, owner="owner-a", tier=fx.TIER,
+                key="k"):
+        return {"action_key": key, "unix": 2000.0,
                 "tier_id": tier, "owner": owner, "rate_mb_s": 60,
                 "bytes": 600_000_000, "seconds": 10.0,
                 "held_seconds": held, "flushes": 3,
                 "mb_per_s_file_side": rate}
 
     read = storage_tiers.export_measured_mb_s
-    assert read([], tier_id=fx.TIER, owner="owner-a") is None
-    assert read([receipt(2000.0, 60.0)], tier_id=fx.TIER, owner="owner-a") == 60
+    assert read(None, tier_id=fx.TIER, owner="owner-a") is None
+    assert read(receipt(60.0), tier_id=fx.TIER, owner="owner-a") == 60
+    assert read(receipt(60.5), tier_id=fx.TIER, owner="owner-a") == 60
     # Not this owner, not this tier: not the producer's history.
-    assert read([receipt(2000.0, 60.0, owner="owner-b")],
+    assert read(receipt(60.0, owner="owner-b"),
                 tier_id=fx.TIER, owner="owner-a") is None
-    assert read([receipt(2000.0, 60.0, tier="elsewhere")],
+    assert read(receipt(60.0, tier="elsewhere"),
                 tier_id=fx.TIER, owner="owner-a") is None
-    # A run the pacer held proves only an "at least": it prices nothing,
-    # with no fallback to an older writer-bound rate.
-    assert read([receipt(2000.0, 60.0, held=30.0)],
+    # A degenerate record measured nothing and prices nothing.
+    assert read(receipt(0.2), tier_id=fx.TIER, owner="owner-a") is None
+    assert read({**receipt(60.0), "bytes": 0},
                 tier_id=fx.TIER, owner="owner-a") is None
-    assert read([receipt(1000.0, 60.0), receipt(2000.0, 60.0, held=0.5)],
+    assert read({**receipt(60.0), "seconds": 0.0},
                 tier_id=fx.TIER, owner="owner-a") is None
-    assert read([receipt(2000.0, 60.0),
-                 receipt(1000.0, 40.0, held=9.0)],
-                tier_id=fx.TIER, owner="owner-a") == 60
+    # A run the pacer held proves only an "at least": it prices nothing.
+    assert read(receipt(60.0, held=30.0),
+                tier_id=fx.TIER, owner="owner-a") is None
     # A receipt that cannot say which side bounded the run fails closed.
-    assert read([{"unix": 2000.0, "tier_id": fx.TIER, "owner": "owner-a",
-                  "bytes": 1, "seconds": 1.0, "mb_per_s_file_side": 60.0}],
+    assert read({"unix": 2000.0, "tier_id": fx.TIER, "owner": "owner-a",
+                 "bytes": 1, "seconds": 1.0, "mb_per_s_file_side": 60.0},
                 tier_id=fx.TIER, owner="owner-a") is None
-    assert read([receipt(2000.0, 60.0, held="0.0")],
+    assert read(receipt(60.0, held="0.0"),
                 tier_id=fx.TIER, owner="owner-a") is None
-    # Malformed records are skipped, not fatal; newest well-formed wins.
-    assert read([receipt(2000.0, 0.2), receipt(1000.0, 40.0)],
-                tier_id=fx.TIER, owner="owner-a") == 40
-    assert read([receipt(2000.0, 60.0), receipt(1000.0, 40.0)],
-                tier_id=fx.TIER, owner="owner-a") == 60
+
+
+def test_a_degenerate_newer_export_does_not_replace_the_priced_record(tmp_path):
+    """The sidecar keeps one file per (producer action, tier), replaced well.
+
+    Only a record that measured a rate may replace the file, and the
+    writer and the reader share ONE measurable predicate, so they cannot
+    disagree about which records carry a rate.  A degenerate newer
+    export (a truncated group, a sub-floor rate) therefore cannot erase
+    the real rate the producer wrote at -- the priced record stays, and
+    the next seal still prices it.  A pacer-bound record IS well-formed:
+    it replaces the file and the reader prices it as nothing (the whole
+    offer), which is the newest-receipt rule, not an erasure.
+    """
+
+    spool = base.world(tmp_path, env={ps.PACED_EXPORT_ENV: "1"})
+    offer_fill(spool.queue, 164)
+    q = spool.queue
+
+    def receipt(unix, *, rate=60.0, held=0.0, key="k"):
+        return {"schema": EXPORT_RECEIPT_SCHEMA, "action_key": key,
+                "unix": unix, "tier_id": fx.TIER, "owner": spool.owner,
+                "rate_mb_s": 60, "bytes": 600_000_000, "seconds": 10.0,
+                "held_seconds": held, "flushes": 3,
+                "mb_per_s_file_side": rate}
+
+    assert q.record_export(receipt(2000.0)) is not None
+    kept = q.export_receipt(spool.owner, fx.TIER)
+    assert kept is not None and kept["mb_per_s_file_side"] == 60.0
+
+    # Degenerate newer exports must not erase the priced record.
+    assert q.record_export(receipt(3000.0, rate=0.2)) is None
+    assert q.record_export({**receipt(3000.0), "bytes": 0}) is None
+    assert q.record_export({**receipt(3000.0), "seconds": 0.0}) is None
+    kept = q.export_receipt(spool.owner, fx.TIER)
+    assert kept is not None and kept["mb_per_s_file_side"] == 60.0
+    assert storage_tiers.export_measured_mb_s(
+        kept, tier_id=fx.TIER, owner=spool.owner) == 60
+
+    # A pacer-bound record is well-formed: it replaces, and prices nothing.
+    assert q.record_export(receipt(4000.0, held=30.0)) is not None
+    kept = q.export_receipt(spool.owner, fx.TIER)
+    assert kept is not None and kept["held_seconds"] == 30.0
+    assert storage_tiers.export_measured_mb_s(
+        kept, tier_id=fx.TIER, owner=spool.owner) is None
+
+    # And the seal follows the file: the whole offer after the held run.
+    spool.submit_group("b1", base.prepare(spool, "b1")[2])
+    assert sealed(spool, "b1")["params"]["demand"][FILL_DEMAND] == 164
