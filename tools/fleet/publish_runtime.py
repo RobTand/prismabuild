@@ -118,6 +118,10 @@ FLEET_SCRIPTS = (
     # runtime_process_census.py is here for the same reason and is only
     # useful there: it reads /proc on the box it runs on.
     "pbstatus.py", "pbmetrics.py", "pbwait.py", "pbcampaign.py", "runtime_process_census.py",
+    # pbsnapshot.py runs inside an action: a client that hashes its own
+    # source asks it which files in the pbrun checkout PrismaBuild generated.
+    # It has to be the executing generation's copy, found by published path.
+    "pbsnapshot.py",
     # pbmcp.py is the same case as pbstatus.py and then some: an agent
     # registers it by absolute published path so that every session starts on
     # the current generation, and the boxes it is registered from are exactly

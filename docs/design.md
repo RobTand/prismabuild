@@ -1263,6 +1263,34 @@ request, #517/#518). A client asks for a capability by tag, never by probing
 files or function names. The surface test fails if a tag is advertised
 without the code behind it.
 
+### Generated files in a pbrun checkout
+
+A `pbrun` action runs in a fresh checkout of a snapshot commit. That commit is
+the submitter's tree plus one file PrismaBuild wrote, the closure stamp
+`.pbrun-closure.<fingerprint>.json`. A client that hashes its own source to
+name the tree a run tested must leave the stamp out, or two runs of one source
+on two boxes hash differently. It must never leave a file out because of its
+name alone, because a submitter can commit a file with that name.
+
+`pbsnapshot.py verify <checkout> <commit>` is the published check (#1280).
+The client runs it as a command, from the executing generation's
+`tools/`, rather than parsing PrismaBuild's records itself. The tool verifies
+the stamp against the exact sealed action that materialized the checkout. It
+checks the snapshot commit subject, the action request in the CAS and its key,
+the code closure, the container owner, and the stamp name, which it recomputes
+with `pbrun.result_and_stamp_names`.
+
+- Exit 0 prints a `prismabuild.checkout_snapshot.v1` record: `snapshot`, and
+  `generated`, which lists each verified file with its `path`, `bytes`,
+  `sha256`, `action_key` and `request_sha256`. A commit that is not a pbrun
+  snapshot has `snapshot: false` and an empty `generated` list.
+- Exit 1 means the commit says it is a snapshot and does not verify, and the
+  reason is on stderr. A client must read exit 1 as "unknown", never as
+  "nothing generated".
+
+The tool knows nothing about the client that runs it. The client decides what
+to do with the list.
+
 ## Work decomposition boundary
 
 Rob's 2026-09-11 design decision is to partition logical requests into small,
