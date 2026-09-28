@@ -342,6 +342,10 @@ def test_every_fleet_tool_is_published_or_excluded_on_purpose() -> None:
         assert (fleet / name).exists() or (ROOT / "tools" / name).exists(), name
     for name, reason in publish_runtime.EXCLUDED:
         assert reason.strip(), name
+    # The publisher refuses this one itself (#1284): a published script that
+    # imports a tools module the publication does not carry.
+    assert publish_runtime._unshipped_imports(
+        publish_runtime._publication_manifest()) == []
 
 
 def _generation_store(tmp_path: Path) -> Path:

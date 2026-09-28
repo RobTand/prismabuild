@@ -38,6 +38,7 @@ admission. See the canary runbook.
 from __future__ import annotations
 
 import argparse
+import ast
 from contextlib import contextmanager
 import fcntl
 import hashlib
@@ -98,8 +99,8 @@ FLEET_SCRIPTS = (
     # ...and manifest_promotion.py, which the tier loop imports to promote
     # manifest rows' residency plans (#1252).  Generation 9098f84c872b shipped
     # without it and the tier role crash-looped at import (#1284);
-    # tests/test_published_scripts_import_published_modules.py now refuses
-    # any published script that imports an unpublished tools module.
+    # ``_unshipped_imports`` now refuses any publication in which a
+    # published script imports a tools module the publication does not carry.
     "manifest_promotion.py",
     # ...and ram_promote.py, the ram tier's movement node (#640): it copies a
     # landed stage range into the tmpfs and files the fragment that carries
@@ -493,6 +494,44 @@ def _source_for(name: str) -> Path:
         source = CHECKOUT / "tools" / "fleet" / base
         return source if source.is_file() else CHECKOUT / "tools" / base
     return CHECKOUT / name
+
+
+def _imported_modules(source: Path) -> set[str]:
+    """Top-level names ``source`` imports absolutely, at any depth."""
+    tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            names.add(node.module.split(".")[0])
+    return names
+
+
+def _unshipped_imports(published: dict[str, str]) -> list[str]:
+    """Published scripts that import a tools module this publication lacks (#1284).
+
+    Neither dl380g10 nor sparklina has a checkout: the generation is the only
+    place their commands exist, so a published script that imports a module
+    of this checkout's ``tools/`` the publication does not carry dies at
+    import on those boxes.  Generation 9098f84c872b did exactly that, and its
+    tier role crash-looped on every respawn.
+    """
+    problems: list[str] = []
+    for member in sorted(published):
+        parts = member.split("/")
+        if len(parts) != 2 or parts[0] != "tools" or not member.endswith(".py"):
+            continue
+        source = _source_for(member)
+        if not source.is_file():
+            continue
+        for name in sorted(_imported_modules(source)):
+            local = any((CHECKOUT / base / f"{name}.py").is_file()
+                        for base in ("tools/fleet", "tools"))
+            if local and f"tools/{name}.py" not in published:
+                problems.append(f"{member} imports {name}, which this "
+                                "publication does not carry")
+    return problems
 
 
 def _publication_manifest() -> dict[str, str]:
@@ -1904,6 +1943,12 @@ def _run_publication(args) -> int:
         )
 
     published = _publication_manifest()
+    problems = _unshipped_imports(published)
+    if problems:
+        raise SystemExit(
+            "refusing to publish: a published script imports a module this "
+            "publication does not carry (#1284):\n  " + "\n  ".join(problems)
+            + "\nNothing was published.")
     # --canary forces the gate on, --no-canary forces it off (the two together
     # are refused in main()); otherwise the versioned default decides.
     canary_enabled = bool(args.canary or (CANARY_DEFAULT_ENABLED and not args.no_canary))
