@@ -3527,7 +3527,12 @@ reservation lands where production would put it.  Nothing is simulated
 past the data: the real `tier_loop.cycle` mints the tiers and admits the
 movers, the real `stage_move`, `ram_promote` and `stage_release` nodes run
 in-process under a claimed action key, and the reader uses the published
-residency map.  An audit hook counts every open of the source pool outside
+residency map.  The storage host's worker is modelled as production runs
+it: its offer is the RAM policy's measured roof, read by the worker's own
+`box_capacity.ram_policy_mem_roof`, and its host ledger is minted at that
+offer before the first cycle, because a RAM fill holds host `mem_gb`
+beside its tier tokens and the gate's own claims mint the ledger of the
+box it runs on (#1222, #1253).  An audit hook counts every open of the source pool outside
 a stage mover.  The run passes only when each tier moved every unique
 byte of the manifest at least once and no byte more often than the read
 plan reads it, every entry the plan reads read back bit-exactly from RAM, the
