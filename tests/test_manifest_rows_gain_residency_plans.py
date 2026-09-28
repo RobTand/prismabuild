@@ -324,3 +324,85 @@ def test_decisions_are_memorized_and_receipts_not_rewritten(
     assert reads == []          # the decision is remembered, not re-read
     record = fleet.queue.prewarm(plain)
     assert record is None       # a no_manifest row receipts nothing at all
+
+
+# --- review round 2 (#1252): the memo and the examination budget ---
+
+def test_an_unreadable_request_is_not_a_permanent_decision(tmp_path):
+    """REVIEW-1252-r2 item A: a read failure is not a no-manifest fact.
+
+    One unreadable request passes the row over this cycle without remembering
+    anything; the row is planned the moment its request reads again.
+    """
+
+    import os
+    fleet = Fleet(tmp_path)
+    key = _manifest_row(fleet, "row-flaky",
+                        annotations={"phases": phase_table(NAMED_FILES)})
+    request = fleet.cas_root / "requests" / key[:2] / f"{key}.json"
+    mode = request.stat().st_mode
+    os.chmod(request, 0)
+
+    first = manifest_promotion.promote_ready_manifest_rows(
+        fleet.queue, fleet.cas_root, _stage_tier(fleet),
+        ready=[_ready_item(fleet, key)])
+    os.chmod(request, mode)
+    second = manifest_promotion.promote_ready_manifest_rows(
+        fleet.queue, fleet.cas_root, _stage_tier(fleet),
+        ready=[_ready_item(fleet, key)])
+
+    assert first[0]["outcome"] == "no_manifest"
+    assert second[0]["outcome"] == "planned", second[0]
+
+
+def test_remembered_rows_do_not_spend_the_examination_budget(tmp_path):
+    """REVIEW-1252-r2 item B: the budget bounds reads, not lookups.
+
+    A hundred remembered plain rows ahead of a manifest row: the manifest row
+    is still planned in the same cycle, because a memo answer costs no read.
+    """
+
+    fleet = Fleet(tmp_path)
+    files = [fleet.file(name, size) for name, size in NAMED_FILES]
+    plain = [fleet.action(f"r2-plain-{index:03d}", files, with_manifest=False)
+             for index in range(100)]
+    annotations = {"phases": phase_table(NAMED_FILES)}
+    manifest_rows = [
+        _manifest_row(fleet, f"r2-mrow-{index:03d}", annotations=annotations,
+                      files=[fleet.file(f"r2-{index}-{name}", size)
+                             for name, size in NAMED_FILES])
+        for index in range(2)]
+
+    # First cycle: only the plain rows are offered, so the planner spends its
+    # reads on them and remembers every answer.
+    manifest_promotion.promote_ready_manifest_rows(
+        fleet.queue, fleet.cas_root, _stage_tier(fleet),
+        ready=[_ready_item(fleet, key) for key in plain])
+
+    # Second cycle: the remembered hundred cost nothing, so the budget still
+    # reaches the manifest row behind them.
+    second = manifest_promotion.promote_ready_manifest_rows(
+        fleet.queue, fleet.cas_root, _stage_tier(fleet),
+        ready=[_ready_item(fleet, key)
+               for key in plain + manifest_rows])
+
+    assert second[-1]["outcome"] == "planned", second[-1]
+
+
+def test_priority_zero_is_not_minus_ten(tmp_path):
+    """REVIEW-1252-r2 item C: 0 is a band, not a missing value."""
+
+    fleet = Fleet(tmp_path)
+    key = _manifest_row(fleet, "row-zero",
+                        annotations={"phases": phase_table(NAMED_FILES)},
+                        priority=0)
+
+    outcomes = manifest_promotion.promote_ready_manifest_rows(
+        fleet.queue, fleet.cas_root, _stage_tier(fleet),
+        ready=[_ready_item(fleet, key)])
+
+    assert outcomes[0]["outcome"] == "planned", outcomes[0]
+    plan = residency_plan.read(fleet.queue, key)
+    assert plan is not None
+    for phase in plan["phases"]:
+        assert int(phase["mover_row"]["priority"]) == 0

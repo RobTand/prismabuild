@@ -180,6 +180,20 @@ def movement_template_of(queue: pool.PoolQueue,
     }
 
 
+def read_request(cas_root: Path, action_key: str) -> tuple[dict | None, bool]:
+    """``(body, read_ok)`` -- a failed read is not a fact about the bytes.
+
+    REVIEW-1252-r2 item A: a request that could not be read (or is not a
+    JSON object) answers ``read_ok=False`` so the caller passes the row over
+    WITHOUT remembering anything -- the failure is transient, and the row is
+    the planner's again the moment its request reads.  ``no_manifest`` is
+    remembered only off a body that was actually read.
+    """
+
+    body = row_request(cas_root, action_key)
+    return body, isinstance(body, dict)
+
+
 def declares_data_manifest(request: Mapping[str, object] | None) -> bool:
     """Whether a sealed request carries a ``pbcampaign.data-manifest`` input.
 
@@ -212,6 +226,13 @@ def promote_ready_manifest_rows(
 
     if ready is None:
         ready = queue.ready_items()
+    # REVIEW-1252-r2 nit D: the decisions that matter are the rows that are
+    # still READY, so the memo is pruned to exactly them each call -- bounded
+    # by the backlog, not by the loop's lifetime.
+    live = {(str(queue.root), str(item.get("action_key") or ""))
+            for item in ready}
+    for stale in [key for key in _DECISIONS if key not in live]:
+        del _DECISIONS[stale]
     cas = pb.PrismaBuildCAS(Path(cas_root))
     outcomes: list[dict[str, object]] = []
     planned = 0
@@ -230,12 +251,16 @@ def promote_ready_manifest_rows(
         if residency_plan.read(queue, key) is not None:
             outcomes.append({"action_key": key, "outcome": "stands_down"})
             continue
-        examined += 1
         memo_key = (str(queue.root), key)
         memo = _DECISIONS.get(memo_key)
         if memo is not None:
+            # A remembered answer costs no read, and the examination budget
+            # exists to bound reads (REVIEW-1252-r2 item B): it is not spent
+            # here, so a hundred remembered rows ahead of a manifest row
+            # cannot keep the planner from reaching it.
             outcomes.append(dict(memo["outcome"]))
             continue
+        examined += 1
         outcome: dict[str, object] = {"action_key": key}
         # Total containment for this advisory stage (REVIEW-1252 item 1):
         # the planner reads the request file raw -- no validate_action stands
@@ -246,7 +271,13 @@ def promote_ready_manifest_rows(
         # does today, which is what makes ``except Exception`` the correct
         # boundary here rather than a smell.
         try:
-            request = row_request(Path(cas_root), key)
+            request, read_ok = read_request(Path(cas_root), key)
+            if not read_ok:
+                # Item A: an unreadable request passes the row over for this
+                # cycle and remembers nothing -- the next cycle reads again.
+                outcome["outcome"] = "no_manifest"
+                outcomes.append(outcome)
+                continue
             if not declares_data_manifest(request):
                 outcome["outcome"] = "no_manifest"
                 outcomes.append(outcome)
@@ -254,9 +285,10 @@ def promote_ready_manifest_rows(
                 continue
             # The submitter's mover band is the consumer's own (REVIEW-1252
             # item 4): a priority-1 consumer's staging waits behind the -10
-            # band otherwise.
+            # band otherwise.  Zero is a band, not a missing value (item C).
+            raw_priority = item.get("priority")
             args = planner_args(
-                priority=int(item.get("priority", -10) or -10))
+                priority=-10 if raw_priority is None else int(raw_priority))
             template = movement_template_of(queue, request, key)
             if template is None:
                 outcome["outcome"] = "refused"
@@ -283,13 +315,15 @@ def promote_ready_manifest_rows(
                         queue, staged["plan"], renew=True)
         except SystemExit as exc:
             # pbrun's refusal vocabulary: the sealing path says no with a
-            # SystemExit, which ``except Exception`` does not see.
+            # SystemExit, which ``except Exception`` does not see.  A sealing
+            # refusal depends on tier, stage and queue state, not only on the
+            # request's bytes, so it is receipted (content-gated) and NEVER
+            # remembered (REVIEW-1252-r2 item A).
             outcome["outcome"] = "refused"
             outcome["reason"] = str(exc)
             outcomes.append(outcome)
-            _receipt_once(queue, memo_key, key, status="refused",
-                          detail=str(exc))
-            _remember(memo_key, outcome)
+            _record_tier_receipt(queue, key, status="refused",
+                                 detail=str(exc))
             continue
         except pool.TransitionLockBusy as exc:
             # Transient, not a refusal (REVIEW-1252 item 6): the consumer's
@@ -303,12 +337,13 @@ def promote_ready_manifest_rows(
                                  detail=repr(exc))
             continue
         except Exception as exc:  # noqa: BLE001 -- see the block comment
+            # Item A again: never remembered -- the refusal is a fact about
+            # this cycle's tier and queue state, not about the row.
             outcome["outcome"] = "refused"
             outcome["reason"] = repr(exc)
             outcomes.append(outcome)
-            _receipt_once(queue, memo_key, key, status="refused",
-                          detail=repr(exc))
-            _remember(memo_key, outcome)
+            _record_tier_receipt(queue, key, status="refused",
+                                 detail=repr(exc))
             continue
         plan = staged["plan"]
         phases = list(plan.get("phases") or ())
@@ -347,7 +382,7 @@ def _remember(memo_key: tuple[str, str], outcome: dict[str, object]) -> None:
 
 def _receipt_once(queue: pool.PoolQueue, memo_key: tuple[str, str],
                   action_key: str, **block: object) -> None:
-    """Write a refusal receipt only when its content changes (item 3)."""
+    """Write a remembered refusal's receipt only when its content changes."""
 
     memo = _DECISIONS.setdefault(memo_key, {})
     if memo.get("receipt") == dict(block):
