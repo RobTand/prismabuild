@@ -387,10 +387,8 @@ def _sha256(path: Path) -> str:
 
 
 def _git_result(*argv: str):
-    return subprocess.run(
-        ["git", "-C", str(CHECKOUT), *argv],
-        capture_output=True, text=True, check=False,
-    )
+    from prismabuild import core as pb
+    return pb._git_run(CHECKOUT, *argv, timeout=None)
 
 
 def _commit_identity() -> str:

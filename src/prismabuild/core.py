@@ -1809,49 +1809,41 @@ def git_checkout_identity(root: str | Path) -> dict[str, str]:
     checkout = Path(root)
     repository_detected = find_git_worktree_marker(checkout) is not None
 
-    def _git(
+    def _identity_fail(message: str) -> NoReturn:
+        raise ActionContractError(
+            "cannot compute pbrun checkout identity: " + message
+        )
+
+    def _identity_git(
         *args: str,
         input_text: str | None = None,
         accepted_returncodes: tuple[int, ...] = (0,),
         env: Mapping[str, str] | None = None,
     ) -> str:
         try:
-            completed = subprocess.run(
-                ["git", "-C", str(checkout), "-c",
-                 "core.excludesFile=/dev/null", *args],
-                capture_output=True,
-                text=True,
+            return _git(
+                checkout,
+                "-c", "core.excludesFile=/dev/null", *args,
+                input_text=input_text,
                 errors="surrogateescape",
-                input=input_text,
                 timeout=30,
                 env=env,
+                accepted_returncodes=accepted_returncodes,
+                fail=_identity_fail,
             )
-        except (OSError, subprocess.SubprocessError) as exc:
+        except ActionContractError:
             if repository_detected:
-                raise ActionContractError(
-                    "cannot compute pbrun checkout identity: Git "
-                    f"{' '.join(args)} failed: {exc}"
-                ) from exc
+                raise
             return ""
-        if completed.returncode not in accepted_returncodes:
-            if repository_detected:
-                detail = (completed.stderr or completed.stdout).strip()
-                raise ActionContractError(
-                    "cannot compute pbrun checkout identity: Git "
-                    f"{' '.join(args)} failed: "
-                    f"{detail or completed.returncode}"
-                )
-            return ""
-        return completed.stdout
 
-    top_level = _git("rev-parse", "--show-toplevel").rstrip("\n")
+    top_level = _identity_git("rev-parse", "--show-toplevel").rstrip("\n")
     if top_level:
         # Identity covers the repository, even when pbrun's requested cwd is
         # a package below it. Git reports the tracked delta for that closure;
         # the filesystem special-inode scan must cover the same closure.
         checkout = Path(top_level)
         repository_detected = True
-    head = _git("rev-parse", "HEAD").strip() or "no-git"
+    head = _identity_git("rev-parse", "HEAD").strip() or "no-git"
 
     # Personal excludes must not change either the untracked roster or the
     # special-inode screen. The helper pins them off for every Git call;
@@ -1862,7 +1854,7 @@ def git_checkout_identity(root: str | Path) -> dict[str, str]:
     # -z`` emits the repository-root-relative filesystem path verbatim.
     untracked_paths = [
         path
-        for path in _git(
+        for path in _identity_git(
             "ls-files", "--others", "--exclude-standard", "-z"
         ).split("\0")
         if path and not is_pbrun_generated_path(path)
@@ -1872,7 +1864,7 @@ def git_checkout_identity(root: str | Path) -> dict[str, str]:
     # block forever, and no special inode has stable bytes Git can transport.
     # Prune Git-ignored directories before walking so an ignored environment
     # or cache does not turn identity into an unrelated filesystem crawl.
-    ignored_directory_output = _git(
+    ignored_directory_output = _identity_git(
         "ls-files",
         "--others",
         "--ignored",
@@ -1924,7 +1916,7 @@ def git_checkout_identity(root: str | Path) -> dict[str, str]:
     if special_paths:
         ignored_specials = set(
             value
-            for value in _git(
+            for value in _identity_git(
                 "check-ignore",
                 "--no-index",
                 "-z",
@@ -1975,10 +1967,10 @@ def git_checkout_identity(root: str | Path) -> dict[str, str]:
     # and global attributes do not belong to the checkout's content identity.
     dirty = bytearray()
     if head != "no-git":
-        objects = _git(
+        objects = _identity_git(
             "rev-parse", "--path-format=absolute", "--git-path", "objects"
         ).rstrip("\n")
-        index = _git(
+        index = _identity_git(
             "rev-parse", "--path-format=absolute", "--git-path", "index"
         ).rstrip("\n")
         diff_env = {
@@ -2005,7 +1997,7 @@ def git_checkout_identity(root: str | Path) -> dict[str, str]:
                     "[core]\nrepositoryformatversion = 1\n"
                     "[extensions]\nobjectformat = sha256\n"
                 )
-            dirty.extend(os.fsencode(_git(
+            dirty.extend(os.fsencode(_identity_git(
                 "--git-dir=" + str(private_git),
                 "--work-tree=" + str(checkout),
                 "-c", "core.abbrev=auto",
@@ -2121,28 +2113,59 @@ def validate_pbrun_checkout_snapshot(value: object) -> dict[str, object]:
     return validated
 
 
+def _git_run(
+    root: Path | str,
+    *args: str,
+    timeout: float | None = 30,
+    env: Mapping[str, str] | None = None,
+    input_text: str | None = None,
+    errors: str | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """Run ``git -C root`` with one option set; the caller maps the result."""
+    return subprocess.run(
+        ["git", "-C", str(root), *args],
+        capture_output=True,
+        text=True,
+        errors=errors,
+        input=input_text,
+        timeout=timeout,
+        env=env,
+    )
+
+
+def _git(
+    root: Path | str,
+    *args: str,
+    timeout: float | None = 30,
+    env: Mapping[str, str] | None = None,
+    input_text: str | None = None,
+    errors: str | None = None,
+    accepted_returncodes: tuple[int, ...] = (0,),
+    fail: Callable[[str], NoReturn] = _fail,
+) -> str:
+    """Run ``git -C root``; map transport and returncode failures through ``fail``."""
+    try:
+        completed = _git_run(
+            root, *args, timeout=timeout, env=env,
+            input_text=input_text, errors=errors,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        fail(f"Git {' '.join(args)} failed: {exc}")
+    if completed.returncode not in accepted_returncodes:
+        detail = (completed.stderr or completed.stdout).strip()
+        fail(f"Git {' '.join(args)} failed: {detail or completed.returncode}")
+    return completed.stdout
+
+
 def _materialized_git(root: Path, *args: str) -> str:
     """One read of the materialized checkout, refused rather than guessed."""
 
-    try:
-        completed = subprocess.run(
-            ["git", "-C", str(root), *args],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
+    def _materialized_fail(message: str) -> NoReturn:
         raise ActionContractError(
-            f"cannot read materialized pbrun checkout: Git "
-            f"{' '.join(args)} failed: {exc}"
-        ) from exc
-    if completed.returncode != 0:
-        detail = (completed.stderr or completed.stdout).strip()
-        raise ActionContractError(
-            f"cannot read materialized pbrun checkout: Git "
-            f"{' '.join(args)} failed: {detail or completed.returncode}"
+            "cannot read materialized pbrun checkout: " + message
         )
-    return completed.stdout.strip()
+
+    return _git(root, *args, fail=_materialized_fail).strip()
 
 
 def _verify_pbrun_checkout_ancestry(
