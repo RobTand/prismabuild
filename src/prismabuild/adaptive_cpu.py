@@ -924,7 +924,7 @@ class Controller:
                 continue
             if cpu in cpus and len(found.setdefault(cpu, [])) < 4:
                 found[cpu].append(int(entry))
-                if all(len(found[c]) >= 4 for c in cpus):
+                if all(len(found.get(c, ())) >= 4 for c in cpus):
                     break
         self._foreign_pid_cache = (key, found)
         return found

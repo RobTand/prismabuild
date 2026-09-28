@@ -146,8 +146,10 @@ def test_foreign_only_off_the_measurements_cpus_keeps_the_withhold(
     CPUs 10-19 read 0.30 foreign (S = 3.0, over every baseline) while the
     measurement's CPUs 0-3 read 0.01.  The old sum starves the measurement
     for load it will never run on.  GREEN: no typed verdict -- the refusal
-    stays ``measurement_host_not_idle`` and the box withholds for the
-    measurement instead of overtaking it.
+    stays ``measurement_host_not_idle``.  Pool mechanics: a measurement-only
+    withhold never blocks admittable rows behind it, so the row behind
+    still claims; what must NOT happen is the measurement being overtaken
+    and reported starved.  Its denial stays withholding, never starved.
     """
 
     capacity = {"cpu": 20, "mem_gb": 120}
@@ -165,10 +167,8 @@ def test_foreign_only_off_the_measurements_cpus_keeps_the_withhold(
     for _ in range(pool.STARVATION_FLOOR - 1):
         queue.record_pass(measurement)
     behind = _publish(queue, clock, _key("behind"), {"cpu": 4, "mem_gb": 40})
-    got = _claim(queue, capacity, tiers=tiers)
-    assert got is None, (
-        "foreign load off the measurement's CPUs must not starve it: "
-        f"the row behind claimed as {got}")
+    assert _claim(queue, capacity, tiers=tiers) == behind, (
+        "the box flows around a withheld measurement")
     denial = _denial(queue, measurement)
     assert denial["reason"] == "adaptive_cpu_refused_withholding", denial
     decision = denial["evidence"]["decision"]
