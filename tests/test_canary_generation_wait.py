@@ -227,3 +227,21 @@ def test_a_minting_leg_still_pending_at_its_deadline_does_not_submit(
                           submit_leg=submit_leg,
                           clock=lambda: float(next(ticks)))
     assert calls == []
+
+
+def test_a_retained_offer_on_the_old_generation_waits(tmp_path, monkeypatch):
+    """The pre-check reads the offers pbrun's placement verdict reads.
+
+    pbrun refuses on every recorded offer (``RECORDED_OFFER_MAX_AGE_S``), so
+    a box busy past the live window still blocks on its retained
+    old-generation offer.  The pre-check must see that offer too, or it
+    reads "not pending" and lets the leg submit into the refusal.
+    """
+    queue = pool.PoolQueue(tmp_path / "pb-queue")
+    queue.ensure_layout()
+    _offer(queue, HOST, generation=OLD_GEN)
+    later = pool._now() + 10 * pool.OFFER_TIMEOUT_S
+    monkeypatch.setattr(pool, "_now", lambda: later)
+
+    assert pbcanary.generation_pending(
+        _paths(tmp_path), SPEC, NEW_GEN, HOST) is True
