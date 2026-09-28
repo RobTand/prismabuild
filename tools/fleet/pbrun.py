@@ -86,7 +86,7 @@ RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from prismabuild import (  # noqa: E402
     action_edges, adaptive_gpu, container_images, core as pb,
-    decomposition as dc, movement_actions, pool, residency_plan, slurm_lane,
+    decomposition as dc, materialize, movement_actions, pool, residency_plan, slurm_lane,
     storage_tiers,
 )
 import pbstatus  # noqa: E402
@@ -4899,7 +4899,7 @@ def _stamp_scancel_accepted(queue_root: Path, submission) -> None:
     if not isinstance(detail, dict) or "cancelled_with" not in detail:
         return
     detail["scancel_accepted_unix"] = time.time()
-    slurm_lane._write_json_atomic(filed, record)
+    materialize._write_json_atomic(filed, record, trailing_newline=True)
 
 
 def withdraw_main(q, prefixes, *, reason: str = "", by: str = "") -> int:

@@ -63,28 +63,46 @@ def _now() -> float:
 
 
 def _write_json_atomic(path: Path, payload: Mapping[str, object], *,
-                       make_parent: bool = True) -> None:
+                       make_parent: bool = True,
+                       trailing_newline: bool = False) -> None:
     """Publish a record by rename, so no reader ever sees a partial file.
 
     ``make_parent=False`` skips the ``mkdir``: a caller that rewrites one
     record every cycle creates its directory only when a write finds it
     missing (``FileNotFoundError``), not on every call (#960).
+
+    ``trailing_newline=True`` terminates the record with one LF, the lane
+    history: the retired ``slurm_lane._write_latest`` wrote
+    ``_canonical_file_bytes``.  Lane records are read by another box's
+    ``json.load``, which accepts both shapes, but their bytes are pinned,
+    so the flag preserves them bit for bit.  ``False`` keeps this module's
+    historical bare bytes, which feed content-addressed paths and must not
+    move.
+
+    The temp name carries pid and UUID because a lane directory lives on the
+    shared mount: two boxes submitting one action key write into it, and a
+    pid alone names one file on both (retired ``_write_latest`` rationale).
+    The rename sits inside the ``try`` so a failed rename still cleans its
+    temp instead of littering a directory an operator reads.
     """
 
     if make_parent:
         path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.parent / f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
-    data = pb._canonical_bytes(dict(payload))
+    if trailing_newline:
+        data = pb._canonical_file_bytes(dict(payload))
+    else:
+        data = pb._canonical_bytes(dict(payload))
     descriptor = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
     try:
         with os.fdopen(descriptor, "wb") as handle:
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
+        os.replace(tmp, path)
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
-    os.replace(tmp, path)
 
 def _run_materializer_git(
     argv: Sequence[str],

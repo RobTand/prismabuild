@@ -97,8 +97,9 @@ def test_an_ending_this_writer_crossed_is_repaired(
         "status": "failed", "detail": {"status": "failed"},
     }
 
-    def crossing_write(path: Path, payload) -> None:
-        replace(path, payload)
+    def crossing_write(path: Path, payload, *, trailing_newline: bool) -> None:
+        assert trailing_newline is True, "lane records keep their LF history"
+        replace(path, payload, trailing_newline=trailing_newline)
         if crossed or path.name != f"{KEY}.json":
             return
         crossed.append(1)
@@ -166,14 +167,15 @@ def test_a_delayed_write_cannot_erase_a_newer_writer_that_already_returned(
     newer_attempted = threading.Event()
     newer_returned = threading.Event()
 
-    def delayed_write(path: Path, payload) -> None:
+    def delayed_write(path: Path, payload, *, trailing_newline: bool) -> None:
+        assert trailing_newline is True, "lane records keep their LF history"
         if payload.get("published_unix") == 100.0:
             older_checked.set()
             assert newer_attempted.wait(5)
             # Unlocked code lets the newer writer completely finish before
             # the older rename. Locked code blocks it until this write ends.
             newer_returned.wait(0.5)
-        replace(path, payload)
+        replace(path, payload, trailing_newline=trailing_newline)
 
     def newer_writer():
         assert older_checked.wait(5)

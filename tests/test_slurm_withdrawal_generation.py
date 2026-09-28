@@ -9,7 +9,7 @@ and a ``--retry-safe`` run submitted attempt 2 of the action somebody had just
 cancelled.  The ending was filed as a failure rather than as the withdrawal it
 was.
 
-Issue #65.  The interleaving is injected at ``_write_latest``, which is the
+Issue #65.  The interleaving is injected at the lane's atomic JSON writer, which is the
 publication boundary the second process reads across; the withdrawal code, the
 generation comparison and every file operation are the real ones.
 """
@@ -94,11 +94,12 @@ def test_a_withdrawal_of_this_run_survives_the_submission_that_follows_it(
     lane = tmp_path / "lane"
     fleet = _Fleet()
     marker = queue / pool.WITHDRAWN / f"{KEY}.json"
-    published = sl._write_latest
+    published = sl._write_json_atomic
     withdrawn: list[int] = []
 
-    def write_then_withdraw(path: Path, payload) -> None:
-        published(path, payload)
+    def write_then_withdraw(path: Path, payload, *, trailing_newline: bool) -> None:
+        assert trailing_newline is True, "lane records keep their LF history"
+        published(path, payload, trailing_newline=trailing_newline)
         if path.name != "latest.json" or withdrawn:
             return
         withdrawn.append(1)
@@ -110,7 +111,7 @@ def test_a_withdrawal_of_this_run_survives_the_submission_that_follows_it(
         ) == 0
         assert marker.exists()
 
-    monkeypatch.setattr(sl, "_write_latest", write_then_withdraw)
+    monkeypatch.setattr(sl, "_write_json_atomic", write_then_withdraw)
     monkeypatch.setattr(sl, "cancel", fleet.cancel)
 
     _run(tmp_path, fleet, queue=queue, lane=lane,
