@@ -194,6 +194,28 @@ def read_request(cas_root: Path, action_key: str) -> tuple[dict | None, bool]:
     return body, isinstance(body, dict)
 
 
+def has_plan_history(queue: pool.PoolQueue, key: str) -> bool:
+    """Whether a consumer carries ANY residency-plan history (#708 safety).
+
+    A filed plan answers before this is ever asked; what this catches is the
+    consumer whose plan was superseded and reaped -- its retirement markers
+    are still live under ``residency-plans/superseded/``, and the owner that
+    withdrew it owns its reseal (``handoff_safe`` checks the markers this
+    planner must not retire).  Such a row stands down: the planner advises
+    bare rows, never a lifecycle another flow is driving.
+    """
+
+    directory = (queue.residency_plan_path(key).parent
+                 / residency_plan.SUPERSEDED)
+    try:
+        for marker in pool._scan(directory):
+            if marker.name.startswith(f"{key}."):
+                return True
+    except (OSError, ValueError):
+        return True          # unknown history is history: stand down
+    return False
+
+
 def declares_data_manifest(request: Mapping[str, object] | None) -> bool:
     """Whether a sealed request carries a ``pbcampaign.data-manifest`` input.
 
@@ -264,7 +286,8 @@ def promote_ready_manifest_rows(
         # A filed plan answers before anything costs a read (REVIEW-1252
         # item 3): one lstat against a CAS request fetch, and a row another
         # submitter sealed residency for is never the planner's.
-        if residency_plan.read(queue, key) is not None:
+        if residency_plan.read(queue, key) is not None or \
+                has_plan_history(queue, key):
             counters["stands_down"] += 1
             outcomes.append({"action_key": key, "outcome": "stands_down",
                              "fresh": False})

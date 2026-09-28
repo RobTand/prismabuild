@@ -320,7 +320,11 @@ def test_decisions_are_memorized_and_receipts_not_rewritten(
         fleet.queue, fleet.cas_root, _stage_tier(fleet),
         ready=[_ready_item(fleet, plain)])
 
-    assert second == first
+    def decision(outcome):
+        return {name: value for name, value in outcome.items()
+                if name != "fresh"}
+
+    assert [decision(o) for o in second] == [decision(o) for o in first]
     assert reads == []          # the decision is remembered, not re-read
     record = fleet.queue.prewarm(plain)
     assert record is None       # a no_manifest row receipts nothing at all
@@ -442,10 +446,14 @@ def test_remembered_rows_emit_one_summary_line_per_cycle(tmp_path):
     files = [fleet.file(name, size) for name, size in NAMED_FILES]
     keys = [fleet.action(f"r3-quiet-{index:03d}", files, with_manifest=False)
             for index in range(150)]
-    # Remember every answer once, outside the cycles being counted.
-    manifest_promotion.promote_ready_manifest_rows(
-        fleet.queue, fleet.cas_root, _stage_tier(fleet),
-        ready=[_ready_item(fleet, key) for key in keys])
+    # Remember every answer, outside the cycles being counted: the
+    # examination cap reads 64 a call, so loop until nothing new is read.
+    ready = [_ready_item(fleet, key) for key in keys]
+    while True:
+        reads = manifest_promotion.promote_ready_manifest_rows(
+            fleet.queue, fleet.cas_root, _stage_tier(fleet), ready=ready)
+        if not any(outcome.get("fresh") for outcome in reads):
+            break
 
     events = fleet.queue.root / "residency-events" / "_host" / f"{HOST}.jsonl"
     _driven_cycle(fleet, tmp_path, None)
@@ -455,14 +463,20 @@ def test_remembered_rows_emit_one_summary_line_per_cycle(tmp_path):
     second = (events.read_text().splitlines()
               if events.exists() else [])
 
-    def promotion_lines(lines):
+    def fresh_lines(lines):
         return [line for line in lines
-                if "manifest-row-promotion" in line]
+                if '"manifest-row-promotion"' in line]
 
-    assert len(promotion_lines(first)) <= 1, promotion_lines(first)
-    assert len(promotion_lines(second)) - len(promotion_lines(first)) <= 1
-    summary = promotion_lines(second)[-1]
-    assert "manifest-row-promotion-summary" in summary
+    def summary_lines(lines):
+        return [line for line in lines
+                if "manifest-row-promotion-summary" in line]
+
+    # A replayed answer is not an event: no fresh line, exactly one summary.
+    assert fresh_lines(first) == [], fresh_lines(first)
+    assert len(summary_lines(first)) == 1
+    assert fresh_lines(second) == []
+    assert len(summary_lines(second)) - len(summary_lines(first)) == 1
+    summary = summary_lines(second)[-1]
     assert '"replayed": 150' in summary
 
 
