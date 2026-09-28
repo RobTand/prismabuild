@@ -342,6 +342,10 @@ def test_every_fleet_tool_is_published_or_excluded_on_purpose() -> None:
         assert (fleet / name).exists() or (ROOT / "tools" / name).exists(), name
     for name, reason in publish_runtime.EXCLUDED:
         assert reason.strip(), name
+    # The publisher refuses this one itself (#1284): a published script that
+    # imports a tools module the publication does not carry.
+    assert publish_runtime._unshipped_imports(
+        publish_runtime._publication_manifest()) == []
 
 
 def _generation_store(tmp_path: Path) -> Path:
@@ -931,3 +935,38 @@ def test_the_shape_gate_is_a_checkout_tool_not_a_generation_member() -> None:
     assert "shape_gate.py" not in publish_runtime.FLEET_SCRIPTS
     assert publish_runtime._shape_gate_path() == (
         publish_runtime.CHECKOUT / "tools" / "fleet" / "shape_gate.py")
+
+
+def test_publish_refuses_a_script_whose_import_it_does_not_carry(
+    tmp_path, monkeypatch,
+) -> None:
+    """#1284: the publisher refuses the roster, not only the suite.
+
+    Generation 9098f84c872b shipped a tier loop importing a module it did not
+    carry while this file's roster test was red on main.  A red test that
+    nobody ran is not a gate; the publication itself refuses now.
+    """
+
+    checkout = _checkout(tmp_path / "checkout", "new")
+    fleet = checkout / "tools" / "fleet"
+    (fleet / "tier_loop.py").write_text("import manifest_promotion\n")
+    (fleet / "manifest_promotion.py").write_text("")
+    mirror = tmp_path / "mirror"
+    monkeypatch.setattr(publish_runtime, "CHECKOUT", checkout)
+    monkeypatch.setattr(publish_runtime, "MIRROR", mirror)
+    monkeypatch.setattr(publish_runtime, "FLEET_SCRIPTS", ("tier_loop.py",))
+    monkeypatch.setattr(publish_runtime, "FLEET_DATA", ())
+    monkeypatch.setattr(publish_runtime, "EXCLUDED", (
+        ("manifest_promotion.py", "fixture: excluded, yet imported"),
+        ("pbcanary.py", "fixture: the canary driver"),
+    ))
+    monkeypatch.setattr(
+        publish_runtime.subprocess, "run", _fake_git_and_probe("a" * 40))
+    monkeypatch.setattr(sys, "argv", [
+        "publish_runtime.py", "--rollout", "rolling",
+        "--rollout-reason", "fixture publication",
+        "--shape-gate-waiver", "fixture publication", "--dry-run"])
+
+    with pytest.raises(SystemExit, match="tier_loop.py imports manifest_promotion"):
+        publish_runtime.main()
+    assert not mirror.exists()
