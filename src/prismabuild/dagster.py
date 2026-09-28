@@ -18,10 +18,9 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 import importlib
 import json
-import math
 from pathlib import Path
 import re
-from typing import Any, Protocol
+from typing import Any, NoReturn, Protocol
 
 from . import core as pb
 from . import slurm as ps
@@ -113,31 +112,24 @@ def _exact_mapping(
     return value
 
 
+def _fail(message: str) -> NoReturn:
+    raise DagsterGraphError(message)
+
+
 def _text(value: object, *, where: str, pattern: re.Pattern[str]) -> str:
-    if type(value) is not str or pattern.fullmatch(value) is None:
-        raise DagsterGraphError(f"{where} has an invalid value")
-    return value
+    return pb._text(value, where=where, pattern=pattern, fail=_fail)
 
 
 def _nonnegative_integer(value: object, *, where: str) -> int:
-    if type(value) is not int or value < 0:
-        raise DagsterGraphError(f"{where} must be a non-negative integer")
-    return value
+    return pb._nonnegative_integer(value, where=where, fail=_fail)
 
 
 def _positive_integer(value: object, *, where: str) -> int:
-    if type(value) is not int or value <= 0:
-        raise DagsterGraphError(f"{where} must be a positive integer")
-    return value
+    return pb._positive_integer(value, where=where, fail=_fail)
 
 
 def _positive_finite(value: object, *, where: str) -> float:
-    if type(value) not in {int, float}:
-        raise DagsterGraphError(f"{where} must be a positive finite number")
-    normalized = float(value)
-    if normalized <= 0 or not math.isfinite(normalized):
-        raise DagsterGraphError(f"{where} must be a positive finite number")
-    return normalized
+    return pb._positive_finite(value, where=where, fail=_fail)
 
 
 def _absolute_path(value: object, *, where: str, root_ok: bool = False) -> Path:

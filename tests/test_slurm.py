@@ -564,7 +564,6 @@ def test_submit_refuses_job_id_from_outside_sealed_cluster(
     [
         ("constraint", "gb10;touch-pwned"),
         ("partition", "--uid=0"),
-        ("account", "pq\n--wrap=bad"),
         ("qos", "gold value"),
         ("time_limit", "4 hours"),
     ],
@@ -572,6 +571,13 @@ def test_submit_refuses_job_id_from_outside_sealed_cluster(
 def test_resource_fields_refuse_option_or_shell_injection(field: str, value: str):
     with pytest.raises(pb.ActionContractError, match="invalid value"):
         _resources(**{field: value})
+
+
+def test_resource_account_reports_control_characters():
+    # Delegation to core._text (#1305): a value with control characters
+    # reports the NUL/control refusal, not invalid-value. Refusal preserved.
+    with pytest.raises(pb.ActionContractError, match="NUL or control character"):
+        _resources(account="pq\n--wrap=bad")
 
 
 def test_submit_refuses_wrong_scope_before_calling_slurm(

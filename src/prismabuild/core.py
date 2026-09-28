@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Callable, Mapping, Sequence
+from typing import NoReturn
 from contextlib import contextmanager, suppress
 import errno
 import fcntl
@@ -612,6 +613,7 @@ def _text(
     pattern: re.Pattern[str] | None = None,
     allow_empty: bool = False,
     allow_control: bool = False,
+    fail: Callable[[str], NoReturn] = _fail,
 ) -> str:
     """Validate one text field.
 
@@ -625,13 +627,13 @@ def _text(
     """
 
     if type(value) is not str or (not value and not allow_empty):
-        _fail(f"{where} must be a {'string' if allow_empty else 'non-empty string'}")
+        fail(f"{where} must be a {'string' if allow_empty else 'non-empty string'}")
     if "\x00" in value:
-        _fail(f"{where} contains a NUL character")
+        fail(f"{where} contains a NUL character")
     if not allow_control and any(ord(char) < 32 for char in value):
-        _fail(f"{where} contains a NUL or control character")
+        fail(f"{where} contains a NUL or control character")
     if pattern is not None and pattern.fullmatch(value) is None:
-        _fail(f"{where} has an invalid value")
+        fail(f"{where} has an invalid value")
     return value
 
 
@@ -641,14 +643,37 @@ def _optional_token(value: object, *, where: str) -> str | None:
     return _text(value, where=where, pattern=_SCOPE_TOKEN_RE)
 
 
-def _nonnegative_integer(value: object, *, where: str) -> int:
+def _nonnegative_integer(
+    value: object, *, where: str, fail: Callable[[str], NoReturn] = _fail
+) -> int:
     if type(value) is not int or value < 0:
-        _fail(f"{where} must be a non-negative integer")
+        fail(f"{where} must be a non-negative integer")
     return value
 
 
-def _sha256(value: object, *, where: str) -> str:
-    return _text(value, where=where, pattern=_SHA256_RE)
+def _positive_integer(
+    value: object, *, where: str, fail: Callable[[str], NoReturn] = _fail
+) -> int:
+    if type(value) is not int or value <= 0:
+        fail(f"{where} must be a positive integer")
+    return value
+
+
+def _positive_finite(
+    value: object, *, where: str, fail: Callable[[str], NoReturn] = _fail
+) -> float:
+    if type(value) not in {int, float}:
+        fail(f"{where} must be a positive finite number")
+    normalized = float(value)
+    if normalized <= 0 or not math.isfinite(normalized):
+        fail(f"{where} must be a positive finite number")
+    return normalized
+
+
+def _sha256(
+    value: object, *, where: str, fail: Callable[[str], NoReturn] = _fail
+) -> str:
+    return _text(value, where=where, pattern=_SHA256_RE, fail=fail)
 
 
 def _canonical_bytes(value: object) -> bytes:
