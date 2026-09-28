@@ -101,12 +101,22 @@ def read_claimed_record(queue, action_key: str) -> dict[str, object] | None:
 
     The record is the one PrismaBuild files when a worker claims the action.
     It carries, among other fields, the action's ``cas_root`` and its
-    ``residency`` block.  An absent or empty record is ``None``; a record that
-    exists but is not a JSON object raises, so a broken mount is never read as
-    "not claimed".
+    ``residency`` block.  An absent record is ``None``; a record that exists
+    but is empty or is not a JSON object raises, so a torn write or a broken
+    mount is never read as "not claimed" (#1267).
     """
 
-    return _pool._read_json(queue.item_path(_pool.CLAIMED, action_key))
+    path = queue.item_path(_pool.CLAIMED, action_key)
+    record = _pool._read_json(path)
+    if record is None:
+        # ``_read_json`` answers ``None`` for absent and for empty; only the
+        # absent is "not claimed".  An empty row is a torn write or a broken
+        # mount holding an opinion, and the reader that asked by key holds no
+        # evidence the directory is live -- the same reason ``_read_json``
+        # keeps single-key callers loud.
+        raise _pool.PoolContractError(
+            f"claimed record is empty (torn write or broken mount?): {path}")
+    return record
 
 
 # -- produced output ---------------------------------------------------------
@@ -211,7 +221,12 @@ def cas_receipt_self_check(receipt: Mapping[str, object]) -> str | None:
     if _core.canonical_sha256(body) != receipt["receipt_sha256"]:
         return RECEIPT_REFUSALS[1]
     producer = receipt["producer"]
-    if not (producer.get("schema") == WORKER_ATTESTATION_SCHEMA_V2
+    # A producer that is not an object (null, a list, a string) is the
+    # attestation refusal, not an AttributeError: the receipt's digests may
+    # be intact over a body whose producer field is corrupt, and a reader
+    # holding only the receipt gets the named refusal either way (#1267).
+    if not isinstance(producer, dict) or not (
+            producer.get("schema") == WORKER_ATTESTATION_SCHEMA_V2
             and producer.get("action_key") == receipt["action_key"]
             and _core.canonical_sha256(
                 {key: value for key, value in producer.items()
