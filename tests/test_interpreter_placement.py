@@ -237,27 +237,117 @@ def test_pbtest_refuses_a_path_no_recorded_worker_reports(tmp_path, capsys):
     import pbrun
     import pbtest
 
+    # A unanimous absent is the refusal: every capable offer answered, and
+    # every answer named the path missing (the fleet below is the new
+    # generation with a READY row already asking for this path).
     queue = _queue_at(tmp_path)
-    # A fleet with the new generation on it: one box answers paths, so the
-    # question "does anybody report this one" is a real no.
-    _announce(queue, "dl380g10", tags=(pb.INTERPRETER_TAG,),
-              interpreters=[PQ_PYTHON])
+    _announce_live(queue, "dl380g10", absent=["/no/such/venv/bin/python"])
 
-    refusal = pbtest.interpreter_refusal(
+    kind, message = pbtest.interpreter_refusal(
         queue, "/no/such/venv/bin/python",
         tags=[], resources={"cpu": 1}, needs_gpu=False)
-    assert refusal is not None
-    assert "/no/such/venv/bin/python" in refusal
+    assert kind == "refusal"
+    assert "/no/such/venv/bin/python" in message
 
-    fine = pbtest.interpreter_refusal(
+    fine_kind, _ = pbtest.interpreter_refusal(
         queue, PQ_PYTHON, tags=[], resources={"cpu": 1}, needs_gpu=False)
-    assert fine is None
+    assert fine_kind is None or fine_kind == "notice"
 
     # A fleet whose offers predate the field offers no capability, so the
-    # pre-flight stays a warning rather than a suite-wide guess: the
+    # pre-flight stays a notice rather than a suite-wide guess: the
     # per-shard pbrun refusal is the fail-closed answer there.
     legacy = _queue_at(tmp_path / "legacy")
     _announce(legacy, "old-box", tags=(), interpreters=None)
-    assert pbtest.interpreter_refusal(
+    kind, _ = pbtest.interpreter_refusal(
         legacy, "/no/such/venv/bin/python",
-        tags=[], resources={"cpu": 1}, needs_gpu=False) is None
+        tags=[], resources={"cpu": 1}, needs_gpu=False)
+    assert kind in (None, "notice")
+
+
+# --- review round 1 (#1266): the first submission must pass the pre-flight ---
+
+def _announce_live(queue, host, *, present=(), absent=(),
+                   tags=(pb.INTERPRETER_TAG,)):
+    _announce(queue, host, tags=tags, interpreters=list(present) or None)
+    record_path = queue.root / "workers" / f"{host}.json"
+    record = json.loads(record_path.read_text())
+    if absent:
+        record["interpreters_absent"] = sorted(absent)
+    record_path.write_text(json.dumps(record))
+
+
+def test_a_first_submission_passes_the_preflight(tmp_path, capsys):
+    """REVIEW-1266 r1 [P1]: a path no READY row names yet is on no offer.
+
+    The live shape of a fresh new-generation offer: the capability is
+    offered, and both answer lists are empty, because nothing in READY asks
+    about any path.  A first submission naming a real venv must pass --
+    refused here would refuse every pbtest after the publish.
+    """
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]
+                           / "tools" / "fleet"))
+    import pbtest
+
+    queue = _queue_at(tmp_path)
+    _announce_live(queue, "sparky")
+    _announce_live(queue, "sparklina")
+
+    kind, message = pbtest.interpreter_refusal(
+        queue, PQ_PYTHON, tags=[], resources={"cpu": 1}, needs_gpu=False)
+
+    assert kind in (None, "notice"), (kind, message)
+    if kind == "notice":
+        assert PQ_PYTHON in message
+
+
+def test_pbrun_publishes_a_first_submission_with_a_notice(tmp_path, capsys):
+    """The same first-submission shape at pbrun's refusal site: no raise."""
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]
+                           / "tools" / "fleet"))
+    import pbrun
+
+    queue = _queue_at(tmp_path)
+    _announce_live(queue, "sparky")
+    _announce_live(queue, "sparklina")
+
+    verdict = pbrun.interpreter_submission_verdict(
+        queue, PQ_PYTHON, tags=[])
+
+    assert verdict[0] in ("unknown", "present"), verdict
+
+
+def test_a_unanimous_absent_is_refused_naming_the_path(tmp_path):
+    """Every capable offer answered, and every answer was absent."""
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]
+                           / "tools" / "fleet"))
+    import pbtest
+
+    queue = _queue_at(tmp_path)
+    _announce_live(queue, "sparky", absent=[PQ_PYTHON])
+    _announce_live(queue, "sparklina", absent=[PQ_PYTHON])
+
+    kind, message = pbtest.interpreter_refusal(
+        queue, PQ_PYTHON, tags=[], resources={"cpu": 1}, needs_gpu=False)
+
+    assert kind == "refusal"
+    assert PQ_PYTHON in message
+
+
+def test_one_present_answer_beats_every_absent_one(tmp_path):
+    """A split fleet answers present somewhere: the row is placeable."""
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]
+                           / "tools" / "fleet"))
+    import pbtest
+
+    queue = _queue_at(tmp_path)
+    _announce_live(queue, "sparky", absent=[PQ_PYTHON])
+    _announce_live(queue, "sparklina", present=[PQ_PYTHON])
+
+    kind, message = pbtest.interpreter_refusal(
+        queue, PQ_PYTHON, tags=[], resources={"cpu": 1}, needs_gpu=False)
+
+    assert kind is None
