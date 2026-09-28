@@ -246,7 +246,14 @@ def test_a_cold_host_refuses_a_constant_foreign_load_on_every_pass() -> None:
         assert verdict["exceeds"] is True, (pass_number, verdict)
         assert verdict["basis"] == "unmeasured", (pass_number, verdict)
         assert verdict["samples"] == 0, (pass_number, verdict)
-    assert state["samples"] == [], "a refused sample must not seed the window"
+    # Since #1185, refused seeds join flagged provisional so a host that
+    # boots under load still accumulates evidence; the gate keeps them
+    # out of every reference until five span 180 s.  The #1014 guarantee
+    # stands in the asserts above (refused on every pass, samples == 0)
+    # and here: no refused sample may join as firm baseline evidence.
+    assert state["samples"] != [], state
+    assert all(s.get("provisional") for s in state["samples"]), (
+        "a refused sample must never seed the window as firm evidence", state)
 
 
 def test_a_foreign_load_is_refused_until_it_outlives_the_remembered_idle_span() -> None:
