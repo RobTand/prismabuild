@@ -1606,7 +1606,9 @@ def export_measured_mb_s(record: Mapping[str, object] | None, *,
     :func:`export_receipt_measurable` measured nothing and prices
     nothing.  Any positive finite rate prices, however slow the writer:
     no floor, no writer-bound gate (#1319 amendment -- a measurement is
-    a measurement, and the price tracks the latest one).
+    a measurement, and the price tracks the latest one); the price is
+    ceiled with a floor of 1, so the slowest writer still reserves and
+    paces instead of failing open (#1327 review).
 
     ``None`` means no measurement, and the caller's seal falls back to
     the tier's whole offer, which runs one export at a time: the missing
@@ -1621,7 +1623,11 @@ def export_measured_mb_s(record: Mapping[str, object] | None, *,
         return None
     if not export_receipt_measurable(record):
         return None
-    return int(float(record["mb_per_s_file_side"]))
+    # Ceiled, floored at 1: the ledger counts whole MB/s, and a seal of 0
+    # would price `export_fill`'s falsy fill as no measurement -- fail open
+    # for exactly the slowest writer the pacing is for (#1327 review).
+    # Ceil errs toward the movers, like the 1:1 bound it refines.
+    return max(1, math.ceil(float(record["mb_per_s_file_side"])))
 
 
 def mover_fill_demand_from_receipts(

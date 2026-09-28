@@ -1576,7 +1576,7 @@ def _export_claimed_group(queue, group, manifest, record, manifest_sha256, expor
                 "flushes": pacing["flushes"],
                 "mb_per_s_file_side": pacing["mb_per_s_file_side"],
             })
-        except OSError:
+        except (OSError, pool.PoolContractError):
             pass
     answer = {"ok": True, "entries": len(landed)}
     adopted = sum(1 for proof in landed if "adopted" in proof)

@@ -13617,7 +13617,9 @@ price:
   other, and the tier ledger still bounds their summed declared rates at
   the offer. Any positive finite rate prices, however slow the writer: no
   floor, no writer-bound gate -- a measurement is a measurement (#1319
-  amendment). A newest receipt that measured nothing (a zero, negative,
+  amendment). The price is the ceiling with a minimum of 1, so the
+  slowest writer still reserves and paces instead of failing open (#1327
+  review). A newest receipt that measured nothing (a zero, negative,
   missing or non-finite rate, or internally inconsistent parts) prices
   nothing, and the seal falls back to the whole offer: fail closed, never
   a second writer on a missing signal. History survives beside the newest:
