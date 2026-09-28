@@ -151,6 +151,21 @@ def test_mutable_summary_cannot_replace_archived_failure(failure):
         recover(failure)
 
 
+def test_a_pre_1203_ending_with_full_streams_still_reconciles(failure):
+    """Endings filed by the pre-#1203 runtime carry the full streams inline
+    and none of the bounded-tail keys; receipt recovery must still accept
+    exactly that legacy shape (PR #1277 review)."""
+    q, _, action, ending = failure
+    archived = q.attempt_outcomes(ending)[-1]
+    legacy = {**archived['detail'], 'stdout': archived['stdout'],
+              'stderr': archived['stderr']}
+    rewrite_ending(failure, lambda e: e.__setitem__('detail', legacy))
+    result = recover(failure)
+    assert result['payload_status'] == 'verified'
+    assert result['transport_status'] == 'failed'
+    assert result['returncode'] == 125
+
+
 @pytest.mark.parametrize('target', ['request', 'receipt', 'payload', 'attempt', 'stderr'])
 def test_corrupt_canonical_evidence_is_not_accepted(failure, target):
     q, cas, action, ending = failure
