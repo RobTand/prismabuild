@@ -165,6 +165,26 @@ POOL_OUTCOME_SCHEMA_V1 = "prismaquant.prismabuild.pool_outcome.v1"
 RESOURCE_PROFILE_SCHEMA_V1 = "prismabuild.resource_profile.v1"
 POOL_ATTEMPT_SCHEMA_V1 = "prismaquant.prismabuild.pool_attempt.v1"
 POOL_OFFER_SCHEMA_V1 = "prismaquant.prismabuild.pool_offer.v1"
+#: Inline cap on an action stream inside a mutable queue record (#1203).  The
+#: immutable attempt log keeps the full stream and the record names it, so a
+#: reader that needs the bytes follows the reference instead of the row.
+TERMINAL_STREAM_TAIL_BYTES = 64 * 1024
+
+
+def _terminal_stream_inline(raw: str) -> tuple[str, int, bool]:
+    """Bounded inline copy of an action stream for a mutable record.
+
+    Returns ``(inline, byte_count, cut)``.  The inline copy is the stream's
+    last ``TERMINAL_STREAM_TAIL_BYTES`` bytes, decoded permissively so a code
+    point the cut split still renders; the byte count and whether the copy
+    was cut travel beside it so a reader can tell a tail from a whole stream
+    (#1203).
+    """
+    data = raw.encode("utf-8")
+    if len(data) <= TERMINAL_STREAM_TAIL_BYTES:
+        return raw, len(data), False
+    tail = data[-TERMINAL_STREAM_TAIL_BYTES:]
+    return tail.decode("utf-8", errors="replace"), len(data), True
 
 
 def _membership_withdrawal_owner(value: object) -> bool:
@@ -21825,8 +21845,19 @@ class PoolQueue:
         if not isinstance(finished_host, str) or not finished_host:
             raise PoolContractError("pool attempt finished_host must be nonempty text")
         detail = dict(raw_detail)
-        detail["stdout"] = str(adopted.get("stdout") or "")
-        detail["stderr"] = str(adopted.get("stderr") or "")
+        logs = adopted.get("logs")
+        for stream in ("stdout", "stderr"):
+            # Only the bounded tail lives in the mutable record; the immutable
+            # attempt log beside it keeps the whole stream and is named so a
+            # reader can still fetch every byte (#1203).
+            inline, full_bytes, cut = _terminal_stream_inline(
+                str(adopted.get(stream) or ""))
+            detail[stream] = inline
+            detail[f"{stream}_bytes"] = full_bytes
+            detail[f"{stream}_truncated"] = cut
+            metadata = logs.get(stream) if isinstance(logs, Mapping) else None
+            if isinstance(metadata, Mapping):
+                detail[f"{stream}_log"] = dict(metadata)
         return {
             "attempt": attempt,
             "status": status,

@@ -632,6 +632,27 @@ the mutable rows for the same reason it follows a preemption successor: the
 waiter's generation is the one it submitted, and a newer generation's ending
 is never reported as this run's.
 
+**A mutable ending carries a bounded tail of a stream, not the stream
+(#1203).** An action that prints megabytes made the terminal row itself the
+bulk: `pbstatus` bounds an ending record at 8 MiB, so one 8.4 MB stdout
+filed a row no reader could open, and a requeued record carried the same
+stream into every discovery read. The mutable row now carries only the last
+64 KiB of each stream (`pool.TERMINAL_STREAM_TAIL_BYTES`), decoded
+permissively so a code point the cut split still renders, beside the stream's
+full byte count (`stdout_bytes`/`stderr_bytes`), whether it was cut
+(`stdout_truncated`/`stderr_truncated`), and the immutable attempt log that
+keeps every byte (`stdout_log`/`stderr_log`, the same first-writer-wins,
+content-addressed file `archive_attempt` already writes, with its path, byte
+count and digest). `adopted_attempt_summary` is the one writer of that shape,
+so `finish`, the late finisher, the stale-claim reaper and preemption
+successor recovery file it identically, and receipt reconciliation compares
+the ending against that same bounded form rather than the archived stream.
+Readers that scan the last line of a stream (the canary legs, worker stderr
+tails, `pbrun`'s on-screen diagnostics) keep their answer inside the tail,
+and a reader that needs every byte follows the named log. `pbstatus` renders
+a bounded row as an ordinary ending; a legacy oversized row still degrades
+per record, naming the limit, while every other ending renders.
+
 **One key, one terminal record (#1117).** `done/` and `failed/` are one slot
 each, so a later generation that ends in the same state replaces the earlier
 row. One that ends in the *other* state -- a failed key resubmitted and

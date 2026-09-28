@@ -171,7 +171,11 @@ Normal wait, retry and terminal-record semantics do not read this supplement.
         _require(archived.get("status") == "failed" and archived.get("disposition") == pool.FAILED,
                  "immutable attempt has a different terminal disposition")
         _require(isinstance(archived.get("detail"), dict), "immutable attempt detail is missing")
-        detail = {**archived["detail"], "stdout": archived["stdout"], "stderr": archived["stderr"]}
+        # The mutable ending's streams are the bounded tail of the immutable
+        # attempt's, published through the one writer that shapes them
+        # (#1203); comparing the archived streams themselves would ask the
+        # ending to carry a stream it was never allowed to store.
+        detail = q.adopted_attempt_summary(record)["detail"]
         _require(record.get("detail") == detail,
                  "mutable ending differs from the immutable attempt")
         for field in ("claimed_by", "claimed_host", "claimed_unix", "finished_host", "finished_unix"):
