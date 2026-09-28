@@ -1081,7 +1081,7 @@ def main() -> int:
     # Answering it once here fails the whole submission fast, naming the path.
     refusal = interpreter_refusal(
         pool.PoolQueue(pbrun.SH / "pb-queue"), args.python,
-        tags=tags, resources={"cpu": args.cpus, "mem_gb": args.mem_gb},
+        tags=tags, resources={"cpu": 1, "mem_gb": args.mem_gb},
         needs_gpu=bool(args.gpu))
     if refusal is not None:
         sys.stderr.write(refusal + "\n")

@@ -988,7 +988,7 @@ def interpreter_lookup(items) -> list[str]:
     paths = sorted({
         str(item.get("interpreter"))
         for item in items
-        if isinstance(item, Mapping)
+        if isinstance(item, dict)
         and isinstance(item.get("interpreter"), str)})
     return [
         path for path in paths

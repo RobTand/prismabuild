@@ -62,7 +62,8 @@ def test_a_shared_venv_interpreter_is_placeable_on_every_box_that_has_it(tmp_pat
 
     queue = _queue_at(tmp_path)
     for host in ("dl380g10", "sparky", "sparklina"):
-        _announce(queue, host, tags=(), interpreters=[PQ_PYTHON])
+        _announce(queue, host, tags=(pb.INTERPRETER_TAG,),
+                  interpreters=[PQ_PYTHON])
     _publish(queue, "a" * 64, interpreter=PQ_PYTHON)
 
     probe = {"tags": [pb.INTERPRETER_TAG], "interpreter": PQ_PYTHON,
@@ -76,9 +77,12 @@ def test_a_sparks_only_interpreter_is_placeable_on_the_sparks_only(tmp_path):
     """The tf516 venv: portable work, one real constraint, no submitter tag."""
 
     queue = _queue_at(tmp_path)
-    _announce(queue, "dl380g10", tags=(), interpreters=[PQ_PYTHON])
-    _announce(queue, "sparky", tags=(), interpreters=[PQ_PYTHON, TF516_PYTHON])
-    _announce(queue, "sparklina", tags=(), interpreters=[PQ_PYTHON, TF516_PYTHON])
+    _announce(queue, "dl380g10", tags=(pb.INTERPRETER_TAG,),
+              interpreters=[PQ_PYTHON])
+    _announce(queue, "sparky", tags=(pb.INTERPRETER_TAG,),
+              interpreters=[PQ_PYTHON, TF516_PYTHON])
+    _announce(queue, "sparklina", tags=(pb.INTERPRETER_TAG,),
+              interpreters=[PQ_PYTHON, TF516_PYTHON])
 
     probe = {"tags": [], "interpreter": TF516_PYTHON,
              "resources": {"cpu": 1, "mem_gb": 1}}
@@ -107,7 +111,8 @@ def test_an_offer_without_answers_is_not_a_match_for_a_naming_item(tmp_path):
 
     queue = _queue_at(tmp_path)
     _announce(queue, "old-generation", tags=(), interpreters=None)
-    _announce(queue, "new-generation", tags=(), interpreters=[PQ_PYTHON])
+    _announce(queue, "new-generation", tags=(pb.INTERPRETER_TAG,),
+              interpreters=[PQ_PYTHON])
 
     probe = {"tags": [], "interpreter": PQ_PYTHON,
              "resources": {"cpu": 1, "mem_gb": 1}}
@@ -150,7 +155,7 @@ def test_the_offer_records_only_what_it_positively_answers(tmp_path):
     _announce(queue, "answered", interpreters=[TF516_PYTHON, PQ_PYTHON])
     _announce(queue, "silent", interpreters=None)
     answered = json.loads((queue.root / "workers" / "answered.json").read_text())
-    assert answered["interpreters"] == [PQ_PYTHON, TF516_PYTHON]
+    assert answered["interpreters"] == [TF516_PYTHON, PQ_PYTHON]
     silent = json.loads((queue.root / "workers" / "silent.json").read_text())
     assert "interpreters" not in silent
 
@@ -194,7 +199,7 @@ def test_the_claim_denies_an_interpreter_this_box_does_not_have(tmp_path):
                        tags=[pb.INTERPRETER_TAG, "gb10"]) is None
     denial = _denials(queue)[-1]
     assert denial["reason"] == "interpreter_not_present"
-    assert denial["interpreter"] == "/no/such/bin/python"
+    assert denial["evidence"]["interpreter"] == "/no/such/bin/python"
     assert queue.item_path(pool.READY, "f" * 64).exists()
 
 
