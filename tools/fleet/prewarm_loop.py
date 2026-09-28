@@ -3605,6 +3605,53 @@ def summarize_cycle(event: Mapping[str, object]) -> str:
     return "prewarm cycle: " + "; ".join(parts)
 
 
+def ram_tier_announced(queue: pool.PoolQueue) -> bool:
+    """Whether this queue's announced tiers include a live ram tier (#1247).
+
+    The tier records are the one shared fact between the two loops: the
+    prewarm loop and the tier role read the same queue root, and a tier
+    announced between two polls changes the answer next cycle.  Unreadable
+    answers ``False`` -- an unreadable tiers directory is not evidence a
+    ram tier exists.
+    """
+
+    try:
+        return any(
+            record.get("tier") == "ram" and not record.get("retired")
+            and str(record.get("host") or "") == socket.gethostname()
+            for record in queue.tiers())
+    except (OSError, pool.PoolContractError):
+        return False
+
+
+def manifest_row_skip_reason(room: Mapping, ram_tier_live: bool) -> str | None:
+    """Why the ARC loop passes a manifest row over, or ``None`` to warm (#1247).
+
+    On a box whose ram tier is announced, the tier role's planner owns
+    manifest rows -- it files residency plans and the movers stage through
+    the fences, the host tokens (#1245) and the residency maps, and an ARC
+    warm beside that would only churn a cache capped far below one row's
+    set.  Otherwise, a box with a real ARC at its ceiling
+    (``headroom_effective`` zero with ``arc_c_max`` above zero) makes a
+    warm evict a byte for every byte it reads: the 2026-09-27 G2 receipts
+    show 309.9 s of pacer holds warming 21 MB of a 63.66 GB manifest.  A
+    box with no ARC keeps its existing budget refusal.  Neither skip
+    spends the lookahead, so the rows behind keep their turn.
+    """
+
+    if ram_tier_live:
+        return "ram-tier-planner-owns"
+    if (int(room.get("arc_c_max", 0) or 0) > 0
+            and int(room.get("headroom_effective", 0) or 0) <= 0):
+        # A box with a real ARC at its ceiling: a warm here evicts a byte for
+        # every byte it reads -- the 2026-09-27 G2 receipts show 309.9 s of
+        # pacer holds warming 21 MB of a 63.66 GB manifest.  A box with no
+        # ARC at all keeps its existing answer (``headroom``): its budget is
+        # zero by construction and the budget's own refusal names it.
+        return "headroom_effective zero"
+    return None
+
+
 def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
           pacer: DiskPacer | None = None) -> dict:
     ready = queue.ready_items()
@@ -3672,6 +3719,10 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
     ledger_mark = pacer.ledger.snapshot()
 
     cycle_spent = 0
+
+    #: #1247: a live ram tier on this queue moves manifest rows to the tier
+    #: role's planner, read once per cycle from the announced records.
+    ram_tier_live = ram_tier_announced(queue)
 
     def warm(*, key: str, manifest: dict, digest: str, entries: list,
              start_bytes: int, target: int, phase: str, phased: bool,
@@ -3995,6 +4046,15 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
         request = sealed_request(root, key)
         entry = manifest_input_of(request)
         if entry is None:
+            continue
+        skip_reason = manifest_row_skip_reason(room, ram_tier_live)
+        if skip_reason is not None:
+            # #1247: see :func:`manifest_row_skip_reason`.  Skipped, not
+            # failed -- and ``taken`` is not spent, so the rows behind this
+            # one keep their turn at the budget.
+            event["skipped"].append({
+                "action_key": key, "reason": skip_reason,
+            })
             continue
         manifest = load_manifest(root, entry)
         if manifest is None:

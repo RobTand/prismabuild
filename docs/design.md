@@ -12690,6 +12690,38 @@ eviction, because a rename cannot merge and a map naming an evicted range points
 at deleted files. The launcher puts the composed map's path in
 `PRISMABUILD_RESIDENCY_MAP`, and only when the file exists.
 
+**A declared manifest is an opt-in to the same map (#1247).** A row that
+carries a `pbcampaign.data-manifest` input states its whole input set, but
+until #1247 only a submitter that passed `--residency stage` got a plan: the
+G2 campaign's rows were published bare, and the ARC prewarm loop -- the one
+thing that read their manifests -- targeted a cache the RAM-tier policy caps
+at 22 GiB against 59.6 GiB rows (its 2026-09-27 receipts: 21 MB warmed of
+63.66 GB declared, 309.9 s of pacer holds). The tier role therefore gained a
+planner (`tools/fleet/manifest_promotion.py`) that runs inside its single
+writer after the mint, before the planned-consumers walk: for the first
+READY rows in claim order (one per cycle -- the streaming rule; the
+resident-byte bound is the tier's window and eviction, not the plan) that
+declare a manifest and have no filed plan, it runs the submitter's own
+sealing path (`pbrun.residency_stage_rows` + `residency_plan.seal_window`,
+under the consumer's transition lock exactly as a submission does) off the
+row's sealed request, and the loop's ordinary adoption pass publishes the
+movers, promotes onto the ram tier, and composes the map as it does for any
+`--residency stage` submission. No second sealing scheme, mover, or store
+exists; a row whose request already has a plan stands down; a refusal is
+receipted (the row's `pool_prewarm.v1` record gains an additive `tier`
+block: `destination: ram-tier`, `status: planned|refused`) and the row runs
+exactly as it always has. The ARC loop passes manifest rows over by name on
+a box whose ram tier is announced (`ram-tier-planner-owns`) and skips at
+`headroom_effective == 0` (`headroom_effective zero`), so it neither churns a
+full cache beside the planner nor paces hours for megabytes. The map reaches
+the row at claim through the launcher: `residency_map_environment` injects
+for a sealed residency block as before, and now also for a manifest-declaring
+row when a composed map for its action key exists -- the declaration is the
+opt-in, the map is the evidence, neither alone injects, and a row with no
+map launches byte-identically. PrismaQuant #1529 (P2) tracks the one read
+family that bypasses the resolver; the covered families are the row's
+dominant 45.8 GiB of cache inputs and its shard loads.
+
 **The queue root is published, not derived (#961).** The pool launcher also
 sets `PRISMABUILD_QUEUE_ROOT` (`core.QUEUE_ROOT_ENV`) for every action it runs,
 map or no map, to the queue's absolute root (`PoolQueue.launch_environment`).

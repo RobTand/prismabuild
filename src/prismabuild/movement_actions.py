@@ -380,8 +380,19 @@ def egress_progress_policy(
     return pb.validate_progress_policy(policy), derivation
 
 
+#: The fleet's movement-node scripts, named once (REVIEW-1252-r4): the
+#: sealing path's defaults and any reader that must recognize a movement row
+#: by its sealed command share this one home -- a second copy of the same
+#: fact drifts the day a script is added.
+STAGE_MOVER_SCRIPT = "stage_move.py"
+RAM_PROMOTE_SCRIPT = "ram_promote.py"
+STAGE_RELEASE_SCRIPT = "stage_release.py"
+MOVEMENT_SCRIPTS = (STAGE_MOVER_SCRIPT, RAM_PROMOTE_SCRIPT,
+                    STAGE_RELEASE_SCRIPT)
+
+
 def movement_tools(tier: Mapping[str, object], *,
-                   mover: str = "stage_move.py") -> tuple[str, str, str]:
+                   mover: str = STAGE_MOVER_SCRIPT) -> tuple[str, str, str]:
     """The interpreter and the two movement scripts, as the tier announces them.
 
     ``mover`` names the movement node's script -- ``stage_move.py`` for a
@@ -416,7 +427,7 @@ def movement_tools(tier: Mapping[str, object], *,
             f"older than this one is the usual cause, and publishing the "
             f"runtime again fixes it.  Filling them in from this process "
             f"would seal an argv naming a python that is not on that box")
-    return (python, str(Path(root) / mover), str(Path(root) / "stage_release.py"))
+    return (python, str(Path(root) / mover), str(Path(root) / STAGE_RELEASE_SCRIPT))
 
 
 def container_owner(

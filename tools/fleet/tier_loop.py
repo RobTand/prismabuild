@@ -62,6 +62,7 @@ from prismabuild import window_credit  # noqa: E402
 
 import deferred_release  # noqa: E402
 import prewarm_loop  # noqa: E402
+import manifest_promotion  # noqa: E402
 import stage_release  # noqa: E402
 #: The same generation gate ``prewarm_loop`` reads, under the same name, for
 #: the same reason: a loop holds the modules it imported for its whole life,
@@ -6214,6 +6215,11 @@ def sync_ram_host_mirror(queue: pool.PoolQueue,
     return queue.reconcile_ram_host_holds(
         storage_tiers.tier_id("ram", host), (), release_orphans=False)
 
+#: The last manifest-promotion summary triple this loop emitted
+#: (REVIEW-1252-r4 nit): an unchanged cycle appends nothing, the same
+#: content gate the planner's receipts use.
+_MANIFEST_SUMMARY_LAST: tuple[int, int, int] | None = None
+
 
 def rows_held_for_gate(queue: pool.PoolQueue, host: str,
                        converged: bool) -> int | None:
@@ -10230,6 +10236,54 @@ def _cycle(
     # the tier's *current* free capacity covers, so it must see this cycle's
     # supply rather than the last one's.
     announced_tiers = {str(record["tier_id"]): record for record in announced}
+    # READY manifest rows gain their residency plans here, before this
+    # cycle's planned-consumers walk, so a plan filed now is adopted by the
+    # same cycle rather than the next (#1247).  The planner is the
+    # submitter's own sealing path invoked by the loop: it files plans and
+    # never publishes movers -- the adoption and window passes below own
+    # that, exactly as they do for a ``--residency stage`` submission.  A
+    # stage tier is the gate: no stage, no planner, and a box that announces
+    # no ram tier still plans (the sealing path's ram leg is ``auto`` and
+    # simply seals no promotion nodes when none sits in front of the stage).
+    stage_for_manifests = next(
+        (dict(record) for record in announced
+         if record.get("tier") == "stage"), None)
+    if stage_for_manifests is not None:
+        # Fresh decisions are events; replays and stand-downs are a summary
+        # (REVIEW-1252-r3 [P2]): one line per remembered row per cycle is
+        # churn on the shared mount, and a replayed answer is not an event.
+        stats: dict[str, int] = {}
+        try:
+            for outcome in manifest_promotion.promote_ready_manifest_rows(
+                    queue, None, stage_for_manifests, stats=stats):
+                if outcome.get("fresh", True):
+                    _emit(queue, host,
+                          {"event": "manifest-row-promotion", **outcome},
+                          tier_consumers=tier_consumers)
+            if stats:
+                triple = (int(stats.get("replayed", 0)),
+                          int(stats.get("stands_down", 0)),
+                          int(stats.get("examined", 0)))
+                global _MANIFEST_SUMMARY_LAST
+                if triple != _MANIFEST_SUMMARY_LAST:
+                    _MANIFEST_SUMMARY_LAST = triple
+                    _emit(queue, host,
+                          {"event": "manifest-row-promotion-summary",
+                           "replayed": triple[0],
+                           "stands_down": triple[1],
+                           "examined": triple[2]},
+                          tier_consumers=tier_consumers)
+        except Exception as exc:  # REVIEW-1252 item 1: advisory, never fatal
+            # The planner is fail-closed per row; this is the loop-level
+            # guard for what a row cannot catch (a queue read, say).  Total,
+            # because this stage advises -- a cycle without new plans is the
+            # ordinary cost of a refusal, never a halted tier role.  One
+            # cycle without new plans is the ordinary cost of a refusal.
+            _emit(queue, host,
+                  {"event": "manifest-row-promotion-refused",
+                   "reason": repr(exc)},
+                  tier_consumers=tier_consumers)
+    phases.lap("manifest_promotion")
     # The epoch drop before anything reads a fragment: a prior epoch's range
     # is not resident, so the adoption, the pressure, the sweep and the maps
     # below all see a world that no longer contains it (#640).  The drop is
