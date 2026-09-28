@@ -645,8 +645,9 @@ keeps every byte (`stdout_log`/`stderr_log`, the same first-writer-wins,
 content-addressed file `archive_attempt` already writes, with its path, byte
 count and digest). `adopted_attempt_summary` is the one writer of that shape,
 so `finish`, the late finisher, the stale-claim reaper and preemption
-successor recovery file it identically, and receipt reconciliation compares
-the ending against that same bounded form rather than the archived stream.
+successor recovery file it identically, and receipt reconciliation accepts
+that same bounded form or, for endings filed by the pre-#1203 runtime, the
+legacy form carrying the full streams inline — and nothing else.
 Readers that scan the last line of a stream (the canary legs, worker stderr
 tails, `pbrun`'s on-screen diagnostics) keep their answer inside the tail,
 and a reader that needs every byte follows the named log. `pbstatus` renders

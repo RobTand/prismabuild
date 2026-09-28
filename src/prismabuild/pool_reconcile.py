@@ -174,9 +174,17 @@ Normal wait, retry and terminal-record semantics do not read this supplement.
         # The mutable ending's streams are the bounded tail of the immutable
         # attempt's, published through the one writer that shapes them
         # (#1203); comparing the archived streams themselves would ask the
-        # ending to carry a stream it was never allowed to store.
+        # ending to carry a stream it was never allowed to store.  Endings
+        # filed by the pre-#1203 runtime carry the full streams inline with
+        # none of the bounded-tail keys, so exactly one of the two shapes is
+        # accepted and the matched shape feeds the later checks.
         detail = q.adopted_attempt_summary(record)["detail"]
-        _require(record.get("detail") == detail,
+        legacy = {**archived["detail"], "stdout": archived["stdout"],
+                  "stderr": archived["stderr"]}
+        ending_detail = record.get("detail")
+        if ending_detail == legacy:
+            detail = legacy
+        _require(ending_detail == detail,
                  "mutable ending differs from the immutable attempt")
         for field in ("claimed_by", "claimed_host", "claimed_unix", "finished_host", "finished_unix"):
             _require(record.get(field) == archived.get(field),

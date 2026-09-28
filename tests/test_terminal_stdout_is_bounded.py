@@ -4,6 +4,7 @@ Mutable ending records carry only a bounded tail of an action's stdout or
 stderr; the immutable attempt log keeps every byte and the record names it.
 No fleet queue, live mount, container, or other process is touched.
 """
+import hashlib
 import json
 from pathlib import Path
 import sys
@@ -55,7 +56,6 @@ def test_a_huge_stdout_stays_readable_in_the_ending(queue):
     # at the recorded digest.
     log = detail["stdout_log"]
     raw = (queue.root / str(log["path"])).read_bytes()
-    import hashlib
     assert len(raw) == detail["stdout_bytes"]
     assert hashlib.sha256(raw).hexdigest() == log["sha256"]
     assert raw.endswith(b"FINAL-MARKER\n")
