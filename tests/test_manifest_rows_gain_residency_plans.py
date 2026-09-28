@@ -506,3 +506,34 @@ def test_a_repeated_identical_refusal_writes_one_receipt(tmp_path):
 
     assert record.read_text() == content
     assert record.stat().st_mtime_ns == before
+
+
+def test_a_movement_row_is_machinery_not_a_consumer(tmp_path):
+    """REVIEW-1252-r3 follow-up: the tier's own movers are never planned.
+
+    A mover or egress row carries its consumer's manifest as its own input,
+    so judging by the declaration alone would seal a plan for one of the
+    tier's own phase-0 rows -- and interfere with the lifecycle of the
+    window it belongs to.
+    """
+
+    fleet = Fleet(tmp_path)
+    files = [fleet.file(name, size) for name, size in NAMED_FILES]
+    consumer = _manifest_row(fleet, "mv-consumer",
+                             annotations={"phases": phase_table(NAMED_FILES)})
+    assert manifest_promotion.promote_ready_manifest_rows(
+        fleet.queue, fleet.cas_root, _stage_tier(fleet),
+        ready=[_ready_item(fleet, consumer)])[0]["outcome"] == "planned"
+    plan = residency_plan.read(fleet.queue, consumer)
+    lead = str(plan["phases"][0]["mover_row"]["action_key"])
+    egress = str(plan["phases"][0]["egress_row"]["action_key"])
+
+    for child in (lead, egress):
+        item = _ready_item(fleet, child) if (
+            fleet.queue.root / "ready" / f"{child}.json").exists() else {
+            "action_key": child, "cas_root": str(fleet.cas_root),
+            "priority": 0}
+        outcomes = manifest_promotion.promote_ready_manifest_rows(
+            fleet.queue, fleet.cas_root, _stage_tier(fleet), ready=[item])
+        assert outcomes[0]["outcome"] == "no_manifest", outcomes[0]
+        assert residency_plan.read(fleet.queue, child) is None

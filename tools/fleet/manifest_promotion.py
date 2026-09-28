@@ -194,6 +194,28 @@ def read_request(cas_root: Path, action_key: str) -> tuple[dict | None, bool]:
     return body, isinstance(body, dict)
 
 
+#: The fleet's movement-node scripts.  A mover or egress row carries its
+#: consumer's manifest as its own input (the mover stages it), so a planner
+#: that judged rows by their manifest alone would try to plan the tier's own
+#: machinery -- sealing a plan for a phase-0 egress of somebody else's
+#: window.  A row whose sealed command runs one of these is a movement node,
+#: not a consumer, whatever it declares.
+_MOVEMENT_SCRIPTS = ("stage_move.py", "stage_release.py", "ram_promote.py")
+
+
+def is_movement_row(request: Mapping[str, object] | None) -> bool:
+    """Whether this sealed request is one of the tier's own movement nodes."""
+
+    if not isinstance(request, Mapping):
+        return False
+    params = request.get("params")
+    command = (params.get("command")
+               if isinstance(params, Mapping) else None)
+    if not isinstance(command, Sequence) or isinstance(command, (str, bytes)):
+        return False
+    return any(str(part).endswith(_MOVEMENT_SCRIPTS) for part in command)
+
+
 def has_plan_history(queue: pool.PoolQueue, key: str) -> bool:
     """Whether a consumer carries ANY residency-plan history (#708 safety).
 
@@ -327,6 +349,13 @@ def promote_ready_manifest_rows(
                 # backlog from an unreadable one.
                 outcome["outcome"] = "unreadable"
                 outcomes.append(outcome)
+                continue
+            if is_movement_row(request):
+                # The tier's own mover/egress rows declare their consumer's
+                # manifest by construction; they are machinery, not consumers.
+                outcome["outcome"] = "no_manifest"
+                outcomes.append(outcome)
+                _remember(memo_key, outcome)
                 continue
             if not declares_data_manifest(request):
                 outcome["outcome"] = "no_manifest"
