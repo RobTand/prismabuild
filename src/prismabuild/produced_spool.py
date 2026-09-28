@@ -360,35 +360,32 @@ def export_fill(queue, tier_id, owner=None):
     ``storage_tiers.current_fill_offer``.
 
     The measured side is the producer's own newest complete export receipt
-    on this tier (#1014 item 3), priced at its achieved file-side rate
-    only when that run's **writer** bounded it: the pacer's own held
-    accounting says which side did (``ExportPacer.wrote`` sleeps and
-    records a hold only when the copy runs ahead of its schedule), and a
-    run the pacer held proves only that the writer can do at least the
-    seal, so it prices nothing and the seal stays the whole offer -- one
-    congested run cannot ratchet the producer's seal down forever.  A
-    writer-bound run's achieved rate is the writer's real rate, and the
-    next export reserves that beside its siblings instead of waiting for
-    the whole offer.  With no owner, or no receipt that prices one, the
-    measured side is ``None`` and the price is the tier's current offer:
-    one read MB per written MB, which over-charges a write (the same bins
-    displace about 0.4 read MB per written MB) and so errs toward the
-    movers -- the stated bound, which runs one export at a time and
-    never admits a second writer on a missing signal.  A tier that
-    announces no fill offer prices nothing, and the export stays
-    unreserved and unpaced exactly as before.
+    on this tier (#1014 item 3, #1319): each finished export files its
+    achieved file-side rate queue-side, one immutable file per export
+    (``exports/<export_key>.json``), and the next export seals at the
+    newest receipt's rate capped by the tier's offer instead of the whole
+    offer -- however slow the writer, with no floor and no writer-bound
+    gate (#1319 amendment: a measurement is a measurement).  With no
+    owner, or no receipt that prices one, the measured side is ``None``
+    and the price is the tier's current offer: one read MB per written
+    MB, which over-charges a write (the same bins displace about 0.4
+    read MB per written MB) and so errs toward the movers -- the stated
+    bound, which runs one export at a time and never admits a second
+    writer on a missing signal.  A tier that announces no fill offer
+    prices nothing, and the export stays unreserved and unpaced exactly
+    as before.
 
-    The receipt is read directly, not scanned for: the queue keeps ONE
-    sidecar per (producer action, tier)
-    (``exports/<owner>/<tier_id>.json``, :meth:`PoolQueue.export_receipt`),
-    the newest well-formed receipt the producer's exports on that tier
-    filed, so this costs one read however long the campaign runs.
+    The newest receipt is the last of :meth:`PoolQueue.export_records`:
+    one directory listing over the producer's own per-tier receipts,
+    oldest first, so history survives beside it for diagnosis.
     """
 
-    measured = (storage_tiers.export_measured_mb_s(
-                    queue.export_receipt(owner, tier_id),
-                    tier_id=tier_id, owner=owner)
-                if owner else None)
+    measured = None
+    if owner:
+        listed = queue.export_records(owner, tier_id)
+        if listed:
+            measured = storage_tiers.export_measured_mb_s(
+                listed[-1], tier_id=tier_id, owner=owner)
     for record in queue.tiers():
         if isinstance(record, dict) and str(record.get("tier_id")) == str(tier_id):
             fill, _offer, _basis = storage_tiers.current_fill_offer(record, measured)
@@ -1558,12 +1555,12 @@ def _export_claimed_group(queue, group, manifest, record, manifest_sha256, expor
     _write(group / "receipt.json", receipt)
     if pacer is not None:
         # The rate this producer's next export seals from, filed queue-side
-        # so it survives this group's retirement tick (#1014 item 3).  One
-        # sidecar per (producer action, tier), replaced when it measured a
-        # rate; best effort: the export has succeeded and its receipt is
-        # written, so a failed sidecar write costs the next seal its
-        # measured rate -- it falls back to the whole offer, which fails
-        # closed -- and not this export its result.
+        # so it survives this group's retirement tick (#1014 item 3,
+        # #1319).  One immutable file per export; best effort: the export
+        # has succeeded and its receipt is written, so a failed queue-side
+        # write costs the next seal its measured rate -- it falls back to
+        # the whole offer, which fails closed -- and not this export its
+        # result.
         pacing = receipt["pacing"]
         try:
             queue.record_export({
@@ -1579,7 +1576,7 @@ def _export_claimed_group(queue, group, manifest, record, manifest_sha256, expor
                 "flushes": pacing["flushes"],
                 "mb_per_s_file_side": pacing["mb_per_s_file_side"],
             })
-        except OSError:
+        except (OSError, pool.PoolContractError):
             pass
     answer = {"ok": True, "entries": len(landed)}
     adopted = sum(1 for proof in landed if "adopted" in proof)

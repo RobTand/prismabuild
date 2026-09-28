@@ -4,11 +4,13 @@ A paced export used to seal the tier's whole fill offer (#747's conservative
 first cut: no export receipt priced a pool write), so a second paced export
 on the same tier waited for the first to end and exports serialized across
 producers.  These tests pin the measured fix end to end: an export files
-its achieved file-side rate queue-side when it completes, a producer's next
-export seals at that rate capped by the tier's offer, the tier ledger keeps
-the sum of concurrent exports' declared rates at the offer, and a producer
-with no measurement still takes the whole offer -- a missing signal never
-admits a second writer.
+its achieved file-side rate queue-side when it completes, one immutable
+file per export (``exports/<export_key>.json``, #1319), a producer's next
+export seals at its newest receipt's rate capped by the tier's offer --
+however slow, with no floor and no writer-bound gate -- the tier ledger
+keeps the sum of concurrent exports' declared rates at the offer, and a
+producer with no measurement still takes the whole offer -- a missing
+signal never admits a second writer.
 """
 from __future__ import annotations
 
@@ -71,20 +73,20 @@ def file_prior_receipt(queue, owner, *, rate=60.0, unix=2000.0,
                        seal=60) -> None:
     """File one completed export's queue-side receipt, as the export will.
 
-    One small file per (producer action, tier), replaced by each
-    well-formed later export of the same producer on the same tier
-    (``exports/<owner>/<tier_id>.json``).  ``held`` is the pacer's own
-    held/slept accounting (``ExportPacer.wrote`` records a hold only when
-    it actually sleeps), and ``seal`` the rate that run was sealed at.
+    One small immutable file per export (``exports/<export_key>.json``).
+    ``held`` is the pacer's own held/slept accounting (``ExportPacer.wrote``
+    records a hold only when it actually sleeps), and ``seal`` the rate that
+    run was sealed at.  Written by hand for the seal tests: on a tree
+    without the per-export reader it is inert, which is exactly the defect.
     """
 
     record = {"schema": EXPORT_RECEIPT_SCHEMA, "action_key": key, "unix": unix,
               "tier_id": tier, "owner": owner, "rate_mb_s": seal,
               "bytes": 600_000_000, "seconds": 10.0, "held_seconds": held,
               "flushes": 3, "mb_per_s_file_side": rate}
-    exports = Path(queue.root) / "exports" / owner
+    exports = Path(queue.root) / "exports"
     exports.mkdir(parents=True, exist_ok=True)
-    pool._write_json_atomic(exports / f"{tier}.json", record)
+    pool._write_json_atomic(exports / f"{key}.json", record)
 
 
 def claim(spool):
@@ -103,14 +105,13 @@ def second_paced_write(spool, mb_s: int) -> str:
 def test_two_paced_exports_from_two_producers_share_the_tier(tmp_path):
     """Each measured well under half the offer: both claim, and the offer bounds them.
 
-    The producer's prior export was writer-bound at 60 MB/s on a tier
-    offering 164 (its pacer never held: the writer itself was the slow
-    side), so its next export seals at 60 instead of the whole offer.  A
-    second producer's paced write, likewise writer-bound at 104, claims
-    beside it and fills the offer exactly -- the two exports run together,
-    which the whole-offer seal refused.  Without a writer-bound rate the
-    seal is the whole offer, free is zero, and the second producer waits
-    for the first to end -- the serialization this file pins away.
+    The producer's prior export wrote at 60 MB/s on a tier offering 164,
+    so its next export seals at 60 instead of the whole offer.  A second
+    producer's paced write at 104 claims beside it and fills the offer
+    exactly -- the two exports run together, which the whole-offer seal
+    refused.  Without a measured rate the seal is the whole offer, free
+    is zero, and the second producer waits for the first to end -- the
+    serialization this file pins away.
     """
 
     spool = base.world(tmp_path, env={ps.PACED_EXPORT_ENV: "1"})
@@ -132,17 +133,73 @@ def test_two_paced_exports_from_two_producers_share_the_tier(tmp_path):
     assert ledger.available().get(FILL, 0) == 0      # the offer bounds the sum
 
 
-def test_a_pacer_bound_receipt_does_not_price_below_the_offer(tmp_path):
-    """A run the pacer held proves only an "at least", and prices nothing.
+def test_two_measured_exports_share_the_tier_while_a_third_borrows(tmp_path):
+    """Two measured seals fit under the offer; the third borrows (#1319, #999).
+
+    The producer's prior export wrote at 60 MB/s on a tier offering 164,
+    filed at the per-export home.  Three paced exports each seal at 60:
+    the first two claim beside each other (120 under the 164 offer) and
+    the third finds 44 free -- short of 60 -- so it takes the free 44 as
+    tokens and borrows the remaining 16 from its siblings' held fill:
+    other exports are family lenders by design (#999), and a producer's
+    own reservations holding its own export out would be the wedge #999
+    was built to fix.  The borrow is explicit and bounded -- lenders
+    named, overcommit tracked -- while the ledger still bounds the
+    unborrowed sum at the offer; the tier no longer serializes behind
+    one export.  On a tree without the per-export reader the filed
+    receipt is inert, every export seals the whole offer, and the second
+    export waits: the serialization this pins away (this test still
+    fails there, at the second claim).
+    """
+
+    spool = base.world(tmp_path, env={ps.PACED_EXPORT_ENV: "1"})
+    offer_fill(spool.queue, 164)
+    file_prior_receipt(spool.queue, spool.owner, rate=60.0)
+    first = spool.submit_group("b1", base.prepare(spool, "b1")[2])
+    assert sealed(spool, "b1")["params"]["demand"][FILL_DEMAND] == 60
+    claimed_first = claim(spool)
+    assert claimed_first is not None \
+        and claimed_first["action_key"] == first["export_key"]
+
+    second = spool.submit_group("b2", base.prepare(spool, "b2")[2])
+    assert sealed(spool, "b2")["params"]["demand"][FILL_DEMAND] == 60
+    claimed_second = claim(spool)
+    assert claimed_second is not None \
+        and claimed_second["action_key"] == second["export_key"]
+
+    ledger = spool.queue.tier_ledger(fx.TIER)
+    assert ledger.holder_tokens(first["export_key"]).get(FILL) == 60
+    assert ledger.holder_tokens(second["export_key"]).get(FILL) == 60
+    assert ledger.available().get(FILL, 0) == 44   # the offer bounds the sum
+
+    third = spool.submit_group("b3", base.prepare(spool, "b3")[2])
+    assert sealed(spool, "b3")["params"]["demand"][FILL_DEMAND] == 60
+    claimed_third = claim(spool)
+    assert claimed_third is not None \
+        and claimed_third["action_key"] == third["export_key"]
+    borrow = claimed_third["tier_fill_borrowed"][fx.TIER]
+    assert borrow["taken_free"] == 44 and borrow["borrowed"] == 16
+    assert sum(borrow["lent"].values()) == 16
+    assert set(borrow["lent"]) <= {first["export_key"], second["export_key"]}
+    assert borrow["owner"] == spool.owner
+    # The borrow takes no token: the siblings still hold their 60 each,
+    # and the ledger still bounds the unborrowed sum at the offer.
+    assert ledger.holder_tokens(first["export_key"]).get(FILL) == 60
+    assert ledger.holder_tokens(second["export_key"]).get(FILL) == 60
+    assert ledger.holder_tokens(third["export_key"]).get(FILL) == 44
+
+
+def test_a_pacer_bound_receipt_prices_its_achieved_rate(tmp_path):
+    """A held run's achieved rate is its seal, and it prices (#1319).
 
     The prior export was sealed at the whole 164 MB/s offer and its pacer
-    held it for 30 s: the writer could have gone faster, and the achieved
-    60 MB/s says nothing about what it can do.  That receipt must not
-    lower the next seal -- one congested run would otherwise ratchet the
-    producer's seal down forever, because every later run is paced at the
-    lower rate and can never measure more.  A pacer-bound receipt prices
-    as no measurement: the next seal is the whole offer, and a second
-    producer's writer-bound 60 MB/s write still waits behind it.
+    held it for 30 s at an achieved 60: that is a stable fixed point, not
+    a ratchet -- the next run re-proves the seal -- so the next export
+    seals at 60 instead of the whole offer, and a second producer's
+    writer-bound 104 MB/s write claims beside it and fills the offer
+    exactly.  The writer-bound gate is gone with the rate floor
+    (no-heuristics rule: a measured positive finite rate is a
+    measurement).
     """
 
     spool = base.world(tmp_path, env={ps.PACED_EXPORT_ENV: "1"})
@@ -150,18 +207,17 @@ def test_a_pacer_bound_receipt_does_not_price_below_the_offer(tmp_path):
     file_prior_receipt(spool.queue, spool.owner, rate=60.0, held=30.0,
                        seal=164)
     first = spool.submit_group("b1", base.prepare(spool, "b1")[2])
-    assert sealed(spool, "b1")["params"]["demand"][FILL_DEMAND] == 164
-    assert sealed(spool, "b1")["params"]["command"][-4:] == \
-        ["--pace-mb-s", "164", "--pace-tier", fx.TIER]
+    assert sealed(spool, "b1")["params"]["demand"][FILL_DEMAND] == 60
 
-    claimed = claim(spool)
-    assert claimed is not None and claimed["action_key"] == first["export_key"]
+    claimed_first = claim(spool)
+    assert claimed_first is not None \
+        and claimed_first["action_key"] == first["export_key"]
 
-    foreign = second_paced_write(spool, 60)
-    assert claim(spool) is None         # a held run seals the whole offer
-    assert spool.queue.item_path(pool.READY, foreign).exists()
-    denial = al._denial(spool.queue, foreign)
-    assert denial["reason"] == "tier_reservation_unavailable", denial
+    foreign = second_paced_write(spool, 104)
+    claimed_second = claim(spool)
+    assert claimed_second is not None and claimed_second["action_key"] == foreign
+    ledger = spool.queue.tier_ledger(fx.TIER)
+    assert ledger.available().get(FILL, 0) == 0      # the offer bounds the sum
 
 
 def test_an_export_with_no_measured_rate_takes_the_whole_offer(tmp_path):
@@ -215,8 +271,8 @@ def test_a_finished_export_files_its_rate_and_prices_the_next_seal(tmp_path):
     spool.queue.finish(first["export_key"], status="executed")
 
     pacing = ps._read(spool._group("b1") / "receipt.json")["pacing"]
-    filed_path = (Path(spool.queue.root) / "exports" / spool.owner
-                  / f"{fx.TIER}.json")
+    filed_path = (Path(spool.queue.root) / "exports"
+                  / f"{first['export_key']}.json")
     filed = json.loads(filed_path.read_text())
     assert filed["schema"] == EXPORT_RECEIPT_SCHEMA
     assert filed["action_key"] == first["export_key"]
@@ -224,22 +280,24 @@ def test_a_finished_export_files_its_rate_and_prices_the_next_seal(tmp_path):
     assert filed["bytes"] == len(payload) and filed["seconds"] == pacing["seconds"]
     assert filed["mb_per_s_file_side"] == pacing["mb_per_s_file_side"]
     assert 1.0 <= filed["mb_per_s_file_side"] <= 2.1   # held to its seal
-    # The pacer held this run (the copy outran its 2 MB/s schedule), so the
-    # receipt is pacer-bound and the next seal is the whole offer, not the
-    # achieved rate: a held run never lowers the seal.
+    # The pacer held this run (the copy outran its 2 MB/s schedule), and
+    # the held receipt still prices under #1319: the next seal is the
+    # achieved rate capped by the offer, not the whole offer.
     assert filed["held_seconds"] > 0.0
+    expected = min(int(filed["mb_per_s_file_side"]), 2)
     spool.submit_group("b2", base.prepare(spool, "b2", ceiling=1 << 20)[2])
-    assert sealed(spool, "b2")["params"]["demand"][FILL_DEMAND] == 2
+    assert sealed(spool, "b2")["params"]["demand"][FILL_DEMAND] == expected
 
 
-def test_export_measured_mb_s_prices_only_writer_bound_runs():
-    """Unit pin of the pricing rule the seal reads.
+def test_export_measured_mb_s_prices_any_positive_finite_rate():
+    """Unit pin of the pricing rule the seal reads (#1319).
 
-    The reader is pure over ONE record -- the single file the sidecar
-    keeps for (owner, tier): owner/tier scoping, the measurable predicate
-    (positive bytes over positive seconds at a finite rate of at least
-    1 MB/s), and the writer-bound rule -- a pacer-bound record
-    (``held_seconds`` above zero) or one that cannot say prices nothing.
+    The reader is pure over ONE record -- the newest of the producer's
+    per-export receipts: owner/tier scoping, then the amended measurable
+    test (positive bytes over positive seconds at a positive finite
+    rate, however slow -- no floor, no writer-bound gate).  A zero,
+    negative, missing or non-finite rate, or a record from another owner
+    or tier, prices nothing.
     """
 
     def receipt(rate, *, held=0.0, owner="owner-a", tier=fx.TIER,
@@ -253,73 +311,106 @@ def test_export_measured_mb_s_prices_only_writer_bound_runs():
     read = storage_tiers.export_measured_mb_s
     assert read(None, tier_id=fx.TIER, owner="owner-a") is None
     assert read(receipt(60.0), tier_id=fx.TIER, owner="owner-a") == 60
-    assert read(receipt(60.5), tier_id=fx.TIER, owner="owner-a") == 60
+    assert read(receipt(60.5), tier_id=fx.TIER, owner="owner-a") == 61
     # Not this owner, not this tier: not the producer's history.
     assert read(receipt(60.0, owner="owner-b"),
                 tier_id=fx.TIER, owner="owner-a") is None
     assert read(receipt(60.0, tier="elsewhere"),
                 tier_id=fx.TIER, owner="owner-a") is None
-    # A degenerate record measured nothing and prices nothing.
-    assert read(receipt(0.2), tier_id=fx.TIER, owner="owner-a") is None
+    # A slow measurement is still a measurement: it seals at least 1, so
+    # the slowest writer still reserves and paces (#1327 review: 0 would
+    # fail open through `export_fill`'s falsy fill).
+    assert read(receipt(0.2), tier_id=fx.TIER, owner="owner-a") == 1
+    # A zero, negative, missing or non-finite rate prices nothing.
+    assert read(receipt(0.0), tier_id=fx.TIER, owner="owner-a") is None
+    assert read(receipt(-5.0), tier_id=fx.TIER, owner="owner-a") is None
+    assert read(receipt(float("inf")), tier_id=fx.TIER, owner="owner-a") is None
+    assert read({k: v for k, v in receipt(60.0).items()
+                 if k != "mb_per_s_file_side"},
+                tier_id=fx.TIER, owner="owner-a") is None
+    # Internally inconsistent parts are corrupt, not a measurement.
     assert read({**receipt(60.0), "bytes": 0},
                 tier_id=fx.TIER, owner="owner-a") is None
     assert read({**receipt(60.0), "seconds": 0.0},
                 tier_id=fx.TIER, owner="owner-a") is None
-    # A run the pacer held proves only an "at least": it prices nothing.
+    # A run the pacer held prices its achieved rate like any other run.
     assert read(receipt(60.0, held=30.0),
-                tier_id=fx.TIER, owner="owner-a") is None
-    # A receipt that cannot say which side bounded the run fails closed.
+                tier_id=fx.TIER, owner="owner-a") == 60
+    # A receipt without any bound accounting prices too: the bound
+    # state is no longer part of the test.
     assert read({"unix": 2000.0, "tier_id": fx.TIER, "owner": "owner-a",
                  "bytes": 1, "seconds": 1.0, "mb_per_s_file_side": 60.0},
-                tier_id=fx.TIER, owner="owner-a") is None
-    assert read(receipt(60.0, held="0.0"),
-                tier_id=fx.TIER, owner="owner-a") is None
+                tier_id=fx.TIER, owner="owner-a") == 60
 
 
-def test_a_degenerate_newer_export_does_not_replace_the_priced_record(tmp_path):
-    """The sidecar keeps one file per (producer action, tier), replaced well.
+def test_a_sub_one_mb_s_measurement_still_seals_a_fill_and_a_pace(tmp_path):
+    """The slowest writer still reserves and paces (#1327 review).
 
-    Only a record that measured a rate may replace the file, and the
-    writer and the reader share ONE measurable predicate, so they cannot
-    disagree about which records carry a rate.  A degenerate newer
-    export (a truncated group, a sub-floor rate) therefore cannot erase
-    the real rate the producer wrote at -- the priced record stays, and
-    the next seal still prices it.  A pacer-bound record IS well-formed:
-    it replaces the file and the reader prices it as nothing (the whole
-    offer), which is the newest-receipt rule, not an erasure.
+    A 0.2 MB/s measurement truncates to int 0, and `export_fill` prices a
+    falsy fill as no measurement -- no fill demand, no `--pace-mb-s`:
+    fail open for exactly the writer the pacing is for.  The seal must
+    carry fill 1 and pace at 1.
+    """
+
+    spool = base.world(tmp_path, env={ps.PACED_EXPORT_ENV: "1"})
+    offer_fill(spool.queue, 164)
+    file_prior_receipt(spool.queue, spool.owner, rate=0.2)
+    first = spool.submit_group("b1", base.prepare(spool, "b1")[2])
+    assert sealed(spool, "b1")["params"]["demand"][FILL_DEMAND] == 1
+    assert sealed(spool, "b1")["params"]["command"][-4:] == \
+        ["--pace-mb-s", "1", "--pace-tier", fx.TIER]
+
+
+def test_a_degenerate_newest_receipt_fails_closed_while_history_survives(tmp_path):
+    """Per-export files have nothing to erase (#1319).
+
+    Every schema-valid record is filed under its own export key, and the
+    seal prices the newest one only.  A degenerate newest (bytes 0 --
+    measured nothing) prices ``None`` and the next seal falls back to
+    the whole offer: fail closed, never a second writer on a missing
+    signal.  The older priced record stays listed for diagnosis, and
+    another owner's receipts are invisible to this producer's seal.  A
+    record without a 64-hex export key is corrupt and refused.
     """
 
     spool = base.world(tmp_path, env={ps.PACED_EXPORT_ENV: "1"})
     offer_fill(spool.queue, 164)
     q = spool.queue
 
-    def receipt(unix, *, rate=60.0, held=0.0, key="k"):
+    def receipt(unix, *, rate=60.0, key="1" * 64, owner=None):
         return {"schema": EXPORT_RECEIPT_SCHEMA, "action_key": key,
-                "unix": unix, "tier_id": fx.TIER, "owner": spool.owner,
+                "unix": unix, "tier_id": fx.TIER,
+                "owner": spool.owner if owner is None else owner,
                 "rate_mb_s": 60, "bytes": 600_000_000, "seconds": 10.0,
-                "held_seconds": held, "flushes": 3,
+                "held_seconds": 0.0, "flushes": 3,
                 "mb_per_s_file_side": rate}
 
-    assert q.record_export(receipt(2000.0)) is not None
-    kept = q.export_receipt(spool.owner, fx.TIER)
-    assert kept is not None and kept["mb_per_s_file_side"] == 60.0
+    filed = q.record_export(receipt(2000.0))
+    assert filed is not None and filed.name == "1" * 64 + ".json"
+    listed = q.export_records(spool.owner, fx.TIER)
+    assert [record["action_key"] for record in listed] == ["1" * 64]
 
-    # Degenerate newer exports must not erase the priced record.
-    assert q.record_export(receipt(3000.0, rate=0.2)) is None
-    assert q.record_export({**receipt(3000.0), "bytes": 0}) is None
-    assert q.record_export({**receipt(3000.0), "seconds": 0.0}) is None
-    kept = q.export_receipt(spool.owner, fx.TIER)
-    assert kept is not None and kept["mb_per_s_file_side"] == 60.0
+    # A degenerate newer export files beside the priced record ...
+    again = q.record_export({**receipt(3000.0, key="2" * 64),
+                             "bytes": 0, "mb_per_s_file_side": 0.0})
+    assert again is not None and again.name == "2" * 64 + ".json"
+    listed = q.export_records(spool.owner, fx.TIER)
+    assert [record["action_key"] for record in listed] == ["1" * 64, "2" * 64]
+    # ... and prices nothing, so the next seal takes the whole offer.
     assert storage_tiers.export_measured_mb_s(
-        kept, tier_id=fx.TIER, owner=spool.owner) == 60
-
-    # A pacer-bound record is well-formed: it replaces, and prices nothing.
-    assert q.record_export(receipt(4000.0, held=30.0)) is not None
-    kept = q.export_receipt(spool.owner, fx.TIER)
-    assert kept is not None and kept["held_seconds"] == 30.0
-    assert storage_tiers.export_measured_mb_s(
-        kept, tier_id=fx.TIER, owner=spool.owner) is None
-
-    # And the seal follows the file: the whole offer after the held run.
+        listed[-1], tier_id=fx.TIER, owner=spool.owner) is None
     spool.submit_group("b1", base.prepare(spool, "b1")[2])
     assert sealed(spool, "b1")["params"]["demand"][FILL_DEMAND] == 164
+
+    # Another owner's receipts never enter this producer's listing.
+    q.record_export(receipt(4000.0, key="3" * 64, owner="someone-else"))
+    assert len(q.export_records(spool.owner, fx.TIER)) == 2
+    assert len(q.export_records("someone-else", fx.TIER)) == 1
+
+    # No 64-hex export key: corrupt, refused loudly.
+    try:
+        q.record_export(receipt(5000.0, key="not-a-key"))
+    except pool.PoolContractError:
+        pass
+    else:                                                  # pragma: no cover
+        raise AssertionError("record_export filed a keyless receipt")

@@ -1565,20 +1565,16 @@ def current_fill_offer(tier: Mapping[str, object],
 def export_receipt_measurable(record: object) -> bool:
     """Whether one export receipt carries a rate a seal can price.
 
-    ONE predicate, shared by the writer and the reader (#1014 item 3,
-    round 3): :meth:`pool.PoolQueue.record_export` files a record only
-    when this is true -- so a degenerate newer export cannot erase the
-    priced record before it -- and :func:`export_measured_mb_s` accepts
-    one only when it is, so the two can never disagree about which
-    records carry a rate.  A receipt measured a rate when its whole
-    export wrote positive ``bytes`` over positive ``seconds`` at a
-    finite file-side rate of at least 1 MB/s, the floor a mover receipt
-    under is priced nothing at (the ledger counts whole MB/s).
-
-    The pacer's bound state (``held_seconds``) is NOT part of this test:
-    a pacer-bound run is a complete, well-formed receipt that prices
-    nothing -- it still replaces the sidecar file, and the reader prices
-    it as ``None``.
+    ONE predicate, read by :func:`export_measured_mb_s` (#1014 item 3,
+    #1319): a receipt measured a rate when its whole export wrote
+    positive ``bytes`` over positive ``seconds`` at a positive finite
+    file-side rate, however slow -- no floor, no writer-bound gate
+    (#1319 amendment: a measurement is a measurement).  The pacer's
+    bound state (``held_seconds``) is NOT part of this test: a held run
+    prices its achieved rate like any other run.  Filing is not gated
+    on this predicate -- every schema-valid record is filed under its
+    own export key, and a degenerate newest prices nothing while the
+    older priced records stay listed beside it.
     """
 
     if not isinstance(record, Mapping):
@@ -1592,39 +1588,27 @@ def export_receipt_measurable(record: object) -> bool:
         or isinstance(seconds, bool) or not isinstance(seconds, (int, float))
         or float(seconds) <= 0.0
         or isinstance(rate, bool) or not isinstance(rate, (int, float))
-        or not math.isfinite(float(rate)) or float(rate) < 1.0)
+        or not math.isfinite(float(rate)) or float(rate) <= 0.0)
 
 
 def export_measured_mb_s(record: Mapping[str, object] | None, *,
                           tier_id: str, owner: str) -> int | None:
     """The rate one producer's newest complete export wrote at, or ``None``.
 
-    The measured side of an export's fill seal (#1014 item 3), pure over
-    ONE record: the single file the queue keeps for the producer and
-    tier (``exports/<owner>/<tier_id>.json``, read by
-    :meth:`pool.PoolQueue.export_receipt`), which holds the newest
-    well-formed receipt the producer's exports on that tier filed -- the
-    recency rule of :func:`mover_fill_price`'s latest window, without
-    the median a mover needs, because an export prices only its own
-    producer's behaviour.  A record that is not this owner's or not this
-    tier's is not the producer's history; one that is not
+    The measured side of an export's fill seal (#1014 item 3, #1319),
+    pure over ONE record: the newest of the producer's per-export
+    receipts on the tier (``exports/<export_key>.json``, listed by
+    :meth:`pool.PoolQueue.export_records`) -- the recency rule of
+    :func:`mover_fill_price`'s latest window, without the median a
+    mover needs, because an export prices only its own producer's
+    behaviour.  A record that is not this owner's or not this tier's
+    is not the producer's history; one that is not
     :func:`export_receipt_measurable` measured nothing and prices
-    nothing.
-
-    A receipt prices only a run its **writer** bounded.  The pacer's own
-    held/slept accounting says which side did: ``ExportPacer.wrote``
-    returns without sleeping when the copy is behind its schedule and
-    records a hold only when it actually sleeps
-    (``time.sleep(ahead); self.held += ahead``), so a filed
-    ``held_seconds`` above zero means the pacer held the run to its seal.
-    Such a run proves only an "at least" -- the writer could have gone
-    faster, and the achieved rate is the seal, not the writer -- so
-    pricing it would ratchet the producer's seal down forever (every
-    later run is paced at the lower rate and can never measure more).  A
-    pacer-bound newest receipt therefore prices nothing, and the caller's
-    seal falls back to the tier's whole offer.  The record's own rounding
-    (``round(self.held, 3)``) is the accounting's resolution: any hold it
-    can state is at least a millisecond, and none smaller is a hold.
+    nothing.  Any positive finite rate prices, however slow the writer:
+    no floor, no writer-bound gate (#1319 amendment -- a measurement is
+    a measurement, and the price tracks the latest one); the price is
+    ceiled with a floor of 1, so the slowest writer still reserves and
+    paces instead of failing open (#1327 review).
 
     ``None`` means no measurement, and the caller's seal falls back to
     the tier's whole offer, which runs one export at a time: the missing
@@ -1639,11 +1623,11 @@ def export_measured_mb_s(record: Mapping[str, object] | None, *,
         return None
     if not export_receipt_measurable(record):
         return None
-    held = record.get("held_seconds")
-    if (isinstance(held, bool) or not isinstance(held, (int, float))
-            or float(held) > 0.0):
-        return None            # the pacer bounded the run: it proves an "at least"
-    return int(float(record["mb_per_s_file_side"]))
+    # Ceiled, floored at 1: the ledger counts whole MB/s, and a seal of 0
+    # would price `export_fill`'s falsy fill as no measurement -- fail open
+    # for exactly the slowest writer the pacing is for (#1327 review).
+    # Ceil errs toward the movers, like the 1:1 bound it refines.
+    return max(1, math.ceil(float(record["mb_per_s_file_side"])))
 
 
 def mover_fill_demand_from_receipts(
