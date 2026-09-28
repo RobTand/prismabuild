@@ -67,6 +67,7 @@ import os
 import socket
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve()
@@ -240,6 +241,40 @@ def last_json_object(text: str) -> dict | None:
         if isinstance(value, dict):
             return value
     return None
+
+
+def generation_pending(paths: dict, spec: dict, generation: str | None,
+                        host: str) -> bool:
+    """Whether a refused image-pinned leg waits only on the new generation (#1239).
+
+    True when the full intent matches no recorded offer but the same intent
+    without the ``runtime-generation`` tag matches one -- which can only be an
+    offer that positively reports the leg's image and every other
+    requirement, held by a box whose loop has not re-offered on the new
+    generation yet.  False when the image is on no box at all (an immediate
+    refusal stands) or when some other requirement is the blocker.  The
+    rolling publish is minutes; a canary that refuses here refuses the
+    generation's own rollout, which is the one thing it must not do.
+    """
+
+    image = str(spec.get("container_image") or "").strip()
+    if not image or generation is None:
+        return False
+    sys.path.insert(0, str(paths["published_src"]))
+    from prismabuild import pool as _pool, core as _core
+    from prismabuild import publication_canary as _canary
+    queue = _pool.PoolQueue(paths["queue_root"])
+    base = {
+        "tags": [host, _canary.CAPABILITY, _core.CONTAINER_IMAGE_TAG],
+        "container_images": [image],
+        "needs_gpu": True,
+        "resources": {"gpu": 1},
+    }
+    full = {**base, "tags": [*base["tags"],
+                             f"runtime-generation:{generation}"]}
+    if queue.placeable(full) is True:
+        return False
+    return queue.placeable(base) is True
 
 
 def submit_leg(
@@ -647,11 +682,30 @@ def _execute_side(
     """
     label = leg if side is None else f"{leg} ({side})"
     file_tag = "" if side is None else f"_{side}"
-    action_key, detach = submit_leg(
-        paths, spec, checkout, run_id, priority, generation, argv,
-        extra_flags=extra_flags, extra_env=extra_env, manifest=manifest,
-        submit_label=label,
-    )
+    # #1239: a submission refused only because the box holding the image has
+    # not re-offered on the new generation yet waits inside this leg's own
+    # budget -- the rollout is minutes, and refusing here would refuse the
+    # generation the canary exists to certify.  Anything else (an image no
+    # box reports, another blocker) refuses exactly as before.
+    deadline = time.monotonic() + float(wait_s)
+    while True:
+        try:
+            action_key, detach = submit_leg(
+                paths, spec, checkout, run_id, priority, generation, argv,
+                extra_flags=extra_flags, extra_env=extra_env, manifest=manifest,
+                submit_label=label,
+            )
+            break
+        except PreconditionRefused:
+            pending = generation_pending(
+                paths, spec, generation, socket.gethostname())
+            if not pending or time.monotonic() >= deadline:
+                raise
+            print(f"pbcanary: {label}: the image-holding box has not "
+                  f"re-offered on generation {generation}; waiting within "
+                  f"the leg's {wait_s}s budget before resubmitting",
+                  flush=True)
+            time.sleep(min(15.0, max(1.0, deadline - time.monotonic())))
     write_json(leg_dir / f"detach{file_tag}.json", detach)
     short = action_key[:12]
 
