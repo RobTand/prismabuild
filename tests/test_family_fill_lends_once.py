@@ -25,10 +25,13 @@ leaves ``claimed/`` and the tokens are lendable again.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import test_a_producers_exports_run_on_its_allowance as al
 import test_a_producers_paced_export_borrows_its_familys_fill as fam
 import test_prepaid_writer_integration as fx
+import test_produced_spool as sp
+import test_produced_spool_paced_export as paced
 from prismabuild import pool
 
 
@@ -83,6 +86,67 @@ def test_a_report_from_before_the_lenders_claim_is_not_mid_copy(
     assert claim is not None and claim["action_key"] == export_key
     borrow = claim["tier_fill_borrowed"][fx.TIER]
     assert borrow["lenders_mid_copy"] == []
+
+
+def _announce_fill(queue, mb_s: int) -> None:
+    """Re-announce the tier's fill offer without minting, as the tier loop
+    does between staged exports: the next export seals this demand."""
+
+    path = Path(queue.root) / "tiers" / f"{fx.TIER}.json"
+    record = json.loads(path.read_text())
+    record["tokens"] = {fx.KIND: 4, fam.FILL: mb_s}
+    pool._write_json_atomic(path, record)
+
+
+def test_a_borrow_draws_only_what_it_took(tmp_path, monkeypatch) -> None:
+    """A borrow records the draw, not the lender's balance (#1293 round 2).
+
+    The lender holds the whole 100-token offer.  Exports needing 30 then 30
+    both borrow -- each draws 30, leaving the other 70 lendable -- and an
+    export needing 50 is refused while 60 is drawn and only 40 fits.  When a
+    borrowing export ends, its draw returns and the 50 is admitted.  A
+    borrow that recorded the lender's full balance would lock the whole
+    family out after the first 30."""
+
+    spool, _cas = fam._paced_producer(tmp_path, monkeypatch)
+    queue = spool.queue
+    paced.offer_fill(queue, 100)
+    ledger = queue.tier_ledger(fx.TIER)
+    held = int(ledger.available().get(fam.FILL, 0))
+    assert held >= 100
+    assert ledger.acquire(fam.MOVER, {fam.FILL: held})
+    assert ledger.available().get(fam.FILL, 0) == 0
+
+    _announce_fill(queue, 30)
+    first = al._export(spool, "g0")
+    assert paced.sealed(spool, "g0")["params"]["demand"][paced.FILL_DEMAND] == 30
+    al._running(spool, monkeypatch, psi=0.)
+    claim = al._claim(queue, spool.host)
+    assert claim is not None and claim["action_key"] == first
+    borrow = claim["tier_fill_borrowed"][fx.TIER]
+    assert borrow["borrowed"] == 30 and borrow["taken_free"] == 0
+    assert borrow["lent"] == {fam.MOVER: 30}
+    assert borrow["funded_by"] == [fam.MOVER]
+
+    second = al._export(spool, "g1")
+    assert paced.sealed(spool, "g1")["params"]["demand"][paced.FILL_DEMAND] == 30
+    again = al._claim(queue, spool.host)
+    assert again is not None and again["action_key"] == second
+    assert again["tier_fill_borrowed"][fx.TIER]["lent"] == {fam.MOVER: 30}
+
+    _announce_fill(queue, 50)
+    third = al._export(spool, "g2")
+    assert paced.sealed(spool, "g2")["params"]["demand"][paced.FILL_DEMAND] == 50
+    assert al._claim(queue, spool.host) is None
+    denial = al._denial(queue, third)
+    assert denial["reason"] == "tier_reservation_unavailable", denial
+    shortage = denial["evidence"]["tier_shortage"]
+    assert shortage["family_fill"] == "not_enough_family_fill", shortage
+
+    queue.finish(first, status="executed", claim_snapshot=claim)
+    fourth = al._claim(queue, spool.host)
+    assert fourth is not None and fourth["action_key"] == third
+    assert fourth["tier_fill_borrowed"][fx.TIER]["lent"] == {fam.MOVER: 50}
 
 
 def test_a_lender_cannot_fund_two_borrows_at_once(tmp_path, monkeypatch) -> None:
