@@ -81,6 +81,9 @@ def test_pressure_fold_takes_the_newest_record_not_the_worst() -> None:
     absent = {"sampled_unix": 3.0}
     unreadable = {"sampled_unix": 4.0, "host_io_pressure": {
         "io_psi_some": None, "unavailable_reason": "gone"}}
-    assert st.host_io_pressure_from_records([old, new]) == 3.0
-    assert st.host_io_pressure_from_records([new, absent, unreadable]) is None
-    assert st.host_io_pressure_from_records([]) is None
+    assert st.host_io_pressure_from_records(
+        [old, new], now=3.0, max_age_s=120.0) == 3.0
+    assert st.host_io_pressure_from_records(
+        [new, absent, unreadable], now=3.0, max_age_s=120.0) is None
+    assert st.host_io_pressure_from_records(
+        [], now=3.0, max_age_s=120.0) is None

@@ -1268,7 +1268,8 @@ def read_io_pressure_some(path: str = PROC_PRESSURE_IO) -> dict[str, float] | No
 
 
 def host_io_pressure_from_records(
-        records: Iterable[Mapping[str, object]]) -> float | None:
+        records: Iterable[Mapping[str, object]], *, now: float,
+        max_age_s: float) -> float | None:
     """The newest readable host IO pressure (PSI ``some avg60"), or ``None``.
 
     The admitter-side fold over announced tier records, in the shape of
@@ -1279,8 +1280,15 @@ def host_io_pressure_from_records(
     the authority: when it carries no readable block, the fold answers
     ``None`` rather than falling back to an older readable sample, the same
     one-directional honesty an unreadable live reading keeps (#654, #1248).
-    Returns the ``avg60`` share (0.0–100.0) when the newest record carries a
-    readable block, else ``None``.
+
+    Staleness is the same honesty pointed the other way: if the tier loop
+    dies, its last sample must not read as a quiet host forever, so a newest
+    record older than ``max_age_s`` answers ``None``.  The bound is the
+    caller's, not a constant picked here — the precedent a future admission
+    term would pass is the tier loop's existing report latency,
+    ``pool.HEARTBEAT_S + CYCLE_INTERVAL_S`` (tier_loop.py:3272).  Returns the
+    ``avg60`` share (0.0–100.0) when the newest record is within the bound
+    and carries a readable block, else ``None``.
     """
 
     newest: Mapping[str, object] | None = None
@@ -1292,6 +1300,9 @@ def host_io_pressure_from_records(
             continue
         best_unix, newest = float(sampled), record
     if newest is None:
+        return None
+    if now - best_unix > max_age_s:
+        # Stale is unknown, not quiet.
         return None
     block = newest.get(HOST_IO_PRESSURE_FIELD)
     if not isinstance(block, Mapping):
