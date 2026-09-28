@@ -15,6 +15,22 @@ import pbmcp
 import pbmcp_fixture as fx
 
 
+class _StartupReaderError:
+    """The #1216 bounded-reader diagnostics: the child's stage, the original
+    cause, and the parent's reader-exit detail all survive the IPC."""
+
+    def __eq__(self, other):
+        if not isinstance(other, str):
+            return NotImplemented
+        return (other.startswith("stage=read: ")
+                and "startup link unavailable" in other
+                and "; reader pid=" in other
+                and other.endswith("exit code 1"))
+
+
+ANY_STARTUP_ERROR = _StartupReaderError()
+
+
 @pytest.mark.parametrize("failure", ["timeout", "error"])
 def test_failed_startup_read_does_not_hang_or_invent_generation(
     tmp_path, monkeypatch, failure,
@@ -54,7 +70,7 @@ def test_failed_startup_read_does_not_hang_or_invent_generation(
         else:
             assert body["unavailable"] == [{"section": "startup-repo-link",
                                             "type": "RuntimeError",
-                                            "error": "startup link unavailable"}]
+                                            "error": ANY_STARTUP_ERROR}]
 
 
 def test_healthy_startup_read_keeps_generation_change_detection(tmp_path):

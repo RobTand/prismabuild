@@ -155,6 +155,10 @@ def test_a_fully_deselected_file_is_accounted_for(
         "import pytest\n\n@pytest.mark.keep\ndef test_keep():\n    pass\n")
     (checkout / "tests" / "test_drop.py").write_text(
         "def test_drop():\n    pass\n")
+    (checkout / "pytest.ini").write_text("[pytest]\n")
+    # Hermetic rootdir: without an inifile of its own, pytest walks the
+    # ancestor chain and any config in $HOME hijacks the rootdir, so nodeids
+    # stop matching the assigned files (#1257).
     subprocess.run(["git", "init", "-q", str(checkout)], check=True)
     code, results = _dispatch(checkout, monkeypatch,
                               ["--shards", "1", "--workers-per-shard", str(workers),
@@ -185,6 +189,7 @@ def test_selector_does_not_excuse_a_file_with_no_collection(
     (checkout / "tests" / "test_keep.py").write_text(
         "def test_keep():\n    pass\n")
     (checkout / "tests" / "test_empty.py").write_text("# no tests\n")
+    (checkout / "pytest.ini").write_text("[pytest]\n")
     subprocess.run(["git", "init", "-q", str(checkout)], check=True)
     code, results = _dispatch(checkout, monkeypatch,
                               ["--shards", "1", "--workers-per-shard", str(workers),

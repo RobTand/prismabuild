@@ -25,6 +25,7 @@ PIN = "a" * 40
 def fixture_checkout(tmp_path, *, installed="b" * 40):
     checkout = tmp_path / "project"
     (checkout / "tools").mkdir(parents=True)
+    (checkout / "pytest.ini").write_text("[pytest]\n")  # hermetic rootdir (#1257)
     (checkout / "tools/resolve_fleetfixture_dev_pin.py").write_text(
         f"print({PIN!r})\n")
     (checkout / "tests").mkdir()
