@@ -4379,10 +4379,13 @@ its offer by what the family lent, which is the family's own work. The claim
 records it as `tier_fill_borrowed` (per tier: `demand`, `taken_free`,
 `borrowed`, `funded_by`, `lent`), and `finish` adds the lenders that released
 before the export ended and the overcommit they left
-(`lenders_released_before_end`, `overcommit_mb_s`) before the export's own
-tokens go back, and `reap_stale` answers the same question on the terminal
-record it files for a lease the claimant lost -- the borrow lives in the
-claim record both of them file.  A conclusion that cannot read the record at
+(`lenders_released_before_end`, `overcommit_mb_s`) — a lender is judged there
+against the family's combined live draws, this borrow's draw plus what the
+other claimed rows still owe it (#1292), so two overlapping borrows from one
+lender are flagged when the lender no longer covers their sum — before the
+export's own tokens go back, and `reap_stale` answers the same question on
+the terminal record it files for a lease the claimant lost -- the borrow
+lives in the claim record both of them file.  A conclusion that cannot read the record at
 all (an unparseable queue entry, a widowed lease beside a record already
 gone) stays unannotated. Each token is lent once at a time (#1292): a
 lender's holdings count toward a borrow only beyond what live borrows on the
