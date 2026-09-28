@@ -211,7 +211,15 @@ def test_the_shard_exports_its_remaining_budget(tmp_path, monkeypatch):
         returncode = 0
 
         def __init__(self, command):
-            self.output = "1 passed in 0.01s\n"
+            # A green shard carries its outcome record since #941.
+            record = outcomes.PREFIX + json.dumps({
+                "schema": outcomes.SCHEMA, "rootdir_relative": ".",
+                "collect_only": False,
+                "collected": ["tests/test_one.py::test_one"],
+                "reports": [["tests/test_one.py::test_one", "call",
+                               "passed", "", None]],
+            })
+            self.output = f".\n{record}\n1 passed in 0.01s\n"
 
         def communicate(self):
             return self.output, None

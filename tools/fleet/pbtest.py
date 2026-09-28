@@ -44,6 +44,7 @@ import argparse
 import json
 import posixpath
 import re
+import statistics
 import subprocess
 import sys
 import threading
@@ -593,17 +594,135 @@ def discover(checkout: Path, paths: list[str]) -> list[str]:
     return [str(p.relative_to(checkout)) for p in dict.fromkeys(found)]
 
 
-def shard(files: list[str], count: int) -> list[list[str]]:
-    """Round-robin, so adjacent (and so similar) files land on different boxes."""
+def shard(files: list[str], count: int, *, durations: dict[str, float] | None = None,
+          ceiling: float | None = None) -> list[list[str]]:
+    """Round-robin without measurements; measured packing with them (#1246).
+
+    ``durations`` maps each measured file to its predicted seconds, and
+    ``ceiling`` is the sealed shard deadline the predictions are judged
+    against.  With neither, this is today's rotation: adjacent (and so
+    similar) files land on different boxes.  With measurements:
+
+    * a file predicted at or past half the ceiling gets its own shard, so
+      its stall or timeout costs only that file (``ISOLATE_SHARE``);
+    * the rest pack longest-processing-time first into the remaining
+      shards, largest prediction onto the least-loaded bucket.
+
+    Files with no measurement take the median of the measured ones -- a
+    declared default derived from the same receipts, never a picked
+    constant.  With no measurement at all the answer is the rotation.
+    Deterministic throughout: ties break by bucket index, then file name.
+    """
 
     count = max(1, min(count, len(files)))
+    if not durations:
+        return _round_robin(files, count)
+    known = {name: durations[name] for name in files if name in durations}
+    if not known:
+        return _round_robin(files, count)
+    default = statistics.median(known.values())
+    predicted = {name: known.get(name, default) for name in files}
+    ordered = sorted(files, key=lambda name: (-predicted[name], name))
+    singletons: list[str] = []
+    if ceiling is not None:
+        singletons = [name for name in ordered
+                      if predicted[name] >= ceiling * ISOLATE_SHARE]
+    alone = set(singletons)
+    rest = [name for name in ordered if name not in alone]
+    buckets = [[name] for name in singletons]
+    pools = max(1, count - len(singletons))
+    totals = [0.0] * pools
+    packed: list[list[str]] = [[] for _ in range(pools)]
+    for name in rest:
+        index = min(range(pools), key=lambda i: (totals[i], i))
+        packed[index].append(name)
+        totals[index] += predicted[name]
+    buckets.extend(packed)
+    return [bucket for bucket in buckets if bucket]
+
+
+def _round_robin(files: list[str], count: int) -> list[list[str]]:
+    """Today's rotation: adjacent files land on different boxes."""
+
     buckets: list[list[str]] = [[] for _ in range(count)]
     for index, name in enumerate(files):
         buckets[index % count].append(name)
     return buckets
 
 
-#: The interpreter program every shard runs.  It carries the modules it runs
+#: A file predicted at or past this share of the sealed shard deadline gets
+#: its own shard (#1246).  One half: past it, the file leaves less than half
+#: the lease for whatever shares its shard, so sharing buys no packing and
+#: risks every mate's results on the file's stall; at it, the file alone can
+#: still fill the shard it is given.  Derived from the lease, not picked.
+ISOLATE_SHARE = 0.5
+
+
+def load_history(paths: list[str] | None) -> dict[str, list[float]]:
+    """Per-file wall-time samples out of prior ``--json`` run reports (#1246).
+
+    Each report holds every shard's files beside its full stdout, and the
+    stdout holds the shard's outcome record with its ``file_durations`` --
+    so a prior report is the receipts' content in one file, and loading it
+    reads no live state.  Unreadable files, non-list shapes, shards with no
+    parseable record, and non-numeric samples are skipped, never fatal: a
+    history flag must not fail a submission because one old report rotted.
+    """
+
+    history: dict[str, list[float]] = {}
+    for raw in paths or ():
+        try:
+            runs = json.loads(Path(raw).read_text())
+        except (OSError, ValueError):
+            continue
+        if not isinstance(runs, list):
+            continue
+        for result in runs:
+            if not isinstance(result, dict):
+                continue
+            record = pbtest_outcomes.parse(result.get("output") or "")
+            if record is None:
+                continue
+            durations = record.get("file_durations") or {}
+            if not isinstance(durations, dict):
+                continue
+            for name, seconds in durations.items():
+                if (not isinstance(name, str) or isinstance(seconds, bool)
+                        or not isinstance(seconds, (int, float))
+                        or seconds < 0):
+                    continue
+                history.setdefault(name, []).append(float(seconds))
+    return history
+
+
+def predict_durations(history: dict[str, list[float]]) -> dict[str, float]:
+    """Each measured file's prediction: the max of its samples (#1246).
+
+    The most conservative high quantile, because a file's time moves with
+    load: the slow file took 93 s alone on a quiet box and 1513 s in a
+    batch of 38 concurrent shards, and packing for its mean strands the
+    shard on its bad day.  The submitter bounds staleness by which reports
+    it passes as history; the model itself never forgets inside one run.
+    """
+
+    return {name: max(samples) for name, samples in history.items() if samples}
+
+
+def summary_seconds(summary: str) -> float | None:
+    """pytest's own session seconds out of a terminal summary line.
+
+    The grammar already ends every summary in ``in S.SSs``; this reads that
+    number, so the run's predicted-against-actual report compares the model
+    against what pytest measured, not against queueing and placement (#1246).
+    ``None`` when the shard never reported -- a missing summary has no
+    seconds to read.
+    """
+
+    if not summary:
+        return None
+    match = re.search(r" in (\d+\.\d+)s(?: \([^)]*\))?\s*$",
+                      ANSI.sub("", summary).strip())
+    return float(match.group(1)) if match else None
 #: as text, so the action key names their bytes and no helper path has to
 #: exist on the worker -- the rule the dependency guard already followed.
 SHARD_PROGRAM = """\
@@ -953,6 +1072,14 @@ def main() -> int:
                          "a different set of actions from an unprofiled one "
                          "and never a cache hit for it")
     ap.add_argument("--json", default="", help="write the per-shard result here")
+    ap.add_argument("--history", nargs="*", default=[],
+                    help="prior --json run reports whose file_durations "
+                         "pack this run's shards by measured duration "
+                         "(#1246): each measured file is predicted at the "
+                         "max of its samples, a file past half the sealed "
+                         "deadline shards alone, the rest pack "
+                         "longest-first, and unmeasured files take the "
+                         "median. Without it the shards stay round-robin")
     ap.add_argument(
         "--transport", choices=TRANSPORTS, default=default_transport(),
         help="which dispatcher carries the shards (env PRISMABUILD_TRANSPORT, "
@@ -1059,10 +1186,19 @@ def main() -> int:
     except (OSError, ValueError) as exc:
         sys.stderr.write(f"cannot discover tests: {exc}\n")
         return 2
+    history = load_history(args.history)
+    predicted = predict_durations(history)
+    model_default = (statistics.median(predicted.values())
+                     if predicted else None)
+    # The packing model (#1246): prior ``--json`` reports are the receipts'
+    # content in one file, so loading them reads no live state -- and a
+    # submission never fails because one old report rotted.
     if not files:
         sys.stderr.write(f"no test files under {args.paths} in {checkout}\n")
         return 2
     buckets = shard(files, args.shards)
+    # The ceiling the model judges against is sealed later, beside the
+    # deadline; the samples load and the predictions resolve above.
     # Resolve reviewed dependencies only inside each admitted worker action.
     # Embed the guard bytes in argv so neither a target-local helper path nor
     # an older receipt can silently omit the check. Unpinned projects retain
@@ -1095,11 +1231,9 @@ def main() -> int:
         sys.stderr.write(message + "\n")
     if kind == "refusal":
         return 2
-    sizes = [len(b) for b in buckets]
-    print(f"{len(files)} files -> {len(buckets)} shards "
-          f"(min {min(sizes)}, max {max(sizes)} files per shard), tags={tags}, "
-          f"transport={args.transport}",
-          flush=True)
+    # The sizes line prints beside the model below, after the ceiling the
+    # model judges against is sealed -- printing it here would report the
+    # round-robin the history then replaces.
 
     # torch sizes its thread pool from the affinity mask, so an unconstrained
     # shard on an 80-core box asks for 40 threads -- forty shards then ask for
@@ -1144,6 +1278,39 @@ def main() -> int:
               f"({pytest_test_bound.TIMEOUT_ENV}); a test that outlives it "
               "fails as itself instead of holding the shard to its ceiling",
               flush=True)
+    if test_bound and sealed_s is not None:
+        # The shard's sealed deadline rides beside the per-test bound, so a
+        # test that starts late in the shard fails named at the time it has
+        # left instead of dying unnamed at the shard's ceiling (#1246).  The
+        # bound alone still travels without it: no seal, no budget.
+        test_bound.append(
+            f"{pytest_test_bound.SHARD_BUDGET_ENV}={sealed_s:g}")
+        print(f"pbtest: each shard also seals its remaining budget "
+              f"({pytest_test_bound.SHARD_BUDGET_ENV}={sealed_s:g}); a test "
+              "starting with less time left than its bound is failed at "
+              "what is left", flush=True)
+    if predicted:
+        # The ceiling is sealed now, so the model can judge against it: the
+        # slow file shards alone, the rest pack longest-first (#1246).
+        assert model_default is not None
+        default = model_default
+        buckets = shard(files, args.shards, durations=predicted,
+                        ceiling=sealed_s)
+        measured = sum(1 for name in files if name in predicted)
+        print(f"pbtest: duration model from {len(args.history)} history "
+              f"file(s): {measured}/{len(files)} files measured, the rest "
+              f"default to the median {default:.1f}s, predictions are "
+              "per-file maxima", flush=True)
+        totals = [sum(predicted.get(name, default) for name in bucket)
+                  for bucket in buckets]
+        print("pbtest: predicted shard totals: " +
+              ", ".join(f"shard {index} {total:.0f}s"
+                           for index, total in enumerate(totals)), flush=True)
+    sizes = [len(b) for b in buckets]
+    print(f"{len(files)} files -> {len(buckets)} shards "
+          f"(min {min(sizes)}, max {max(sizes)} files per shard), tags={tags}, "
+          f"transport={args.transport}",
+          flush=True)
     procs = []
     for index, bucket in enumerate(buckets):
         # Built in order rather than spliced into.  The repeatable --tag used
@@ -1276,10 +1443,19 @@ def main() -> int:
         # The key as structured fields beside the returncode, so a report can
         # cite the action rather than a prefix dug out of ``output`` (#1012).
         action_key = shard_result.get("action_key")
+        predicted_s = (round(sum(predicted.get(name, model_default)
+                                 for name in bucket), 1)
+                       if predicted else None)
+        actual_s = summary_seconds(summary) if ran else None
         results.append({"shard": index, "files": bucket,
                         "returncode": returncode, "action_key": action_key,
                         "receipt_path": receipt_path(action_key),
                         "summary": summary,
+                        # The model's prediction for this shard and pytest's
+                        # own session seconds beside it, so the report can say
+                        # whether the packing bought what it promised (#1246).
+                        "predicted_s": predicted_s,
+                        "pytest_s": actual_s,
                         "ran": ran, "skipped": skipped, "attempts": attempts,
                         "output": out})
         state = "ok" if returncode == 0 else f"rc={returncode}"
@@ -1290,7 +1466,11 @@ def main() -> int:
                    if attempts > 1 else "")
         keyed = (f" [action {action_key}]" if action_key else
                  " [no action key: pbrun printed no queued or attached line]")
-        _say(f"shard {index:>3} {state:<8} {summary}{retried}{keyed}")
+        timed = ""
+        if predicted:
+            have = f"{actual_s:.1f}s" if actual_s is not None else "unknown"
+            timed = f" [predicted {predicted_s:.1f}s, pytest {have}]"
+        _say(f"shard {index:>3} {state:<8} {summary}{timed}{retried}{keyed}")
         counted = summary_count(summary, "skipped") if ran else 0
         if skipped is None and counted:
             print(f"shard {index:>3} {counted} skip(s) with NO RECORDED REASON: "
@@ -1310,6 +1490,23 @@ def main() -> int:
 
     reconcile_shards(results)
     print_reconciliation(results)
+    if predicted:
+        # Item 4 of #1246: the run reports what the model promised against
+        # what pytest measured, per shard and in total, so the next history
+        # flag is an informed choice and a stale model shows itself.
+        print("\npredicted vs pytest seconds per shard:")
+        total_want = 0.0
+        total_have = 0.0
+        for r in results:
+            want = r["predicted_s"]
+            have = r["pytest_s"]
+            total_want += want or 0.0
+            total_have += have or 0.0
+            shown = f"{have:.1f}s" if have is not None else "unknown"
+            print(f"  shard {r['shard']:>3} predicted {want:.1f}s, "
+                  f"pytest {shown}")
+        print(f"total predicted {total_want:.1f}s, total pytest "
+              f"{total_have:.1f}s")
 
     # A shard is green when it exited 0 AND pytest reported a terminal summary.
     # ``ran`` has been computed, printed and written to the JSON since #213, and
