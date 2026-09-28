@@ -1015,7 +1015,7 @@ def _import_dagster() -> Any:
         return importlib.import_module("dagster")
     except ImportError as exc:
         raise DagsterUnavailableError(
-            "Dagster is optional; install PrismaQuant's 'prismabuild' extra "
+            "Dagster is optional; install PrismaBuild's 'dagster' extra "
             "before requesting native definitions"
         ) from exc
 

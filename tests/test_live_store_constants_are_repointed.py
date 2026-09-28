@@ -246,11 +246,10 @@ def test_the_reader_finds_a_constant_it_should_find() -> None:
 def test_the_reader_follows_a_constant_derived_from_another() -> None:
     """A path built from a live constant is live, which is most of them."""
 
-    found = {(m, a) for m, a, _l in _live_constants(REPO / "tools" / "fleet" / "tessera_status.py")}
-    # ``SH`` spells the mount; ``CAS``, ``Q`` and ``RES`` are built from it.
-    assert ("tessera_status", "SH") in found
-    for derived in ("CAS", "Q", "RES"):
-        assert ("tessera_status", derived) in found, derived
+    found = {(m, a) for m, a, _l in _live_constants(REPO / "tools" / "fleet" / "pbstatus.py")}
+    # ``SHARED_ROOT`` spells the mount; ``DEFAULT_QUEUE_ROOT`` is built from it.
+    assert ("pbstatus", "SHARED_ROOT") in found
+    assert ("pbstatus", "DEFAULT_QUEUE_ROOT") in found
 
 
 def test_every_exemption_names_a_constant_that_still_exists() -> None:

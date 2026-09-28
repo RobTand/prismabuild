@@ -8,7 +8,7 @@ under `/home/rob/venvs/pb-cpu/bin/python`, a pricing row inside a pinned
 producer image, or a shell loop -- and `import prismabuild` fails in all
 three, because the package is on the shared mount rather than installed.  The
 first consumer of the contract wrote its own copy of the record against the
-wire format for exactly that reason (prismaquant `prismabuild_progress.py`),
+wire format for exactly that reason (the first client's own progress module),
 which is one copy of a versioned schema too many.
 
 So this file is deliberately a leaf: standard library only, no intra-package

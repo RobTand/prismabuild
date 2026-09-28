@@ -3,6 +3,10 @@
  "_why": "One versioned statement of what each box offers the pool, so a supervisor on any box can be started by an identical command line and the shape of the fleet is a file somebody can read rather than three hand-typed invocations nobody wrote down. Values here are the ones the loops were observed running on 2026-09-03; changing the fleet means changing this file. Raised 2026-09-04 against measurement, not intuition: see _measured_2026_09_04.",
  "local_disk_free_floor_percent": 5,
  "_local_disk_free_floor_why": "The fleet's disk-headroom floor: every box keeps at least this percent of a local filesystem's size free. It is Rob's standing rule (10% until 2026-08-26, then relaxed to 5%: \"you can change the danger threshold to 5%\"). supervise.py measures a box's --spool-gb against it at start and on every tick while no spool_gb is held: the box offers f_bavail on its local_disk minus this floor, in whole GiB, capped by a numeric declaration (#910, #911, #1190).",
+ "gpu_interpreters": [
+  "/home/rob/dq-runs/venvs/prismaquant-cu130/bin/python"
+ ],
+ "_gpu_interpreters_why": "The interpreters whose invocation starts GPU work on this fleet. require_pool.py refuses a command that runs one outside PrismaBuild; it reads the list here rather than naming a client's venv in code (#1076). A loop's --python is not this list: sparky's loops name none, and a box's worker launcher may be the system interpreter. Change the list when the fleet's GPU environment moves.",
  "boxes": {
   "sparky": {
    "loops": 5,

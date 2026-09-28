@@ -1,8 +1,7 @@
 """One place a producer hands a sealed action to whichever transport is live.
 
-Three tools seal their own actions and enqueue them directly --
-``dispatch_tessera_shards``, ``dispatch_tessera_ladder`` and
-``seal_and_publish``.  Each called ``PoolQueue.publish`` itself, which was
+A producer that seals its own action and enqueues it directly -- such as
+``seal_and_publish`` -- once called ``PoolQueue.publish`` itself, which was
 fine while there was one dispatcher and becomes a bypass the moment there are
 two: after the cutover, publishing into the pull queue puts 120 export shards
 somewhere no worker drains, and publishing succeeds, so nothing says so.
@@ -271,7 +270,7 @@ def seal_checkout_into_action(
     # Sealing a tree makes the action portable, and only sealing does not make
     # it relocatable: an argv token or an environment variable holding an
     # absolute path into the submitter's checkout still reads the submitter's
-    # bytes on whichever node the scheduler picked.  Both Tessera producers
+    # bytes on whichever node the scheduler picked.  Two client producers
     # shipped exactly that as ``PYTHONPATH``, so a worker verified the sealed
     # encoder in its private checkout, imported the shared one, and published
     # the result under the sealed key.  ``pbrun`` already refuses this for an

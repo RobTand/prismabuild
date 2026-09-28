@@ -93,7 +93,7 @@ SCRIPT_DIRNAME = "scripts"
 
 #: The terminal record this lane files where the pull queue files its own.
 #:
-#: Eleven fleet tools and Tessera's ``merge_suite`` read one action's ending out
+#: Eleven fleet tools and at least one client's merge step read one action's ending out
 #: of ``pb-queue/done/<key>.json`` or ``pb-queue/failed/<key>.json``.  The queue
 #: writes those from ``PoolQueue.finish``, on the worker holding the claim.
 #: There is no such worker here, so the submitter writes them -- in the same two
@@ -2528,7 +2528,7 @@ def detail_status_and_returncode(
     not.  SLURM reports a job it killed at its time limit as ``ExitCode=0:15``:
     exit code zero, signal fifteen.  Filed as ``returncode=0`` under
     ``failed/``, that zero reads as a pass to any reader that takes zero as
-    success, and Tessera's ``merge_suite`` does.  The pool filed a timeout as
+    success, and at least one client's merge step does.  The pool filed a timeout as
     ``status="timeout"`` with ``returncode=None`` (status is the authority;
     ``pbrun`` separately maps the record to its public CLI exit codes), so that
     is what a ``TIMEOUT`` job files here.  A job that died by any other signal
@@ -2819,8 +2819,8 @@ def publish_outcome(
     }
     if job is not None:
         # The action's own ending, when the node left one. ``returncode`` above
-        # is the launcher's and stays that -- eleven fleet tools and Tessera's
-        # ``merge_suite`` read it as such -- so the action's goes in a field of
+        # is the launcher's and stays that -- eleven fleet tools and a client's
+        # merge step read it as such -- so the action's goes in a field of
         # its own, and is absent when there is nothing to say.
         body.update(read_action_status(
             action_status_path(job.directory, job.job_id)

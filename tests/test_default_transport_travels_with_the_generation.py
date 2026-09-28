@@ -147,7 +147,7 @@ def test_an_environment_transport_this_code_does_not_have_is_refused(
 # -- every producer reads it, and reading it is what the tests check ---------
 #
 # A source-text check that pbrun spells ``default_transport()`` passed while
-# pbtest, pbcampaign and tessera_status each kept their own
+# pbtest, pbcampaign and a status screen each kept their own
 # ``os.environ.get(...) or "pool"``. These run the producers instead.
 
 

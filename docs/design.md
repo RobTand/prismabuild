@@ -1900,8 +1900,8 @@ miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
   task work into a retry. The worker preflight requires the private tree to be
   clean at the sealed commit, to carry the recorded parent, and to resolve
   every recorded branch to its recorded id. This snapshot proof applies to
-  every definition carrying `params.checkout_snapshot`, including Tessera
-  producers; only the closure-stamp proof is specific to `fleet/pbrun`.
+  every definition carrying `params.checkout_snapshot`, including producers
+  that seal their own actions; only the closure-stamp proof is specific to `fleet/pbrun`.
   Thus `HEAD~1` and `BASE...HEAD`
   are facts a diff-derived gate can rely on rather than a
   `fatal: ambiguous argument`. Absolute submitter-repository paths in argv or
@@ -12875,17 +12875,6 @@ could be evicted. The order is the oldest receipt first, which is deterministic
 and is not a ranking — there is no read-ahead model saying a later artifact is
 more likely to want one range than another, and inventing one would be a
 heuristic where no measurement exists.
-
-## Model-level Tessera dispatch
-
-The [full-model dispatcher](tessera_model_dispatch.md) owns decomposition into
-Tessera's whole-layer serving-part domain. It delegates admission/distribution
-to the existing campaign interface, seals the producer/source/plan/scale/image
-identity, and admits assembly only behind an exact complete CAS-receipt barrier.
-The assembler uses the producer's checked merge and revalidates part bytes.
-Per-worker source-hash reuse requires unchanged filesystem identity and matching
-expected digests, with before/after export checks. It is cooperative cache
-validation, not a claim of hostile-writer immutability or cross-action residency.
 
 ### Status census completeness
 

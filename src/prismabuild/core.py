@@ -2222,7 +2222,7 @@ def _verify_pbrun_checkout_identity(
 
     Keying the whole function on the definition id conflated them, so every
     action a producer sealed itself skipped the snapshot proof.
-    ``fleet_submit`` seals a snapshot for ``tessera/*`` on the SLURM lane, and
+    ``fleet_submit`` seals a snapshot for a producer's own tree on the SLURM lane, and
     those nodes ran a materialized tree nothing had checked.
     """
 

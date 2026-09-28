@@ -247,7 +247,7 @@ POOL_MOVEMENT_RECEIPT_SCHEMAS = (POOL_MOVE_SCHEMA_V1, POOL_EGRESS_SCHEMA_V1)
 #: mover has no terminal record -- it never ran.
 MOVE_ADOPTED_FROM_FIELD = "adopted_from"
 
-# The `prismaquant.` prefix is kept on purpose.  It is the namespace grammar of
+# The legacy client-named schema prefix is kept on purpose.  It is the namespace grammar of
 # every receipt already published to this CAS; mixing prefixes inside one store
 # would be worse than carrying the history.  See the package docstring.
 
@@ -16408,7 +16408,7 @@ class PoolQueue:
         if action["action_key"] != key:
             raise PoolContractError("contained action request differs from claimed key")
         if demand is None and action["task"]["definition_id"] != "fleet/pbrun":
-            # Existing generic producers (including Tessera) declare resources
+            # Existing generic producers declare resources
             # through publish rather than action params. Preserve that trusted
             # producer contract; pbrun always binds demand into the sealed key.
             demand = item.get("resources")
@@ -22785,7 +22785,7 @@ class PoolQueue:
         A subdirectory rather than a timestamped sibling, because every reader
         of ``withdrawn/`` addresses it by ``<key>.json``: ``withdrawn_keys``
         lists it, ``find_key`` globs it, ``item_path`` builds the name,
-        ``pbrun``'s wait loop lists it and ``tessera_status`` counts ``*.json``
+        ``pbrun``'s wait loop lists it and client status screens count ``*.json``
         in it.  A sibling named ``<key>.<unix>.json`` would look to all five
         like an action whose key is nonsense; a subdirectory is invisible to
         every one of them.  It keeps both retired withdrawals and ready/claimed
