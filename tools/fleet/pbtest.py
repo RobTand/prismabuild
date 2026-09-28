@@ -617,9 +617,11 @@ def shard(files: list[str], count: int, *, durations: dict[str, float] | None = 
     similar) files land on different boxes.  With measurements:
 
     * up to ``count - 1`` files predicted at or past half the ceiling get
-      their own shard, so a stall or timeout costs only that file
-      (``ISOLATE_SHARE``) -- ``--shards`` is a ceiling the submitter sets
-      on purpose, and the packer never exceeds it;
+      their own shard, so a stall or timeout costs only that file --
+      ``--shards`` is a ceiling the submitter sets on purpose, and the
+      packer never exceeds it.  Half is not a picked share: two files each
+      at or past half the ceiling can never share one shard within the
+      ceiling, so giving each its own is never worse than pairing them;
     * the rest pack longest-processing-time first into the remaining
       shards, largest prediction onto the least-loaded bucket.
 
@@ -647,8 +649,10 @@ def shard(files: list[str], count: int, *, durations: dict[str, float] | None = 
     if ceiling is not None:
         # At most count - 1, longest first: --shards is a ceiling, and any
         # further past-half file packs LPT with the rest (#1303 review).
+        # The bar is half the ceiling itself, not a picked share: two files
+        # each at or past it can never share one shard within the ceiling.
         singletons = [name for name in ordered
-                      if predicted[name] >= ceiling * ISOLATE_SHARE][:max(0, count - 1)]
+                      if 2 * predicted[name] >= ceiling][:max(0, count - 1)]
     alone = set(singletons)
     rest = [name for name in ordered if name not in alone]
     buckets = [[name] for name in singletons]
@@ -670,14 +674,6 @@ def _round_robin(files: list[str], count: int) -> list[list[str]]:
     for index, name in enumerate(files):
         buckets[index % count].append(name)
     return buckets
-
-
-#: A file predicted at or past this share of the sealed shard deadline gets
-#: its own shard (#1246).  One half, chosen and stated: past it, the file
-#: leaves less than half the lease for whatever shares its shard, so sharing
-#: buys no packing and risks every mate's results on the file's stall; at it,
-#: the file alone can still fill the shard it is given.
-ISOLATE_SHARE = 0.5
 
 
 def load_history(paths: list[str] | None) -> tuple[dict[str, list[float]], list[str]]:
@@ -766,9 +762,9 @@ def summary_seconds(summary: str) -> float | None:
     return float(match.group(1)) if match else None
 
 
-#: The shard program travels as text, so the action key names its bytes and
-#: no helper path has to exist on the worker -- the rule the dependency
-#: guard already followed.
+#: The interpreter program every shard runs.  It carries the modules it runs
+#: as text, so the action key names their bytes and no helper path has to
+#: exist on the worker -- the rule the dependency guard already followed.
 SHARD_PROGRAM = """\
 # A pbtest shard: pytest under pbtest_outcomes' recorder.
 import sys
@@ -1244,9 +1240,10 @@ def main() -> int:
     if not files:
         sys.stderr.write(f"no test files under {args.paths} in {checkout}\n")
         return 2
-    buckets = shard(files, args.shards)
     # The ceiling the model judges against is sealed later, beside the
-    # deadline; the samples load and the predictions resolve above.
+    # deadline; the samples load and the predictions resolve above.  The
+    # round-robin below is the no-history answer, not a first pass: the
+    # history branch replaces it wholesale (#1303 review).
     # Resolve reviewed dependencies only inside each admitted worker action.
     # Embed the guard bytes in argv so neither a target-local helper path nor
     # an older receipt can silently omit the check. Unpinned projects retain
@@ -1343,6 +1340,8 @@ def main() -> int:
         print("pbtest: predicted shard totals: " +
               ", ".join(f"shard {index} {total:.0f}s"
                            for index, total in enumerate(totals)), flush=True)
+    else:
+        buckets = shard(files, args.shards)
     sizes = [len(b) for b in buckets]
     print(f"{len(files)} files -> {len(buckets)} shards "
           f"(min {min(sizes)}, max {max(sizes)} files per shard), tags={tags}, "
@@ -1534,16 +1533,26 @@ def main() -> int:
         print("\npredicted vs pytest seconds per shard:")
         total_want = 0.0
         total_have = 0.0
+        unknown_shards = 0
         for r in results:
             want = r["predicted_s"]
             have = r["pytest_s"]
             total_want += want or 0.0
-            total_have += have or 0.0
-            shown = f"{have:.1f}s" if have is not None else "unknown"
+            if have is None:
+                # An unobserved shard is not zero seconds of pytest: it
+                # counts at the packing default, the same floor an
+                # unmeasured file packs at (#1303 review).
+                have = default
+                unknown_shards += 1
+            total_have += have
+            shown = (f"{r['pytest_s']:.1f}s" if r["pytest_s"] is not None
+                     else f"unknown (counts {default:.1f}s)")
             print(f"  shard {r['shard']:>3} predicted {want:.1f}s, "
                   f"pytest {shown}")
+        total_note = (f" (includes {unknown_shards} unknown shard(s) at "
+                      f"the {default:.1f}s default)" if unknown_shards else "")
         print(f"total predicted {total_want:.1f}s, total pytest "
-              f"{total_have:.1f}s")
+              f"{total_have:.1f}s{total_note}")
 
     # A shard is green when it exited 0 AND pytest reported a terminal summary.
     # ``ran`` has been computed, printed and written to the JSON since #213, and

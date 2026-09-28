@@ -48,12 +48,18 @@ def test_two():
     pass
 '''
 
+MID_TESTS = '''\
+def test_mid():
+    pass
+'''
+
 
 def _checkout(tmp_path: Path) -> Path:
     checkout = tmp_path / "project"
     (checkout / "tests").mkdir(parents=True)
     (checkout / "pytest.ini").write_text("[pytest]\n")
     (checkout / "tests" / "test_slow_file.py").write_text(SLOW_TESTS)
+    (checkout / "tests" / "test_mid_file.py").write_text(MID_TESTS)
     (checkout / "tests" / "test_fast_file.py").write_text(FAST_TESTS)
     subprocess.run(["git", "init", "-q", str(checkout)], check=True)
     return checkout
@@ -75,13 +81,18 @@ def _dispatch(checkout: Path, monkeypatch, extra: list[str]):
 
 
 def _prior_run(tmp_path: Path, durations: dict[str, float]) -> Path:
-    """A prior run report whose outcome record carries ``durations``."""
+    """A prior run report whose outcome record carries ``durations``.
+
+    Keys are the real checkout-relative paths a live recorder writes
+    (``tests/...``), never bare file names: bare keys would only exercise
+    the unmeasured fallback (#1303 review).
+    """
 
     record = {
         "schema": outcomes.SCHEMA,
         "rootdir_relative": ".",
         "collect_only": False,
-        "collected": [f"tests/{name}" for name in durations],
+        "collected": list(durations),
         "deselected": [],
         "reports": [],
         "uncounted": [],
@@ -90,7 +101,7 @@ def _prior_run(tmp_path: Path, durations: dict[str, float]) -> Path:
     path = tmp_path / "prior.json"
     path.write_text(json.dumps([{
         "shard": 0,
-        "files": [f"tests/{name}" for name in durations],
+        "files": list(durations),
         "returncode": 0,
         "action_key": None,
         "receipt_path": None,
@@ -113,7 +124,8 @@ def test_the_outcome_record_carries_per_file_wall_time(tmp_path, monkeypatch):
     durations = record.get("file_durations")
     assert durations is not None, "the record names no per-file durations"
     assert set(durations) == {
-        "tests/test_slow_file.py", "tests/test_fast_file.py"}
+        "tests/test_slow_file.py", "tests/test_mid_file.py",
+        "tests/test_fast_file.py"}
     assert durations["tests/test_slow_file.py"] >= 0.4
     assert durations["tests/test_fast_file.py"] < durations["tests/test_slow_file.py"]
 
@@ -182,7 +194,9 @@ def test_the_summary_reports_predicted_against_actual(tmp_path, monkeypatch, cap
     """Every shard prints its model's prediction beside pytest's own seconds."""
 
     checkout = _checkout(tmp_path)
-    prior = _prior_run(tmp_path, {"test_slow_file.py": 0.5, "test_fast_file.py": 0.01})
+    prior = _prior_run(tmp_path, {"tests/test_slow_file.py": 100.0,
+                                  "tests/test_mid_file.py": 10.0,
+                                  "tests/test_fast_file.py": 1.0})
     code, results = _dispatch(checkout, monkeypatch,
                               ["--shards", "2", "--history", str(prior)])
     printed = capsys.readouterr().out
@@ -191,12 +205,78 @@ def test_the_summary_reports_predicted_against_actual(tmp_path, monkeypatch, cap
     for result in results:
         assert result["predicted_s"] > 0
         assert result["pytest_s"] is not None and result["pytest_s"] >= 0
+    # The split main() sealed is the longest-first packing, not the
+    # rotation: slow alone, mid beside fast.
+    buckets = [result["files"] for result in results]
+    assert buckets == [["tests/test_slow_file.py"],
+                        ["tests/test_mid_file.py", "tests/test_fast_file.py"]]
+    files = [name for bucket in buckets for name in bucket]
+    assert sorted(buckets, key=sorted) != sorted(
+        pbtest._round_robin(sorted(files), 2), key=sorted)
+
+
+def test_main_packs_shards_from_history_not_round_robin(tmp_path, monkeypatch):
+    """main()'s history branch reaches the shards (#1303 review).
+
+    The sealed split is the model's packing, not the rotation: reverting
+    the ``shard(..., durations=predicted, ceiling=sealed_s,
+    model_default=model_default)`` call in ``main()`` to the plain
+    ``shard(files, args.shards)`` fails this test, and nothing else pins
+    that call.
+    """
+
+    checkout = tmp_path / "project"
+    (checkout / "tests").mkdir(parents=True)
+    (checkout / "pytest.ini").write_text("[pytest]\n")
+    for name in ("test_a.py", "test_b.py", "test_c.py", "test_d.py"):
+        (checkout / "tests" / name).write_text("def test_x():\n    pass\n")
+    subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+    prior = _prior_run(tmp_path, {"tests/test_a.py": 100.0,
+                                  "tests/test_b.py": 90.0,
+                                  "tests/test_c.py": 80.0,
+                                  "tests/test_d.py": 10.0})
+    code, results = _dispatch(checkout, monkeypatch,
+                              ["--shards", "2", "--history", str(prior)])
+    assert code == 0
+    buckets = [result["files"] for result in results]
+    assert buckets == [["tests/test_a.py", "tests/test_d.py"],
+                        ["tests/test_b.py", "tests/test_c.py"]]
+    files = [name for bucket in buckets for name in bucket]
+    assert sorted(buckets, key=sorted) != sorted(
+        pbtest._round_robin(sorted(files), 2), key=sorted)
+
+
+def test_main_isolates_a_file_past_half_the_sealed_deadline(tmp_path, monkeypatch):
+    """The sealed ceiling reaches the packer through main().
+
+    A file predicted past half of ``--timeout-s`` shards alone: the
+    isolation is main()'s ceiling, not only shard()'s unit argument.
+    """
+
+    checkout = tmp_path / "project"
+    (checkout / "tests").mkdir(parents=True)
+    (checkout / "pytest.ini").write_text("[pytest]\n")
+    for name in ("test_a.py", "test_b.py", "test_c.py", "test_d.py"):
+        (checkout / "tests" / name).write_text("def test_x():\n    pass\n")
+    subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+    prior = _prior_run(tmp_path, {"tests/test_a.py": 400.0,
+                                  "tests/test_b.py": 10.0,
+                                  "tests/test_c.py": 10.0,
+                                  "tests/test_d.py": 10.0})
+    code, results = _dispatch(checkout, monkeypatch,
+                              ["--shards", "2", "--timeout-s", "600",
+                               "--history", str(prior)])
+    assert code == 0
+    buckets = [result["files"] for result in results]
+    assert buckets == [["tests/test_a.py"],
+                        ["tests/test_b.py", "tests/test_c.py",
+                         "tests/test_d.py"]]
 
 
 def test_bad_history_is_ignored_with_a_stated_reason(tmp_path):
     """A rotted report never fails the submission, and never packs silently."""
 
-    good = _prior_run(tmp_path, {"test_a.py": 4.0})
+    good = _prior_run(tmp_path, {"tests/test_a.py": 4.0})
     rotted = tmp_path / "rotted.json"
     rotted.write_text("{not json")
     foreign = tmp_path / "foreign.json"
@@ -216,7 +296,7 @@ def test_bad_history_is_ignored_with_a_stated_reason(tmp_path):
     history, problems = pbtest.load_history(
         [str(good), str(rotted), str(foreign), str(mixed),
          str(tmp_path / "missing.json")])
-    assert history == {"test_a.py": [4.0],
+    assert history == {"tests/test_a.py": [4.0],
                        "tests/test_c.py": [2.0]}, history
     assert len(problems) == 4, problems
     assert any("rotted.json" in problem for problem in problems)
@@ -230,12 +310,12 @@ def test_history_flag_takes_one_report_per_flag(tmp_path, monkeypatch, capsys):
     """--history is repeatable single-value: it cannot swallow test paths."""
 
     checkout = _checkout(tmp_path)
-    first = _prior_run(tmp_path, {"test_slow_file.py": 0.5,
-                                  "test_fast_file.py": 0.01})
+    first = _prior_run(tmp_path, {"tests/test_slow_file.py": 0.5,
+                                  "tests/test_fast_file.py": 0.01})
     one = tmp_path / "one.json"
     first.rename(one)
-    two = _prior_run(tmp_path, {"test_slow_file.py": 0.6,
-                                "test_fast_file.py": 0.02})
+    two = _prior_run(tmp_path, {"tests/test_slow_file.py": 0.6,
+                                "tests/test_fast_file.py": 0.02})
     code, _ = _dispatch(checkout, monkeypatch,
                         ["--shards", "2", "--history", str(one),
                          "--history", str(two)])
