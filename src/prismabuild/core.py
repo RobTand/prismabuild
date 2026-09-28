@@ -7420,6 +7420,25 @@ def repair_local_result(
     }
 
 
+def _output_lock_name(output: Path) -> str:
+    """The ``.worker-locks`` file name for one physical output path.
+
+    The exclusion identity is the normalized physical output path and
+    nothing else.  It used to hash the resolved checkout root as well, which
+    made one file two locks: ``checkout_root=/repo`` with
+    ``working_directory=sub`` and ``checkout_root=/repo/sub`` with
+    ``working_directory=.`` both resolve to ``/repo/sub/result.bin``, so two
+    concurrent actions each passed the absent-result check and one published
+    the other's bytes under its own deterministic key.  Callers resolve the
+    output first (``core._validate_execution_paths`` before the lock,
+    ``pb_gc`` with ``realpath`` before deriving); this function only names.
+    """
+    identity = hashlib.sha256(
+        os.path.normpath(str(output)).encode("utf-8")
+    ).hexdigest()
+    return f"{identity}.lock"
+
+
 @contextmanager
 def _local_output_lock(cas: PrismaBuildCAS, checkout: Path, output: Path):
     """Serialize actions sharing one live-checkout result path.
@@ -7440,11 +7459,9 @@ def _local_output_lock(cas: PrismaBuildCAS, checkout: Path, output: Path):
     exclusion identity: what has to be exclusive is the file.
     """
 
-    identity = hashlib.sha256(
-        os.path.normpath(str(output)).encode("utf-8")
-    ).hexdigest()
+    identity = _output_lock_name(output)
     directory = cas.root / ".worker-locks"
-    path = directory / f"{identity}.lock"
+    path = directory / identity
     directory_fd = _open_directory_nofollow(
         directory, where="local action lock directory", create=True
     )
