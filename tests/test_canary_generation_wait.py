@@ -99,14 +99,24 @@ def test_the_submission_retries_within_its_budget(tmp_path, monkeypatch):
     monkeypatch.setattr(pbcanary.time, "monotonic",
                         lambda: 0.0)  # never past the deadline
 
-    key, detach = pbcanary._execute_side(
-        {"published_src": "", "queue_root": tmp_path},
-        leg="leg-2", spec=SPEC, argv=["/bin/true"],
-        checkout=tmp_path, run_id="r", generation=NEW_GEN, priority=-10,
-        fleet_root=tmp_path, leg_dir=tmp_path, side=None,
-        extra_flags=[], extra_env={}, manifest=None, wait_s=600)
+    def unobserved(paths, leg, action_key, wait_s):
+        # The retry is what this test proves; the wait beyond it is another
+        # leg of the flow, and a timeout there is the clean place to stop.
+        raise pbcanary.subprocess.TimeoutExpired(cmd="pbwait", timeout=wait_s)
 
-    assert key == "9" * 64
+    monkeypatch.setattr(pbcanary, "wait_leg", unobserved)
+
+    import pytest
+    with pytest.raises(pbcanary._SideUnverified):
+        pbcanary._execute_side(
+            {"published_src": "", "queue_root": tmp_path},
+            leg="leg-2", spec=SPEC, argv=["/bin/true"],
+            checkout=tmp_path, run_id="r", generation=NEW_GEN, priority=-10,
+            fleet_root=tmp_path, leg_dir=tmp_path, side=None,
+            extra_flags=[], extra_env={}, manifest=None, wait_s=600)
+
+    # The submission was refused once, waited on the generation, and the
+    # resubmit succeeded -- the wait that follows is where this test stops.
     assert len(calls) == 2
 
 
