@@ -386,6 +386,52 @@ import pbtest_outcomes  # noqa: E402
 NON_GPU_UNREQUESTED_CEILING_CAP_S = 2 * pool.WITHHOLD_CEILING_S
 
 
+def fleet_queue():
+    """The queue every shard is submitted to, read the way the tools do.
+
+    One construction for the ceilings read and the interpreter pre-flight
+    alike, so the two questions cannot drift onto different roots.
+    """
+
+    return pool.PoolQueue(pbrun.SH / "pb-queue")
+
+
+def interpreter_refusal(queue, python: str, *, tags, resources,
+                       needs_gpu: bool) -> tuple[str | None, str | None]:
+    """The pre-flight's answer for one interpreter (#1263, #1266 review).
+
+    ``(None, None)`` -- run.  ``("refusal", why)`` -- exit 2 before any shard
+    is sealed: every capable eligible offer answered, and every answer named
+    the path absent.  ``("notice", line)`` -- run, saying so: the path is
+    unknown (a first submission is unknown by construction -- no READY row
+    named it when the offers were written), the claim-time stat stays the
+    guard everywhere, and the fleet's next poll answers for it.
+    """
+
+    probe = {
+        "tags": list(tags),
+        "interpreter": python,
+        "resources": dict(resources),
+        "needs_gpu": bool(needs_gpu),
+    }
+    verdict = queue.interpreter_placement_verdict(
+        probe, python, max_age_s=pbrun.RECORDED_OFFER_MAX_AGE_S)
+    if verdict == "absent":
+        return ("refusal",
+                "pbtest: every recorded worker that could take these shards "
+                f"names the interpreter absent: {python}. Install it on a "
+                "box that offers these tags and let its worker's next poll "
+                "answer for the path; submitting now would queue shards "
+                "that die with 127 on the first box to claim them.")
+    if verdict == "unknown":
+        return ("notice",
+                f"pbtest: no worker has answered for the interpreter "
+                f"{python} yet; the shards publish, the claim-time check "
+                "guards every box, and the fleet's next poll places them "
+                "where the path lives.")
+    return (None, None)
+
+
 def announced_ceilings(tags: list[str]) -> dict[str, float | None]:
     """What each live worker able to take these shards says its ceiling is.
 
@@ -406,7 +452,7 @@ def announced_ceilings(tags: list[str]) -> dict[str, float | None]:
     """
 
     try:
-        offers = pool.PoolQueue(pbrun.SH / "pb-queue").offers()
+        offers = fleet_queue().offers()
     except Exception:
         return {}
     required = set(tags)
@@ -1037,6 +1083,18 @@ def main() -> int:
     # Say nothing instead and let ``pbrun`` answer; it pins to this box.
     tags = args.tag or ([] if pool.is_box_local_path(RUNTIME_ROOT) else
                         ["gb10" if args.gpu else "x86"])
+    # One placement question before any shard is sealed (#1263): the
+    # interpreter every shard names is a requirement, and if no recorded
+    # worker reports the path, every shard's pbrun would refuse identically.
+    # Answering it once here fails the whole submission fast, naming the path.
+    kind, message = interpreter_refusal(
+        fleet_queue(), args.python,
+        tags=tags, resources={"cpu": 1, "mem_gb": args.mem_gb},
+        needs_gpu=bool(args.gpu))
+    if message is not None:
+        sys.stderr.write(message + "\n")
+    if kind == "refusal":
+        return 2
     sizes = [len(b) for b in buckets]
     print(f"{len(files)} files -> {len(buckets)} shards "
           f"(min {min(sizes)}, max {max(sizes)} files per shard), tags={tags}, "

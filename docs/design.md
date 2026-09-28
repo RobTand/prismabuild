@@ -2742,6 +2742,35 @@ Contract:
   two actions differing only in the image never share a Docker ownership
   label or `<owner>.used` marker. Absent, the action, its owner and its queue
   item are byte-for-byte what they were before the field existed.
+
+### Named interpreters (#1263)
+
+Placement eligibility comes from the interpreter a host has, not from the
+tags a submitter types. A `pbrun` command whose first argument is an absolute
+`python*` path declares that path: it is sealed into the action's params
+(`interpreter`, hence the key), copied onto the queue row, and matched the
+way declared images are — presence is positive evidence only. The capability
+tag is `interpreter-path-v1`, offered by loops of this generation; a loop
+from before the field offers neither the tag nor the answers, so
+interpreter-naming work waits out a rolling publish rather than exiting 127
+on a box that cannot run it (fail closed, the #714 fence).
+
+**The inventory is a lookup, not a scan.** The worker's offer answers for
+exactly the absolute paths the ready items name — one `stat` per distinct
+path per poll — and publishes the present, executable ones as `interpreters`
+on the offer. No configured roots, no directory walk, and nothing anywhere
+names a project's venvs: PB core stays ignorant of PQ. An offer with no
+`interpreters` field is unknown, never capable, and matches no
+interpreter-naming item.
+
+**Claim and submission.** The claim checks the item's path on its own box
+before spending an attempt (`interpreter_not_present` names the path;
+another box may still take the row). `pbrun` refuses at submission when no
+recorded worker reports the path — the refusal names it — and `pbtest` asks
+the same question once for the whole suite before sealing any shard.
+`publish` validates the path (absolute, non-empty), adds the capability tag
+with it, and refuses the tag without a path; every check precedes the first
+side effect. An item naming no interpreter is byte-identical to before.
 - **Capability.** A declaration requires the `container-image-v1` placement
   tag, offered by loops whose code performs the claim check. A loop from
   before the check cannot match image-pinned work; a loop that has the check

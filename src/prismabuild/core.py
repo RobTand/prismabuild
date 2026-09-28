@@ -205,6 +205,12 @@ EGRESS_PROGRESS_TAG = "progress-egress-v1"
 #: see it -- which is the fail-closed behavior this tag exists to reach, not
 #: a reason to hide the capability.
 CONTAINER_IMAGE_TAG = "container-image-v1"
+#: The capability tag an item that names an absolute interpreter carries
+#: (#1263).  A loop of this generation offers it; a loop from before the
+#: field does not, so an interpreter-naming item is never claimed by a box
+#: that cannot even see the requirement -- the same rolling-publish fence
+#: ``CONTAINER_IMAGE_TAG`` gives declared images (#714).
+INTERPRETER_TAG = "interpreter-path-v1"
 PBRUN_STAMP_PREFIX = ".pbrun-closure."
 PBRUN_RESULT_PREFIX = "pbrun_result."
 PBRUN_GENERATED_FINGERPRINT_HEX_LENGTH = 16

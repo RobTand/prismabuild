@@ -31,6 +31,17 @@ also why `pbtest` names no default tag when run from a worktree: the `x86`
 default is an explicit placement claim, and an explicit tag outranks the pin
 `pbrun` would otherwise derive (RobTand/prismabuild#292).
 
+Placement eligibility comes from capability, not from submitter tags (#1263):
+a command whose first argument is an absolute interpreter path declares that
+path, and only boxes whose worker offers positively report it may claim the
+row. Name the interpreter for CPU-only work instead of tagging a host that
+happens to hold the venv -- that habit is what idled both GPUs for 100 minutes
+on 2026-09-28 while 80 spare CPUs sat on dl380g10. A path absent from every
+recorded offer is refused at submission with the path named. Old-generation
+workers neither offer the `interpreter-path-v1` capability nor answer path
+questions, so interpreter-naming rows wait out a rolling publish rather than
+running where they would exit 127.
+
 Placement holds two bounded preferences you may see in a denial and must not
 read as a refusal: `deferred_for_preferred_cpu`, and
 `deferred_for_cross_resource_placement`, which keeps a box already working one

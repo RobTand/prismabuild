@@ -5169,6 +5169,8 @@ class PoolQueue:
         progress_contracts: Sequence[str] | None = None,
         addresses: Sequence[str] | None = None,
         observed_images: Sequence[str] | None = None,
+        interpreters: Sequence[str] | None = None,
+        interpreters_absent: Sequence[str] | None = None,
         state: str | None = None,
         drain_owner: str | None = None,
         drain_reason: str | None = None,
@@ -5309,6 +5311,22 @@ class PoolQueue:
             # declares images must read that absence as unknown (#714).
             record["container_images"] = sorted(
                 {str(entry) for entry in observed_images})
+        if interpreters is not None:
+            # The absolute interpreter paths this box positively answers for,
+            # looked up per poll from exactly the paths READY items name
+            # (#1263): present is positive evidence only -- a loop from before
+            # the field, or a poll that could not read the queue, publishes no
+            # list, and an item that names an interpreter reads that absence
+            # as unknown, never as capable (the #714 rule).
+            record["interpreters"] = sorted({str(p) for p in interpreters})
+        if interpreters_absent is not None:
+            # The paths this box was asked about and does not have (#1266
+            # review): the submission-time verdict refuses only on a
+            # unanimous absent, so a first submission -- a path no READY row
+            # named when the offers were written -- is unknown and publishes
+            # with a notice rather than a deadlock.
+            record["interpreters_absent"] = sorted(
+                {str(p) for p in interpreters_absent})
         if state is not None:
             record["state"] = str(state)
         if drain_owner is not None:
@@ -5398,6 +5416,11 @@ class PoolQueue:
                 or not all(isinstance(entry, str) for entry in declared_images)):
             raise PoolContractError(
                 "pool item container_images must be a list of strings")
+        declared_interpreter = item.get("interpreter")
+        if declared_interpreter is not None and not isinstance(
+                declared_interpreter, str):
+            raise PoolContractError(
+                "pool item interpreter must be an absolute path string")
         demand = self.demand_of(item)
         needs_gpu = bool(item.get("needs_gpu")) or demand.get("gpu", 0) > 0
         matches: list[Mapping[str, object]] = []
@@ -5417,6 +5440,14 @@ class PoolQueue:
                     continue
                 seen = {str(entry) for entry in present}
                 if any(image not in seen for image in declared_images):
+                    continue
+            if declared_interpreter:
+                # Same rule, one path (#1263): an offer that reports no
+                # interpreter answers is unknown, and unknown is not capable.
+                offered_paths = offer.get("interpreters")
+                if not isinstance(offered_paths, list) or \
+                        declared_interpreter not in {
+                            str(entry) for entry in offered_paths}:
                     continue
             capacity = offer.get("capacity") or {}
             # A kind the offer does not MENTION is unknown, not zero.  The
@@ -5439,6 +5470,47 @@ class PoolQueue:
                 continue          # this box can never fit it, however idle
             matches.append(offer)
         return matches
+
+    def interpreter_placement_verdict(
+            self, item: Mapping[str, object], interpreter: str, *,
+            max_age_s: float = OFFER_TIMEOUT_S,
+    ) -> str:
+        """``"present"``, ``"absent"`` or ``"unknown"`` for one path (#1266).
+
+        Asked over the offers that could run ``item`` otherwise (tags, GPU,
+        images, demand) and carry the interpreter capability.  Present
+        anywhere wins; absent means every capable eligible offer answered
+        and every answer named the path missing; anything else -- no capable
+        offer, or one that has not answered either way -- is unknown, which
+        the submission tools publish with a notice rather than refuse,
+        because the first submission of any path is unknown by construction
+        and refusing it would deadlock the tool on its own first use.
+        """
+
+        eligible = self._matching_offers(
+            {name: value for name, value in item.items()
+             if name not in ("interpreter",)},
+            live=self.offers(max_age_s=max_age_s))
+        capable = [
+            offer for offer in eligible
+            if pb.INTERPRETER_TAG in {
+                str(t) for t in (offer.get("tags") or [])}]
+        if not capable:
+            return "unknown"
+        unanimous_absent = True
+        for offer in capable:
+            answers = offer.get("interpreters")
+            if isinstance(answers, list) and interpreter in {
+                    str(entry) for entry in answers}:
+                return "present"
+            missing = offer.get("interpreters_absent")
+            if not (isinstance(missing, list) and interpreter in {
+                    str(entry) for entry in missing}):
+                # A capable box that has not answered for the path may still
+                # have it: offers are written at different moments, so one
+                # absent beside a silent box is unknown (#1266 review r2).
+                unanimous_absent = False
+        return "absent" if unanimous_absent else "unknown"
 
     def placeable(
         self, item: Mapping[str, object], *, max_age_s: float = OFFER_TIMEOUT_S
@@ -5722,6 +5794,7 @@ class PoolQueue:
         retry_safe: bool | None = None,
         container_owner: str | None = None,
         container_images: Sequence[str] | None = None,
+        interpreter: str | None = None,
         preempted_claim: Mapping[str, object] | None = None,
         handoff_by: str | None = None,
         residency: Mapping[str, object] | None = None,
@@ -5745,6 +5818,13 @@ class PoolQueue:
         before it spends an attempt.  Absent means the action declares none,
         and the item is byte-identical to what it was before the field
         existed (#714).
+
+        ``interpreter`` is the absolute path of the interpreter the action's
+        command runs under (#1263).  Placement reads it as a requirement: the
+        item is placeable exactly on the boxes whose offers positively report
+        the path, and a box that says nothing is not a match.  Absent means
+        the action declares none and the item is byte-identical to before the
+        field existed.
 
         ``refuse_withdrawn`` is for *automatic* republication: inside this
         method's transition lock a live cancellation marker refuses the
@@ -5786,12 +5866,38 @@ class PoolQueue:
                 image_refs = list(image_inventory.normalize_refs(container_images))
             except ValueError as exc:
                 raise PoolContractError(f"container_images: {exc}") from exc
+        declared_interpreter: str | None = None
+        if interpreter is not None:
+            # The requirement is one absolute path.  It is validated here for
+            # the same reason ``container_images`` is: so a producer cannot
+            # publish a requirement the matcher and the claim would each have
+            # to treat as malformed.  Relative paths are refused because the
+            # matcher's question -- "does this exact path exist on that box"
+            # -- has no meaning for one.
+            if (not isinstance(interpreter, str) or not interpreter
+                    or "\x00" in interpreter or not interpreter.startswith("/")
+                    or interpreter == "/"):
+                raise PoolContractError(
+                    "interpreter must be an absolute path to an executable "
+                    f"(got {interpreter!r})")
+            declared_interpreter = interpreter
         # Every declaration check is a precondition, ahead of the first side
         # effect below: a publication this method refuses must not have
         # retired a live withdrawal, created a directory or answered an
         # adoption on its way to refusing (#714 review, #708's cancellation
         # contract).
         normalized_tags = normalize_placement_tags(tags)
+        if declared_interpreter is not None:
+            # The capability tag rides the requirement (the #714 shape): a
+            # loop from before the field does not offer it, so an old worker
+            # never claims an item whose interpreter it cannot even see.
+            normalized_tags = normalize_placement_tags(
+                [*normalized_tags, pb.INTERPRETER_TAG])
+        elif pb.INTERPRETER_TAG in normalized_tags:
+            raise PoolContractError(
+                f"{pb.INTERPRETER_TAG} requires an interpreter; an item may "
+                "not require the declared-interpreter capability without "
+                "naming one")
         if image_refs:
             # The capability the claim check rides must travel with the
             # requirement, never be forgotten by a producer: a box that does
@@ -6199,6 +6305,8 @@ class PoolQueue:
             item["container_owner"] = str(container_owner)
         if image_refs:
             item["container_images"] = image_refs
+        if declared_interpreter is not None:
+            item["interpreter"] = declared_interpreter
         if superseded is not None:
             item["supersedes_withdrawal"] = {
                 "published_unix": superseded.get("published_unix"),
@@ -18239,6 +18347,7 @@ class PoolQueue:
         #: instead of two per mover.  A non-dead hint only skips the check;
         #: a dead hint still pays for the full proof under the key's lock.
         dead_input_hints: dict[str, tuple[str, dict[str, object] | None]] = {}
+        interpreter_cache: dict[str, bool] = {}
         for item in ready:
             key = str(item.get("action_key", ""))
             held_back = withheld_for is not None and (
@@ -18399,6 +18508,29 @@ class PoolQueue:
                     # verdict is correctness-only, and delaying it behind
                     # load no drain clears is the boundary loss.
                     canary_exempt = True
+                declared_interpreter = item.get("interpreter")
+                if declared_interpreter is not None:
+                    if not isinstance(declared_interpreter, str) or \
+                            not declared_interpreter.startswith("/"):
+                        self.record_denial(item, "malformed_interpreter", {
+                            "interpreter": item.get("interpreter")})
+                        continue
+                    # One stat per distinct path per pass (#1266 review): the
+                    # venvs live on NFS in practice, and a wide pbtest would
+                    # otherwise pay a stat per candidate per pass per box.
+                    runs_here = interpreter_cache.get(declared_interpreter)
+                    if runs_here is None:
+                        runs_here = bool(
+                            os.path.isfile(declared_interpreter)
+                            and os.access(declared_interpreter, os.X_OK))
+                        interpreter_cache[declared_interpreter] = runs_here
+                    if not runs_here:
+                        # This box cannot run the command; another box may.
+                        # The denial names the path so a submitter reading
+                        # the ring sees which interpreter was missing where.
+                        self.record_denial(item, "interpreter_not_present", {
+                            "interpreter": declared_interpreter})
+                        continue
                 declared_images = item.get("container_images")
                 item_tags = item.get("tags")
                 if (not declared_images and isinstance(item_tags, list)
