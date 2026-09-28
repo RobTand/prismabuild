@@ -1,7 +1,7 @@
-"""Shared deterministic bytes + digest helpers for pbcanary legs 3-4.
+"""Shared deterministic bytes + digest + envelope helpers for pbcanary legs 3-4.
 
-This module is deliberately tiny: the deterministic byte generator and the
-digest helpers, nothing else. No PrismaBuild imports, stdlib only, so both
+This module is deliberately small: the deterministic byte generator, the
+digest helpers, and the envelope extractor, nothing else. No PrismaBuild imports, stdlib only, so both
 the canary driver (submit side) and the sealed worker actions (execute side,
 ``python3 tools/fleet/pbcanary_legs/legN.py --run-action``) can use it without a
 configured environment. See PB #688.
@@ -129,3 +129,49 @@ def sha256_file_hex(path: str, *, offset: int = 0, size: int | None = None) -> s
 def canonical_json(obj: object) -> str:
     """Encode ``obj`` as canonical JSON: sorted keys, compact separators."""
     return json.dumps(obj, sort_keys=True, separators=(",", ":"))
+
+
+def extract_envelope(receipt: object, *, schema: str) -> tuple[str | None, dict | None, str]:
+    """Find the canary envelope bearing ``schema`` in ``receipt``.
+
+    Returns ``(raw, parsed, where)``; ``raw`` is None when the receipt
+    carries only a parsed envelope. Accepted locations, in order:
+    ``receipt["envelope"]``, ``receipt["stdout"]``,
+    ``receipt["detail"]["stdout"]``. Stdout is scanned for the last line
+    that parses as a JSON object with the schema marker. Leg 4 callers
+    REQUIRE the raw bytes for the bitwise-equality check; leg 3 ignores
+    them. Stdlib only, like the rest of this module.
+    """
+    if not isinstance(receipt, dict):
+        return None, None, ""
+    candidate = receipt.get("envelope")
+    if isinstance(candidate, str):
+        try:
+            parsed = json.loads(candidate)
+        except ValueError:
+            return None, None, "receipt[envelope]"
+        if isinstance(parsed, dict) and parsed.get("schema") == schema:
+            return candidate.strip(), parsed, "receipt[envelope]"
+        return None, None, "receipt[envelope]"
+    if isinstance(candidate, dict) and candidate.get("schema") == schema:
+        return None, candidate, "receipt[envelope]"
+    for where in ("stdout", "detail.stdout"):
+        node: object = receipt
+        for key in where.split("."):
+            node = node.get(key) if isinstance(node, dict) else None
+        if not isinstance(node, str):
+            continue
+        found = None
+        for line in node.splitlines():
+            line = line.strip()
+            if not line.startswith("{"):
+                continue
+            try:
+                parsed = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(parsed, dict) and parsed.get("schema") == schema:
+                found = (line, parsed)
+        if found is not None:
+            return found[0], found[1], f"receipt[{where}]"
+    return None, None, ""
