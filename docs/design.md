@@ -3400,12 +3400,15 @@ through ordinary duplicate handling. Retain spent records for as long as their
 published generation remains addressable; namespace/run GC does not remove them.
 Growth is one small grant and persistent lock inode per host/generation.
 
-pbrun mints the grant **before** its placement check, so a refused submission
-has already spent it. The leg-2 submission therefore waits for the
+pbrun runs its placement verdict for a canary submission **before** the
+publisher authorizes the grant, so an unplaceable canary is refused without
+spending the slot (#1278). A refusal after the grant has spent it, and the
+driver cannot tell the two apart, so the leg-2 submission waits for the
 image-holding box to re-offer on the new generation **before** it submits
-(#1239's wait) and submits once; still pending at the leg's deadline, it
-refuses without minting, and the slot stays unspent (#1278). Other legs keep
-#1239's wait-and-resubmit.
+(#1239's wait) and submits once. That wait reads the same recorded offers as
+pbrun's verdict, not only the live window; still pending at the leg's
+deadline, the leg refuses without minting. Other legs keep #1239's
+wait-and-resubmit.
 
 The worker advertises `publication-canary-slot-v1` and
 `runtime-generation:<loaded immutable generation>` only from its loaded runtime,

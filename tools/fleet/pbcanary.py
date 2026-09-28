@@ -272,9 +272,15 @@ def generation_pending(paths: dict, spec: dict, generation: str | None,
     }
     full = {**base, "tags": [*base["tags"],
                              f"runtime-generation:{generation}"]}
-    if queue.placeable(full) is True:
+    # pbrun's placement verdict reads every recorded offer, not the live
+    # window, so a box busy past it still blocks on its retained
+    # old-generation offer.  Read the same offers, or "not pending" lets the
+    # leg submit into that refusal (#1278).
+    import pbrun
+    recorded = pbrun.RECORDED_OFFER_MAX_AGE_S
+    if queue.placeable(full, max_age_s=recorded) is True:
         return False
-    return queue.placeable(base) is True
+    return queue.placeable(base, max_age_s=recorded) is True
 
 
 def submit_leg(
@@ -698,9 +704,10 @@ def _execute_side(
     # box reports, another blocker) refuses exactly as before.
     #
     # A leg whose submission mints the generation's one publication-canary
-    # slot waits BEFORE it submits, and submits once.  pbrun mints the slot
-    # before its placement check, so a refused submission has already spent
-    # it; a resubmit would collide with its own slot and refuse as "output
+    # slot waits BEFORE it submits, and submits once (#1278).  pbrun now
+    # refuses an unplaceable canary before the grant, but a refusal after
+    # the grant has spent the slot, and this side cannot tell the two apart;
+    # a resubmit would collide with its own slot and refuse as "output
     # already exists".  Still pending at the deadline, it refuses without
     # submitting, and the slot stays unspent for a later canary run.
     deadline = time.monotonic() + float(wait_s)

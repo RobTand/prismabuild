@@ -221,7 +221,7 @@ def test_a_minting_leg_still_pending_at_its_deadline_does_not_submit(
         calls.append(1)
         return "9" * 64, {"action_key": "9" * 64}
 
-    with pytest.raises(pbcanary.PreconditionRefused, match="did not test"):
+    with pytest.raises(pbcanary.PreconditionRefused, match="was not minted"):
         _run_minting_side(tmp_path, monkeypatch,
                           pending=lambda *a, **k: True,
                           submit_leg=submit_leg,
