@@ -77,6 +77,7 @@ from runtime_paths import generation_root  # noqa: E402
 
 sys.path.insert(0, str(generation_root(__file__) / "src"))
 
+from prismabuild import box_capacity  # noqa: E402
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import pool, reader_lease, residency_map  # noqa: E402
 from prismabuild import residency_plan, storage_tiers  # noqa: E402
@@ -105,7 +106,11 @@ HOST_PROFILE: dict[str, object] = {
     "arc_c_max_bytes": 23622320128,
     "arc_size_bytes": 23557060320,
     "arc_meta_used_bytes": 7421280480,
-    "worker": {"cpu": 80, "mem_gb": 96},
+    # ``mem_gb`` is the declared fallback.  The storage host's worker runs
+    # with ``--mem-gb-ram-tier-roof`` (``fleet_boxes.json``, #1222), so its
+    # offer is the RAM policy's measured roof, which ``_host_facts`` reads
+    # through the worker's own ``box_capacity.ram_policy_mem_roof`` (#1253).
+    "worker": {"cpu": 80, "mem_gb": 96, "mem_gb_ram_tier_roof": True},
 }
 
 #: The committed reference tables, by the first 12 hex digits of the manifest
@@ -569,6 +574,35 @@ class ShapeGate:
         self.arc = {"c_max": int(self.profile["arc_c_max_bytes"]) // self.scale,  # type: ignore[arg-type]
                     "size": int(self.profile["arc_size_bytes"]) // self.scale,  # type: ignore[arg-type]
                     "arc_meta_used": int(self.profile["arc_meta_used_bytes"]) // self.scale}  # type: ignore[arg-type]
+        if self.profile["worker"].get("mem_gb_ram_tier_roof"):  # type: ignore[union-attr]
+            self.capacity["mem_gb"] = self._worker_mem_roof()
+
+    def _worker_mem_roof(self) -> int:
+        """The storage host worker's ``mem_gb`` offer: the measured roof.
+
+        Since #1222 the worker offers the RAM policy's roof, and every RAM
+        fill holds host ``mem_gb`` tokens beside its tier tokens, so a gate
+        that offers the static fallback cannot mirror a full window and
+        stalls on ``host mem pool full`` (#1253).  The roof is read by the
+        worker's own function over the host's unscaled facts: it answers
+        whole GiB, and GiB counts are used as they are here.
+        """
+
+        facts = self.host_dir / "worker"
+        facts.mkdir(parents=True, exist_ok=True)
+        (facts / "meminfo").write_text(
+            f"MemTotal: {int(self.profile['mem_total_bytes']) // 1024} kB\n")  # type: ignore[arg-type]
+        (facts / "arcstats").write_text(
+            f"c_max 4 {int(self.profile['arc_c_max_bytes'])}\n")  # type: ignore[arg-type]
+        (facts / "ram_policy.json").write_text(json.dumps(self.ram_policy))
+        roof = box_capacity.ram_policy_mem_roof(
+            policy_path=facts / "ram_policy.json",
+            arcstats_path=facts / "arcstats", meminfo_path=facts / "meminfo")
+        if roof is None or roof <= 0:
+            raise ShapeGateFailure(
+                "no_worker_roof",
+                f"the storage host worker's measured roof did not read: {roof!r}")
+        return roof
 
     def discover(self, *, host, source_pool, fill_records, now, ram_policy,
                  rows_held_gib):
@@ -947,6 +981,12 @@ class ShapeGate:
         # reads it for placement.
         self.queue.announce(host=self.host, tags=[self.host], has_gpu=False,
                             capacity=self.capacity)
+        # ...and the host ledger that worker mints at start.  Since #1222 a
+        # RAM fill holds host ``mem_gb`` beside its tier tokens in this
+        # ledger, and this process's claims mint the ledger of the box the
+        # gate runs on, not the storage host's; without this mint every
+        # RAM fence is host-short and the window stalls (#1253).
+        self.queue.ledger(self.host).ensure_capacity(self.capacity)
         self.receipts = self.tier_loop.ReceiptCache()
 
         mark = time.monotonic()

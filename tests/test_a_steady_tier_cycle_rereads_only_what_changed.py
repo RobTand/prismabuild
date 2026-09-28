@@ -74,7 +74,8 @@ STEADY_CPU_BOUND_S = 4 * MEASURED_STEADY_CPU_S
 
 #: The steps of a cycle, as ``LAST_CYCLE["phases"]`` names them.
 PHASES = {
-    "reclaim_idle_rates", "receipts", "discover", "mint_announce",
+    "reclaim_idle_rates", "receipts", "sync_ram_host_mirror", "discover",
+    "mint_announce",
     "drop_prior_ram_epochs", "release_incomplete_ram_promotions",
     "planned_consumers", "withdrawn_keys", "withdraw_dead_consumer_movers",
     "adopt_resident_ranges", "window_pressure",
