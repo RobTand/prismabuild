@@ -107,6 +107,12 @@ def read_claimed_record(queue, action_key: str) -> dict[str, object] | None:
     """
 
     path = queue.item_path(_pool.CLAIMED, action_key)
+    try:
+        present = path.exists()
+    except OSError:
+        present = True          # a stat that cannot answer is not "absent"
+    if not present:
+        return None
     record = _pool._read_json(path)
     if record is None:
         # ``_read_json`` answers ``None`` for absent and for empty; only the
