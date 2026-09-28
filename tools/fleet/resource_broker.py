@@ -71,6 +71,16 @@ def _settlement_evidence(value):
 
 
 def scope_id(key, nonce):
+    """The scope identity the broker issues for an action+nonce.
+
+    Canonical formula: ``'prismabuild-job' + sha256(key+nonce)[:32] +
+    '.slice'``.  This definition is the issuer and cannot move into the
+    package: the broker is a stdlib-only root daemon.  The package mirrors
+    it in ``produced_output._broker_scope_id`` (control-identity check) and
+    ``resource_scope._adopt_created_scope`` enforces it on every broker
+    response; the three agree by the cross test
+    ``tests/test_broker_scope_contract_1301.py``, never by import.
+    """
     return 'prismabuild-job'+hashlib.sha256((key+nonce).encode()).hexdigest()[:32]+'.slice'
 
 #: ASCII-decimal nonzero start time (field 22 of /proc/<pid>/stat is clock

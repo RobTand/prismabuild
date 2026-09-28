@@ -607,7 +607,11 @@ def _broker_scope_id(action_key: str, nonce: str) -> str:
 
     Same formula `ResourceScope._adopt_created_scope` enforces on every
     broker response: `prismabuild-job` + sha256(action+nonce)[:32] + `.slice`.
-    Reused here as the control-identity check, never redefined.
+    Reused here as the control-identity check, never redefined.  This is the
+    package-side owner: `resource_scope` calls it rather than restating the
+    formula.  The broker itself keeps its own spelling -- a stdlib-only root
+    daemon cannot import the package -- and the issuer/mirror agreement is
+    pinned by `tests/test_broker_scope_contract_1301.py`.
     """
 
     return ("prismabuild-job"
