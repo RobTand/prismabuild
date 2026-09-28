@@ -59,8 +59,11 @@ def test_the_planner_phase_cost_on_a_ready_backlog(tmp_path):
     # plain rows answer from the memo.
     assert first[-1]["outcome"] == "planned", first[-1]
     assert {outcome["outcome"] for outcome in first[:-1]} == {"no_manifest"}
-    assert second[-1]["outcome"] == "stands_down"
-    assert {outcome["outcome"] for outcome in second[:-1]} == {"no_manifest"}
+    # The steady state: last cycle's row stands down (it does not spend the
+    # streaming budget), and the next unplanned manifest row is planned.
+    assert "stands_down" in {o["outcome"] for o in second}
+    assert second[-1]["outcome"] == "planned"
+    assert {o["outcome"] for o in second[:-1]} <= {"no_manifest", "stands_down"}
     print(f"MANIFEST_PROMOTION_PHASE ready_rows={len(ready)} "
           f"cold_cycle_s={cold_s:.3f} warm_cycle_s={warm_s:.3f}",
           flush=True)
