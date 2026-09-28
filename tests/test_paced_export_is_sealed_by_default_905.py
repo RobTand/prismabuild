@@ -48,6 +48,8 @@ def _env(*items: str) -> list[str]:
 
 
 def _build(tmp_path, monkeypatch, *extra: str, transport: str = "pool"):
+    tmp_path = tmp_path / f"build{len(list(tmp_path.iterdir()))}"
+    tmp_path.mkdir()
     work = _checkout(tmp_path)
     monkeypatch.setattr(pbrun, "SH", tmp_path / "fleet")
     monkeypatch.setattr(socket, "gethostname", lambda: "sparky")
