@@ -276,18 +276,17 @@ def output_lock_name(claim: Mapping[str, object]) -> str:
     This mirrors ``core._local_output_lock``: the identity is the normalized
     physical output path and nothing else. ``core._validate_execution_paths``
     resolves the working directory before joining the result path, so this
-    resolves it too. The agreement is pinned by a test that takes the real
-    lock and compares the file it created against this name.
+    resolves it too. The claim-to-path derivation here is unique logic -- the
+    caller's root names the output -- but the digest itself is owned by
+    ``core._output_lock_name``. The agreement is pinned by a test that takes
+    the real lock and compares the file it created against this name.
     """
 
     root = Path(str(claim["checkout_root"]))
     working = str(claim["working_directory"])
     cwd = root if working == "." else root / working
     output = Path(os.path.realpath(cwd)) / str(claim["result_path"])
-    identity = hashlib.sha256(
-        os.path.normpath(str(output)).encode("utf-8")
-    ).hexdigest()
-    return f"{identity}.lock"
+    return pb._output_lock_name(output)
 
 
 def _count_json(directory: Path) -> int:
