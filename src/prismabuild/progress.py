@@ -341,8 +341,10 @@ def _write(path: Path, record: dict[str, object]) -> bool:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.parent / f".{path.name}.{os.getpid()}.tmp"
-        temporary.write_text(
-            json.dumps(record, sort_keys=True) + "\n", encoding="utf-8")
+        with open(temporary, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, sort_keys=True) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
         os.replace(temporary, path)
     except OSError:
         return False
