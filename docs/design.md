@@ -4384,7 +4384,16 @@ tokens go back, and `reap_stale` answers the same question on the terminal
 record it files for a lease the claimant lost -- the borrow lives in the
 claim record both of them file.  A conclusion that cannot read the record at
 all (an unparseable queue entry, a widowed lease beside a record already
-gone) stays unannotated. Scheduling tier
+gone) stays unannotated. Each token is lent once at a time (#1292): a
+lender's holdings count toward a borrow only beyond what live borrows on the
+same tier already drew from it, read from the borrowing rows' `lent` maps in
+`claimed/`, so concurrent family exports cannot each draw the same tokens
+and stack the tier past its offer by multiples of what the family lent; the
+tokens are lendable again when the borrowing row leaves `claimed/`. The
+borrow record also names the lenders that were mid-copy at borrow time
+(`lenders_mid_copy`, from their #1090 landing reports, a report predating
+its lender's claim not counting), so the transient overcommit is
+attributable per lender without waiting for the end annotation. Scheduling tier
 bandwidth across a producer's movers and exports belongs in the tier loop's
 window (#905), which is where a successor goes. A
 dependent never holds `gpu`: a demand outside the allowance's kinds is

@@ -15460,7 +15460,16 @@ class PoolQueue:
         ``handles`` like any claim; the borrowed part takes no token, so
         while the export runs the tier's pool traffic can exceed its offer by
         at most what the family lent -- the family's own work, never a
-        stranger's.  Returns the borrow record the claim files
+        stranger's.  Each token is lent once at a time (#1292): a lender's
+        holdings count toward a borrow only beyond what live borrows on the
+        same tier already drew from it, read from the borrowing rows'
+        ``lent`` maps in ``claimed/``, so concurrent family exports do not
+        each draw the same tokens and stack past the offer; the tokens are
+        lendable again when the borrowing row leaves ``claimed/``.  The
+        record also names the lenders that were mid-copy at borrow time
+        (``lenders_mid_copy``, from their #1090 landing reports) so the
+        transient overcommit can be attributed without waiting for the end.
+        Returns the borrow record the claim files
         (``tier_fill_borrowed``), or ``None`` with ``handles`` left empty.
         """
 
@@ -15487,13 +15496,20 @@ class PoolQueue:
                     lenders[holder] = int(count)
             except (OSError, PoolContractError, ValueError):
                 return None
+            outstanding = self._outstanding_family_loans(tier_id)
+            lendable = {holder: max(0, count - outstanding.get(holder, 0))
+                        for holder, count in lenders.items()}
             taken = min(free, need)
             borrowed = need - taken
-            if borrowed > sum(lenders.values()):
+            if borrowed > sum(lendable.values()):
                 return None
             record[tier_id] = {
                 "kind": storage_tiers.FILL_KIND, "demand": need, "taken_free": taken,
-                "borrowed": borrowed, "funded_by": sorted(lenders), "lent": lenders,
+                "borrowed": borrowed,
+                "funded_by": sorted(holder for holder, count in lendable.items() if count),
+                "lent": {holder: count for holder, count in lendable.items() if count},
+                "lenders_mid_copy": sorted(
+                    holder for holder in lenders if self._lender_mid_copy(holder)),
                 "owner": owner, "plan_children": children, "borrowed_unix": _now()}
         for tier_id, entry in sorted(record.items()):
             taken = int(entry["taken_free"])  # type: ignore[call-overload]
@@ -15507,6 +15523,65 @@ class PoolQueue:
                 return None
             handles[tier_id] = handle
         return record
+
+    def _lender_mid_copy(self, lender: str) -> bool:
+        """Whether family lender ``lender`` is copying on the tier now (#1292).
+
+        A lender with a live landing report (#1090) is mid-copy, so the
+        tokens it lends carry its live copy's rate while the borrow runs.
+        The report counts only when its copy began inside the lender's
+        current claim: a report a previous attempt left predates the claim
+        and names nothing live.  A claim row this cannot read does not
+        disprove the report, so the lender is named mid-copy -- the
+        annotation gates nothing, and recording a lender that already
+        finished overstates nothing that can be measured here.  A lender
+        with no report at all is not mid-copy.
+        """
+
+        report = self.mover_landing(lender)
+        if report is None:
+            return False
+        started = float(report["started_unix"])
+        row = _read_json(self.item_path(CLAIMED, lender))
+        if not isinstance(row, Mapping):
+            return True
+        claimed = row.get("claimed_unix")
+        if (isinstance(claimed, bool) or not isinstance(claimed, (int, float))
+                or not math.isfinite(float(claimed))):
+            return True
+        return started >= float(claimed)
+
+    def _outstanding_family_loans(self, tier_id: str) -> dict[str, int]:
+        """Fill tokens each holder has already lent a live borrow on ``tier_id`` (#1292).
+
+        The ``lent`` maps are read out of the claimed rows' borrow records:
+        a loan lives where the borrowing export's lifecycle lives, so a
+        borrow that ends -- by ``finish`` or by the reapers filing its
+        terminal record -- takes its loan out of the count with no second
+        mutable state to maintain.  Returns holder -> lent tokens; a
+        holder's loans count only while its borrowing row is claimed.
+        """
+
+        out: dict[str, int] = {}
+        for path in _glob(self.dir(CLAIMED), "*.json"):
+            row = _read_json(path)
+            if not isinstance(row, Mapping):
+                continue
+            borrowed = row.get("tier_fill_borrowed")
+            if not isinstance(borrowed, dict):
+                continue
+            entry = borrowed.get(tier_id)
+            if not isinstance(entry, dict):
+                continue
+            lent = entry.get("lent")
+            if not isinstance(lent, dict):
+                continue
+            for holder, count in lent.items():
+                if isinstance(count, bool) or not isinstance(count, int) or count <= 0:
+                    continue
+                key = str(holder)
+                out[key] = out.get(key, 0) + count
+        return out
 
     def note_fill_borrow_end(self, record: dict[str, object]) -> None:
         """Say which lenders released before a borrowing export ended (#999).
