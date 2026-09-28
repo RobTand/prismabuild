@@ -77,6 +77,21 @@ STAGE_POOL_PREFIX = "prismabuild-stage"
 ARCSTATS = "/proc/spl/kstat/zfs/arcstats"
 SYSFS_BLOCK = "/sys/class/block"
 BY_ID = "/dev/disk/by-id"
+PROC_PRESSURE_IO = "/proc/pressure/io"
+
+#: The window the pool-read pressure signal names, in seconds.  This is not
+#: picked: it is ``tier_loop.CYCLE_INTERVAL_S``, the cadence the tier loop
+#: already samples on, and the kernel's PSI ``avg60`` accumulator covers
+#: exactly the interval the loop just waited between two records (#1248).
+PRESSURE_WINDOW_S = 60
+
+#: The admitter-readable pool-read pressure block on a tier record (#1248):
+#: ``{"io_psi_some": {"avg10": .., "avg60": .., "avg300": ..},
+#: "window_s": PRESSURE_WINDOW_S, "source": "proc_pressure_io"}`` — or
+#: ``io_psi_some: None`` with an ``unavailable_reason`` when the kernel's
+#: pressure file would not answer.  Additive and observable only; no
+#: admission term reads it without its own ruling.
+POOL_PRESSURE_FIELD = "pool_read_pressure"
 GIB = 1 << 30
 MB = 1_000_000
 #: ``zpool status`` groups whose members are not the data path.
@@ -1214,6 +1229,78 @@ def split_demand(
 POOL_FILL_FIELD = "mean_pool_read_mb_s"
 
 
+def read_io_pressure_some(path: str = PROC_PRESSURE_IO) -> dict[str, float] | None:
+    """IO PSI ``some`` stall shares from the kernel's own windows, or ``None``.
+
+    The ``some`` line of ``/proc/pressure/io`` carries ``avg10``/``avg60``/
+    ``avg300`` — the share of wall time at least one task spent waiting on
+    IO, over windows the kernel maintains itself, so reading it costs one
+    small file and no polling daemon.  ``None`` — unreadable or unparseable
+    — is never a zero: an absent signal must not read as a quiet pool, which
+    is the same one-directional honesty the fill mint keeps (#654, #1248).
+    """
+
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        if not line.startswith("some "):
+            continue
+        out: dict[str, float] = {}
+        for field in line.split()[1:]:
+            key, sep, raw = field.partition("=")
+            if not sep:
+                return None
+            try:
+                out[key] = float(raw)
+            except ValueError:
+                return None
+        if not {"avg10", "avg60", "avg300"} <= out.keys():
+            return None
+        return out
+    return None
+
+
+def pool_read_pressure_from_records(
+        records: Iterable[Mapping[str, object]]) -> float | None:
+    """The newest readable pool-read pressure (PSI ``some avg60"), or ``None``.
+
+    The admitter-side fold over announced tier records, in the shape of
+    :func:`fill_rate_from_records` but taking the *newest* record rather than
+    the best: capacity is a demonstrated quantity a past window establishes,
+    while pressure is a state only the latest sample speaks for — a 30-minute
+    spike must not price the pool as contended forever.  The newest record is
+    the authority: when it carries no readable block, the fold answers
+    ``None`` rather than falling back to an older readable sample, the same
+    one-directional honesty an unreadable live reading keeps (#654, #1248).
+    Returns the ``avg60`` share (0.0–100.0) when the newest record carries a
+    readable block, else ``None``.
+    """
+
+    newest: Mapping[str, object] | None = None
+    best_unix: float | None = None
+    for record in records:
+        sampled = record.get("sampled_unix")
+        if (isinstance(sampled, bool) or not isinstance(sampled, (int, float))
+                or (best_unix is not None and not sampled > best_unix)):
+            continue
+        best_unix, newest = float(sampled), record
+    if newest is None:
+        return None
+    block = newest.get(POOL_PRESSURE_FIELD)
+    if not isinstance(block, Mapping):
+        return None
+    share = block.get("io_psi_some")
+    if not isinstance(share, Mapping):
+        return None
+    avg60 = share.get("avg60")
+    if (isinstance(avg60, bool) or not isinstance(avg60, (int, float))
+            or avg60 < 0):
+        return None
+    return float(avg60)
+
+
 def fill_rate_from_records(records: Iterable[Mapping[str, object]]) -> float | None:
     """The best pool-side MB/s any recorded read off a tier demonstrated, or ``None``.
 
@@ -2331,6 +2418,7 @@ def discover_tiers(
     arcstats_path: str = ARCSTATS,
     sysfs: str = SYSFS_BLOCK,
     by_id: str = BY_ID,
+    proc_pressure: str = PROC_PRESSURE_IO,
     source_pool: str | None = None,
     fill_records: Iterable[Mapping[str, object]] = (),
     now: float | None = None,
@@ -2367,6 +2455,23 @@ def discover_tiers(
         members = pool_member_devices(source_pool, runner=runner, sysfs=sysfs)
         members_by_id = [n for n in by_id_names(leaves, by_id=by_id).values() if n]
     fill = fill_rate_from_records(fill_records)
+    pressure = read_io_pressure_some(proc_pressure)
+    if pressure is not None:
+        pressure_block: dict[str, object] = {
+            "io_psi_some": dict(pressure),
+            "window_s": PRESSURE_WINDOW_S,
+            "source": "proc_pressure_io",
+        }
+    else:
+        # Never a quiet-pool lookalike: the box that would not answer is
+        # named as unanswered, so a later admission term can fail closed on
+        # exactly this shape (#1248).
+        pressure_block = {
+            "io_psi_some": None,
+            "window_s": PRESSURE_WINDOW_S,
+            "source": "proc_pressure_io",
+            "unavailable_reason": "io pressure file unreadable or unparseable",
+        }
     for pool in stage_pools(runner=runner) or []:
         leaves = pool_member_paths(str(pool["name"]), runner=runner) or []
         names = by_id_names(leaves, by_id=by_id)
@@ -2423,6 +2528,7 @@ def discover_tiers(
                            if source_pool else None),
             },
             FILL_RECORD_FIELD: fill,
+            POOL_PRESSURE_FIELD: pressure_block,
             "sampled_unix": sampled,
         }
     arc_stats = read_arcstats(arcstats_path)
@@ -2437,6 +2543,7 @@ def discover_tiers(
             "source_pool": source_pool,
             "source_members": members,
             FILL_RECORD_FIELD: fill,
+            POOL_PRESSURE_FIELD: pressure_block,
             "sampled_unix": sampled,
         }
     if ram_policy is not None:
@@ -2453,6 +2560,11 @@ __all__ = [
     "ARCSTATS",
     "FILL_RECORD_FIELD",
     "POOL_FILL_FIELD",
+    "PROC_PRESSURE_IO",
+    "PRESSURE_WINDOW_S",
+    "POOL_PRESSURE_FIELD",
+    "read_io_pressure_some",
+    "pool_read_pressure_from_records",
     "POOL_MEASUREMENT_MIN_SHARE",
     "MOVER_FILL_DEMAND_FIELD",
     "MOVER_CONCURRENCY_FIELD",
