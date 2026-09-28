@@ -1,8 +1,10 @@
 """progress._write lands crash-atomic (issue #1311).
 
 The report body is flushed + fsynced to the temp file before os.replace, so
-a crash never leaves a torn temp and a power loss after the replace never
-loses the record. The non-raising contract holds: any OSError returns False.
+a crash leaves either the old record or the complete new one, never a torn
+one. The rename itself is not made durable (no parent-directory fsync): after
+a power loss the old record may reappear. That is enough for best-effort
+status. The non-raising contract holds: any OSError returns False.
 """
 
 from __future__ import annotations
