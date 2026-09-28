@@ -386,7 +386,7 @@ def egress_progress_policy(
 #: fact drifts the day a script is added.
 STAGE_MOVER_SCRIPT = "stage_move.py"
 RAM_PROMOTE_SCRIPT = "ram_promote.py"
-STAGE_RELEASE_SCRIPT = STAGE_RELEASE_SCRIPT
+STAGE_RELEASE_SCRIPT = "stage_release.py"
 MOVEMENT_SCRIPTS = (STAGE_MOVER_SCRIPT, RAM_PROMOTE_SCRIPT,
                     STAGE_RELEASE_SCRIPT)
 
