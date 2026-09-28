@@ -54,12 +54,17 @@ _K, _BANDS = 64, 16
 # CLI entry points are expected once per script, not duplication.
 ENTRY_POINTS = frozenset({"main", "_main", "parse_args", "_parse_args",
                           "build_parser", "_build_parser", "cli"})
-#: The sanctioned owner of digest recipes: ``_canonical_bytes`` (the
-#: ``sort_keys`` JSON home), ``_canonical_file_bytes``,
-#: ``canonical_sha256``, ``_decode_strict_json``. A new primitive
-#: ``hashlib`` or sorted-JSON site inside it is expected -- that is where
-#: consolidation moves sites to -- so only sites OUTSIDE it are ratcheted.
-DIGEST_OWNERS = frozenset({"src/prismabuild/core.py"})
+#: The sanctioned owners of digest recipes: ``core.py`` holds
+#: ``_canonical_bytes`` (the ``sort_keys`` JSON home),
+#: ``_canonical_file_bytes``, ``canonical_sha256`` and
+#: ``_decode_strict_json``; ``materialize.py`` holds the one
+#: rename-atomic record owner, whose ``sorted_lf`` spelling is itself a
+#: sanctioned sorted-JSON recipe (#1330). A new primitive ``hashlib`` or
+#: sorted-JSON site inside either file is expected -- that is where
+#: consolidation moves sites to -- so only sites OUTSIDE them are
+#: ratcheted.
+DIGEST_OWNERS = frozenset({"src/prismabuild/core.py",
+                            "src/prismabuild/materialize.py"})
 
 
 def _files(root: Path):
