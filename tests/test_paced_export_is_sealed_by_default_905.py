@@ -71,13 +71,16 @@ def test_a_declared_bound_seals_paced_export_without_any_switch(tmp_path, monkey
     assert variables[SWITCH] == "1"
 
 
-def test_an_explicit_opt_in_is_the_same_action(tmp_path, monkeypatch):
-    default = pbrun.seal_action_from_template(
+def test_an_explicit_opt_in_is_the_same_declaration(tmp_path, monkeypatch):
+    # Each build lives in its own checkout, so the action keys differ by path;
+    # the sealed environment is what the declaration owns.
+    default = _sealed_variables(
         _build(tmp_path, monkeypatch, *_env(f"{MAX}={5 * GIB}")))
-    explicit = pbrun.seal_action_from_template(
+    explicit = _sealed_variables(
         _build(tmp_path, monkeypatch, *_env(f"{PACED}=1", f"{MAX}={5 * GIB}")))
-    assert default["action_key"] == explicit["action_key"]
-    assert explicit["environment"]["variables"][PACED] == "1"
+    assert explicit[PACED] == "1"
+    ours = lambda v: {k: x for k, x in v.items() if k.startswith("PRISMABUILD_PRODUCED_SPOOL")}
+    assert ours(default) == ours(explicit)
 
 
 def test_an_explicit_zero_beside_a_declared_bound_is_refused_by_name(tmp_path, monkeypatch):
