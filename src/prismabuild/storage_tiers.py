@@ -1270,7 +1270,7 @@ def read_io_pressure_some(path: str = PROC_PRESSURE_IO) -> dict[str, float] | No
 def host_io_pressure_from_records(
         records: Iterable[Mapping[str, object]], *, now: float,
         max_age_s: float) -> float | None:
-    """The newest readable host IO pressure (PSI ``some avg60"), or ``None``.
+    """The newest readable host IO pressure (PSI ``some avg60``), or ``None``.
 
     The admitter-side fold over announced tier records, in the shape of
     :func:`fill_rate_from_records` but taking the *newest* record rather than
