@@ -76,11 +76,21 @@ pbstatus.bounded('pool', read, deadline=pbstatus.Deadline(20), abandoned=[])
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                               start_new_session=True)
     try:
+        # The child's ``write_text`` makes the file visible when it is opened
+        # and truncated, before the pid lands: an ``exists()`` poll can win
+        # that window and read an empty file, and ``int('')`` is the flake
+        # this retry closes.  The handshake is complete only when the pid
+        # parses, not when the path exists.
         until = time.monotonic() + 5
-        while not child_file.exists() and parent.poll() is None and time.monotonic() < until:
-            time.sleep(0.01)
-        assert child_file.exists(), 'reader never reached its blocked section'
-        child = int(child_file.read_text())
+        child = None
+        while parent.poll() is None and time.monotonic() < until:
+            try:
+                child = int(child_file.read_text().strip())
+            except (FileNotFoundError, ValueError):
+                time.sleep(0.01)
+                continue
+            break
+        assert child is not None, 'reader never reached its blocked section'
         os.kill(parent.pid, signum)
         parent.communicate(timeout=3)
         assert not Path(f'/proc/{child}').exists(), 'cancelled parent left its reader alive'

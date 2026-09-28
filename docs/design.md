@@ -4314,7 +4314,11 @@ records it as `tier_fill_borrowed` (per tier: `demand`, `taken_free`,
 `borrowed`, `funded_by`, `lent`), and `finish` adds the lenders that released
 before the export ended and the overcommit they left
 (`lenders_released_before_end`, `overcommit_mb_s`) before the export's own
-tokens go back; the reapers' conclusions do not annotate. Scheduling tier
+tokens go back, and `reap_stale` answers the same question on the terminal
+record it files for a lease the claimant lost -- the borrow lives in the
+claim record both of them file.  A conclusion that cannot read the record at
+all (an unparseable queue entry, a widowed lease beside a record already
+gone) stays unannotated. Scheduling tier
 bandwidth across a producer's movers and exports belongs in the tier loop's
 window (#905), which is where a successor goes. A
 dependent never holds `gpu`: a demand outside the allowance's kinds is
