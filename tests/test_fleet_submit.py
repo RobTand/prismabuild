@@ -1,6 +1,6 @@
 """The one submit path the fleet's producers share, on both transports.
 
-Three tools seal their own actions and enqueued them by calling
+Producer tools that seal their own actions enqueued them by calling
 ``PoolQueue.publish`` directly.  That is a bypass once there are two
 dispatchers: after the cutover a direct publish puts 120 export shards in a
 queue no worker drains, and it *succeeds*, so nothing anywhere says so.
@@ -28,8 +28,6 @@ from prismabuild import core as pb  # noqa: E402
 from prismabuild import pool  # noqa: E402
 from prismabuild import slurm_lane as sl  # noqa: E402
 
-import dispatch_tessera_ladder as ladder  # noqa: E402
-import dispatch_tessera_shards as shards  # noqa: E402
 import fleet_submit  # noqa: E402
 import seal_and_publish  # noqa: E402
 
@@ -302,22 +300,6 @@ def _point_at_this_tree(
 
     monkeypatch.setattr(producer, "SH", tmp_path / "fleet")
     monkeypatch.setattr(producer, "RUNTIME_ROOT", REPOSITORY)
-    if producer is seal_and_publish:
-        return
-
-    checkout = tmp_path / "checkout"
-    (checkout / "tessera" / "src").mkdir(parents=True)
-    (checkout / "tessera" / "src" / "encoder.py").write_text(
-        "VALUE = 1\n", encoding="utf-8")
-    (checkout / producer.WRAPPER).write_text("# wrapper\n", encoding="utf-8")
-    monkeypatch.setattr(producer, "CHECKOUT", checkout)
-    monkeypatch.setattr(producer, "PYTHON", sys.executable)
-    monkeypatch.setattr(producer, "SOURCE", str(tmp_path / "unused-model"))
-    if producer is not ladder:
-        plan = tmp_path / "plan.json"
-        plan.write_text("{}\n", encoding="utf-8")
-        monkeypatch.setattr(producer, "PLAN", str(plan))
-        monkeypatch.setattr(producer, "PARTS", str(tmp_path / "parts"))
 
 
 def drive_producer(
@@ -350,38 +332,9 @@ def drive_producer(
     monkeypatch.setattr(fleet_submit, "submit", capture)
     monkeypatch.setattr(pool.PoolQueue, "publish", refuse_a_direct_publish)
 
-    if producer is seal_and_publish:
-        assert producer.main(argv) == 0
-    else:
-        monkeypatch.setattr(sys, "argv", [f"{producer.__name__}.py", *argv])
-        # Both of these fall off the end of ``main``; ``SystemExit(None)`` is 0.
-        assert producer.main() in (None, 0)
+    assert producer.main(argv) == 0
     assert seen, f"{producer.__name__} never reached fleet_submit.submit"
     return seen
-
-
-@pytest.mark.parametrize("transport", ["pool", "slurm"])
-def test_the_ladder_dispatcher_routes_through_the_shared_submit(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, transport: str,
-) -> None:
-    seen = drive_producer(
-        ladder, ["--shards", "1", "--transport", transport],
-        tmp_path, monkeypatch)
-
-    assert seen["transport"] == transport
-    assert seen["checkout_root"] == str(tmp_path / "checkout")
-
-
-@pytest.mark.parametrize("transport", ["pool", "slurm"])
-def test_the_shard_dispatcher_routes_through_the_shared_submit(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, transport: str,
-) -> None:
-    seen = drive_producer(
-        shards, ["--shards", "61", "--transport", transport],
-        tmp_path, monkeypatch)
-
-    assert seen["transport"] == transport
-    assert seen["checkout_root"] == str(tmp_path / "checkout")
 
 
 @pytest.mark.parametrize("transport", ["pool", "slurm"])
@@ -430,12 +383,12 @@ def _producer_action(checkout: Path, *, shard: int = 1) -> dict:
     return pb.seal_action({
         "schema": pb.ACTION_SCHEMA_V2,
         "task": {
-            "definition_id": "tessera/glm53-export-shard",
+            "definition_id": "producer/export-shard",
             "definition_version": "v1",
             "task_class": "generation",
             "determinism": "deterministic",
             "artifact_family": "generic",
-            "artifact_kind": "tessera-shard",
+            "artifact_kind": "export-shard",
             "argv": [sys.executable, "task.py"],
             "working_directory": ".",
             "result_path": "shard.json",
@@ -639,8 +592,8 @@ def test_a_producers_submission_is_findable_by_the_key_it_went_under(
     """What makes a producer's job accountable after the producer has exited.
 
     ``submit`` returns as soon as the scheduler has the job, so nothing here
-    ever sees the ending and no terminal record is filed: ``tessera_status``
-    reads ``done/`` and ``failed/`` and would see nothing at all.  ``pbwait``
+    ever sees the ending and no terminal record is filed: a status screen that
+    reads ``done/`` and ``failed/`` would see nothing at all.  ``pbwait``
     closes that, and the only thing it has to work from is the lane's
     submission record -- so the record has to be there, under the key the
     action was actually submitted with, and resolvable from the twelve

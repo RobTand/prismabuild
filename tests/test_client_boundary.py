@@ -29,8 +29,10 @@ callee or matched token, never by line number).
 Two vocabularies are frozen beside it:
 
 - ``core_vocabulary.txt``: the members of ``core._ARTIFACT_FAMILIES`` and
-  ``core._PYTHON_DISTRIBUTIONS``, which carry a quantization format
-  (``codebook``) and a retired client lane (``gridbook``) into scheduler core;
+  ``core._PYTHON_DISTRIBUTIONS``, which carried a quantization format
+  (``codebook``) and a retired client lane (``gridbook``) into scheduler core.
+  Step 4 (#1076) made both submitter-declared fields, so the list is empty and
+  a vocabulary reintroduced under either name fails;
 - ``legacy_ids.txt``: every distinct ``prismaquant.prismabuild.*`` record ID
   the scanned code spells. They are inside hashed action bodies and stay as
   legacy; a new record type uses ``prismabuild.*``.
@@ -42,9 +44,10 @@ Every list is held to exact equality with the code:
 
 The lists only shrink; step 0 lands no CI half for them, because PB has no
 pull-request CI that checks out code (see the PR). Step 4 of the plan (#1076)
-moves the Tessera drivers and ``render_identity.py`` out, takes the venv from
-configuration and replaces the vocabularies with submitter-declared fields.
-The legacy IDs stay unless a wire version changes identity anyway (step 8).
+moved the Tessera drivers and ``render_identity.py`` to PrismaQuant, took the
+GPU-interpreter signature from configuration and replaced the vocabularies
+with submitter-declared fields, which emptied both lists. The legacy IDs stay
+unless a wire version changes identity anyway (step 8).
 """
 from __future__ import annotations
 

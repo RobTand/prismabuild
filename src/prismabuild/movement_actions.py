@@ -80,7 +80,7 @@ def movement_environment(command: Sequence[str]) -> dict[str, str]:
 
     A mover's own, never its consumer's: the consumer's environment describes
     the box that will compute (a GB10 venv at the head of its ``PATH``, its
-    thread caps, its spool root and pacing opt-ins, its ``PRISMAQUANT_*``
+    thread caps, its spool root and pacing opt-ins, its client's own
     reader settings), and the mover runs on the box that owns the stage.  So
     it is the tier interpreter's directory -- ``command[0]``, which every
     caller takes off the tier record (`movement_tools`) or names absolutely --
@@ -391,7 +391,7 @@ def movement_tools(tier: Mapping[str, object], *,
 
     Off the tier record, never off this process.  A mover runs on the box that
     owns the stage, and the box that seals it is very often a different one of
-    a different architecture: PrismaQuant's dispatcher submits from an aarch64
+    a different architecture: a client's dispatcher submits from an aarch64
     Spark while the stage is dl380g10's.  ``sys.executable`` here names a venv
     that does not exist there, and ``RUNTIME_ROOT`` is this process's view of
     the generation; sealing either produces an action whose argv cannot start

@@ -252,37 +252,17 @@ def test_action_key_binds_every_semantic_input(
         assert pb.seal_action(changed)["action_key"] != original["action_key"]
 
 
-def test_portability_contracts_and_explicit_codebook_family_refusal(tmp_path: Path):
+def test_portability_is_declared_by_the_submitter_not_by_the_family(tmp_path: Path):
     with pytest.raises(pb.ActionContractError, match="measurement actions"):
         _action(tmp_path, task_class="measurement")
-    # These labels were false negatives under the retired substring heuristic.
-    # The closed family, not a spelling convention, now carries the policy.
-    for artifact_kind in (
-        "fp8-book",
-        "fp8-lut",
-        "fp8-palette",
-        "nvfp4-quantizer",
-        "scale-book",
-        "cb-training",
-        "codebook-train",
-        "fp8-dictionary",
-    ):
-        with pytest.raises(pb.ActionContractError, match="D29"):
-            _action(
-                tmp_path,
-                artifact_family="codebook",
-                artifact_kind=artifact_kind,
-            )
-
-    # These labels were false positives under substring matching. An ordinary
-    # family remains portable even when its descriptive kind happens to contain
-    # the letters "cb" near a quantization-family token.
-    for artifact_kind in ("nvfp4-recbuild", "fp8-cbor-dump"):
-        action = _action(
-            tmp_path,
-            artifact_family="generic",
-            artifact_kind=artifact_kind,
-        )
+    # ``artifact_family`` is a submitter-chosen label (#1076). Core used to
+    # refuse a portable ``codebook`` action for one client's format; now the
+    # submitter that knows its bytes drift across architectures declares a
+    # keyed scope, and core seals whatever scope and label it is given.
+    for family, artifact_kind in (("codebook", "fp8-lut"), ("generic", "nvfp4-recbuild"),
+                                  ("scale-book", "fp8-cbor-dump")):
+        action = _action(tmp_path, artifact_family=family, artifact_kind=artifact_kind)
+        assert action["task"]["artifact_family"] == family  # type: ignore[index]
         assert (
             action["execution_scope"]["portability"]  # type: ignore[index]
             == "portable"
@@ -309,11 +289,14 @@ def test_portability_contracts_and_explicit_codebook_family_refusal(tmp_path: Pa
     assert host["execution_scope"]["host_class"] == "gb10"  # type: ignore[index]
 
 
-def test_action_v2_requires_closed_artifact_family_and_refuses_v1(tmp_path: Path):
+def test_action_v2_requires_an_artifact_family_token_and_refuses_v1(tmp_path: Path):
     body = _body(tmp_path)
     body["task"]["artifact_family"] = "codebook-ish"  # type: ignore[index]
-    with pytest.raises(pb.ActionContractError, match="artifact_family must be one of"):
-        pb.seal_action(body)
+    assert pb.seal_action(body)["task"]["artifact_family"] == "codebook-ish"  # type: ignore[index]
+    for malformed in ("Codebook", "two words", ""):
+        body["task"]["artifact_family"] = malformed  # type: ignore[index]
+        with pytest.raises(pb.ActionContractError, match="artifact_family"):
+            pb.seal_action(body)
 
     legacy = _body(tmp_path)
     legacy["schema"] = pb.ACTION_SCHEMA_V1
@@ -333,9 +316,12 @@ def test_nonportable_action_refuses_unattestable_toolchain_or_unbound_argv0(
         portability="platform_keyed",
         platform_key="linux-aarch64-sm121",
     )
-    body["environment"]["toolchain"] = {"container": "claimed-not-probed"}  # type: ignore[index]
-    with pytest.raises(pb.ActionContractError, match="no worker preflight"):
-        pb.seal_action(body)
+    # A field outside the platform set names a Python distribution the worker
+    # probes (#1076); one that cannot be a distribution name has no probe.
+    for field in ("container image", "-leading-dash", "trailing."):
+        body["environment"]["toolchain"] = {field: "claimed-not-probed"}  # type: ignore[index]
+        with pytest.raises(pb.ActionContractError, match="no worker preflight"):
+            pb.seal_action(body)
 
     body["environment"]["toolchain"] = {"python": "3.12"}  # type: ignore[index]
     with pytest.raises(pb.ActionContractError, match=r"bind argv\[0\]"):
@@ -4306,3 +4292,16 @@ def test_identifiers_still_refuse_control_characters(tmp_path: Path) -> None:
     body["environment"]["variables"]["BAD\nKEY"] = "x"
     with pytest.raises(pb.ActionContractError, match="control character"):
         pb.seal_action(body)
+
+
+def test_the_worker_probes_exactly_the_distributions_the_action_declares():
+    # No list of runtimes lives in core (#1076): the probe asks the action's
+    # interpreter for the names the submitter declared, passed as data.
+    observed = pb._probe_python_toolchain(
+        Path(sys.executable), ["pytest", "no-such-distribution-1076"])
+    assert observed["pytest"] == pytest.__version__
+    assert "no-such-distribution-1076" not in observed
+    assert set(observed) == {"python", "pytest"}
+    assert pb._declared_distributions(
+        {"argv0.sha256": "0" * 64, "python": "3.12", "torch": "2.11", "vllm": "0.20"}
+    ) == ["torch", "vllm"]

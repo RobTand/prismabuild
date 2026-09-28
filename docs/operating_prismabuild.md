@@ -2761,32 +2761,22 @@ Two failures happen after the job ran.
     or it may have been purged past `MinJobAge`. This is exit 75, not a failure:
     there is no verdict yet. Look under the action's lane directory.
 
-## Example consumer: Tessera
+## Producers that seal their own actions
 
-PrismaBuild is not coupled to any project. Tessera is one consumer, and its
-dispatch tools show the shape a producer takes when `pbrun` is the wrong entry
-point.
+PrismaBuild is not coupled to any project. Most producers submit through
+`pbrun` or `pbcampaign`, which seal a shell command over a checkout snapshot.
+A producer that must seal its own action bodies -- its own closures,
+environments and result paths -- publishes them through the same last step.
 
-`tools/fleet/dispatch_tessera_shards.py` and
-`tools/fleet/dispatch_tessera_ladder.py` seal their own action bodies — their
-own closures, environments and result paths — one action per input shard.
-Routing them through `pbrun` would re-seal the work as a shell command and lose
-exactly that.
+The Tessera export drivers that used to ship in `tools/fleet/`
+(`dispatch_tessera_model.py`, `dispatch_tessera_shards.py`,
+`dispatch_tessera_ladder.py`, `tessera_status.py`) and `render_identity.py`
+moved to their client on 2026-09-28 (#1076). They now submit through
+`pbcampaign` and read endings through `pbwait`, so they are ordinary
+`pbrun` actions and their keys changed with the move.
 
-The ladder dispatcher accepts `--wrapper /path/to/tessera_ladder_probe.py`.
-Without it, the source is `tessera_ladder_probe.py` in the shared checkout;
-there is no dependency on a submitting box's private Tessera tree. Each
-submission records the resolved source path, SHA256, and staged relative path
-in `params.wrapper_source`. The source bytes are staged under
-`prismabuild-wrappers/<sha256>/tessera_ladder_probe.py`, included in the code
-closure, and invoked at that relative path. Concurrent dispatches with different
-wrappers keep separate copies. A conflicting existing digest path is refused.
-The source path is provenance bound into the action key, so changing either
-the source path or its bytes changes the key. `--dry-run --wrapper ...` previews
-that same closure without staging files or publishing work.
-
-What they share with `pbrun` is the last step: hand the sealed action to
-whichever transport is live. That step is `tools/fleet/fleet_submit.py`, and
+The step a self-sealing producer shares with `pbrun` is the last one: hand
+the sealed action to whichever transport is live. That step is `tools/fleet/fleet_submit.py`, and
 it is there once.
 
 The SLURM lane addresses a checkout only through the action's sealed snapshot,
@@ -2801,25 +2791,13 @@ A producer addresses its own code relative to the tree the action runs in.
 `fleet_submit` runs `pbrun`'s relocation guard over the action's argv and
 environment while it seals, so an absolute path into the submitter's checkout
 is refused before anything is queued. A sealed snapshot the executing process
-never imports is not provenance: the worker verifies the sealed bytes and the
-interpreter loads the shared ones. Both Tessera dispatchers therefore set
-`PYTHONPATH` to `tessera/src`. That is a different action key from the absolute
-spelling they used before 2026-09-05, so receipts published under the old keys
-are misses and those shards re-encode.
+never imports proves nothing: the worker verifies the sealed bytes and the
+interpreter loads the shared ones. A producer therefore sets `PYTHONPATH`
+relative to the sealed tree, never to an absolute checkout path.
 
 `fleet_submit` files no endings. It returns as soon as the scheduler has the
 job, and the lane's submission record is what makes the job findable
 afterwards. Run `pbwait` on the keys to derive and file the terminal records.
-
-`tools/fleet/tessera_status.py` reads the export's progress from the CAS
-receipts of the export it names, not from files in the shared checkout. Under
-SLURM a shard writes its manifest inside a private checkout the job removes
-when it ends, so the receipt is the record. The export is identified by the
-digest of the allocation plan the dispatcher hands the exporter, so a receipt
-from a previous plan is counted on its own line instead of deciding the shard
-count. The screen reads the shared results directory only under the pull
-queue, which is the transport that wrote those files. It reports what it could
-not read rather than failing.
 
 Any producer that builds its own actions should do the same: seal the action,
 hand it to `fleet_submit`, print the key, and read the CAS for the verdict.
@@ -3899,14 +3877,6 @@ them. First publish the new supervisor so an old cron process re-execs onto
 that per-cycle handover behavior. Verify `systemctl --user show` reports the actual
 `MainPID`, and inspect that PID's argv for `--systemd`. Test a stop/start during
 an idle maintenance window and verify workers exited and fresh offers returned.
-
-## Export a complete Tessera model
-
-Use `dispatch_tessera_model.py` for new full-model serving exports, including
-single-file checkpoints. Supply the full source, plan, scales and immutable
-producer identity; PrismaBuild selects whole-layer work quanta and runs the
-receipt-gated merge. See [the model dispatcher guide](tessera_model_dispatch.md).
-The legacy `dispatch_tessera_shards.py` remains the GLM input-shard interface.
 
 ### Logical batches with their own strict read inputs
 

@@ -653,7 +653,7 @@ def freeze_common(
 
     A logical request names its source and its data by *path*, because that is
     what a producer can type.  A path is not an identity: the same
-    ``/home/rob/prismaquant`` is a different tree after every commit, and two
+    ``/home/rob/project`` is a different tree after every commit, and two
     worktrees of one commit are the same tree under two names.  Hashing the
     declaration would therefore make a parent that recovery resumes against a
     tree that has moved on, and make two parents out of one campaign run from
