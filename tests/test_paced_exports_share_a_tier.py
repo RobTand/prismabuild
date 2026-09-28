@@ -311,14 +311,16 @@ def test_export_measured_mb_s_prices_any_positive_finite_rate():
     read = storage_tiers.export_measured_mb_s
     assert read(None, tier_id=fx.TIER, owner="owner-a") is None
     assert read(receipt(60.0), tier_id=fx.TIER, owner="owner-a") == 60
-    assert read(receipt(60.5), tier_id=fx.TIER, owner="owner-a") == 60
+    assert read(receipt(60.5), tier_id=fx.TIER, owner="owner-a") == 61
     # Not this owner, not this tier: not the producer's history.
     assert read(receipt(60.0, owner="owner-b"),
                 tier_id=fx.TIER, owner="owner-a") is None
     assert read(receipt(60.0, tier="elsewhere"),
                 tier_id=fx.TIER, owner="owner-a") is None
-    # A slow measurement is still a measurement: no floor.
-    assert read(receipt(0.2), tier_id=fx.TIER, owner="owner-a") == 0
+    # A slow measurement is still a measurement: it seals at least 1, so
+    # the slowest writer still reserves and paces (#1327 review: 0 would
+    # fail open through `export_fill`'s falsy fill).
+    assert read(receipt(0.2), tier_id=fx.TIER, owner="owner-a") == 1
     # A zero, negative, missing or non-finite rate prices nothing.
     assert read(receipt(0.0), tier_id=fx.TIER, owner="owner-a") is None
     assert read(receipt(-5.0), tier_id=fx.TIER, owner="owner-a") is None
@@ -339,6 +341,24 @@ def test_export_measured_mb_s_prices_any_positive_finite_rate():
     assert read({"unix": 2000.0, "tier_id": fx.TIER, "owner": "owner-a",
                  "bytes": 1, "seconds": 1.0, "mb_per_s_file_side": 60.0},
                 tier_id=fx.TIER, owner="owner-a") == 60
+
+
+def test_a_sub_one_mb_s_measurement_still_seals_a_fill_and_a_pace(tmp_path):
+    """The slowest writer still reserves and paces (#1327 review).
+
+    A 0.2 MB/s measurement truncates to int 0, and `export_fill` prices a
+    falsy fill as no measurement -- no fill demand, no `--pace-mb-s`:
+    fail open for exactly the writer the pacing is for.  The seal must
+    carry fill 1 and pace at 1.
+    """
+
+    spool = base.world(tmp_path, env={ps.PACED_EXPORT_ENV: "1"})
+    offer_fill(spool.queue, 164)
+    file_prior_receipt(spool.queue, spool.owner, rate=0.2)
+    first = spool.submit_group("b1", base.prepare(spool, "b1")[2])
+    assert sealed(spool, "b1")["params"]["demand"][FILL_DEMAND] == 1
+    assert sealed(spool, "b1")["params"]["command"][-4:] == \
+        ["--pace-mb-s", "1", "--pace-tier", fx.TIER]
 
 
 def test_a_degenerate_newest_receipt_fails_closed_while_history_survives(tmp_path):
