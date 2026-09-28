@@ -4905,6 +4905,9 @@ class PoolQueue:
         self.root = Path(DEFAULT_POOL_ROOT if defaulted else root)
         self._cpu_deferrals: dict[tuple[str, str], float] = {}
         self._cross_resource_deferrals: dict[tuple[str, str], float] = {}
+        #: When this process first left each CPU-only row generation to a host
+        #: without a GPU (#1262): evidence for the denial, never a timer.
+        self._cpu_host_yields: dict[tuple[str, str], float] = {}
         self._claim_denial_bases: dict[str, Path] = {}
         #: The last claim pass's transition holds (#1029), or ``None`` before
         #: the first pass: :meth:`_TransitionHolds.summary`.
@@ -17157,6 +17160,126 @@ class PoolQueue:
                         "demand": dict(demand)}
         return None
 
+    def _cpu_host_view(
+        self, host: str, offer: Mapping, views: dict[str, dict[str, object] | None],
+    ) -> dict[str, object] | None:
+        """What this pass knows of a host without a GPU, read once per pass (#1262).
+
+        The free tokens and preferred CPUs of its ledger, the capacity its
+        offer observed, and its published latest denial per action
+        generation (``reservations/<host>/adaptive/claim-denials.json``, the
+        file :meth:`latest_denials` reads).  Every CPU-only row a pass
+        considers asks about the same few hosts, so the mount is read at most
+        once per host per pass (#351), and each yield charges the view so a
+        host is never offered more rows in one pass than it can fit.
+        ``None`` when a read fails or the host's CPU map is not its offer's:
+        a host this pass cannot read is not one a row waits for.
+        """
+
+        if host in views:
+            return views[host]
+        view: dict[str, object] | None = None
+        try:
+            remote = self.ledger(host)
+            tiers = offer.get("cpu_tiers") or {}
+            if _read_json(remote.base / "cpu-map.json") == tiers:
+                denials = cpu_admission.read_json(
+                    self.root / RESERVATIONS / host / "adaptive" / CLAIM_DENIALS).get("records")
+                view = {"available": dict(remote.available()),
+                        "free_preferred": int(remote.free_preferred(tiers)),
+                        "observed": dict(offer.get("observed_capacity") or {}),
+                        "denials": dict(denials) if isinstance(denials, Mapping) else {}}
+        except (OSError, ValueError, TypeError, PoolContractError):
+            view = None
+        views[host] = view
+        return view
+
+    def _cpu_host_passed_on(self, item: Mapping, host: str, view: Mapping) -> bool:
+        """Whether ``host`` has already looked at this row and not taken it.
+
+        Its published latest denial for this generation says so, whatever the
+        reason: a host that could have admitted the row would have claimed it
+        on that evaluation.  ``transition_busy`` is not a verdict -- a loop of
+        that host is evaluating the row this instant -- so it does not count.
+        The latest-denial file keeps only its newest ``MAX_CLAIM_DENIALS``
+        records, so when it is full and names nothing for this generation the
+        row's own reason ring is read as well: a host's refusal appends there
+        when its reason changes, and the ring is per key, never crowded out by
+        other rows.
+        """
+
+        published = item.get("published_unix")
+        identity = f"{item['action_key']}:{repr(float(published))}"  # type: ignore[arg-type]
+        denials = view["denials"]
+        record = denials.get(identity)                              # type: ignore[union-attr]
+        if isinstance(record, Mapping) and record.get("host") == host:
+            return record.get("reason") != "transition_busy"
+        if len(denials) < MAX_CLAIM_DENIALS:                         # type: ignore[arg-type]
+            return False
+        return any(entry.get("host") == host for entry in self.denial_transitions(
+            str(item["action_key"]), published_unix=float(published)))  # type: ignore[arg-type]
+
+    def _defer_to_cpu_host(
+        self, item: Mapping, demand: Mapping, *, has_gpu: bool, live: Sequence,
+        views: dict[str, dict[str, object] | None],
+    ) -> dict[str, object] | None:
+        """Leave a CPU-only row to a host without a GPU that can run it now (#1262).
+
+        A GPU host's CPUs and memory feed its GPU.  A CPU-only row that a
+        host without a GPU could run spends them on work that did not need
+        this host, and GPU rows that arrive behind it are refused on CPU
+        (#1262: both GB10s idle for 100 minutes behind CPU-only rows).  So a
+        GPU host does not claim a CPU-only row while a live, matching host
+        without a GPU fits the whole demand now -- free ledger tokens, free
+        preferred CPUs and observed capacity, read as
+        :meth:`_defer_cross_resource_placement` reads them -- and has not
+        already passed on the row (:meth:`_cpu_host_passed_on`).
+
+        This is a placement rule, not the bounded preference above, and it
+        has no timer: it ends on evidence.  The row is claimed here as before
+        once every such host has refused it, filled up, gone stale or
+        disappeared, so CPU-only work still overflows onto the GPU hosts when
+        the CPU host cannot take it.  A host without a GPU never yields, so
+        two hosts cannot wait on each other.  A row whose tags exclude every
+        host without a GPU (aarch64-only work tagged ``gb10``) has no such
+        host to wait for and is claimed here, spread across the GPU hosts by
+        their own claims.
+        """
+
+        if not has_gpu or demand.get("gpu") or not demand:
+            return None
+        if not isinstance(item.get("published_unix"), (int, float)):
+            return None           # no denial could ever end the wait
+        host = socket.gethostname()
+        for offer in self._matching_offers(item, live=live):
+            remote_host = str(offer.get("host") or "")
+            if not remote_host or remote_host == host or offer.get("has_gpu"):
+                continue
+            if self._opposite_resource_load(offer, gpu_job=False) is None:
+                continue          # its reading is stale: not known to be there
+            view = self._cpu_host_view(remote_host, offer, views)
+            if view is None or self._cpu_host_passed_on(item, remote_host, view):
+                continue
+            free = view["available"]
+            observed = view["observed"]
+            if not (view["free_preferred"] >= demand.get("cpu", 0)          # type: ignore[operator]
+                    and all(min(free.get(k, 0), observed.get(k, 0)) >= n     # type: ignore[union-attr]
+                            for k, n in demand.items())):
+                continue
+            since = self._cpu_host_yields.setdefault(
+                (str(item["action_key"]), repr(item.get("published_unix"))), _now())
+            evidence = {"host": remote_host, "available": dict(free),       # type: ignore[call-overload]
+                        "free_preferred": view["free_preferred"],
+                        "observed_capacity": dict(observed),                  # type: ignore[call-overload]
+                        "demand": dict(demand), "yielding_s": round(_now() - since, 3)}
+            for kind, need in demand.items():
+                free[kind] = int(free.get(kind, 0)) - int(need)             # type: ignore[index, union-attr]
+                if kind in observed:                                         # type: ignore[operator]
+                    observed[kind] = int(observed[kind]) - int(need)         # type: ignore[index]
+            view["free_preferred"] = int(view["free_preferred"]) - int(demand.get("cpu", 0))  # type: ignore[call-overload]
+            return evidence
+        return None
+
     def claim(
         self, *, tags: Iterable[str] = (), has_gpu: bool = False,
         owner: str | None = None, capacity: Mapping[str, int] | None = None,
@@ -17208,6 +17331,7 @@ class PoolQueue:
                     # Match _claim's retirement of absent-generation hints.
                     self._cpu_deferrals.clear()
                     self._cross_resource_deferrals.clear()
+                    self._cpu_host_yields.clear()
                     return None
                 # ``_claim`` takes admission itself, once per candidate and only
                 # around the decision that has to be exclusive. Wrapping the
@@ -17941,6 +18065,10 @@ class PoolQueue:
                 placement_offers = self.offers()
             return placement_offers
 
+        #: Hosts without a GPU as this pass read them, for the CPU-only rows a
+        #: GPU host leaves to them (#1262, :meth:`_cpu_host_view`).
+        cpu_host_views: dict[str, dict[str, object] | None] = {}
+
         ledger = None
         total: dict[str, int] = {}
         if capacity is not None:
@@ -17973,7 +18101,8 @@ class PoolQueue:
             ready = self._aged_for(ready, tags=tagset, has_gpu=has_gpu)
         live_generations = {(str(item.get("action_key", "")), repr(item.get("published_unix")))
                             for item in ready}
-        for deferrals in (self._cpu_deferrals, self._cross_resource_deferrals):
+        for deferrals in (self._cpu_deferrals, self._cross_resource_deferrals,
+                          self._cpu_host_yields):
             for generation in list(deferrals):
                 if generation not in live_generations:
                     deferrals.pop(generation, None)
@@ -18482,6 +18611,18 @@ class PoolQueue:
                         # admission lock below: it reads the worker registry
                         # and other boxes' ledgers over the shared mount, and
                         # holding host admission across a mount stall is #351.
+                        cpu_host = self._defer_to_cpu_host(
+                            item, reservation_demand, has_gpu=has_gpu,
+                            live=offer_snapshot(), views=cpu_host_views)
+                        if cpu_host is not None:
+                            # Not a refusal: no ``record_pass``, as for the
+                            # preferences below.  It lasts until the host
+                            # without a GPU claims the row or passes on it.
+                            self.record_denial(item, "deferred_for_cpu_only_host", {
+                                "demand": demand, "reservation_demand": reservation_demand,
+                                "cpu_host": cpu_host,
+                            })
+                            continue
                         cross_resource = self._defer_cross_resource_placement(
                             item, reservation_demand, live=offer_snapshot())
                         if cross_resource is not None:
@@ -19181,6 +19322,7 @@ class PoolQueue:
                 generation = (key, repr(moved.get("published_unix")))
                 self._cpu_deferrals.pop(generation, None)
                 self._cross_resource_deferrals.pop(generation, None)
+                self._cpu_host_yields.pop(generation, None)
                 claimed["claimed_by"] = owner
                 claimed["claimed_unix"] = _now()
                 claimed["claimed_host"] = socket.gethostname()

@@ -1757,6 +1757,13 @@ retain their admission rules. Older workers may omit this optional detail.
 `deferred_for_preferred_cpu` and `deferred_for_cross_resource_placement` are
 bounded placement preferences, not refusals: they age nothing and expire on
 their own after 20 seconds, so treat neither as starvation.
+`deferred_for_cpu_only_host` is not a refusal either, and has no timer (#1262):
+a GPU host left a CPU-only row to a matching host without a GPU that fits it
+now (`cpu_host` names that host, its free tokens, observed capacity and
+`yielding_s`). It ends when that host claims the row, or passes on it (any
+published denial of the row by that host other than `transition_busy`), or
+stops fitting or goes stale; then the GPU host claims it as before. It ages
+nothing.
 `deferred_for_ready_gpu_row` is not a refusal either: a CPU-only row was held
 back for one pass because it would not fit beside a ready GPU row that fits the
 box's free GPU and that another loop was deciding (#1169). It ages nothing and

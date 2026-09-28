@@ -3863,6 +3863,24 @@ could not run; the only effect is a bounded wait that a better placement may
 or may not win. With no alternative, a stale reading on either side, or no
 GPU-power evidence, there is no preference at all.
 
+CPU-only work on a GPU host is governed by a placement rule ahead of that
+preference, and the rule has no timer (#1262). A GPU host's CPUs and memory
+feed its GPU; CPU-only rows it admits leave GPU rows arriving behind them to be
+refused on CPU (on 2026-09-28 both GB10s idled for 100 minutes that way). So a
+GPU host does not claim a CPU-only row while a live, matching host without a
+GPU fits the whole demand now -- free ledger tokens, free preferred CPUs and
+observed capacity -- and has not passed on the row. "Passed on" is evidence
+that host already evaluated the row and did not take it: its published latest
+denial for the generation (`reservations/<host>/adaptive/claim-denials.json`),
+any reason but `transition_busy`, or, when that file is at its record cap, an
+entry of that host in the row's reason ring. The GPU host records
+`deferred_for_cpu_only_host`, ages nothing, and claims the row as before once
+no such host remains, so CPU-only work still overflows onto GPU hosts when the
+CPU host is full or refuses. A host without a GPU never yields, so no two hosts
+wait on each other, and a row whose tags exclude every host without a GPU is
+unaffected. Remote reads are made once per host per claim pass and each yield
+charges that view, so a pass never leaves a host more rows than it fits.
+
 It is not a thermal control and nothing here measures temperature or
 throughput. The GPU side reads drawn power against a reference, because
 `gpu_utilization` reports a resident kernel rather than working SMs. The
