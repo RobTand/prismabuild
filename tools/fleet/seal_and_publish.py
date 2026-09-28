@@ -44,7 +44,13 @@ COMMIT_ENVIRONMENT = {
 def _git(root: Path, argv: list[str]) -> subprocess.CompletedProcess:
     environment = dict(os.environ)
     environment.update(COMMIT_ENVIRONMENT)
-    return pb._git_run(root, *argv, timeout=30, env=environment)
+    try:
+        return pb._git_run(root, *argv, timeout=30, env=environment)
+    except subprocess.TimeoutExpired as exc:
+        raise SystemExit(
+            f"seal_and_publish: cannot run Git {' '.join(argv)} "
+            f"in {root}: {exc}"
+        )
 
 
 def ensure_snapshottable_checkout(checkout: Path) -> None:
@@ -68,14 +74,7 @@ def ensure_snapshottable_checkout(checkout: Path) -> None:
         return
     inside = _git(checkout, ["rev-parse", "--is-inside-work-tree"])
     if inside.returncode != 0 or inside.stdout.strip() != "true":
-        try:
-            initialized = _git(checkout, ["init", "-q"])
-        except subprocess.TimeoutExpired as exc:
-            raise SystemExit(
-                f"seal_and_publish: cannot make {checkout} a Git checkout, "
-                "which the SLURM lane needs to seal it: "
-                f"Git init timed out: {exc}"
-            )
+        initialized = _git(checkout, ["init", "-q"])
         if initialized.returncode != 0:
             raise SystemExit(
                 f"seal_and_publish: cannot make {checkout} a Git checkout, "
@@ -87,13 +86,7 @@ def ensure_snapshottable_checkout(checkout: Path) -> None:
         ["commit", "-q", "-m", "PrismaBuild fleet smoke closure member",
          "--", closure_member],
     ):
-        try:
-            completed = _git(checkout, argv)
-        except subprocess.TimeoutExpired as exc:
-            raise SystemExit(
-                f"seal_and_publish: cannot commit {closure_member} in "
-                f"{checkout}: Git {' '.join(argv)} timed out: {exc}"
-            )
+        completed = _git(checkout, argv)
         if completed.returncode != 0:
             raise SystemExit(
                 f"seal_and_publish: cannot commit {closure_member} in "

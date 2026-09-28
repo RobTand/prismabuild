@@ -160,3 +160,46 @@ def test_seal_git_maps_timeout_to_system_exit(monkeypatch):
     monkeypatch.setattr(subprocess, "run", _hang_on_init)
     with pytest.raises(SystemExit, match="seal_and_publish: cannot"):
         seal.ensure_snapshottable_checkout(REPOSITORY / "no-such-dir-1307")
+
+
+def test_seal_probe_timeout_maps_to_system_exit(monkeypatch):
+    # An NFS stall on the very first probe must give the SystemExit text,
+    # not a raw traceback.
+    import seal_and_publish as seal
+
+    def _hang(*args, **kwargs):
+        raise subprocess.TimeoutExpired(
+            cmd=args[0], timeout=kwargs["timeout"])
+
+    monkeypatch.setattr(subprocess, "run", _hang)
+    with pytest.raises(SystemExit, match=r"cannot run Git rev-parse"):
+        seal.ensure_snapshottable_checkout(REPOSITORY / "no-such-dir-1307")
+
+
+def test_seal_add_timeout_maps_to_system_exit(monkeypatch):
+    import seal_and_publish as seal
+
+    def _hang_on_add(*args, **kwargs):
+        argv = args[0]
+        if argv[3:4] == ["add"]:
+            raise subprocess.TimeoutExpired(
+                cmd=argv, timeout=kwargs["timeout"])
+        if argv[3:5] == ["rev-parse", "--verify"]:
+            return subprocess.CompletedProcess(argv, 1, stdout="", stderr="")
+        return subprocess.CompletedProcess(
+            argv, 0, stdout="true\n", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", _hang_on_add)
+    with pytest.raises(SystemExit, match=r"cannot run Git add"):
+        seal.ensure_snapshottable_checkout(REPOSITORY / "no-such-dir-1307")
+
+
+def test_identity_git_falls_back_on_plain_directory(monkeypatch, tmp_path):
+    # Not a repository: every Git read fails, identity stays representable
+    # as no-git instead of raising.
+    def _norc(*args, **kwargs):
+        return subprocess.CompletedProcess(args[0], 1, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", _norc)
+    identity = pb.git_checkout_identity(tmp_path)
+    assert identity["head"] == "no-git"
