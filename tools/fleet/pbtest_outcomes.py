@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import json
 import os
+import posixpath
 from pathlib import Path
 import sys
 import tempfile
@@ -54,6 +55,18 @@ def pytest_sessionfinish(session, exitstatus):
     if output is not None:
         output["pbtest_deselected"] = _deselected
 '''
+
+
+def source_file(nodeid: str, rootdir: str) -> str:
+    """The repository-relative file a node ID belongs to.
+
+    The same normalization ``pbtest.py`` reconciles with: the node ID's file
+    part joined onto the record's ``rootdir_relative``, so a duration sample
+    from one run keys the same file in the next run's packing (#1246).
+    """
+
+    return posixpath.normpath(posixpath.join(
+        rootdir or ".", nodeid.split("::", 1)[0]))
 
 
 def skip_reason(report) -> str:
@@ -222,6 +235,7 @@ def main(argv: list[str] | None = None, *, preflight=None) -> int:
             self.deselected: list[str] = []
             self.reports: list[list] = []
             self.uncounted: list[list] = []
+            self.file_durations: dict[str, float] = {}
             self.written = False
 
         def pytest_configure(self, config) -> None:
@@ -257,6 +271,27 @@ def main(argv: list[str] | None = None, *, preflight=None) -> int:
                                      skip_reason(report), self.location(report)])
 
         def pytest_runtest_logreport(self, report) -> None:
+            # Every phase consumes wall time, counted or not: a passing
+            # setup or teardown never reaches the summary line, but the
+            # file still paid its seconds, and the packing model (#1246)
+            # must charge them.  Summed by repository-relative file, so a
+            # later run can key the same file out of its own history.
+            try:
+                duration = float(getattr(report, "duration", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                duration = 0.0
+            if duration > 0:
+                config = self.config
+                rootdir = ""
+                if config is not None:
+                    try:
+                        rootdir = os.path.relpath(
+                            config.rootpath, config.invocation_params.dir)
+                    except Exception:
+                        rootdir = ""
+                name = source_file(report.nodeid, rootdir)
+                self.file_durations[name] = (
+                    self.file_durations.get(name, 0.0) + duration)
             status = self.config.hook.pytest_report_teststatus(
                 report=report, config=self.config)
             category = status[0] if status else ""
@@ -287,6 +322,12 @@ def main(argv: list[str] | None = None, *, preflight=None) -> int:
                 "deselected": self.deselected,
                 "reports": self.reports,
                 "uncounted": self.uncounted,
+                # Each file's summed phase seconds, to the millisecond:
+                # the packing model a later run reads (#1246).  Additive,
+                # so a reader that predates it sees the same record.
+                "file_durations": {
+                    name: round(seconds, 3)
+                    for name, seconds in self.file_durations.items()},
             }, separators=(",", ":"))
 
         def pytest_terminal_summary(self, terminalreporter) -> None:
