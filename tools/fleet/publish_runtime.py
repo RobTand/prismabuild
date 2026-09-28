@@ -95,6 +95,12 @@ FLEET_SCRIPTS = (
     # consumers filed with ``pbrun --after`` once their producers commit
     # (#913).  A generation without it is a tier loop that cannot start.
     "deferred_release.py",
+    # ...and manifest_promotion.py, which the tier loop imports to promote
+    # manifest rows' residency plans (#1252).  Generation 9098f84c872b shipped
+    # without it and the tier role crash-looped at import (#1284);
+    # tests/test_published_scripts_import_published_modules.py now refuses
+    # any published script that imports an unpublished tools module.
+    "manifest_promotion.py",
     # ...and ram_promote.py, the ram tier's movement node (#640): it copies a
     # landed stage range into the tmpfs and files the fragment that carries
     # the epoch.  A generation without it leaves the ram window publishing
