@@ -594,6 +594,18 @@ def discover(checkout: Path, paths: list[str]) -> list[str]:
     return [str(p.relative_to(checkout)) for p in dict.fromkeys(found)]
 
 
+def default_duration(known: dict[str, float]) -> float | None:
+    """One predicted-duration default, shared by ``main()`` and ``shard()``.
+
+    The median of the measured files -- a declared default derived from the
+    same receipts, never a picked constant.  ``None`` with no measurement
+    at all.  Computed here so the printed prediction and the actual packing
+    cannot disagree (#1303 review).
+    """
+
+    return statistics.median(known.values()) if known else None
+
+
 def shard(files: list[str], count: int, *, durations: dict[str, float] | None = None,
           ceiling: float | None = None) -> list[list[str]]:
     """Round-robin without measurements; measured packing with them (#1246).
@@ -603,14 +615,15 @@ def shard(files: list[str], count: int, *, durations: dict[str, float] | None = 
     against.  With neither, this is today's rotation: adjacent (and so
     similar) files land on different boxes.  With measurements:
 
-    * a file predicted at or past half the ceiling gets its own shard, so
-      its stall or timeout costs only that file (``ISOLATE_SHARE``);
+    * up to ``count - 1`` files predicted at or past half the ceiling get
+      their own shard, so a stall or timeout costs only that file
+      (``ISOLATE_SHARE``) -- ``--shards`` is a ceiling the submitter sets
+      on purpose, and the packer never exceeds it;
     * the rest pack longest-processing-time first into the remaining
       shards, largest prediction onto the least-loaded bucket.
 
-    Files with no measurement take the median of the measured ones -- a
-    declared default derived from the same receipts, never a picked
-    constant.  With no measurement at all the answer is the rotation.
+    Files with no measurement take ``default_duration`` of the measured
+    ones.  With no measurement at all the answer is the rotation.
     Deterministic throughout: ties break by bucket index, then file name.
     """
 
@@ -620,13 +633,16 @@ def shard(files: list[str], count: int, *, durations: dict[str, float] | None = 
     known = {name: durations[name] for name in files if name in durations}
     if not known:
         return _round_robin(files, count)
-    default = statistics.median(known.values())
+    default = default_duration(known)
+    assert default is not None
     predicted = {name: known.get(name, default) for name in files}
     ordered = sorted(files, key=lambda name: (-predicted[name], name))
     singletons: list[str] = []
     if ceiling is not None:
+        # At most count - 1, longest first: --shards is a ceiling, and any
+        # further past-half file packs LPT with the rest (#1303 review).
         singletons = [name for name in ordered
-                      if predicted[name] >= ceiling * ISOLATE_SHARE]
+                      if predicted[name] >= ceiling * ISOLATE_SHARE][:max(0, count - 1)]
     alone = set(singletons)
     rest = [name for name in ordered if name not in alone]
     buckets = [[name] for name in singletons]
@@ -651,48 +667,67 @@ def _round_robin(files: list[str], count: int) -> list[list[str]]:
 
 
 #: A file predicted at or past this share of the sealed shard deadline gets
-#: its own shard (#1246).  One half: past it, the file leaves less than half
-#: the lease for whatever shares its shard, so sharing buys no packing and
-#: risks every mate's results on the file's stall; at it, the file alone can
-#: still fill the shard it is given.  Derived from the lease, not picked.
+#: its own shard (#1246).  One half, chosen and stated: past it, the file
+#: leaves less than half the lease for whatever shares its shard, so sharing
+#: buys no packing and risks every mate's results on the file's stall; at it,
+#: the file alone can still fill the shard it is given.
 ISOLATE_SHARE = 0.5
 
 
-def load_history(paths: list[str] | None) -> dict[str, list[float]]:
+def load_history(paths: list[str] | None) -> tuple[dict[str, list[float]], list[str]]:
     """Per-file wall-time samples out of prior ``--json`` run reports (#1246).
 
     Each report holds every shard's files beside its full stdout, and the
     stdout holds the shard's outcome record with its ``file_durations`` --
     so a prior report is the receipts' content in one file, and loading it
-    reads no live state.  Unreadable files, non-list shapes, shards with no
-    parseable record, and non-numeric samples are skipped, never fatal: a
-    history flag must not fail a submission because one old report rotted.
+    reads no live state.  Returns ``(history, problems)``: unreadable
+    files, non-list shapes, and non-numeric samples are ignored with a
+    stated reason per path, never silently and never fatally -- a history
+    flag must neither fail a submission because one old report rotted nor
+    pretend a foreign report packed the shards (#1303 review).  The caller
+    prints the problems; tests assert on them.
     """
 
     history: dict[str, list[float]] = {}
+    problems: list[str] = []
     for raw in paths or ():
         try:
             runs = json.loads(Path(raw).read_text())
-        except (OSError, ValueError):
+        except OSError as exc:
+            problems.append(f"{raw}: unreadable, skipped ({exc})")
+            continue
+        except ValueError as exc:
+            problems.append(f"{raw}: not a JSON report, skipped ({exc})")
             continue
         if not isinstance(runs, list):
+            problems.append(f"{raw}: top shape is "
+                            f"{type(runs).__name__}, not a run list; skipped")
             continue
+        skipped = 0
         for result in runs:
             if not isinstance(result, dict):
+                skipped += 1
                 continue
             record = pbtest_outcomes.parse(result.get("output") or "")
             if record is None:
+                skipped += 1
                 continue
             durations = record.get("file_durations") or {}
             if not isinstance(durations, dict):
+                skipped += 1
                 continue
             for name, seconds in durations.items():
                 if (not isinstance(name, str) or isinstance(seconds, bool)
                         or not isinstance(seconds, (int, float))
                         or seconds < 0):
+                    skipped += 1
                     continue
                 history.setdefault(name, []).append(float(seconds))
-    return history
+        if skipped:
+            problems.append(f"{raw}: {skipped} entr" +
+                            ("y" if skipped == 1 else "ies") +
+                            " without usable file_durations, skipped")
+    return history, problems
 
 
 def predict_durations(history: dict[str, list[float]]) -> dict[str, float]:
@@ -723,8 +758,11 @@ def summary_seconds(summary: str) -> float | None:
     match = re.search(r" in (\d+\.\d+)s(?: \([^)]*\))?\s*$",
                       ANSI.sub("", summary).strip())
     return float(match.group(1)) if match else None
-#: as text, so the action key names their bytes and no helper path has to
-#: exist on the worker -- the rule the dependency guard already followed.
+
+
+#: The shard program travels as text, so the action key names its bytes and
+#: no helper path has to exist on the worker -- the rule the dependency
+#: guard already followed.
 SHARD_PROGRAM = """\
 # A pbtest shard: pytest under pbtest_outcomes' recorder.
 import sys
@@ -1072,14 +1110,17 @@ def main() -> int:
                          "a different set of actions from an unprofiled one "
                          "and never a cache hit for it")
     ap.add_argument("--json", default="", help="write the per-shard result here")
-    ap.add_argument("--history", nargs="*", default=[],
+    ap.add_argument("--history", action="append", default=[],
                     help="prior --json run reports whose file_durations "
                          "pack this run's shards by measured duration "
-                         "(#1246): each measured file is predicted at the "
-                         "max of its samples, a file past half the sealed "
-                         "deadline shards alone, the rest pack "
-                         "longest-first, and unmeasured files take the "
-                         "median. Without it the shards stay round-robin")
+                         "(#1246): repeatable, one report per flag "
+                         "(--history takes exactly one path so it can never "
+                         "swallow the test paths that follow it); each "
+                         "measured file is predicted at the max of its "
+                         "samples, a file past half the sealed deadline "
+                         "shards alone, the rest pack longest-first, and "
+                         "unmeasured files take the median. Without it the "
+                         "shards stay round-robin")
     ap.add_argument(
         "--transport", choices=TRANSPORTS, default=default_transport(),
         help="which dispatcher carries the shards (env PRISMABUILD_TRANSPORT, "
@@ -1186,10 +1227,11 @@ def main() -> int:
     except (OSError, ValueError) as exc:
         sys.stderr.write(f"cannot discover tests: {exc}\n")
         return 2
-    history = load_history(args.history)
+    history, history_problems = load_history(args.history)
+    for problem in history_problems:
+        sys.stderr.write(f"pbtest: --history {problem}\n")
     predicted = predict_durations(history)
-    model_default = (statistics.median(predicted.values())
-                     if predicted else None)
+    model_default = default_duration(predicted)
     # The packing model (#1246): prior ``--json`` reports are the receipts'
     # content in one file, so loading them reads no live state -- and a
     # submission never fails because one old report rotted.
@@ -1278,17 +1320,6 @@ def main() -> int:
               f"({pytest_test_bound.TIMEOUT_ENV}); a test that outlives it "
               "fails as itself instead of holding the shard to its ceiling",
               flush=True)
-    if test_bound and sealed_s is not None:
-        # The shard's sealed deadline rides beside the per-test bound, so a
-        # test that starts late in the shard fails named at the time it has
-        # left instead of dying unnamed at the shard's ceiling (#1246).  The
-        # bound alone still travels without it: no seal, no budget.
-        test_bound.append(
-            f"{pytest_test_bound.SHARD_BUDGET_ENV}={sealed_s:g}")
-        print(f"pbtest: each shard also seals its remaining budget "
-              f"({pytest_test_bound.SHARD_BUDGET_ENV}={sealed_s:g}); a test "
-              "starting with less time left than its bound is failed at "
-              "what is left", flush=True)
     if predicted:
         # The ceiling is sealed now, so the model can judge against it: the
         # slow file shards alone, the rest pack longest-first (#1246).

@@ -9,9 +9,7 @@ file's summed wall time; a later run loads those numbers out of prior run
 reports, isolates a file that alone fills a large share of the ceiling, packs
 the rest longest-processing-time first on a high quantile of each file's
 history, and prints predicted against actual seconds per shard.  With no
-history anywhere, sharding stays round-robin.  A test that starts late in its
-shard is bounded by the time left in the shard, not by the ceiling alone, so
-the stall is named before the pool kills the shard.
+history anywhere, sharding stays round-robin.
 """
 from __future__ import annotations
 
@@ -20,11 +18,6 @@ import json
 from pathlib import Path
 import subprocess
 import sys
-
-import pytest
-
-from pbtest_shard_output import ShardProcess  # noqa: E402
-
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location(
@@ -137,6 +130,20 @@ def test_a_slow_file_is_isolated_from_its_shard_mates():
     assert alone[0] == ["tests/test_slow.py"]
 
 
+def test_isolation_never_exceeds_the_requested_shard_count():
+    """--shards is a ceiling: three past-half files with count=2 pack 2."""
+
+    files = ["tests/test_huge_a.py", "tests/test_huge_b.py",
+             "tests/test_huge_c.py", "tests/test_small.py"]
+    durations = {"tests/test_huge_a.py": 2000.0, "tests/test_huge_b.py": 1900.0,
+                 "tests/test_huge_c.py": 1850.0, "tests/test_small.py": 10.0}
+    buckets = pbtest.shard(files, 2, durations=durations, ceiling=3600.0)
+    assert len(buckets) == 2, buckets
+    assert buckets[0] == ["tests/test_huge_a.py"]
+    assert buckets[1] == ["tests/test_huge_b.py", "tests/test_huge_c.py",
+                          "tests/test_small.py"]
+
+
 def test_shards_pack_by_longest_processing_time_first():
     """The rest fill the least-loaded bucket, largest prediction first."""
 
@@ -186,55 +193,84 @@ def test_the_summary_reports_predicted_against_actual(tmp_path, monkeypatch, cap
         assert result["pytest_s"] is not None and result["pytest_s"] >= 0
 
 
-def test_a_late_test_is_bound_by_the_time_left_in_the_shard(tmp_path, monkeypatch):
-    """The alarm arms at min(bound, seal - elapsed), never past the lease."""
+def test_bad_history_is_ignored_with_a_stated_reason(tmp_path):
+    """A rotted report never fails the submission, and never packs silently."""
 
-    from prismabuild import pytest_test_bound
-    bound = pytest_test_bound.remaining_bound(
-        bound_s=3570.0, budget_s=3600.0, elapsed_s=3500.0)
-    assert bound == pytest.approx(3600.0 - 3500.0 - 30.0)
-    floored = pytest_test_bound.remaining_bound(
-        bound_s=3570.0, budget_s=3600.0, elapsed_s=3599.0)
-    assert floored == pytest.approx(1.0)
-
-
-def test_the_shard_exports_its_remaining_budget(tmp_path, monkeypatch):
-    """The worker learns the seal from the environment, like the bound."""
-
-    from prismabuild import pytest_test_bound
-    checkout = tmp_path / "checkout"
-    (checkout / "tests").mkdir(parents=True)
-    (checkout / "tests" / "test_one.py").write_text("def test_one():\n    pass\n")
-    subprocess.run(["git", "init", "-q", str(checkout)], check=True)
-
-    class _Done(ShardProcess):
-        returncode = 0
-
-        def __init__(self, command):
-            # A green shard carries its outcome record since #941.
-            record = outcomes.PREFIX + json.dumps({
+    good = _prior_run(tmp_path, {"test_a.py": 4.0})
+    rotted = tmp_path / "rotted.json"
+    rotted.write_text("{not json")
+    foreign = tmp_path / "foreign.json"
+    foreign.write_text(json.dumps({"not": "a run list"}))
+    mixed = tmp_path / "mixed.json"
+    mixed.write_text(json.dumps([{
+        "shard": 0, "files": ["tests/test_c.py"], "returncode": 0,
+        "summary": "1 passed in 2.00s", "ran": True, "output":
+            "1 passed in 2.00s\n" + outcomes.PREFIX + json.dumps({
                 "schema": outcomes.SCHEMA, "rootdir_relative": ".",
                 "collect_only": False,
-                "collected": ["tests/test_one.py::test_one"],
-                "reports": [["tests/test_one.py::test_one", "call",
-                               "passed", "", None]],
-            })
-            self.output = f".\n{record}\n1 passed in 0.01s\n"
+                "collected": ["tests/test_b.py::t", "tests/test_c.py::t"],
+                "deselected": [], "reports": [], "uncounted": [],
+                "file_durations": {"tests/test_b.py": "slow",
+                                     "tests/test_c.py": 2.0}}) + "\n",
+    }]))
+    history, problems = pbtest.load_history(
+        [str(good), str(rotted), str(foreign), str(mixed),
+         str(tmp_path / "missing.json")])
+    assert history == {"tests/test_a.py": [4.0],
+                       "tests/test_c.py": [2.0]}, history
+    assert len(problems) == 4, problems
+    assert any("rotted.json" in problem for problem in problems)
+    assert any("foreign.json" in problem for problem in problems)
+    assert any("mixed.json" in problem and "1 entr" in problem
+               for problem in problems)
+    assert any("missing.json" in problem for problem in problems)
 
-        def communicate(self):
-            return self.output, None
 
-    calls: list[list[str]] = []
+def test_history_flag_takes_one_report_per_flag(tmp_path, monkeypatch, capsys):
+    """--history is repeatable single-value: it cannot swallow test paths."""
 
-    def _popen(command, **kwargs):
-        calls.append(list(command))
-        return _Done(command)
+    checkout = _checkout(tmp_path)
+    first = _prior_run(tmp_path, {"test_slow_file.py": 0.5,
+                                  "test_fast_file.py": 0.01})
+    one = tmp_path / "one.json"
+    first.rename(one)
+    two = _prior_run(tmp_path, {"test_slow_file.py": 0.6,
+                                "test_fast_file.py": 0.02})
+    code, _ = _dispatch(checkout, monkeypatch,
+                        ["--shards", "2", "--history", str(one),
+                         "--history", str(two)])
+    printed = capsys.readouterr().out
+    assert code == 0, printed
+    assert "2 history file(s)" in printed, printed
 
-    monkeypatch.setattr(pbtest.subprocess, "Popen", _popen)
-    monkeypatch.setattr(sys, "argv", [
-        "pbtest.py", "--checkout", str(checkout), "--python", "/target/python",
-        "--shards", "1", "--timeout-s", "600", "tests"])
-    assert pbtest.main() == 0
-    exported = [part for command in calls for part in command
-                if part.startswith(pytest_test_bound.SHARD_BUDGET_ENV + "=")]
-    assert exported == [f"{pytest_test_bound.SHARD_BUDGET_ENV}=600"]
+
+def test_the_printed_default_is_the_packing_default():
+    """main() and shard() share one default: the median of the measured."""
+
+    assert pbtest.default_duration(
+        {"tests/test_a.py": 100.0, "tests/test_b.py": 10.0}) == 55.0
+    assert pbtest.default_duration({}) is None
+
+
+def test_shard_packing_properties():
+    """No drop or duplicate, the count is a ceiling, and history is stable."""
+
+    import random
+    rng = random.Random(1246)
+    for _ in range(300):
+        n = rng.randint(0, 12)
+        files = [f"tests/test_{i:02d}.py" for i in range(n)]
+        count = rng.randint(1, 5)
+        durations = (
+            {name: rng.choice([0.0, 0.5, 5.0, 60.0, 600.0, 2000.0])
+             for name in rng.sample(files, rng.randint(0, n))} if n else {})
+        ceiling = rng.choice([None, 60.0, 600.0, 3600.0])
+        first = pbtest.shard(files, count, durations=dict(durations),
+                             ceiling=ceiling)
+        flat = [name for bucket in first for name in bucket]
+        assert sorted(flat) == sorted(files)
+        assert len(first) <= (max(1, min(count, n)) if n else 1)
+        assert pbtest.shard(files, count, durations=dict(durations),
+                            ceiling=ceiling) == first
+        if not durations:
+            assert first == pbtest.shard(files, count)
