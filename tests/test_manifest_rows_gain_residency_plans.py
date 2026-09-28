@@ -351,7 +351,7 @@ def test_an_unreadable_request_is_not_a_permanent_decision(tmp_path):
         fleet.queue, fleet.cas_root, _stage_tier(fleet),
         ready=[_ready_item(fleet, key)])
 
-    assert first[0]["outcome"] == "no_manifest"
+    assert first[0]["outcome"] == "unreadable"
     assert second[0]["outcome"] == "planned", second[0]
 
 
@@ -406,3 +406,89 @@ def test_priority_zero_is_not_minus_ten(tmp_path):
     assert plan is not None
     for phase in plan["phases"]:
         assert int(phase["mover_row"]["priority"]) == 0
+
+
+# --- review round 3 (#1252): event churn, receipt gating, unreadable ---
+
+
+def _driven_cycle(fleet, tmp_path, stage_root):
+    """One real tier_loop cycle over a stub stage tier (never the live one)."""
+
+    import tier_loop
+    stage = tmp_path / "stage"
+    stage.mkdir(exist_ok=True)
+
+    def discover(**_kwargs):
+        return {_stage_tier(fleet)["tier_id"]: {
+            "schema": "prismabuild.storage_tier.v1",
+            "tier_id": _stage_tier(fleet)["tier_id"],
+            "host": HOST, "tier": "stage",
+            "mountpoint": str(stage),
+            "capacity_bytes": 8 * (1 << 30)}}
+
+    tier_loop.cycle(fleet.queue, host=HOST, source_pool="storage_pool",
+                    receipts=tier_loop.ReceiptCache(), discover=discover)
+
+
+def test_remembered_rows_emit_one_summary_line_per_cycle(tmp_path):
+    """REVIEW-1252-r3 [P2]: replays are summarized, not re-emitted.
+
+    150 remembered no-manifest rows, two driven tier-loop cycles: at most one
+    host-event line per cycle for them -- the summary -- counted in the real
+    event file the cycle appends to.
+    """
+
+    fleet = Fleet(tmp_path)
+    files = [fleet.file(name, size) for name, size in NAMED_FILES]
+    keys = [fleet.action(f"r3-quiet-{index:03d}", files, with_manifest=False)
+            for index in range(150)]
+    # Remember every answer once, outside the cycles being counted.
+    manifest_promotion.promote_ready_manifest_rows(
+        fleet.queue, fleet.cas_root, _stage_tier(fleet),
+        ready=[_ready_item(fleet, key) for key in keys])
+
+    events = fleet.queue.root / "residency-events" / "_host" / f"{HOST}.jsonl"
+    _driven_cycle(fleet, tmp_path, None)
+    first = (events.read_text().splitlines()
+             if events.exists() else [])
+    _driven_cycle(fleet, tmp_path, None)
+    second = (events.read_text().splitlines()
+              if events.exists() else [])
+
+    def promotion_lines(lines):
+        return [line for line in lines
+                if "manifest-row-promotion" in line]
+
+    assert len(promotion_lines(first)) <= 1, promotion_lines(first)
+    assert len(promotion_lines(second)) - len(promotion_lines(first)) <= 1
+    summary = promotion_lines(second)[-1]
+    assert "manifest-row-promotion-summary" in summary
+    assert '"replayed": 150' in summary
+
+
+def test_a_repeated_identical_refusal_writes_one_receipt(tmp_path):
+    """REVIEW-1252-r3 [P3]: the receipt gate is real, not a comment."""
+
+    import os
+    import time
+    fleet = Fleet(tmp_path)
+    key = _manifest_row(fleet, "row-stuck",
+                        annotations={"phases": phase_table(NAMED_FILES)})
+    broken = _stage_tier(fleet)
+    broken["mountpoint"] = "relative/and/refused"
+    record = fleet.queue.root / "prewarm" / f"{key}.json"
+
+    manifest_promotion.promote_ready_manifest_rows(
+        fleet.queue, fleet.cas_root, broken,
+        ready=[_ready_item(fleet, key)])
+    assert record.exists()
+    before = record.stat().st_mtime_ns
+    content = record.read_text()
+    time.sleep(0.05)
+
+    manifest_promotion.promote_ready_manifest_rows(
+        fleet.queue, fleet.cas_root, broken,
+        ready=[_ready_item(fleet, key)])
+
+    assert record.read_text() == content
+    assert record.stat().st_mtime_ns == before

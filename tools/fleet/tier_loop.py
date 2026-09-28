@@ -10219,11 +10219,23 @@ def _cycle(
         (dict(record) for record in announced
          if record.get("tier") == "stage"), None)
     if stage_for_manifests is not None:
+        # Fresh decisions are events; replays and stand-downs are a summary
+        # (REVIEW-1252-r3 [P2]): one line per remembered row per cycle is
+        # churn on the shared mount, and a replayed answer is not an event.
+        stats: dict[str, int] = {}
         try:
             for outcome in manifest_promotion.promote_ready_manifest_rows(
-                    queue, prewarm_loop.SH / "cas", stage_for_manifests):
+                    queue, None, stage_for_manifests, stats=stats):
+                if outcome.get("fresh", True):
+                    _emit(queue, host,
+                          {"event": "manifest-row-promotion", **outcome},
+                          tier_consumers=tier_consumers)
+            if stats:
                 _emit(queue, host,
-                      {"event": "manifest-row-promotion", **outcome},
+                      {"event": "manifest-row-promotion-summary",
+                       "replayed": int(stats.get("replayed", 0)),
+                       "stands_down": int(stats.get("stands_down", 0)),
+                       "examined": int(stats.get("examined", 0))},
                       tier_consumers=tier_consumers)
         except Exception as exc:  # REVIEW-1252 item 1: advisory, never fatal
             # The planner is fail-closed per row; this is the loop-level

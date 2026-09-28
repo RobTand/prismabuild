@@ -211,17 +211,32 @@ def declares_data_manifest(request: Mapping[str, object] | None) -> bool:
 
 
 def promote_ready_manifest_rows(
-        queue: pool.PoolQueue, cas_root: Path, stage_tier: Mapping[str, object],
+        queue: pool.PoolQueue, cas_root: Path | None,
+        stage_tier: Mapping[str, object],
         *, limit: int = MANIFEST_ROWS_PER_CYCLE,
         ready: Sequence[Mapping[str, object]] | None = None,
+        stats: dict[str, int] | None = None,
         ) -> list[dict[str, object]]:
     """Seal residency plans for the first READY manifest rows (claim order).
 
-    Returns one outcome per row examined -- ``planned``, ``stands_down``,
-    ``no_manifest``, ``refused`` (with the reason) -- and writes the row's
-    prewarm receipt ``tier`` block for each.  Never raises for a single row's
-    refusal; the tier loop's cycle must survive any one consumer's bad
-    request.
+    Returns one outcome per row -- ``planned``, ``stands_down``,
+    ``no_manifest``, ``unreadable``, ``refused``/``deferred`` (with the
+    reason) -- and writes the row's prewarm receipt ``tier`` block for the
+    fresh decisions.  Never raises for a single row's refusal; the tier
+    loop's cycle must survive any one consumer's bad request.
+
+    ``cas_root`` may be ``None``: the planner then reads each row's request
+    out of the CAS root the row's own queue record names, which is the truth
+    the loop has (a fleet's rows may not all seal into one CAS).  When the
+    caller passes a root, every row is read from it, as the tests do.
+
+    Fresh decisions (rows that cost a read, and every planned, refusal and
+    deferral) carry ``"fresh": True``; a replay from the memo and a
+    stand-down carry ``"fresh": False`` -- the caller emits the fresh ones
+    and summarizes the rest (REVIEW-1252-r3 [P2]), because a replayed answer
+    is not an event, and one line per remembered row per cycle is churn on
+    the shared mount.  ``stats``, when given, is filled with the cycle's
+    counts: ``fresh``, ``replayed``, ``stands_down``, ``examined``.
     """
 
     if ready is None:
@@ -231,9 +246,10 @@ def promote_ready_manifest_rows(
     # by the backlog, not by the loop's lifetime.
     live = {(str(queue.root), str(item.get("action_key") or ""))
             for item in ready}
-    for stale in [key for key in _DECISIONS if key not in live]:
-        del _DECISIONS[stale]
-    cas = pb.PrismaBuildCAS(Path(cas_root))
+    for table in (_DECISIONS, _RECEIPTS):
+        for stale in [key for key in table if key not in live]:
+            del table[stale]
+    counters = {"fresh": 0, "replayed": 0, "stands_down": 0, "examined": 0}
     outcomes: list[dict[str, object]] = []
     planned = 0
     examined = 0
@@ -249,7 +265,9 @@ def promote_ready_manifest_rows(
         # item 3): one lstat against a CAS request fetch, and a row another
         # submitter sealed residency for is never the planner's.
         if residency_plan.read(queue, key) is not None:
-            outcomes.append({"action_key": key, "outcome": "stands_down"})
+            counters["stands_down"] += 1
+            outcomes.append({"action_key": key, "outcome": "stands_down",
+                             "fresh": False})
             continue
         memo_key = (str(queue.root), key)
         memo = _DECISIONS.get(memo_key)
@@ -258,10 +276,14 @@ def promote_ready_manifest_rows(
             # exists to bound reads (REVIEW-1252-r2 item B): it is not spent
             # here, so a hundred remembered rows ahead of a manifest row
             # cannot keep the planner from reaching it.
-            outcomes.append(dict(memo["outcome"]))
+            counters["replayed"] += 1
+            replayed = dict(memo["outcome"])
+            replayed["fresh"] = False
+            outcomes.append(replayed)
             continue
         examined += 1
-        outcome: dict[str, object] = {"action_key": key}
+        counters["examined"] += 1
+        outcome: dict[str, object] = {"action_key": key, "fresh": True}
         # Total containment for this advisory stage (REVIEW-1252 item 1):
         # the planner reads the request file raw -- no validate_action stands
         # between the CAS and it -- so a corrupted-but-JSON body, a hostile
@@ -270,12 +292,17 @@ def promote_ready_manifest_rows(
         # role's single writer.  A row that gains no plan runs exactly as it
         # does today, which is what makes ``except Exception`` the correct
         # boundary here rather than a smell.
+        row_cas = Path(cas_root) if cas_root is not None else Path(
+            str(item.get("cas_root") or ""))
         try:
-            request, read_ok = read_request(Path(cas_root), key)
+            request, read_ok = read_request(row_cas, key)
             if not read_ok:
                 # Item A: an unreadable request passes the row over for this
                 # cycle and remembers nothing -- the next cycle reads again.
-                outcome["outcome"] = "no_manifest"
+                # Its own label (r3): the row may have a manifest, and an
+                # operator reading the summary must be able to tell a quiet
+                # backlog from an unreadable one.
+                outcome["outcome"] = "unreadable"
                 outcomes.append(outcome)
                 continue
             if not declares_data_manifest(request):
@@ -297,7 +324,7 @@ def promote_ready_manifest_rows(
                                      "sealed checkout snapshot beside its "
                                      "manifest)")
                 outcomes.append(outcome)
-                _receipt_once(queue, memo_key, key, status="refused",
+                _receipt_gated(queue, memo_key, key, status="refused",
                               detail=str(outcome["reason"]))
                 _remember(memo_key, outcome)
                 continue
@@ -305,6 +332,7 @@ def promote_ready_manifest_rows(
             # seal and file under the consumer's transition lock, so a
             # dead-consumer pass cannot reap a plan between its filing and
             # its adoption.
+            cas = pb.PrismaBuildCAS(row_cas)
             with queue._transition_locked(key):
                 staged = pbrun.residency_stage_rows(
                     template, consumer_action_key=key,
@@ -322,8 +350,8 @@ def promote_ready_manifest_rows(
             outcome["outcome"] = "refused"
             outcome["reason"] = str(exc)
             outcomes.append(outcome)
-            _record_tier_receipt(queue, key, status="refused",
-                                 detail=str(exc))
+            _receipt_gated(queue, memo_key, key, status="refused",
+                           detail=str(exc))
             continue
         except pool.TransitionLockBusy as exc:
             # Transient, not a refusal (REVIEW-1252 item 6): the consumer's
@@ -333,7 +361,7 @@ def promote_ready_manifest_rows(
             outcome["outcome"] = "deferred"
             outcome["reason"] = repr(exc)
             outcomes.append(outcome)
-            _record_tier_receipt(queue, key, status="deferred",
+            _receipt_gated(queue, memo_key, key, status="deferred",
                                  detail=repr(exc))
             continue
         except Exception as exc:  # noqa: BLE001 -- see the block comment
@@ -342,13 +370,14 @@ def promote_ready_manifest_rows(
             outcome["outcome"] = "refused"
             outcome["reason"] = repr(exc)
             outcomes.append(outcome)
-            _record_tier_receipt(queue, key, status="refused",
-                                 detail=repr(exc))
+            _receipt_gated(queue, memo_key, key, status="refused",
+                           detail=repr(exc))
             continue
         plan = staged["plan"]
         phases = list(plan.get("phases") or ())
         outcome["outcome"] = "planned"
         outcome["phases"] = len(phases)
+        counters["fresh"] += 1
         outcome["tier_id"] = str(plan.get("tier_id") or "")
         outcome["ram_tier_id"] = plan.get("ram_tier_id")
         outcomes.append(outcome)
@@ -361,8 +390,30 @@ def promote_ready_manifest_rows(
             manifest_sha256=str(plan.get("manifest_sha256") or ""),
             manifest_bytes=int(plan.get("manifest_bytes") or 0))
         planned += 1
+    counters["fresh"] += sum(
+        1 for outcome in outcomes
+        if outcome.get("fresh") and outcome.get("outcome") != "planned")
+    if stats is not None:
+        stats.update(counters)
     return outcomes
 
+
+
+#: The last receipt block written per row, content-gated (r3 [P3]): a
+#: persistent refusal must not rewrite the row's prewarm record every cycle.
+#: Separate from ``_DECISIONS`` because a refusal is deliberately NOT a
+#: remembered decision, and pruned with the same live set.
+_RECEIPTS: dict[tuple[str, str], dict[str, object]] = {}
+
+
+def _receipt_gated(queue: pool.PoolQueue, memo_key: tuple[str, str],
+                   action_key: str, **block: object) -> None:
+    """Write a receipt only when its content changes (REVIEW-1252-r3 [P3])."""
+
+    if _RECEIPTS.get(memo_key) == dict(block):
+        return
+    _RECEIPTS[memo_key] = dict(block)
+    _record_tier_receipt(queue, action_key, **block)
 
 
 #: Terminal per-row decisions, remembered for the life of the loop
@@ -378,17 +429,6 @@ def _remember(memo_key: tuple[str, str], outcome: dict[str, object]) -> None:
     """Store one terminal decision, merging into any receipt state."""
 
     _DECISIONS.setdefault(memo_key, {})["outcome"] = dict(outcome)
-
-
-def _receipt_once(queue: pool.PoolQueue, memo_key: tuple[str, str],
-                  action_key: str, **block: object) -> None:
-    """Write a remembered refusal's receipt only when its content changes."""
-
-    memo = _DECISIONS.setdefault(memo_key, {})
-    if memo.get("receipt") == dict(block):
-        return
-    memo["receipt"] = dict(block)
-    _record_tier_receipt(queue, action_key, **block)
 
 
 def _record_tier_receipt(queue: pool.PoolQueue, action_key: str, *,
