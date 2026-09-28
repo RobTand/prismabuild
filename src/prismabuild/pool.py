@@ -629,13 +629,6 @@ def _adaptive_refusal_drains(
         # and reported starved with the foreign CPUs and their PIDs in its
         # evidence, and the rows behind it keep claiming (#1185).
         return None, True
-    if reason == "measurement_foreign_load":
-        # The refusal's own attribution names the load: every held CPU read
-        # quiet and the busy above the idle fraction is on CPUs no holder
-        # holds, so no drain of the pool's holders clears it (#1231).  The
-        # item is overtaken and reported starved with the foreign CPUs in
-        # its evidence, and the rows behind it keep claiming.
-        return None, True
     if reason in DRAIN_EXCLUSIVE_CPU:
         return "exclusive", False
     declared = int(demand.get("cpu", 0) or 0)

@@ -694,12 +694,12 @@ def idle_judgement_with_reference(
     ``state`` is the history to persist (unchanged when ``state is`` the
     returned one), and ``reference`` is the baseline window the verdict was
     actually judged against -- the whole remembered window less unlatched
-    provisional seeds, with holders present or not, and ``None`` where the verdict judged against nothing at
-    all: a forced holder tail, or the fresh empty window an identity reset
-    judges against (empty, not None -- the reset state carries no samples
-    to re-derive, #1233 review).  The
-    reference is an answer, never a field of the verdict, which is
-    serialized into refusal evidence.
+    provisional seeds -- and ``None`` where the verdict judged against
+    nothing at all: a forced holder tail, or the fresh empty window an
+    identity reset judges against (empty, not None -- the reset state
+    carries no samples to re-derive, #1233 review).  The reference is an
+    answer, never a field of the verdict, which is serialized into refusal
+    evidence.
 
     * An **idle sample** is a fresh one taken with no holder on the host and
       no holder seen since its interval began: a sample whose interval

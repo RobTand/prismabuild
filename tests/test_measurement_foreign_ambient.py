@@ -29,6 +29,7 @@ absolute line, which is where the sum was the defect.
 from __future__ import annotations
 
 import hashlib
+import io
 from pathlib import Path
 import sys
 
@@ -225,13 +226,32 @@ def test_provisional_depth_measures_a_loaded_host(
 def test_ambient_refusal_names_foreign_pids(
     queue: pool.PoolQueue, clock, monkeypatch,
 ) -> None:
-    """RED: the typed refusal carries the processes behind the excess.
+    """The typed refusal carries the processes behind the excess.
 
     A census of /proc, read once per sample and capped, names candidate
     pids per excess CPU so the refusal is actionable without a second
-    tool.  GREEN: ``foreign_pids`` maps each excess CPU to a pid list.
+    tool.  The census runs against a fake /proc: the test pins exactly
+    which pids live on the excess CPUs, so it passes on an idle box and
+    a loaded one alike (#1310 review).
     """
 
+    on_cpu = {"101": 0, "102": 0, "103": 1}
+
+    def fake_stat(pid: str) -> bytes:
+        fields = [b"R"] + [b"7"] * 35 + [str(on_cpu[pid]).encode()]
+        return pid.encode() + b" (fake) " + b" ".join(fields) + b" 0 0"
+
+    monkeypatch.setattr(adaptive_cpu.os, "listdir",
+                        lambda path: [*on_cpu, "self"])
+    real_open = open
+
+    def fake_open(path, mode="r", *args, **kwargs):
+        if (isinstance(path, str) and path.startswith("/proc/")
+                and path.endswith("/stat")):
+            return io.BytesIO(fake_stat(path.split("/")[2]))
+        return real_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", fake_open)
     capacity = {"cpu": 20, "mem_gb": 120}
     tiers = {"preferred": list(range(20)), "fallback": []}
     per_cpu = _flat(0.01)
@@ -249,9 +269,7 @@ def test_ambient_refusal_names_foreign_pids(
     pids = decision["foreign_pids"]
     # String keys: the denial record is read back through JSON, where int
     # dict keys do not survive (normalized where the evidence is built).
-    assert set(pids) == {"0", "1"}, decision
-    for cpu, names in pids.items():
-        assert names and all(type(pid) is int for pid in names), (cpu, names)
+    assert pids == {"0": [101, 102], "1": [103]}, decision
 
 
 def test_foreign_pid_census_is_capped_and_reads_stat_field_39(
@@ -264,7 +282,6 @@ def test_foreign_pid_census_is_capped_and_reads_stat_field_39(
     index 36 of the fields after ``(comm)`` -- so the filler around it is
     distinct from the answer.
     """
-    import io
     from types import SimpleNamespace
 
     on_cpu = {"11": 0, "12": 0, "13": 0, "14": 0, "15": 0, "16": 0,

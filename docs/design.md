@@ -391,7 +391,10 @@ token shortage withholds when transient holders cover every short kind. An
 adaptive refusal that draining resolves withholds too: an exclusive need (a
 measurement's `measurement_host_not_idle`/`measurement_holder`, unbounded or
 full-width CPU demand on a pressured host, and the GPU refusals for a
-measurement) when every holder is transient, and the adaptive CPU refusals
+measurement) when transient holders cover it -- with no holders at all
+there is nothing a drain could place, so the pool reports the item starved
+(`adaptive_cpu_refused_starved`) while the decision stays the withhold-type
+refusal (#1185) -- and the adaptive CPU refusals
 that stand for a CPU token shortage (`borrow_evidence_unavailable`,
 `pressure_override_no_borrow`, `projected_cpu_cost` with the tokens short)
 by the token rule. A `host_pressure` refusal of an item that needs CPUs rather
