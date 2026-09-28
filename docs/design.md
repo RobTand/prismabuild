@@ -13607,33 +13607,26 @@ price:
   physical written MB. Physical write bytes are the logical bytes, divided by
   compression, times 4/3 for raidz1 parity, plus metadata. This is an
   estimate from one day's windows, not a measurement of an export.
-* An export's seal is priced by its own producer's receipts (#1014 item 3):
-  each finished export files its achieved file-side rate queue-side, ONE
-  sidecar per (producer action, tier)
-  (`exports/<owner>/<tier_id>.json`, `prismaquant.prismabuild.pool_export.v1`,
-  the pacing record plus its identity), replaced atomically whenever the
-  new receipt measured a rate -- so a degenerate newer export cannot
-  erase the real rate, and retention is the replacement itself: the
-  store stays one small file per (producer action, tier), whatever the
-  campaign files (no reaper is needed; retired producer directories are
-  plain files a future cleanup could prune, and none is built here). The
-  producer's next export reads that one file directly and reserves that
-  rate capped at the tier's offer instead of the whole offer.
-  Two producers' exports then run beside each other, and the tier
-  ledger still bounds their summed declared rates at the offer.  Only a
-  run the **writer** bounded is priced: the receipt carries the pacer's own
-  held/slept accounting (`held_seconds`, the same counter `ExportPacer.wrote`
-  raises only when it actually sleeps), and a run the pacer held proves
-  only that the writer can do at least the seal -- its achieved rate is
-  the seal, not the writer -- so it prices nothing and the seal stays the
-  whole offer.  One congested run therefore cannot ratchet the producer's
-  seal down forever: every later run is paced at the seal it re-proves, and
-  only a writer-bound run -- the pacer never held, the achieved rate is
-  the writer's real rate -- can lower it, and only to what the writer
-  actually did. 1:1 remains the first export's price -- and the fallback
-  whenever no receipt prices the producer, or the newest receipt is
-  pacer-bound -- so a missing or held signal fails closed and never admits
-  a second writer.
+* An export's seal is priced by its own producer's receipts (#1014 item 3,
+  amended by #1319): each finished export files its achieved file-side rate
+  queue-side, ONE file per export (`exports/<export_key>.json`,
+  `prismaquant.prismabuild.pool_export.v1`, the pacing record plus its
+  identity). The producer's next export reads the NEWEST of its own
+  per-tier receipts and reserves that rate capped at the tier's offer
+  instead of the whole offer. Two producers' exports then run beside each
+  other, and the tier ledger still bounds their summed declared rates at
+  the offer. Any positive finite rate prices, however slow the writer: no
+  floor, no writer-bound gate -- a measurement is a measurement (#1319
+  amendment). A newest receipt that measured nothing (a zero, negative,
+  missing or non-finite rate, or internally inconsistent parts) prices
+  nothing, and the seal falls back to the whole offer: fail closed, never
+  a second writer on a missing signal. History survives beside the newest:
+  older receipts stay listed for diagnosis (`export_records`), and another
+  owner's receipts never enter a producer's listing. A record without a
+  64-hex export key is corrupt and refused loudly. 1:1 remains the first
+  export's price, so a missing signal fails closed. A congested run lowers
+  the next seal to what the writer actually achieved under the hold -- the
+  price tracks the latest measurement, whatever bounded it.
 
 The
 pace, not the reservation, bounds what an export does to the spindles.

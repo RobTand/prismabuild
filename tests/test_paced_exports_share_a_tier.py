@@ -133,18 +133,23 @@ def test_two_paced_exports_from_two_producers_share_the_tier(tmp_path):
     assert ledger.available().get(FILL, 0) == 0      # the offer bounds the sum
 
 
-def test_two_measured_exports_share_the_tier_while_a_third_waits(tmp_path):
-    """Two measured seals fit under the offer; the third waits (#1319).
+def test_two_measured_exports_share_the_tier_while_a_third_borrows(tmp_path):
+    """Two measured seals fit under the offer; the third borrows (#1319, #999).
 
     The producer's prior export wrote at 60 MB/s on a tier offering 164,
     filed at the per-export home.  Three paced exports each seal at 60:
     the first two claim beside each other (120 under the 164 offer) and
-    the third finds 44 free -- short of 60 -- so it stays ready with a
-    ``tier_reservation_unavailable`` denial.  The ledger still bounds the
-    summed declared rates at the offer; the tier no longer serializes
-    behind one export.  On a tree without the per-export reader the
-    filed receipt is inert, every export seals the whole offer, and the
-    second export waits: the serialization this pins away.
+    the third finds 44 free -- short of 60 -- so it takes the free 44 as
+    tokens and borrows the remaining 16 from its siblings' held fill:
+    other exports are family lenders by design (#999), and a producer's
+    own reservations holding its own export out would be the wedge #999
+    was built to fix.  The borrow is explicit and bounded -- lenders
+    named, overcommit tracked -- while the ledger still bounds the
+    unborrowed sum at the offer; the tier no longer serializes behind
+    one export.  On a tree without the per-export reader the filed
+    receipt is inert, every export seals the whole offer, and the second
+    export waits: the serialization this pins away (this test still
+    fails there, at the second claim).
     """
 
     spool = base.world(tmp_path, env={ps.PACED_EXPORT_ENV: "1"})
@@ -169,10 +174,19 @@ def test_two_measured_exports_share_the_tier_while_a_third_waits(tmp_path):
 
     third = spool.submit_group("b3", base.prepare(spool, "b3")[2])
     assert sealed(spool, "b3")["params"]["demand"][FILL_DEMAND] == 60
-    assert claim(spool) is None         # 60 over the 44 free: it waits
-    assert spool.queue.item_path(pool.READY, third["export_key"]).exists()
-    denial = al._denial(spool.queue, third["export_key"])
-    assert denial["reason"] == "tier_reservation_unavailable", denial
+    claimed_third = claim(spool)
+    assert claimed_third is not None \
+        and claimed_third["action_key"] == third["export_key"]
+    borrow = claimed_third["tier_fill_borrowed"][fx.TIER]
+    assert borrow["taken_free"] == 44 and borrow["borrowed"] == 16
+    assert sum(borrow["lent"].values()) == 16
+    assert set(borrow["lent"]) <= {first["export_key"], second["export_key"]}
+    assert borrow["owner"] == spool.owner
+    # The borrow takes no token: the siblings still hold their 60 each,
+    # and the ledger still bounds the unborrowed sum at the offer.
+    assert ledger.holder_tokens(first["export_key"]).get(FILL) == 60
+    assert ledger.holder_tokens(second["export_key"]).get(FILL) == 60
+    assert ledger.holder_tokens(third["export_key"]).get(FILL) == 44
 
 
 def test_a_pacer_bound_receipt_prices_its_achieved_rate(tmp_path):

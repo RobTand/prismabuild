@@ -935,43 +935,27 @@ MOVE_PRICING_FIELDS = (
 )
 
 #: Where a finished produced-output export files its pacing record (#1014
-#: item 3).  A sidecar beside ``movers/``, for the write side of the pool: a
-#: producer's next paced export seals its fill from the one record here that
-#: is its own -- the newest well-formed receipt its exports on that tier
-#: filed (:meth:`PoolQueue.export_receipt`, priced by
+#: item 3, #1319).  One immutable file per export
+#: (``exports/<export_key>.json``), for the write side of the pool: a
+#: producer's next paced export seals its fill from the newest of its own
+#: per-tier receipts here (:meth:`PoolQueue.export_records`, priced by
 #: :func:`storage_tiers.export_measured_mb_s`).  The group-local receipt
 #: carries the same pacing body, but it retires with the group's checkpoint
 #: (#1001), and the rate a next seal prices from must stay readable after
 #: that.  A directory of its own, not entries in ``movers/``: a mover receipt
 #: prices pool *reads*, and folding an export's write among them would make
-#: ``usable_mover_receipts`` count a writer among the readers.
+#: ``usable_mover_receipts`` count a writer among the readers.  History
+#: survives beside the newest: older receipts stay listed for diagnosis,
+#: and a degenerate newest prices nothing without erasing them.
 EXPORTS = "exports"
 #: The schema of one filed export receipt: the export's pacing record with
 #: the identity a next seal needs -- action key, unix, tier, owner.
 POOL_EXPORT_SCHEMA_V1 = "prismaquant.prismabuild.pool_export.v1"
 MOVE_PRICING_PACING_FIELDS = ("pool_read_bytes", storage_tiers.POOL_FILL_FIELD,
                               "held_seconds", storage_tiers.YIELDED_FIELD)
-#: The characters a tier id may carry to be its own export-sidecar
-#: filename: the ledger already files ``tiers/<tier_id>.json`` under the
-#: ids it mints (letters, digits, and ``- . : @ _ +``), and any id outside
-#: this set is hashed rather than trusted as a path component.
-_EXPORT_TIER_NAME_OK = frozenset(
-    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-.:@_+")
-
-
-def _export_tier_name(tier_id: str) -> str:
-    """The filename one producer's export sidecar keeps for ``tier_id``.
-
-    The tier id itself when every character is filename-safe (the common
-    case, e.g. ``prismabuild-stage:dl380g10``), else the first 16 hex of
-    its SHA-256: a stable, collision-free name for an id that carries a
-    separator or an escape.  One function because the writer and the
-    reader must spell this path the same.
-    """
-
-    if tier_id and _EXPORT_TIER_NAME_OK.issuperset(tier_id):
-        return tier_id
-    return hashlib.sha256(tier_id.encode("utf-8")).hexdigest()[:16]
+#: ``exports/`` needs no tier-name mapping: one file per export action
+#: key (a 64-hex seal), so nothing untrusted ever becomes a path
+#: component (#1319).
 
 
 
@@ -8094,64 +8078,36 @@ class PoolQueue:
         _write_json_atomic(path, body)
         return path, body
 
-    def export_path(self, owner: str, tier_id: str) -> Path:
-        """The one sidecar a producer's exports on a tier keep (#1014 item 3).
+    def export_path(self, export_key: str) -> Path:
+        """The file one finished export's pacing record keeps (#1319).
 
-        ``exports/<owner>/<tier>.json``: one small file per (producer
-        action, tier), because only one record can ever decide a price --
-        the newest well-formed receipt for that pair -- and a seal reads
-        it in O(1), with no directory scan.  The owner is the producer
-        action key (a 64-hex seal) and so needs no escaping; a tier id is
-        its own filename when it is a safe one (the ledger already files
-        ``tiers/<tier_id>.json``), and a hash of it otherwise.
+        ``exports/<export_key>.json``: one small immutable file per
+        export.  The key is the export action key (a 64-hex seal, so it
+        needs no escaping); a record without one is corrupt and refused
+        loudly here, never filed.
         """
 
-        tier_name = _export_tier_name(tier_id)
-        return self.root / EXPORTS / owner / f"{tier_name}.json"
+        key = str(export_key)
+        if len(key) != 64 or any(ch not in "0123456789abcdef" for ch in key):
+            raise PoolContractError(
+                "export receipt names no 64-hex export key; "
+                "record_export files one file per export")
+        return self.root / EXPORTS / f"{key}.json"
 
-    def export_receipt(self, owner: str, tier_id: str) -> dict[str, object] | None:
-        """The newest well-formed receipt a producer's exports filed, or ``None``.
+    def record_export(self, record: Mapping[str, object]) -> Path:
+        """File one finished export's pacing record (#1014 item 3, #1319).
 
-        The single file :meth:`export_path` names, read directly -- the
-        O(1) side of the round-3 review: a paced seal costs one read,
-        never a glob over every receipt a campaign ever filed.  A file
-        that is missing, unreadable, or not an export receipt answers
-        ``None`` (never raised: a seal must not fail because one sidecar
-        was truncated), and the caller prices ``None`` as no measurement,
-        which falls back to the whole offer and fails closed.
-        """
-
-        try:
-            record = _read_json(self.export_path(owner, tier_id),
-                                tolerate_stale=True)
-        except (OSError, PoolContractError):
-            return None
-        if (not isinstance(record, dict)
-                or record.get("schema") != POOL_EXPORT_SCHEMA_V1):
-            return None
-        return record
-
-    def record_export(self, record: Mapping[str, object]) -> Path | None:
-        """File one finished export's pacing record (#1014 item 3).
-
-        A sidecar like :meth:`record_move`, for the pool's write side, at
-        :meth:`export_path` -- one file per (producer action, tier), so
-        the sidecar never grows with the campaign: each well-formed
-        later export of the same producer on the same tier replaces the
-        one before it atomically, and retention is the replacement
-        itself.  The export files this at completion, best effort -- its
-        own group receipt is already written, so a failed sidecar write
-        costs the next seal its measured rate (which then falls back to
-        the whole offer and fails closed) and not the export its result.
-        A record that measured no rate (not
-        :func:`storage_tiers.export_receipt_measurable` -- the ONE
-        predicate the reader also prices by) is refused, returning
-        ``None`` unwritten, so a degenerate newer export cannot erase the
-        real rate the producer wrote at; a pacer-bound record IS
-        well-formed and replaces, and the reader prices it as nothing.
-        No mint lock and no pricing log: the tier loop never reads
-        these, and one producer writes one file per tier, uncontended.
-        Any schema but the export receipt's is refused, as
+        One immutable file per export at :meth:`export_path`, so history
+        survives beside the newest: a degenerate newer export files
+        beside the priced record it cannot price from, and the seal
+        falls back to the whole offer while the older record stays
+        listed for diagnosis.  The export files this at completion, best
+        effort -- its own group receipt is already written, so a failed
+        write costs the next seal its measured rate (which then falls
+        back to the whole offer and fails closed) and not the export its
+        result.  No mint lock and no pricing log: the tier loop never
+        reads these, and one export writes its own file once,
+        uncontended.  Any schema but the export receipt's is refused, as
         ``record_move`` refuses (#1158).
         """
 
@@ -8166,12 +8122,56 @@ class PoolQueue:
                 or not isinstance(tier_id, str) or not tier_id):
             raise PoolContractError(
                 "export receipt names no owner or no tier; record_export "
-                "files one file per (producer action, tier)")
-        if not storage_tiers.export_receipt_measurable(record):
-            return None      # measured nothing: keep the record that did
-        path = self.export_path(owner, tier_id)
+                "files one file per export")
+        path = self.export_path(record.get("action_key"))
+        path.parent.mkdir(parents=True, exist_ok=True)
         _write_json_atomic(path, dict(record))
         return path
+
+    def export_records(self, owner: str, tier_id: str) -> list[dict[str, object]]:
+        """Every export receipt filed for one producer on one tier (#1319).
+
+        Oldest first by ``unix`` (a record without one sorts before any
+        with one), so the caller prices the last entry: the newest of
+        the producer's per-export receipts, the recency rule of
+        :func:`storage_tiers.mover_fill_price`'s latest window without
+        the median a mover needs, because an export prices only its own
+        producer's behaviour.  Another owner's receipts never enter the
+        listing.  A file that is missing, unreadable, or not an export
+        receipt is skipped (never raised: a seal must not fail because
+        one file was truncated), and the caller prices an empty listing
+        as no measurement, which falls back to the whole offer and fails
+        closed.
+        """
+
+        root = self.root / EXPORTS
+        try:
+            names = sorted(os.listdir(root))
+        except FileNotFoundError:
+            return []
+        records = []
+        for name in names:
+            if not name.endswith(".json"):
+                continue
+            try:
+                record = _read_json(root / name, tolerate_stale=True)
+            except (OSError, PoolContractError):
+                continue
+            if (not isinstance(record, dict)
+                    or record.get("schema") != POOL_EXPORT_SCHEMA_V1
+                    or str(record.get("owner") or "") != str(owner)
+                    or str(record.get("tier_id") or "") != str(tier_id)):
+                continue
+            records.append(record)
+
+        def _unix(record):
+            unix = record.get("unix")
+            if isinstance(unix, bool) or not isinstance(unix, (int, float)):
+                return float("-inf")
+            return float(unix)
+
+        records.sort(key=_unix)
+        return records
 
     # -- residency: the map an action reads, and the plan it was cut from ---
 
