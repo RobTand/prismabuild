@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
+import json
 import os
 from pathlib import Path
 import shutil
@@ -64,8 +65,16 @@ def _now() -> float:
 
 def _write_json_atomic(path: Path, payload: Mapping[str, object], *,
                        make_parent: bool = True,
-                       trailing_newline: bool = False) -> None:
+                       trailing_newline: bool = False,
+                       text: str = "canonical",
+                       tmp: str = "pid_uuid",
+                       fsync: bool = True) -> None:
     """Publish a record by rename, so no reader ever sees a partial file.
+
+    The one owner for rename-atomic JSON records (#1330): the pool queue
+    writers already call this, and the hand-rolled remainder migrate to
+    it with exactly the parameters that preserve their history -- never
+    silently upgraded or downgraded.
 
     ``make_parent=False`` skips the ``mkdir``: a caller that rewrites one
     record every cycle creates its directory only when a write finds it
@@ -77,32 +86,89 @@ def _write_json_atomic(path: Path, payload: Mapping[str, object], *,
     ``json.load``, which accepts both shapes, but their bytes are pinned,
     so the flag preserves them bit for bit.  ``False`` keeps this module's
     historical bare bytes, which feed content-addressed paths and must not
-    move.
+    move.  ``text" selects the bytes: ``"canonical"`` (the default,
+    ``_canonical_bytes``), ``"canonical_lf"`` (same plus one LF, the
+    spelling ``trailing_newline=True`` keeps for its callers), or
+    ``"sorted_lf"`` (``json.dumps`` with ``sort_keys`` plus one LF --
+    the exact bytes the hand-rolled writers in ``core``'s status
+    sidecars, ``pool``'s holder records and ``progress`` wrote;
+    ``resource_scope`` keeps its own 8-line spelling because that
+    module ships as a single file inside published generations and
+    cannot import this owner).
 
-    The temp name carries pid and UUID because a lane directory lives on the
-    shared mount: two boxes submitting one action key write into it, and a
-    pid alone names one file on both (retired ``_write_latest`` rationale).
-    The rename sits inside the ``try`` so a failed rename still cleans its
-    temp instead of littering a directory an operator reads.
+    ``tmp`` names the temp file: ``"pid_uuid"`` (the default -- a lane
+    directory lives on the shared mount, where two boxes submitting one
+    action key write into it and a pid alone names one file on both) or
+    ``"pid"`` (the local writers' history).
+
+    ``fsync=False`` skips the file fsync (the local status writers'
+    history -- a best-effort sidecar must not pay spindle latency).
+    The rename sits inside the ``try`` so a failed rename still cleans
+    its temp instead of littering a directory an operator reads.
+
+    Deliberately NOT parametrized further: the upgrade client's
+    (plain temp, post-write chmod, dir fsync) and the resource broker's
+    (token temp, ``O_NOFOLLOW``, dir fsync) writers stay hand-rolled --
+    both are standalone host tools that must not import this package,
+    and their durability contracts are not this owner's.
+    """
+
+    if text not in ("canonical", "canonical_lf", "sorted_lf"):
+        raise MaterializationContractError(
+            f"atomic record text must be canonical, canonical_lf or "
+            f"sorted_lf, not {text!r}")
+    if tmp not in ("pid_uuid", "pid"):
+        raise MaterializationContractError(
+            f"atomic record tmp must be pid_uuid or pid, not {tmp!r}")
+    if make_parent:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    if tmp == "pid_uuid":
+        tmp_name = f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+    else:
+        tmp_name = f".{path.name}.{os.getpid()}.tmp"
+    tmp_path = path.parent / tmp_name
+    if text == "sorted_lf":
+        data = (json.dumps(dict(payload), sort_keys=True) + "\n").encode("utf-8")
+    elif text == "canonical_lf" or trailing_newline:
+        data = pb._canonical_file_bytes(dict(payload))
+    else:
+        data = pb._canonical_bytes(dict(payload))
+    descriptor = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                         0o644)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            if fsync:
+                os.fsync(handle.fileno())
+        os.replace(tmp_path, path)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
+
+
+def write_bytes_atomic(path: Path, data: bytes, *,
+                       make_parent: bool = True) -> None:
+    """Publish exact bytes by rename, beside the JSON owner (#1330).
+
+    ``pool._write_bytes_atomic``'s contract verbatim: pid+UUID temp,
+    ``0o644`` exclusive create, file fsync, rename; the same sync policy
+    as JSON records.  One spelling so the two can never drift.
     """
 
     if make_parent:
         path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.parent / f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
-    if trailing_newline:
-        data = pb._canonical_file_bytes(dict(payload))
-    else:
-        data = pb._canonical_bytes(dict(payload))
-    descriptor = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    temporary = path.parent / f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
     try:
         with os.fdopen(descriptor, "wb") as handle:
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(tmp, path)
     except BaseException:
-        tmp.unlink(missing_ok=True)
+        temporary.unlink(missing_ok=True)
         raise
+    os.replace(temporary, path)
 
 def _run_materializer_git(
     argv: Sequence[str],

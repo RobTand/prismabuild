@@ -63,22 +63,17 @@ def test_no_fsync_still_lands_and_leaves_no_litter():
 def test_temp_styles_land_and_clean_up():
     import tempfile
     with tempfile.TemporaryDirectory() as tmp:
-        for style in ("pid_uuid", "pid", "plain", "secure"):
+        for style in ("pid_uuid", "pid"):
             path = Path(tmp) / f"{style}.json"
             materialize._write_json_atomic(path, {"a": 1}, tmp=style)
             assert _read(path) == b'{"a":1}'
         assert sorted(p.name for p in Path(tmp).iterdir()) == [
-            "pid.json", "pid_uuid.json", "plain.json", "secure.json"]
+            "pid.json", "pid_uuid.json"]
 
 
-def test_mode_and_dir_fsync_and_no_mkdir():
+def test_no_mkdir_leaves_the_missing_directory_missing():
     import tempfile
     with tempfile.TemporaryDirectory() as tmp:
-        path = Path(tmp) / "r.json"
-        materialize._write_json_atomic(path, {"a": 1}, mode=0o600,
-                                       dir_fsync=True)
-        assert os.stat(path).st_mode & 0o777 == 0o600
-        assert _read(path) == b'{"a":1}'
         missing = Path(tmp) / "no-such-dir" / "r.json"
         try:
             materialize._write_json_atomic(missing, {"a": 1},

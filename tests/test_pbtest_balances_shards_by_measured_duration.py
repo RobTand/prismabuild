@@ -187,7 +187,7 @@ def test_no_history_keeps_round_robin():
         ["tests/test_1.py", "tests/test_5.py"],
         ["tests/test_2.py"],
         ["tests/test_3.py"]]
-    assert pbtest.shard(files, 4, durations={}, ceiling=None) == pbtest.shard(files, 4)
+    assert pbtest.shard(files, 4, durations={}, ceiling=None) == pbtest._round_robin(files, 4)
 
 
 def test_the_summary_reports_predicted_against_actual(tmp_path, monkeypatch, capsys):
@@ -380,4 +380,6 @@ def test_shard_packing_properties():
         assert pbtest.shard(files, count, durations=dict(durations),
                             ceiling=ceiling) == first
         if not durations:
-            assert first == pbtest.shard(files, count)
+            # Pinned rotation, not the function under test (#1303 P3:
+            # comparing shard() with itself proves nothing).
+            assert first == pbtest._round_robin(files, max(1, min(count, n)))

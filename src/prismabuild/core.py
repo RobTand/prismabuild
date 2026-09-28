@@ -8178,12 +8178,11 @@ def _write_action_status(body: Mapping[str, object]) -> None:
         merged.update(existing)
     merged.update(body)
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.parent / f".{path.name}.{os.getpid()}.tmp"
-        tmp.write_text(
-            json.dumps(merged, sort_keys=True) + "\n", encoding="utf-8"
-        )
-        os.replace(tmp, path)
+        # Local import: materialize imports this module, so the owner
+        # resolves here, once, instead of at module load (#1330).
+        from .materialize import _write_json_atomic
+        _write_json_atomic(path, merged, text="sorted_lf", tmp="pid",
+                           fsync=False)
     except OSError:
         pass
 
@@ -8568,10 +8567,10 @@ def report_action_progress(
         record["unit"] = str(unit)
     path = Path(destination)
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.parent / f".{path.name}.{os.getpid()}.tmp"
-        tmp.write_text(json.dumps(record, sort_keys=True) + "\n", encoding="utf-8")
-        os.replace(tmp, path)
+        # Local import: see _write_action_status (#1330).
+        from .materialize import _write_json_atomic
+        _write_json_atomic(path, record, text="sorted_lf", tmp="pid",
+                           fsync=False)
     except OSError:
         # Reporting is never worth failing an action for.  A report that does
         # not land is a stall to the watchdog, which is the honest reading of a

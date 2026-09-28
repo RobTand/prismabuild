@@ -286,6 +286,15 @@ def read_process_io(pid: int) -> tuple[str, int, dict[str, int] | None] | None:
 
 
 def _atomic_json(path: Path, record: dict) -> None:
+    """Rename-atomic JSON record, standalone-copy safe (#1330).
+
+    This module ships as a single file inside published generations
+    (see ``test_wrapper_and_proxy_support_source_and_published_layouts``),
+    so it cannot import the record owner in ``materialize``: the eight
+    lines below are the price of that layout.  Same bytes as the owner
+    with ``text=\"sorted_lf\", tmp=\"pid\", fsync=False``.
+    """
+
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = path.with_name(f'.{path.name}.{os.getpid()}.tmp')
     try:
