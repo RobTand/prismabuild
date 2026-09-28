@@ -216,7 +216,7 @@ def test_bad_history_is_ignored_with_a_stated_reason(tmp_path):
     history, problems = pbtest.load_history(
         [str(good), str(rotted), str(foreign), str(mixed),
          str(tmp_path / "missing.json")])
-    assert history == {"tests/test_a.py": [4.0],
+    assert history == {"test_a.py": [4.0],
                        "tests/test_c.py": [2.0]}, history
     assert len(problems) == 4, problems
     assert any("rotted.json" in problem for problem in problems)
