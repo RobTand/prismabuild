@@ -277,8 +277,11 @@ def test_a_failed_reader_that_cannot_be_reaped_still_ends_at_once(
             pbrun.RECORD_WRITE_FAILED_EXIT
         assert time.monotonic() - started < 3
         err = capsys.readouterr().err
-        assert "failed (RuntimeError: the mount answered EIO) and its reader " \
-            "could not be reaped" in err
+        assert "the mount answered EIO" in err
+        # #1216 diagnostics ride along: the read stage and the failed
+        # reader's identity are named instead of a bare message.
+        assert "stage=read:" in err
+        assert "reader pid=" in err
         assert "when the terminal re-read ended" in err
         assert "still retained" not in err
         assert len(readers.forked) == 2

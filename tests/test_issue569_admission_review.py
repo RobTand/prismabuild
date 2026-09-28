@@ -184,10 +184,12 @@ def test_high_some_never_shares_the_held_preferred_cpu(tmp_path, monkeypatch):
         assert meta.get('borrowing') is not True
 
 
-def test_hot_cpus_this_claim_would_receive_refuse_even_with_idle_cores_later(
+def test_hot_cpus_inside_the_tier_are_skipped_for_idle_ones(
         tmp_path, monkeypatch):
-    """The proof is about the CPUs the ledger would hand over, not about how
-    many idle cores exist somewhere on the box."""
+    """#1210 eligible-token selection: the proof is about the CPUs the
+    ledger would hand over, not about how many idle cores exist somewhere
+    on the box.  With the hot half of the preferred tier skipped, the claim
+    is served from the idle half instead of being refused."""
     from prismabuild import adaptive_cpu
     cpus = list(range(8))
     tiers = {'preferred': cpus, 'fallback': []}
@@ -197,6 +199,25 @@ def test_hot_cpus_this_claim_would_receive_refuse_even_with_idle_cores_later(
     monkeypatch.setattr(adaptive_cpu.Controller, 'sample',
                         lambda self: host_sample(cpus, busy, .633))
     publish(queue, tmp_path, resources={'cpu': 4, 'mem_gb': 1})
+    item = queue.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True)
+    assert item is not None
+    assert item['cpu_allocation'] == {'preferred': [4, 5, 6, 7], 'fallback': []}
+
+
+def test_a_claim_that_would_have_to_take_hot_cpus_still_refuses(
+        tmp_path, monkeypatch):
+    """The #569 invariant under the #1210 contract: when hot CPUs are the
+    only ones left to take, admission refuses -- idle-core pressure math
+    does not excuse serving a claim onto foreign-busy CPUs."""
+    from prismabuild import adaptive_cpu
+    cpus = list(range(8))
+    tiers = {'preferred': cpus, 'fallback': []}
+    queue, capacity = box(tmp_path, tiers)
+    monkeypatch.setattr(adaptive_cpu, 'action_identity', lambda item: ('shape', False))
+    busy = {cpu: (1. if cpu < 4 else 0.) for cpu in cpus}
+    monkeypatch.setattr(adaptive_cpu.Controller, 'sample',
+                        lambda self: host_sample(cpus, busy, .633))
+    publish(queue, tmp_path, resources={'cpu': 8, 'mem_gb': 1})
     assert queue.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True) is None
 
 
