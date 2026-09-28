@@ -933,6 +933,29 @@ MOVE_PRICING_FIELDS = (
     "stage_root", "entries_judged", "census_s", "census_validate_s",
     "lock_held_s", "unlink_s", "prune_s",
 )
+
+#: Where a finished produced-output export files its pacing record (#1014
+#: item 3).  A sidecar beside ``movers/``, for the write side of the pool: a
+#: producer's next paced export seals its fill from the newest record here
+#: that is its own (:func:`storage_tiers.export_measured_mb_s` over
+#: :meth:`PoolQueue.export_records`).  The group-local receipt carries the
+#: same pacing body, but it retires with the group's checkpoint (#1001), and
+#: the rate a next seal prices from must stay readable after that.  A
+#: directory of its own, not entries in ``movers/``: a mover receipt prices
+#: pool *reads*, and folding an export's write among them would make
+#: ``usable_mover_receipts`` count a writer among the readers.
+EXPORTS = "exports"
+#: The schema of one filed export receipt: the export's pacing record with
+#: the identity a next seal needs -- action key, unix, tier, owner.
+POOL_EXPORT_SCHEMA_V1 = "prismaquant.prismabuild.pool_export.v1"
+#: What an export-pricing read keeps of each filed receipt, in the shape
+#: :meth:`PoolQueue.export_records` answers: every field
+#: :func:`storage_tiers.export_measured_mb_s` consults, and nothing else.
+EXPORT_PRICING_FIELDS = (
+    "schema", "action_key", "unix", "tier_id", "owner",
+    "rate_mb_s", "bytes", "seconds", "held_seconds",
+    "flushes", "mb_per_s_file_side",
+)
 MOVE_PRICING_PACING_FIELDS = ("pool_read_bytes", storage_tiers.POOL_FILL_FIELD,
                               "held_seconds", storage_tiers.YIELDED_FIELD)
 
@@ -8056,6 +8079,68 @@ class PoolQueue:
                 "action_key": action_key}
         _write_json_atomic(path, body)
         return path, body
+
+    def export_path(self, action_key: str) -> Path:
+        """The sidecar one finished export files its rate under (#1014 item 3)."""
+
+        return self.root / EXPORTS / f"{action_key}.json"
+
+    def export_records(self) -> list[dict[str, object]]:
+        """The pricing fields of every filed export receipt, oldest first.
+
+        The history a producer's next paced export prices itself from
+        (#1014 item 3): each record is one finished export's pacing record
+        with the identity it needs -- action key, unix, tier, owner -- as
+        :meth:`record_export` filed it under ``exports/``.  A record that
+        is unreadable, not a dict, or not an export receipt is skipped,
+        never raised: a seal must not fail because one older receipt was
+        truncated.  The order is :meth:`move_records`': by action key,
+        then by ``unix``.
+        """
+
+        directory = self.root / EXPORTS
+        out: list[dict[str, object]] = []
+        try:
+            paths = sorted(directory.glob("*.json"), key=lambda path: path.name)
+        except OSError:
+            return out
+        for path in paths:
+            try:
+                full = _read_json(path, tolerate_stale=True)
+            except (OSError, PoolContractError):
+                continue
+            if (not isinstance(full, dict)
+                    or full.get("schema") != POOL_EXPORT_SCHEMA_V1):
+                continue
+            out.append({name: full[name] for name in EXPORT_PRICING_FIELDS
+                        if name in full})
+        out.sort(key=lambda record: str(record.get("action_key") or ""))
+        out.sort(key=lambda record: float(record.get("unix", 0.0) or 0.0))
+        return out
+
+    def record_export(self, action_key: str, record: Mapping[str, object]) -> Path:
+        """File one finished export's pacing record (#1014 item 3).
+
+        A sidecar like :meth:`record_move`, for the pool's write side: the
+        export files this at completion, best effort -- its own group
+        receipt is already written, so a failed sidecar write costs the
+        next seal its measured rate (which then falls back to the whole
+        offer and fails closed) and not the export its result.  No mint
+        lock and no pricing log: the tier loop never reads these, and one
+        producer files one record per finished group, so the directory
+        stays small and uncontended.  Any schema but the export
+        receipt's is refused, as ``record_move`` refuses (#1158).
+        """
+
+        schema = record.get("schema") if isinstance(record, Mapping) else None
+        if schema != POOL_EXPORT_SCHEMA_V1:
+            raise PoolContractError(
+                f"export receipt {action_key} has schema {schema!r}; "
+                f"record_export files only {POOL_EXPORT_SCHEMA_V1}")
+        path = self.export_path(action_key)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _write_json_atomic(path, {**dict(record), "action_key": action_key})
+        return path
 
     # -- residency: the map an action reads, and the plan it was cut from ---
 

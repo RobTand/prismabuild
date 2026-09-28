@@ -1562,6 +1562,65 @@ def current_fill_offer(tier: Mapping[str, object],
     return offer, offer, "tier-offer-cap"
 
 
+def export_measured_mb_s(records: Iterable[Mapping[str, object]], *,
+                           tier_id: str, owner: str) -> int | None:
+    """The rate one producer's newest complete export wrote at, or ``None``.
+
+    The measured side of an export's fill seal (#1014 item 3): the owner's
+    newest filed export receipt on this tier
+    (:meth:`pool.PoolQueue.export_records`), priced at its achieved
+    file-side rate ``mb_per_s_file_side`` -- bytes over seconds for the
+    whole export, a rate the export's own pacer held it to, so it is a
+    lower bound on what the producer can write and a pacer-bound export
+    re-seals at about its seal.  Newest valid record only, never a
+    statistic over the whole history: the recency rule of
+    :func:`mover_fill_price`'s latest window, without the median a mover
+    needs, because an export prices only its own producer's behaviour.
+
+    A record that is not this owner's or not this tier's is not the
+    producer's history; an incomplete one (``bytes`` or ``seconds`` not
+    positive) wrote nothing measurable; one slower than 1 MB/s prices
+    nothing, as a mover receipt under 1 MB/s does -- the ledger counts
+    whole MB/s.  Invalid records are skipped, not fatal, and the newest
+    *valid* record wins: a degenerate latest export (a tiny group that
+    measured under the floor) does not erase the real rate the producer
+    wrote at before it.  ``None`` means no measurement, and the caller's
+    seal falls back to the tier's whole offer, which runs one export at a
+    time: the missing signal fails closed and never admits a second
+    writer.
+    """
+
+    best_key: tuple[float, str] | None = None
+    best_rate: float | None = None
+    for record in records:
+        if not isinstance(record, Mapping):
+            continue
+        if str(record.get("tier_id") or "") != str(tier_id):
+            continue
+        if str(record.get("owner") or "") != str(owner):
+            continue
+        total = record.get("bytes")
+        seconds = record.get("seconds")
+        if (isinstance(total, bool) or not isinstance(total, (int, float))
+                or float(total) <= 0.0
+                or isinstance(seconds, bool) or not isinstance(seconds, (int, float))
+                or float(seconds) <= 0.0):
+            continue
+        rate = record.get("mb_per_s_file_side")
+        if (isinstance(rate, bool) or not isinstance(rate, (int, float))
+                or not math.isfinite(float(rate)) or float(rate) < 1.0):
+            continue
+        when = record.get("unix")
+        when = (float(when) if isinstance(when, (int, float))
+                and not isinstance(when, bool) else 0.0)
+        key = (when, str(record.get("action_key") or ""))
+        if best_key is None or key > best_key:
+            best_key, best_rate = key, float(rate)
+    if best_rate is None:
+        return None
+    return int(best_rate)
+
+
 def mover_fill_demand_from_receipts(
     records: Iterable[Mapping[str, object]], *, tier_id: str,
     pool_identity: Mapping[str, object] | None = None,
@@ -2590,6 +2649,7 @@ __all__ = [
     "PROMOTION_CHUNKS_PER_WINDOW",
     "fill_supply_from_records",
     "mover_fill_demand_from_receipts",
+    "export_measured_mb_s",
     "mover_fill_price",
     "manifest_phase_ranges",
     "manifest_read_entries",

@@ -15,9 +15,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import test_a_producers_exports_run_on_its_allowance as al
 import test_prepaid_writer_integration as fx
 import test_produced_spool as base
-from prismabuild import pool, produced_spool as ps, storage_tiers
+from prismabuild import core, pool, produced_output as po, produced_spool as ps, storage_tiers
 
 FILL = storage_tiers.FILL_KIND
 FILL_DEMAND = f"{FILL}{storage_tiers.TIER_DEMAND_SEPARATOR}{fx.TIER}"
@@ -27,6 +28,28 @@ EXPORT_RECEIPT_SCHEMA = "prismaquant.prismabuild.pool_export.v1"
 #: The literal record the fix reads, written by hand for the seal tests:
 #: on a tree without the reader it is inert, which is exactly the defect.
 PRIOR_EXPORT_KEY = "a" * 64
+
+
+def world_roomy(tmp_path, *, payload_max: int):
+    """A producer whose template allows two 1 MiB payloads outstanding."""
+
+    cas_root = tmp_path / "cas"
+    template = fx._template(str(tmp_path / "canonical"))
+    template["durable_maxima"]["payload_max_bytes"] = payload_max
+    initial = fx._producer_request(tmp_path, cas_root, template)
+    cas, request = po._read_producer_request(cas_root, initial)
+    request.pop("action_key")
+    request["environment"]["variables"].update(
+        {ps.ROOT_ENV: str(tmp_path / "local"), ps.MAX_ENV: str(2 << 20),
+         ps.PACED_EXPORT_ENV: "1"})
+    action = core.seal_action(request)
+    cas.publish_action_request(action)
+    owner = action["action_key"]
+    q = fx._queue(tmp_path)
+    inst = fx._bind(q, template, owner, cas_root)
+    fx._announce_tier(q, tmp_path / "stage")
+    return ps.ProducedSpool(q, inst, template, cas_root=cas_root,
+                            root=tmp_path / "local", max_bytes=2 << 20)
 
 
 def offer_fill(queue: pool.PoolQueue, mb_s: int) -> None:
@@ -60,14 +83,25 @@ def claim(spool):
     return spool.queue.claim(owner="share-a-tier-test", tags=[spool.host])
 
 
-def test_two_paced_exports_from_one_producer_share_the_tier(tmp_path):
-    """Each measured well under half the offer: both claim, a third waits.
+def second_paced_write(spool, mb_s: int) -> str:
+    """Another producer's paced export: a plain row tagged to the host and
+    sealing ``mb_s`` of the tier's fill, priced at its own measured rate."""
+
+    cas = core.PrismaBuildCAS(spool.root.parent / "cas")
+    return al._foreign(spool, cas, "paced-write",
+                       {"cpu": 1, "mem_gb": 1, FILL_DEMAND: mb_s})
+
+
+def test_two_paced_exports_from_two_producers_share_the_tier(tmp_path):
+    """Each measured well under half the offer: both claim, and the offer bounds them.
 
     The producer's prior export wrote at 60 MB/s on a tier offering 164,
-    so both of its next exports seal at 60 and run together, and the tier
-    ledger keeps their sum at the offer: a third 60 MB/s export finds
-    164 - 120 = 44 free and waits.  Without the measured rate the seal is
-    the whole offer and the second export waits for the first to end --
+    so its next export seals at 60 instead of the whole offer.  A second
+    producer's paced write, likewise measured at 60, claims beside it --
+    the two exports run together, which the whole-offer seal refused --
+    and the tier ledger keeps their summed rate at the offer: 44 tokens
+    stay free.  Without the measured rate the seal is the whole offer,
+    free is zero, and the second producer waits for the first to end --
     the serialization this file pins away.
     """
 
@@ -80,27 +114,23 @@ def test_two_paced_exports_from_one_producer_share_the_tier(tmp_path):
     claimed_first = claim(spool)
     assert claimed_first is not None and claimed_first["action_key"] == first["export_key"]
 
-    second = spool.submit_group("b2", base.prepare(spool, "b2")[2])
-    assert sealed(spool, "b2")["params"]["demand"][FILL_DEMAND] == 60
+    foreign = second_paced_write(spool, 60)
     claimed_second = claim(spool)
-    assert claimed_second is not None and claimed_second["action_key"] == second["export_key"]
+    assert claimed_second is not None and claimed_second["action_key"] == foreign
 
     ledger = spool.queue.tier_ledger(fx.TIER)
     assert ledger.holder_tokens(first["export_key"]).get(FILL) == 60
-    assert ledger.holder_tokens(second["export_key"]).get(FILL) == 60
+    assert ledger.holder_tokens(foreign).get(FILL) == 60
     assert ledger.available().get(FILL, 0) == 44     # the offer bounds the sum
-
-    spool.submit_group("b3", base.prepare(spool, "b3")[2])
-    assert sealed(spool, "b3")["params"]["demand"][FILL_DEMAND] == 60
-    assert claim(spool) is None         # a third waits its turn
 
 
 def test_an_export_with_no_measured_rate_takes_the_whole_offer(tmp_path):
     """No receipt for this producer: the seal is the offer, and it is exclusive.
 
     The conservative default is unchanged (#747): a missing signal fails
-    closed, so the export reserves the whole offer and a second paced
-    export -- same producer, still no measurement -- waits for it.
+    closed, so the export reserves the whole offer and a measured second
+    producer -- sealing 60 of the 164 it could justify -- still waits, a
+    stranger's row that no family fill can cover (#999).
     """
 
     spool = base.world(tmp_path, env={ps.PACED_EXPORT_ENV: "1"})
@@ -115,9 +145,11 @@ def test_an_export_with_no_measured_rate_takes_the_whole_offer(tmp_path):
     ledger = spool.queue.tier_ledger(fx.TIER)
     assert ledger.available().get(FILL, 0) == 0     # the whole offer is held
 
-    second = spool.submit_group("b2", base.prepare(spool, "b2")[2])
-    assert sealed(spool, "b2")["params"]["demand"][FILL_DEMAND] == 164
+    foreign = second_paced_write(spool, 60)
     assert claim(spool) is None         # no measurement, no second writer
+    assert spool.queue.item_path(pool.READY, foreign).exists()
+    denial = al._denial(spool.queue, foreign)
+    assert denial["reason"] == "tier_reservation_unavailable", denial
 
 
 def test_a_finished_export_files_its_rate_and_prices_the_next_seal(tmp_path):
@@ -129,7 +161,7 @@ def test_a_finished_export_files_its_rate_and_prices_the_next_seal(tmp_path):
     the offer.
     """
 
-    spool = base.world(tmp_path, maximum=2 << 20, env={ps.PACED_EXPORT_ENV: "1"})
+    spool = world_roomy(tmp_path, payload_max=2 << 20)
     offer_fill(spool.queue, 2)
     payload = b"x" * 1_000_000      # under the template's 1 MiB payload maximum
     _source, _destination, entries = base.prepare(spool, payload=payload, ceiling=1 << 20)
