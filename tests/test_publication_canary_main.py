@@ -70,3 +70,28 @@ def test_real_main_grant_binds_exact_request_and_ready_generation(tmp_path, monk
     assert bound["action_key"] == key
     assert bound["published_unix"] == item["published_unix"] == line["published_unix"]
     assert slots.verified(q.root, item)
+
+
+def test_real_main_placement_refusal_precedes_the_grant(tmp_path, monkeypatch):
+    """#1278: an unplaceable canary is refused before the publisher mints.
+
+    The grant is one per runtime generation and host.  A submission that
+    minted it and was then refused at placement spent the slot on work that
+    never ran; the placement verdict must come first.
+    """
+    q, intent = _private_submission(tmp_path, monkeypatch)
+    host = socket.gethostname()
+    # The only box still offers the previous generation: the rollout's shape.
+    q.announce(host=host, tags=[host, slots.CAPABILITY,
+                                "runtime-generation:previous-generation"],
+               has_gpu=True, capacity={"cpu": 4, "gpu": 1, "mem_gb": 16})
+    seen = []
+
+    def grant(action):
+        seen.append(action["action_key"])
+        slots.mint(q.root, action, run_id="private-main")
+
+    with pytest.raises(SystemExit):
+        pbrun.main(publication_canary_intent=intent, authorize_canary=grant)
+    assert seen == []
+    assert not slots.slot_path(q.root, intent).exists()

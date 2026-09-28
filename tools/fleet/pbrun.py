@@ -8269,7 +8269,16 @@ def main(*, publication_canary_intent=None, authorize_canary=None) -> int:
             "prevent reproduction by this client."
         )
 
+    placement_announced = False
     if publication_canary_intent is not None:
+        # The placement verdict runs BEFORE the grant (#1278).  The grant is
+        # one per runtime generation and host and is never replenished, so a
+        # submission refused at placement after the mint would spend the
+        # slot on work that never ran.
+        announce_placement(
+            prepared["offer_queue"](), action, args=args, cwd=cwd,
+            portable_checkout=portable_checkout)
+        placement_announced = True
         authorize_canary(action)
     request_path = cas.publish_action_request(action)
 
@@ -8357,11 +8366,12 @@ def main(*, publication_canary_intent=None, authorize_canary=None) -> int:
             detach=args.detach,
         )
 
-    offer_q = prepared["offer_queue"]()
     q = pool.PoolQueue(SH / "pb-queue")
 
-    announce_placement(
-        offer_q, action, args=args, cwd=cwd, portable_checkout=portable_checkout)
+    if not placement_announced:
+        announce_placement(
+            prepared["offer_queue"](), action, args=args, cwd=cwd,
+            portable_checkout=portable_checkout)
 
     # Read the decision this submission is about to supersede, so the caller is
     # told rather than surprised.  ``publish`` retires the marker -- a key is a

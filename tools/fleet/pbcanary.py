@@ -272,9 +272,15 @@ def generation_pending(paths: dict, spec: dict, generation: str | None,
     }
     full = {**base, "tags": [*base["tags"],
                              f"runtime-generation:{generation}"]}
-    if queue.placeable(full) is True:
+    # pbrun's placement verdict reads every recorded offer, not the live
+    # window, so a box busy past it still blocks on its retained
+    # old-generation offer.  Read the same offers, or "not pending" lets the
+    # leg submit into that refusal (#1278).
+    import pbrun
+    recorded = pbrun.RECORDED_OFFER_MAX_AGE_S
+    if queue.placeable(full, max_age_s=recorded) is True:
         return False
-    return queue.placeable(base) is True
+    return queue.placeable(base, max_age_s=recorded) is True
 
 
 def submit_leg(
@@ -664,6 +670,15 @@ def _prepare_leg3(module, spec: dict, leg_dir: Path, paths: dict
     return flags, env, manifest_path
 
 
+def _await_generation(label: str, generation: str | None, wait_s: int,
+                      deadline: float) -> None:
+    print(f"pbcanary: {label}: the image-holding box has not "
+          f"re-offered on generation {generation}; waiting within "
+          f"the leg's {wait_s}s budget before submitting",
+          flush=True)
+    time.sleep(min(15.0, max(1.0, deadline - time.monotonic())))
+
+
 def _execute_side(
     paths: dict, *, leg: str, spec: dict, argv: list[str] | None,
     checkout: Path, run_id: str, generation: str | None, priority: int,
@@ -687,7 +702,25 @@ def _execute_side(
     # budget -- the rollout is minutes, and refusing here would refuse the
     # generation the canary exists to certify.  Anything else (an image no
     # box reports, another blocker) refuses exactly as before.
+    #
+    # A leg whose submission mints the generation's one publication-canary
+    # slot waits BEFORE it submits, and submits once (#1278).  pbrun now
+    # refuses an unplaceable canary before the grant, but a refusal after
+    # the grant has spent the slot, and this side cannot tell the two apart;
+    # a resubmit would collide with its own slot and refuse as "output
+    # already exists".  Still pending at the deadline, it refuses without
+    # submitting, and the slot stays unspent for a later canary run.
     deadline = time.monotonic() + float(wait_s)
+    mints = (spec.get("name") == "leg-2"
+             and paths.get("publication_canary_authorizer") is not None)
+    while mints and generation_pending(
+            paths, spec, generation, socket.gethostname()):
+        if time.monotonic() >= deadline:
+            raise PreconditionRefused(
+                f"precondition refused ({label}): the image-holding box did "
+                f"not re-offer on generation {generation} within the leg's "
+                f"{wait_s}s budget; the canary slot was not minted: did not test")
+        _await_generation(label, generation, wait_s, deadline)
     while True:
         try:
             action_key, detach = submit_leg(
@@ -697,15 +730,13 @@ def _execute_side(
             )
             break
         except PreconditionRefused:
+            if mints:
+                raise
             pending = generation_pending(
                 paths, spec, generation, socket.gethostname())
             if not pending or time.monotonic() >= deadline:
                 raise
-            print(f"pbcanary: {label}: the image-holding box has not "
-                  f"re-offered on generation {generation}; waiting within "
-                  f"the leg's {wait_s}s budget before resubmitting",
-                  flush=True)
-            time.sleep(min(15.0, max(1.0, deadline - time.monotonic())))
+            _await_generation(label, generation, wait_s, deadline)
     write_json(leg_dir / f"detach{file_tag}.json", detach)
     short = action_key[:12]
 
