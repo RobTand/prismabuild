@@ -724,13 +724,9 @@ def run_action() -> int:
 
 
 def _extract_envelope(receipt: object) -> tuple[str | None, dict | None, str]:
-    """Find the leg-3 envelope in ``receipt``.
+    """Bind ``common.extract_envelope`` to the leg-3 schema marker.
 
-    Returns ``(raw, parsed, where)``; ``raw`` is None when the receipt
-    carries only a parsed envelope. Accepted locations, in order:
-    ``receipt["envelope"]``, ``receipt["stdout"]``,
-    ``receipt["detail"]["stdout"]``. Stdout is scanned for the last line
-    that parses as a JSON object with this leg's schema marker.
+    The accepted locations and return shape are documented there once.
     """
     return extract_envelope(receipt, schema=LEG3_SCHEMA)
 
