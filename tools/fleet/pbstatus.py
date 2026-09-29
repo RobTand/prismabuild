@@ -807,6 +807,13 @@ def _admission_sample(record: dict | None | Exception, *, now: float, max_age_s:
             "age_s": age, "record": record}
 
 
+#: An offer this old marks its box ``retired`` in the node census (#1040): the
+#: loop that wrote it is not restarting, the box left.  One day is far past
+#: ``pool.OFFER_TIMEOUT_S`` (a supervisor replaces a loop within minutes) and
+#: short enough that a decommissioned box stops reading as a transient outage.
+OFFER_RETIRED_AFTER_S = 86400.0
+
+
 def _valid_pool_offer(host: str, offer: dict | None) -> bool:
     return (offer is not None and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*', host) is not None
             and offer.get("schema") == pool.POOL_OFFER_SCHEMA_V1
@@ -1016,6 +1023,14 @@ def read_pool(queue_root: str | Path) -> dict:
         else:
             state = "live" if fresh else "stale"
             note = None if fresh else "offer expired or timestamp invalid"
+            # An offer nobody has refreshed for a day is a box that left the
+            # fleet, not a loop that is restarting (#1040).  It is marked, never
+            # deleted: the file is another box's record, and only that box, or
+            # an operator who knows it is gone, may remove it.
+            if not fresh and age is not None and age > OFFER_RETIRED_AFTER_S:
+                state = "retired"
+                note = (f"offer unrefreshed for {age / 86400:.1f} days; "
+                        "box treated as retired (record kept)")
         nodes.append({
             "node": host, "transport": "pool", "state": state,
             "healthy": fresh, "age_s": age, "capacity": offer.get("capacity"),
