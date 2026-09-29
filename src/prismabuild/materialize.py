@@ -185,10 +185,13 @@ def _run_materializer_git(
     environment: Mapping[str, str] | None = None,
 ) -> str:
     try:
-        completed = subprocess.run(
-            list(argv),
-            capture_output=True,
-            text=True,
+        # ``argv`` is ``git <args>``; ``git -C . <args>`` is the same command
+        # run through the one shared runner (#1318).
+        if not argv or argv[0] != "git":
+            raise MaterializationError(f"{where} failed: not a git command")
+        completed = pb._git_run(
+            ".",
+            *argv[1:],
             timeout=120,
             env=None if environment is None else dict(environment),
         )
