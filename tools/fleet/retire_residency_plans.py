@@ -41,7 +41,9 @@ def candidates(queue: pool.PoolQueue) -> list[str]:
     return keys
 
 
-def run(queue: pool.PoolQueue, *, apply: bool) -> dict[str, list[str]]:
+def retire_concluded_plans(queue: pool.PoolQueue, *, apply: bool) -> dict[str, list[str]]:
+    """Reap each candidate plan (or only list it when ``apply`` is false)."""
+
     result: dict[str, list[str]] = {"retired": [], "kept": [], "would_retire": []}
     for key in candidates(queue):
         if not apply:
@@ -58,7 +60,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--apply", action="store_true",
                         help="archive the plans (default: dry run)")
     args = parser.parse_args(argv)
-    result = run(pool.PoolQueue(Path(args.queue)), apply=args.apply)
+    result = retire_concluded_plans(pool.PoolQueue(Path(args.queue)), apply=args.apply)
     print(json.dumps({"apply": args.apply,
                       **{k: len(v) for k, v in result.items()},
                       "keys": result}, indent=1))

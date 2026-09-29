@@ -30,9 +30,9 @@ def test_dry_run_changes_nothing_and_apply_archives_a_concluded_plan(
     queue.item_path(pool.READY, key).unlink()
     assert tool.candidates(queue) == [key]
 
-    assert tool.run(queue, apply=False)["would_retire"] == [key]
+    assert tool.retire_concluded_plans(queue, apply=False)["would_retire"] == [key]
     assert queue.residency_plan_path(key).exists()
 
-    assert tool.run(queue, apply=True)["retired"] == [key]
+    assert tool.retire_concluded_plans(queue, apply=True)["retired"] == [key]
     assert not queue.residency_plan_path(key).exists()
     assert tool.candidates(queue) == []
