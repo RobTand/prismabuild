@@ -693,6 +693,12 @@ def _canonical_file_bytes(value: object) -> bytes:
     return _canonical_bytes(value) + b"\n"
 
 
+def _sorted_lf_bytes(value: object) -> bytes:
+    """The hand-rolled writers' spelling, owned here (#1331)."""
+
+    return (json.dumps(dict(value), sort_keys=True) + "\n").encode("utf-8")
+
+
 def canonical_sha256(value: object) -> str:
     """Hash canonical JSON without importing another repository module."""
 

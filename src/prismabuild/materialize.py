@@ -22,7 +22,6 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
-import json
 import os
 from pathlib import Path
 import shutil
@@ -89,12 +88,12 @@ def _write_json_atomic(path: Path, payload: Mapping[str, object], *,
     move.  ``text" selects the bytes: ``"canonical"`` (the default,
     ``_canonical_bytes``), ``"canonical_lf"`` (same plus one LF, the
     spelling ``trailing_newline=True`` keeps for its callers), or
-    ``"sorted_lf"`` (``json.dumps`` with ``sort_keys`` plus one LF --
-    the exact bytes the hand-rolled writers in ``core``'s status
-    sidecars, ``pool``'s holder records and ``progress`` wrote;
-    ``resource_scope`` keeps its own 8-line spelling because that
-    module ships as a single file inside published generations and
-    cannot import this owner).
+    ``"sorted_lf"`` (``core._sorted_lf_bytes`` -- ``json.dumps`` with
+    ``sort_keys`` plus one LF, the exact bytes the hand-rolled writers
+    in ``core``'s status sidecars, ``pool``'s holder records and
+    ``progress`` wrote; ``resource_scope`` keeps its own 8-line
+    spelling because that module ships as a single file inside
+    published generations and cannot import this owner).
 
     ``tmp`` names the temp file: ``"pid_uuid"`` (the default -- a lane
     directory lives on the shared mount, where two boxes submitting one
@@ -134,7 +133,7 @@ def _write_json_atomic(path: Path, payload: Mapping[str, object], *,
         tmp_name = f".{path.name}.{os.getpid()}.tmp"
     tmp_path = path.parent / tmp_name
     if text == "sorted_lf":
-        data = (json.dumps(dict(payload), sort_keys=True) + "\n").encode("utf-8")
+        data = pb._sorted_lf_bytes(dict(payload))
     elif text == "canonical_lf" or trailing_newline:
         data = pb._canonical_file_bytes(dict(payload))
     else:
