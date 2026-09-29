@@ -263,9 +263,13 @@ for one box's whole GPU capacity, so it derives GPU demand and refuses when no
 tagged worker announces a GPU. It says nothing about CPU isolation.
 
 `--measurement` is the isolation mechanism, and `adaptive_cpu.Controller.decision`
-enforces it. A measurement is admitted only against a fresh host sample showing
-at most 5% of the box's cores busy. It refuses to start while any other
-reservation is held on the host, and blocks other admissions while it holds one.
+enforces it. A measurement requires a fresh host sample that does not exceed
+the host's measured idle baseline for busy CPUs or PSI `some`. The admission
+record publishes that judgement as `idle_baseline`; record it with the result.
+The fixed 5%-busy/PSI-0.10 limits apply only while the baseline is unmeasured,
+not as an additional limit on a measured host (see "Idle baseline (#997)" in
+`docs/design.md`). It refuses to start while any other reservation is held on
+the host, and blocks other admissions while it holds one.
 It never borrows CPU capacity, and its own reservation is never lent out. Action
 validation in `core` refuses a measurement whose execution scope is portable, so
 the result carries the platform or host class that produced it.
