@@ -67,6 +67,13 @@ import pbrun  # noqa: E402
 #: runtime containing this file uses.  ``None`` when neither layout has one.
 PBRUN = fleet_tool("pbrun.py", root=RUNTIME_ROOT)
 SHARED = Path("/mnt/shared")
+#: Each shard holds one pbrun client on the submitting box for its whole wait,
+#: about this much resident memory apiece (#1348).
+CLIENT_RSS_MB = 80
+#: Most clients kept resident at once; 24 shards would otherwise pin ~2 GB on a
+#: box whose watchdog reads box-wide RAM.  ``--max-clients 0`` restores one per
+#: shard.
+DEFAULT_MAX_CLIENTS = 8
 
 #: pytest's terminal summary line -- the one line that says pytest reached the
 #: end of a session.  Built from ``_pytest.terminal``'s own grammar:
@@ -1070,6 +1077,12 @@ def main() -> int:
                     help="how many actions the suite is split into, "
                          "round-robin over the discovered files; more than "
                          "there are files is lowered to one shard per file")
+    ap.add_argument("--max-clients", type=int, default=DEFAULT_MAX_CLIENTS,
+                    help="most pbrun clients this process keeps resident at "
+                         f"once (default {DEFAULT_MAX_CLIENTS}; 0 = one per "
+                         f"shard).  Each is about {CLIENT_RSS_MB} MB on the "
+                         "submitting box for the shard's whole wait, so the "
+                         "rest of the shards start as clients exit (#1348)")
     ap.add_argument("--workers-per-shard", type=int, default=1,
                     help="pytest workers in each action; above 1 uses pytest-xdist "
                          "(-n N), which must be installed in the target interpreter")
@@ -1483,6 +1496,12 @@ def main() -> int:
             "-p", "no:cacheprovider", *explicit_options,
             *shard_pytest_args(pytest_args, index), *pytest_workers, *bucket,
         ]
+        # Hold at most ``--max-clients`` pbrun clients (#1348): the next shard
+        # starts when one exits.  Its wait budget starts here, at its own
+        # submission, not while it queued behind the others.
+        if args.max_clients > 0:
+            while sum(1 for entry in procs if entry[2].is_alive()) >= args.max_clients:
+                next(entry[2] for entry in procs if entry[2].is_alive()).join(0.05)
         # The shard's own wait budget, spanning every attempt (#1102).
         deadline = time.monotonic() + args.wait_s
         # ``errors="replace"``: a stray byte must not end the drain thread,
