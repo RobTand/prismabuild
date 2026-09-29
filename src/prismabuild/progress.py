@@ -38,8 +38,6 @@ from pathlib import Path
 import sys
 import time
 
-from .materialize import _write_json_atomic
-
 #: The record schema the worker's ``ProgressWatch`` accepts.  Versioned with
 #: the placement tag it travels under (``progress-v1``): a new record format
 #: is a new tag, so an old worker never claims work whose reports it would
@@ -341,7 +339,17 @@ def _write(path: Path, record: dict[str, object]) -> bool:
     """
 
     try:
-        _write_json_atomic(path, record, text="sorted_lf", tmp="pid")
+        # Hand-rolled, not the record owner: progress.py runs as a program
+        # (python progress.py --phase run ...) with no parent package, so a
+        # relative import fails there. Same bytes the owner writes with
+        # text="sorted_lf", tmp="pid".
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.parent / f".{path.name}.{os.getpid()}.tmp"
+        with open(temporary, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, sort_keys=True) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
     except OSError:
         return False
     return True

@@ -8184,11 +8184,18 @@ def _write_action_status(body: Mapping[str, object]) -> None:
         merged.update(existing)
     merged.update(body)
     try:
-        # Local import: materialize imports this module, so the owner
-        # resolves here, once, instead of at module load (#1330).
-        from .materialize import _write_json_atomic
-        _write_json_atomic(path, merged, text="sorted_lf", tmp="pid",
-                           fsync=False)
+        # Hand-rolled, not the record owner: core.py runs standalone via
+        # runpy (test_core_reporter_remains_reachable_without_package_import)
+        # and must contain zero relative imports
+        # (test_one_definition_of_the_schema_and_the_channel), so it cannot
+        # import materialize -- which imports this module -- at any level.
+        # Same bytes the owner writes with text="sorted_lf", tmp="pid".
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.parent / f".{path.name}.{os.getpid()}.tmp"
+        tmp.write_text(
+            json.dumps(merged, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        os.replace(tmp, path)
     except OSError:
         pass
 
@@ -8573,10 +8580,11 @@ def report_action_progress(
         record["unit"] = str(unit)
     path = Path(destination)
     try:
-        # Local import: see _write_action_status (#1330).
-        from .materialize import _write_json_atomic
-        _write_json_atomic(path, record, text="sorted_lf", tmp="pid",
-                           fsync=False)
+        # Hand-rolled, not the record owner: see _write_action_status.
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.parent / f".{path.name}.{os.getpid()}.tmp"
+        tmp.write_text(json.dumps(record, sort_keys=True) + "\n", encoding="utf-8")
+        os.replace(tmp, path)
     except OSError:
         # Reporting is never worth failing an action for.  A report that does
         # not land is a stall to the watchdog, which is the honest reading of a

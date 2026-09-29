@@ -89,11 +89,13 @@ def _write_json_atomic(path: Path, payload: Mapping[str, object], *,
     ``_canonical_bytes``), ``"canonical_lf"`` (same plus one LF, the
     spelling ``trailing_newline=True`` keeps for its callers), or
     ``"sorted_lf"`` (``core._sorted_lf_bytes`` -- ``json.dumps`` with
-    ``sort_keys`` plus one LF, the exact bytes the hand-rolled writers
-    in ``core``'s status sidecars, ``pool``'s holder records and
-    ``progress`` wrote; ``resource_scope`` keeps its own 8-line
-    spelling because that module ships as a single file inside
-    published generations and cannot import this owner).
+    ``sort_keys`` plus one LF, the exact bytes ``pool``'s holder
+    records and reader-scope proofs wrote).  ``core``'s status
+    sidecars, ``progress`` and ``resource_scope`` keep their own
+    spellings: all three run standalone (runpy, as-a-program, and
+    single-file-in-generation respectively) and cannot import this
+    owner at any level -- proven by the reachability suites, which
+    failed on the migration and pass on the revert.
 
     ``tmp`` names the temp file: ``"pid_uuid"`` (the default -- a lane
     directory lives on the shared mount, where two boxes submitting one

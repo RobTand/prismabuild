@@ -190,6 +190,7 @@
   "sorted-json:src/prismabuild/produced_spool.py::_write_tick",
   "sorted-json:src/prismabuild/produced_spool.py::export_group",
   "sorted-json:src/prismabuild/produced_spool.py::main",
+  "sorted-json:src/prismabuild/progress.py::_write",
   "sorted-json:src/prismabuild/reader_lease.py::_canonical_pin_body",
   "sorted-json:src/prismabuild/reader_lease.py::_file_release_failure",
   "sorted-json:src/prismabuild/resource_scope.py::_atomic_json",
