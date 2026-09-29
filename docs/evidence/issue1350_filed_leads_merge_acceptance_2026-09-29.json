@@ -1,0 +1,40 @@
+{
+  "schema": "pb.staged_read_acceptance.v1",
+  "step": "merge",
+  "contract_commit": "37b72cc431b876b6dc4889fa1f5889dd1656b97d",
+  "ledger_commit": "e353e3778a354facbccb930c2f35e734302d4f71",
+  "scope": ["INV-02", "SC-01", "SC-02"],
+  "prelaunch": {"status": "not-this-step"},
+  "merge": {
+    "branch": "sol/1654-prewarm-leads",
+    "issue": "https://github.com/RobTand/prismabuild/issues/1350",
+    "validated_repairs": [
+      {
+        "id": "INV-02",
+        "actions": ["0b2211c06167ae4dda7b08ce194fc5e7e4b6ec400a17f06a235fb3fb57d0957d", "4a7f823490cee1b4ef6112713aeb784d226d630df1c88ece8b756992ae5c74b2"],
+        "outcome": "Scoped bare-planner-row repair only: corrected RED 4 expected failures/3 passes; GREEN executed/returncode0, 65 collected/ran/passed, no skips. Logs/reconciliation/terminal checked; CAS receipt SHA256 69a82cc1456f82523420770d6d704b77f9e3d2afa3347418d02e1f93c7e81ad6; result blob 4a3437cf45dd25d16f9427efe0b26184537a437dbfab4ffec9868b3cced87295, 16733 bytes/SHA256 verified. Actual claim refuses the absent first lead; derived and explicit blocks use identical existing map gates. Existing cache-hit, wrong-manifest, pin/adoption and terminal-denial tests remain green."
+      },
+      {
+        "id": "SC-01",
+        "actions": [],
+        "outcome": "Manual source review: PoolQueue.residency_verdict remains the PB claim decision point; bare rows derive their existing consumer_residency block there. No PQ placement knob added."
+      },
+      {
+        "id": "SC-02",
+        "actions": [],
+        "outcome": "Manual source review: reuse existing filed-plan derivation and all existing lead/map/epoch checks. No new mover, application dispatcher, cache or scheduler; READY bytes are not rewritten."
+      }
+    ],
+    "remaining_gaps": [
+      "Final source/test-tree PB self-test after fixture type assertions and this acceptance record: independently required before merge.",
+      "INV-02 deployment axis: pending; no activated runtime generation or role convergence observed for this patch.",
+      "INV-02 workload proof: deployed real-row first-lead-before-claim evidence still required; fixture GREEN does not establish production deployment or eliminate every startup wait.",
+      "Measurement: isolated profiled w03 A/B and complete wire/cost/anchor identity remain pending; no speed or quality delta claimed.",
+      "All other staged-read ledger axes: out of this scoped repair; their unknown/proposed states are not promoted."
+    ],
+    "note": "Prepared source-merge record, not evidence that a merge or deployment occurred. This repair gates only the filed first lead, never every later phase; explicit range blocks and ordinary advisory rows with no plan retain their semantics. Test-only type assertions followed the cited GREEN, so final-tree validation is an additional PR gate. Shared-filesystem receipts establish observed reread/hash identity, not power-loss durability (DUR-01). No agent waiver or non-staged tier exception is asserted."
+  },
+  "deploy": {"status": "not-this-step"},
+  "complete": {"status": "not-this-step"},
+  "exceptions": []
+}

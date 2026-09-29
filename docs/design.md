@@ -7327,8 +7327,18 @@ reaper finds the stale lease.
 
 ### The residency gate
 
-An item may carry a `residency` block naming its lead movement nodes. It is
-admitted only when every lead has a `done/` record whose status is `executed`;
+An item may carry a `residency` block naming its lead movement nodes. A bare
+manifest-planner consumer with a filed plan uses the same derived first-lead
+block that tier discovery uses (`consumer_residency`, #1350), without rewriting
+its READY record. An unreadable filed plan is a `plan_unreadable` denial, not
+advisory prewarm. Explicit mover/egress range blocks are not reinterpreted, and
+an ordinary row with neither a block nor a filed plan remains advisory. This
+is a first-window gate, never a barrier over every later phase.
+
+The existing executed/manifest/pin-or-adoption checks and the readable,
+current composed-map gate (including RAM epoch when declared) apply to that
+derived block unchanged. Except for a matching pinned range already adopted,
+each lead needs a `done/` record whose status is `executed`;
 otherwise the claim is denied before any token
 moves, and the box goes and does other work.  A lead that may still arrive
 reads `residency_lead_not_resident`; a lead that ended somewhere no later
