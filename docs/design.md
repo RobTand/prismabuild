@@ -1347,6 +1347,13 @@ product with the worker count exceeds the reservation is refused with exit 2
 before any shard is submitted; a single worker with `0` still sets no ceiling
 and still requires `--cpus-per-shard`.
 
+A test file that reads fleet data declares it with `@pytest.mark.fleet_data`
+(or a module `pytestmark`), and `pbtest` refuses a run that includes one without
+`--data-manifest PATH` (#915). The manifest is the same file `pbrun
+--data-manifest` takes; `pbtest` forwards it, and `--residency {none,stage}`,
+to every shard only when given, so a run without them keeps its action keys.
+`--residency stage` without a manifest is refused with exit 2.
+
 A `--gpu` run must declare its per-test bound (#975): `--test-timeout-s`, or
 `--timeout-s`, from which the bound is derived one heartbeat inside the sealed
 deadline. With neither, `pbtest` refuses with exit 2 before any shard is
