@@ -210,7 +210,7 @@ def test_holder_only_busy_with_foreign_below_the_verdict_keeps_the_withhold(
     denial = _denial(queue, measurement)
     assert denial["reason"] == "adaptive_cpu_refused_withholding", denial
     assert denial["evidence"]["decision"]["reason"] == "measurement_host_not_idle"
-    assert denial["evidence"]["withhold"]["why"] == "drains_soon"
+    assert denial["evidence"]["withhold"]["why"] == "draining_for_measurement"
     queue.finish(holder, status="executed")
     state["busy"] = False
     clock[0] += adaptive_cpu.MAX_INTERVAL_S + adaptive_cpu.MAX_SAMPLE_AGE_S + 1

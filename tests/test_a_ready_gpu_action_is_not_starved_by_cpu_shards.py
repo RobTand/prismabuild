@@ -278,18 +278,17 @@ def test_a_progress_governed_unbounded_holder_never_holds_the_box_shut(
     assert queue.item_path(pool.READY, shard).exists()
 
 
-@pytest.mark.parametrize("timeout_s,withholds", [(86_400, False), (2_500, True)],
+@pytest.mark.parametrize("timeout_s,expected_bound", [(86_400, "long"), (2_500, "transient")],
                          ids=["ends-in-a-day", "ends-inside-the-ceiling"])
 def test_a_measurement_behind_a_bounded_holder_reads_the_declared_end(
     queue: pool.PoolQueue, clock, monkeypatch, tmp_path: Path,
-    timeout_s: int, withholds: bool,
+    timeout_s: int, expected_bound: str,
 ) -> None:
-    """"Drains soon" is what the holder declared, not a new constant.
+    """A measurement snapshots a bounded incumbent's end even if it is long.
 
-    A holder claimed 2000 s ago is past the pool's transient line.  One whose
-    sealed timeout ends in a day does not drain soon, so the measurement
-    behind it does not hold the box shut; one whose timeout ends inside
-    ``WITHHOLD_CEILING_S`` from now does, so it may.
+    The ordinary transient-holder classification is unchanged. #1185 gives
+    a measurement one fixed drain opportunity, qualified by the holder's
+    sealed end and the existing minimum episode ceiling, not its age alone.
     """
 
     capacity = {"cpu": 8, "mem_gb": 16}
@@ -318,16 +317,22 @@ def test_a_measurement_behind_a_bounded_holder_reads_the_declared_end(
         queue.record_pass(measurement)
     behind = _publish(queue, clock, _key("behind"), {"cpu": 1, "mem_gb": 1})
 
-    if withholds:
-        assert claim() is None
-        assert queue.holder_bound(holder)["bound"] == "transient"
-        assert _denial(queue, measurement)["reason"] == "adaptive_cpu_refused_withholding"
-    else:
-        assert claim() == behind
-        assert queue.holder_bound(holder)["bound"] == "long"
-        denial = _denial(queue, measurement)
-        assert denial["reason"] == "adaptive_cpu_refused_starved"
-        assert denial["evidence"]["starved"]["why"] == "holder_does_not_drain_soon"
+    assert claim() is None
+    bound = queue.holder_bound(holder)
+    assert bound["bound"] == expected_bound
+    denial = _denial(queue, measurement)
+    assert denial["reason"] == "adaptive_cpu_refused_withholding"
+    verdict = denial["evidence"]["withhold"]
+    assert verdict["why"] == "draining_for_measurement"
+    claimed_unix = bound["claimed_unix"]
+    assert isinstance(claimed_unix, float)
+    assert verdict["drain_until_unix"] == pytest.approx(max(
+        claimed_unix + timeout_s, clock[0] + pool.WITHHOLD_CEILING_S))
+    assert queue.item_path(pool.READY, behind).exists()
+    clock[0] = verdict["drain_until_unix"] + 1
+    assert claim() == behind
+    expired = _denial(queue, measurement)["evidence"]["withhold"]
+    assert expired["why"] == "measurement_drain_expired" and not expired["withhold"]
 
 
 # -- #939: a shard that seals its deadline ------------------------------------
@@ -502,10 +507,10 @@ def test_a_measurement_withholds_while_its_holders_drain_and_through_their_tail(
 ) -> None:
     """``fed96645``: refused ``measurement_host_not_idle`` while shards ran.
 
-    Past the floor the measurement withholds while the holders in its way are
-    transient.  When the last one leaves, the next CPU sample still carries
-    its tail; the measurement keeps the box for one sample window of that,
-    and is admitted when the host reads idle.
+    The measurement withholds on its first refusal while the holder drains.
+    When it leaves, the next CPU sample still carries its tail; inside the
+    fixed episode the measurement keeps the box for one sample window of
+    that, and is admitted when the host reads idle.
     """
 
     capacity = {"cpu": 8, "mem_gb": 16}
@@ -527,18 +532,16 @@ def test_a_measurement_withholds_while_its_holders_drain_and_through_their_tail(
     _publish(queue, clock, measurement, {"cpu": 1, "mem_gb": 1})
     shards = [_publish(queue, clock, _key(f"shard-{n}"), {"cpu": 1, "mem_gb": 1})
               for n in range(3)]
-    # Below the floor the shards still overtake it, as they always did.
-    assert claim() == shards[0]
-    assert claim() == shards[1]
-    # At the floor it withholds: every holder in its way is transient.
+    # #1185 protects a measurement before the ordinary starvation floor.
+    assert queue.passes(measurement) == 0
     assert claim() is None, "the measurement never withheld against a shard stream"
+    assert all(queue.item_path(pool.READY, key).exists() for key in shards)
     denial = _denial(queue, measurement)
     assert denial["reason"] == "adaptive_cpu_refused_withholding"
     assert denial["evidence"]["decision"]["reason"] == "measurement_host_not_idle"
-    assert denial["evidence"]["withhold"]["why"] == "drains_soon"
+    assert denial["evidence"]["withhold"]["why"] == "draining_for_measurement"
 
-    for key in (first, *shards[:2]):
-        queue.finish(key, status="executed")
+    queue.finish(first, status="executed")
     # The holders are gone; the sample still carries their load.
     assert claim() is None
     assert _denial(queue, measurement)["evidence"]["withhold"]["why"] == "holder_tail"

@@ -582,6 +582,12 @@ DRAIN_HELD_CPUS = "held_cpus"
 #: does not own; and the current withholding episode's start and, once it
 #: expired, its end (see :meth:`PoolQueue._withhold_verdict`).
 DRAIN_NOTE_FIELDS = ("blocked_unix", "foreign_unix", "epoch_unix", "expired_unix")
+MEASUREMENT_DRAIN_NOTE_FIELDS = (*DRAIN_NOTE_FIELDS, "measurement_until_unix")
+
+
+def _measurement_foreign_clear(decision: Mapping[str, object] | None) -> bool:
+    proof = decision.get("measurement_pool_drain") if isinstance(decision, Mapping) else None
+    return isinstance(proof, Mapping) and proof.get("foreign_clear") is True
 
 
 def _adaptive_refusal_drains(
@@ -6693,7 +6699,8 @@ class PoolQueue:
         (:data:`WITHHOLD_CARRYING_REASONS`): the row's transition lock held by
         another loop, an unknown image inventory, or an unreadable residency
         lead record (#1143).  A withhold is live while its episode is inside
-        ``WITHHOLD_CEILING_S``: the episode is the verdict's own
+        ``WITHHOLD_CEILING_S`` (or before a measurement's snapshotted
+        ``drain_until_unix``): the episode is the verdict's own
         (``episode_age_s`` back from when it was filed), or, for a withhold
         with none on file (``in_flight``, ``holder_tail``), the row's first
         denial (``withhold_age_s``) -- the epoch bound a stage mover's
@@ -6702,7 +6709,8 @@ class PoolQueue:
         files its denial with the episode it carried (``withhold_carried``),
         so the next such pass reads the same start whichever of those reasons
         either of them recorded, and a run of them never renews it.  Returns
-        ``{"reason", "mode", "epoch_unix"}``, or ``None``.
+        ``{"reason", "mode", "epoch_unix"}``, with the measurement deadline
+        when present, or ``None``.
         """
 
         def finite(value: object) -> bool:
@@ -6717,11 +6725,13 @@ class PoolQueue:
         reason, evidence = record.get("reason"), record.get("evidence")
         if not isinstance(reason, str) or not isinstance(evidence, Mapping):
             return None
+        until = None
         if reason in WITHHOLD_CARRYING_REASONS:
             carried = evidence.get("withhold_carried")
             if not isinstance(carried, Mapping):
                 return None
             origin, mode, epoch = carried.get("reason"), carried.get("mode"), carried.get("epoch_unix")
+            until = carried.get("drain_until_unix")
         elif reason.endswith(MOVER_WITHHOLD_SUFFIX) and reason not in MOVER_WITHHOLD_REASONS:
             verdict, denied = evidence.get("withhold"), record.get("denied_unix")
             if not isinstance(verdict, Mapping) or verdict.get("withhold") is not True:
@@ -6732,13 +6742,18 @@ class PoolQueue:
             if not finite(held) or not finite(denied):
                 return None
             origin, mode = reason, verdict.get("mode")
+            until = verdict.get("drain_until_unix")
             epoch = float(denied) - float(held)  # type: ignore[arg-type]
         else:
             return None
         if (not isinstance(origin, str) or not isinstance(mode, str) or not finite(epoch)
-                or now - float(epoch) > WITHHOLD_CEILING_S):  # type: ignore[arg-type]
+                or (until is not None and (not finite(until) or not float(epoch) <= now < float(until)))
+                or (until is None and now - float(epoch) > WITHHOLD_CEILING_S)):  # type: ignore[arg-type]
             return None
-        return {"reason": origin, "mode": mode, "epoch_unix": float(epoch)}  # type: ignore[arg-type]
+        result = {"reason": origin, "mode": mode, "epoch_unix": float(epoch)}  # type: ignore[arg-type]
+        if until is not None:
+            result["drain_until_unix"] = float(until)
+        return result
 
     def _claim_blocked_fresh(self, key: str) -> tuple[bool, str | None]:
         """Whether ``claimed/`` refuses a claim of ``key``, listed fresh (#993).
@@ -8311,6 +8326,26 @@ class PoolQueue:
             value = notes[field] if field in notes else prior.get(field)
             if type(value) in (int, float) and math.isfinite(value):
                 record[field] = float(value)
+        # Measurements keep their clocks by host and submission generation.
+        # The per-key transition lock serializes this existing sidecar write;
+        # shared priority/pass counting is unchanged. A peer host cannot lend
+        # us its deadline or its foreign-load history.
+        episodes = prior.get("measurement_drains")
+        episodes = dict(episodes) if isinstance(episodes, Mapping) else {}
+        pending = getattr(self, "_measurement_drain_notes", {}).pop(action_key, None)
+        if pending is not None:
+            host, generation, updates = pending
+            previous = episodes.get(host)
+            if not isinstance(previous, Mapping) or previous.get("generation") != generation:
+                previous = {}
+            episode: dict[str, object] = {"generation": generation}
+            for field in MEASUREMENT_DRAIN_NOTE_FIELDS:
+                value = updates[field] if field in updates else previous.get(field)
+                if type(value) in (int, float) and math.isfinite(value):
+                    episode[field] = float(value)
+            episodes[host] = episode
+        if episodes:
+            record["measurement_drains"] = episodes
         _write_json_atomic(self.passes_path(action_key), record)
         return count
 
@@ -10476,6 +10511,8 @@ class PoolQueue:
         mode: str, adaptive: bool = False, foreign: bool = False,
         gpu_sample: Mapping[str, object] | None = None,
         held_cpus: Sequence[int] | None = None, cpu_tiers: Mapping | None = None,
+        measurement: bool = False, measurement_foreign_clear: bool = False,
+        measurement_generation: str | None = None,
     ) -> dict[str, object]:
         """May this refused item hold its box shut while the box drains (#924)?
 
@@ -10488,7 +10525,14 @@ class PoolQueue:
         fairness, not capacity authority, and a read it cannot make leaves the
         item to be overtaken, as every adaptive refusal was before #924.
 
-        **Eligible** is the old floor -- ``STARVATION_FLOOR`` denials -- or, for
+        A sealed measurement is eligible on its first drain-resolvable
+        refusal (#1185). Its episode snapshots the incumbents' declared ends,
+        at least ``WITHHOLD_CEILING_S`` from the first denial, and does not
+        renew across arrivals or restarts. A fresh complete CPU attribution
+        plus a fresh complete GPU census may retire an old foreign-load veto;
+        neither this verdict nor that proof admits the measurement itself.
+
+        For ordinary work, **eligible** is ``STARVATION_FLOOR`` denials or, for
         an item that needs a GPU on a box whose GPU is free, the first denial:
         an idle GPU behind CPU-only work is the costliest waste the pool has,
         and every admission behind the item takes CPU or memory it needs.
@@ -10546,13 +10590,21 @@ class PoolQueue:
 
         now = _now()
         prior = _read_json(self.passes_path(key)) or {}
+        measurement_wait = measurement and mode in ("exclusive", "tokens")
+        host = ledger.base.name
+        clocks: Mapping[str, object] = prior
+        if measurement_wait:
+            episodes = prior.get("measurement_drains")
+            episode = episodes.get(host) if isinstance(episodes, Mapping) else None
+            clocks = (episode if isinstance(episode, Mapping)
+                      and episode.get("generation") == measurement_generation else {})
         passes = prior.get("passes", 0)
         passes = int(passes) if type(passes) in (int, float) else 0
         first = prior.get("first_unix")
         age = max(0.0, now - float(first)) if type(first) in (int, float) else 0.0
 
         def stamp(field: str) -> float | None:
-            value = prior.get(field)
+            value = clocks.get(field)
             return float(value) if type(value) in (int, float) and math.isfinite(value) else None
 
         # ``None`` in ``notes`` clears the field; an absent field is carried.
@@ -10585,17 +10637,46 @@ class PoolQueue:
                     # own evidence, not an occupancy draining is known to fix.
                     verdict["why"] = "not_a_token_shortage"
                     return verdict
-            eligible = passes + 1 >= STARVATION_FLOOR or gpu_first
+            eligible = measurement_wait or passes + 1 >= STARVATION_FLOOR or gpu_first
             verdict.update(eligible=eligible, gpu_first=gpu_first)
+            if measurement_wait:
+                if (not isinstance(measurement_generation, str)
+                        or len(measurement_generation) != 64
+                        or any(c not in "0123456789abcdef" for c in measurement_generation)):
+                    raise ValueError("measurement drain requires a submission generation")
+                verdict.update(drain_host=host, drain_generation=measurement_generation)
             if foreign:
+                # Suspend the drain, but never renew its fixed episode after
+                # a transient foreign spike clears.
                 notes["foreign_unix"] = now
             if not eligible:
                 return verdict
-            foreign_unix = now if foreign else stamp("foreign_unix")
+            # A new, affirmative attribution may retire an old foreign veto;
+            # mere absence of an error (or an incomplete GPU census) may not.
+            gpu_foreign_clear = (not gpu_need or (gpu_clear is True
+                and gpu_sample.get("schema") == "prismabuild.gpu_capacity.v1"
+                and gpu_sample.get("complete") is True
+                and gpu_sample.get("attributed") is True))
+            clear_foreign = (measurement_wait and measurement_foreign_clear
+                             and gpu_foreign_clear and not foreign)
+            if clear_foreign:
+                notes["foreign_unix"] = None
+            foreign_unix = (now if foreign else None if clear_foreign
+                            else stamp("foreign_unix"))
             if foreign_unix is not None and now - foreign_unix <= WITHHOLD_CEILING_S:
-                notes.update(epoch_unix=None, expired_unix=None)
+                if not measurement_wait:
+                    notes.update(epoch_unix=None, expired_unix=None)
                 verdict.update(why="foreign_load", foreign_age_s=now - foreign_unix)
                 return verdict
+            until, epoch = stamp("measurement_until_unix"), stamp("epoch_unix")
+            if measurement_wait and until is not None:
+                verdict.update(measurement_key=key, drain_until_unix=until,
+                               episode_age_s=now - (epoch if epoch is not None else now))
+                if now >= until:
+                    # Even a last holder's sample tail or an in-flight rename
+                    # cannot reopen a completed measurement episode.
+                    verdict["why"] = "measurement_drain_expired"
+                    return verdict
             unknown_drains = age <= WITHHOLD_CEILING_S
 
             def drains(bound: Mapping[str, object]) -> bool:
@@ -10603,6 +10684,7 @@ class PoolQueue:
                         or (bound["bound"] == "unknown" and unknown_drains))
 
             in_way: list[dict[str, object]] = []
+            bounds: list[Mapping[str, object]] = []
             draining: list[Mapping[str, object]] = []
             covered = {kind: 0 for kind in short}
             if mode == DRAIN_HELD_CPUS:
@@ -10625,6 +10707,7 @@ class PoolQueue:
                     if not counts:
                         continue
                 bound = self.holder_bound(holder, now=now)
+                bounds.append(bound)
                 if drains(bound):
                     draining.append(bound)
                     for kind, count in counts.items():
@@ -10636,6 +10719,28 @@ class PoolQueue:
             verdict["holders"] = in_way
             if draining or in_way:
                 notes["blocked_unix"] = now
+            if measurement_wait and (bounds or mode == "tokens"):
+                # Snapshot one opportunity on this host/generation. A token
+                # acquisition not filed under a holder yet gets the same
+                # bounded episode, never another host's first-denial age.
+                if until is None:
+                    epoch = now
+                    ends = [float(bound["claimed_unix"]) + float(bound["requested_timeout_s"])
+                            for bound in bounds
+                            if type(bound.get("claimed_unix")) in (int, float)
+                            and type(bound.get("requested_timeout_s")) in (int, float)
+                            and math.isfinite(float(bound["claimed_unix"]))
+                            and math.isfinite(float(bound["requested_timeout_s"]))]
+                    until = max([now + WITHHOLD_CEILING_S,
+                                 *(end for end in ends if math.isfinite(end))])
+                notes.update(epoch_unix=epoch, measurement_until_unix=until)
+                verdict.update(withhold=now < until,
+                               why=("draining_for_measurement" if now < until
+                                    else "measurement_drain_expired"),
+                               measurement_key=key, drain_until_unix=until,
+                               episode_age_s=now - (epoch if epoch is not None else now),
+                               holders=[dict(bound) for bound in bounds])
+                return verdict
             if not draining and not in_way:
                 if mode == "exclusive":
                     blocked = stamp("blocked_unix")
@@ -10643,7 +10748,9 @@ class PoolQueue:
                     if blocked is not None and now - blocked <= window:
                         verdict.update(withhold=True, why="holder_tail")
                         return verdict
-                    notes.update(foreign_unix=now, epoch_unix=None, expired_unix=None)
+                    notes["foreign_unix"] = now
+                    if not measurement_wait:
+                        notes.update(epoch_unix=None, expired_unix=None)
                     verdict["why"] = "foreign_load"
                     return verdict
                 # Short, yet no action holds the short kind: the tokens are
@@ -10689,7 +10796,11 @@ class PoolQueue:
             return verdict
         finally:
             if notes:
-                self.__dict__.setdefault("_drain_notes", {})[key] = notes
+                if measurement_wait:
+                    self.__dict__.setdefault("_measurement_drain_notes", {})[key] = (
+                        host, measurement_generation, notes)
+                else:
+                    self.__dict__.setdefault("_drain_notes", {})[key] = notes
 
     def _write_claim_intent(self, action_key: str, *, owner: str) -> None:
         _write_json_atomic(
@@ -19212,7 +19323,11 @@ class PoolQueue:
                                 gpu_sample=_gpu_sample_for(gpu_controller, demand),
                                 held_cpus=(decision.get("held_cpus")  # type: ignore[union-attr]
                                            if mode == DRAIN_HELD_CPUS else None),
-                                cpu_tiers=cpu_tiers)
+                                cpu_tiers=cpu_tiers,
+                                measurement=bool(identity and identity[1]),
+                                measurement_generation=(self.attempt_generation(item)
+                                    if identity and identity[1] else None),
+                                measurement_foreign_clear=_measurement_foreign_clear(cpu_decision))
                                 if mode is not None or foreign else None)
                             if (verdict is not None and verdict["withhold"]
                                     and isinstance(decision, Mapping)
@@ -19283,7 +19398,11 @@ class PoolQueue:
                         if handle is None:
                             verdict = self._withhold_verdict(
                                 key, ledger=ledger, need=asked, mode="tokens",
-                                gpu_sample=_gpu_sample_for(gpu_controller, demand))
+                                gpu_sample=_gpu_sample_for(gpu_controller, demand),
+                                measurement=bool(identity and identity[1]),
+                                measurement_generation=(self.attempt_generation(item)
+                                    if identity and identity[1] else None),
+                                measurement_foreign_clear=_measurement_foreign_clear(cpu_decision))
                             denials = self.record_pass(key)
                             if not preempted:
                                 # Selection reacquires admission, while the separate

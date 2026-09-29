@@ -2333,6 +2333,14 @@ def _token_shortage_text(denial: Mapping[str, object]) -> str:
     return f" [{resource}: requested {requested}, available {available}; waiting for release]"
 
 
+def _measurement_drain_text(denial: Mapping[str, object]) -> str:
+    evidence = denial.get('evidence')
+    verdict = evidence.get('withhold') if isinstance(evidence, Mapping) else None
+    if isinstance(verdict, Mapping) and verdict.get('why') == 'draining_for_measurement':
+        return f"/draining_for_measurement {str(verdict.get('measurement_key', ''))[:12]}"
+    return ''
+
+
 def pool_job_lines(jobs: Sequence[Mapping[str, object]], summary: Mapping[str, object]) -> list[str]:
     if not jobs:
         return ["no jobs ready or claimed" if summary.get('empty') is True else "pool job state unavailable"]
@@ -2345,6 +2353,7 @@ def pool_job_lines(jobs: Sequence[Mapping[str, object]], summary: Mapping[str, o
              f"{denial['host']}: {denial['reason']}"
              + (f"/{denial['decision_reason']}" if denial.get('decision_reason') else '')
              + _token_shortage_text(denial)
+             + _measurement_drain_text(denial)
              + f" ({denial['age_s']:.0f}s ago)"
              for denial in j['admission_denials']),
          j.get('unstarted_releases'), j.get('placeable_hosts'),

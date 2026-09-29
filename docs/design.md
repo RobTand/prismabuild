@@ -394,7 +394,27 @@ full-width CPU demand on a pressured host, and the GPU refusals for a
 measurement) when transient holders cover it -- with no holders at all
 there is nothing a drain could place, so the pool reports the item starved
 (`adaptive_cpu_refused_starved`) while the decision stays the withhold-type
-refusal (#1185) -- and the adaptive CPU refusals
+refusal (#1185). A sealed measurement is an exception to the ordinary
+starvation floor and transient-holder rule (#1185, 2026-09-29): on its first
+drain-resolvable refusal, it withholds lower-ranked work on this host, including
+new GPU sharing probes. Incumbents continue without preemption. The episode
+snapshots the latest incumbent's sealed end, at least `WITHHOLD_CEILING_S`
+from its first denial; unknown or unbounded holders get that ceiling instead.
+The existing `passes/<action-key>.json` sidecar keeps these clocks under
+`measurement_drains[host]`, qualified by the exact submission generation.
+Other hosts cannot supply the deadline or foreign-load history. Later arrivals,
+restarts, and a transient foreign-load refusal cannot extend the snapshot;
+foreign load suspends withholding without deleting the episode. Fixed expiry
+also takes precedence over a departing holder's sample tail. A fresh, complete
+per-CPU attribution on the measurement's predicted CPUs, plus a fresh complete
+GPU foreign-process census when it needs a GPU, may retire a historical
+foreign-load veto. Missing, partial, invalid or stale evidence cannot.
+This only protects the drain: all CPU/GPU idle and isolation gates still
+refuse until the measurement can actually claim. Denials report
+`withhold.why: draining_for_measurement`, the exact `measurement_key`,
+`drain_host`, `drain_generation`, and `drain_until_unix`; past the snapshot they report `measurement_drain_expired`
+and stop withholding. Portable backfill remains eligible on other hosts, and
+priority ordering is unchanged. The adaptive CPU refusals
 that stand for a CPU token shortage (`borrow_evidence_unavailable`,
 `pressure_override_no_borrow`, `projected_cpu_cost` with the tokens short)
 by the token rule. A `host_pressure` refusal of an item that needs CPUs rather
@@ -440,7 +460,8 @@ transient reason -- another loop holds its transition lock
 (`container_image_presence_unknown`), or its residency lead record does not
 read (`residency_lead_record_unreadable`), #1143 -- the row still withholds
 for that pass if this host's latest verdict for it is a withhold whose
-episode is inside `WITHHOLD_CEILING_S` (the latest *flushed* verdict: claim
+episode is inside `WITHHOLD_CEILING_S`, or before the measurement's fixed
+`drain_until_unix` (the latest *flushed* verdict: claim
 passes batch their denial records and flush once after the pass (#1221), so a
 sibling loop's first withhold of a new episode is visible here one pass
 late); the denial it records carries that

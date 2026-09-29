@@ -941,8 +941,9 @@ class Controller:
         Returns ``None`` when the question cannot be asked on this sample
         (stale sample, no per-CPU attribution, or the demand's CPUs
         unknowable); the caller then falls through to the conservative
-        host_not_idle path.  Otherwise ``{'exceeds': bool, 'evidence':
-        {...}}`` where exceeds is true only when a foreign busy reading on
+        host_not_idle path. Otherwise ``{'exceeds': bool, 'clear': bool,
+        'evidence': {...}}``. Clear requires a complete valid prediction;
+        exceeds is true only when a foreign busy reading on
         one of the measurement's own predicted CPUs tops
         :data:`PER_CPU_FOREIGN_MAX`.  Held (PB-owned) busy on those CPUs
         is ours and never fires this; load anywhere else never fires this.
@@ -981,7 +982,10 @@ class Controller:
             census = self._foreign_pids(set(excess), sample.get('sampled_unix'))
             evidence['foreign_pids'] = {str(cpu): list(census.get(cpu, []))
                                         for cpu in excess}
-        return {'exceeds': bool(excess), 'evidence': evidence}
+        complete = (len(readings) == len(predicted)
+                    and all(0 <= value <= 1 for value in readings.values()))
+        return {'exceeds': bool(excess), 'clear': complete and not excess,
+                'evidence': evidence}
 
     def write_state(self, name, value):
         write_json(self.base / name, value)
@@ -1163,6 +1167,7 @@ class Controller:
         export allowance a producer's claim reserves with itself (#985).
         """
         funding_refusal = None
+        measurement_drain = {}
         self.last_decision = {"reason": "not_evaluated"}
         if self._host_sample is None:
             self._host_sample = self.sample()
@@ -1179,7 +1184,8 @@ class Controller:
                 extra['dependent_of'] = owner
             if funding_refusal is not None:
                 extra['allowance'] = funding_refusal
-            self.last_decision = {"reason": reason, "sample": sample, **extra, **values}
+            self.last_decision = {"reason": reason, "sample": sample,
+                                  **measurement_drain, **extra, **values}
             return None
         fresh = (0 <= now - sample.get('sampled_unix', 0) <= MAX_SAMPLE_AGE_S
                  and sample.get('cpu_count') == len(self.cpus)
@@ -1214,6 +1220,14 @@ class Controller:
         idle = (self.idle(sample, holders) if fresh else
                 {'state': 'sample_not_fresh', 'exceeds': True})
         exclusive_need = measurement or unbounded_cpu or declared == len(self.cpus)
+        ambient = (self._measurement_foreign_ambient(sample, holders, declared)
+                   if measurement and fresh else None)
+        if ambient is not None and ambient['clear']:
+            # Affirmative, complete attribution can retire a historical
+            # foreign-load veto. Missing/stale/partial readings cannot.
+            measurement_drain = {'measurement_pool_drain': {
+                'foreign_clear': True, 'sampled_unix': sample['sampled_unix'],
+                **ambient['evidence']}}
         if isinstance(owner, str) and not measurement:
             # A dependent runs on the room its producer reserved (#985).  Host
             # pressure is not its gate: its CPUs are reserved, so nothing the
@@ -1344,8 +1358,6 @@ class Controller:
             # could ever place, and its re-judge re-armed an unproven
             # window on the same unproven load.)
             if fresh and idle['exceeds']:
-                ambient = self._measurement_foreign_ambient(sample, holders,
-                                                            declared)
                 if ambient is not None and ambient['exceeds']:
                     return refuse("measurement_foreign_ambient", fresh=fresh,
                                   baseline=idle, **ambient['evidence'])
@@ -1526,7 +1538,7 @@ class Controller:
                               lendable=lendable, available_cpu=available,
                               declared_cpu=declared, borrowable_cpus=len(borrowable),
                               last_borrow_sampled_unix=last)
-        self.last_decision = {"reason": "admitted", "sample": sample}
+        self.last_decision = {"reason": "admitted", "sample": sample, **measurement_drain}
         return {'declared_cpu': declared, 'cost': cost, 'shape': shape,
                 'unbounded_cpu': unbounded_cpu,
                 'measurement': measurement, 'serves_measurement': serves,
