@@ -356,6 +356,17 @@ The pull queue orders ready items by descending priority, then descending
 admission-denial count, then oldest publication time. Aging changes order only
 within a priority band.
 
+`pbrun --priority-reason TEXT` and a campaign row's `priority_reason` carry
+an optional scheduling annotation beside `priority` in the queue and status
+view (#1249). The reason is outside the sealed action and its cache key;
+changing its wording or omitting it does not create different work. Reasons
+must be nonblank, single-line printable text of at most 1024 characters.
+Outer whitespace is trimmed. No reason is required, including above-default
+priority, and no ordering or admission decision reads it. Reattachment keeps
+the existing submission's annotation. Deferred release retains it in optional
+publication metadata; older deferred records without it still read. SLURM
+stores it with the submission, not in the action or `sbatch` priority flags.
+
 A ready record that states any of those three fields in a way the queue cannot
 read is **skipped from the listing and filed by the sweep**. `publish` refuses a
 non-integer `priority` and writes `published_unix` itself, so such a record was

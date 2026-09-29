@@ -635,14 +635,20 @@ def read_jobs(*, squeue: str = "squeue", lane_root: str | Path | None = None,
                 row["resources"] = record.get("resources")
                 row["constraint"] = record.get("constraint")
                 row["submitted_host"] = record.get("submitted_host")
+                try:
+                    row["priority_reason"] = pool.normalize_priority_reason(
+                        record.get("priority_reason"))
+                except pool.PoolContractError as exc:
+                    row["priority_reason"] = None
+                    row["note"] = str(exc)
                 recorded_id = str(record.get("job_id") or "")
                 if recorded_id and recorded_id != job_id:
                     # `latest.json` points at the newest submission of this
                     # action key, which after a retry or a resubmission is a
                     # different job from the one in this row.
-                    row["note"] = (
-                        f"the lane's latest record is job {recorded_id}"
-                    )
+                    row["note"] = "; ".join(filter(None, (
+                        row["note"], f"the lane's latest record is job {recorded_id}"
+                    )))
         jobs.append(row)
     _name_the_job_ahead(jobs)
     return jobs
@@ -1135,12 +1141,14 @@ def read_pool(queue_root: str | Path) -> dict:
             row = {"action_key": key, "action_key_prefix": key[:12], "transport": "pool",
                    "state": state.upper(), "node": None, "reason": None}
             try:
-                if not _valid_pool_item(key, record):
+                if record is None or not _valid_pool_item(key, record):
                     raise ValueError('invalid action record')
                 sidecar = sidecars[state, key]
                 if isinstance(sidecar, Exception):
                     raise sidecar
                 row.update(resources=queue.demand_of(record), constraint=record.get('tags'),
+                           priority=record.get('priority', 0),
+                           priority_reason=pool.normalize_priority_reason(record.get('priority_reason')),
                            submitted_host=record.get('published_by'),
                            unstarted_releases=_releases(record),
                            age_s=_age(record.get('claimed_unix') if state == pool.CLAIMED
@@ -2344,9 +2352,11 @@ def _measurement_drain_text(denial: Mapping[str, object]) -> str:
 def pool_job_lines(jobs: Sequence[Mapping[str, object]], summary: Mapping[str, object]) -> list[str]:
     if not jobs:
         return ["no jobs ready or claimed" if summary.get('empty') is True else "pool job state unavailable"]
-    return render_table(("KEY", "STATE", "NODE", "RESOURCES", "AGE", "LEASE", "OUTPUT", "PROGRESS",
+    return render_table(("KEY", "STATE", "NODE", "RESOURCES", "PRIORITY", "PRIORITY REASON",
+                         "AGE", "LEASE", "OUTPUT", "PROGRESS",
                          "PASSES", "DENIAL", "RELEASES", "MATCHING", "NOTE"), (
-        (j['action_key_prefix'], j['state'], j.get('node'), j.get('resources'), j.get('age_s'),
+        (j['action_key_prefix'], j['state'], j.get('node'), j.get('resources'),
+         j.get('priority'), j.get('priority_reason'), j.get('age_s'),
          j.get('lease_age_s'), (j.get('execution_observation') or {}).get('last_output_age_s'),
          j.get('progress_observation'),
          j.get('admission_passes'), None if not j.get('admission_denials') else '; '.join(
@@ -2827,7 +2837,7 @@ def job_lines(jobs: Sequence[Mapping[str, object]]) -> list[str]:
         return ["no jobs queued or running"]
     headers = (
         "JOBID", "STATE", "PART", "NODE", "ELAPSED", "LIMIT", "USER", "KEY",
-        "RESOURCES", "CONSTRAINT", "FROM", "REASON",
+        "RESOURCES", "CONSTRAINT", "FROM", "PRIORITY REASON", "REASON",
     )
     rows = []
     for job in jobs:
@@ -2844,7 +2854,7 @@ def job_lines(jobs: Sequence[Mapping[str, object]]) -> list[str]:
             job.get("node") or ABSENT, job.get("elapsed"),
             job.get("time_limit"), job.get("user"),
             job.get("action_key_prefix") or ABSENT, resources,
-            job.get("constraint"), job.get("submitted_host"),
+            job.get("constraint"), job.get("submitted_host"), job.get("priority_reason"),
             "; ".join(reasons) or ABSENT,
         ))
     return render_table(headers, rows)

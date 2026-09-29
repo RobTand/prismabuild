@@ -4329,6 +4329,7 @@ def slurm_outcome(
     retry_safe: bool,
     max_attempts: int,
     priority: int = 0,
+    priority_reason: str | None = None,
     placement_notice: str = "",
     anywhere: bool = False,
     detach: bool = False,
@@ -4493,6 +4494,7 @@ def slurm_outcome(
                 # is what let ``pool_reset``'s bulk ``--priority -10`` land
                 # alongside interactive work instead of behind it.
                 priority=priority,
+                priority_reason=priority_reason,
                 timeout_s=timeout_s,
                 worker_script=runtime_root / "tools" / "prismabuild_worker.py",
                 job_entry=runtime_root / "tools" / "fleet" / "slurm_job.py",
@@ -6912,6 +6914,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
                          "(slurm_lane.nice_for), scaled so one priority step "
                          "outranks submission order rather than one later "
                          "submission")
+    ap.add_argument("--priority-reason", type=pool.normalize_priority_reason,
+                    default=None, help="optional explanation of the priority, "
+                    "stored with the submission and shown by pbstatus; not "
+                    "part of the action identity or an admission requirement. "
+                    "Use single-line printable text, at most 1024 characters")
     ap.add_argument("--profile", type=_profile_mode, default=None,
                     metavar="{" + ",".join(pb.PROFILE_MODES) + "}",
                     help="run a profiler around this action's child and store "
@@ -7685,6 +7692,16 @@ def publication_row(
         "container_owner": str(variables[CONTAINER_OWNER_ENV]),
         "checkout_snapshot": params["checkout_snapshot"],
     }
+    priority_reason = getattr(args, "priority_reason", None)
+    if priority_reason is not None:
+        parameters = inspect.signature(queue.publish).parameters
+        if ("priority_reason" not in parameters
+                and not any(p.kind is inspect.Parameter.VAR_KEYWORD
+                            for p in parameters.values())):
+            raise pool.PoolContractError(
+                "loaded queue runtime does not support priority_reason; "
+                "use a matching runtime or omit --priority-reason")
+        row["priority_reason"] = pool.normalize_priority_reason(priority_reason)
     if params.get("container_images"):
         # Derived from the sealed body, never re-read from the caller: the row
         # describes the action, so the action's own params are the authority.
@@ -7707,7 +7724,8 @@ def publication_row(
 #: release publishes the consumer.  Everything else about the action is in
 #: its frozen template.
 _DEFERRED_PUBLICATION_ARGS = (
-    "priority", "max_attempts", "retry_safe", "residency", "residency_tier",
+    "priority", "priority_reason", "max_attempts", "retry_safe", "residency",
+    "residency_tier",
     "residency_ram", "residency_share", "residency_mover_mem_gb",
     "residency_mover_readers",
     "residency_mover_max_attempts",
@@ -8418,6 +8436,7 @@ def main(*, publication_canary_intent=None, authorize_canary=None) -> int:
             retry_safe=args.retry_safe,
             max_attempts=args.max_attempts,
             priority=args.priority,
+            priority_reason=args.priority_reason,
             anywhere=args.anywhere,
             detach=args.detach,
         )

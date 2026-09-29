@@ -672,10 +672,14 @@ def test_the_submission_record_says_what_the_priority_became(
     and neither is part of the action's identity."""
 
     job = _submit(tmp_path, resources=sl.LaneResources.from_demand({"cpu": 1}),
-                  priority=-10, seed="recorded")
+                  priority=-10, priority_reason="yield to production", seed="recorded")
     record = json.loads(job.record_path.read_text(encoding="utf-8"))
     assert record["nice"] == sl.NICE_BASE + 10 * sl.NICE_SCALE
+    assert record["priority_reason"] == "yield to production"
     assert "partition" in record
+    request = json.loads((tmp_path / "cas" / "requests" / job.action_key[:2]
+                          / f"{job.action_key}.json").read_text())
+    assert "priority_reason" not in request["params"]
 
 
 def test_the_partition_is_read_off_the_demand_and_the_placement() -> None:

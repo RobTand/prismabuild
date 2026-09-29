@@ -1203,6 +1203,18 @@ class PoolContractError(PoolError, ValueError):
     """A queue record does not satisfy its schema."""
 
 
+def normalize_priority_reason(value: object) -> str | None:
+    """Validate an optional scheduling annotation, never an action parameter."""
+    if value is None:
+        return None
+    if (not isinstance(value, str) or not value.strip() or len(value) > 1024
+            or not value.isprintable()):
+        raise PoolContractError(
+            "priority_reason must be nonblank, single-line printable text "
+            "of at most 1024 characters")
+    return value.strip()
+
+
 class StaleAbsenceError(FileNotFoundError):
     """A linked attempt file its directory lists that this client cannot open yet.
 
@@ -5825,6 +5837,7 @@ class PoolQueue:
         tags: Sequence[str] = (),
         needs_gpu: bool = False,
         priority: int = 0,
+        priority_reason: str | None = None,
         resources: Mapping[str, int] | None = None,
         max_attempts: int = DEFAULT_MAX_ATTEMPTS,
         retry_safe: bool | None = None,
@@ -5888,6 +5901,7 @@ class PoolQueue:
         """
 
         self._refuse_if_fenced()
+        reason = normalize_priority_reason(priority_reason)
         if not isinstance(action_key, str) or len(action_key) != 64:
             raise PoolContractError("action_key must be a 64-character digest")
         image_refs: list[str] = []
@@ -6306,6 +6320,9 @@ class PoolQueue:
             "published_by": socket.gethostname(),
             **addressing,
         }
+        if reason is not None:
+            # Optional publication metadata: no key, order or enforcement change.
+            item["priority_reason"] = reason
         if canary_ref is not None:
             item["publication_canary"] = canary_ref
         if residency_block is not None:

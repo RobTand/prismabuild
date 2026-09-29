@@ -212,6 +212,7 @@ its existing limits. This is not a whole-submission timeout.
 | `--here` | Pin the action to this box. Combines with `--tag`. | The box's hostname joins the constraint. Every hostname is a node Feature. |
 | `--anywhere` | Assert that dependencies outside the snapshot are identical on every eligible worker. | No constraint, and the default partition. |
 | `--priority N` | A queue hint. Higher runs sooner; a negative value yields to everything at 0, and aging never lifts it past them. Defaults to 0. | `--nice`, sent on every submission. SLURM subtracts the nice from the base priority its scheduler assigned. |
+| `--priority-reason TEXT` | Optional explanation shown beside priority in `pbstatus`; outside action identity and admission policy. | Stored with the lane submission, outside identity and scheduling flags. |
 | `--profile MODE` | Run a profiler around the action's child and store the profile as a CAS blob named on the ending. `sample` is py-spy over the whole process tree; `nsys` is Nsight Systems over CUDA and NVTX, optionally windowed (`nsys:600`); `torch` is a contract the action opts into. **Part of the action identity**, unlike `--priority`. | Carried unchanged; the worker resolves the backend on the box that runs it. |
 
 `pbrun` accepts only `cpu`, `gpu`, `mem_gb`, and `disk_metadata` in `--demand`.
@@ -651,6 +652,11 @@ whichever is not true.
 
 `--priority` is a queue hint and nothing more. It is not part of the action
 identity, so two submissions that differ only in priority are the same action.
+Use `--priority-reason 'release gate approved'` to record why a submission has
+that priority. This optional note also stays outside the key. It must be
+nonblank, single-line printable text of at most 1024 characters; outer
+whitespace is trimmed. An attached submission keeps its original note. A
+reason is not required at any priority.
 
 Ready items are ordered by priority band first, then by admission denials
 (aging), then by publish time. Aging reorders only within a band: a
@@ -1210,6 +1216,7 @@ an omitted field is not passed at all.
 | `gpu_capacity` | `--gpu-capacity` |
 | `gpu_memory_gb` | `--gpu-memory-gb`, a positive finite GiB budget; pool only, requires GPU demand |
 | `priority` | `--priority` |
+| `priority_reason` | `--priority-reason`; optional scheduling note outside action identity |
 | `profile` | `--profile`, a profiler mode; sealed into the row's action key |
 | `measurement` | `--measurement` |
 | `host_class` | `--host-class`, a pool measurement worker class or SLURM Feature such as `gb10` |
