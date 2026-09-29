@@ -215,14 +215,10 @@ def run_action() -> int:
 
 
 def _extract_envelope(receipt: object) -> tuple[str | None, dict | None, str]:
-    """Find the leg-4 envelope in ``receipt``.
+    """Bind ``common.extract_envelope`` to the leg-4 schema marker.
 
-    Returns ``(raw, parsed, where)``; ``raw`` is None when the receipt
-    carries only a parsed envelope — leg 4 REQUIRES the raw bytes for
-    the bitwise-equality check. Accepted locations, in order:
-    ``receipt["envelope"]``, ``receipt["stdout"]``,
-    ``receipt["detail"]["stdout"]``. Stdout is scanned for the last line
-    that parses as a JSON object with this leg's schema marker.
+    The accepted locations and return shape are documented there once.
+    Leg 4 requires the raw bytes (``raw`` not None) for its bitwise check.
     """
     return extract_envelope(receipt, schema=LEG4_SCHEMA)
 
