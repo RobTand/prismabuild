@@ -136,6 +136,77 @@ def rollout_lines(summary: Mapping[str, object] | None) -> list[str]:
     return [f"epoch {summary.get('epoch')}  live {summary.get('live_generation')}",
             f"pending {summary.get('pending_phase')}  outstanding {outstanding}"]
 
+#: A ``pending`` canary record older than this is a canary that started and
+#: never reported (#978): the process died or the box rebooted, and nothing
+#: else will ever replace the record.  Six hours is longer than any canary run
+#: the driver's own budgets allow, so a live run is never called stale.
+CANARY_PENDING_STALE_S = 6 * 3600.0
+
+#: Canary states that mean "no verdict exists for this generation".
+CANARY_NEEDS_RUN = frozenset({"missing", "unreadable", "skipped", "pending_stale"})
+
+
+def read_canary_summary(repo_link: str | Path, now: float | None = None) -> dict:
+    """Say whether the active generation has a canary verdict (#978).
+
+    The verdict is the ``<generation>.canary.json`` sidecar the publisher
+    writes beside the sealed generation.  A generation that was staged in
+    PrismaBuild and activated outside it has no sidecar, and that absence is
+    the case this read exists to name.  Read-only, and it never raises: a link
+    that does not resolve is ``unavailable``, not a missing verdict.
+    """
+    link = Path(repo_link)
+    try:
+        generation = link.resolve(strict=True).name
+    except OSError as exc:
+        return {"state": "unavailable", "generation": None, "record": None,
+                "error": f"{type(exc).__name__}: {exc}"}
+    record_path = link.parent / "runtime-generations" / f"{generation}.canary.json"
+    base = {"generation": generation, "record": str(record_path)}
+    try:
+        raw = record_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {**base, "state": "missing"}
+    except OSError as exc:
+        return {**base, "state": "unreadable",
+                "error": f"{type(exc).__name__}: {exc}"}
+    try:
+        record = json.loads(raw)
+        status = record["canary_status"]
+        if record.get("generation") != generation or not isinstance(status, str):
+            raise ValueError("record does not describe this generation")
+    except (ValueError, KeyError, TypeError) as exc:
+        return {**base, "state": "unreadable",
+                "error": f"{type(exc).__name__}: {exc}"}
+    recorded = record.get("recorded_unix")
+    age = (time.time() if now is None else now) - recorded \
+        if isinstance(recorded, (int, float)) else None
+    state = status
+    if status == "pending" and (age is None or age > CANARY_PENDING_STALE_S):
+        state = "pending_stale"
+    elif status == "not_run" and record.get("canary_exit") is None:
+        state = "skipped"  # the publisher skipped it; the canary never ran
+    return {**base, "state": state, "canary_exit": record.get("canary_exit"),
+            "age_s": age, "detail": record.get("detail")}
+
+
+def canary_lines(summary: Mapping[str, object] | None) -> list[str]:
+    if summary is None or summary.get("state") == "unavailable":
+        return ["canary status unavailable"]
+    generation, state = summary.get("generation"), summary.get("state")
+    if state == "missing":
+        return [f"missing canary verdict for generation {generation}"]
+    if state == "unreadable":
+        return [f"unreadable canary verdict for generation {generation}: "
+                f"{summary.get('error')}"]
+    if state == "skipped":
+        return [f"missing canary verdict for generation {generation} "
+                "(the publisher skipped the canary)"]
+    if state == "pending_stale":
+        return [f"missing canary verdict for generation {generation} "
+                "(a canary started and never reported)"]
+    return [f"generation {generation}  canary {state}"]
+
 #: How long any one scheduler command has to answer.  Shorter than the lane's
 #: own 60 s, deliberately: a ``pbrun`` waiting on a job is willing to wait for
 #: a busy controller, and a person looking at a status screen is not.
@@ -3765,6 +3836,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     else:
         timed_out.append("rollout")
 
+    # Report-only (#978): a missing verdict is a line to act on, not a partial
+    # census, so no outcome here changes ``complete`` or the exit status.
+    canary = {"state": "unavailable", "generation": None, "record": None}
+    read = bounded("canary", lambda: read_canary_summary(args.repo_link),
+                   deadline=deadline, abandoned=abandoned)
+    if read["status"] == "ok":
+        canary = read["value"]
+
     # Whole means every required section read, and read entirely: the deadline
     # held, nothing raised, and the pool census came back with every record
     # legible.  Any one of those failing is a partial answer, and a partial
@@ -3806,6 +3885,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "jobs": jobs,
             "endings": endings,
             "rollout": rollout,
+            "canary": canary,
             "scheduler": notes,
         }, sort_keys=True, indent=1))
         return _incomplete(timed_out, unavailable, pool_partial, args.timeout_s)
@@ -3831,6 +3911,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     print()
     print("== rollout")
     print("\n".join(rollout_lines(rollout)))
+    print()
+    print("== canary")
+    print("\n".join(canary_lines(canary)))
     return _incomplete(timed_out, unavailable, pool_partial, args.timeout_s)
 
 

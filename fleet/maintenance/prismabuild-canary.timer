@@ -1,0 +1,12 @@
+[Unit]
+Description=Check every few minutes that the active generation has a canary verdict
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=10min
+Persistent=true
+RandomizedDelaySec=30
+Unit=prismabuild-canary.service
+
+[Install]
+WantedBy=timers.target

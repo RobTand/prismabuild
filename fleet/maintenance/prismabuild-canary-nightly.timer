@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the fleet canary nightly
+
+[Timer]
+OnCalendar=*-*-* 05:30:00
+Persistent=true
+RandomizedDelaySec=300
+Unit=prismabuild-canary-nightly.service
+
+[Install]
+WantedBy=timers.target

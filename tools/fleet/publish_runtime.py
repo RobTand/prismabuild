@@ -254,6 +254,11 @@ EXCLUDED: tuple[tuple[str, str], ...] = (
      "worker boxes execute the driver's legs from the submission snapshot, "
      "never from the generation; a box with no checkout has no reason to "
      "run it"),
+    ("pbcanary_watch.py",
+     "the canary watcher (#978) runs from a checkout as a systemd oneshot: "
+     "it reads the active generation, runs the checkout's pbcanary driver "
+     "when the generation has no verdict, and writes the verdict sidecar; "
+     "workers never execute it"),
     ("pbcanary_submission.py",
      "the checkout canary's private bounded sealed-action handoff to the "
      "lock-owning publisher; it loads the published pbrun client but never "

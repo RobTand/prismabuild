@@ -1,105 +1,69 @@
-# Self-hosted runner setup for pbcanary (PB #688, crew E)
+# Fleet canary timer (PB #688, #978)
 
-## Why this runner exists
+## Why a timer
 
-`.github/workflows/canary.yml` runs the fleet end-to-end canary
-(`tools/fleet/pbcanary.py`, crew A). GitHub-hosted runners cannot reach
-the fleet queue or `/mnt/shared`, so one self-hosted runner provides
-the `fleet` label. Its only job is to check out the repo and **submit**
-the canary through the real queue interfaces (`pbrun`); the legs
-execute on fleet workers (sparky/sparklina), never as local processes
-on the runner host.
+The fleet end-to-end canary (`tools/fleet/pbcanary.py`) needs the fleet
+queue and `/mnt/shared`, which GitHub-hosted runners cannot reach. It used
+to run from a self-hosted GitHub Actions workflow, `canary.yml`. That
+workflow was informational and could not see a generation that was staged
+in PrismaBuild and activated outside it, so an activated generation could
+sit without a verdict. It is removed.
 
-## Host: dl380
+A systemd timer on the dl380 replaces it. The dl380 (`dl380g10` in
+`tools/fleet/fleet_boxes.json`) is always on and holds `/mnt/shared` as a
+local dataset.
 
-- The dl380 (`dl380g10` in `tools/fleet/fleet_boxes.json`) is always on
-  and is the file server: `/mnt/shared` is a local ZFS dataset here, so
-  the queue roots, CAS, and canary namespaces are local paths, not
-  network mounts.
-- Run the GitHub Actions runner service on this host under an
-  unprivileged user (e.g. `pb-runner`) that is a member of whatever
-  group owns `/mnt/shared/prismabuild-fleet` writes. The canary writes
-  only under `/mnt/shared/prismabuild-fleet/pb-canary/<run-id>/`.
+## What runs
 
-## Registration
+`tools/fleet/pbcanary_watch.py` resolves the live `repo` link to the active
+generation and reads the generation's verdict sidecar,
+`runtime-generations/<generation>.canary.json`. The publisher writes the
+same sidecar.
 
-Repo-level runner for `RobTand/prismabuild` (repo scope is enough; no
-org runner needed):
+- With no verdict, a verdict that never reported (a `pending` record older
+  than six hours), or an unreadable record, it runs `pbcanary.py
+  --generation <generation>` and records the result.
+- With a verdict and no `--nightly`, it exits 0 and runs nothing.
+- With `--nightly`, it runs the canary regardless.
 
-1. Repo → Settings → Actions → Runners → New self-hosted runner.
-   Pick the Linux image matching the dl380 OS.
-2. On the dl380, as the runner user:
-   - `mkdir -p ~/actions-runner && cd ~/actions-runner`
-   - Download and verify the runner package per GitHub's shown steps.
-   - `./config.sh --url https://github.com/RobTand/prismabuild \
-       --token <just-issued-token> \
-       --name pb-canary-dl380 --labels fleet --unattended`
-     - The `self-hosted` label is implicit; `--labels fleet` adds the
-       `fleet` label the workflow's `runs-on: [self-hosted, fleet]`
-       selects on. Do not add other labels.
-     - Registration tokens are single-use and expire; re-issue from the
-       same settings page when adding a replacement host.
-3. `./svc.sh install` then `./svc.sh start` (or the equivalent
-   `systemctl` unit). Verify the runner shows Idle (green) on the
-   settings page.
-4. Proof: Actions → pbcanary → Run workflow (leave generation empty) →
-   the run leaves Queued, starts on `pb-canary-dl380`, checks out main,
-   submits the canary, archives `pbcanary-summary-<run-id>`.
+The driver's exit status is the watcher's exit status: 0 verified, 1 a leg
+failed, 2 the canary could not run. The sidecar records `verified`,
+`failed` or `not_run` to match.
 
-## Host prerequisites
+`pbstatus` shows the state in a `== canary` section, and as a `canary` key
+in `--json`. An active generation with no verdict prints
+`missing canary verdict for generation <name>`.
 
-- The canary's GPU leg reads `PBCANARY_GPU_IMAGE` from the job environment
-  (set in `canary.yml` as versioned config — do not shadow it with a
-  different value in the runner's service environment unless you also
-  update the workflow). The host must be able to `docker run
-  --entrypoint "" <that ref>` with `--gpus all`: the image must exist
-  locally or be pullable, and the Docker daemon must have GPU device
-  plumbing (`nvidia-container-toolkit`). Verified 2026-09-19 on sparky
-  against `prismaquant-glm-derivative@sha256:c0e532d2…` (1 CUDA device).
+Units in `fleet/maintenance/`:
 
+- `prismabuild-canary.timer` runs `prismabuild-canary.service` at boot and
+  every 10 minutes.
+- `prismabuild-canary-nightly.timer` runs
+  `prismabuild-canary-nightly.service` daily at 05:30 UTC-local time.
 
-- `git`, `python3` (whatever `tools/fleet/pbcanary.py` needs beyond the
-  stdlib comes from the repo/fleet environment, not the runner image).
-- `/mnt/shared/prismabuild-fleet` reachable at the same path the fleet
-  uses (local dataset on dl380 — nothing to mount).
-- Egress to github.com (checkout, artifact upload) and to the fleet
-  queue. No ingress: the runner polls outbound only.
+Both services set `PBCANARY_GPU_IMAGE` to a `name@sha256` digest pin. The
+host must be able to `docker run --entrypoint "" <that ref>` with
+`--gpus all`.
 
-## Pre-registration behavior
+## Install
 
-The workflow file may merge before this runner registers. That is safe:
-runs with unmatched `runs-on` labels stay Queued server-side until a
-matching runner appears, then proceed normally. Nothing backfills and
-nothing times out while queued (`timeout-minutes` starts at pickup).
-Delete or re-run stale queued runs only if they predate the driver's
-landing (crew A) — a queued run against a tree without
-`tools/fleet/pbcanary.py` fails at the `Run pbcanary` step.
+The units are not installed by merging. On the dl380, as the user that owns
+the `prismabuild` checkout:
 
-## Fork hardening
+```
+mkdir -p ~/.config/systemd/user
+cp ~/prismabuild/fleet/maintenance/prismabuild-canary*.{service,timer} ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now prismabuild-canary.timer prismabuild-canary-nightly.timer
+systemctl --user list-timers 'prismabuild-canary*'
+```
 
-- Repo → Settings → Actions → General → **Fork pull request workflows**:
-  require approval for first-time contributors (minimum; "require
-  approval for all outside collaborators" is also acceptable). This
-  workflow has no `pull_request` trigger, but the setting guards the
-  repo's other workflows sharing the same runner pool.
-- **No secrets on this runner beyond checkout + fleet mounts.** The
-  workflow declares `permissions: contents: read`, checks out with
-  `persist-credentials: false`, and configures no environment secrets.
-  Do not add deployment keys, tokens, or cloud credentials to the
-  runner host or the workflow; the canary needs none (low-priority
-  queue submission is unauthenticated local-path work).
-- The `GITHUB_TOKEN` available to the job is read-scoped; artifact
-  upload uses that token, not a PAT.
-- Keep this workflow informational: never add `pbcanary` as a required
-  status check in branch protection, and never add a `pull_request`
-  trigger to `canary.yml` (PR CI stays exactly as-is per #688
-  non-goals).
+Proof: `python3 tools/fleet/pbstatus.py` shows `== canary` with the active
+generation, and `~/prismabuild/tools/fleet/pbcanary_watch.py` run by hand
+writes the sidecar.
 
 ## Maintenance
 
-- Upgrade the runner package when GitHub marks it out of date
-  (settings page shows the version); `./svc.sh stop`, replace package,
-  `./svc.sh start`.
-- If the runner goes offline, canary runs queue (see above) and the
-  nightly verdict goes missing — treat a missing nightly verdict as an
-  ops alert, not a canary pass.
+A missing canary verdict in `pbstatus` is an ops alert, not a canary pass.
+The checkout the timer runs from must be at or ahead of the active
+generation's commit, because it supplies `pbcanary.py`.
