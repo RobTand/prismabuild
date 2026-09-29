@@ -1302,6 +1302,65 @@ def stable_host_capacity(live: dict[str, int],
     return {**live, kind: max(int(live[kind]), int(started[kind]))}
 
 
+def _pid_provably_dead(pid: int) -> bool:
+    """True only when this box's kernel says ``pid`` does not exist.
+
+    ``EPERM`` means the process exists, and anything else is unknown; both read
+    as not provably dead.
+    """
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except OSError:
+        return False
+    return False
+
+
+def sweep_own_dead_offer_tmp(workers_dir: Path, host: str, *,
+                             now: float | None = None,
+                             min_age_s: float | None = None) -> list[str]:
+    """Remove this box's own offer temporary files whose writer is gone (#1040).
+
+    ``_write_json_atomic`` names its temporary ``.<name>.<pid>.<uuid>.tmp`` and
+    removes it only on an exception, so a writer killed between the create and
+    the rename leaves the file for good.  Only files named for *this* host are
+    considered: a pid names a process on one box, and another box's files are
+    not ours to judge.  A file goes only when both hold: the pid is provably dead
+    here, and the file is older than an offer's life, so a live writer in
+    another pid namespace on this box (a container sharing the mount) is never
+    swept mid-write.  Returns the names removed.  Any error is a skip: the sweep
+    is housekeeping and never blocks the loop.
+    """
+    import re
+    now = time.time() if now is None else now
+    min_age_s = pool.OFFER_TIMEOUT_S if min_age_s is None else min_age_s
+    pattern = re.compile(
+        r"\." + re.escape(host) + r"\.json\.(\d+)\.[0-9a-f]{32}\.tmp")
+    removed: list[str] = []
+    try:
+        entries = sorted(os.scandir(workers_dir), key=lambda e: e.name)
+    except OSError:
+        return removed
+    for entry in entries:
+        match = pattern.fullmatch(entry.name)
+        if match is None:
+            continue
+        try:
+            info = entry.stat(follow_symlinks=False)
+            if not stat.S_ISREG(info.st_mode):
+                continue
+            if now - info.st_mtime <= min_age_s:
+                continue
+            if not _pid_provably_dead(int(match.group(1))):
+                continue
+            os.unlink(entry.path)
+            removed.append(entry.name)
+        except OSError:
+            continue
+    return removed
+
+
 def _run_loop(stop_requested):
     ap = build_parser()
     args = ap.parse_args()
@@ -1445,6 +1504,10 @@ def _run_loop(stop_requested):
           f"per poll (issue #16)", flush=True)
     print(f"[{host}] queue discovery bounded to {DISCOVERY_TIMEOUT_S:g}s "
           f"per poll (issue #16)", flush=True)
+    swept = sweep_own_dead_offer_tmp(queue.root / "workers", host)
+    if swept:
+        print(f"[{host}] swept {len(swept)} dead offer temporary file(s) "
+              f"(issue #1040)", flush=True)
     while True:
         if stop_requested():
             print(f"[{host}] shutdown requested; current action drained", flush=True)

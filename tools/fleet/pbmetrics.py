@@ -2110,6 +2110,11 @@ def _collect(
         "prismabuild_worker_up",
         "Whether a syntactically valid worker offer is fresh enough for pool placement.",
     )
+    worker_retired = metrics.family(
+        "prismabuild_worker_retired",
+        "Whether a valid worker offer has gone unrefreshed long enough that its box "
+        "is treated as retired; the offer file is kept (#1040).",
+    )
     offer_age = metrics.family(
         "prismabuild_worker_offer_age_seconds", "Age of a valid worker's last offer.")
     capacity = metrics.family(
@@ -2148,7 +2153,7 @@ def _collect(
     for node in census.get("nodes", []):
         host = _host(node.get("node"))
         state = node.get("state")
-        if host is None or state not in {"live", "draining", "stale"}:
+        if host is None or state not in {"live", "draining", "stale", "retired"}:
             success = False
             continue
         valid_hosts.add(host)
@@ -2161,6 +2166,7 @@ def _collect(
         # exactly as written.
         fresh = state in {"live", "draining"}
         worker_up.add(1 if fresh else 0, host=host)
+        worker_retired.add(1 if state == "retired" else 0, host=host)
         age = _number(node.get("age_s"))
         if age is not None:
             offer_age.add(age, host=host)
