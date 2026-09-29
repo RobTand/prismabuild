@@ -2977,11 +2977,14 @@ name itself is refused rather than overwritten. The token is minted per launch,
 not per key, so an action that outlived SIGKILL on a previous attempt and still
 holds the path cannot report for its successor.
 
-Two more variables travel with them, and they are conveniences rather than
-channel (#488): `PRISMABUILD_ACTION_PROGRESS_PHASES` is the sealed phase list
-as a JSON array, and `PRISMABUILD_ACTION_PROGRESS_HELPER` is the absolute path
-of `prismabuild/progress.py` inside the runtime generation that launched the
-action. `progress.py` is a leaf module -- standard library only, no
+Three more variables travel with them, and they are conveniences rather
+than channel (#488): `PRISMABUILD_ACTION_PROGRESS_PHASES` is the sealed
+phase list as a JSON array, `PRISMABUILD_ACTION_PROGRESS_ALLOWANCES` is the
+same phases as a JSON object of effective stall allowances in declared order
+(#1242) -- the resolved numbers the watchdog enforces, after defaults,
+overrides and the worker's clamp -- and `PRISMABUILD_ACTION_PROGRESS_HELPER`
+is the absolute path of `prismabuild/progress.py` inside the runtime
+generation that launched the action. `progress.py` is a leaf module -- standard library only, no
 intra-package imports. `core` mirrors the contract constants and retains the
 exported `prismabuild.core.report_action_progress(phase, units_completed)`
 compatibility writer without a repository import, preserving its standalone
