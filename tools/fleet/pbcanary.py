@@ -183,10 +183,19 @@ def check_preconditions(paths: dict, checkout: Path) -> None:
 
 def default_checkout() -> Path:
     """The Git toplevel holding this driver; ``pbrun --cwd`` snapshots it."""
-    completed = subprocess.run(
-        ["git", "rev-parse", "--show-toplevel"],
-        capture_output=True, text=True, check=False,
-    )
+    src = str(FLEET_DIR.parent.parent / "src")
+    if src not in sys.path:
+        sys.path.insert(0, src)
+    try:
+        # Lazy and guarded: the repo copy this driver just put on the path.
+        from prismabuild import core as _core
+    except ImportError:
+        completed = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, check=False,
+        )
+    else:
+        completed = _core._git_run(os.getcwd(), "rev-parse", "--show-toplevel")
     if completed.returncode != 0:
         raise PreconditionRefused(
             "precondition refused (run): no Git checkout found for the "

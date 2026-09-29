@@ -29,6 +29,21 @@ import uuid
 MARK = '/pb266b-marker'
 
 
+def git_head():
+    """HEAD of the working directory's checkout, through the repo's git runner."""
+    src = str(Path(__file__).resolve().parents[2] / 'src')
+    if src not in sys.path:
+        sys.path.insert(0, src)
+    try:
+        # Lazy and guarded: the repo copy this tool just put on the path.
+        from prismabuild import core
+    except ImportError:
+        completed = subprocess.run(['git', 'rev-parse', 'HEAD'], capture_output=True, text=True)
+    else:
+        completed = core._git_run(os.getcwd(), 'rev-parse', 'HEAD')
+    return completed.stdout.strip()
+
+
 def child(args):
     sys.path.insert(0, str(Path.cwd() / 'src'))
     os.environ['PRISMABUILD_BOX_STATE_ROOT'] = args.box_state
@@ -211,8 +226,7 @@ def driver(args):
               'stderr_tail': completed.stderr[-4000:], 'wall_s': time.time() - started,
               'queue_root': str(queue_root), 'box_state': str(box_state),
               'host': os.uname().nodename, 'cwd': os.getcwd(),
-              'git_head': subprocess.run(['git', 'rev-parse', 'HEAD'], capture_output=True,
-                                         text=True).stdout.strip()}
+              'git_head': git_head()}
     if completed.returncode == 0:
         report['child'] = json.load(open(child_out))
         passes = parse(trace, str(queue_root), str(box_state))
