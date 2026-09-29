@@ -2855,7 +2855,8 @@ def _unreadable_holder(holder: Path, exc: OSError) -> dict[str, object]:
 
 
 def _holder_token_paths(
-    holder: Path, pattern: str = "*-*",
+    holder: Path, pattern: str = "*-*", *,
+    names: Callable[[Path], list[Path]] | None = None,
 ) -> tuple[list[Path], OSError | None]:
     """One listed holder's token paths for a tolerant read, and its error.
 
@@ -2870,7 +2871,10 @@ def _holder_token_paths(
     try:
         if not _holder_is_dir(holder):
             return [], None
-        return _glob_visible(holder, pattern), None
+        if names is None:
+            return _glob_visible(holder, pattern), None
+        return sorted(path for path in names(holder)
+                      if fnmatch.fnmatchcase(path.name, pattern)), None
     except (FileNotFoundError, NotADirectoryError):
         return [], None
     except OSError as exc:
@@ -2903,8 +2907,10 @@ def held_names_visible(ledger, key: str) -> set[str]:
     """
 
     try:
-        return {path.name
-                for path in _glob_visible(ledger.held_dir / key, "*-*")}
+        paths = (ledger._glob_names(ledger.held_dir / key, "*-*", strict=True)
+                 if isinstance(ledger, ResourceLedger)
+                 else _glob_visible(ledger.held_dir / key, "*-*"))
+        return {path.name for path in paths}
     except (FileNotFoundError, NotADirectoryError):
         return set()
 
@@ -3780,6 +3786,25 @@ def _guarded_mutation(*, blocking: bool):
     return decorator
 
 
+# A tier cycle supplies the existing trusted-directory cache; pool does not
+# import fleet tooling or keep a second cache. Only explicitly guarded tier
+# ledgers use it, and the callback must preserve error-visible names.
+_TIER_LEDGER_NAMES: contextvars.ContextVar[
+    Callable[[Path], frozenset[str]] | None] = contextvars.ContextVar(
+        "pool_tier_ledger_names", default=None)
+
+
+@contextmanager
+def tier_ledger_names_from(reader: Callable[[Path], frozenset[str]] | None):
+    """Scope a tier cycle's trusted names reader, resetting even on failure."""
+
+    token = _TIER_LEDGER_NAMES.set(reader)
+    try:
+        yield
+    finally:
+        _TIER_LEDGER_NAMES.reset(token)
+
+
 class ResourceLedger:
     """Per-host capacity, held as tokens that are acquired by ``rename``.
 
@@ -3832,19 +3857,53 @@ class ResourceLedger:
 
         return self._mutation_guard is not None
 
-    def _census_scan(self, directory: Path):
+    def _scan_names(self, directory: Path, *, strict: bool = False,
+                    optional: bool = False):
+        """Fresh or trusted names, preserving the caller's absence semantics.
+
+        An optional child is absent only when its error-visible parent census
+        says so. A failed child listing is never remembered as empty.
+        """
+
+        reader = _TIER_LEDGER_NAMES.get() if self._strict_census() else None
+        if reader is None:
+            return _scan_visible(directory) if strict else _scan(directory)
+        try:
+            if optional and directory.name not in reader(directory.parent):
+                return []
+            return sorted(directory / name for name in reader(directory))
+        except (FileNotFoundError, NotADirectoryError):
+            if strict:
+                raise
+            return []
+
+    def _glob_names(self, directory: Path, pattern: str, *, strict: bool = False):
+        """Flat token-name matches without changing legacy tolerant errors."""
+
+        if (not self._strict_census() or _TIER_LEDGER_NAMES.get() is None
+                or "/" in pattern or "**" in pattern):
+            return (_glob_visible(directory, pattern) if strict
+                    else _glob(directory, pattern))
+        try:
+            return sorted(path for path in self._scan_names(directory, strict=True)
+                          if fnmatch.fnmatchcase(path.name, pattern))
+        except OSError:
+            if strict:
+                raise
+            # Path.glob's tolerant behavior varies by interpreter. Preserve
+            # it on errors; a failed cache read never becomes a remembered empty.
+            return _glob(directory, pattern)
+
+    def _census_scan(self, directory: Path, *, optional: bool = False):
         """Authoritative-or-tolerant directory listing by ledger kind."""
 
-        if self._strict_census():
-            return _scan_visible(directory)
-        return _scan(directory)
+        return self._scan_names(directory, strict=self._strict_census(),
+                                optional=optional)
 
     def _census_glob(self, directory: Path, pattern: str):
         """Authoritative-or-tolerant name match by ledger kind."""
 
-        if self._strict_census():
-            return _glob_visible(directory, pattern)
-        return _glob(directory, pattern)
+        return self._glob_names(directory, pattern, strict=self._strict_census())
 
     @property
     def base(self) -> Path:
@@ -4103,8 +4162,8 @@ class ResourceLedger:
 
         if self._strict_census():
             return any(
-                name in {path.name for path in _scan_visible(holder)}
-                for holder in _scan_visible(self.held_dir)
+                name in {path.name for path in self._scan_names(holder, strict=True)}
+                for holder in self._scan_names(self.held_dir, strict=True)
                 if _holder_is_dir(holder)
             )
         for holder in _scan(self.held_dir):
@@ -4203,7 +4262,7 @@ class ResourceLedger:
             target = int(count)
             if target < 0:
                 raise PoolContractError(f"capacity for {kind!r} must not be negative")
-            free = _glob(self.free_dir, f"{kind}-*")
+            free = self._glob_names(self.free_dir, f"{kind}-*")
             pattern = f"{kind}-*"
             if not unreadable:
                 held = sum(1 for path in held_paths
@@ -4395,8 +4454,9 @@ class ResourceLedger:
 
         paths: list[Path] = []
         unreadable: list[dict[str, object]] = []
-        for holder in _scan(self.held_dir):
-            tokens, error = _holder_token_paths(holder)
+        for holder in self._scan_names(self.held_dir):
+            tokens, error = _holder_token_paths(
+                holder, names=lambda path: self._scan_names(path, strict=True))
             if error is not None:
                 unreadable.append(_unreadable_holder(holder, error))
                 continue
@@ -4415,7 +4475,7 @@ class ResourceLedger:
         """
 
         counts: dict[str, int] = {}
-        for path in _glob(self.free_dir, "*-*"):
+        for path in self._glob_names(self.free_dir, "*-*"):
             counts[path.name.rsplit("-", 1)[0]] = counts.get(path.name.rsplit("-", 1)[0], 0) + 1
         held, unreadable = self._held_census()
         for path in held:
@@ -4433,10 +4493,11 @@ class ResourceLedger:
         other listing error propagates, and the retire then has no bound.
         """
 
-        markers = {path.name for path in _scan_visible(self.minted_dir)
+        markers = {path.name for path in self._scan_names(self.minted_dir, strict=True)
                    if path.name != "dead"}
         try:
-            dead = {path.name for path in _scan_visible(self.minted_dir / "dead")}
+            dead = {path.name for path in self._scan_names(
+                self.minted_dir / "dead", strict=True, optional=True)}
         except FileNotFoundError:
             dead = set()
         return markers, dead
@@ -4505,7 +4566,7 @@ class ResourceLedger:
         """Tokens of each kind not currently held."""
 
         counts: dict[str, int] = {}
-        for path in _glob(self.free_dir, "*-*"):
+        for path in self._glob_names(self.free_dir, "*-*"):
             kind = path.name.rsplit("-", 1)[0]
             counts[kind] = counts.get(kind, 0) + 1
         return counts
@@ -4950,7 +5011,7 @@ class ResourceLedger:
         swept: list[str] = []
         now = _now()
         local = socket.gethostname()
-        for holder in _scan(self.held_dir):
+        for holder in self._scan_names(self.held_dir):
             if not _is_acquisition(holder.name) or not holder.is_dir():
                 continue
             started = _acquisition_clock(holder)
@@ -5092,10 +5153,10 @@ class ResourceLedger:
         """
 
         counts: dict[str, int] = {}
-        for holder in _scan(self.held_dir):
+        for holder in self._scan_names(self.held_dir):
             if not holder.is_dir():
                 continue
-            for path in _glob(holder, "*-*"):
+            for path in self._glob_names(holder, "*-*"):
                 kind = path.name.rsplit("-", 1)[0]
                 counts[kind] = counts.get(kind, 0) + 1
         return counts
@@ -5112,7 +5173,7 @@ class ResourceLedger:
         """
 
         counts: dict[str, int] = {}
-        for path in _glob(self.held_dir / action_key, "*-*"):
+        for path in self._glob_names(self.held_dir / action_key, "*-*"):
             kind = path.name.rsplit("-", 1)[0]
             counts[kind] = counts.get(kind, 0) + 1
         return counts
@@ -5141,7 +5202,7 @@ class ResourceLedger:
         """
 
         return sorted(
-            path.name for path in _scan(self.held_dir)
+            path.name for path in self._scan_names(self.held_dir)
             if path.is_dir() and not _is_acquisition(path.name)
         )
 
@@ -15517,8 +15578,8 @@ class PoolQueue:
         reclaimed: dict[str, int] = {}
         dead_dir = ledger.minted_dir / "dead"
         try:
-            names = sorted(path.name for path in ledger._census_scan(dead_dir)
-                           if path.is_file())
+            names = sorted(path.name for path in ledger._census_scan(
+                dead_dir, optional=True) if path.is_file())
         except OSError:
             # Unknown dead set: retain everything, decide nothing.
             return reclaimed

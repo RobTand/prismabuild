@@ -856,7 +856,8 @@ class DirectoryRecords:
         self.kept = 0
         self.parsed = 0
 
-    def names(self, directory: Path, *, select) -> frozenset[str]:
+    def names(self, directory: Path, *, select,
+              missing_ok: bool = True) -> frozenset[str]:
         """The names in ``directory`` that ``select(name)`` keeps.
 
         A names-only listing, kept under the same stamp as :meth:`read`'s:
@@ -866,7 +867,8 @@ class DirectoryRecords:
         the directory last changed in), the directory is listed every call,
         as a plain ``os.listdir`` is.  A directory that does not exist reads
         as empty and is not remembered; any other ``OSError`` reaches the
-        caller, never an empty set.
+        caller, never an empty set.  ``missing_ok=False`` also raises on
+        absence, for authoritative ledger censuses that must refuse it.
         """
 
         name = str(directory)
@@ -879,6 +881,8 @@ class DirectoryRecords:
         try:
             listed = os.listdir(directory)
         except FileNotFoundError:
+            if not missing_ok:
+                raise
             return frozenset()
         self.listed += 1
         found = frozenset(child for child in listed if select(child))
@@ -4657,7 +4661,9 @@ def sweep_dead_owner_fragments(
         try:
             # Include nonregular holder names: an unknown ledger entry is
             # not evidence that this mover has no charge.
-            held_by_tier[tier] = set(os.listdir(queue.tier_ledger(tier).held_dir))
+            ledger = queue.tier_ledger(tier)
+            held_by_tier[tier] = {path.name for path in
+                                  ledger._census_scan(ledger.held_dir)}
         except FileNotFoundError:
             held_by_tier[tier] = set()
         except (OSError, pool.PoolContractError) as exc:
