@@ -45,11 +45,23 @@ import os
 import signal
 import sys
 import threading
+import time
 
 import pytest
 
 #: The one name the shard, this plugin and the tests that exercise it share.
 TIMEOUT_ENV = "PRISMABUILD_TEST_TIMEOUT_S"
+
+#: The seconds the shard was sealed for.  A test that starts late is bound by
+#: what is left of this rather than by its full per-test bound (#1309).
+SHARD_BUDGET_ENV = "PRISMABUILD_SHARD_BUDGET_S"
+
+#: Held back from the budget so the handler's stderr, which names the test,
+#: reaches the lease's execution observation while the action is still alive.
+BUDGET_MARGIN_S = 30.0
+
+#: The shortest alarm armed for a test that starts with no budget left.
+MIN_ARMED_S = 1.0
 
 #: Whether this platform can arm a wall-clock alarm at all.  Absent on
 #: Windows; the bound is then reported as unavailable rather than pretended.
@@ -81,6 +93,39 @@ def configured_bound(environ: "os._Environ[str] | dict[str, str] | None" = None)
     return seconds if seconds > 0 else 0.0
 
 
+def configured_budget(
+        environ: "os._Environ[str] | dict[str, str] | None" = None) -> float:
+    """Read the shard's sealed budget in seconds; ``0.0`` means none."""
+
+    raw = (os.environ if environ is None else environ).get(SHARD_BUDGET_ENV)
+    if raw is None or not raw.strip():
+        return 0.0
+    try:
+        seconds = float(raw)
+    except ValueError:
+        raise pytest.UsageError(
+            f"{SHARD_BUDGET_ENV}={raw!r} is not a number of seconds") from None
+    if seconds != seconds or seconds in (float("inf"), float("-inf")):
+        raise pytest.UsageError(
+            f"{SHARD_BUDGET_ENV}={raw!r} is not a finite number of seconds")
+    return seconds if seconds > 0 else 0.0
+
+
+def remaining_bound(*, bound_s: float, budget_s: float, elapsed_s: float) -> float:
+    """The alarm for a test starting ``elapsed_s`` into a ``budget_s`` shard.
+
+    The per-test bound, or the time left less ``BUDGET_MARGIN_S`` when that is
+    shorter, and never below ``MIN_ARMED_S``.
+    """
+
+    if not bound_s or not budget_s:
+        return bound_s
+    remaining = budget_s - elapsed_s - BUDGET_MARGIN_S
+    if remaining <= MIN_ARMED_S:
+        return MIN_ARMED_S
+    return min(bound_s, remaining)
+
+
 class _Alarm:
     """One armed bound, disarmable without a late signal reaching the next.
 
@@ -92,20 +137,27 @@ class _Alarm:
     """
 
     def __init__(self, nodeid: str, phase: str, seconds: float,
-                 capman=None) -> None:
+                 capman=None, budgeted: bool = False) -> None:
         self.nodeid = nodeid
         self.phase = phase
         self.seconds = seconds
         self.capman = capman
+        self.budgeted = budgeted
         self.armed = False
 
     def message(self) -> str:
-        return (
+        text = (
             f"{self.nodeid} exceeded the per-test bound of {self.seconds:g}s "
             f"during {self.phase} ({TIMEOUT_ENV}). A test that runs longer "
             "than its shard can afford is a hang until measured otherwise: "
             "this fails the test, not the shard's slot (#600)."
         )
+        if self.budgeted:
+            text += (
+                " The bound was tightened to the time this test had left in "
+                f"its shard ({SHARD_BUDGET_ENV}): it started too late to run "
+                "its full bound before the shard's end.")
+        return text
 
     def __call__(self, signum: int, frame: object) -> None:
         if not self.armed:
@@ -157,8 +209,18 @@ def _bounded(item: pytest.Item, phase: str):
         # the honest answer -- and it is the answer the record can read,
         # because an unbounded phase simply has no bound failure in it.
         return None
+    budget = getattr(item.config, "_prismabuild_shard_budget", 0.0)
+    started = getattr(item.config, "_prismabuild_session_start", None)
+    budgeted = False
+    if budget and started is not None:
+        tightened = remaining_bound(
+            bound_s=seconds, budget_s=budget,
+            elapsed_s=time.monotonic() - started)
+        budgeted = tightened != seconds
+        seconds = tightened
     alarm = _Alarm(item.nodeid, phase, seconds,
-                   item.config.pluginmanager.get_plugin("capturemanager"))
+                   item.config.pluginmanager.get_plugin("capturemanager"),
+                   budgeted=budgeted)
     previous = signal.signal(signal.SIGALRM, alarm)
     alarm.armed = True
     signal.setitimer(signal.ITIMER_REAL, seconds)
@@ -179,6 +241,8 @@ def pytest_configure(config: pytest.Config) -> None:
     # the environment -- so a malformed value is refused at startup rather
     # than at the first test, and every item in the session shares one bound.
     config._prismabuild_test_bound = configured_bound()
+    config._prismabuild_shard_budget = configured_budget()
+    config._prismabuild_session_start = time.monotonic()
 
 
 def pytest_report_header(config: pytest.Config) -> str | None:

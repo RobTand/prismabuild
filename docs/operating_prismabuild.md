@@ -1452,7 +1452,10 @@ reads it as the shard's declared end, so an item waiting behind a shard can
 tell whether the shard leaves soon (#939). With no `--timeout-s` and no
 announced ceiling, a shard seals none. Each test in the shard is bounded one
 heartbeat inside that deadline (`PRISMABUILD_TEST_TIMEOUT_S`), so a test that
-hangs fails by name before the deadline ends the lease. `--test-timeout-s`
+hangs fails by name before the deadline ends the lease. The sealed deadline is
+also exported as `PRISMABUILD_SHARD_BUDGET_S`, so a test that starts late in
+the shard is bound by the time the shard has left, less a 30 s margin, instead
+of by its full bound (#1309). `--test-timeout-s`
 sets a tighter bound from a measured duration, and `0` removes it. A box's
 ceiling can be long -- a loop set for campaign work may announce a day -- so
 pass `--timeout-s` when a hung test should be named sooner. A `--gpu` run must

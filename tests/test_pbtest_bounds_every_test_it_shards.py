@@ -227,3 +227,43 @@ def test_the_derivation_never_returns_a_negative_bound() -> None:
 
     assert pbtest.per_test_bound(timeout_s=1.0, override_s=None) == 0.0
     assert pbtest.per_test_bound(timeout_s=None, override_s=-5.0) == 0.0
+
+
+def test_a_late_test_is_bound_by_the_time_left_in_the_shard() -> None:
+    """main: a test's alarm is its full bound however late it starts.
+
+    branch: the alarm arms at min(bound, budget - elapsed - margin), so a test
+    that starts with less time left than its bound is failed by name at what
+    is left, not killed unnamed at the shard ceiling (#1309).
+    """
+
+    assert pytest_test_bound.remaining_bound(
+        bound_s=3570.0, budget_s=3600.0, elapsed_s=0.0) == pytest.approx(3570.0)
+    assert pytest_test_bound.remaining_bound(
+        bound_s=3570.0, budget_s=3600.0, elapsed_s=3500.0) == pytest.approx(70.0)
+    assert pytest_test_bound.remaining_bound(
+        bound_s=3570.0, budget_s=3600.0, elapsed_s=3599.0) == pytest.approx(1.0)
+    assert pytest_test_bound.remaining_bound(
+        bound_s=3570.0, budget_s=0.0, elapsed_s=3599.0) == pytest.approx(3570.0)
+
+
+def test_the_shard_exports_its_remaining_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """main: only the per-test bound rides in the shard's ``env`` prefix.
+
+    branch: the sealed deadline is exported beside it, so the plugin can
+    tighten a late test's alarm (#1309).
+    """
+
+    code, calls = _dispatch(tmp_path, monkeypatch, ["--timeout-s", "600"])
+
+    assert code == 0
+    payload = calls[0][calls[0].index("--") + 1:]
+    assert payload[0] == "env"
+    prefix = []
+    for word in payload[1:]:
+        if "=" not in word:
+            break
+        prefix.append(word)
+    assert (f"{pytest_test_bound.SHARD_BUDGET_ENV}=600") in prefix
