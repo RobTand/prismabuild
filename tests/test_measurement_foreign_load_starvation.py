@@ -222,7 +222,7 @@ def test_holder_busy_keeps_the_withhold_then_admits(
     denial = _denial(queue, measurement)
     assert denial["reason"] == "adaptive_cpu_refused_withholding", denial
     assert denial["evidence"]["decision"]["reason"] == "measurement_host_not_idle"
-    assert denial["evidence"]["withhold"]["why"] == "drains_soon"
+    assert denial["evidence"]["withhold"]["why"] == "draining_for_measurement"
     # The drain completes and the host reads idle: the measurement runs.
     queue.finish(holder, status="executed")
     state["busy"] = False
