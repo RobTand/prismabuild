@@ -22557,7 +22557,31 @@ class PoolQueue:
             src.unlink(missing_ok=True)
         else:
             tombstone.unlink(missing_ok=True)
+        if disposition in {DONE, FAILED}:
+            self.retire_residency_plan(action_key)
         return dst
+
+    def retire_residency_plan(self, consumer_action_key: str) -> bool:
+        """Move a concluded consumer's residency plan out of the census (#1041).
+
+        A plan describes a window that a live consumer advances.  Once the
+        consumer is terminal, and only then, the plan is archived under
+        ``residency-plans/superseded/`` by ``residency_plan.reap``, which
+        refuses while any movement or egress row the plan sealed is still
+        queued or claimed -- the dead-consumer pass reads the plan to
+        withdraw those rows, so a plan with live children stays.  Best
+        effort: a failure leaves the plan filed, which is the state before
+        this hook, and never changes the consumer's terminal record.
+        """
+
+        from . import residency_plan
+
+        try:
+            return residency_plan.reap(
+                self, consumer_action_key, reason="consumer-terminal",
+            ) is not None
+        except Exception:                                     # noqa: BLE001
+            return False
 
     def _archive_earlier_terminal(
         self, record: Mapping[str, object], disposition: str,
