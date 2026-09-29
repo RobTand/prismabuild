@@ -572,8 +572,11 @@ On a box whose ram tier the planner owns, the same sidecar carries the
 planner's additive `tier` block (`design.md`, #1247 and #1332). Its `status`
 moves once, from `planned`, to what the tier loop observed: `landed` when the
 composed residency map certified the plan's lead resident while the row was
-still ready, or `claimed_before_landing` when the claim came first. Because
-`claim` copies the sidecar, the claimed record shows which one happened. A
+still ready, or `claimed_before_landing` when the claim came first. The
+sidecar under `pb-queue/prewarm/` shows which one happened; it is a
+latest-only record (the write replaces the file), so the tier loop's
+`manifest-row-landed` / `manifest-row-claimed-before-landing` event is the
+second copy of the same observation. A
 `planned` that never moves means the tier loop never treated the row as a
 consumer -- the #1332 defect -- not that staging is slow. `phase_contract`
 says whether the row's progress phases can place it in its plan (`linear`),

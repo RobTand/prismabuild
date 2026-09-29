@@ -1769,6 +1769,12 @@ def retain_filed(queue, live_keys: Collection[str]) -> None:
     for stale in [memo_key for memo_key in _FILED
                   if memo_key[0] == root and memo_key[1] not in keep]:
         del _FILED[stale]
+    # The progress-order memo is keyed by CAS root, not queue root, so it is
+    # pruned by action key alone: forgetting another queue's live key costs
+    # that queue one re-read of an immutable request, never a wrong answer.
+    for stale in [memo_key for memo_key in _PROGRESS_ORDERS
+                  if memo_key[1] not in keep]:
+        del _PROGRESS_ORDERS[stale]
 
 
 def consumer_residency(queue, item: Mapping[str, object], *,
