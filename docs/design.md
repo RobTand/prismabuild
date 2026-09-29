@@ -12804,6 +12804,42 @@ map launches byte-identically. PrismaQuant #1529 (P2) tracks the one read
 family that bypasses the resolver; the covered families are the row's
 dominant 45.8 GiB of cache inputs and its shard loads.
 
+**A filed plan makes its bare row a consumer (#1332).** The planner never
+rewrites the row it plans for (rewriting a ready item races its claim), and
+until #1332 every reader of consumers tested the row's own `residency` block,
+so the adoption pass above never ran for a planner row: its receipt read
+`planned` forever, no mover was published, no map composed, and a GLM PACT
+row read its next ~14.5 GB layer cold from the pool's disks at every row
+boundary (PrismaQuant #1654). `residency_plan.consumer_residency` is now the
+one answer to "which block does this live row stage under": the row's own
+block when it names leads (`residency_source: row`), else, for a pool item
+(`pool_item.v1` -- never the claim's `<key>.lease`, which carries the same
+action key) with a filed plan, the block that plan implies, in the shape
+`pbcampaign` writes (`residency_source: filed_plan`). `tier_loop.live_consumers`,
+the RAM credit, the claimed staged-wait attribution, `_uncensused_tier`,
+`stage_release.shared_interest` and the orphan sweep's `live_claims` all
+read through it, so a planner row's first phase stages while the row is
+READY, before its claim, exactly as a `--residency stage` submission's does.
+Its receipt's `tier` block then records the outcome the loop observed:
+`landed` (the composed map certifies the lead resident while the row is
+still ready -- `consumer_state` and `observed_unix` say when) or
+`claimed_before_landing`; either is written once, from `planned`.
+
+**Progress phases place a consumer in its plan (#1332).** A claimed
+consumer's accepted progress phase says which plan phase it is reading, and
+`residency_plan.remaining` reads a name the plan does not know as "the
+beginning" -- so a row reporting `pricing` after its reads would have every
+evicted range recopied. `residency_plan.accepted_plan_phase` maps the report
+through the row's sealed progress order: a plan phase is itself; under the
+linear contract (`progress_contract == "linear"`, every read phase declared
+in read order -- the same rule `pbrun.require_linear_read_plan_progress`
+enforces on `--residency stage`) a later declared phase is the last read
+phase at or before it; otherwise the name passes through unchanged. The
+planner records the row's contract in its receipt (`tier.phase_contract`), so
+a row whose progress cannot place it (`undeclared`, `unnamed`, `misordered`)
+is visible before its claim. The staging of the first phase before a claim
+does not depend on the contract.
+
 **The queue root is published, not derived (#961).** The pool launcher also
 sets `PRISMABUILD_QUEUE_ROOT` (`core.QUEUE_ROOT_ENV`) for every action it runs,
 map or no map, to the queue's absolute root (`PoolQueue.launch_environment`).
