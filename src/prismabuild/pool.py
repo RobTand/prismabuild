@@ -16852,8 +16852,8 @@ class PoolQueue:
     def residency_verdict(self, item: Mapping[str, object]) -> dict[str, object]:
         """Whether this item's declared bytes are resident, and why not.
 
-        ``not_requested`` for everything the fleet publishes today; written onto
-        the claim record whenever an item carries a block.  A lead counts as
+        ``not_requested`` when an item has no residency request; the verdict is
+        written onto the claim record when residency is requested. A lead counts as
         resident only when its ``done/`` record says ``executed`` **and** that
         record names the same manifest the consumer does: a ``cache_hit``
         finished without moving a byte, and a mover that made a range of some
