@@ -99,7 +99,13 @@ def _write_json_atomic(path: Path, payload: Mapping[str, object], *,
     ``tmp`` names the temp file: ``"pid_uuid"`` (the default -- a lane
     directory lives on the shared mount, where two boxes submitting one
     action key write into it and a pid alone names one file on both) or
-    ``"pid"`` (the local writers' history).
+    ``"pid"`` (the local writers' history).  ``pid_uuid`` opens
+    ``O_EXCL`` (a collision there is a bug); ``pid`` opens ``O_TRUNC``
+    -- the migrated writers used ``write_text``/``open("w")``, and a
+    stale pid temp left by a SIGKILLed writer must truncate, not wedge
+    every later write with ``FileExistsError`` (PIDs get reused, and
+    the status sidecars swallow ``OSError`` while progress records feed
+    stall detection: #1331 review).
 
     ``fsync=False`` skips the file fsync (the local status writers'
     history -- a best-effort sidecar must not pay spindle latency).
@@ -133,8 +139,9 @@ def _write_json_atomic(path: Path, payload: Mapping[str, object], *,
         data = pb._canonical_file_bytes(dict(payload))
     else:
         data = pb._canonical_bytes(dict(payload))
-    descriptor = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL,
-                         0o644)
+    flags = os.O_WRONLY | os.O_CREAT
+    flags |= os.O_EXCL if tmp == "pid_uuid" else os.O_TRUNC
+    descriptor = os.open(tmp_path, flags, 0o644)
     try:
         with os.fdopen(descriptor, "wb") as handle:
             handle.write(data)
