@@ -339,6 +339,10 @@ def _write(path: Path, record: dict[str, object]) -> bool:
     """
 
     try:
+        # Hand-rolled, not the record owner: progress.py runs as a program
+        # (python progress.py --phase run ...) with no parent package, so a
+        # relative import fails there. Same bytes the owner writes with
+        # text="sorted_lf", tmp="pid".
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.parent / f".{path.name}.{os.getpid()}.tmp"
         with open(temporary, "w", encoding="utf-8") as handle:

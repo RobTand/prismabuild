@@ -693,6 +693,12 @@ def _canonical_file_bytes(value: object) -> bytes:
     return _canonical_bytes(value) + b"\n"
 
 
+def _sorted_lf_bytes(value: object) -> bytes:
+    """The hand-rolled writers' spelling, owned here (#1331)."""
+
+    return (json.dumps(dict(value), sort_keys=True) + "\n").encode("utf-8")
+
+
 def canonical_sha256(value: object) -> str:
     """Hash canonical JSON without importing another repository module."""
 
@@ -8178,6 +8184,12 @@ def _write_action_status(body: Mapping[str, object]) -> None:
         merged.update(existing)
     merged.update(body)
     try:
+        # Hand-rolled, not the record owner: core.py runs standalone via
+        # runpy (test_core_reporter_remains_reachable_without_package_import)
+        # and must contain zero relative imports
+        # (test_one_definition_of_the_schema_and_the_channel), so it cannot
+        # import materialize -- which imports this module -- at any level.
+        # Same bytes the owner writes with text="sorted_lf", tmp="pid".
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.parent / f".{path.name}.{os.getpid()}.tmp"
         tmp.write_text(
@@ -8568,6 +8580,7 @@ def report_action_progress(
         record["unit"] = str(unit)
     path = Path(destination)
     try:
+        # Hand-rolled, not the record owner: see _write_action_status.
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.parent / f".{path.name}.{os.getpid()}.tmp"
         tmp.write_text(json.dumps(record, sort_keys=True) + "\n", encoding="utf-8")

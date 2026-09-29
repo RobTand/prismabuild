@@ -165,7 +165,6 @@
   "sorted-json:src/prismabuild/container_images.py::content_ref",
   "sorted-json:src/prismabuild/dagster.py::ActionSpec.__init__",
   "sorted-json:src/prismabuild/movement_actions.py::container_owner",
-  "sorted-json:src/prismabuild/pool.py::PoolQueue.write_stage_ownership_holder",
   "sorted-json:src/prismabuild/produced_output.py::_DeadStagedReports.refused",
   "sorted-json:src/prismabuild/produced_output.py::_index_attempt",
   "sorted-json:src/prismabuild/produced_output.py::_publish_prewrite_record",

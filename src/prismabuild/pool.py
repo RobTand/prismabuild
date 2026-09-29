@@ -2475,21 +2475,10 @@ def _is_hex64(value: object) -> bool:
             and all(character in "0123456789abcdef" for character in value))
 
 
-def _write_bytes_atomic(path: Path, data: bytes) -> None:
-    """Publish exact bytes by rename, with the same sync policy as JSON records."""
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.parent / f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
-    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
-    try:
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
-    except BaseException:
-        temporary.unlink(missing_ok=True)
-        raise
-    os.replace(temporary, path)
+_write_bytes_atomic = materialize.write_bytes_atomic
+#: The bytes twin lives beside the JSON owner so the two can never drift
+#: (#1330); this alias keeps the pool-local name its callers and one
+#: monkeypatching test use.
 
 
 def _read_optional_document(path: Path
@@ -10911,11 +10900,8 @@ class PoolQueue:
             "host": socket.gethostname(), "pid": os.getpid(),
             "since_unix": _now()}
         path = self.stage_ownership_holder_path(stage_root)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.parent / f".{path.name}.{os.getpid()}.tmp"
-        temporary.write_text(json.dumps(record, sort_keys=True) + "\n",
-                             encoding="utf-8")
-        os.replace(temporary, path)
+        _write_json_atomic(path, record, text="sorted_lf", tmp="pid",
+                           fsync=False)
         return record
 
     def clear_stage_ownership_holder(self, stage_root) -> None:
@@ -16956,14 +16942,7 @@ class PoolQueue:
         if not payload["host"] or not payload["worker"]:
             return False
         path = reader_lease.attestation_path(self, action_key, nonce)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-        with open(tmp, "w") as stream:
-            json.dump(payload, stream, sort_keys=True)
-            stream.write("\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(tmp, path)
+        _write_json_atomic(path, payload, text="sorted_lf", tmp="pid")
         return True
 
     def _recover_reader_scope_proof(self, record: Mapping[str, object],
