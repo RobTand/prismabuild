@@ -1,0 +1,14 @@
+[Unit]
+Description=PrismaBuild fleet canary for the active runtime generation
+Documentation=file://%h/prismabuild/docs/self_hosted_runner_canary_2026-09-19.md
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/prismabuild
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+# Leg 2's image is a name@sha256 digest pin, never a floating tag (review D2).
+Environment=PBCANARY_GPU_IMAGE=prismaquant-glm-derivative@sha256:c0e532d28a78b3bf425bbbc0d862e2840ba624249162aedfadd09748a6c68c37
+# Runs pbcanary.py only when the active generation has no verdict. The
+# nightly service runs it regardless.
+ExecStart=/usr/bin/python3 tools/fleet/pbcanary_watch.py
+UMask=0077
