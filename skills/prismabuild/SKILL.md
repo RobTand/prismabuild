@@ -202,6 +202,12 @@ contract, so call them unconditionally rather than testing how the action was
 launched. `PRISMABUILD_ACTION_PROGRESS_PHASES` carries the phases the
 submission declared: a name that is not among them raises where the typo is,
 instead of being refused quietly by the worker until the allowance runs out.
+`PRISMABUILD_ACTION_PROGRESS_ALLOWANCES` carries the same phases as a JSON
+object of effective stall allowances in declared order (#1242): the resolved
+numbers the watchdog enforces, after defaults, overrides and the worker's
+clamp. Read it with `prismabuild.progress.declared_allowances()` instead of
+repeating an allowance in the action's own arguments, where it can drift
+from the sealed policy without anything checking it.
 
 Inside a container that cannot see the fleet's mount, write the record
 directly -- it is one atomic file, and these ten lines are held byte for byte

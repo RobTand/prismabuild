@@ -74,6 +74,15 @@ ACTION_PROGRESS_TOKEN_ENV = "PRISMABUILD_ACTION_PROGRESS_TOKEN"
 #: ``ValueError`` on the first commit.
 ACTION_PROGRESS_PHASES_ENV = "PRISMABUILD_ACTION_PROGRESS_PHASES"
 
+#: Each declared phase's effective stall allowance, as a JSON object
+#: ``{name: effective_grace_s}`` in declared order (#1242).  The number is
+#: the resolved one -- after defaults and overrides, including a clamp the
+#: worker applied -- and it is the same shape the controller enforces: the
+#: launch block builds it from the policy the watchdog holds, not from the
+#: sealed request.  An action that paces its own reports reads the allowance
+#: actually applied instead of repeating a copy that can drift from it.
+ACTION_PROGRESS_ALLOWANCES_ENV = "PRISMABUILD_ACTION_PROGRESS_ALLOWANCES"
+
 #: The absolute path of this file inside the runtime generation that launched
 #: the action.  Exported so an action that cannot import the package can still
 #: run the same writer rather than reimplement the record: same generation,
@@ -86,6 +95,7 @@ ACTION_PROGRESS_ENV = (
     ACTION_PROGRESS_PATH_ENV,
     ACTION_PROGRESS_TOKEN_ENV,
     ACTION_PROGRESS_PHASES_ENV,
+    ACTION_PROGRESS_ALLOWANCES_ENV,
     ACTION_PROGRESS_HELPER_ENV,
 )
 
@@ -125,6 +135,36 @@ def declared_phases() -> tuple[str, ...] | None:
     if not all(isinstance(name, str) and name for name in names):
         return None
     return tuple(names)
+
+
+def declared_allowances() -> dict[str, float] | None:
+    """Each declared phase's effective stall allowance, or ``None`` if unknown.
+
+    Unknown means either no contract or a worker generation that predates
+    the export.  A corrupt export reads as unknown too: a mapping whose
+    keys are not names or whose values are not finite numbers is not a
+    number to pace a report by, so the whole export is refused rather than
+    guessed at -- the same fail-closed shape as :func:`declared_phases`.
+    """
+
+    raw = os.environ.get(ACTION_PROGRESS_ALLOWANCES_ENV) or ""
+    if not raw:
+        return None
+    try:
+        allowances = json.loads(raw)
+    except ValueError:
+        return None
+    if not isinstance(allowances, dict) or not allowances:
+        return None
+    checked: dict[str, float] = {}
+    for name, grace_s in allowances.items():
+        if not isinstance(name, str) or not name:
+            return None
+        if (isinstance(grace_s, bool) or not isinstance(grace_s, (int, float))
+                or not math.isfinite(grace_s)):
+            return None
+        checked[name] = float(grace_s)
+    return checked
 
 
 def commit(

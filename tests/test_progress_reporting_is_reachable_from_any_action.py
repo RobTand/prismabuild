@@ -173,7 +173,8 @@ def test_one_definition_of_the_schema_and_the_channel():
     assert pb.ACTION_PROGRESS_ENV == progress.ACTION_PROGRESS_ENV
     assert pb.ACTION_PROGRESS_ENV == (
         pb.ACTION_PROGRESS_PATH_ENV, pb.ACTION_PROGRESS_TOKEN_ENV,
-        pb.ACTION_PROGRESS_PHASES_ENV, pb.ACTION_PROGRESS_HELPER_ENV)
+        pb.ACTION_PROGRESS_PHASES_ENV, pb.ACTION_PROGRESS_ALLOWANCES_ENV,
+        pb.ACTION_PROGRESS_HELPER_ENV)
     relative = [node for node in ast.walk(ast.parse(Path(pb.__file__).read_text()))
                 if isinstance(node, ast.ImportFrom) and node.level > 0]
     assert relative == []

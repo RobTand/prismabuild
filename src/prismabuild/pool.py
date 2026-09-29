@@ -24197,6 +24197,12 @@ class PoolQueue:
                 # worker accepts instead of a second copy of the schema.
                 pb.ACTION_PROGRESS_PHASES_ENV: json.dumps(
                     [phase.name for phase in progress.phases]),
+                # The enforced numbers, not the requested ones (#1242):
+                # the policy above already carries the worker's ceiling, so
+                # ``effective_grace_s`` is what the watchdog will allow.
+                pb.ACTION_PROGRESS_ALLOWANCES_ENV: json.dumps(
+                    {phase.name: phase.effective_grace_s
+                     for phase in progress.phases}),
                 pb.ACTION_PROGRESS_HELPER_ENV: str(
                     Path(pb_progress.__file__).resolve()),
             }
