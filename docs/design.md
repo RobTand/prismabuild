@@ -774,6 +774,23 @@ timed-out, failed, or retained prefix reader exits 74 and names any retained
 PID/start-time identity, without retrying any scanner in the parent. Full
 64-hex keys retain their no-read fast path.
 
+A mutable terminal summary that disagrees with its verified immutable attempt
+remains a contract refusal (#1351). `pbwait` reports it as a per-key
+`record_error` and exit 74, preserving the other keys' rows. The same bounded
+verification child returns `integrity_error.kind=terminal_summary_conflict`,
+exact key/generation/attempt and paths, differing summary fields, hashes of
+both detail objects, and separately labelled immutable status, return code
+and verified log references. Detail field names are capped at 32 names of
+128 characters; values, argv and streams are not exposed. Missing or invalid
+attempt/log evidence yields a refusal without verified-evidence claims.
+There is no parent diagnostic reread, CAS fallback, retry, reconciliation or
+record mutation. `pbwait --json` exposes the ordered rows for inspection;
+ordinary action/receipt verdict fields remain unknown on a conflict row.
+`pbrun` retains its strict contract error. Historical pre-#1203 stream summaries
+can differ solely because the newer reader reconstructs six stream-metadata
+fields; diagnosis does not normalize that difference or certify a historical
+CAS result.
+
 Each later `pbwait` pass runs its read-only submission lookup, pool outcome and
 preemption selection, and any needed sealed-request/CAS receipt lookup in one
 five-second bounded child. A landed outcome's immutable attempt/log verification

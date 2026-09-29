@@ -377,8 +377,19 @@ def _job_id(found) -> str:
 
 
 def _from_record(q, outcome_path, outcome) -> dict:
-    summary = pbrun.bounded_outcome_render(
-        q, outcome_path, outcome, budget_s=PBWAIT_READ_TIMEOUT_S)["summary"]
+    rendered = pbrun.bounded_outcome_render(
+        q, outcome_path, outcome, budget_s=PBWAIT_READ_TIMEOUT_S,
+        diagnose_conflicts=True)
+    diagnostic = rendered.get("integrity_error")
+    if diagnostic is not None:
+        return _row(
+            diagnostic["action_key"], "record_error", integrity_error=diagnostic,
+            note=("terminal summary conflicts with verified immutable attempt; "
+                  f"fields={','.join(diagnostic['mismatched_fields'])}; "
+                  f"immutable attempt={diagnostic['attempt_path']}; "
+                  "use --json for verified log references; not an action or CAS verdict"),
+        )
+    summary = rendered["summary"]
     scheduler = summary["detail"].get("slurm") or {}
     return _row(
         summary["action_key"] or "",
@@ -555,6 +566,10 @@ def _look_once(q, key: str, *, cas, **kwargs):
         # row carries it by PID and starttime so they can (#1048).
         return _row(key, "record_error", note=str(exc),
                     retained_readers=exc.retained)
+    except pool.PoolContractError as exc:
+        # Other integrity failures have no verified diagnostic. Refuse this
+        # key without rereading evidence or aborting the other keys (#1351).
+        return _row(key, "record_error", note=str(exc))
     except pbrun.OutcomeReadUnavailable as exc:
         # A failed child, or one that delivered and was not reaped, is the
         # exact reader a later diagnostic read would race.  Refuse this key
@@ -817,6 +832,8 @@ def main(argv=None) -> int:
     )
     ap.add_argument("--wait-s", type=float, default=86400.0,
                     help="how long to wait for ALL of them, not for each")
+    ap.add_argument("--json", action="store_true",
+                    help="emit ordered per-key rows, including read-only integrity diagnostics")
     ap.add_argument("keys", nargs="+", metavar="KEY",
                     help="action key, or a prefix of one already recorded")
     ap.add_argument("--reconcile-pool", action="store_true",
@@ -847,7 +864,7 @@ def main(argv=None) -> int:
         print(json.dumps(result, sort_keys=True))
         return 0
     rows = wait_for_keys(queue, keys, cas=cas, wait_s=args.wait_s)
-    print(render(rows))
+    print(json.dumps(rows, sort_keys=True) if args.json else render(rows))
     return verdict(rows)
 
 

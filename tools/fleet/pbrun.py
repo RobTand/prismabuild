@@ -3003,7 +3003,7 @@ def _bounded_pool_read(section: str, read, *, budget_s: float,
     message = str(result.get("error") or "reader failed")
     # These two historical errors remain meaningful to callers of
     # ``await_outcome`` even though their originating read now lived in a child.
-    if kind == "PoolContractError":
+    if kind in {"PoolContractError", "_TerminalSummaryConflict"}:
         raise pool.PoolContractError(message)
     if kind == pool.StaleAbsenceError.__name__:
         # Listed, not yet visible on this box (#1100); the reader is reaped.
@@ -3149,8 +3149,18 @@ def _outcome_observation_value(q, key: str, generation: float | None) -> dict:
     }
 
 
+class _TerminalSummaryConflict(pool.PoolContractError):
+    """A verified immutable attempt disagrees with its mutable summary."""
+
+    def __init__(self, message, *, adopted, fields):
+        super().__init__(message)
+        self.adopted = adopted
+        self.fields = fields
+
+
 def bounded_outcome_render(q, outcome_path: Path, outcome: dict, *, budget_s: float,
-                         use_delivered_snapshot: bool = False) -> dict:
+                         use_delivered_snapshot: bool = False,
+                         diagnose_conflicts: bool = False) -> dict:
     """Verify and expand one landed ending in a separate bounded read.
 
     Immutable attempt records and their logs are part of the outcome verdict.
@@ -3161,19 +3171,68 @@ def bounded_outcome_render(q, outcome_path: Path, outcome: dict, *, budget_s: fl
     ``use_delivered_snapshot`` is ``await_outcome``'s opt-in, as with
     observation: the verified summary feeds a printout and an exit status,
     so a complete payload from an unreaped reader is used (#630).
+    ``diagnose_conflicts`` reports a verified-attempt/summary disagreement as
+    inspection evidence, never as an ordinary successful outcome (#1351).
     """
 
     value = _bounded_pool_read(
         "pool outcome verification",
-        lambda: _outcome_render_value(q, str(outcome_path), outcome),
+        lambda: (_diagnosed_outcome_render_value if diagnose_conflicts
+                 else _outcome_render_value)(q, str(outcome_path), outcome),
         budget_s=budget_s,
         use_delivered_snapshot=use_delivered_snapshot,
     )
     if not isinstance(value, dict):
         raise OutcomeReadUnavailable("pool outcome verification returned an invalid payload")
+    if diagnose_conflicts and isinstance(value.get("integrity_error"), dict):
+        return value
     if not isinstance(value.get("summary"), dict) or not isinstance(value.get("attempts"), list):
         raise OutcomeReadUnavailable("pool outcome verification returned an invalid summary")
     return value
+
+
+def _diagnosed_outcome_render_value(q, outcome_path: str, outcome: dict) -> dict:
+    """Diagnose conflicts inside the same bounded, read-only verifier."""
+    try:
+        return _outcome_render_value(q, outcome_path, outcome)
+    except _TerminalSummaryConflict as exc:
+        adopted = exc.adopted
+        attempt = q.attempt_outcomes(outcome)[-1]
+        queued_detail = outcome.get("detail")
+        immutable_detail = adopted["detail"]
+        if isinstance(queued_detail, dict):
+            absent = object()
+            fields = sorted(name for name in queued_detail.keys() | immutable_detail.keys()
+                            if queued_detail.get(name, absent) != immutable_detail.get(name, absent))
+        else:
+            fields = ["<not-an-object>"]
+        # No field values, argv, or streams are included. Bound even malicious
+        # field names/counts; the digests identify the full compared objects.
+        diagnostic = {
+            "kind": "terminal_summary_conflict",
+            "action_key": outcome["action_key"],
+            "generation": q.attempt_generation(outcome),
+            "published_unix": outcome["published_unix"],
+            "attempt": adopted["attempt"],
+            "summary_path": outcome_path,
+            "attempt_path": str(q.attempt_path(outcome, adopted["attempt"])),
+            "mismatched_fields": exc.fields,
+            "detail_fields": [name[:128] for name in fields[:32]],
+            "detail_field_count": len(fields),
+            "queue_detail_sha256": pb.canonical_sha256(queued_detail),
+            "adopted_detail_sha256": pb.canonical_sha256(immutable_detail),
+            "immutable_attempt": {
+                "status": str(adopted["status"])[:128],
+                "disposition": str(adopted["disposition"])[:128],
+                "returncode": (immutable_detail.get("returncode")
+                               if type(immutable_detail.get("returncode")) is int else None),
+                "logs": {stream: {field: metadata[field]
+                                  for field in ("path", "bytes", "sha256")}
+                         for stream, metadata in attempt["logs"].items()
+                         if stream in {"stdout", "stderr"}},
+            },
+        }
+        return {"integrity_error": diagnostic}
 
 
 def _outcome_render_value(q, outcome_path: str, outcome: dict) -> dict:
@@ -3221,16 +3280,19 @@ def outcome_summary(q, outcome_path, outcome) -> dict:
             and Path(outcome_path) == q.attempt_path(
                 outcome, outcome["attempts"]))
         if not archived_source and disposition != Path(outcome_path).parent.name:
-            raise pool.PoolContractError(
+            raise _TerminalSummaryConflict(
                 "terminal queue directory disagrees with the adopted immutable "
-                f"attempt: {Path(outcome_path).parent.name!r} != {disposition!r}"
+                f"attempt: {Path(outcome_path).parent.name!r} != {disposition!r}",
+                adopted=adopted, fields=["disposition"],
             )
-        for field in ("status", "finished_unix", "finished_host", "detail"):
-            if outcome.get(field) != adopted[field]:
-                raise pool.PoolContractError(
-                    "terminal queue summary disagrees with the adopted "
-                    f"immutable attempt field {field!r}"
-                )
+        conflicts = [field for field in ("status", "finished_unix", "finished_host", "detail")
+                     if outcome.get(field) != adopted[field]]
+        if conflicts:
+            raise _TerminalSummaryConflict(
+                "terminal queue summary disagrees with the adopted "
+                f"immutable attempt field {conflicts[0]!r}",
+                adopted=adopted, fields=conflicts,
+            )
         detail = adopted["detail"]
         status = str(adopted["status"])
     claimed_host = outcome.get("claimed_host")

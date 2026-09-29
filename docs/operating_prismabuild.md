@@ -2691,6 +2691,27 @@ removed. A later submission with the same action key can replace a mutable
 `done/` or `failed/` row; the original generation's immutable attempt directory
 still identifies the earlier invocation.
 
+If `pbwait` finds a terminal summary that conflicts with its verified
+immutable attempt, it reports that key as `record_error` and exits 74 without
+losing the other keys' rows. Inspect the bounded diagnostic with:
+
+```bash
+python tools/fleet/pbwait.py --json --wait-s 0 <key>
+```
+
+`integrity_error` names the exact key, generation, attempt, summary path and
+immutable attempt path, differing fields and both detail digests. Its
+`immutable_attempt.logs` references have passed the existing canonical-path,
+byte-count and SHA-256 verification. Resolve their paths against the queue
+root as above. The immutable status and return code are inspection evidence,
+not an ordinary action or CAS verdict: `succeeded` stays false and the row's
+return-code and receipt fields stay unknown. Invalid attempt/log evidence
+produces a refusal without those verified references. No records are repaired
+or rewritten, no CAS success is inferred and no deterministic conflict is
+retried. In particular, old pre-#1203 summaries omit six stream-metadata
+fields reconstructed by newer readers; that historical shape mismatch is
+still refused, not silently normalized (#1351).
+
 `detail.execution_observation` describes the last heartbeat sample. A quick
 exit can occur before that sample sees output, leaving zero byte counts or
 `launcher_alive: true` beside a completed failure. Use the attempt's final log
