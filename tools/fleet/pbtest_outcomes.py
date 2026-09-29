@@ -208,6 +208,32 @@ def reconcile(record: dict, counts: dict[str, int] | None,
     }
 
 
+def ignored_named_paths(config) -> set[str]:
+    """The positional arguments a loaded conftest's collect_ignore excludes."""
+
+    import fnmatch
+
+    conftests = []
+    for plugin in config.pluginmanager.get_plugins():
+        source = getattr(plugin, "__file__", None)
+        if source and Path(source).name == "conftest.py":
+            conftests.append((Path(source).parent, plugin))
+    ignored: set[str] = set()
+    for arg in config.args:
+        name = str(arg).split("::", 1)[0]
+        path = (config.invocation_params.dir / name).resolve()
+        for folder, module in conftests:
+            if folder != path.parent and folder not in path.parents:
+                continue
+            for entry in getattr(module, "collect_ignore", None) or ():
+                if (folder / str(entry)).resolve() == path:
+                    ignored.add(str(arg))
+            for pattern in getattr(module, "collect_ignore_glob", None) or ():
+                if fnmatch.fnmatch(str(path), str(folder / str(pattern))):
+                    ignored.add(str(arg))
+    return ignored
+
+
 def main(argv: list[str] | None = None, *, preflight=None) -> int:
     """Run pytest on ``argv`` with the recorder, then return its exit code.
 
@@ -240,6 +266,27 @@ def main(argv: list[str] | None = None, *, preflight=None) -> int:
 
         def pytest_configure(self, config) -> None:
             self.config = config
+
+        @pytest.hookimpl(tryfirst=True)
+        def pytest_collection(self, session):
+            # pytest never asks its ignore rules about a path named on the
+            # command line, and pbtest names every file (#1304).  Drop the
+            # named files a loaded conftest's ``collect_ignore`` /
+            # ``collect_ignore_glob`` excludes, which is what a directory
+            # run of the same suite would have done.
+            ignored = ignored_named_paths(session.config)
+            if not ignored:
+                return None
+            session.config.args[:] = [
+                arg for arg in session.config.args
+                if str(arg) not in ignored]
+            if not session.config.args:
+                # Every named file is ignored: collect nothing rather than
+                # widen an empty argument list to the whole suite.
+                self.collected = []
+                session.testscollected = 0
+                return True
+            return None
 
         def location(self, report) -> str | None:
             return skip_location(report, self.config.invocation_params.dir)
