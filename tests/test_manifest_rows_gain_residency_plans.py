@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
 from prewarm_fixture import Fleet, data_manifest, phase_table  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import manifest_promotion  # noqa: E402
+import tier_loop  # noqa: E402
 
 HOST = "dl380g10"
 STAGE_TIER = "prismabuild-stage:dl380g10"
@@ -50,7 +51,8 @@ def _ready_item(fleet: Fleet, key: str) -> dict:
 
 
 def _manifest_row(fleet: Fleet, seed: str, *, annotations=None,
-                  files=None, priority: int = 0) -> str:
+                  files=None, priority: int = 0,
+                  progress_phases: list[str] | None = None) -> str:
     """Seal and publish a READY manifest row that carries a checkout snapshot.
 
     The movers a plan names materialize the consumer's sealed snapshot, so
@@ -95,6 +97,11 @@ def _manifest_row(fleet: Fleet, seed: str, *, annotations=None,
                 "total_bytes": manifest["total_bytes"],
             },
             "checkout_snapshot": snapshot,
+            **({pb.PROGRESS_PARAM: {
+                "schema": pb.PROGRESS_POLICY_SCHEMA_V1,
+                "phases": [{"name": name, "grace_s": 600.0}
+                           for name in progress_phases]}}
+               if progress_phases is not None else {}),
         },
         "environment": {"variables": {"PATH": "/usr/bin"}, "toolchain": {}},
         "execution_scope": {"portability": "portable",
@@ -213,6 +220,62 @@ def test_a_refusal_is_receipted_and_never_raises(tmp_path):
     tier = (fleet.queue.prewarm(key) or {}).get("tier")
     assert isinstance(tier, dict) and tier["status"] == "refused"
     assert residency_plan.read(fleet.queue, key) is None
+
+
+def test_a_planned_row_is_staged_by_the_tier_loop(tmp_path):
+    """#1332: the plan the planner files is the plan the window stages.
+
+    The docstring's promise -- "the tier loop adopts and publishes a filed
+    plan's movers exactly as it does a submitter-sealed one" -- asserted end
+    to end: planned while READY, then the lead mover published in the same
+    loop's window, before any claim.
+    """
+
+    fleet = Fleet(tmp_path)
+    key = _manifest_row(fleet, "row-staged",
+                        annotations={"phases": phase_table(NAMED_FILES)})
+    fleet.queue.mint_tier_capacity(STAGE_TIER, {"stage_gib": 16})
+    assert manifest_promotion.promote_ready_manifest_rows(
+        fleet.queue, fleet.cas_root, _stage_tier(fleet),
+        ready=[_ready_item(fleet, key)])[0]["outcome"] == "planned"
+    plan = residency_plan.read(fleet.queue, key)
+    assert plan is not None
+
+    events = tier_loop.residency_window(
+        fleet.queue, tiers={STAGE_TIER: _stage_tier(fleet)})
+
+    lead = residency_plan.leads_for(plan)[0]
+    published = [event.get("action_key") for event in events
+                 if event.get("event") == "mover-published"]
+    assert lead in published, events
+    assert (fleet.queue.root / "ready" / f"{key}.json").exists()
+
+
+def test_the_receipt_records_whether_progress_can_place_the_row(tmp_path):
+    """#1332: the planner records the linear-progress contract, never refuses.
+
+    ``pbrun`` refuses a staged submission whose progress phases do not name
+    its read phases in order; the planner stages such a row anyway (a refused
+    row is colder than a staged one) and says so on the receipt.
+    """
+
+    fleet = Fleet(tmp_path)
+    table = phase_table(NAMED_FILES)
+    names = [str(phase["name"]) for phase in table]
+    linear = _manifest_row(fleet, "row-linear", annotations={"phases": table},
+                           progress_phases=["startup", *names, "pricing"])
+    pact = _manifest_row(fleet, "row-pact", annotations={"phases": table},
+                         progress_phases=["startup", "pricing", "finalize"])
+
+    outcomes = manifest_promotion.promote_ready_manifest_rows(
+        fleet.queue, fleet.cas_root, _stage_tier(fleet), limit=2,
+        ready=[_ready_item(fleet, linear), _ready_item(fleet, pact)])
+
+    by_key = {outcome["action_key"]: outcome for outcome in outcomes}
+    assert by_key[linear]["outcome"] == by_key[pact]["outcome"] == "planned"
+    assert by_key[linear]["phase_contract"] == "linear"
+    assert by_key[pact]["phase_contract"] == "unnamed"
+    assert fleet.queue.prewarm(pact)["tier"]["phase_contract"] == "unnamed"
 
 
 # --- review round 1 (#1252): containment, priority, deferral, memoization ---

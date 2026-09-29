@@ -2015,8 +2015,10 @@ def shared_interest(queue: pool.PoolQueue, mover_action_key: str, *,
         for path, item in queue_records(queue, state):
             if not isinstance(item, dict):
                 continue
-            residency = item.get("residency")
-            if not isinstance(residency, dict) or not residency.get("leads"):
+            # The row's block, or its filed plan's (#1332): a planner-filed
+            # consumer is as interested in a shared range as a sealed one.
+            residency, _source = residency_plan.consumer_residency(queue, item)
+            if residency is None:
                 continue
             key = (path.name[:-len(".json")] if path.name.endswith(".json")
                    else path.name)
@@ -2041,7 +2043,8 @@ def shared_interest(queue: pool.PoolQueue, mover_action_key: str, *,
                 observation = prewarm_loop.progress_phase(
                     queue, key, float(claimed_unix))
                 if observation is not None:
-                    accepted = str(observation["phase"])
+                    accepted = residency_plan.accepted_plan_phase(
+                        queue, item, str(observation["phase"]))
             ahead = {str(phase["name"]) for phase in
                      residency_plan.remaining(plan, accepted)}
             if str(leg["phase"]) in ahead:
@@ -4222,12 +4225,23 @@ def live_claims(queue: pool.PoolQueue) -> tuple[set[str], dict[str, str]]:
     owners: dict[str, str] = {}
     for state in (pool.READY, pool.CLAIMED):
         for path, item in queue_records(queue, state):
-            residency = item.get("residency") if isinstance(item, dict) else None
+            if not isinstance(item, dict):
+                continue
+            key = path.name[:-len(".json")] if path.name.endswith(".json") else path.name
+            residency = item.get("residency")
             if not isinstance(residency, dict):
+                # A bare row the #1247 planner filed a plan for is a consumer
+                # like any other (#1332): its movers are its own, not orphans
+                # for the sweep to evict under it.
+                derived, source = residency_plan.consumer_residency(queue, item)
+                if source != "filed_plan" or derived is None:
+                    continue
+                wanted.update(str(lead) for lead in derived["leads"])  # type: ignore[union-attr]
+                wanted.update(residency_plan.filed_mover_keys(queue, key))
+                owners[key] = key
                 continue
             for lead in residency.get("leads") or []:
                 wanted.add(str(lead))
-            key = path.name[:-len(".json")] if path.name.endswith(".json") else path.name
             owners[key] = key
             plan = residency_plan.read(queue, key)
             if plan is not None:

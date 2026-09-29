@@ -262,6 +262,56 @@ def test_the_consumer_reads_that_pin_as_a_resident_lead(fleet) -> None:
     assert claimed["residency_verdict"]["state"] == "resident"
 
 
+def test_a_planner_rows_receipt_reads_landed_on_the_real_verdict(fleet) -> None:
+    """#1332: the same path, with the consumer row bare as the planner leaves it.
+
+    The #1247 planner files the plan and never writes the row's block, so the
+    tier loop must find the lead through the filing, and the receipt's
+    ``landed`` must come from ``residency_verdict`` itself -- the predicate a
+    sealed consumer is admitted on -- asked with the block the filing implies.
+    """
+
+    import manifest_promotion
+
+    queue, mover = fleet.queue, _lead(fleet)
+    path = queue.item_path(pool.READY, CONSUMER)
+    row = json.loads(path.read_text())
+    row.pop("residency")
+    path.write_text(json.dumps(row))
+    manifest_promotion._record_tier_receipt(queue, CONSUMER, status="planned",
+                                            tier_id=TIER)
+
+    _cycle(fleet)
+    lead_ready = [r for r in queue.ready_items() if r.get("action_key") == mover]
+    assert lead_ready, "the filing's lead was not published for a bare row"
+    claim = queue.claim(capacity={"cpu": 4, "mem_gb": 8}, tags=["dl380g10"], ready=lead_ready)
+    assert claim is not None and claim["action_key"] == mover
+    queue.record_move(mover, {
+        "tier_id": TIER, "consumer_action_key": CONSUMER, "complete": True,
+        "bytes_staged": PHASE_BYTES, "entries_staged": 1,
+        "range_start_bytes": 0, "range_end_bytes": PHASE_BYTES,
+        "stage_root": str(fleet.stage),
+        "disk_pacing": {"mean_self_read_mb_s": 0.0}})
+    queue.finish(mover, status="executed", claim_snapshot=claim)
+    assert queue.prewarm(CONSUMER)["tier"]["status"] == "planned"
+
+    residency_map.write_fragment(queue.residency_fragment_root(), {
+        "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
+        "consumer_action_key": CONSUMER, "mover_action_key": mover,
+        "tier_id": TIER, "stage_root": str(fleet.stage),
+        "manifest_sha256": str(fleet.staged["residency"]["manifest_sha256"]),
+        "entries": {residency_map.residency_map_key("/mnt/shared/part-0", 0): {
+            "stage_path": str(fleet.stage / "part-0"), "bytes": PHASE_BYTES,
+            "offset": 0, "sha256": "a" * 64}}})
+    _cycle(fleet)
+
+    tier = queue.prewarm(CONSUMER)["tier"]
+    assert tier["status"] == "landed", tier
+    assert tier["consumer_state"] == pool.READY
+    assert tier["verdict"] == "resident"
+    assert queue.item_path(pool.READY, CONSUMER).exists()
+
+
 def test_the_frozen_plan_refuses_a_mover_row_that_carries_no_pin(fleet) -> None:
     """The bite, on the driver: strip the block and the plan will not freeze.
 

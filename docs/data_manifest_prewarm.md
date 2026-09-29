@@ -568,6 +568,22 @@ snapshot: the window advances after the claim, so the sidecar under
 uses `setdefault`.  An action nobody warmed carries no `prewarm` key at all,
 because "nobody looked" and "warmed nothing" are different facts.
 
+On a box whose ram tier the planner owns, the same sidecar carries the
+planner's additive `tier` block (`design.md`, #1247 and #1332). Its `status`
+moves once, from `planned`, to what the tier loop observed: `landed` when the
+admission verdict first read `resident` (the lead executed, pinned and named
+by the composed map), or `claimed_before_landing` when the claim came first.
+`landed` alone does not say "before the claim": `consumer_state: ready` with
+`observed_unix` earlier than the claim's `claimed_unix` does. The
+sidecar under `pb-queue/prewarm/` shows which one happened; it is a
+latest-only record (the write replaces the file), so the tier loop's
+`manifest-row-landed` / `manifest-row-claimed-before-landing` event is the
+second copy of the same observation. A
+`planned` that never moves means the tier loop never treated the row as a
+consumer -- the #1332 defect -- not that staging is slow. `phase_contract`
+says whether the row's progress phases can place it in its plan (`linear`),
+or why not.
+
 ## The stage tier (#582) -- opt-in, and off
 
 `--stage` gives the window read a second destination: a copy on a ZFS pool
