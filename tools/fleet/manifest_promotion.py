@@ -432,8 +432,19 @@ def promote_ready_manifest_rows(
             continue
         plan = staged["plan"]
         phases = list(plan.get("phases") or ())
+        # The contract ``pbrun`` refuses a staged submission without, checked
+        # here and recorded rather than refused (#1332): a refused row would
+        # be colder than a staged one.  Without it the consumer's progress
+        # cannot say where it is in the read plan, so the window keeps every
+        # phase until the row ends -- the whole plan is still staged before
+        # the claim, which is what the row start needs.
+        contract = residency_plan.progress_contract(
+            [str(phase.get("name")) for phase in phases],
+            residency_plan.sealed_progress_order(
+                {"action_key": key, "cas_root": str(row_cas)}))
         outcome["outcome"] = "planned"
         outcome["phases"] = len(phases)
+        outcome["phase_contract"] = contract
         counters["fresh"] += 1
         outcome["tier_id"] = str(plan.get("tier_id") or "")
         outcome["ram_tier_id"] = plan.get("ram_tier_id")
@@ -445,7 +456,8 @@ def promote_ready_manifest_rows(
                          if plan.get("ram_tier_id") else None),
             phases=len(phases),
             manifest_sha256=str(plan.get("manifest_sha256") or ""),
-            manifest_bytes=int(plan.get("manifest_bytes") or 0))
+            manifest_bytes=int(plan.get("manifest_bytes") or 0),
+            phase_contract=contract)
         planned += 1
     counters["fresh"] += sum(
         1 for outcome in outcomes
@@ -493,14 +505,18 @@ def _record_tier_receipt(queue: pool.PoolQueue, action_key: str, *,
                          ram_tier_id: str | None = None,
                          phases: int = 0, manifest_sha256: str = "",
                          manifest_bytes: int = 0,
-                         detail: str = "") -> None:
+                         detail: str = "",
+                         phase_contract: str = "",
+                         extra: Mapping[str, object] | None = None) -> None:
     """The additive ``tier`` block in the row's prewarm record (#1247).
 
     Same file the ARC loop receipts into, same schema (``pool_prewarm.v1``):
     the block is a new field old readers ignore, and a reader that wants the
-    tier's answer reads ``tier.status`` -- ``planned`` when the plan is filed
-    (``complete`` for the bytes is the composed map's, which the movers write
-    as they land), ``refused`` with the reason when it is not.
+    tier's answer reads ``tier.status`` -- ``planned`` when the plan is filed,
+    ``refused`` with the reason when it is not, and then (#1332, written by
+    the tier loop through :func:`record_landing`) ``landed`` once the
+    consumer's admission verdict reads ``resident``, or
+    ``claimed_before_landing`` when it was claimed first.
     """
 
     block: dict[str, object] = {
@@ -508,6 +524,10 @@ def _record_tier_receipt(queue: pool.PoolQueue, action_key: str, *,
         "status": status,
         "phases": int(phases),
     }
+    if phase_contract:
+        block["phase_contract"] = phase_contract
+    if extra:
+        block.update(extra)
     if tier_id:
         block["tier_id"] = tier_id
     if ram_tier_id:
@@ -524,3 +544,68 @@ def _record_tier_receipt(queue: pool.PoolQueue, action_key: str, *,
         # The receipt is observability, never a gate: a row whose receipt
         # cannot be written keeps its plan and its ordinary claim.
         pass
+
+
+def record_landing(queue: pool.PoolQueue, consumer: Mapping[str, object], *,
+                   now: float) -> dict[str, object] | None:
+    """Say, once, whether a planner row's first phase landed before its claim.
+
+    #1332.  ``planned`` alone cannot certify the thing the planner exists
+    for: a receipt that never changes reads the same whether the bytes
+    arrived ahead of the row or never did (the 2026-09-29 rows read
+    ``planned`` for the life of the row while nothing was staged).  So the
+    tier loop asks this after it composes a planner consumer's map:
+
+    * ``landed`` -- the admission verdict a sealed consumer is claimed on,
+      asked with the block the filed plan implies, reads ``resident``: every
+      lead executed, pinned and named by the composed map.  ``consumer_state``
+      says whether that was seen while the row was still ready.
+    * ``claimed_before_landing`` -- the row was claimed while its receipt
+      still read ``planned`` and its verdict does not read ``resident``: the
+      row start read its first phase off the pool.
+
+    Written once: any receipt that no longer reads ``planned`` is left
+    alone, so the steady cost is one small read per planner consumer per
+    cycle.  The rest of the record is carried over, not replaced.  Returns
+    the event to emit, or ``None``.
+    """
+
+    key = str(consumer.get("action_key") or "")
+    item = consumer.get("item")
+    residency = consumer.get("residency")
+    if (not key or consumer.get("residency_source") != "filed_plan"
+            or not isinstance(item, Mapping)
+            or not isinstance(residency, Mapping)):
+        return None
+    try:
+        record = queue.prewarm(key)
+    except (OSError, ValueError, pool.PoolContractError):
+        return None
+    tier = record.get("tier") if isinstance(record, Mapping) else None
+    if not isinstance(tier, Mapping) or tier.get("status") != "planned":
+        return None
+    try:
+        verdict = queue.residency_verdict({**dict(item),
+                                           "residency": dict(residency)})
+    except (OSError, pool.PoolContractError):
+        return None
+    state = str(consumer.get("state") or "")
+    if verdict.get("state") == "resident":
+        status = "landed"
+    elif state == pool.CLAIMED:
+        status = "claimed_before_landing"
+    else:
+        return None
+    block: dict[str, object] = {
+        **dict(tier), "status": status, "observed_unix": float(now),
+        "consumer_state": state, "verdict": str(verdict.get("state")),
+    }
+    if consumer.get("claimed_unix") is not None:
+        block["claimed_unix"] = consumer.get("claimed_unix")
+    try:
+        queue.record_prewarm(key, {**dict(record), "tier": block})
+    except (OSError, pool.PoolContractError):
+        return None
+    return {"event": f"manifest-row-{status.replace('_', '-')}",
+            "consumer": key, "consumer_state": state,
+            "verdict": str(verdict.get("state"))}

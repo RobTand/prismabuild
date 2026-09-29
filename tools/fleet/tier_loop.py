@@ -691,7 +691,14 @@ def probe_fill_demand(ready: list[dict[str, object]], tier_id: str) -> int | Non
 
 
 def live_consumers(queue: pool.PoolQueue) -> list[dict[str, object]]:
-    """Every ready or claimed item that declares leads, with what it has accepted.
+    """Every ready or claimed consumer with leads, with what it has accepted.
+
+    A consumer declares leads in its row's residency block or, for a row the
+    #1247 planner filed, through its filed plan (#1332); ``residency`` and
+    ``residency_source`` (``row`` or ``filed_plan``) say which.
+    ``accepted_phase`` is the plan phase the consumer's reported progress
+    places it in (``residency_plan.accepted_plan_phase``);
+    ``reported_phase`` is the raw report.
 
     Ready and claimed both, because the window has work to do on either: a
     ready consumer needs its first phase staged before anything can admit it,
@@ -708,6 +715,7 @@ def live_consumers(queue: pool.PoolQueue) -> list[dict[str, object]]:
     """
 
     out: list[dict[str, object]] = []
+    seen: set[str] = set()
     released = queue.released_origin_consumer_keys()
     for state in (pool.READY, pool.CLAIMED):
         # Inside a cycle, the listing and the bytes are the loop's own read,
@@ -716,16 +724,21 @@ def live_consumers(queue: pool.PoolQueue) -> list[dict[str, object]]:
         for _path, item in stage_release.queue_records(queue, state):
             if not isinstance(item, dict):
                 continue
-            residency = item.get("residency")
-            if not isinstance(residency, dict) or not residency.get("leads"):
+            # The row's own block, or the one its filed plan implies: the
+            # #1247 planner files a plan and leaves the row bare, and a
+            # census that read only the row staged none of them (#1332).
+            residency, source = residency_plan.consumer_residency(queue, item)
+            if residency is None:
                 continue
             key = item.get("action_key")
             if not isinstance(key, str):
                 continue
+            seen.add(key)
             if (state == pool.READY and key in released
                     and prewarm_loop.released_origin_consumer(queue, key)):
                 continue
             accepted = None
+            reported = None
             claimed_unix = None
             reported_unix = None
             if state == pool.CLAIMED:
@@ -734,7 +747,14 @@ def live_consumers(queue: pool.PoolQueue) -> list[dict[str, object]]:
                     observation = prewarm_loop.progress_phase(
                         queue, key, float(claimed_unix))
                     if observation is not None:
-                        accepted = str(observation["phase"])
+                        reported = str(observation["phase"])
+                        # Placed in the plan through the row's sealed
+                        # progress order (#1332): ``pricing`` after the
+                        # read phases is the last read phase, never "the
+                        # beginning", or the window recopies every range it
+                        # already evicted.
+                        accepted = residency_plan.accepted_plan_phase(
+                            queue, item, reported)
                         reported_unix = observation.get("reported_unix")
             # The record itself travels beside the key: ``record_denial`` is
             # keyed by an item's own ``published_unix`` generation, so a
@@ -742,9 +762,12 @@ def live_consumers(queue: pool.PoolQueue) -> list[dict[str, object]]:
             # claim time and the accepted phase's report time are the two
             # ends of the consumer's measured consumption (#903).
             out.append({"action_key": key, "state": state,
-                        "accepted_phase": accepted, "item": item,
+                        "accepted_phase": accepted, "reported_phase": reported,
+                        "item": item, "residency": residency,
+                        "residency_source": source,
                         "claimed_unix": claimed_unix,
                         "reported_unix": reported_unix})
+    residency_plan.retain_filed(queue, seen)
     return out
 
 
@@ -969,7 +992,8 @@ def _ram_credit_state(queue, tier_id, holder, *, current_epoch, locks):
                 # corrupt/missing lease. Destruction must not mistake that
                 # uncertainty for proof of the initial frontier.
                 return "unknown", "claimed progress is not positively available"
-            accepted = str(observed["phase"])
+            accepted = residency_plan.accepted_plan_phase(
+                queue, item, str(observed["phase"]))
         already, held = _ram_mover_state(queue, plan, tier_id)
         rowed = [key for key in residency_plan.ram_mover_keys(plan)
                  if queue.item_path(pool.READY, key).exists()]
@@ -4279,7 +4303,8 @@ def _uncensused_tier(queue: pool.PoolQueue, key: str) -> str | None:
             continue
         except (OSError, ValueError, pool.PoolContractError):
             return ""
-        residency = item.get("residency") if isinstance(item, dict) else None
+        residency = (residency_plan.consumer_residency(queue, item)[0]
+                     if isinstance(item, dict) else None)
         tier_id = residency.get("tier_id") if isinstance(residency, dict) else None
         if not isinstance(tier_id, str) or not tier_id:
             return ""
@@ -4813,7 +4838,8 @@ def declared_wait_movers(queue: pool.PoolQueue, tier_id: str, *,
     for _path, item in claimed:
         if not isinstance(item, dict):
             continue
-        residency = item.get("residency")
+        # A planner-filed consumer's staged waits count too (#1332).
+        residency, _source = residency_plan.consumer_residency(queue, item)
         if (not isinstance(residency, dict) or not residency.get("leads")
                 or str(residency.get("tier_id") or "") != str(tier_id)):
             continue
@@ -8632,6 +8658,12 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
             # and the consumer on the pool: slower, never wrong.
             published.append({"event": "map-compose-failed", "consumer": key,
                               "error": repr(exc)})
+        # A planner row's receipt says whether its first phase landed before
+        # its claim (#1332), read against the map just composed.
+        landing = manifest_promotion.record_landing(
+            queue, consumer, now=time.time() if now is None else now)
+        if landing is not None:
+            published.append(landing)
     published.extend(publish_landing_expectations(
         queue, tiers=tiers, consumers=cycle_consumers, now=now,
         claim_order=claim_order))

@@ -1695,6 +1695,233 @@ def leads_for(plan: Mapping[str, object]) -> list[str]:
     return [str(lead_mover_row(plan)["action_key"])]
 
 
+#: One live row's filed plan, reduced to what discovery needs (#1332), keyed
+#: by ``(queue root, consumer)`` and re-read only when the filing's
+#: incarnation changes.  A plan runs to 775 KB on the GLM rows, and the tier
+#: loop asks about every live row several times a cycle, so the steady cost
+#: is one ``stat`` per row per question, not a parse.
+_FILED: dict[tuple[str, str], tuple[tuple[int, int, int], dict[str, object]]] = {}
+
+#: A row's sealed progress order, keyed by ``(cas root, action key)``.  A
+#: sealed request is content-addressed and immutable, so the answer never
+#: changes; an unreadable request is not remembered and is asked again.
+_PROGRESS_ORDERS: dict[tuple[str, str], tuple[str, ...] | None] = {}
+
+
+def _filed_entry(queue, consumer_action_key: str, *,
+                 on_unreadable: Callable[[Exception], None] | None = None,
+                 ) -> dict[str, object] | None:
+    """The discovery facts of one filed plan, or ``None`` when none is filed."""
+
+    def refused(error: Exception) -> None:
+        if on_unreadable is not None:
+            on_unreadable(error)
+
+    try:
+        path = Path(queue.residency_plan_path(consumer_action_key))
+    except ValueError as error:
+        refused(error)
+        return None
+    memo_key = (str(queue.root), consumer_action_key)
+    incarnation, error = _stat_incarnation(path)
+    if error is not None:
+        refused(error)
+        return None
+    if incarnation is None:
+        _FILED.pop(memo_key, None)
+        return None
+    cached = _FILED.get(memo_key)
+    if cached is not None and cached[0] == incarnation:
+        return cached[1]
+    plan, read_incarnation = read_filed(queue, consumer_action_key,
+                                        on_unreadable=on_unreadable)
+    if plan is None or read_incarnation is None:
+        _FILED.pop(memo_key, None)
+        return None
+    entry: dict[str, object] = {
+        "residency": {
+            # The block ``pbrun``'s staged lane and ``pbcampaign`` write onto
+            # a consumer row, field for field, so no reader can tell a
+            # derived block from a sealed one by its shape.
+            "schema": _pool.RESIDENCY_SCHEMA_V1,
+            "manifest_sha256": plan["manifest_sha256"],
+            "manifest_bytes": plan["manifest_bytes"],
+            "tier_id": plan["tier_id"],
+            "leads": leads_for(plan),
+        },
+        "phase_names": tuple(str(phase["name"])
+                             for phase in plan["phases"]),  # type: ignore[union-attr]
+        "mover_keys": tuple(mover_keys(plan)),
+    }
+    _FILED[memo_key] = (read_incarnation, entry)
+    return entry
+
+
+def retain_filed(queue, live_keys: Collection[str]) -> None:
+    """Forget the filed-plan memo of every consumer no longer live.
+
+    Bounded by the backlog, not by the loop's lifetime: the tier loop calls
+    this with the keys its own census found ready or claimed.
+    """
+
+    root = str(queue.root)
+    keep = set(live_keys)
+    for stale in [memo_key for memo_key in _FILED
+                  if memo_key[0] == root and memo_key[1] not in keep]:
+        del _FILED[stale]
+
+
+def consumer_residency(queue, item: Mapping[str, object], *,
+                       on_unreadable: Callable[[Exception], None] | None = None,
+                       ) -> tuple[dict[str, object] | None, str | None]:
+    """The residency block the tier machinery reads for one live row (#1332).
+
+    ``(block, "row")`` for a row that carries its own block naming leads --
+    the ``--residency stage`` submitter's and ``pbcampaign``'s rows, exactly
+    as before.  ``(block, "filed_plan")`` for a bare row with a filed plan:
+    the #1247 planner files a plan and deliberately never rewrites the
+    consumer's row (rewriting a ready item races its claim), so the block is
+    derived from the filing, in the shape the submitter would have written.
+    ``(None, None)`` for everything else, including a mover's or egress's
+    own block, which names a range rather than leads.
+
+    Before #1332 every reader tested the row's block alone, so a planner
+    row's plan was filed and then staged by nobody: no mover, no map, and a
+    GLM row read 51 GB cold at every row boundary.
+    """
+
+    residency = item.get("residency")
+    if isinstance(residency, Mapping):
+        if residency.get("leads"):
+            return dict(residency), "row"
+        return None, None
+    key = item.get("action_key")
+    if not isinstance(key, str) or not key:
+        return None, None
+    entry = _filed_entry(queue, key, on_unreadable=on_unreadable)
+    if entry is None:
+        return None, None
+    return dict(entry["residency"]), "filed_plan"  # type: ignore[arg-type]
+
+
+def filed_mover_keys(queue, consumer_action_key: str) -> list[str]:
+    """Every movement node the consumer's filed plan names, from the memo."""
+
+    entry = _filed_entry(queue, consumer_action_key)
+    return [] if entry is None else list(entry["mover_keys"])  # type: ignore[arg-type]
+
+
+def progress_contract(phase_names: Sequence[str],
+                      progress_order: Sequence[str] | None) -> str:
+    """Whether a row's progress phases can say where it is in its read plan.
+
+    ``linear`` when every read phase is a declared progress phase, in read
+    order -- the contract ``pbrun`` has always required of a ``--residency
+    stage`` submitter (``require_linear_read_plan_progress``).  Otherwise
+    ``undeclared`` (no linear progress phases at all: none, or cyclic),
+    ``unnamed`` (a read phase is not a progress phase), or ``misordered``.
+    """
+
+    names = [str(name) for name in phase_names]
+    if not progress_order:
+        return "undeclared"
+    order = [str(name) for name in progress_order]
+    if not set(names).issubset(order):
+        return "unnamed"
+    wanted = set(names)
+    if [name for name in order if name in wanted] != names:
+        return "misordered"
+    return "linear"
+
+
+def plan_phase(phase_names: Sequence[str], reported: str | None,
+               progress_order: Sequence[str] | None) -> str | None:
+    """The plan phase a reported progress phase places the consumer in.
+
+    A read phase the consumer reports is itself.  A progress phase that is
+    not a read phase -- ``pricing`` after the row has read its weights --
+    places the consumer in the last read phase declared at or before it, but
+    only under the ``linear`` contract, where the sealed progress order says
+    which read phases come first.  That keeps ``remaining``'s rule of
+    including the phase being read: the last read phase is never evicted
+    under a running consumer, only the ones before it.  Without the
+    contract, or for a phase declared before any read phase (``startup``),
+    the name is returned unchanged and ``remaining`` reads it as the
+    beginning, as it always has.
+
+    Why the mapping must exist before a producer names its read phases:
+    once a consumer has reported a read phase, the window evicts the phases
+    before it; a later non-read report read as "the beginning" would find
+    every evicted range ahead and unpublished and copy it again (#1332).
+    """
+
+    if reported is None:
+        return None
+    names = [str(name) for name in phase_names]
+    if reported in names:
+        return reported
+    if (progress_order is None
+            or progress_contract(names, progress_order) != "linear"):
+        return reported
+    order = [str(name) for name in progress_order]
+    if reported not in order:
+        return reported
+    at = order.index(reported)
+    passed = [name for name in names if order.index(name) <= at]
+    return passed[-1] if passed else reported
+
+
+def sealed_progress_order(item: Mapping[str, object]) -> tuple[str, ...] | None:
+    """The row's sealed linear progress order, or ``None`` when it has none.
+
+    Read from the sealed request (``pool.progress_policy``), the same source
+    the worker enforces.  A cyclic policy has no order to place a read phase
+    in, so it answers ``None``; so does a request that does not read, and
+    that answer is not remembered.
+    """
+
+    key = item.get("action_key")
+    cas_root = item.get("cas_root")
+    if not isinstance(key, str) or not isinstance(cas_root, str):
+        return None
+    memo_key = (cas_root, key)
+    if memo_key in _PROGRESS_ORDERS:
+        return _PROGRESS_ORDERS[memo_key]
+    try:
+        policy = _pool.progress_policy(item, None)
+    except (OSError, ValueError, KeyError, pb.ActionContractError,
+            pb.CASTamperError, pb.CASUnavailableError,
+            _pool.PoolContractError):
+        return None
+    order = (None if policy is None or policy.cycle
+             else tuple(phase.name for phase in policy.phases))
+    _PROGRESS_ORDERS[memo_key] = order
+    return order
+
+
+def accepted_plan_phase(queue, item: Mapping[str, object],
+                        reported: str | None) -> str | None:
+    """``plan_phase`` for one live row, from its filed plan and sealed order.
+
+    ``reported`` unchanged when the row has no filed plan or the phase is
+    already one of the plan's, which costs no request read.
+    """
+
+    if reported is None:
+        return None
+    key = item.get("action_key")
+    if not isinstance(key, str):
+        return reported
+    entry = _filed_entry(queue, key)
+    if entry is None:
+        return reported
+    names = entry["phase_names"]
+    assert isinstance(names, tuple)
+    if reported in names:
+        return reported
+    return plan_phase(names, reported, sealed_progress_order(item))
+
+
 def mover_keys(plan: Mapping[str, object]) -> list[str]:
     """Every movement node this plan will ever have, published or not.
 
@@ -3243,8 +3470,11 @@ __all__ = [
     "SHARED_MOVER_SCHEMA_V1",
     "SHARED_RANGE_SCHEMA_V1",
     "accepted",
+    "accepted_plan_phase",
     "advance_needs",
     "build_plan",
+    "consumer_residency",
+    "filed_mover_keys",
     "expected_landings",
     "find_mover_leg",
     "freeze",
@@ -3254,6 +3484,8 @@ __all__ = [
     "legs_over",
     "mover_announcement",
     "mover_keys",
+    "plan_phase",
+    "progress_contract",
     "ram_mover_keys",
     "read",
     "read_footprint",
@@ -3262,8 +3494,10 @@ __all__ = [
     "refill_horizon",
     "register_shared_range",
     "remaining",
+    "retain_filed",
     "runahead_budget_gib",
     "runahead_step_gib",
+    "sealed_progress_order",
     "share_namespace",
     "share_namespace_of",
     "shared_mover_path",

@@ -2217,11 +2217,14 @@ def require_linear_read_plan_progress(manifest: Mapping[str, object],
     reported = ([phase["name"] for phase in progress["phases"]]
                 if isinstance(progress, dict) and not progress.get("cycle")
                 else [])
-    if not reported or not set(names).issubset(reported):
+    # One rule for both paths (#1332): the tier loop places a planner row's
+    # progress in its read plan with the same contract.
+    contract = residency_plan.progress_contract(names, reported)
+    if contract in ("undeclared", "unnamed"):
         raise SystemExit(
             "pbrun: v2 read plan requires linear progress reporting "
             "with every read phase named")
-    if [name for name in reported if name in set(names)] != names:
+    if contract == "misordered":
         raise SystemExit("pbrun: read plan phases must follow progress order")
 
 
