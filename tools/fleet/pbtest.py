@@ -919,6 +919,8 @@ def reconcile_shards(results: list[dict]) -> None:
         observed.update(source_file(row[0])
                         for row in record.get("reports") or ()
                         if row[1] == "collect")
+        observed.update(source_file(nodeid)
+                        for nodeid in record.get("collect_seen") or ())
         missing = sorted(set(result["files"]) - observed)
         reconciliation["missing_files"] = missing
         if missing:

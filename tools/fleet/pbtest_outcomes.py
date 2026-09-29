@@ -46,14 +46,23 @@ PREFIX = "pbtest-outcomes: "
 # actual deselected node IDs through xdist's own workeroutput channel.
 XDIST_ROSTER_PLUGIN = '''\
 _deselected = []
+_collect_seen = []
 
 def pytest_deselected(items):
     _deselected.extend(item.nodeid for item in items)
+
+def pytest_collectreport(report):
+    # xdist's controller keeps one collection report per distinct longrepr, so
+    # two modules that skip through one shared helper look identical and the
+    # second is dropped (#1220).  The worker sees every report.
+    if report.failed or report.skipped:
+        _collect_seen.append(report.nodeid)
 
 def pytest_sessionfinish(session, exitstatus):
     output = getattr(session.config, "workeroutput", None)
     if output is not None:
         output["pbtest_deselected"] = _deselected
+        output["pbtest_collect_seen"] = _collect_seen
 '''
 
 
@@ -259,6 +268,10 @@ def main(argv: list[str] | None = None, *, preflight=None) -> int:
             self.config = None
             self.collected: list[str] | None = None
             self.deselected: list[str] = []
+            # Modules whose collection failed or skipped, as every xdist
+            # worker saw them.  Not counted: the summary counts the
+            # controller's deduplicated reports (#1220).
+            self.collect_seen: list[str] = []
             self.reports: list[list] = []
             self.uncounted: list[list] = []
             self.file_durations: dict[str, float] = {}
@@ -309,6 +322,7 @@ def main(argv: list[str] | None = None, *, preflight=None) -> int:
             output = getattr(node, "workeroutput", None)
             if isinstance(output, dict):
                 self.deselected.extend(output.get("pbtest_deselected") or ())
+                self.collect_seen.extend(output.get("pbtest_collect_seen") or ())
 
         def pytest_collectreport(self, report) -> None:
             if report.failed:
@@ -367,6 +381,7 @@ def main(argv: list[str] | None = None, *, preflight=None) -> int:
                                      and config.getoption("collectonly", False)),
                 "collected": self.collected,
                 "deselected": self.deselected,
+                "collect_seen": sorted(set(self.collect_seen)),
                 "reports": self.reports,
                 "uncounted": self.uncounted,
                 # Each file's summed phase seconds, to the millisecond:
