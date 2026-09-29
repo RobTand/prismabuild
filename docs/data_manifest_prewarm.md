@@ -571,8 +571,10 @@ because "nobody looked" and "warmed nothing" are different facts.
 On a box whose ram tier the planner owns, the same sidecar carries the
 planner's additive `tier` block (`design.md`, #1247 and #1332). Its `status`
 moves once, from `planned`, to what the tier loop observed: `landed` when the
-composed residency map certified the plan's lead resident while the row was
-still ready, or `claimed_before_landing` when the claim came first. The
+admission verdict first read `resident` (the lead executed, pinned and named
+by the composed map), or `claimed_before_landing` when the claim came first.
+`landed` alone does not say "before the claim": `consumer_state: ready` with
+`observed_unix` earlier than the claim's `claimed_unix` does. The
 sidecar under `pb-queue/prewarm/` shows which one happened; it is a
 latest-only record (the write replaces the file), so the tier loop's
 `manifest-row-landed` / `manifest-row-claimed-before-landing` event is the

@@ -12821,8 +12821,8 @@ the RAM credit, the claimed staged-wait attribution, `_uncensused_tier`,
 read through it, so a planner row's first phase stages while the row is
 READY, before its claim, exactly as a `--residency stage` submission's does.
 Its receipt's `tier` block then records the outcome the loop observed:
-`landed` (the composed map certifies the lead resident while the row is
-still ready -- `consumer_state` and `observed_unix` say when) or
+`landed` (the admission verdict reads `resident`; `consumer_state` and
+`observed_unix` say whether that was before the claim) or
 `claimed_before_landing`; either is written once, from `planned`.
 
 **Progress phases place a consumer in its plan (#1332).** A claimed
