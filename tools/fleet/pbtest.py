@@ -1375,6 +1375,16 @@ def main() -> int:
               f"({pytest_test_bound.TIMEOUT_ENV}); a test that outlives it "
               "fails as itself instead of holding the shard to its ceiling",
               flush=True)
+        if sealed_s is not None:
+            # A test that starts with less time left than its bound cannot
+            # finish inside the shard; the plugin tightens its alarm to what
+            # is left so the test is failed by name (#1309).
+            test_bound.append(
+                f"{pytest_test_bound.SHARD_BUDGET_ENV}={sealed_s:g}")
+            print(f"pbtest: each shard also seals its remaining budget "
+                  f"({pytest_test_bound.SHARD_BUDGET_ENV}={sealed_s:g}); a "
+                  "test starting with less time left than its bound is failed "
+                  "at what is left", flush=True)
     if predicted:
         # The ceiling is sealed now, so the model can judge against it: the
         # slow file shards alone, the rest pack longest-first (#1246).
