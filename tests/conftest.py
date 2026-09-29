@@ -209,6 +209,11 @@ def pytest_configure(config: pytest.Config) -> None:
         "live_store(reason): the test reads the fleet's live store on purpose; "
         "the call-time live-store guard lets it through (#1019)",
     )
+    config.addinivalue_line(
+        "markers",
+        "fleet_data: the test reads fleet data under the shared mount; pbtest "
+        "refuses the file without --data-manifest (#915)",
+    )
     # An audit hook cannot be removed, so install it once per process even if
     # this module is configured again (a nested in-process pytest run).
     if not getattr(sys, "_prismabuild_live_store_hook", False):

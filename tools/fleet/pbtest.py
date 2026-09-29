@@ -594,6 +594,30 @@ def discover(checkout: Path, paths: list[str]) -> list[str]:
     return [str(p.relative_to(checkout)) for p in dict.fromkeys(found)]
 
 
+#: The pytest marker a test file carries when it reads fleet data.
+FLEET_DATA_MARKER = "fleet_data"
+_FLEET_DATA_USE = re.compile(rf"\bmark\.{FLEET_DATA_MARKER}\b")
+
+
+def fleet_data_files(checkout: Path, files: list[str]) -> list[str]:
+    """The discovered files that declare they read fleet data (#915).
+
+    A file declares it with ``@pytest.mark.fleet_data`` on a test, or
+    ``pytestmark = pytest.mark.fleet_data`` for the module.  The scan is
+    textual, so it never imports the target's plugins.
+    """
+
+    marked = []
+    for name in files:
+        try:
+            text = (checkout / name).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if _FLEET_DATA_USE.search(text):
+            marked.append(name)
+    return marked
+
+
 def default_duration(known: dict[str, float]) -> float | None:
     """One predicted-duration default, shared by ``main()`` and ``shard()``.
 
@@ -1124,6 +1148,17 @@ def main() -> int:
                          "unmeasured files take the median. Without it the "
                          "shards stay round-robin")
     ap.add_argument(
+        "--data-manifest", default=None, metavar="PATH",
+        help="a data manifest, as pbrun takes it, naming the shared-mount "
+             "bytes the tests read; forwarded to every shard so the fleet can "
+             "make them resident before a shard is claimed (#915).  It enters "
+             "each shard's action key.  A test file marked "
+             f"@pytest.mark.{FLEET_DATA_MARKER} reads fleet data, and the "
+             "run is refused without this flag")
+    ap.add_argument(
+        "--residency", choices=("none", "stage"), default="none",
+        help="forwarded to pbrun; 'stage' needs --data-manifest (#915)")
+    ap.add_argument(
         "--transport", choices=TRANSPORTS, default=default_transport(),
         help="which dispatcher carries the shards (env PRISMABUILD_TRANSPORT, "
              "else the published runtime generation's default_transport); "
@@ -1239,6 +1274,23 @@ def main() -> int:
     # submission never fails because one old report rotted.
     if not files:
         sys.stderr.write(f"no test files under {args.paths} in {checkout}\n")
+        return 2
+    # Tests that read the shared mount undeclared cost the fleet a scan it
+    # cannot see or stage (#915), so they run only with a manifest.
+    if args.residency == "stage" and not args.data_manifest:
+        sys.stderr.write("pbtest: --residency stage needs --data-manifest\n")
+        return 2
+    if args.data_manifest and not Path(args.data_manifest).is_file():
+        sys.stderr.write(
+            f"pbtest: --data-manifest {args.data_manifest!r} is not a file\n")
+        return 2
+    reading = fleet_data_files(checkout, files)
+    if reading and not args.data_manifest:
+        sys.stderr.write(
+            "pbtest: these files are marked "
+            f"@pytest.mark.{FLEET_DATA_MARKER}, so they read fleet data, and "
+            "no --data-manifest declares it (#915); pass one, or leave them "
+            "out of the run: " + ", ".join(reading) + "\n")
         return 2
     # The ceiling the model judges against is sealed later, beside the
     # deadline; the samples load and the predictions resolve above.  The
@@ -1400,6 +1452,12 @@ def main() -> int:
             # on the fleet.  pbrun owns which modes are legal and refuses the
             # rest, so this passes the word through rather than listing them.
             flags += ["--profile", str(args.profile)]
+        if args.data_manifest:
+            # Forwarded only when given: the manifest enters the action key,
+            # so an unasked flag would re-key every suite run (#915).
+            flags += ["--data-manifest", str(Path(args.data_manifest).resolve())]
+        if args.residency != "none":
+            flags += ["--residency", args.residency]
         # Explicit forwarding replaces addopts from both environment and
         # project config: either can hide -n auto or --dist each. The original
         # no-forwarding command remains byte-identical for existing receipts.
