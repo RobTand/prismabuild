@@ -1795,6 +1795,11 @@ def consumer_residency(queue, item: Mapping[str, object], *,
         if residency.get("leads"):
             return dict(residency), "row"
         return None, None
+    # Only a queue row is a consumer.  ``claimed/`` also holds each claim's
+    # ``<key>.lease``, which carries the row's action key but is not the row:
+    # read as one, every claimed planner row would be counted twice.
+    if item.get("schema") != _pool.POOL_ITEM_SCHEMA_V1:
+        return None, None
     key = item.get("action_key")
     if not isinstance(key, str) or not key:
         return None, None

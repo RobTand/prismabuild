@@ -112,6 +112,32 @@ def _claim(fleet: Fleet, key: str, *, claimed_unix: float = 1000.0) -> None:
     ready.unlink()
 
 
+def test_a_claimed_planner_row_is_one_consumer_not_two_with_its_lease(tmp_path):
+    """``claimed/`` holds ``<key>.lease`` beside the row; a lease is no row.
+
+    The lease carries the row's action key, so a census that derived a
+    block for any record with a filed plan counted every claimed planner
+    row twice -- once as the row, once as its lease -- and priced two
+    consumers' horizons onto one stage.
+    """
+
+    fleet = Fleet(tmp_path)
+    key, _plan_ = _planner_row(fleet, "row-lease")
+    _claim(fleet, key)
+    fleet.queue.lease_path(key).write_text(json.dumps({
+        "schema": pool.POOL_LEASE_SCHEMA_V1, "action_key": key,
+        "owner": "sparklina", "claimed_unix": 1000.0,
+        "heartbeat_unix": 1000.0}))
+
+    consumers = [c for c in tier_loop.live_consumers(fleet.queue)
+                 if c["action_key"] == key]
+    assert len(consumers) == 1
+    assert consumers[0]["item"].get("schema") == pool.POOL_ITEM_SCHEMA_V1
+
+    _wanted, owners = stage_release.live_claims(fleet.queue)
+    assert set(owners) == {key}
+
+
 def test_a_planner_row_is_a_live_consumer_with_its_plans_leads(tmp_path):
     fleet = Fleet(tmp_path)
     key, plan = _planner_row(fleet, "row-live")
