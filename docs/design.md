@@ -8988,6 +8988,12 @@ already holds the queue and the tier ledger every cycle. How many are in flight
 is bounded by the tier's free tokens and by the consumer's own progress, never
 by a number.
 
+A plan leaves `residency-plans/` when its consumer concludes. `PoolQueue.finish`
+reaps it after a DONE or FAILED write, which archives it under
+`residency-plans/superseded/` unless a child mover or egress row is still ready
+or claimed. `tools/fleet/retire_residency_plans.py` does the same for plans that
+outlived their consumer (dry run unless you pass `--apply`).
+
 ### Mover run-ahead is bounded by the consumer, not only by the tier (#632)
 
 Free capacity is the only brake that acts on the **admit** side. The release
