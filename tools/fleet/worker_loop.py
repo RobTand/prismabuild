@@ -1193,6 +1193,9 @@ def build_parser() -> argparse.ArgumentParser:
                          "0 disables (default), 1 serializes actions declaring "
                          "disk_metadata=1 on this host's shared ledger, not "
                          "ordinary work, tier egress or external I/O (#1008)")
+    ap.add_argument("--local-scratch-profile-config", default=None,
+                    help="explicit v1 configured executed CAS scratch-profile references; "
+                         "absent reads no profile input; never benchmarks during polling")
     ap.add_argument("--spool-gb", type=int, default=0,
                     help="local disk this box offers produced-output spool "
                          "windows and declared bounded local scratch, in GiB; "
@@ -1375,6 +1378,14 @@ def sweep_own_dead_offer_tmp(workers_dir: Path, host: str, *,
     return removed
 
 
+def scratch_observed_detail(observer, profile_inputs):
+    """The actual offer merges qualified configured profiles with host samples."""
+    detail = dict(observer.last.detail if observer is not None and observer.last is not None else {})
+    if profile_inputs is not None:
+        detail.update(profile_inputs.observe())
+    return detail
+
+
 def _run_loop(stop_requested):
     ap = build_parser()
     args = ap.parse_args()
@@ -1420,6 +1431,10 @@ def _run_loop(stop_requested):
     known_physical_gpus = 1 if gpu_capable else 0
 
     queue = pool.PoolQueue(SH / "pb-queue")
+    profile_inputs = (local_scratch.ProfileInputs(
+        args.local_scratch_profile_config, source_root=RUNTIME_ROOT,
+        checkout_root=pool.LOCAL_CHECKOUT_ROOT, producer_python=args.python)
+        if args.local_scratch_profile_config is not None else None)
     # Read once, not per poll: it seeds the observer's window so a loop that
     # starts while the box is busy inherits the standing verdict instead of
     # re-minting, for the length of its window, every token the other loops on
@@ -1478,6 +1493,10 @@ def _run_loop(stop_requested):
         # before the field offers neither, so an interpreter-naming item waits
         # for a box that can run it instead of dying with 127 there.
         tags.append(pb.INTERPRETER_TAG)
+        # Code capability only; configured executed profiles and current root
+        # observations separately decide admission. Old workers cannot ignore
+        # opted-in sealed traffic during a rolling publication.
+        tags.append(local_scratch.IO_CAPABILITY)
         if loaded_generation:
             tags.extend((publication_canary.CAPABILITY,
                          f"runtime-generation:{loaded_generation}"))
@@ -1825,6 +1844,11 @@ def _run_loop(stop_requested):
         offered_interpreters, absent_interpreters = interpreter_lookup(
             discovery.snapshot or [])
 
+        # Immutable producer/source verification is cached; small CAS proof
+        # inputs and independent current device identity refresh outside the
+        # admission lock. The publisher receives this poll's captured detail.
+        observed_detail = scratch_observed_detail(observer, profile_inputs)
+
         def announce_offer(queue=queue, host=host, tags=offered,
                            has_gpu=gpu_capable, declared=placeable_capacity,
                            capacity=capacity, observer=observer, loops=loops,
@@ -1832,7 +1856,8 @@ def _run_loop(stop_requested):
                            timeout_s=args.timeout_s, addresses=addresses,
                            observed_images=observed_images,
                            interpreters=offered_interpreters,
-                           interpreters_absent=absent_interpreters):
+                           interpreters_absent=absent_interpreters,
+                           observed_detail=observed_detail):
             # (``interpreters`` binds the poll's lookup; the announce call
             # below receives it under that closure-local name.)
             """The exact advisory record this poll offers the queue.
@@ -1849,8 +1874,7 @@ def _run_loop(stop_requested):
                 capacity=declared, observed_capacity=capacity,
                 foreign=(observer.last.foreign if observer is not None
                          and observer.last is not None else None),
-                observed_detail=(observer.last.detail if observer is not None
-                                 and observer.last is not None else None),
+                observed_detail=observed_detail,
                 runtime_commit=runtime_commit, cpu_tiers=cpu_tiers, loops=loops,
                 # The ceiling this loop will actually kill an action at.  It is a
                 # CLI default nobody outside the loop could see, and

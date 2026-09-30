@@ -29,10 +29,25 @@ from __future__ import annotations
 import math
 import os
 import re
+import runpy
+import socket
 import time
+import uuid
 from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
-from typing import cast
+from typing import Any, cast
+
+# The isolated recorder loads only the sibling owner from its sealed snapshot.
+# Core's self-source capture is startup work, outside the I/O measurement.
+if __package__:
+    from .core import _canonical_file_bytes, _local_scratch_profile_block
+    from .core import _positive_finite as _core_positive_finite
+else:
+    _recipe_core = runpy.run_path(str(Path(__file__).resolve().with_name("core.py")))
+    _canonical_file_bytes = _recipe_core["_canonical_file_bytes"]
+    _local_scratch_profile_block = _recipe_core["_local_scratch_profile_block"]
+    _core_positive_finite = _recipe_core["_positive_finite"]
+    del _recipe_core
 
 #: The sealed variable that names an action's bounded-local pairs.
 PAIRS_ENV = "PRISMABUILD_LOCAL_SCRATCH_PAIRS"
@@ -548,3 +563,547 @@ def read_spool_offer(ledger_base) -> int | None:
         return None
     value = adaptive_cpu.read_json(path).get(KIND)
     return value if type(value) is int and value >= 0 else None
+
+
+# -- opt-in measured I/O service placement (Refs #1182) ----------------------
+IO_ENV = "PRISMABUILD_LOCAL_SCRATCH_IO"
+IO_SCHEMA = "prismabuild.local_scratch_io.v1"
+IO_CAPABILITY = "local-scratch-io-v1"
+PROFILE_SCHEMA = "prismabuild.local_scratch_io_profile.v1"
+CONFIG_SCHEMA = "prismabuild.local_scratch_io_profiles.v1"
+PLACEMENT_SCHEMA = "prismabuild.local_scratch_io_placement.v1"
+PROFILES = "local_scratch_io_profiles"
+DEVICES = "local_scratch_devices"
+PLACEMENT = "local_scratch_io_placement"
+PROFILE_CONTRACT = "prismabuild.local_scratch_io.buffered_seq_sync.v1"
+PROFILE_METHOD = "buffered-sequential-write-fdatasync-read.v1"
+PROFILE_PATTERN = "repeated-shake256-block.v1"
+RECORDER = "tools/fleet/local_scratch_profile.py"
+PROFILE_RESULT = "prismabuild-local-scratch-profile.json"
+PROFILE_ROOT_ENV = "PQ_PROFILE_ROOT"
+PROFILE_MAX_ENV = "PQ_PROFILE_MAX_BYTES"
+PROFILE_OBSERVATION_ENV = "PRISMABUILD_PROFILE_OBSERVATION_ID"
+PROFILE_PATH = "/usr/bin:/bin"
+PROFILE_OWNER_ENV = "PRISMABUILD_CONTAINER_OWNER"
+PROFILE_MARKER_ENV = "PRISMABUILD_CONTAINER_MARKER"
+PRODUCER_FILES = (RECORDER, "src/prismabuild/local_scratch.py", "src/prismabuild/core.py")
+LOCAL_FILESYSTEM_TYPES = frozenset({"ext4", "xfs", "btrfs", "zfs"})
+
+
+def _is_positive_finite(value: object) -> bool:
+    """Predicate adapter; retain the caller's original int/float value."""
+    try:
+        _core_positive_finite(value, where="scratch positive finite observation")
+    except (ValueError, OverflowError):
+        return False
+    return True
+
+
+def io_intent(variables, *, transport="pool"):
+    """Optional sealed traffic, never inferred from occupancy or host rates."""
+    if IO_ENV not in variables:
+        return None
+    from . import core
+    try:
+        raw = variables[IO_ENV]
+        if not isinstance(raw, str):
+            raise TypeError("traffic declaration is not text")
+        value = core._decode_strict_json(raw.encode(), where=IO_ENV)
+    except (TypeError, ValueError) as exc:
+        raise LocalScratchError(f"{IO_ENV} must be versioned JSON") from exc
+    keys = {"schema", "write_bytes", "read_bytes", "profile_contract", "max_profile_age_s"}
+    if not isinstance(value, dict) or set(value) != keys or value["schema"] != IO_SCHEMA:
+        raise LocalScratchError(f"{IO_ENV} requires exactly the {IO_SCHEMA} fields")
+    if any(type(value[d]) is not int or value[d] < 0 for d in ("write_bytes", "read_bytes")):
+        raise LocalScratchError(f"{IO_ENV} traffic must be nonnegative integers")
+    if not value["write_bytes"] and not value["read_bytes"]:
+        raise LocalScratchError(f"{IO_ENV} requires positive traffic")
+    contract = value["profile_contract"]
+    if not isinstance(contract, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+", contract):
+        raise LocalScratchError(f"{IO_ENV} requires an explicit profile_contract")
+    if not _is_positive_finite(value["max_profile_age_s"]):
+        raise LocalScratchError(f"{IO_ENV} max_profile_age_s must be positive finite")
+    pairs = scratch_pairs(variables)
+    if transport != "pool" or len(pairs) != 1:
+        raise LocalScratchError(f"{IO_ENV} requires pool and exactly one scratch pair")
+    return {"declaration": value, "root": pairs[0]["root"]}
+
+
+def _descriptor_identity(fd):
+    """Exact open-object device/FSID, with mount type from its Linux mount ID.
+
+    FSID is an identity, not the filesystem type. No pathname-prefix mount
+    inference, ancestor fallback or operator type override is accepted.
+    """
+    info = os.fstat(fd)
+    import stat
+    if not stat.S_ISDIR(info.st_mode):
+        raise LocalScratchError("scratch root is not a directory")
+    fsid = getattr(os.fstatvfs(fd), "f_fsid", None)
+    if type(fsid) is not int:
+        raise LocalScratchError("scratch descriptor filesystem ID unknown")
+    ids = [line.split(":", 1)[1].strip() for line in
+           Path(f"/proc/self/fdinfo/{fd}").read_text().splitlines()
+           if line.startswith("mnt_id:")]
+    if len(ids) != 1 or not ids[0].isascii() or not ids[0].isdigit():
+        raise LocalScratchError("scratch descriptor mount ID unknown")
+    matches = [line.split(" - ", 1) for line in
+               Path("/proc/self/mountinfo").read_text().splitlines()
+               if line.split(" ", 1)[0] == ids[0]]
+    if len(matches) != 1 or len(matches[0]) != 2:
+        raise LocalScratchError("scratch descriptor mount identity unknown")
+    fields = matches[0][1].split()
+    if len(fields) < 3:
+        raise LocalScratchError("scratch descriptor mount type malformed")
+    filesystem_type = fields[0]
+    if filesystem_type not in LOCAL_FILESYSTEM_TYPES:
+        raise LocalScratchError(f"scratch filesystem type not supported: {filesystem_type}")
+    return {"device": str(info.st_dev), "filesystem": str(fsid),
+            "filesystem_type": filesystem_type, "root_inode": str(info.st_ino)}
+
+
+def root_identity(root):
+    if _canonical_root(root) is None:
+        raise LocalScratchError("scratch root must be canonical absolute")
+    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        return _descriptor_identity(fd)
+    finally:
+        os.close(fd)
+
+
+def profile_command(command):
+    """Recognize only the isolated, checkout-root recorder entrypoint.
+
+    Returns None for all ordinary commands. Named recorder commands with an
+    ambiguous envelope refuse rather than being silently reclassified.
+    """
+    if not isinstance(command, (list, tuple)) or any(not isinstance(token, str) for token in command):
+        raise LocalScratchError("scratch recorder command must be an argv sequence of strings")
+    if RECORDER not in command:
+        return None
+    if (len(command) != 14 or command[1:4] != ["-I", "-S", RECORDER]
+            or not str(command[0]).startswith("/")
+            or not Path(command[0]).name.startswith("python")
+            or command[4::2] != ["--root", "--bytes", "--block-bytes", "--repetitions", "--result"]
+            or command[13] != PROFILE_RESULT):
+        raise LocalScratchError("scratch recorder requires direct PYTHON -I -S and exact file-result envelope")
+    root = command[5]
+    counts = command[7], command[9], command[11]
+    if (_canonical_root(root) is None or any(not isinstance(c, str) or not c.isascii()
+            or not c.isdigit() or int(c) <= 0 for c in counts)):
+        raise LocalScratchError("scratch recorder requires canonical root and positive integer sizes")
+    size, block, repetitions = map(int, counts)
+    if block > size:
+        raise LocalScratchError("scratch recorder block exceeds bytes")
+    return {"root": root, "bytes": size, "block_bytes": block, "repetitions": repetitions}
+
+
+def profile_environment(variables, *, derived=False):
+    """Closed recorder environment, never startup/loader or custom PATH hooks."""
+    defaults = {"HOME": "/home/rob", "TMPDIR": "/home/rob/tmp",
+                "TRITON_CACHE_DIR": "/home/rob/.triton-cache", "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8"}
+    threads = {"OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"}
+    allowed = set(defaults) | threads | {"PATH", "CUDA_VISIBLE_DEVICES", PAIRS_ENV,
+               PROFILE_ROOT_ENV, PROFILE_MAX_ENV, PROFILE_OBSERVATION_ENV}
+    if derived:
+        allowed |= {PROFILE_OWNER_ENV, PROFILE_MARKER_ENV}
+    if set(variables) - allowed:
+        raise LocalScratchError("scratch recorder environment contains unsupported startup/loader/custom fields")
+    if any(k in variables and variables[k] != v for k, v in defaults.items()):
+        raise LocalScratchError("scratch recorder requires exact default environment values")
+    paths = {PROFILE_PATH} if derived else {PROFILE_PATH, "/usr/local/bin:/usr/bin:/bin"}
+    if (("PATH" in variables and variables["PATH"] not in paths)
+            or any(k in variables and variables[k] != "1" for k in threads)
+            or ("CUDA_VISIBLE_DEVICES" in variables and variables["CUDA_VISIBLE_DEVICES"] != "")):
+        raise LocalScratchError("scratch recorder PATH/thread/CUDA environment differs")
+    observation = variables.get(PROFILE_OBSERVATION_ENV)
+    if observation is not None and (not isinstance(observation, str)
+                                   or not re.fullmatch(r"[A-Za-z0-9_.-]+", observation)):
+        raise LocalScratchError("scratch observation identity must be an explicit token")
+    if derived:
+        owner, marker = variables.get(PROFILE_OWNER_ENV), variables.get(PROFILE_MARKER_ENV)
+        if (variables.get("PATH") != PROFILE_PATH or not isinstance(owner, str)
+                or not re.fullmatch(r"[a-f0-9]{64}", owner) or _canonical_root(marker) is None
+                or Path(marker).name != f"{owner}.used" or variables.get("CUDA_VISIBLE_DEVICES") != ""):
+            raise LocalScratchError("scratch recorder derived owner/marker/CUDA environment invalid")
+
+
+def check_profile_request(command, variables, demand, *, cwd, determinism, derived=False):
+    envelope = profile_command(command)
+    if envelope is None:
+        return None
+    if (not isinstance(variables, Mapping) or not isinstance(demand, Mapping)
+            or any(not isinstance(k, str) or not isinstance(v, str) for k, v in variables.items())
+            or any(not isinstance(k, str) or type(v) is not int or v < 0 for k, v in demand.items())):
+        raise LocalScratchError("scratch recorder environment/demand containers invalid")
+    pairs = scratch_pairs(variables)
+    profile_environment(variables, derived=derived)
+    if (cwd != "." or io_intent(variables) is not None or demand.get("gpu")
+            or determinism != "stochastic" or len(pairs) != 1
+            or type(demand.get("cpu")) is not int or demand["cpu"] <= 0
+            or type(demand.get("mem_gb")) is not int or demand["mem_gb"] <= 0
+            or (pairs[0]["root_env"], pairs[0]["max_env"]) != (PROFILE_ROOT_ENV, PROFILE_MAX_ENV)
+            or pairs[0]["root"] != envelope["root"]
+            or cast(int, pairs[0]["max_bytes"]) < envelope["bytes"]):
+        raise LocalScratchError("scratch recorder requires CPU-only stochastic root-checkout, "
+                                "one sufficient pair and no I/O-placement declaration")
+    if demand.get(KIND, 0) < scratch_terms(variables)[KIND]:
+        raise LocalScratchError("scratch recorder demand does not hold its declared occupancy")
+    return envelope
+
+
+def record_profile(envelope):
+    """Bounded buffered sequential calls + write fdatasync + warm reads.
+
+    This scope is NOT physical-disk-read bandwidth, cache eviction, pressure
+    qualification or a representative spill benchmark. Only admitted PB
+    children call this function; the CLI enforces the action environment.
+    """
+    root = envelope["root"]
+    size, block, repetitions = (envelope[k] for k in ("bytes", "block_bytes", "repetitions"))
+    # Allocate the deterministic incompressible block before timing I/O calls.
+    payload = _local_scratch_profile_block(block)
+    directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    name = f".prismabuild-scratch-profile-{uuid.uuid4().hex}"
+    fd = None
+    start = time.time()
+    body = {"schema": PROFILE_SCHEMA, "host": socket.gethostname(), "root": root,
+            "profile_contract": PROFILE_CONTRACT, "method": PROFILE_METHOD,
+            "envelope": dict(envelope), "pattern": PROFILE_PATTERN,
+            "producer_action_key": os.environ.get("PRISMABUILD_ACTION_KEY", ""),
+            "measured_unix": start, "started_unix": start,
+            "write_bytes": 0, "read_bytes": 0, "write_elapsed_s": 0., "read_elapsed_s": 0.,
+            "completed": False, "errors": []}
+    try:
+        identity = _descriptor_identity(directory)
+        body.update(identity, start_identity=identity)
+        fd = os.open(name, os.O_CREAT | os.O_EXCL | os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC,
+                     0o600, dir_fd=directory)
+        if (str(os.fstat(fd).st_dev) != identity["device"]
+                or str(os.fstatvfs(fd).f_fsid) != identity["filesystem"]):
+            raise LocalScratchError("scratch profile file not on root filesystem")
+        for _ in range(repetitions):
+            os.lseek(fd, 0, os.SEEK_SET)
+            begin = time.perf_counter()
+            remaining = size
+            while remaining:
+                count = os.write(fd, memoryview(payload)[:min(block, remaining)])
+                if count <= 0:
+                    raise OSError("scratch write made no progress")
+                remaining -= count
+                body["write_bytes"] += count
+            os.fdatasync(fd)
+            body["write_elapsed_s"] += time.perf_counter() - begin
+            os.lseek(fd, 0, os.SEEK_SET)
+            begin = time.perf_counter()
+            remaining = size
+            while remaining:
+                data = os.read(fd, min(block, remaining))
+                if not data:
+                    raise OSError("scratch read ended early")
+                remaining -= len(data)
+                body["read_bytes"] += len(data)
+            body["read_elapsed_s"] += time.perf_counter() - begin
+        end_identity = _descriptor_identity(directory)
+        body["end_identity"] = end_identity
+        if end_identity != identity or root_identity(root) != identity:
+            raise LocalScratchError("scratch root identity changed during measurement")
+        if os.fstat(fd).st_size != size or any(not _is_positive_finite(body[f"{d}_elapsed_s"])
+                                              for d in ("write", "read")):
+            raise LocalScratchError("scratch measurement size/elapsed incomplete")
+        body["completed"] = True
+    except (OSError, ValueError) as exc:
+        body["errors"].append(f"{type(exc).__name__}: {exc}")
+    finally:
+        body["ended_unix"] = time.time()
+        if fd is not None:
+            os.close(fd)
+            os.unlink(name, dir_fd=directory)
+        os.close(directory)
+    return body
+
+
+def profile_cost(offer, intent, *, now):
+    """Validate the newest observed profile, derive only required rates.
+
+    Offers are the qualified worker trust boundary, like CPU/GPU samples.
+    Worker qualification verifies actual executed recorder receipts; generic
+    library callers may supply labelled synthetic observations for tests.
+    """
+    from . import core
+    if not isinstance(offer, Mapping):
+        raise LocalScratchError("scratch observation malformed")
+    detail = offer.get("observed_detail")
+    if not isinstance(detail, Mapping):
+        raise LocalScratchError("scratch observed detail malformed")
+    profiles = detail.get(PROFILES)
+    root, declaration = intent["root"], intent["declaration"]
+    if not isinstance(profiles, list) or not profiles:
+        raise LocalScratchError("scratch profile missing")
+    relevant = []
+    for profile in profiles:
+        if not isinstance(profile, dict):
+            raise LocalScratchError("scratch profile malformed")
+        if profile.get("root") == root:
+            stamp = profile.get("measured_unix")
+            if not _is_positive_finite(stamp):
+                raise LocalScratchError("scratch profile original time invalid")
+            relevant.append(profile)
+    if not relevant:
+        raise LocalScratchError("scratch profile root missing")
+    latest = max(p["measured_unix"] for p in relevant)
+    newest = [p for p in relevant if p["measured_unix"] == latest]
+    if len(newest) != 1:
+        raise LocalScratchError("scratch newest profile ambiguous")
+    profile = newest[0]
+    envelope = profile.get("envelope")
+    if (not isinstance(envelope, dict)
+            or set(envelope) != {"root", "bytes", "block_bytes", "repetitions"}
+            or envelope["root"] != root
+            or any(type(envelope[k]) is not int or envelope[k] <= 0
+                   for k in ("bytes", "block_bytes", "repetitions"))
+            or envelope["block_bytes"] > envelope["bytes"]
+            or not isinstance(profile.get("pattern"), str) or not profile["pattern"]):
+        raise LocalScratchError("scratch profile workload envelope/pattern missing or malformed")
+    if profile["pattern"] != PROFILE_PATTERN:
+        raise LocalScratchError("incomparable_workload")
+    body = {k: v for k, v in profile.items() if k != "artifact_sha256"}
+    if (profile.get("schema") != PROFILE_SCHEMA
+            or profile.get("artifact_sha256") != core.canonical_sha256(body)
+            or profile.get("host") != offer.get("host")
+            or profile.get("completed") is not True or profile.get("errors") != []
+            or declaration["profile_contract"] != PROFILE_CONTRACT
+            or profile.get("profile_contract") != PROFILE_CONTRACT
+            or profile.get("method") != PROFILE_METHOD
+            or not 0 <= now - latest <= declaration["max_profile_age_s"]):
+        raise LocalScratchError("scratch profile invalid, incompatible or stale")
+    inode = profile.get("root_inode")
+    if not isinstance(inode, str) or not inode.isascii() or not inode.isdigit() or int(inode) <= 0:
+        raise LocalScratchError("scratch root inode missing or malformed")
+    devices = detail.get(DEVICES)
+    if not isinstance(devices, Mapping):
+        raise LocalScratchError("scratch devices observation malformed")
+    current = devices.get(root)
+    if not isinstance(current, dict) or any(current.get(k) != profile.get(k)
+                                           or current.get(k) is None
+                                           for k in ("device", "filesystem", "root_inode")):
+        raise LocalScratchError("scratch current device/filesystem differs from profile")
+    result = {"host": offer["host"], "artifact_sha256": profile["artifact_sha256"],
+              "measured_unix": latest, "method": profile["method"],
+              "device": profile["device"], "filesystem": profile["filesystem"], "root_inode": inode,
+              "envelope": dict(envelope), "pattern": profile["pattern"],
+              "io_seconds": 0., "write_bytes_per_s": None, "read_bytes_per_s": None}
+    for direction in ("write", "read"):
+        traffic = declaration[f"{direction}_bytes"]
+        if traffic:
+            count, elapsed = profile.get(f"{direction}_bytes"), profile.get(f"{direction}_elapsed_s")
+            if type(count) is not int or count <= 0 or not _is_positive_finite(elapsed):
+                raise LocalScratchError(f"scratch required {direction} observation invalid")
+            try:
+                rate = count / elapsed
+                seconds = traffic / rate
+            except ArithmeticError as exc:
+                raise LocalScratchError("scratch service cost cannot be represented") from exc
+            if not _is_positive_finite(rate) or not _is_positive_finite(seconds):
+                raise LocalScratchError("scratch measured service cost not finite positive")
+            result[f"{direction}_bytes_per_s"] = rate
+            result["io_seconds"] += seconds
+    if not _is_positive_finite(result["io_seconds"]):
+        raise LocalScratchError("scratch combined service cost invalid")
+    return result
+
+
+class ProfileInputs:
+    """Configured executed CAS profiles, verified outside host admission.
+
+    Only immutable source verification is cached. Requests/receipts/results
+    are revalidated and root identity observed on refresh; a broken newer ref
+    invalidates its root instead of hiding behind an older successful input.
+    """
+    def __init__(self, config_path, *, source_root, checkout_root, producer_python):
+        from . import core
+        self.config_path = Path(config_path)
+        self.source_root = Path(source_root)
+        self.checkout_root = Path(checkout_root)
+        # Independent operator-configured PB runtime, never artifact-supplied
+        # approval or comparison with this consumer's executable bytes.
+        self.producer_python = producer_python
+        self.verified = set()
+        try:
+            self.expected_sources = self._source_digests()
+        except (OSError, ValueError, core.PrismaBuildError):
+            self.expected_sources = None
+
+    def _source_digests(self):
+        from . import core
+        return tuple(core.raw_sha256(core._read_regular_file_nofollow(
+            self.source_root / name, where="installed scratch producer source"))
+                     for name in PRODUCER_FILES)
+
+    def _load(self, ref):
+        from . import core, materialize, movement_actions
+        keys = {"cas_root", "action_key", "artifact_sha256", "root", "profile_contract"}
+        if (not isinstance(ref, dict) or set(ref) != keys
+                or _canonical_root(ref["root"]) is None or _canonical_root(ref["cas_root"]) is None):
+            raise LocalScratchError("scratch profile reference malformed")
+        core._sha256(ref["action_key"], where="scratch profile producer key")
+        core._sha256(ref["artifact_sha256"], where="scratch profile body digest")
+        cas = core.PrismaBuildCAS(ref["cas_root"])
+        requested = cas.read_action_request(ref["action_key"])
+        if requested is None:
+            raise LocalScratchError("scratch producer request absent")
+        action = cast(dict[str, Any], requested)
+        bounded = cas._lookup_receipt_only(action)
+        if bounded is not None and cast(dict[str, Any], bounded)["result"]["bytes"] > 65536:
+            raise LocalScratchError("scratch profile result exceeds bounded metadata size")
+        found = cas.lookup(action)
+        # Core publishes a canonical result only after successful execution;
+        # there is no invented status field in the v3 CAS receipt.
+        if found is None:
+            raise LocalScratchError("scratch producer successful CAS receipt absent")
+        receipt = cast(dict[str, Any], found)
+        raw = core._read_regular_file_nofollow(cas.result_path(receipt, action),
+                                              where="scratch profile result", max_bytes=65536,
+                                              require_readonly=True)
+        decoded = core._decode_strict_json(raw, where="scratch profile")
+        if not isinstance(decoded, dict):
+            raise LocalScratchError("scratch profile body must be an object")
+        body = cast(dict[str, Any], decoded)
+        if raw != core._canonical_file_bytes(body) or core.canonical_sha256(body) != ref["artifact_sha256"]:
+            raise LocalScratchError("scratch result/body digest or canonical bytes differ")
+        params, task = action["params"], action["task"]
+        required = {"command", "cwd", "demand", "placement", "checkout_snapshot",
+                    "retry_policy", "local_scratch_profile"}
+        if (not isinstance(params, Mapping) or not required.issubset(params)
+                or not isinstance(params["command"], list)
+                or any(not isinstance(token, str) for token in params["command"])
+                or not isinstance(params["cwd"], str)
+                or any(not isinstance(params[k], Mapping) for k in (
+                    "demand", "placement", "checkout_snapshot", "retry_policy", "local_scratch_profile"))):
+            raise LocalScratchError("scratch producer params containers invalid")
+        variables = action["environment"]["variables"]
+        envelope = check_profile_request(params["command"], variables, params["demand"],
+                                         cwd=params["cwd"], determinism=task["determinism"], derived=True)
+        # Recognition precedes all command[0]/envelope indexing. Core params
+        # are arbitrary JSON independent of the argv that actually executed.
+        if envelope is None:
+            raise LocalScratchError("scratch producer command is not a recorder envelope")
+        for recorded in (params["local_scratch_profile"], body.get("envelope")):
+            if (not isinstance(recorded, Mapping) or set(recorded) != set(envelope)
+                    or not isinstance(recorded["root"], str)
+                    or any(type(recorded[k]) is not int or recorded[k] <= 0
+                           for k in ("bytes", "block_bytes", "repetitions"))
+                    or recorded != envelope):
+                raise LocalScratchError("scratch producer envelope invalid or contradictory")
+        declared = action["environment"]["toolchain"]
+        verified = receipt["producer"]["toolchain"]["verified"]
+        executable = receipt["producer"]["executable"]
+        version = verified.get("python")
+        if (_canonical_root(self.producer_python) is None
+                or params["command"][0] != self.producer_python
+                or executable["path"] != self.producer_python
+                or any(k not in verified or declared.get(k) != verified[k]
+                       for k in ("python", "argv0.sha256", "argv0.bytes"))
+                or verified["argv0.sha256"] != executable["sha256"]
+                or verified["argv0.bytes"] != str(executable["bytes"])
+                or not isinstance(version, str) or not re.fullmatch(r"3\.[0-9]+\.[0-9]+", version)
+                or int(version.split(".")[1]) < 10
+                or receipt["producer"]["evidence"]["system"] != "linux"):
+            raise LocalScratchError("scratch producer interpreter is not the configured verified PB runtime")
+        if (envelope is None or task["definition_id"] != "fleet/pbrun"
+                or task["working_directory"] != "." or task["argv"] != params["command"]
+                or task["result_path"] != PROFILE_RESULT or params.get(core.PROFILE_PARAM) is not None
+                or params.get("local_scratch_profile") != envelope
+                or body.get("envelope") != envelope or body.get("root") != ref["root"]
+                or envelope["root"] != ref["root"]
+                or body.get("profile_contract") != ref["profile_contract"]
+                or ref["profile_contract"] != PROFILE_CONTRACT or body.get("method") != PROFILE_METHOD
+                or body.get("pattern") != PROFILE_PATTERN
+                or body.get("producer_action_key") != action["action_key"]
+                or body.get("host") != receipt["producer"]["evidence"]["hostname"]
+                or body.get("completed") is not True or body.get("errors") != []):
+            raise LocalScratchError("scratch producer command/result contract differs")
+        identity = {k: body.get(k) for k in ("device", "filesystem", "filesystem_type", "root_inode")}
+        inode = identity["root_inode"]
+        if (not isinstance(inode, str) or not inode.isascii() or not inode.isdigit() or int(inode) <= 0
+                or identity["filesystem_type"] not in LOCAL_FILESYSTEM_TYPES
+                or body.get("start_identity") != identity or body.get("end_identity") != identity
+                or body.get("measured_unix") != body.get("started_unix")
+                or not _is_positive_finite(body.get("started_unix"))
+                or not _is_positive_finite(body.get("ended_unix"))
+                or body["ended_unix"] < body["started_unix"]
+                or any(body.get(f"{d}_bytes") != envelope["bytes"] * envelope["repetitions"]
+                       or not _is_positive_finite(body.get(f"{d}_elapsed_s")) for d in ("write", "read"))):
+            raise LocalScratchError("scratch producer measurement incomplete")
+        expected = self.expected_sources
+        if expected is None or self._source_digests() != expected:
+            raise LocalScratchError("installed scratch producer source changed or missing")
+        key = (str(cas.root), action["action_key"], receipt["receipt_sha256"],
+               receipt["result"]["sha256"], expected, self.producer_python)
+        if key not in self.verified:
+            with materialize._execution_checkout(
+                    {"action_key": action["action_key"], "cas_root": str(cas.root),
+                     "checkout_snapshot": params["checkout_snapshot"]},
+                    local_checkout_root=self.checkout_root) as checkout:
+                core._verify_pbrun_checkout_identity(action, checkout)
+                core.verify_code_closure(action["code_closure"], checkout)
+                stamps = [f["path"] for f in action["code_closure"]["files"]
+                          if Path(f["path"]).name.startswith(core.PBRUN_STAMP_PREFIX)]
+                stamp = core._decode_strict_json(core._read_regular_file_nofollow(
+                    checkout / stamps[0], where="scratch producer original identity", max_bytes=4096),
+                    where="scratch producer original identity")
+                if not isinstance(stamp, dict):
+                    raise LocalScratchError("scratch producer identity stamp malformed")
+                stamp = cast(dict[str, Any], stamp)
+                marker_root = Path(variables[PROFILE_MARKER_ENV]).parent
+                plain = {k: v for k, v in variables.items()
+                         if k not in {PROFILE_OWNER_ENV, PROFILE_MARKER_ENV}}
+                expected_owner = movement_actions.container_owner(
+                    params["command"], params["cwd"], params["demand"], plain,
+                    determinism=task["determinism"], retry_policy=params["retry_policy"],
+                    marker_root=marker_root, identity={"head": stamp["head"],
+                    "dirty_sha256": stamp["dirty_sha256"]}, logical_cwd=params["cwd"],
+                    placement=params["placement"], container_images=())
+                if variables[PROFILE_OWNER_ENV] != expected_owner:
+                    raise LocalScratchError("scratch producer owner/marker not derived from sealed intent")
+                actual = tuple(core.raw_sha256(core._read_regular_file_nofollow(
+                    checkout / name, where="scratch producer source"))
+                               for name in PRODUCER_FILES)
+                if actual != expected:
+                    raise LocalScratchError("executed scratch producer source differs from installed producer")
+            self.verified.add(key)
+        return {**body, "artifact_sha256": ref["artifact_sha256"]}
+
+    def observe(self):
+        # Bounded configuration capture; no profile work runs in a worker poll.
+        from . import core
+        try:
+            with self.config_path.open("rb") as stream:
+                raw = stream.read(65537)
+            if len(raw) > 65536:
+                raise LocalScratchError("scratch profile config exceeds bounded metadata size")
+            config = core._decode_strict_json(raw, where="scratch profile config")
+            if (not isinstance(config, dict) or set(config) != {"schema", "profiles"}
+                    or config["schema"] != CONFIG_SCHEMA or not isinstance(config["profiles"], list)):
+                raise LocalScratchError("scratch profile config malformed")
+        except (OSError, ValueError, RecursionError):
+            return {PROFILES: [], DEVICES: {}}
+        profiles, devices, failed = [], {}, set()
+        for ref in config["profiles"]:
+            root = ref.get("root") if isinstance(ref, dict) else None
+            if _canonical_root(root) is None:
+                return {PROFILES: [], DEVICES: {}}
+            try:
+                profile = self._load(ref)
+                current = root_identity(root)
+                if profile["host"] != socket.gethostname() or any(current[k] != profile[k]
+                        for k in ("device", "filesystem", "filesystem_type", "root_inode")):
+                    raise LocalScratchError("scratch profile not this current host/filesystem")
+                profiles.append(profile)
+                devices[root] = current
+            except (OSError, ValueError, RecursionError, KeyError, TypeError,
+                    core.PrismaBuildError):
+                failed.add(root)
+        return {PROFILES: [p for p in profiles if p["root"] not in failed],
+                DEVICES: {r: v for r, v in devices.items() if r not in failed}}

@@ -661,6 +661,13 @@ def _positive_integer(
     return value
 
 
+def _local_scratch_profile_block(block_bytes: int) -> bytes:
+    """Fixed recorder payload, prepared before scratch I/O timing (#1182)."""
+
+    length = _positive_integer(block_bytes, where="scratch profile block bytes")
+    return hashlib.shake_256(b"prismabuild.scratch-profile.block.v1").digest(length)
+
+
 def _positive_finite(
     value: object, *, where: str, fail: Callable[[str], NoReturn] = _fail
 ) -> float:
