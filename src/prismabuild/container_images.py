@@ -869,27 +869,20 @@ def _run_bounded(argv, *, env, timeout_s: float, limit: int) -> bytes | None:
                 pass
 
 
-def observe(
+def _observe(
     *,
     probe=None,
     timeout_s: float = INVENTORY_TIMEOUT_S,
     docker: str | None = None,
-) -> frozenset[str] | None:
-    """One bounded local reading; ``None`` means unknown, never empty.
+    retain_metadata: bool = False,
+) -> tuple[frozenset[str] | None, dict[str, object]]:
+    """Read legacy references and optional class inputs under one budget.
 
-    Every failure mode collapses here deliberately -- no binary, a refused
-    daemon, a timeout, a foreign endpoint, a malformed or oversized answer --
-    because they all mean the same thing to a claim: this box cannot show the
-    image, so it must not take the work.
-
-    Two reads, one budget.  The listing answers the ID and manifest-digest
-    forms; an inspect of exactly the IDs it named answers the content form
-    (#805).  ``timeout_s`` bounds the pair, not each, so a slow daemon cannot
-    hold a worker's poll for twice the ceiling.  A failed inspect makes the
-    whole inventory unknown rather than publishing the listing alone: an
-    inventory carrying IDs but no content references would answer a
-    content-form requirement with ``container_image_absent``, and that is the
-    misleading refusal #805 is about.
+    Listing/inspect failures make the reference inventory unknown. Failed
+    supplemental name/store evidence does not discard valid references, but
+    cannot satisfy a class. The store is observed from the same local daemon,
+    never supplied by a requirement. It is lexical DockerRootDir evidence,
+    not daemon, driver or filesystem attestation.
     """
 
     binary = docker or shutil.which("docker") or "/usr/bin/docker"
@@ -908,7 +901,7 @@ def observe(
                         limit=MAX_INVENTORY_BYTES)
         except (OSError, subprocess.SubprocessError, ValueError):
             return None
-        if not isinstance(data, bytes):
+        if not isinstance(data, bytes) or len(data) > MAX_INVENTORY_BYTES:
             return None
         try:
             return data.decode("utf-8")
@@ -921,32 +914,61 @@ def observe(
         "--format", _LIST_FORMAT,
     ])
     if listing is None:
-        return None
+        return None, {}
     try:
         entries = set(parse_inventory(listing))
         identifiers = image_ids(listing)
     except ValueError:
-        return None
-    if not identifiers:
-        return frozenset(entries)
+        return None, {}
+    metadata: dict[str, object] = {}
     if len(identifiers) > MAX_INVENTORY_ENTRIES:
-        # More images than a record may hold; the record would be refused
-        # anyway, and this keeps the inspect argv bounded with it.
-        return None
-    inspected = _take([
-        binary, "--host", LOCAL_ENDPOINT,
-        "image", "inspect", "--format", _INSPECT_FORMAT, *identifiers,
-    ])
-    if inspected is None:
-        # ``docker image inspect`` exits nonzero when any named ID is gone,
-        # so an image removed between the two reads lands here.  Unknown for
-        # this refresh, healed by the next one; no claim comes out of it.
-        return None
-    try:
-        entries |= parse_inspect(inspected)
-    except ValueError:
-        return None
-    return frozenset(entries)
+        return None, {}
+    if identifiers:
+        inspected = _take([
+            binary, "--host", LOCAL_ENDPOINT,
+            "image", "inspect", "--format", _INSPECT_FORMAT, *identifiers,
+        ])
+        if inspected is None:
+            # Removal between listing and inspect remains unknown, not a
+            # partial reference inventory that could deny content as absent.
+            return None, {}
+        try:
+            entries |= parse_inspect(inspected)
+        except ValueError:
+            return None, {}
+        if retain_metadata:
+            try:
+                metadata["image_contents"] = parse_named_inspect(inspected)
+            except ValueError:
+                metadata["image_contents"] = None
+    elif retain_metadata:
+        metadata["image_contents"] = {}
+    if retain_metadata:
+        metadata["store_root"] = None
+        info = _take([binary, "--host", LOCAL_ENDPOINT,
+                      "info", "--format", "{{json .DockerRootDir}}"])
+        if info is not None:
+            try:
+                metadata["store_root"] = _canonical_store_root(json.loads(info))
+            except (ValueError, RecursionError):
+                pass
+    return frozenset(entries), metadata
+
+
+def observe(
+    *,
+    probe=None,
+    timeout_s: float = INVENTORY_TIMEOUT_S,
+    docker: str | None = None,
+) -> frozenset[str] | None:
+    """One bounded local reference reading; ``None`` is unknown, not empty.
+
+    The public legacy API remains listing plus one inspect, sharing one
+    timeout. Cache refresh optionally retains names from those same inspect
+    bytes and reads store metadata with only the remaining budget.
+    """
+
+    return _observe(probe=probe, timeout_s=timeout_s, docker=docker)[0]
 
 
 def _open_private_directory(path: Path) -> int | None:
@@ -1161,16 +1183,23 @@ class InventoryCache:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return
-            entries = observe(probe=self.probe,
-                              timeout_s=min(self.timeout_s, remaining),
-                              docker=self.docker)
+            entries, metadata = _observe(probe=self.probe,
+                                         timeout_s=min(self.timeout_s, remaining),
+                                         docker=self.docker, retain_metadata=True)
             record = {
                 "schema": INVENTORY_SCHEMA,
                 "observed_unix": self.clock(),
                 "entries": None if entries is None else sorted(entries),
+                **metadata,
             }
-            _write_record(directory, self.record_name,
-                          (json.dumps(record, sort_keys=True) + "\n").encode())
+            payload = (json.dumps(record, sort_keys=True) + "\n").encode()
+            if len(payload) > MAX_INVENTORY_BYTES and metadata:
+                # Supplemental evidence cannot turn a readable legacy
+                # inventory into an oversized, hence unknown cache record.
+                for field in metadata:
+                    record.pop(field, None)
+                payload = (json.dumps(record, sort_keys=True) + "\n").encode()
+            _write_record(directory, self.record_name, payload)
         finally:
             try:
                 os.close(lock)

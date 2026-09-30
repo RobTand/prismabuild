@@ -311,8 +311,16 @@ The requirements schema is `prismabuild.container_class_requirements.v1`.
 `images`, an object mapping explicit `repository:tag` names to their portable
 `content:sha256:<64 lowercase hex>` references. The inventory uses the existing
 v2 schema, `observed_unix` and `entries`, plus a **complete** `image_contents`
-name-to-content mapping and observed `store_root`. Current live cache records
-do not supply these supplemental fields; missing fields mean unknown.
+name-to-content mapping and observed `store_root`. Updated `InventoryCache`
+refreshes retain names from the existing inspect response and observe the
+lexical DockerRootDir with a bounded local-daemon info read. All reads share
+one refresh budget and local endpoint; `observe()` and cache `get()` keep their
+legacy reference-set APIs. Supplemental failure or budget exhaustion leaves
+class evidence unknown without discarding valid legacy references. Missing
+fields in older records also mean unknown; do not fill them from requirements.
+An oversized supplemental projection is discarded under the existing 8 MiB
+record cap. This producer wiring is not live qualification or a deployed fleet
+policy; only a separately published runtime would execute the updated path.
 
 The command prints a JSON verdict with `authority: supplied_snapshot_only` and
 `scope: container_work_only`. Exit 0 means the supplied snapshot satisfies the
