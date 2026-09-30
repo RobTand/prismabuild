@@ -11,6 +11,12 @@ consumer's transition lock and archives the plan under
 ``residency-plans/superseded/`` only when the consumer is neither ready nor
 claimed and no child mover or egress row is still ready or claimed.  A plan
 that fails that check is reported and left filed.
+
+The tool is published with the generation (#1381), because the queue it
+reads lives on the shared mount and the boxes an operator runs it from have
+no checkout.  Both the flat ``tools/`` copy and the nested ``tools/fleet/``
+copy bind through ``runtime_paths.generation_root``, so each imports the
+``src`` of the generation that contains it.
 """
 
 from __future__ import annotations
@@ -20,7 +26,11 @@ import json
 from pathlib import Path
 import sys
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
+from runtime_paths import generation_root  # noqa: E402
+
+RUNTIME_ROOT = generation_root(__file__)
+sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 
 from prismabuild import pool, residency_plan  # noqa: E402
 
