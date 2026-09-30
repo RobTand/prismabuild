@@ -168,7 +168,7 @@ def load_generation():
     if not root:
         raise E1Error("PRISMABUILD_READER_HELPER_ROOT is unset; run under an "
                       "admitted PB action")
-    root = Path(root)
+    root = Path(root).resolve()
     source = root / "src"
     if not (source / "prismabuild" / "materialize.py").is_file():
         raise E1Error(f"no sealed prismabuild source under {root}")
@@ -178,7 +178,7 @@ def load_generation():
     import prismabuild.reader_lease as reader_lease
 
     for module in (core, materialize, reader_lease):
-        if not str(Path(module.__file__).resolve()).startswith(str(root)):
+        if not Path(module.__file__).resolve().is_relative_to(root):
             raise E1Error(f"imported {module.__name__} from outside the generation")
     return root, core, materialize, reader_lease
 
