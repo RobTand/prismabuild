@@ -268,15 +268,20 @@ def entry_identity(entry: Path, framing: dict, reader_lease) -> dict[str, object
 
 
 def copy_or_reflink(source: Path, destination: Path) -> str:
+    """Retain the selected object across this Linux helper's copy fallback."""
+
     destination.unlink(missing_ok=True)
-    try:
-        with open(source, "rb") as src, open(destination, "wb") as dst:
-            fcntl.ioctl(dst.fileno(), FICLONE, src.fileno())
-        return "reflink"
-    except OSError:
-        destination.unlink(missing_ok=True)
-        shutil.copyfile(source, destination)
-        return "copy"
+    with open(source, "rb") as src:
+        try:
+            with open(destination, "wb") as dst:
+                fcntl.ioctl(dst.fileno(), FICLONE, src.fileno())
+            return "reflink"
+        except OSError:
+            destination.unlink(missing_ok=True)
+            # Keep shutil's fast-copy path, but reopen the held object rather
+            # than a pathname that may now name different or missing bytes.
+            shutil.copyfile(f"/proc/self/fd/{src.fileno()}", destination)
+            return "copy"
 
 
 def entry_manifest_binding(*, framing: dict, generation: str,
