@@ -895,12 +895,28 @@ def _numa_node_ids(text: str) -> tuple[int, ...] | None:
     return tuple(sorted(nodes))
 
 
-def _memory_numa_memtotal_bytes(root: str) -> dict[int, int] | None:
-    """One membership-bracketed snapshot of every memory node's byte total.
+def _memory_numa_optional_bytes(lines: list[str], *, node: int,
+                                field: str) -> int | None:
+    """One exact optional counter; conflicting/malformed evidence is unknown."""
+
+    candidates = [line for line in lines
+                  if re.search(rf"(?:^|\s){field}(?=:|\s|$)", line)]
+    if len(candidates) != 1:
+        return None
+    match = re.fullmatch(
+        rf"Node {node}\s+{field}:\s+([0-9]{{1,20}})\s+kB\s*",
+        candidates[0])
+    return None if match is None else int(match[1]) * 1024
+
+
+def _memory_numa_snapshot(root: str) -> tuple[
+        dict[int, int], dict[str, int | None], dict[str, int | None]] | None:
+    """One membership-bracketed sample of totals and optional free/shmem bytes.
 
     Kernel has_memory is independent of CPU presence/affinity. Every member
     must have readable positive sysfs MemTotal; membership must stay unchanged
-    around that read. Unknown evidence never proves a single-node host.
+    around that read. Optional counter failures do not invalidate valid totals.
+    Unknown topology/totals discard the entire observation, never a partial map.
     """
 
     directory = Path(root)
@@ -910,6 +926,8 @@ def _memory_numa_memtotal_bytes(root: str) -> dict[int, int] | None:
         if not nodes:
             return None
         memtotal_bytes: dict[int, int] = {}
+        memfree_bytes: dict[str, int | None] = {}
+        shmem_bytes: dict[str, int | None] = {}
         for node in nodes:
             text = (directory / f"node{node}" / "meminfo").read_text()
             totals = re.findall(
@@ -918,10 +936,23 @@ def _memory_numa_memtotal_bytes(root: str) -> dict[int, int] | None:
             if len(totals) != 1 or int(totals[0]) <= 0:
                 return None
             memtotal_bytes[node] = int(totals[0]) * 1024
+            lines = text.splitlines()
+            memfree_bytes[str(node)] = _memory_numa_optional_bytes(
+                lines, node=node, field="MemFree")
+            shmem_bytes[str(node)] = _memory_numa_optional_bytes(
+                lines, node=node, field="Shmem")
         after = (directory / "has_memory").read_text().strip()
     except (OSError, UnicodeError):
         return None
-    return memtotal_bytes if before == after else None
+    return ((memtotal_bytes, memfree_bytes, shmem_bytes)
+            if before == after else None)
+
+
+def _memory_numa_memtotal_bytes(root: str) -> dict[int, int] | None:
+    """Positive byte totals projected from the shared memory-node snapshot."""
+
+    snapshot = _memory_numa_snapshot(root)
+    return None if snapshot is None else snapshot[0]
 
 
 def memory_numa_nodes(root: str = MEMORY_NUMA_ROOT) -> tuple[int, ...] | None:
@@ -1197,7 +1228,9 @@ def ram_tier(policy: Mapping[str, object], *, host: str,
 
     ``memory_numa_root`` is independent of block-device sysfs. Every call
     samples complete memory-node evidence for shared admission and announces
-    it as ``memory_nodes`` (null when unknown); it does not resize the mount.
+    it as ``memory_nodes`` (null when unknown). The same sample retains optional
+    ``node_memfree_bytes``/``node_shmem_bytes`` observations, not admission terms;
+    it does not resize the mount.
 
     Capacity is the tmpfs's own ``statvfs`` -- ``f_bavail x f_frsize``, what
     the mount may still hold -- never ``MemAvailable``, which moves with
@@ -1216,7 +1249,8 @@ def ram_tier(policy: Mapping[str, object], *, host: str,
     epoch = ensure_ram_epoch(mountpoint, host=host, now=now)
     arc = dict(stats) if stats is not None else read_arcstats(arcstats_path)
     mem_total = meminfo_total_bytes(meminfo_path)
-    node_memtotal_bytes = _memory_numa_memtotal_bytes(memory_numa_root)
+    node_snapshot = _memory_numa_snapshot(memory_numa_root)
+    node_memtotal_bytes = None if node_snapshot is None else node_snapshot[0]
     memory_nodes = (None if node_memtotal_bytes is None
                     else tuple(node_memtotal_bytes))
     try:
@@ -1264,6 +1298,8 @@ def ram_tier(policy: Mapping[str, object], *, host: str,
             int(policy["window_gib_default"]),
             policy.get("promotion_chunk_gib")),  # type: ignore[arg-type]
         "memory_nodes": None if memory_nodes is None else list(memory_nodes),
+        "node_memfree_bytes": None if node_snapshot is None else node_snapshot[1],
+        "node_shmem_bytes": None if node_snapshot is None else node_snapshot[2],
         "ram_admission": admission,
         "sampled_unix": time.time() if now is None else now,
     }

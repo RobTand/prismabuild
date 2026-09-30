@@ -1739,6 +1739,10 @@ def _starvation_tiers(queue: pool.PoolQueue, *, now: float,
         supply = (record.get("fill_supply") if isinstance(record, Mapping) else None)
         supply = dict(supply) if isinstance(supply, Mapping) else None
         sampled = (record.get("sampled_unix") if isinstance(record, Mapping) else None)
+        # RAM diagnostics are the tier host's persisted sample, not this
+        # status reader's sysfs or the liveness announcement's freshness.
+        ram_record = (record if isinstance(record, Mapping)
+                      and record.get("tier") == "ram" else {})
         try:
             ledger = queue.tier_ledger(tier_id)
             capacity, available = ledger.capacity(), ledger.available()
@@ -1779,6 +1783,9 @@ def _starvation_tiers(queue: pool.PoolQueue, *, now: float,
                       else None),
             "window_gib": (record.get("window_gib")
                            if isinstance(record, Mapping) else None),
+            "memory_nodes": ram_record.get("memory_nodes"),
+            "node_memfree_bytes": ram_record.get("node_memfree_bytes"),
+            "node_shmem_bytes": ram_record.get("node_shmem_bytes"),
             # The tier loop's latest fold, read, not recomputed: best is the
             # highest pool delivery since the last ceiling, ceiling the most
             # recent measured shortfall, may_grow whether another reader fits.

@@ -5674,6 +5674,44 @@ page placement or universal physical OOM safety. Provisioning, per-node
 MemFree/Shmem visibility, deployment/page turnover and live Shmem balance within
 10% with no pswpout growth over a campaign hour remain owed; full #1032 is open.
 
+**Per-memory-node observations (bounded visibility source slice, Refs #1032).**
+`ram_tier` now retains MemFree and Shmem from the same membership-bracketed
+node meminfo snapshot that supplies positive MemTotal to admission. The
+compatibility total/node-ID readers project that shared mechanism; production
+RAM discovery samples it once, including for the epoch-failure branch. Additive
+`node_memfree_bytes` and `node_shmem_bytes` maps use ascending string node IDs
+and integer byte values. Each optional counter requires one exact `Node N`
+field with an unsigned integer of at most 20 digits and `kB`, converted by 1024;
+zero is known. Missing, malformed, negative, wrong-node/unit or duplicate
+counter evidence (including a valid line beside an invalid one) yields null
+for that node's counter, never fabricated zero. Valid MemTotal-only evidence
+still admits and derives the same tokens. Unreadable meminfo, invalid totals
+or unknown/changed membership discard the entire snapshot: both observation
+maps and `memory_nodes` are null, retaining existing topology refusal.
+
+The existing `pbstatus --starvation` RAM tier projection reads these persisted
+fields and `memory_nodes`, never this reader host's sysfs. Missing fields on
+old records, non-RAM tiers and unannounced ledger rows remain explicit null.
+`sampled_unix` and existing `sampled_age_s` date the observations; a liveness
+re-announcement advances only the announcement stamp, not sample freshness.
+This adds no pressure policy, TTL, cache, admission term, budget, epoch or
+sizing change. MemFree/Shmem observations are neither proof of actual worker/ARC
+placement nor free-headroom admission or physical OOM safety.
+
+Parent verified the fresh untouched-production visibility RED under PB action
+`2735712b6e677a01c97eede18499d2d6966109e4f8716cf819bcf2124c7920bb`
+against source `6e7e33a64c1762865f8a9ee9c33ca7fe4ff19d25`: 1 failed,
+63 deselected, 0 skipped, with one collected/ran/outcome reconciled. Real
+admission, 112 `ram_gib` tokens, exact-record persistence and the public CLI
+succeeded; operator `node_memfree_bytes` was missing instead of reporting the
+fixture's unequal samples. Verification artifact:
+`1032-visibility-red-verification.json` in the parent campaign's
+`tmp/p2p3/prismabuild` directory. Candidate visibility source and prepared
+controls await parent-owned admitted GREEN/compile and independent review;
+no deployment or live balance/swap evidence follows. Mount provisioning,
+qualification/deployment, page turnover, Shmem within 10% and a campaign hour
+without pswpout growth remain owed. Full #1032 stays open.
+
 **Mount-epoch identity — the rule the whole safety argument rests on.**
 tmpfs empties on reboot; the ledger and the residency-map fragments on the
 shared mount survive. Without an epoch, a reboot would leave a map naming
