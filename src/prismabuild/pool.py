@@ -397,8 +397,12 @@ WITHHOLD_CARRYING_REASONS = frozenset({
 #: Residency states the claim pass refuses a row on before any token is taken
 #: (``residency_<state>``): its bytes are not there, or cannot be reached.  A
 #: ready GPU row in one of them keeps no room on a free GPU (#1169).
+#: ``ram_epoch_stale`` belongs here with ``map_not_composed``: the map names
+#: ram paths from the epoch before a reboot, so the bytes are gone and the
+#: tier loop's next recomposition is what makes the row admissible (#640).
 RESIDENCY_REFUSAL_STATES = ("lead_not_resident", "lead_unpinned", "map_not_composed",
-                            "map_stale", "map_unreadable", "plan_unreadable")
+                            "map_stale", "map_unreadable", "plan_unreadable",
+                            "ram_epoch_stale")
 
 #: Pending-lead statuses (``residency_verdict``'s ``pending``) that a later
 #: poll can still see land: a lead with no ending yet (``absent``), and a lead
@@ -19084,6 +19088,11 @@ class PoolQueue:
                     # its own: no coordinator can compose a map from a plan it
                     # refuses, so the item names the refusal rather than
                     # waiting out a cycle that will not come (#615).
+                    # ``ram_epoch_stale`` is ``map_not_composed``'s sibling
+                    # across a reboot: the map names ram paths from the epoch
+                    # before the current one, so the bytes are gone and the
+                    # loop's next recomposition drops the prior-epoch
+                    # fragment (#640).
                     reason = f"residency_{residency['state']}"
                     if residency["state"] in ("lead_not_resident", "lead_unpinned"):
                         pending = residency.get("pending")
