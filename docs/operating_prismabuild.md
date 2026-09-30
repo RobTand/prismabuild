@@ -3366,7 +3366,22 @@ original sample remains fresh, not while the latest denial timestamp does.
 Fresh recovery can resume protection inside the original drain deadline;
 restart and recovery cannot extend it. This never releases held tokens or
 bypasses idle/baseline and isolation checks. A fresh unmeasured baseline is
-not a stale sampler; its separate conservative policy remains unchanged.
+not a stale sampler. A fresh CPU `measurement_host_not_idle` refusal with an
+exceeded `basis: unmeasured` gets a separate **180-second fairness budget**,
+not an admission threshold or a guarantee that calibration can complete.
+`unmeasured_until_unix` is persisted per host/exact submission generation;
+restart, refill, foreign suspension and recovery cannot renew it. The
+incumbent-derived `measurement_until_unix` stays independent. Unknown-history
+expiry reports `measurement_baseline_unknown` and stops withholding and
+refused-room reservation while the measurement remains ready/refused and
+holders keep their tokens. Carried proof keeps both cutoffs and the original
+CPU timestamp; missing or malformed clock proof stays unknown/expired.
+A fresh CPU `holder_tail` has no baseline `basis`; validated finite overlap
+and original sample/interval preserve its existing protection without treating
+it as measured history. Missing or malformed legacy baseline classification
+otherwise remains unknown. Independent proven holder/tail, measured-baseline,
+token and GPU protections are not globally clamped to 180 seconds. No statistical threshold or per-host
+calibration claim follows from this fairness policy.
 
 The declared CPU demand remains an upper bound the action may actually use.
 PrismaBuild measures current host CPU activity and pressure, including unrelated

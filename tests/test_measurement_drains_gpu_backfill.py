@@ -56,7 +56,8 @@ def fleet(tmp_path, monkeypatch):
     (checkout / "task.py").write_text("print('fixture')\n")
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
 
-    def publish(name, *, measurement=False, pinned=False, priority=-10, timeout_s=4200):
+    def publish(name, *, measurement=False, pinned=False, priority=-10, timeout_s=4200,
+                cpu=2, gpu=1, mem_gb=8):
         clock[0] += 0.001
         action = pb.seal_action({
             "schema": pb.ACTION_SCHEMA_V2,
@@ -78,8 +79,8 @@ def fleet(tmp_path, monkeypatch):
         cas.publish_action_request(action)
         key = action["action_key"]
         queue.publish(action_key=key, cas_root=str(cas.root), checkout_root=str(checkout),
-                      worker_script="worker.py", resources={"cpu": 2, "gpu": 1, "mem_gb": 8},
-                      needs_gpu=True, tags=["sparklina"] if pinned else [], priority=priority)
+                      worker_script="worker.py", resources={"cpu": cpu, "gpu": gpu, "mem_gb": mem_gb},
+                      needs_gpu=bool(gpu), tags=["sparklina"] if pinned else [], priority=priority)
         return key
 
     def tick(seconds=2.0):
@@ -105,7 +106,9 @@ def fleet(tmp_path, monkeypatch):
         if result is not None and len(active.ledger(host).held_keys()) == 1:
             key = result["action_key"]
             record = pool._read_json(active.item_path(pool.CLAIMED, key))
-            if not adaptive_gpu.action_contract(record, record["resources"])[1]:
+            assert isinstance(record, dict)
+            if (record.get("needs_gpu")
+                    and not adaptive_gpu.action_contract(record, record["resources"])[1]):
                 # Observe a settled, real sharing permission. Do not mock the
                 # broker or reserve/spend this permission: the next claim must
                 # still decide for itself, and its metadata proves a probe.

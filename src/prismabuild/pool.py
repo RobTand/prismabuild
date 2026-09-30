@@ -586,7 +586,47 @@ DRAIN_HELD_CPUS = "held_cpus"
 #: does not own; and the current withholding episode's start and, once it
 #: expired, its end (see :meth:`PoolQueue._withhold_verdict`).
 DRAIN_NOTE_FIELDS = ("blocked_unix", "foreign_unix", "epoch_unix", "expired_unix")
-MEASUREMENT_DRAIN_NOTE_FIELDS = (*DRAIN_NOTE_FIELDS, "measurement_until_unix")
+# Fairness attention budget, not an idle/admission or decorrelation threshold.
+# Its initial value matches the provisional warmup span; keep its own policy
+# name so later host-derived calibration cannot renew persisted deadlines.
+MEASUREMENT_UNMEASURED_CEILING_S = 180.0
+MEASUREMENT_DRAIN_NOTE_FIELDS = (*DRAIN_NOTE_FIELDS, "measurement_until_unix",
+                               "unmeasured_until_unix")
+
+
+def _measurement_unmeasured_refusal(
+    source: str | None, decision: Mapping[str, object] | None,
+) -> bool:
+    """Identify only a fresh CPU refusal whose exceeded history is unknown."""
+    baseline = decision.get("baseline") if isinstance(decision, Mapping) else None
+    return (source == "adaptive_cpu_refused" and isinstance(decision, Mapping)
+            and decision.get("reason") == "measurement_host_not_idle"
+            and decision.get("fresh") is True and isinstance(baseline, Mapping)
+            and baseline.get("basis") == "unmeasured" and baseline.get("exceeds") is True)
+
+
+def _measurement_holder_tail_refusal(decision: Mapping[str, object] | None) -> bool:
+    """Recognize known CPU holder overlap without inventing a baseline."""
+    if not isinstance(decision, Mapping):
+        return False
+    baseline, sample = decision.get("baseline"), decision.get("sample")
+    if (decision.get("reason") != "measurement_host_not_idle"
+            or decision.get("fresh") is not True or not isinstance(baseline, Mapping)
+            or baseline.get("state") != "holder_tail" or baseline.get("exceeds") is not True
+            or not isinstance(sample, Mapping)):
+        return False
+    values = (baseline.get("holders_seen_unix"), baseline.get("interval_start_unix"),
+              sample.get("sampled_unix"), sample.get("interval_s"))
+    if any(type(value) not in (int, float) for value in values):
+        return False
+    try:
+        seen, started, sampled, interval = (float(value) for value in values
+                                            if isinstance(value, (int, float)))
+    except (TypeError, ValueError, OverflowError):
+        return False
+    return (all(math.isfinite(value) for value in (seen, started, sampled, interval))
+            and 0 < interval <= cpu_admission.MAX_INTERVAL_S
+            and started == sampled - interval and started <= seen <= sampled)
 
 
 def _measurement_foreign_clear(decision: Mapping[str, object] | None) -> bool:
@@ -6751,6 +6791,8 @@ class PoolQueue:
         until = None
         cpu_sampled: object = None
         cpu_fresh = False
+        unmeasured: object = False
+        unmeasured_until: object = None
         if reason in WITHHOLD_CARRYING_REASONS:
             carried = evidence.get("withhold_carried")
             if not isinstance(carried, Mapping):
@@ -6759,6 +6801,8 @@ class PoolQueue:
             until = carried.get("drain_until_unix")
             cpu_sampled = carried.get("measurement_cpu_sampled_unix")
             cpu_fresh = carried.get("measurement_cpu_sample_fresh") is True
+            unmeasured = carried.get("measurement_unmeasured")
+            unmeasured_until = carried.get("unmeasured_until_unix")
         elif reason.endswith(MOVER_WITHHOLD_SUFFIX) and reason not in MOVER_WITHHOLD_REASONS:
             verdict, denied = evidence.get("withhold"), record.get("denied_unix")
             if not isinstance(verdict, Mapping) or verdict.get("withhold") is not True:
@@ -6775,6 +6819,18 @@ class PoolQueue:
             cpu_fresh = isinstance(decision, Mapping) and decision.get("fresh") is True
             sample = decision.get("sample") if isinstance(decision, Mapping) else None
             cpu_sampled = sample.get("sampled_unix") if isinstance(sample, Mapping) else None
+            unmeasured = _measurement_unmeasured_refusal("adaptive_cpu_refused", decision)
+            if (isinstance(decision, Mapping)
+                    and decision.get("reason") == "measurement_host_not_idle"):
+                baseline = decision.get("baseline")
+                if (not _measurement_holder_tail_refusal(decision)
+                        and (not isinstance(baseline, Mapping)
+                             or baseline.get("basis") not in ("measured", "unmeasured")
+                             or baseline.get("exceeds") is not True)):
+                    # Known holder overlap has no baseline basis. Missing or
+                    # malformed classification otherwise remains unknown.
+                    unmeasured = None
+            unmeasured_until = verdict.get("unmeasured_until_unix")
         else:
             return None
         if (not isinstance(origin, str) or not isinstance(mode, str) or not finite(epoch)
@@ -6786,8 +6842,21 @@ class PoolQueue:
             # A new busy/transient denial is not a new CPU observation. Old
             # carried records without the timestamp and affirmative freshness
             # are unknown, not proof; neither this nor expiry releases tokens.
-            if not cpu_fresh or type(cpu_sampled) not in (int, float):
+            if (not cpu_fresh or type(cpu_sampled) not in (int, float)
+                    or type(unmeasured) is not bool):
                 return None
+            if unmeasured:
+                # Unknown-history protection has its own nonrenewing cutoff,
+                # even while the original incumbent deadline/sample is live.
+                if type(unmeasured_until) not in (int, float):
+                    return None
+                try:
+                    unmeasured_until = float(unmeasured_until)
+                except OverflowError:
+                    return None
+                if (not math.isfinite(unmeasured_until)
+                        or not float(epoch) <= now < unmeasured_until):
+                    return None
             try:
                 cpu_time = float(cpu_sampled)  # type: ignore[arg-type]
             except OverflowError:
@@ -6802,6 +6871,9 @@ class PoolQueue:
         if cpu_time is not None:
             result["measurement_cpu_sampled_unix"] = cpu_time
             result["measurement_cpu_sample_fresh"] = True
+            result["measurement_unmeasured"] = unmeasured
+            if unmeasured:
+                result["unmeasured_until_unix"] = unmeasured_until
         return result
 
     def _claim_blocked_fresh(self, key: str) -> tuple[bool, str | None]:
@@ -8390,7 +8462,15 @@ class PoolQueue:
             episode: dict[str, object] = {"generation": generation}
             for field in MEASUREMENT_DRAIN_NOTE_FIELDS:
                 value = updates[field] if field in updates else previous.get(field)
-                if type(value) in (int, float) and math.isfinite(value):
+                if field == "unmeasured_until_unix" and (field in updates or field in previous):
+                    try:
+                        valid = type(value) in (int, float) and math.isfinite(value)
+                    except OverflowError:
+                        valid = False
+                    # Preserve an unreadable cutoff as expired, never erase it
+                    # into an absent field that could start a new allowance.
+                    episode[field] = float(value) if valid else 0.0
+                elif type(value) in (int, float) and math.isfinite(value):
                     episode[field] = float(value)
             episodes[host] = episode
         if episodes:
@@ -10561,7 +10641,7 @@ class PoolQueue:
         gpu_sample: Mapping[str, object] | None = None,
         held_cpus: Sequence[int] | None = None, cpu_tiers: Mapping | None = None,
         measurement: bool = False, measurement_foreign_clear: bool = False,
-        measurement_generation: str | None = None,
+        measurement_generation: str | None = None, measurement_unmeasured: bool = False,
     ) -> dict[str, object]:
         """May this refused item hold its box shut while the box drains (#924)?
 
@@ -10658,6 +10738,7 @@ class PoolQueue:
 
         # ``None`` in ``notes`` clears the field; an absent field is carried.
         notes: dict[str, float | None] = {}
+        unmeasured_until: float | None = None
         verdict: dict[str, object] = {"eligible": False, "withhold": False, "why": None,
                                       "mode": mode, "withhold_age_s": age}
         try:
@@ -10694,6 +10775,19 @@ class PoolQueue:
                         or any(c not in "0123456789abcdef" for c in measurement_generation)):
                     raise ValueError("measurement drain requires a submission generation")
                 verdict.update(drain_host=host, drain_generation=measurement_generation)
+                if measurement_unmeasured:
+                    if "unmeasured_until_unix" not in clocks:
+                        unmeasured_until = now + MEASUREMENT_UNMEASURED_CEILING_S
+                        notes["unmeasured_until_unix"] = unmeasured_until
+                    else:
+                        # Malformed history is not permission to start again.
+                        try:
+                            unmeasured_until = stamp("unmeasured_until_unix")
+                        except OverflowError:
+                            unmeasured_until = None
+                        if unmeasured_until is None:
+                            notes["unmeasured_until_unix"] = 0.0
+                            raise ValueError("unreadable unmeasured measurement deadline")
             if foreign:
                 # Suspend the drain, but never renew its fixed episode after
                 # a transient foreign spike clears.
@@ -10844,6 +10938,21 @@ class PoolQueue:
             verdict.update(withhold=False, why="verdict_unreadable", error=str(exc))
             return verdict
         finally:
+            if measurement_wait and measurement_unmeasured:
+                verdict["measurement_unmeasured"] = True
+                if unmeasured_until is not None:
+                    verdict["unmeasured_until_unix"] = unmeasured_until
+                    original = verdict.get("drain_until_unix")
+                    if type(original) in (int, float):
+                        verdict["measurement_drain_until_unix"] = original
+                        verdict["drain_until_unix"] = min(float(original), unmeasured_until)
+                if unmeasured_until is None or now >= unmeasured_until:
+                    # Withholding and same-pass refused-room reservation are
+                    # independent protections. Unknown expiry stops both, not
+                    # the measurement's refusal, holder tokens or foreign veto.
+                    verdict.update(withhold=False, drain_resolves=False)
+                    if verdict.get("why") not in ("foreign_load", "verdict_unreadable"):
+                        verdict["why"] = "measurement_baseline_unknown"
             if notes:
                 if measurement_wait:
                     self.__dict__.setdefault("_measurement_drain_notes", {})[key] = (
@@ -19381,7 +19490,9 @@ class PoolQueue:
                                 measurement=bool(identity and identity[1]),
                                 measurement_generation=(self.attempt_generation(item)
                                     if identity and identity[1] else None),
-                                measurement_foreign_clear=_measurement_foreign_clear(cpu_decision))
+                                measurement_foreign_clear=_measurement_foreign_clear(cpu_decision),
+                                measurement_unmeasured=_measurement_unmeasured_refusal(
+                                    refusal_source, decision))
                                 if mode is not None or foreign else None)
                             if (verdict is not None and verdict["withhold"]
                                     and isinstance(decision, Mapping)
@@ -19422,7 +19533,9 @@ class PoolQueue:
                             # A refusal a drain of the pool's holders resolves
                             # keeps the refused row's room, whatever its
                             # verdict (#1240, ``keep_refused_room``).
-                            drain_resolves = mode is not None and not foreign
+                            drain_resolves = (mode is not None and not foreign
+                                              and (verdict is None
+                                                   or verdict.get("drain_resolves") is not False))
                             if verdict is not None and verdict["eligible"]:
                                 # #924: an occupied-box refusal holds the box
                                 # shut while its holders drain soon, exactly as

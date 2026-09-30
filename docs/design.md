@@ -440,9 +440,46 @@ timestamp. Missing historical sample proof is unknown. Sampler recovery may
 resume a real drain only inside its existing host/generation deadline; it
 cannot restart or extend that episode. Existing held tokens, unrelated
 busy-row protection, ordinary fairness, idle/baseline and isolation gates are
-unchanged. A fresh sample with an unmeasured baseline is not sampler silence;
-the broader unmeasured-baseline timeout and measured statistical threshold
-remain separate work.
+unchanged. A fresh sample with an unmeasured baseline is not sampler silence.
+
+For a CPU-source `measurement_host_not_idle` refusal only, affirmative
+freshness plus `baseline.basis: unmeasured` and `baseline.exceeds: true` gives
+unknown history a separate fairness attention budget. The explicit policy
+`MEASUREMENT_UNMEASURED_CEILING_S` defaults to **180 seconds**: its initial
+value matches the existing provisional warmup span, but it is not an
+admission/decorrelation threshold and does not guarantee learning. Holder
+samples do not seed the idle window. Later per-host calibration must not
+silently change this policy or an already recorded deadline.
+
+The existing `measurement_drains[host]` episode stores
+`unmeasured_until_unix` under the exact submission generation. The first
+qualifying refusal starts it once; restart, repeated refusal, higher-priority
+refill, foreign suspension and gaps cannot renew it. Keep the independent
+`measurement_until_unix` incumbent snapshot unchanged. While unknown history
+is the reason, evidence reports both cutoffs and the effective
+`drain_until_unix` is their minimum. Expiry reports
+`measurement_baseline_unknown` and stops both withholding and same-pass
+refused-room protection. The CPU controller still refuses the measurement;
+time alone proves no idle host or foreign clearance and releases no token.
+Unreadable clock proof stays expired rather than becoming an absent field
+that could start another allowance.
+
+Carried CPU proof preserves its original sample timestamp and explicit
+classification: measured/unmeasured history, or validated known holder overlap.
+A CPU `holder_tail` intentionally has no baseline `basis`. Its affirmative
+freshness, exceeded tail state, finite original sample/interval and overlap
+`interval_start_unix <= holders_seen_unix <= sampled_unix` must agree with that
+sample's interval. It retains independent protection, not an invented measured
+baseline. Missing or malformed classification is otherwise unknown.
+Unknown-history carry also needs its original cutoff; incomplete proof cannot
+acquire another budget. Independent `measurement_holder`, measured-baseline,
+validated holder-tail, saturation, token and GPU-origin protection are not
+capped by this overlay. Genuine recovery may
+resume their protection inside the original incumbent deadline, but returning
+to unknown history does not reset its earlier cutoff. Seed admission,
+ordinary work, real busy/foreign/PSI/isolation checks and all priority rules
+remain unchanged. The measured statistical threshold and host-derived
+constants remain open in #1317/#1322.
 
 The adaptive CPU refusals that stand for a CPU token shortage
 (`borrow_evidence_unavailable`, `pressure_override_no_borrow`,
