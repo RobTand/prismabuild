@@ -243,6 +243,17 @@ def test_unproven_readings_cannot_retire_a_measurement_foreign_veto(fleet, monke
     readings["foreign"]["2"] = 0.2
     assert claim() is None
     assert denial(measurement)["evidence"]["withhold"]["why"] == "foreign_load"
+    def foreign_stamp():
+        record = pool._read_json(queue.passes_path(measurement))
+        assert isinstance(record, dict)
+        episodes = record["measurement_drains"]
+        assert isinstance(episodes, dict)
+        episode = episodes["sparklina"]
+        assert isinstance(episode, dict)
+        return episode.get("foreign_unix")
+
+    foreign_before = foreign_stamp()
+    assert isinstance(foreign_before, (int, float))
     readings["foreign"]["2"] = 0.0
     if bad == "partial":
         del readings["foreign"]["2"]
@@ -266,8 +277,17 @@ def test_unproven_readings_cannot_retire_a_measurement_foreign_veto(fleet, monke
     else:
         sample["attributed"] = False
     assert claim() is None
-    verdict = denial(measurement)["evidence"]["withhold"]
-    assert verdict["why"] == "foreign_load" and verdict["withhold"] is False
+    waiting = denial(measurement)["evidence"]
+    if bad in ("stale_cpu", "future_cpu"):
+        assert waiting["decision"]["reason"] == "measurement_sampler_unknown"
+        assert waiting["decision"]["fresh"] is False
+        assert waiting.get("withhold", {}).get("withhold") is not True
+        # Unknown telemetry does not clear the old foreign veto or become a
+        # drain. Its original host/generation record remains unchanged.
+        assert foreign_stamp() == foreign_before
+    else:
+        verdict = waiting["withhold"]
+        assert verdict["why"] == "foreign_load" and verdict["withhold"] is False
     assert queue.item_path(pool.READY, measurement).exists()
 
 

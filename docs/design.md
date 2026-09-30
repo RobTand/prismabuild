@@ -425,10 +425,28 @@ refuse until the measurement can actually claim. Denials report
 `withhold.why: draining_for_measurement`, the exact `measurement_key`,
 `drain_host`, `drain_generation`, and `drain_until_unix`; past the snapshot they report `measurement_drain_expired`
 and stop withholding. Portable backfill remains eligible on other hosts, and
-priority ordering is unchanged. The adaptive CPU refusals
-that stand for a CPU token shortage (`borrow_evidence_unavailable`,
-`pressure_override_no_borrow`, `projected_cpu_cost` with the tokens short)
-by the token rule. A `host_pressure` refusal of an item that needs CPUs rather
+priority ordering is unchanged.
+
+CPU sampler silence is not a drain-resolvable measurement refusal (#1317).
+Missing, stale, future-dated or incomplete host samples produce
+`measurement_sampler_unknown` with `fresh: false` and the existing
+`sample_max_age_s: 5` bound. The measurement stays ready and cannot claim;
+unknown evidence proves neither idle, foreign load nor PB-owned contention.
+It takes no drain protection or refused-room reservation from lower-ranked
+work. A CPU-source measurement withhold carried through a transient row lock
+or inventory refusal also requires its original CPU sample to remain fresh.
+The carried `measurement_cpu_sampled_unix` is not replaced by a newer denial
+timestamp. Missing historical sample proof is unknown. Sampler recovery may
+resume a real drain only inside its existing host/generation deadline; it
+cannot restart or extend that episode. Existing held tokens, unrelated
+busy-row protection, ordinary fairness, idle/baseline and isolation gates are
+unchanged. A fresh sample with an unmeasured baseline is not sampler silence;
+the broader unmeasured-baseline timeout and measured statistical threshold
+remain separate work.
+
+The adaptive CPU refusals that stand for a CPU token shortage
+(`borrow_evidence_unavailable`, `pressure_override_no_borrow`,
+`projected_cpu_cost` with the tokens short) are judged by the token rule. A `host_pressure` refusal of an item that needs CPUs rather
 than a quiet host withholds when every busy CPU it names is held by one of the
 pool's own holders (#1160): the refusal records `held_cpus` and `foreign_cpus`
 apart, and with held CPUs and no foreign one it is judged by the exclusive rule
