@@ -160,6 +160,12 @@ FLEET_SCRIPTS = (
     # storage rather than executing it from this shared runtime.
     "resource_exec.py", "resource_broker.py", "resource_payload.py",
     "qualify_resource_scope.py", "install_resource_broker.sh",
+    # The host-local check an operator runs after provisioning the broker: it
+    # reads the installed needrestart main configuration alone to prove the
+    # exact-service deferral survived installation (#1378), and the box that
+    # needs that proof is the box whose running broker cannot be disturbed by
+    # materializing a checkout.
+    "qualify_needrestart_broker_deferral.py",
     "upgrade_client.py", "install_client_upgrader.sh", "install_supervisor_unit.sh",
 )
 #: Fleet tools deliberately left out of the generation, each with the reason.

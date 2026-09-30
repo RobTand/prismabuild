@@ -17,12 +17,20 @@ lexically sorted ``override_rc`` keys, with 0 meaning skip
 (/usr/sbin/needrestart:1135-1162).  A Python re-implementation of the load,
 the match or the ordering would not be evidence about the configuration that
 actually protects the service.
+
+The same rule backs ``tools/fleet/qualify_needrestart_broker_deferral.py``, the
+host-local check that reads the installed main configuration alone and never
+composes the candidate fragment into it; its explicit-config path is exercised
+below so the property that makes it deployment evidence is itself pinned.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import shutil
 import subprocess
 from pathlib import Path
+import sys
 
 import pytest
 
@@ -30,6 +38,7 @@ ROOT = Path(__file__).resolve().parents[1]
 FLEET = ROOT / "tools" / "fleet"
 INSTALLER = FLEET / "install_resource_broker.sh"
 FRAGMENT = FLEET / "50-prismabuild-resource-broker.conf"
+QUALIFIER = FLEET / "qualify_needrestart_broker_deferral.py"
 BROKER = "prismabuild-resource-broker.service"
 NEAR_NAMES = (
     "prismabuild-resource-broker-helper.service",
@@ -139,7 +148,45 @@ def test_the_installer_provisions_the_fragment_without_restarting() -> None:
     subprocess.run(["bash", "-n", str(INSTALLER)], check=True)
 
 
-def test_the_fragment_travels_with_the_published_installer() -> None:
+def test_the_published_manifest_carries_fragment_installer_and_qualifier() -> None:
+    """The generation carries real bytes at both published spellings."""
+
     import publish_runtime
 
-    assert FRAGMENT.name in publish_runtime.FLEET_DATA
+    manifest = publish_runtime._publication_manifest()
+    for source in (FRAGMENT, INSTALLER, QUALIFIER):
+        digest = hashlib.sha256(source.read_bytes()).hexdigest()
+        for name in (f"tools/{source.name}", f"tools/fleet/{source.name}"):
+            assert manifest.get(name) == digest, name
+
+
+def _qualify(config: Path) -> subprocess.CompletedProcess:
+    if shutil.which("perl") is None:
+        pytest.skip("needrestart configuration is Perl; perl is not installed here")
+    return subprocess.run(
+        [sys.executable, str(QUALIFIER), "--config", str(config), "--json"],
+        capture_output=True, text=True, check=False,
+    )
+
+
+def test_the_qualification_cli_reads_only_the_configuration_it_is_given(tmp_path) -> None:
+    """Without an installed fragment it reports the deferral missing, and a
+    configuration whose own loader includes the fragment flips only the broker.
+    A CLI that injected the candidate fragment would pass the first arm too."""
+
+    installed = tmp_path / "needrestart-installed.conf"
+    installed.write_text(FIXTURE, encoding="utf-8")
+    installed.chmod(0o644)
+    absent = _qualify(installed)
+    assert absent.returncode == 1, absent.stderr
+    assert json.loads(absent.stdout)["broker"]["deferred"] is False
+
+    installed.write_text(FIXTURE + FRAGMENT.read_text(encoding="utf-8"),
+                         encoding="utf-8")
+    present = _qualify(installed)
+    assert present.returncode == 0, present.stderr
+    report = json.loads(present.stdout)
+    assert report["broker"]["deferred"] is True
+    assert report["controls"]["ssh.service"]["deferred"] is False
+    assert report["config_sha256"] == hashlib.sha256(installed.read_bytes()).hexdigest()
+    assert report["config_mode"] == "0644"

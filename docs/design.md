@@ -4702,6 +4702,18 @@ semantics; they do not interpret the supplement as another terminal or as
 permission to restart work. Shared filesystem reads are synchronous and can
 delay this explicit operation; it grants no deadline or missing-data bypass.
 
+The broker installer also provisions needrestart's exact-service deferral
+(`/etc/needrestart/conf.d/50-prismabuild-resource-broker.conf`): an OS library
+update must not queue the broker for an automatic restart, because that stop
+closes every connected launcher's execution channel without its result and a
+payload that then completes is only recoverable through the explicit
+reconciliation above (#1378). The override defers only that automatic stop:
+needrestart still reports the service as deferred rather than passing it over
+as a blacklist entry, and the pending library restart remains owed and is
+discharged at the host's next deliberately drained stop, when its attempts are
+idle and the installer replaces the broker under its active-service refusal.
+No OS update is disabled and no deliberate PrismaBuild upgrade is changed.
+
 Worker-loop count supplies enough claimants to exercise this admission policy
 without becoming a second scheduler. `fleet_boxes.json` declares an automatic
 floor. Above that floor the supervisor sizes on the claims the box is holding:
@@ -4763,14 +4775,6 @@ without acquiring the claim or spawning work; an already running cron owner
 rechecks each cycle and hands over without stopping workers. The installer
 enables and starts the service. Legacy units retain legacy
 behavior until reinstalled; the installer travels in the runtime inventory.
-The broker installer also provisions needrestart's exact-service exclusion
-(`/etc/needrestart/conf.d/50-prismabuild-resource-broker.conf`): an OS library
-update must not queue the broker for an automatic restart, because that stop
-closes every connected launcher's execution channel without its result and a
-payload that then completes is only recoverable through explicit receipt
-reconciliation (#1378). The exclusion disables no OS update and does not touch
-the deliberate upgrade path, which drains the host's attempts and stops the
-service before the installer replaces it.
 The stop covers supervised processes only and is not a filesystem-quiescence
 or fleet-barrier certificate. Manually launched processes and stale published
 offers require separate operator readback.
