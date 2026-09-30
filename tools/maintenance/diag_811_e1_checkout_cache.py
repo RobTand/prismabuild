@@ -491,6 +491,16 @@ def negative_controls(
     return controls
 
 
+def timed_materialization_seconds(phases: dict[str, float]) -> float:
+    """Count materialization and verification identically in both arms.
+
+    Cleanup is reported separately. Population, cold verification, negative
+    controls and parity are outside each repetition, not hidden warm costs.
+    """
+    return round(sum(value for name, value in phases.items()
+                     if name != "cleanup"), 4)
+
+
 def arm_a_rep(*, item, checkout_root: Path, materialize, git: Git, core,
               pair: int, order: str) -> dict:
     """Materialize-and-verify time; cleanup is reported separately."""
@@ -508,7 +518,7 @@ def arm_a_rep(*, item, checkout_root: Path, materialize, git: Git, core,
         proof = preflight(item["request"], tree, core)
         phase.done("verify")
     phase.done("cleanup")
-    materialize_seconds = round(phase.seconds["materialize"] + phase.seconds["verify"], 4)
+    materialize_seconds = timed_materialization_seconds(phase.seconds)
     return {
         "arm": "A",
         "pair": pair,
@@ -624,8 +634,7 @@ def arm_b_rep(
         proof = preflight(item["request"], repository, core)
         state = repo_state(repository, core)
         phase.done("verify")
-        materialize_seconds = round(
-            sum(value for name, value in phase.seconds.items() if name != "verify"), 4)
+        materialize_seconds = timed_materialization_seconds(phase.seconds)
         record = {
             "arm": "B",
             "pair": pair,
@@ -797,7 +806,15 @@ def main() -> int:
     scratch = work / "scratch"
     git = Git(materialize)
     git.install()
-    report: dict[str, object] = {"schema": "prismabuild.diag811.e1_checkout_cache.v1"}
+    report: dict[str, object] = {
+        "schema": "prismabuild.diag811.e1_checkout_cache.v2",
+        "timing_boundary": {
+            "includes": ["materialization", "verification"],
+            "excludes": ["cleanup", "population", "cold_entry_verification",
+                         "negative_controls", "parity"],
+            "v1_correction": "arm B seconds previously omitted verification",
+        },
+    }
     reasons: list[str] = []
     try:
         cas = core.PrismaBuildCAS(args.cas_root)

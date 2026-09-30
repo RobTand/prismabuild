@@ -52,3 +52,28 @@ The original report uses schema `prismabuild.diag811.e1_checkout_cache.v1` and
 markers `E1-REPORT-BEGIN` / `E1-REPORT-END` in the action log. Its
 `timing_claim_eligible=true` is a harness screen, not an independent promotion
 or admission gate. No completion of #811 is claimed by this document.
+
+## Correction, 2026-09-30: equal timing boundaries
+
+The original v1 harness included verification in arm A's headline but omitted
+it from arm B's. The 5.7489 s / 0.6742 s table above is therefore not an
+apples-to-apples materialize-and-verify comparison. Preserve those original
+records; do not use their unequal headline boundaries to price a change.
+
+Summing the original per-repetition phases, excluding cleanup in both arms,
+gives these medians:
+
+| Boundary | Median seconds |
+|---|---:|
+| A materialization plus verification | 5.7489 |
+| B materialization plus verification | 1.3039 |
+
+This is a derivation from the same action's recorded phases, not a new run.
+The four B totals are 1.3362, 1.3484, 1.2716 and 1.1382 s. It establishes no
+production speedup; the cold costs and promotion requirements above still
+apply.
+
+The retained reproducer is `tools/maintenance/diag_811_e1_checkout_cache.py`.
+Its v2 report uses one timing function for both arms, includes verification,
+and names the excluded cold, control, parity and cleanup phases. The original
+harness hash and v1 records above continue to identify what actually ran.
