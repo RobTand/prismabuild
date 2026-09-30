@@ -6725,9 +6725,11 @@ class PoolQueue:
         (:meth:`_withhold_epoch`, #1052).  A pass that carries a withhold
         files its denial with the episode it carried (``withhold_carried``),
         so the next such pass reads the same start whichever of those reasons
-        either of them recorded, and a run of them never renews it.  Returns
-        ``{"reason", "mode", "epoch_unix"}``, with the measurement deadline
-        when present, or ``None``.
+        either of them recorded, and a run of them never renews it. A
+        CPU-source measurement drain also requires affirmative freshness of
+        the original CPU sample; transient denials cannot refresh that proof
+        (#1317). Returns ``{"reason", "mode", "epoch_unix"}``, with the
+        measurement deadline and CPU timestamp when present, or ``None``.
         """
 
         def finite(value: object) -> bool:
@@ -6743,12 +6745,16 @@ class PoolQueue:
         if not isinstance(reason, str) or not isinstance(evidence, Mapping):
             return None
         until = None
+        cpu_sampled: object = None
+        cpu_fresh = False
         if reason in WITHHOLD_CARRYING_REASONS:
             carried = evidence.get("withhold_carried")
             if not isinstance(carried, Mapping):
                 return None
             origin, mode, epoch = carried.get("reason"), carried.get("mode"), carried.get("epoch_unix")
             until = carried.get("drain_until_unix")
+            cpu_sampled = carried.get("measurement_cpu_sampled_unix")
+            cpu_fresh = carried.get("measurement_cpu_sample_fresh") is True
         elif reason.endswith(MOVER_WITHHOLD_SUFFIX) and reason not in MOVER_WITHHOLD_REASONS:
             verdict, denied = evidence.get("withhold"), record.get("denied_unix")
             if not isinstance(verdict, Mapping) or verdict.get("withhold") is not True:
@@ -6761,15 +6767,37 @@ class PoolQueue:
             origin, mode = reason, verdict.get("mode")
             until = verdict.get("drain_until_unix")
             epoch = float(denied) - float(held)  # type: ignore[arg-type]
+            decision = evidence.get("decision")
+            cpu_fresh = isinstance(decision, Mapping) and decision.get("fresh") is True
+            sample = decision.get("sample") if isinstance(decision, Mapping) else None
+            cpu_sampled = sample.get("sampled_unix") if isinstance(sample, Mapping) else None
         else:
             return None
         if (not isinstance(origin, str) or not isinstance(mode, str) or not finite(epoch)
                 or (until is not None and (not finite(until) or not float(epoch) <= now < float(until)))
                 or (until is None and now - float(epoch) > WITHHOLD_CEILING_S)):  # type: ignore[arg-type]
             return None
-        result = {"reason": origin, "mode": mode, "epoch_unix": float(epoch)}  # type: ignore[arg-type]
+        cpu_time = None
+        if until is not None and origin == "adaptive_cpu_refused_withholding":
+            # A new busy/transient denial is not a new CPU observation. Old
+            # carried records without the timestamp and affirmative freshness
+            # are unknown, not proof; neither this nor expiry releases tokens.
+            if not cpu_fresh or type(cpu_sampled) not in (int, float):
+                return None
+            try:
+                cpu_time = float(cpu_sampled)  # type: ignore[arg-type]
+            except OverflowError:
+                return None
+            if (not math.isfinite(cpu_time)
+                    or not 0 <= now - cpu_time <= cpu_admission.MAX_SAMPLE_AGE_S):
+                return None
+        result: dict[str, object] = {"reason": origin, "mode": mode,
+                                     "epoch_unix": float(epoch)}  # type: ignore[arg-type]
         if until is not None:
             result["drain_until_unix"] = float(until)
+        if cpu_time is not None:
+            result["measurement_cpu_sampled_unix"] = cpu_time
+            result["measurement_cpu_sample_fresh"] = True
         return result
 
     def _claim_blocked_fresh(self, key: str) -> tuple[bool, str | None]:

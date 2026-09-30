@@ -265,7 +265,11 @@ What PB does with it:
   has the image claims it. An unknown inventory does not release a drain:
   if this box was withholding for the row, the rows behind it stay held for
   that pass (`withhold_carried` in the denial), as they do when another loop
-  holds the row's lock (#1143). The residual race -- an
+  holds the row's lock (#1143). CPU-source measurement protection is an
+  exception once its original CPU sample is older than five seconds: a
+  transient inventory or row-lock denial does not refresh that observation
+  (#1317). The measurement remains refused; no held token is released.
+  The residual race -- an
   image removed after the observation and before the container starts -- is
   reported by the action's own run time, not presented as impossible.
 
@@ -3338,6 +3342,17 @@ publication flock. For an absent or stale copy, inspect `publisher-owner.json`
 `<digest>.adaptive-cpu-v1` directory. Compare nonces before attributing a result.
 No publication timeout establishes process exit or authorizes deleting locks.
 Other shared claim operations remain exposed to a degraded mount.
+
+A measurement with missing, stale, future-dated or incomplete CPU telemetry
+is refused as `measurement_sampler_unknown` (`fresh: false`,
+`sample_max_age_s: 5`). Unknown does not mean idle or foreign load. It does not
+hold lower-ranked work behind a measurement drain or reserve refused room.
+Transient denials carry CPU-source measurement protection only while the
+original sample remains fresh, not while the latest denial timestamp does.
+Fresh recovery can resume protection inside the original drain deadline;
+restart and recovery cannot extend it. This never releases held tokens or
+bypasses idle/baseline and isolation checks. A fresh unmeasured baseline is
+not a stale sampler; its separate conservative policy remains unchanged.
 
 The declared CPU demand remains an upper bound the action may actually use.
 PrismaBuild measures current host CPU activity and pressure, including unrelated

@@ -1345,22 +1345,27 @@ class Controller:
         # host's idle history it refuses here, as the fixed line did, and
         # otherwise the holder loop below refuses the measurement
         # ``measurement_holder`` (naming ``isolated_by``, #982).
-        if measurement and (not fresh or idle['exceeds']):
+        if measurement and not fresh:
+            # Unknown telemetry is not idle, foreign load, or evidence that
+            # PB's holders prevent the measurement. Refuse the measurement
+            # without reserving a drain for sampler silence (#1317).
+            return refuse("measurement_sampler_unknown", fresh=False, baseline=idle,
+                          sample_max_age_s=MAX_SAMPLE_AGE_S)
+        if measurement and idle['exceeds']:
             # A measurement reads the machine it runs on, so load on the
             # CPUs it would actually occupy is ambient contamination, not
             # contention (#1185): the typed per-CPU check runs first, on the
             # measurement's own predicted CPUs, with PB-held busy excluded
-            # and load anywhere else out of scope.  When the sample cannot
-            # answer that question -- stale, unattributed, or an unknowable
-            # prediction -- the conservative host_not_idle below stands.
+            # and load anywhere else out of scope. Fresh but unattributed
+            # readings, or an unknowable CPU prediction, retain the
+            # conservative host_not_idle refusal below.
             # (#1233's box-wide surviving-sum is retired: it let foreign
             # load far from the measurement's CPUs overtake a row no drain
             # could ever place, and its re-judge re-armed an unproven
             # window on the same unproven load.)
-            if fresh and idle['exceeds']:
-                if ambient is not None and ambient['exceeds']:
-                    return refuse("measurement_foreign_ambient", fresh=fresh,
-                                  baseline=idle, **ambient['evidence'])
+            if ambient is not None and ambient['exceeds']:
+                return refuse("measurement_foreign_ambient", fresh=fresh,
+                              baseline=idle, **ambient['evidence'])
             return refuse("measurement_host_not_idle", fresh=fresh, baseline=idle)
         if full_width and fresh and not holders and idle['exceeds']:
             # A reservation of every CPU needs the host idle too.
@@ -1400,7 +1405,7 @@ class Controller:
                     (other.name for other in holders
                      if read_json(other / METADATA).get('measurement')), None)
                 return refuse("measurement_holder", holder=holder.name,
-                              isolated_by=isolated)
+                              isolated_by=isolated, fresh=fresh)
             if meta.get('measurement'):
                 # A measurement's own spool exports run under its isolation;
                 # everything else waits (#982).  Read only here, where a
