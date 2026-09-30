@@ -32,6 +32,7 @@ import argparse
 import fcntl
 import hashlib
 import json
+import math
 import os
 import resource
 import shutil
@@ -237,7 +238,8 @@ def parse_bundle(bundle: Path) -> dict[str, object]:
 def entry_identity(entry: Path, framing: dict, reader_lease) -> dict[str, object]:
     identity: dict[str, object] = {}
     pack, idx = entry_paths(entry, framing)
-    for label, path in (("pack", pack), ("idx", idx)):
+    for label, path in (("pack", pack), ("idx", idx),
+                        ("manifest", entry / "manifest.json")):
         info = os.lstat(path)
         if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
             raise E1Error(f"cache {label} is not a regular file: {path}")
@@ -256,6 +258,41 @@ def copy_or_reflink(source: Path, destination: Path) -> str:
         destination.unlink(missing_ok=True)
         shutil.copyfile(source, destination)
         return "copy"
+
+
+def entry_manifest_binding(*, framing: dict, generation: str,
+                           pack: Path, idx: Path, pack_sha: str,
+                           idx_sha: str) -> dict:
+    """The publication binding shared by the experimental writer and reader."""
+
+    return {
+        "schema": "prismabuild.diag811.e1_entry.v1",
+        "generation": generation,
+        "bundle": {key: framing[key] for key in
+                   ("sha256", "bytes", "pack_offset", "pack_len")},
+        "pack": {"name": pack.name, "sha256": pack_sha,
+                 "bytes": file_bytes(pack)},
+        "idx": {"name": idx.name, "sha256": idx_sha,
+                "bytes": file_bytes(idx)},
+        "advertised": framing["advertised"],
+        "object_format": framing["object_format"],
+    }
+
+
+def same_manifest_binding(actual, expected) -> bool:
+    """Compare typed records; bools and floats cannot stand in for integers."""
+
+    if type(actual) is not type(expected):
+        return False
+    if isinstance(expected, dict):
+        return (actual.keys() == expected.keys()
+                and all(same_manifest_binding(actual[key], value)
+                        for key, value in expected.items()))
+    if isinstance(expected, list):
+        return (len(actual) == len(expected)
+                and all(same_manifest_binding(a, b)
+                        for a, b in zip(actual, expected)))
+    return actual == expected
 
 
 def build_entry(
@@ -311,20 +348,10 @@ def build_entry(
                 return result
             git.run(["git", "index-pack", "--verify", str(pack)],
                     where="verify cached pack and index")
-            manifest = {
-                "schema": "prismabuild.diag811.e1_entry.v1",
-                "generation": generation,
-                "bundle": {"sha256": digest, "bytes": framing["bytes"],
-                           "pack_offset": framing["pack_offset"],
-                           "pack_len": framing["pack_len"]},
-                "pack": {"name": pack.name, "sha256": pack_sha,
-                         "bytes": file_bytes(pack)},
-                "idx": {"name": idx.name, "sha256": sha256_stream(idx),
-                        "bytes": file_bytes(idx)},
-                "advertised": framing["advertised"],
-                "object_format": framing["object_format"],
-                "created_unix": time.time(),
-            }
+            manifest = entry_manifest_binding(
+                framing=framing, generation=generation, pack=pack, idx=idx,
+                pack_sha=pack_sha, idx_sha=sha256_stream(idx))
+            manifest["created_unix"] = time.time()
             (staging / "manifest.json").write_text(
                 json.dumps(manifest, indent=1, sort_keys=True) + "\n")
             os.chmod(pack, 0o444)
@@ -344,17 +371,48 @@ def verify_entry(
     *, entry: Path, bundle_path: Path, framing: dict, git: Git, core,
     reader_lease, memo: dict,
 ) -> dict[str, object]:
-    """Bind the entry to the verified CAS bundle; memoized per stable identity."""
+    """Verify publication, generation and bytes; memoize their stable identity."""
 
-    identity = entry_identity(entry, framing, reader_lease)
-    cached = memo.get(str(entry))
-    if (cached is not None and cached["identity"] == identity
-            and cached["bundle_sha256"] == framing["sha256"]):
-        return {"ok": True, "cached": True, "seconds": 0.0,
-                "pack_sha256": cached["pack_sha256"],
-                "idx_sha256": cached["idx_sha256"]}
     started = time.monotonic()
-    pack, idx = entry_paths(entry, framing)
+    generation = framing.get("runtime_generation")
+    try:
+        if not isinstance(generation, str) or not generation:
+            raise E1Error("entry manifest expected runtime generation is missing")
+        identity = entry_identity(entry, framing, reader_lease)
+        cached = memo.get(str(entry))
+        if (cached is not None and cached["identity"] == identity
+                and cached["bundle_sha256"] == framing["sha256"]
+                and cached.get("runtime_generation") == generation):
+            return {"ok": True, "cached": True, "seconds": 0.0,
+                    "manifest_verified": True,
+                    "pack_sha256": cached["pack_sha256"],
+                    "idx_sha256": cached["idx_sha256"]}
+        memo.pop(str(entry), None)
+        manifest = core._decode_strict_json(
+            core._read_regular_file_nofollow(
+                entry / "manifest.json", where="entry publication manifest"),
+            where="entry publication manifest")
+        if not isinstance(manifest, dict):
+            raise E1Error("entry publication manifest is not an object")
+        created = manifest.get("created_unix")
+        if (isinstance(created, bool) or not isinstance(created, (int, float))
+                or not math.isfinite(created)):
+            raise E1Error("entry publication manifest created_unix is not finite")
+        pack, idx = entry_paths(entry, framing)
+        idx_sha = sha256_stream(idx)
+        expected = entry_manifest_binding(
+            framing=framing, generation=generation, pack=pack, idx=idx,
+            pack_sha=framing["pack_sha256"], idx_sha=idx_sha)
+        binding = {key: value for key, value in manifest.items()
+                   if key != "created_unix"}
+        if not same_manifest_binding(binding, expected):
+            raise E1Error("entry publication manifest binding differs from the "
+                          "verified bundle, runtime generation or pack/index")
+    except (OSError, E1Error, core.ActionContractError) as exc:
+        memo.pop(str(entry), None)
+        return {"ok": False, "cached": False,
+                "reason": f"entry publication manifest refused: {exc}",
+                "seconds": round(time.monotonic() - started, 4)}
     pack_sha = sha256_stream(pack)
     bundle_pack_sha = sha256_stream(bundle_path, offset=int(framing["pack_offset"]),
                                     length=int(framing["pack_len"]))
@@ -371,10 +429,14 @@ def verify_entry(
         return {"ok": False, "cached": False,
                 "reason": f"index verification refused: {exc}",
                 "seconds": round(time.monotonic() - started, 4)}
-    idx_sha = sha256_stream(idx)
+    if entry_identity(entry, framing, reader_lease) != identity:
+        return {"ok": False, "cached": False,
+                "reason": "entry publication manifest or pack/index changed during verification",
+                "seconds": round(time.monotonic() - started, 4)}
     memo[str(entry)] = {"identity": identity, "bundle_sha256": framing["sha256"],
+                        "runtime_generation": generation,
                         "pack_sha256": pack_sha, "idx_sha256": idx_sha}
-    return {"ok": True, "cached": False,
+    return {"ok": True, "cached": False, "manifest_verified": True,
             "seconds": round(time.monotonic() - started, 4),
             "pack_sha256": pack_sha, "idx_sha256": idx_sha}
 
@@ -820,7 +882,8 @@ def main() -> int:
     try:
         cas = core.PrismaBuildCAS(args.cas_root)
         bundle_path = cas.input_path(snapshot["input"])
-        framing = parse_bundle(bundle_path)
+        framing = {**parse_bundle(bundle_path),
+                   "runtime_generation": generation_root.name}
         if framing["sha256"] != digest:
             raise E1Error("bundle digest does not match the sealed input")
         git_version = git.run(["git", "--version"], where="read git version").strip()

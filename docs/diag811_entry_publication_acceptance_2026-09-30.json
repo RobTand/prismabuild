@@ -1,0 +1,33 @@
+{
+  "schema": "pb.staged_read_acceptance.v1",
+  "step": "merge",
+  "contract_commit": "37b72cc431b876b6dc4889fa1f5889dd1656b97d",
+  "ledger_commit": "e353e3778a354facbccb930c2f35e734302d4f71",
+  "scope": ["ID-05", "ID-08"],
+  "prelaunch": {"status": "not-this-step"},
+  "merge": {
+    "branch": "sol/issues-ts-811-contract-6",
+    "issue": "https://github.com/RobTand/prismabuild/issues/811",
+    "validated_repairs": [
+      {
+        "id": "ID-05",
+        "actions": ["bed75cb0d8e086155340d4476237ad48b8df7606fa55a25a02149c7c975a8ab6"],
+        "outcome": "Experimental verify_entry refuses absent, malformed and misbound publication records and invalidates changed-manifest memos. CPU-only action done/exit0, 14 passed/0 failed/0 skipped, 14 collected/ran/outcomes without reconciliation gaps. CAS receipt 59073b739b34072c216e96b5facc7c98e12f9bc6101cfea99f7e5273f0978d3f; result length and SHA-256 checked. Synthetic pack/index and Git double only; full worker attestation not independently verified."
+      },
+      {
+        "id": "ID-08",
+        "actions": ["bed75cb0d8e086155340d4476237ad48b8df7606fa55a25a02149c7c975a8ab6"],
+        "outcome": "Experimental publication and positive memo bind to the executing generation supplied by the harness's existing generation validator. A mismatched record is refused. Same scoped CPU result as ID-05; no deployed-generation or role-convergence proof."
+      }
+    ],
+    "remaining_gaps": [
+      "ID-05: this private experimental entry is not production certification, residency, retirement, lease or power-loss-durability proof; ledger axes remain unchanged.",
+      "ID-08: no production cache integration or deployment occurred; fleet role convergence and production runtime attribution are not qualified by these test doubles.",
+      "PB #811: production retention, reader lifetime, crash recovery and matched deployed claim-path before/after performance acceptance remain open."
+    ],
+    "note": "This source merge repairs only tools/maintenance/diag_811_e1_checkout_cache.py. RED a619312a3ee581cf3cc416e35c18d33eab694e0a2fbb1f78e2553a0022dea588 failed/exit1 with 11 failed/1 positive-control passed/0 skipped before the fix. No production runtime, default, ledger status, cache policy, sealed input or performance claim changes."
+  },
+  "deploy": {"status": "not-this-step"},
+  "complete": {"status": "not-this-step"},
+  "exceptions": []
+}
