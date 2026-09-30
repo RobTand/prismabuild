@@ -1558,11 +1558,14 @@ different runs. File discovery and partitioning remain PB's responsibility.
 Each shard prints its pytest terminal summary, and `--json` records the same
 text plus a `ran` flag. `ran` is true when pytest reported a terminal summary
 — the `1 failed, 531 passed, 1 skipped in 17.82s` line — and false otherwise.
-A shard that died before or outside pytest prints `NO PYTEST SUMMARY`, the
-number of files that did not run, and how the shard ended (`rc=N`, or
-`signal N` when it was killed), because a shard starved of I/O, one whose
-submission was refused, and one that ran clean are three different events that
-used to print the same blank.
+Without a terminal summary, the shard prints `NO PYTEST SUMMARY`, the number
+of files with no verified final result, and how it ended (`rc=N`, or `signal N`
+when killed). Execution and coverage remain unknown: pytest may have executed
+partially before a deadline or signal prevented its final summary. Missing
+counts do not establish zero execution, and `ran=false` is not a claim that no
+case ran. Such a shard remains non-green even if its process returned zero.
+Retained logs can identify individual observed failures, but cannot certify an
+unreported final population.
 
 ### Choose the project's test environment
 

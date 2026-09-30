@@ -37,8 +37,8 @@ pbrun = pbtest.pbrun
 
 REAL_POPEN = subprocess.Popen
 
-TODAY = ("NO PYTEST SUMMARY -- 1 file(s) did not run "
-         "(the shard ended rc=1, before or outside pytest)")
+TODAY = ("NO PYTEST SUMMARY -- 1 file(s) have no verified final result "
+         "(the shard ended rc=1; execution/coverage unknown)")
 
 
 def _pbrun_refusal(monkeypatch, result: dict, *, retained: bool = False) -> str:
