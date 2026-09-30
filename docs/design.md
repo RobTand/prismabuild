@@ -6267,11 +6267,13 @@ argument:
 The refusal in step 1 closes the gap a bare `stat` comparison leaves: two
 changes in one clock tick share a timestamp. Stamps are trusted only on
 filesystems whose directory times come from this kernel's clock (`zfs`,
-`ext4`, `xfs`, `btrfs`, `tmpfs`, matched on the device's `major:minor` in
-`/proc/self/mountinfo`). An answer is remembered only until the kernel
-signals a mount or unmount (`POLLPRI` on `/proc/self/mountinfo`), because
-anonymous device numbers are shared by ZFS, tmpfs, NFS, overlay and FUSE
-mounts and handed out again after an unmount. The trust is re-checked on
+`ext4`, `xfs`, `btrfs`, `tmpfs`). The authoritative fast path matches the
+device's `major:minor` in `/proc/self/mountinfo`; an absent device alone is
+never local evidence. An answer is remembered only in the current process's
+mount namespace and until the kernel signals a mount or unmount (`POLLPRI`
+on `/proc/self/mountinfo`), because anonymous device numbers are shared by
+ZFS, tmpfs, NFS, overlay and FUSE mounts and handed out again after an
+unmount. The trust is re-checked on
 every reuse, not only when the stamp is taken: `_current_directory_version`
 returns the four fields only on a filesystem that is still one of those
 (#1208), so a mount change under a kept listing makes the comparison miss.
@@ -6297,6 +6299,105 @@ rely on:
 A backward step of the realtime clock could stamp a later change with an
 earlier time; to reproduce a kept stamp it would have to land on the same
 nanosecond in both fields.
+
+**An unlisted subvolume needs exact-object evidence (#1358; source repair,
+qualification pending).** Btrfs subvolumes may report a `stat.st_dev` absent
+from mountinfo even though an open descriptor's `mnt_id` names a btrfs row.
+`stage_move._object_filesystem_type` resolves only that missing-device case:
+it binds the observed mode and five-field file version to the caller's
+still-open descriptor, or to an `O_PATH` descriptor opened on the exact name
+with the original follow policy (directory/checkpoint/walk `lstat` is
+no-follow; record `stat` follows). Both fstats, fdinfo reads and, for pathname
+inputs, the final pathname observation must agree. Namespace identity and
+the mount-watch generation bracket resolution. The resolver snapshots the
+existing memo identity and generation under its mutex, performs exact-object
+open/fstat/fdinfo/final-stat work outside that mutex, then reacquires it to
+verify the same namespace, generation, validated table identity and current
+mount-ID allowlist row. A stalled object probe does not hold up unrelated
+known-direct type lookups. No ancestor, pathname prefix,
+sole mount, inode alone or adjusted device number supplies trust; no inferred
+device/object/path alias is memoized. The existing mount-type memo holds the
+one validated table's device and mount-ID indexes, invalidated together.
+
+Procfs parsing refuses unreadable, empty, NUL-containing, invalid-UTF-8,
+truncated or overflowing records: mountinfo is capped at 1 MiB and fdinfo
+at 4 KiB, each read at cap+1 with a complete final newline required. These
+are parser safety limits, not syscall/time/admission bounds. Duplicate mount
+IDs or malformed rows refuse the table; repeated bind rows with the same
+device/type are valid, while contradictory types make that device unusable,
+not eligible for fallback. The separator is identified before the fixed
+three-field suffix (filesystem type, mount source, super options); a literal
+`-` mount source is valid data, not a second separator. Unexpected literal
+`-` tokens in other grammar positions still refuse the row; hyphens within
+legitimate path/options strings are unaffected.
+
+Root and mountpoint fields have distinct grammar. `_mount_path_field` remains
+unchanged for **every mountpoint** and for ordinary absolute escaped roots.
+`_mount_root_field` additionally accepts, only for filesystem type `nsfs`, a
+whole opaque `<kind>:[ASCII-decimal inode]` root token. The closed proven kinds
+are `net`, `pid`, `pid_for_children`, `time`, `time_for_children`, `uts`, `ipc`,
+`mnt`, `user`, and `cgroup`; unknown names, Unicode digits and trailing junk
+refuse. The parser derives the filesystem type only after suffix-shape bounds
+are established, before choosing the root-field grammar. An opaque root is
+kernel display data, not a pathname or inode/ancestor alias, and **nsfs remains
+outside the local-clock allowlist**. Non-nsfs relative roots, opaque
+mountpoints and malformed escaped paths still refuse the complete table.
+
+Provenance: Linux v6.14 `fs/nsfs.c:350–357` (`nsfs_show_path`) prints
+`ns_ops->name` and `inode->i_ino` as `%s:[%lu]`. The closed names are the
+`proc_ns_operations.name` assignments in `net/core/net_namespace.c:1507`,
+`kernel/pid_namespace.c:449,459`, `kernel/time/namespace.c:461,470`,
+`kernel/utsname.c:161`, `ipc/namespace.c:254`, `fs/namespace.c:5985`,
+`kernel/user_namespace.c:1396` and `kernel/cgroup/namespace.c:145`, inspected
+from the parent-retained v6.14 source evidence. This narrowly admits valid
+unrelated namespace mount rows; it grants no local-clock evidence to them.
+
+Focused pre-correction nsfs RED action
+`c769e706c7951902a1824891c3d3e6e1896392d363baaf7dc4a7f5289b6f5925`
+on sparky recorded 16 assertion failures and 10 passing malformed/refusal
+controls, zero skips/setup errors, all 26 collected/ran/outcomes reconciled.
+Direct/inferred real DirectoryRecords returned `(2,0,2)` instead of retained
+`(1,1,1)` when the valid unrelated opaque-root row poisoned the table. This
+attributes the focused omission, not all 32 failures in the earlier integrated
+run. The source correction still owes parent GREEN/compile and retained review;
+no performance, deployment or full-closure claim follows.
+
+Missing/duplicate/malformed descriptor mount IDs,
+changed descriptor/path evidence, unknown or nonlocal types, an unreadable
+namespace, and a failed/invalid mount watch grant no retention. A listing-local
+device boolean cannot bypass these checks. Fstat memo readers check current
+trust before reuse and while their original descriptor remains open. Skip
+checkpoint hits also require **current trusted** owner/co-owner file versions
+under a coarse fence read before their current observations, and current
+trusted parent-directory versions. Bare stat equality alone cannot preserve
+a checkpoint after NFS/unknown-type, namespace or mount-watch trust loss;
+refusal forgets the checkpoint and routes the real dead-owner coherency
+consumer through its ordinary prune/rescan. Valid unchanged inferred-local
+checkpoints remain eligible; inference is not globally disabled.
+
+The corrected synthetic review regression action
+`b94fa8e5200eef374f52ab5a2aaf41041b0a1379740c5ace865255c8cfe1dbfd`
+ran on sparklina against the pre-correction reviewed repair: 15 attributed
+assertion failures, no setup errors/skips, all 15 collected/ran/outcomes
+reconciled. Genuine checkpoint installation/warm-up passed before six
+trust-loss hit failures and six actual coherency-rescan failures; the other
+three failures demonstrated blocked direct lookup and valid-source poisoning.
+This is admitted RED, not GREEN or a performance result. The source
+corrections described here still require parent PB GREEN/compile and fresh
+independent review; affected-host identity/profile qualification (the #1027
+profile barrier), deployment and issue closure remain separate gates.
+
+The shared rule covers directory acquisition and comparison (including the
+publisher's forest census), DirectoryRecords file versions, census document
+and checkpoint/walk versions, and pbmetrics history entries. The extra
+O_PATH/fstat/fdinfo work for unlisted devices is **not a measured speedup**;
+affected-host identity matching and profiling remain qualification gates.
+No deployment or issue-closure claim follows from this source change. The
+four/five-field retained versions still do not encode a mount incarnation:
+allowed-local mount replacement reproducing every stat field (or a nested
+mount change hidden by an unchanged retained directory) is an existing
+limitation, not solved by type resolution. The realtime-backstep and
+rename-only writer assumptions above remain unchanged.
 
 **A changed directory is read by record version.** When a directory's stamp
 moved, it is listed and every entry is `stat`-ed. A record whose #761 version

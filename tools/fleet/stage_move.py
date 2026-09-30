@@ -46,7 +46,7 @@ from __future__ import annotations
 import argparse
 import array
 import bisect
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack, contextmanager, suppress
 import errno
 from collections.abc import Callable, Mapping, Sequence
 import hashlib
@@ -470,12 +470,20 @@ _LOCAL_CLOCK_FILESYSTEMS = frozenset({"zfs", "ext4", "xfs", "btrfs", "tmpfs"})
 #: ``POLLPRI`` says the table changed.
 _MOUNTINFO = "/proc/self/mountinfo"
 
-#: ``major:minor`` answers remembered since the mount table last changed.
-_filesystem_types: dict[int, str | None] = {}
+#: Direct device answers and mount-ID rows from one validated table. Tuple
+#: keys name mount rows or the table marker; integer keys are stat devices.
+_filesystem_types: dict[int | tuple[str, int], str | None] = {}
+_MOUNT_TABLE_KEY = ("table", 0)
 
 #: ``(pid, descriptor, poller)`` watching :data:`_MOUNTINFO`, or ``None``.
 _mount_watch: tuple[int, int, "select.poll"] | None = None
 _mount_lock = threading.Lock()
+_mount_watch_error = False
+_mount_namespace: tuple[int, int, int, str] | None = None
+_mount_generation = 0
+#: Parser byte caps, not syscall interruption or admission limits.
+_MOUNTINFO_MAX_BYTES = 1024 * 1024
+_FDINFO_MAX_BYTES = 4096
 
 
 def _mount_table_changed() -> bool:
@@ -487,60 +495,283 @@ def _mount_table_changed() -> bool:
     use and again in a forked child, which must not clear its parent's mark
     on a shared open file.  A first call, or a table that cannot be watched,
     answers ``True``: nothing remembered before a watch existed is trusted.
+    Setup/poll failure or POLLNVAL also marks ``_mount_watch_error``; the
+    resolver refuses that observation rather than treating it as no event.
     """
 
-    global _mount_watch
+    global _mount_watch, _mount_watch_error
     watch = _mount_watch
     if watch is None or watch[0] != os.getpid():
         try:
             descriptor = os.open(_MOUNTINFO, os.O_RDONLY | os.O_CLOEXEC)
         except OSError:
+            _mount_watch_error = True
             return True
-        poller = select.poll()
-        poller.register(descriptor, select.POLLPRI | select.POLLERR)
+        try:
+            poller = select.poll()
+            poller.register(descriptor, select.POLLPRI | select.POLLERR)
+        except OSError:
+            os.close(descriptor)
+            _mount_watch_error = True
+            return True
+        if watch is not None:
+            # A fork closes only its inherited descriptor.
+            with suppress(OSError):
+                os.close(watch[1])
         _mount_watch = (os.getpid(), descriptor, poller)
         return True
     try:
         events = watch[2].poll(0)
     except OSError:
+        with suppress(OSError):
+            os.close(watch[1])
+        _mount_watch = None
+        _mount_watch_error = True
+        return True
+    if any(mask & select.POLLNVAL for _descriptor, mask in events):
+        with suppress(OSError):
+            os.close(watch[1])
+        _mount_watch = None
+        _mount_watch_error = True
         return True
     return any(mask & (select.POLLPRI | select.POLLERR)
                for _descriptor, mask in events)
 
 
-def _filesystem_type(device: int) -> str | None:
-    """The filesystem type ``/proc/self/mountinfo`` names for ``device``.
+def _namespace_identity() -> tuple[int, int, int, str] | None:
+    """This process's mount namespace, not a pathname-based mount guess."""
 
-    Matched on the ``major:minor`` field, so a bind mount answers with its
-    source's type and nothing is inferred from a path prefix.  ``None`` when
-    no mount names the device or the table cannot be read.  Remembered per
-    device only until the mount table changes (:func:`_mount_table_changed`):
-    anonymous device numbers (``0:N``) are shared by ZFS datasets, tmpfs,
-    NFS, overlay and FUSE mounts and handed out again after an unmount, so a
-    number once seen as ``zfs`` may later name a network mount.  The caller
-    has already taken its ``lstat``, so a change before it is always seen.
+    try:
+        info = os.stat("/proc/self/ns/mnt")
+        link = os.readlink("/proc/self/ns/mnt")
+        if link != f"mnt:[{info.st_ino}]":
+            return None
+        return os.getpid(), info.st_dev, info.st_ino, link
+    except OSError:
+        return None
+
+
+def _mount_state() -> tuple[tuple[int, int, int, str], int] | None:
+    """Refresh the existing memo's namespace/watch fence; called under its lock."""
+
+    global _mount_namespace, _mount_watch, _mount_watch_error
+    global _mount_generation
+    namespace = _namespace_identity()
+    changed = namespace != _mount_namespace or namespace is None
+    if changed:
+        if _mount_watch is not None:
+            with suppress(OSError):
+                os.close(_mount_watch[1])
+            _mount_watch = None
+        _mount_namespace = namespace
+    _mount_watch_error = False
+    if namespace is not None:
+        changed = _mount_table_changed() or changed
+    if changed:
+        _filesystem_types.clear()
+        _mount_generation += 1
+    if namespace is None or _mount_watch_error:
+        return None
+    return namespace, _mount_generation
+
+
+def _proc_mount_text(path: str, limit: int) -> str:
+    """Bounded complete procfs record; caps are parser limits, not timing bounds."""
+
+    with open(path, "rb") as stream:
+        payload = stream.read(limit + 1)
+    if (not payload or len(payload) > limit or not payload.endswith(b"\n")
+            or b"\x00" in payload):
+        raise ValueError("incomplete or oversized procfs mount record")
+    return payload.decode("utf-8")
+
+
+def _decimal(value: str) -> bool:
+    return value.isascii() and value.isdigit()
+
+
+def _mount_path_field(value: str) -> bool:
+    if not value.startswith("/"):
+        return False
+    parts = value.split("\\")
+    return all(part[:3] in {"040", "011", "012", "134"}
+               for part in parts[1:])
+
+
+# Linux v6.14 nsfs_show_path prints ns_ops->name:[inode], not an absolute
+# path. These proc_ns_operations names are a closed, source-proven vocabulary;
+# accepting their root syntax does not make nsfs a local-clock filesystem.
+_NSFS_NAMESPACE_KINDS = frozenset({
+    "net", "pid", "pid_for_children", "time", "time_for_children", "uts",
+    "ipc", "mnt", "user", "cgroup",
+})
+
+
+def _mount_root_field(value: str, fstype: str) -> bool:
+    """A path root, or an nsfs-only opaque namespace dentry display token."""
+
+    if _mount_path_field(value):
+        return True
+    if fstype != "nsfs":
+        return False
+    kind, separator, inode = value.partition(":[")
+    return (separator == ":[" and kind in _NSFS_NAMESPACE_KINDS
+            and inode.endswith("]") and _decimal(inode[:-1]))
+
+
+def _load_mount_types() -> bool:
+    """Validate one table for both indexes; no ambiguous row grants trust.
+
+    Repeated bind rows may share a device and type. Contradictory types make
+    that device unusable (not absent); duplicate mount IDs or malformed rows
+    refuse the complete table, so fallback cannot reinterpret ambiguity.
+    """
+
+    try:
+        text = _proc_mount_text(_MOUNTINFO, _MOUNTINFO_MAX_BYTES)
+        devices: dict[int, str | None] = {}
+        mounts: dict[int, str] = {}
+        for line in text.splitlines():
+            fields = line.split()
+            # Three suffix fields follow the separator. The source field
+            # may itself be '-' (e.g. tmpfs); it is not another separator.
+            separator = len(fields) - 4
+            if (separator < 6 or fields[separator] != "-"
+                    or "-" in fields[:separator]
+                    or fields[separator + 1] == "-"
+                    or fields[separator + 3] == "-"):
+                return False
+            fstype = fields[separator + 1]  # suffix bounds proved above
+            if (not _decimal(fields[0]) or int(fields[0]) <= 0
+                    or not _decimal(fields[1])
+                    or not _mount_root_field(fields[3], fstype)
+                    or not _mount_path_field(fields[4])):
+                return False
+            numbers = fields[2].split(":")
+            if len(numbers) != 2 or not all(_decimal(n) for n in numbers):
+                return False
+            device = os.makedev(int(numbers[0]), int(numbers[1]))
+            mount = int(fields[0])
+            if mount in mounts:
+                return False
+            mounts[mount] = fstype
+            if device in devices and devices[device] != fstype:
+                devices[device] = None
+            else:
+                devices[device] = fstype
+        if not mounts:
+            return False
+    except (OSError, ValueError, OverflowError):
+        return False
+    for device, fstype in devices.items():
+        _filesystem_types[device] = fstype
+    for mount, fstype in mounts.items():
+        _filesystem_types["mount", mount] = fstype
+    _filesystem_types[_MOUNT_TABLE_KEY] = "validated"
+    return True
+
+
+def _filesystem_type(device: int) -> str | None:
+    """Unambiguous direct device/type evidence from the current mount table.
+
+    The fast path remains a device memo plus namespace/watch checks. A missing
+    device is not an alias: only :func:`_object_filesystem_type` can resolve it
+    from an exact descriptor. Unreadable/ambiguous tables never grant trust.
     """
 
     with _mount_lock:
-        if _mount_table_changed():
-            _filesystem_types.clear()
-        if device in _filesystem_types:
-            return _filesystem_types[device]
-        wanted = f"{os.major(device)}:{os.minor(device)}"
-        found: str | None = None
-        try:
-            with open(_MOUNTINFO) as stream:
-                for line in stream:
-                    fields = line.split()
-                    if (len(fields) > 2 and fields[2] == wanted
-                            and " - " in line):
-                        tail = line.split(" - ", 1)[1].split()
-                        found = tail[0] if tail else None
-                        break
-        except OSError:
-            found = None
-        _filesystem_types[device] = found
-        return found
+        before = _mount_state()
+        if before is None:
+            return None
+        if _MOUNT_TABLE_KEY not in _filesystem_types and not _load_mount_types():
+            return None
+        found = _filesystem_types.get(device)
+        return found if _mount_state() == before else None
+
+
+def _same_mount_object(info: os.stat_result, current: os.stat_result) -> bool:
+    return (info.st_mode == current.st_mode
+            and _metadata_version(info) == _metadata_version(current))
+
+
+def _descriptor_mount_id(descriptor: int, info: os.stat_result) -> tuple[int, str]:
+    text = _proc_mount_text(f"/proc/self/fdinfo/{descriptor}", _FDINFO_MAX_BYTES)
+    fields: dict[str, list[str]] = {}
+    for line in text.splitlines():
+        key, separator, value = line.partition(":")
+        if not separator:
+            raise ValueError("malformed fdinfo")
+        fields.setdefault(key, []).append(value.strip())
+    ids = fields.get("mnt_id", [])
+    if len(ids) != 1 or not _decimal(ids[0]) or int(ids[0]) <= 0:
+        raise ValueError("ambiguous descriptor mount ID")
+    inodes = fields.get("ino", [])
+    if inodes and (len(inodes) != 1 or not _decimal(inodes[0])
+                   or int(inodes[0]) != info.st_ino):
+        raise ValueError("descriptor inode changed")
+    return int(ids[0]), text
+
+
+def _object_filesystem_type(info: os.stat_result, *,
+                            path: Path | str | None = None,
+                            descriptor: int | None = None,
+                            follow_symlinks: bool = True) -> str | None:
+    """Type of an observed object, with exact descriptor evidence for #1358.
+
+    Only a device absent from a validated table uses fallback. The supplied
+    descriptor stays open in its caller; otherwise O_PATH opens the exact name
+    with its original follow policy. Both fstats and the final path observation
+    must match the observed mode and five-field version. Mount ID, namespace
+    and watch generation are checked on both sides. Snapshot/final validation
+    hold the memo lock; object IO does not. No inferred alias is kept.
+    """
+
+    direct = _filesystem_type(info.st_dev)
+    if direct is not None:
+        return direct
+    if (path is None and descriptor is None) or not (
+            statmod.S_ISREG(info.st_mode) or statmod.S_ISDIR(info.st_mode)):
+        return None
+    with _mount_lock:
+        before = _mount_state()
+        if (before is None or _MOUNT_TABLE_KEY not in _filesystem_types
+                or info.st_dev in _filesystem_types):
+            return None
+        table = _filesystem_types
+    # A stalled exact-object probe must not block unrelated direct lookups.
+    # Table contents are used only under the lock after revalidating its state.
+    owned = None
+    try:
+        if descriptor is None:
+            if path is None:
+                return None
+            flags = os.O_PATH | os.O_CLOEXEC
+            if not follow_symlinks:
+                flags |= os.O_NOFOLLOW
+            if statmod.S_ISDIR(info.st_mode):
+                flags |= os.O_DIRECTORY
+            owned = descriptor = os.open(path, flags)
+        if not _same_mount_object(info, os.fstat(descriptor)):
+            return None
+        mount, text = _descriptor_mount_id(descriptor, info)
+        if (_descriptor_mount_id(descriptor, info) != (mount, text)
+                or not _same_mount_object(info, os.fstat(descriptor))):
+            return None
+        if path is not None:
+            current = os.stat(path) if follow_symlinks else os.lstat(path)
+            if not _same_mount_object(info, current):
+                return None
+        with _mount_lock:
+            if (_mount_state() != before or _filesystem_types is not table
+                    or _MOUNT_TABLE_KEY not in table or info.st_dev in table):
+                return None
+            found = table.get(("mount", mount))
+            return found if found in _LOCAL_CLOCK_FILESYSTEMS else None
+    except (OSError, ValueError, OverflowError):
+        return None
+    finally:
+        if owned is not None:
+            os.close(owned)
 
 
 def _trusted_directory_stamp(path: Path) -> tuple[int, int, int, int] | None:
@@ -587,7 +818,8 @@ def _trusted_directory_stamp(path: Path) -> tuple[int, int, int, int] | None:
         return None
     if not statmod.S_ISDIR(info.st_mode):
         return None
-    if _filesystem_type(info.st_dev) not in _LOCAL_CLOCK_FILESYSTEMS:
+    if _object_filesystem_type(info, path=path,
+                               follow_symlinks=False) not in _LOCAL_CLOCK_FILESYSTEMS:
         return None
     ctime = int(getattr(info, "st_ctime_ns", 0))
     if info.st_mtime_ns >= before or ctime >= before:
@@ -610,6 +842,9 @@ def _version_fence() -> int | None:
 
 def _keepable_version(info: "os.stat_result", fence: int | None, *,
                       local: dict[int, bool] | None = None,
+                      path: Path | str | None = None,
+                      descriptor: int | None = None,
+                      follow_symlinks: bool = True,
                       ) -> tuple[int, int, int, int, int] | None:
     """A file's #761 version when a record read at it may be kept, else ``None``.
 
@@ -628,21 +863,18 @@ def _keepable_version(info: "os.stat_result", fence: int | None, *,
 
     Only on a filesystem in :data:`_LOCAL_CLOCK_FILESYSTEMS`, whose file
     times come from the clock the fence reads; a network filesystem's come
-    from the server's, so none of its versions is kept.  ``local`` memoizes
-    that answer per device for one listing; without it each call asks
-    :func:`_filesystem_type`.
+    from the server's, so none of its versions is kept. ``path`` preserves
+    the stat's follow policy; ``descriptor`` is the still-open fstat source.
+    Without either, only a direct mount-table device match can grant trust.
+    ``local`` remains accepted for compatibility but is not trust evidence:
+    a listing-local device boolean cannot survive a mount/namespace change.
     """
 
     if fence is None or int(getattr(info, "st_ctime_ns", 0)) >= fence:
         return None
-    device = info.st_dev
-    if local is None:
-        trusted = _filesystem_type(device) in _LOCAL_CLOCK_FILESYSTEMS
-    else:
-        trusted = local.get(device)  # type: ignore[assignment]
-        if trusted is None:
-            trusted = _filesystem_type(device) in _LOCAL_CLOCK_FILESYSTEMS
-            local[device] = trusted
+    trusted = _object_filesystem_type(
+        info, path=path, descriptor=descriptor,
+        follow_symlinks=follow_symlinks) in _LOCAL_CLOCK_FILESYSTEMS
     return _metadata_version(info) if trusted else None
 
 
@@ -667,9 +899,9 @@ def _current_directory_version(path: Path) -> tuple[int, int, int, int] | None:
 def _directory_version_at(name: str) -> tuple[int, int, int, int] | None:
     """:func:`_current_directory_version` of a path already a string.
 
-    The census compares one of these per directory per decision, so the
-    comparison costs a bare ``lstat``, the device's remembered filesystem
-    answer, and no path object.
+    The census compares one of these per directory per decision. Direct
+    device matches use ``lstat`` and the namespace/watch-fenced table memo,
+    with no path object; unlisted devices need the exact descriptor probe.
     """
 
     try:
@@ -678,7 +910,8 @@ def _directory_version_at(name: str) -> tuple[int, int, int, int] | None:
         return None
     if not statmod.S_ISDIR(info.st_mode):
         return None
-    if _filesystem_type(info.st_dev) not in _LOCAL_CLOCK_FILESYSTEMS:
+    if _object_filesystem_type(info, path=name,
+                               follow_symlinks=False) not in _LOCAL_CLOCK_FILESYSTEMS:
         return None
     return (info.st_dev, info.st_ino, info.st_mtime_ns,
             int(getattr(info, "st_ctime_ns", 0)))

@@ -68,7 +68,9 @@ def table(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> _MountTable:
 
     def opening(file, *args, **kwargs):  # type: ignore[no-untyped-def]
         if os.fspath(file) == MOUNTINFO:
-            return io.StringIO(stand_in.text)
+            mode = args[0] if args else kwargs.get("mode", "r")
+            return (io.BytesIO(stand_in.text.encode()) if "b" in mode
+                    else io.StringIO(stand_in.text))
         return real_open(file, *args, **kwargs)
 
     monkeypatch.setattr(stage_move, "open", opening, raising=False)

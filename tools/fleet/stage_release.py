@@ -746,6 +746,7 @@ class CensusIndex(_CensusMemo):
         keeps that promise for less than a listing costs.
         """
 
+        fence = _version_fence()
         for key in keys:
             parsed = self.fragments.get(key)
             if parsed is None:
@@ -754,7 +755,7 @@ class CensusIndex(_CensusMemo):
                 info = os.stat(key)
             except OSError:
                 return False
-            if _metadata_version(info) != parsed[0]:
+            if _keepable_version(info, fence, path=key) != parsed[0]:
                 return False
         return True
 
@@ -946,8 +947,9 @@ class DirectoryRecords:
         that many threads (#1153): a cold read costs one seek per entry, and
         the pool serves many seeks at once, so the read costs (entries /
         readers) x latency rather than entries x latency.  Only the ``stat``
-        and the ``parse`` run on the readers.  Everything else runs on the
-        calling thread, one entry at a time and in name order, exactly as a
+        and the ``parse`` run on the readers, including the exact-object
+        trust recheck before returning an earlier parse. Everything else runs
+        on the calling thread, one entry at a time and in name order, exactly as a
         serial read runs it: the version comparison, ``keep``, the #1045
         fence, the counters, and ``checkpoint``, which is called before each
         entry's result is taken.  A reader takes a run of consecutive entries
@@ -994,7 +996,6 @@ class DirectoryRecords:
         # Read before any entry is stat-ed: a version whose ctime is not
         # strictly before it is not kept (#1045, :func:`_keepable_version`).
         fence = _version_fence()
-        local: dict[int, bool] = {}
         try:
             if checkpoint is None:
                 entries = sorted((entry for entry in os.scandir(directory)
@@ -1043,7 +1044,9 @@ class DirectoryRecords:
             except OSError:
                 version = None
             hit = previous.get(entry.name)
-            if version is not None and hit is not None and hit[0] == version:
+            if (info is not None and version is not None
+                    and hit is not None and hit[0] == version
+                    and _keepable_version(info, fence, path=entry.path) is not None):
                 return info, version, False, hit[1]
             record = parse(path, info) if stat_parse else parse(path)
             return info, version, True, record
@@ -1069,7 +1072,7 @@ class DirectoryRecords:
                     # by a new file under this name given the freed inode
                     # (#1045): not kept, so it is read again next pass, and
                     # neither is the listing, which would lack it.
-                    version = _keepable_version(info, fence, local=local)
+                    version = _keepable_version(info, fence, path=entry.path)
                     if version is None:
                         complete = False
                 if version is not None:
@@ -1280,12 +1283,15 @@ def _read_own_material(root: Path, consumer_action_key: str,
         with open(path) as stream:
             info = os.fstat(stream.fileno())
             version = _metadata_version(info)
+            kept = _keepable_version(info, fence, descriptor=stream.fileno())
             hit = memo.materials.get(key)
-            if hit is not None and hit[0] == version:
+            if kept is not None and hit is not None and hit[0] == version:
                 memo.reuses += 1
                 return hit[1]
             memo.parses += 1
             material = reader_lease.validate_material(json.load(stream))
+            # Validate the original fstat while its exact descriptor is open.
+            kept = _keepable_version(info, fence, descriptor=stream.fileno())
     except FileNotFoundError:
         memo.materials.pop(key, None)
         return None
@@ -1293,7 +1299,6 @@ def _read_own_material(root: Path, consumer_action_key: str,
         memo.materials.pop(key, None)
         return exc
     # Kept only at a version no later file can reproduce (#1045).
-    kept = _keepable_version(info, fence)
     if kept is None:
         memo.materials.pop(key, None)
     else:
@@ -1332,15 +1337,19 @@ def _read_fragment(path: Path, memo: _CensusMemo | None = None,
     try:
         with open(path) as stream:
             info = None
+            kept = None
             if memo is not None:
                 info = os.fstat(stream.fileno())
                 version = _metadata_version(info)
+                kept = _keepable_version(info, fence, descriptor=stream.fileno())
                 hit = memo.fragments.get(key)
-                if hit is not None and hit[0] == version:
+                if kept is not None and hit is not None and hit[0] == version:
                     memo.reuses += 1
                     return hit[1]
                 memo.parses += 1
             document = residency_map.validate_fragment(json.load(stream))
+            if info is not None:
+                kept = _keepable_version(info, fence, descriptor=stream.fileno())
     except (OSError, ValueError) as exc:
         if memo is not None:
             memo.forget(key)
@@ -1348,7 +1357,6 @@ def _read_fragment(path: Path, memo: _CensusMemo | None = None,
     if memo is not None:
         memo.forget(key)
         # Kept only at a version no later file can reproduce (#1045).
-        kept = _keepable_version(info, fence)  # type: ignore[arg-type]
         if kept is None:
             return document
         memo.fragments[key] = (kept, document)
@@ -3341,7 +3349,8 @@ def _fenced_path_version(path: Path | str, fence: int | None,
         return None, None
     if not statmod.S_ISREG(info.st_mode):
         return None, None
-    return _metadata_version(info), _keepable_version(info, fence)
+    return _metadata_version(info), _keepable_version(
+        info, fence, path=path, follow_symlinks=False)
 
 
 def _directory_version(path: Path | str) -> tuple[int, int, int, int] | None:
@@ -3507,8 +3516,10 @@ def _skip_checkpoint_hit(key: tuple, fragment_path: Path,
     each parent directory of its paths, and each co-owner fragment its
     verdict relied on; any difference forgets the checkpoint and runs the
     uncached check, so a rename, a replacement, a removal or a metadata
-    rewrite is seen before any skip.  A hit only ever skips the per-entry
-    scan: the owner's terminal, live, lease and plan state were checked
+    rewrite is seen before any skip. File and directory versions must also
+    still be trusted: bare equality cannot preserve a checkpoint after its
+    filesystem, namespace or mount-watch evidence is lost. A hit only ever
+    skips the per-entry scan: the owner's terminal, live, lease and plan state were checked
     before this is consulted, and no deletion, adoption or mutable-state
     check is skipped.
     """
@@ -3517,16 +3528,17 @@ def _skip_checkpoint_hit(key: tuple, fragment_path: Path,
         record = _skip_checkpoints.get(key)
     if record is None:
         return False
-    fresh = (_path_version(fragment_path) == record["fragment"]
-             and _path_version(material_path) == record["material"])
+    fence = _version_fence()  # before any current file observation (#1045)
+    fresh = (_fenced_path_version(fragment_path, fence)[1] == record["fragment"]
+             and _fenced_path_version(material_path, fence)[1] == record["material"])
     if fresh:
         for name, version in dict(record["documents"]).items():
-            if _path_version(name) != version:
+            if _fenced_path_version(name, fence)[1] != version:
                 fresh = False
                 break
     if fresh:
         for name, version in dict(record["dirs"]).items():
-            if _directory_version(name) != version:
+            if _current_directory_version(Path(name)) != version:
                 fresh = False
                 break
     if not fresh:
@@ -6138,7 +6150,7 @@ def _unattributed_candidates(stage: Path, stage_resolved: Path,
         except OSError as exc:
             errors.append(f"{name}: {exc}")
             return unreadable
-        version = _keepable_version(info, fence)
+        version = _keepable_version(info, fence, path=path, follow_symlinks=False)
         if os.path.normpath(path) in attributed:
             # Attribution decides first and reads no mark; the name is kept
             # so a later pass that no longer attributes it can judge it.
@@ -6219,16 +6231,18 @@ def _unattributed_candidates(stage: Path, stage_resolved: Path,
                     errors.append(f"{name}: {exc}")
                     retry = True
                     continue
+                current_version = _keepable_version(
+                    info, fence, path=path, follow_symlinks=False)
                 normalized = os.path.normpath(path)
                 if kind == attributed_mark:
                     if normalized in attributed:
-                        refreshed[name] = (version, kind, mover)
+                        refreshed[name] = (current_version, kind, mover)
                         continue
                     # Attribution ended: judge the file on this pass.
                     kind, mover = classify(name, path)
                     if memo is not None:
                         memo.walk_probed += 1
-                    version = _keepable_version(info, fence)
+                    version = current_version
                     refreshed[name] = (version, kind, mover)
                     judge(name, path, info, kind, mover)
                     continue
@@ -6236,7 +6250,7 @@ def _unattributed_candidates(stage: Path, stage_resolved: Path,
                     refreshed[name] = (None, attributed_mark, "")
                     continue
                 if (version is not None
-                        and _metadata_version(info) == version
+                        and current_version == version
                         and kind not in (temporary, "mark_unanswerable")):
                     if memo is not None:
                         memo.walk_reused += 1
@@ -6244,7 +6258,7 @@ def _unattributed_candidates(stage: Path, stage_resolved: Path,
                     kind, mover = classify(name, path)
                     if memo is not None:
                         memo.walk_probed += 1
-                    version = _keepable_version(info, fence)
+                    version = current_version
                 refreshed[name] = (version, kind, mover)
                 judge(name, path, info, kind, mover)
             if memo is not None:
