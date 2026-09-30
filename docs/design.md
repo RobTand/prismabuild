@@ -5433,6 +5433,49 @@ it refuses the warm-path admission outright — a swappable tmpfs can page
 pay a swap read behind a claim of RAM, which is the correctness lie this
 tier exists to end.
 
+**Memory-NUMA placement admission (bounded source slice, Refs #1032).**
+`ram_tier` now reads `/sys/devices/system/node/has_memory` on every discovery,
+requires positive, readable `Node N MemTotal:` evidence for every member,
+and rereads membership after collecting that evidence. Missing, empty,
+malformed, incomplete or changed membership is unknown, never evidence of a
+single-node host: after the existing noswap/ceiling/floor/rows/window checks,
+shared `ram_admission` refuses `ram_numa_topology_unreadable`. The record
+announces `memory_nodes` as sorted IDs, or null when evidence is unknown.
+This uses memory membership, not online CPU IDs or the mover's affinity,
+so noncontiguous and CPU-less memory nodes participate. Parsing is bounded
+to 4096 nodes with IDs 0–4095 and a 32768-character node-list ceiling;
+unsupported evidence refuses rather than allocating an unbounded range.
+
+On a known multi-memory-node host, absence of a valid interleave policy
+refuses `ram_mount_not_interleaved`. Bare `mpol=interleave` means all known
+memory nodes; an explicit list must equal the complete discovered set.
+Subsets, extra IDs, descending/malformed lists, repeated IDs,
+duplicate/conflicting mpol options and other placement modes refuse. Kernel
+comma-separated node IDs are reconstructed from adjacent mount-option
+fragments before validation, never validated only up to the first comma.
+Ordinary key/value options and recognized mount flags end that continuation;
+unknown bare fragments after it fail closed. Known single-memory-node hosts
+need no interleave option. Unknown topology refuses even with bare interleave.
+`discover_tiers` and `ram_tier` expose the separate keyword-only
+`memory_numa_root` (default `/sys/devices/system/node`); block-device `sysfs`
+keeps its existing meaning. Direct `ram_admission` callers must supply known
+sorted, unique `memory_nodes` (tuple); its default null is fail-closed.
+
+Both normal and epoch-failure admission branches receive this evidence;
+`ram_statvfs_unreadable` and `ram_epoch_unwritable` still override it. No
+mounted epoch is rotated for a placement refusal, and the existing no-mint
+path retires free supply without releasing held reservations. This is an
+admission repair, not a remount, provisioning path, new scheduler or cache.
+Parent verified the untouched-production behavioral RED under PB action
+`9e4235b372c3d36de127cdfc45baad1ebd3101ec32cbbfb47357bc2c8b3dc38b`:
+missing mpol admitted incorrectly; explicit `interleave:0-1` passed. Source
+changes and added controls await parent-owned admitted GREEN and independent
+review; no deployment or live memory-balance claim follows from this slice.
+Fleet-managed mount provisioning, per-node sizing and MemFree/Shmem
+visibility, deployment/page turnover, and live dl380g10 Shmem balance within
+10% with no pswpout growth over one campaign hour remain owed. Full #1032
+stays open; scoped source acceptance is not staged-read workload completion.
+
 **Mount-epoch identity — the rule the whole safety argument rests on.**
 tmpfs empties on reboot; the ledger and the residency-map fragments on the
 shared mount survive. Without an epoch, a reboot would leave a map naming

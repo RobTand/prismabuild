@@ -606,9 +606,22 @@ class ShapeGate:
         ceiling = int(self.profile["tmpfs_ceiling_bytes"]) // self.scale  # type: ignore[arg-type]
         (self.host_dir / "mounts").write_text(
             f"tmpfs {self.ram_dir} tmpfs rw,relatime,size={ceiling // 1024}k,"
-            f"mode=755,inode64,noswap 0 0\n")
+            f"mode=755,inode64,noswap,mpol=interleave:0-1 0 0\n")
         mem_total = int(self.profile["mem_total_bytes"]) // self.scale  # type: ignore[arg-type]
         (self.host_dir / "meminfo").write_text(f"MemTotal: {mem_total // 1024} kB\n")
+        # A fixture-owned two-memory-node host with matching placement, not
+        # the execution host's sysfs or inherited CPU affinity. Preserve the
+        # profile's scaled total rather than inventing positive node memory.
+        self.memory_numa_root = self.host_dir / "memory-nodes"
+        self.memory_numa_root.mkdir(parents=True, exist_ok=True)
+        (self.memory_numa_root / "has_memory").write_text("0-1\n")
+        node_kib, remainder = divmod(mem_total // 1024, 2)
+        for node in (0, 1):
+            node_dir = self.memory_numa_root / f"node{node}"
+            node_dir.mkdir(exist_ok=True)
+            kib = node_kib + (remainder if node == 0 else 0)
+            (node_dir / "meminfo").write_text(
+                f"Node {node} MemTotal: {kib} kB\n")
         self.ram_ceiling = ceiling
         self.arc = {"c_max": int(self.profile["arc_c_max_bytes"]) // self.scale,  # type: ignore[arg-type]
                     "size": int(self.profile["arc_size_bytes"]) // self.scale,  # type: ignore[arg-type]
@@ -651,6 +664,7 @@ class ShapeGate:
                 policy, host=host, statvfs=_Statvfs(self.ram_dir, self.ram_ceiling),
                 proc_mounts=str(self.host_dir / "mounts"),
                 meminfo_path=str(self.host_dir / "meminfo"), stats=self.arc,
+                memory_numa_root=str(self.memory_numa_root),
                 now=now, rows_held_gib=rows_held_gib)
             if ram is not None:
                 tiers[self.ram_tier_id] = ram

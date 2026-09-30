@@ -69,6 +69,11 @@ def _proc_files(tmp_path: Path, mount: Path, *,
 
     proc = tmp_path / "proc"
     proc.mkdir(exist_ok=True)
+    nodes = tmp_path / "memory_nodes"
+    (nodes / "node0").mkdir(parents=True, exist_ok=True)
+    (nodes / "has_memory").write_text("0\n")
+    (nodes / "node0" / "meminfo").write_text(
+        f"Node 0 MemTotal: {memtotal_kb} kB\n")
     (proc / "mounts").write_text(
         f"sysfs /sys sysfs rw 0 0\n"
         f"tmpfs {mount} tmpfs {options} 0 0\n")
@@ -107,6 +112,7 @@ def _ram_tier(tmp_path: Path, *, mount: Path | None = None,
         ram_policy=_policy(mount, **(policy_over or {})),
         statvfs=statvfs or _statvfs(mount, size_gib=256, free_gib=200),
         proc_mounts=proc_mounts, meminfo_path=meminfo,
+        memory_numa_root=str(tmp_path / "memory_nodes"),
         rows_held_gib=rows_held_gib)
     return tiers.get(storage_tiers.tier_id("ram", HOST))
 
@@ -154,6 +160,7 @@ def test_the_epoch_is_stamped_at_the_mount_and_survives_the_cycle(
             ram_policy=_policy(mount),
             statvfs=_statvfs(mount, size_gib=256, free_gib=200),
             proc_mounts=proc_mounts, meminfo_path=meminfo,
+            memory_numa_root=str(tmp_path / "memory_nodes"),
             rows_held_gib=0)
         return tiers[storage_tiers.tier_id("ram", HOST)]
 
