@@ -1,0 +1,28 @@
+{
+  "schema": "pb.staged_read_acceptance.v1",
+  "step": "merge",
+  "contract_commit": "37b72cc431b876b6dc4889fa1f5889dd1656b97d",
+  "ledger_commit": "e353e3778a354facbccb930c2f35e734302d4f71",
+  "scope": ["ID-05"],
+  "prelaunch": {"status": "not-this-step"},
+  "merge": {
+    "branch": "sol/issues-ts-811-runtime-proof-8",
+    "issue": "https://github.com/RobTand/prismabuild/issues/811",
+    "validated_repairs": [
+      {
+        "id": "ID-05",
+        "actions": ["09e7e090a11c34e879e48f4ad74ea01d9243522ed737b88b304fb045c8b842c5"],
+        "outcome": "Experimental verify_entry converts timestamp floating-point overflow to its existing named created_unix publication refusal and clears the memo. Final-source CPU-only action done/exit0 on sparklina, one worker execution attempt, 20 passed/0 failed/0 skipped, 20 collected/ran/outcomes without gaps or missing files. Receipt 6ba86098ed1439ec615e6ff626d961668347acc88f2146c351f4046d3fe8ff62; result 5635 bytes/SHA-256 43657df78f13797d1d7ec92b43bd8668d21307507fceb0fbe16fca800241ee8a verified. All nine executed local-claim checks pass; full worker attestation not independently checked. Synthetic pack/index and Git double only, not real pack or deployed-runtime qualification."
+      }
+    ],
+    "remaining_gaps": [
+      "ID-05: prototype refusal evidence is not production certification, residency, lease, retention, retirement or power-loss-durability proof; ledger axes remain unchanged.",
+      "PB #811: production reader lifetime, crash recovery, integration and matched deployed claim-path before/after performance acceptance remain open.",
+      "No runtime deployment, published-tool-only execution mode, generation contract, cache default, sealed input or performance claim changed."
+    ],
+    "note": "RED c062c178130c6fd692a2ab0fbfc6f853a7d8c6bedd6cecbfdf855d5eac86297e failed/exit1 with 4 overflow failures/12 passed/0 skipped before this repair. Four added cases cover both signs and cold/primed memo states. GREEN client retried once after worker-offer discovery refused publication; it published one action whose worker attempt count is one."
+  },
+  "deploy": {"status": "not-this-step"},
+  "complete": {"status": "not-this-step"},
+  "exceptions": []
+}
