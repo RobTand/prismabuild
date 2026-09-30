@@ -131,6 +131,13 @@ FLEET_SCRIPTS = (
     # it retires is a name whose box stopped answering, and the operator who
     # notices is on whichever box is holding the mount.
     "retire_worker.py",
+    # The residency-plan backfill (#1041, published by #1381) is the same
+    # operator's second cleanup: it reaps plans whose consumer concluded
+    # before PoolQueue.finish started retiring them at the terminal write,
+    # and the queue it names lives on the shared mount rather than in any
+    # checkout.  It lists without --apply and archives only when no child of
+    # the plan is still ready, claimed or live.
+    "retire_residency_plans.py",
     # The exporter's installer travels with it for the same reason: the box
     # best placed to run it is a box with no checkout.
     "install_pbmetrics.sh",

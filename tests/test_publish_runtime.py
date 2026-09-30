@@ -401,6 +401,32 @@ def test_the_storage_helper_travels_with_the_generation(tmp_path, monkeypatch):
     assert manifest[name] == publish_runtime._sha256(source)
 
 
+def test_the_residency_plan_retire_tool_travels_with_the_generation(
+    tmp_path, monkeypatch,
+) -> None:
+    """#1381: an operator on a box without a checkout runs the backfill.
+
+    ``retire_residency_plans.py`` reaps plans whose consumer concluded before
+    ``PoolQueue.finish`` started retiring them.  The queue it names lives on
+    the shared mount, and the two boxes that most need it have no checkout, so
+    it is published rather than excluded.  The flat ``tools/`` spelling is the
+    one such a box runs, and its ``parents[2] / "src"`` bootstrap named the
+    parent of the generation store there; the entry point binds through
+    ``runtime_paths.generation_root`` instead.
+    """
+
+    assert "retire_residency_plans.py" in publish_runtime.FLEET_SCRIPTS
+    assert "retire_residency_plans.py" not in dict(publish_runtime.EXCLUDED)
+    monkeypatch.setattr(publish_runtime, "CHECKOUT", ROOT)
+    manifest = publish_runtime._publication_manifest()
+    name = "tools/retire_residency_plans.py"
+    assert name in manifest
+    assert "tools/fleet/retire_residency_plans.py" in manifest
+    source = publish_runtime._source_for(name)
+    assert source == ROOT / "tools" / "fleet" / "retire_residency_plans.py"
+    assert manifest[name] == publish_runtime._sha256(source)
+
+
 def test_a_staging_tree_is_not_a_generation(tmp_path, monkeypatch) -> None:
     """An interrupted publish can leave one behind, receipt and all.
 
