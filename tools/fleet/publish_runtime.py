@@ -160,6 +160,12 @@ FLEET_SCRIPTS = (
     # storage rather than executing it from this shared runtime.
     "resource_exec.py", "resource_broker.py", "resource_payload.py",
     "qualify_resource_scope.py", "install_resource_broker.sh",
+    # The host-local check an operator runs after provisioning the broker: it
+    # reads the installed needrestart main configuration alone to prove the
+    # exact-service deferral survived installation (#1378), and the box that
+    # needs that proof is the box whose running broker cannot be disturbed by
+    # materializing a checkout.
+    "qualify_needrestart_broker_deferral.py",
     "upgrade_client.py", "install_client_upgrader.sh", "install_supervisor_unit.sh",
 )
 #: Fleet tools deliberately left out of the generation, each with the reason.
@@ -299,8 +305,12 @@ CANARY_RECORD_SCHEMA = "prismaquant.prismabuild.canary_status.v1"
 #: ram tier's declared sizing from ``ram_tier_policy.json`` every cycle
 #: (#640), so a change to it is a publish rather than an ssh -- and a
 #: generation published without it discovers no ram tier, which is the
-#: honest answer for a runtime that predates the tier.
-FLEET_DATA = ("fleet_boxes.json", "ram_tier_policy.json")
+#: honest answer for a runtime that predates the tier.  The broker installer
+#: reads ``50-prismabuild-resource-broker.conf`` beside itself and provisions
+#: it as needrestart's exact-service restart exclusion (#1378), so a
+#: generation published without it would install an unprotected broker.
+FLEET_DATA = ("fleet_boxes.json", "ram_tier_policy.json",
+              "50-prismabuild-resource-broker.conf")
 
 # These originate at tools/, without a second tools/fleet/ spelling. The
 # torch helper is copied by consumers following the published profile guide.

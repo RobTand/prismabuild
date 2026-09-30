@@ -100,6 +100,16 @@ overwrite an active service: an upgrade must first drain submissions for that
 host, verify its attempts and job groups are idle, and stop the old service.
 Then install the new revision and verify the service and installed file hashes.
 Do not restart the broker merely because its process name matches a search.
+The installer also provisions
+`/etc/needrestart/conf.d/50-prismabuild-resource-broker.conf`, which defers
+exactly this unit from needrestart's automatic library-update restarts: a
+broker stop closes connected launchers' execution channels without their
+results (#1378). needrestart still reports the deferred restart, and it is owed
+at the next drain-owned stop described above; OS updates stay enabled and the
+deliberate upgrade path is unaffected. After provisioning (or after any
+configuration change), prove the installed configuration defers the broker with
+`tools/fleet/qualify_needrestart_broker_deferral.py`; it reads the installed
+main configuration alone and restarts nothing.
 
 After the initial installation, enroll the host with
 `tools/fleet/install_client_upgrader.sh`. The automatic updater closes admission

@@ -74,6 +74,16 @@ OOMScoreAdjust=-900
 WantedBy=multi-user.target
 UNIT
 chmod 0644 "$unit"
+# An OS library update must not queue this service for needrestart's automatic
+# restart: stopping the broker closes every connected launcher's execution
+# channel without its result, and a payload that then finishes is recorded
+# failed (#1378).  This provisions the exact-service exclusion; it restarts
+# nothing, and deliberate PrismaBuild upgrades are unchanged because they
+# drain the host's attempts and stop the service before this script will run.
+install -d -o root -g root -m 0755 /etc/needrestart/conf.d
+install -o root -g root -m 0644 \
+    "$source_dir/50-prismabuild-resource-broker.conf" \
+    /etc/needrestart/conf.d/50-prismabuild-resource-broker.conf
 systemctl daemon-reload
 systemctl enable --now prismabuild-resource-broker.service
 systemctl is-active prismabuild-resource-broker.service
