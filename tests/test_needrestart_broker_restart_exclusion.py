@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -199,4 +200,33 @@ def test_the_qualification_report_uses_the_independent_record_namespace(tmp_path
     installed.write_text(FIXTURE, encoding="utf-8")
     qualified = _qualify(installed)
     assert json.loads(qualified.stdout)["schema"] == \
+        "prismabuild.needrestart_broker_deferral.v1"
+
+
+@pytest.mark.parametrize("layout", ["tools", "tools/fleet"])
+def test_the_qualifier_bootstraps_its_generation_in_every_published_layout(tmp_path, layout) -> None:
+    """The qualifier's core import works from the flat and nested publisher
+    layouts (and so from a checkout), run from outside the tree with no
+    PYTHONPATH (#1386)."""
+
+    if shutil.which("perl") is None:
+        pytest.skip("needrestart configuration is Perl; perl is not installed here")
+    generation = tmp_path / "generation"
+    generation.mkdir()
+    (generation / "src").symlink_to(ROOT / "src", target_is_directory=True)
+    directory = generation / layout
+    directory.mkdir(parents=True)
+    for name in (QUALIFIER.name, "runtime_paths.py"):
+        shutil.copy2(FLEET / name, directory / name)
+    config = tmp_path / "needrestart-main.conf"
+    config.write_text(FIXTURE, encoding="utf-8")
+    environment = dict(os.environ)
+    environment.pop("PYTHONPATH", None)
+    environment["PYTHONNOUSERSITE"] = "1"
+    completed = subprocess.run(
+        [sys.executable, str(directory / QUALIFIER.name),
+         "--config", str(config), "--json"],
+        capture_output=True, text=True, check=False, cwd=tmp_path, env=environment)
+    assert completed.returncode == 1, completed.stderr
+    assert json.loads(completed.stdout)["schema"] == \
         "prismabuild.needrestart_broker_deferral.v1"

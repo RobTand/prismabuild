@@ -25,12 +25,18 @@ end; the only reads outside it are the CAS request and bundle.  Admission and
 measurement isolation come from the sealed PB action this runs under; this
 report supplies raw paired timings, phase costs, parity and controls, and makes
 no speedup claim by itself.
+
+The harness's own byte serialization and hashing comes from the digest owner
+beside this file (its source tree, loaded under a private name), never from
+the generation under test: a historical generation may predate those recipes,
+and it stays imported under its own name for checkout verification only
+(#1386).
 """
 from __future__ import annotations
 
 import argparse
 import fcntl
-import hashlib
+import importlib.util
 import json
 import math
 import os
@@ -59,23 +65,36 @@ def log(message: str) -> None:
     print(f"[e1 {time.strftime('%H:%M:%S')}] {message}", flush=True)
 
 
+def _load_source_digest_owner():
+    """The digest/serialization owner shipped beside this harness (#1386).
+
+    The generation under test may predate any profile the harness's own byte
+    work needs, so those recipes are loaded from this file's source tree
+    under a private name; ``core`` stays the object taken from the sealed
+    generation for checkout verification only.
+    """
+
+    path = (Path(__file__).resolve().parents[2] / "src" / "prismabuild"
+            / "core.py")
+    if not path.is_file():
+        raise E1Error(f"no source digest owner beside the harness: {path}")
+    spec = importlib.util.spec_from_file_location(
+        "e1_source_digest_owner", path)
+    if spec is None or spec.loader is None:
+        raise E1Error(f"cannot load the source digest owner: {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+#: The harness's own byte recipes, scoped to its source tree.
+DIGEST_OWNER = _load_source_digest_owner()
+
+
 def sha256_stream(path: Path, *, offset: int = 0, length: int | None = None) -> str:
-    digest = hashlib.sha256()
-    remaining = length
-    with open(path, "rb") as handle:
-        if offset:
-            handle.seek(offset)
-        while True:
-            want = 1 << 20 if remaining is None else min(1 << 20, remaining)
-            if want <= 0:
-                break
-            chunk = handle.read(want)
-            if not chunk:
-                break
-            digest.update(chunk)
-            if remaining is not None:
-                remaining -= len(chunk)
-    return digest.hexdigest()
+    """The harness's range hash, delegated to the source owner (#1386)."""
+
+    return DIGEST_OWNER.stream_sha256(path, offset=offset, length=length)
 
 
 def file_bytes(path: Path) -> int:
@@ -353,7 +372,7 @@ def build_entry(
                 pack_sha=pack_sha, idx_sha=sha256_stream(idx))
             manifest["created_unix"] = time.time()
             (staging / "manifest.json").write_text(
-                json.dumps(manifest, indent=1, sort_keys=True) + "\n")
+                DIGEST_OWNER._indented_lf_bytes(manifest).decode("utf-8"))
             os.chmod(pack, 0o444)
             os.chmod(idx, 0o444)
             entry.parent.mkdir(parents=True, exist_ok=True)
@@ -462,7 +481,7 @@ def repo_state(root: Path, core) -> dict[str, object]:
     return {
         "head": git_output("rev-parse", "HEAD").strip(),
         "refs": git_output("for-each-ref", "--format=%(refname) %(objectname)"),
-        "index": hashlib.sha256(git_output("ls-files", "-s").encode()).hexdigest(),
+        "index": DIGEST_OWNER.raw_sha256(git_output("ls-files", "-s").encode()),
         "status": git_output("status", "--porcelain"),
         "fetch_head": fetch_head.read_bytes().hex() if fetch_head.exists() else None,
         "identity": core.git_checkout_identity(root),
@@ -470,7 +489,12 @@ def repo_state(root: Path, core) -> dict[str, object]:
 
 
 def preflight(request: dict, tree: Path, core) -> dict[str, object]:
-    """The worker's own checkout proof, recorded rather than fatal."""
+    """The worker's own checkout proof, recorded rather than fatal.
+
+    Distinct from ``pbtest_pins.preflight``, the pytest wrapper's exit-code
+    pin gate; the collision is a registered exact-name exception
+    (same_name_distinct, #1386).
+    """
 
     try:
         core._verify_pbrun_checkout_identity(request, tree)
@@ -866,8 +890,9 @@ def main() -> int:
     work = work_parent / f"{WORK_PREFIX}{invocation}"
     os.mkdir(work, 0o700)  # exclusive: this invocation owns exactly this path
     (work / "OWNED-BY-E1").write_text(
-        json.dumps({"invocation": invocation, "action_key": item["action_key"],
-                    "created_unix": time.time()}, sort_keys=True) + "\n")
+        DIGEST_OWNER._sorted_lf_bytes(
+            {"invocation": invocation, "action_key": item["action_key"],
+             "created_unix": time.time()}).decode("utf-8"))
     checkout_root = work / "checkouts"
     checkout_root.mkdir(parents=True, exist_ok=True)
     cache_root = work / "cache"
@@ -1032,11 +1057,11 @@ def main() -> int:
         if marker.is_file():
             shutil.rmtree(work, ignore_errors=True)
 
-    text = json.dumps(report, indent=1, sort_keys=True)
+    text = DIGEST_OWNER._indented_lf_bytes(report).decode("utf-8")
     if args.report:
-        Path(args.report).write_text(text + "\n")
+        Path(args.report).write_text(text)
     print(REPORT_BEGIN)
-    print(text)
+    print(text, end="")
     print(REPORT_END)
     return 0
 
