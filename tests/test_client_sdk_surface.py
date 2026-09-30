@@ -51,7 +51,7 @@ def _no_outer_launch_identity(monkeypatch):
                  "PRISMABUILD_READER_HELPER_ROOT"):
         monkeypatch.delenv(name, raising=False)
 
-SDK_VERSION = 2
+SDK_VERSION = 3
 
 #: Each callable's parameters as ``[kind]name[=default]``: ``*`` keyword-only,
 #: no prefix positional-or-keyword.
@@ -105,11 +105,13 @@ SIGNATURES = {
     "canonical_sha256": "value",
     "bind_ephemeral_scratch": "queue, *root_env, *name, *claim_snapshot, *env=None",
     "ephemeral_scratch_path": "declaration",
+    "record_ephemeral_scratch_declarations": "queue, *claim_snapshot, *env=None",
 }
 
 CONSTANTS = {
-    "SDK_VERSION": 2,
+    "SDK_VERSION": 3,
     "EPHEMERAL_SCRATCH_SCHEMA_V1": "prismabuild.ephemeral_scratch.v1",
+    "SCRATCH_DECLARATION_RECORD_SCHEMA_V1": "prismabuild.scratch_declaration_record.v1",
     "READER_LEASE_TAG": "reader-lease-v1",
     "DATA_MANIFEST_MAX_BYTES": 64 * 1024 * 1024,
     "CLAIMED": "claimed",
@@ -147,6 +149,8 @@ REEXPORTS = {
     "LocalScratchError": local_scratch.LocalScratchError,
     "bind_ephemeral_scratch": local_scratch.bind_ephemeral_scratch,
     "ephemeral_scratch_path": local_scratch.ephemeral_scratch_path,
+    "SCRATCH_DECLARATION_RECORD_SCHEMA_V1": local_scratch.SCRATCH_DECLARATION_RECORD_SCHEMA_V1,
+    "record_ephemeral_scratch_declarations": local_scratch.record_ephemeral_scratch_declarations,
     "READER_LEASE_TAG": reader_lease.READER_LEASE_TAG,
     "injected_context": reader_lease.injected_context,
     "acquire_for": reader_lease.acquire_for,

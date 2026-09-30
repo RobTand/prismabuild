@@ -1333,9 +1333,10 @@ through its public interfaces. Those are the fleet tools (`pbrun`, `pbtest`,
 internal. It can change in any release, and a client that imports it takes on
 that risk alone.
 
-**Versioning.** `client.SDK_VERSION` names the contract; it is `2`.
-Version 2 adds nondestructive ephemeral scratch naming (Refs #1360); all
-version-1 exports, signatures and capability tags remain unchanged.
+**Versioning.** `client.SDK_VERSION` names the contract; it is `3`.
+Version 2 adds nondestructive ephemeral scratch naming; version 3 adds durable
+sealed declaration evidence before pool payload launch (Refs #1360). All
+version-1/2 exports, signatures and capability tags remain unchanged.
 `tests/test_client_sdk_surface.py` pins everything the SDK exports: the set of
 names, each callable's parameters (name, kind, default), each constant's value,
 and, for each re-exported name, that it is the internal object itself. An
@@ -1349,7 +1350,7 @@ generation. A client imports `prismabuild.client` from `<root>/src`, so the
 SDK and the runtime that launched the action are one generation. The variable
 names the generation root, never `src`; the client appends `src` itself.
 
-**The surface (version 2).**
+**The surface (version 3).**
 
 | Area | Names |
 |---|---|
@@ -14393,6 +14394,70 @@ required cleanup settles. None is implemented by this naming slice. The
 staged-read SM-01/INV-01/INV-07 targets remain owed for scratch finalization;
 this change promotes no requirement/deployment/workload axis in the ledger.
 No full scratch-lifetime capability is advertised, and #1360 remains open.
+
+### Durable scratch declaration evidence (SDK v3, Refs #1360)
+
+This extends the existing claim/lease/attempt evidence, not a directory-lifetime
+registration. `PRISMABUILD_EPHEMERAL_SCRATCH_DECLARATIONS` is an explicit sealed
+JSON list of exact `{root_env, name}` objects. Absent, empty text or `[]` is off;
+pair names never infer selection. Input is bounded to 16 KiB and 64 entries.
+Duplicate object keys, duplicate selections, malformed/unknown fields, invalid
+names and roots not in the sealed ROOT/MAX pairs refuse before payload launch.
+Persistent cache pairs remain unselected unless explicitly named. The input
+records naming intent only: it does not redirect TMPDIR, create directories,
+grant write permission or designate required cleanup.
+
+`client.record_ephemeral_scratch_declarations(queue, *, claim_snapshot,
+env=None)` returns the committed record, or `None` when off. The schema is
+`prismabuild.scratch_declaration_record.v1`, exported as
+`client.SCRATCH_DECLARATION_RECORD_SCHEMA_V1`. The exact fields are `schema`,
+`purpose: "declaration-only"`, `cleanup_required: false`, `claim_envelope` and
+`declarations` (unchanged SDK-v2 naming objects). The checked envelope records
+key, CAS root, worker, claimed host/time, publication, previous-attempt count,
+resources and the exact nonce/scope. Maximum canonical record size is 256 KiB.
+Purpose and cleanup flag are fixed writer output, not caller-selectable flags.
+
+The queue writer uses its existing per-key transition lock shared with finish,
+heartbeat and recovery. It requires a matching complete live/caller envelope,
+consistent lease and holder metadata, and the owning host. Available lease
+scope/intention identities must match the claim; contradictions refuse before
+any write. Every selection is validated and bound from the sealed request
+before the atomic claim write; unrelated live fields are preserved. Mirror
+repair merges only the declaration field into the existing verified lease:
+worker PID, child PID, heartbeat and execution/progress observations remain
+unchanged. An already-correct mirror is not written. A missing lease refuses;
+the owning worker must restore its heartbeat before replay. Identical calls
+are idempotent; conflicting evidence refuses without overwrite. A crash or failure after claim publication but before lease mirroring
+leaves the claim and charged reservation in place; replay repairs the mirror.
+Persistence failures propagate instead of reporting successful recording.
+File fsync/rename provides the existing process-crash storage semantics, not a
+new power-loss or cross-host NFS durability qualification.
+
+The real pool executor records selected declarations after constructing its
+own contained scope and before payload `Popen`. It passes that action's exact
+nonce/scope, not ambient outer-action identity. Opt-in without containment
+refuses; ordinary off actions preserve their launch behavior, including the
+existing proven-absent-request custom-launcher path. Malformed, unreadable or
+key-mismatched requests never become off. Scope startup retains its original
+key transition exclusion. Existing leases,
+pending payload-cleanup records and tombstones retain evidence. Central
+immutable attempt detail archives it; retry shaping strips the active record
+so a successor must bind its own attempt. Cancelled claim evidence is retained
+through the existing superseded-record archive before owner removal in both
+normal finish and cancellation reaping, including declarations committed after
+a withdrawal decision. No new
+ledger, reservation, cache, sweeper or runtime dispatcher is introduced.
+
+Matching metadata under exclusion is not broker/cgroup authenticity, real
+funding, local filesystem/inode/symlink proof or stopped-descendant authority.
+The record never authorizes deletion or settles cleanup. Ordinary finish/reap
+still follow their existing payload-cleanup and capacity-release contracts;
+this audit record does not hold charged capacity until directory removal.
+Required-cleanup registration must include the aggregate terminal/recovery
+barrier and authorized idempotent settlement, not an orphaned requirement that
+pins capacity forever. Full #1360 cleanup/recovery, unsafe-path checks,
+successor-safe destructive transitions, deployment and PQ acceptance remain
+open. No scratch-lifetime or cleanup capability is advertised or promoted.
 
 **Still open.**
 
