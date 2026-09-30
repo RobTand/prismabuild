@@ -249,6 +249,30 @@
   "sorted-json:tools/fleet/upgrade_client.py::Upgrader.report",
   "sorted-json:tools/fleet/upgrade_client.py::canonical_json"
  ],
+ "same_name_distinct": [
+  {
+   "modules": [
+    "tools/fleet/qualify_needrestart_broker_deferral.py"
+   ],
+   "name": "_fail",
+   "reason": "The qualifier's helper prints a refusal to stderr and returns process status 2; core._fail and dagster._fail raise their own contract errors inside library validation, and no caller crosses between those two contracts."
+  },
+  {
+   "modules": [
+    "src/prismabuild/container_images.py"
+   ],
+   "name": "_observe",
+   "reason": "container_images._observe probes the local Docker daemon's image inventory under one deadline budget and reports unknown or inventory; produced_spool._observe and stage_move._observe observe filesystem path identity and metadata versions, with different failure modes."
+  },
+  {
+   "modules": [
+    "tools/fleet/pbtest_pins.py",
+    "tools/maintenance/diag_811_e1_checkout_cache.py"
+   ],
+   "name": "preflight",
+   "reason": "pbtest_pins.preflight is the pytest wrapper's exit-code gate over reviewed dependency pins; diag_811's preflight records a checkout-identity proof as experiment data and maps a failure to ok=false, so the two share only the vocabulary word."
+  }
+ ],
  "same_name_helpers": {
   "_absent": [
    "src/prismabuild/pool_reconcile.py",

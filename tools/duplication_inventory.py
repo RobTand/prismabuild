@@ -15,12 +15,22 @@ alone):
   salts proposes candidates, and each candidate's Jaccard is then computed
   exactly.
 - **Same-name helpers.** A module-level function name defined in more than
-  one module.
+  one module. A collision whose contracts genuinely differ keeps its name
+  and is recorded in the baseline's ``same_name_distinct`` list as exact
+  ``(name, path)`` exceptions with a reason (#1386): the registry is policy,
+  not one of the shrink-only arrays; the guard refuses a stale or malformed
+  entry and a third path joining an exempt name, and every unregistered
+  definition is still a growth.
 - **Primitive digest sites** (PB #1328). Raw ``hashlib`` constructor calls
   and literal ``sort_keys=True`` JSON encodings, counted per enclosing
   scope with import aliases resolved. Sites inside :data:`DIGEST_OWNERS`
   are the sanctioned home and are not ratcheted; a new site anywhere else
-  fails the gate, and removing one lowers the baseline.
+  fails the gate, and removing one lowers the baseline.  New byte work uses
+  the owner's named profiles -- ``_canonical_bytes``/``_canonical_file_bytes``
+  (compact canonical JSON), ``_sorted_lf_bytes`` (sorted keys plus one LF),
+  ``_indented_lf_bytes`` (sorted keys, ``indent=1``, one LF),
+  ``canonical_sha256``, ``raw_sha256`` and ``stream_sha256`` -- never a new
+  raw recipe or a per-site exemption.
 
 ``tests/test_duplication_baseline.py`` holds the live result against
 ``tests/fixtures/duplication_baseline.json``, which only shrinks.
@@ -30,7 +40,10 @@ entries.
 A pair that must stay two implementations is recorded in the baseline's
 ``must_differ`` list with its reason: for example, an independent
 reference oracle, or a sealed module whose bytes are bound into receipts.
-``--write-baseline`` keeps those records for pairs that still exist.
+``--write-baseline`` keeps those records for pairs that still exist, applies
+the registered same-name exceptions when it filters the groups so the
+shrink-only map never absorbs them, and keeps registry rows whose names are
+still live.
 """
 from __future__ import annotations
 
@@ -56,8 +69,9 @@ ENTRY_POINTS = frozenset({"main", "_main", "parse_args", "_parse_args",
                           "build_parser", "_build_parser", "cli"})
 #: The sanctioned owner of digest recipes: ``core.py`` holds
 #: ``_canonical_bytes`` (the ``sort_keys`` JSON home),
-#: ``_canonical_file_bytes``, ``_sorted_lf_bytes``, ``canonical_sha256``
-#: and ``_decode_strict_json``. A new primitive ``hashlib`` or
+#: ``_canonical_file_bytes``, ``_sorted_lf_bytes``, ``_indented_lf_bytes``,
+#: ``canonical_sha256``, ``raw_sha256``, ``stream_sha256`` and
+#: ``_decode_strict_json``. A new primitive ``hashlib`` or
 #: sorted-JSON site inside it is expected -- that is where
 #: consolidation moves sites to -- so only sites OUTSIDE it are
 #: ratcheted. Never widen this to a whole second module: that exempts
@@ -224,12 +238,44 @@ def scan(root: Path = ROOT) -> dict:
     }
 
 
+def registered_same_name(old: dict) -> dict[str, set[str]]:
+    """Exact ``(name, path)`` same-name exceptions from a baseline (#1386)."""
+
+    names: dict[str, set[str]] = {}
+    for row in old.get("same_name_distinct", []):
+        names.setdefault(row["name"], set()).update(row["modules"])
+    return names
+
+
+def same_name_growth(live: dict, base: dict, exempt: dict) -> dict:
+    """The name/path deltas a group may not add: baseline members and exact
+    registered exceptions are allowed; every other definition is a growth."""
+
+    return {name: sorted(set(members) - set(base.get(name, ()))
+                         - exempt.get(name, set()))
+            for name, members in live.items()
+            if set(members) - set(base.get(name, ())) - exempt.get(name, set())}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--write-baseline", action="store_true")
     args = parser.parse_args()
     live = scan()
     old = json.loads(BASELINE.read_text(encoding="utf-8")) if BASELINE.exists() else {}
+    exempt = registered_same_name(old)
+    # The shrink-only map never absorbs a registered exception.
+    raw_groups = live["same_name_helpers"]
+    live["same_name_helpers"] = {}
+    for name, modules in raw_groups.items():
+        members = [module for module in modules
+                   if module not in exempt.get(name, set())]
+        if members:
+            live["same_name_helpers"][name] = members
+    live["same_name_distinct"] = [
+        row for row in old.get("same_name_distinct", [])
+        if any(module in raw_groups.get(row["name"], ())
+               for module in row["modules"])]
     pairs = {tuple(p) for p in live["near_duplicates"]}
     live["must_differ"] = [row for row in old.get("must_differ", [])
                            if tuple(row["pair"]) in pairs]

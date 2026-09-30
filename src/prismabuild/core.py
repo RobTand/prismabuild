@@ -701,10 +701,62 @@ def _sorted_lf_bytes(value: object) -> bytes:
     return (json.dumps(dict(value), sort_keys=True) + "\n").encode("utf-8")
 
 
+def _indented_lf_bytes(value: object) -> bytes:
+    """The diagnostics' pretty spelling: sorted, ``indent=1``, one LF (#1386).
+
+    Default ``ensure_ascii`` and ``allow_nan`` are kept exactly: this owns the
+    bytes the experiment reports and entry manifests already wrote, not a new
+    canonical form.
+    """
+
+    return (json.dumps(dict(value), sort_keys=True, indent=1)
+            + "\n").encode("utf-8")
+
+
 def canonical_sha256(value: object) -> str:
     """Hash canonical JSON without importing another repository module."""
 
     return hashlib.sha256(_canonical_bytes(value)).hexdigest()
+
+
+def raw_sha256(data: bytes) -> str:
+    """The raw-bytes digest: sha256 of the bytes themselves (#1386).
+
+    The canonical profiles hash the JSON encoding of a value; a caller whose
+    contract is the digest of bytes as read -- a host configuration file, a
+    command's output -- uses this so no tool spells its own ``hashlib``
+    recipe.
+    """
+
+    return hashlib.sha256(data).hexdigest()
+
+
+def stream_sha256(
+    path: str | Path, *, offset: int = 0, length: int | None = None
+) -> str:
+    """Chunked sha256 over a byte range of a file (#1386).
+
+    ``offset`` seeks before the first read and ``length`` bounds how many
+    bytes are hashed; a short file hashes what it has.  No size cap and no
+    mmap: the caller this exists for hashes multi-gigabyte Git pack sections.
+    """
+
+    digest = hashlib.sha256()
+    remaining = length
+    with open(path, "rb") as handle:
+        if offset:
+            handle.seek(offset)
+        while True:
+            want = 1 << 20 if remaining is None else min(1 << 20, remaining)
+            if want <= 0:
+                break
+            chunk = handle.read(want)
+            if not chunk:
+                break
+            digest.update(chunk)
+            if remaining is not None:
+                remaining -= len(chunk)
+    return digest.hexdigest()
 
 
 def _normalize_relative_path(value: object, *, where: str, dot_ok: bool) -> str:

@@ -100,6 +100,8 @@ import stat
 import subprocess
 import time
 
+from . import core
+
 #: How long one observed inventory answers the *offer*.  It bounds the
 #: placement surface's staleness and how often one box pays for a Docker read.
 INVENTORY_TTL_S = 30.0
@@ -883,6 +885,11 @@ def _observe(
     cannot satisfy a class. The store is observed from the same local daemon,
     never supplied by a requirement. It is lexical DockerRootDir evidence,
     not daemon, driver or filesystem attestation.
+
+    Not the filesystem observation of ``produced_spool._observe`` or
+    ``stage_move._observe``: this probes the local daemon's image inventory.
+    The collision is a registered exact-name exception (same_name_distinct,
+    #1386).
     """
 
     binary = docker or shutil.which("docker") or "/usr/bin/docker"
@@ -1302,7 +1309,7 @@ def _class_verdict_main(names: list[str]) -> int:
     except (OSError, UnicodeError, ValueError, RecursionError):
         result = _snapshot_verdict(args.klass, time.time())
         result["reason"] = "requirements_invalid"
-        print(json.dumps(result, sort_keys=True))
+        print(core._sorted_lf_bytes(result).decode("utf-8"), end="")
         return 2
     try:
         inventory = _read_offline_json(args.inventory)
@@ -1313,7 +1320,7 @@ def _class_verdict_main(names: list[str]) -> int:
                                      now=time.time(), max_age_s=args.max_age_s)
     except ValueError as error:
         parser.error(str(error))
-    print(json.dumps(result, sort_keys=True))
+    print(core._sorted_lf_bytes(result).decode("utf-8"), end="")
     return 0 if result["status"] == "satisfied" else 1
 
 

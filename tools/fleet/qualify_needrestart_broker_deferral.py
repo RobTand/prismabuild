@@ -18,15 +18,26 @@ the installer provisions the configuration.
 from __future__ import annotations
 
 import argparse
-import hashlib
-import json
 from pathlib import Path
 import shutil
 import stat
 import subprocess
 import sys
 
-SCHEMA = "prismaquant.prismabuild.needrestart_broker_deferral.v1"
+#: The published generation containing this tool supplies the digest owner,
+#: in each of the publisher's layouts (tools/, tools/fleet/) and from a
+#: checkout (#1386).  ``runtime_paths`` ships beside the tool in all three.
+sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
+from runtime_paths import generation_root  # noqa: E402
+
+sys.path.insert(0, str(generation_root(__file__) / "src"))
+from prismabuild import core  # noqa: E402
+
+#: A new record type uses the independent ``prismabuild.*`` namespace (#1250).
+#: This report type is absent from the observed current runtime generation,
+#: and the inspected history found no deployed reader, so there is no known
+#: deployed producer/reader contract to preserve (#1384).
+SCHEMA = "prismabuild.needrestart_broker_deferral.v1"
 DEFAULT_CONFIG = Path("/etc/needrestart/needrestart.conf")
 BROKER = "prismabuild-resource-broker.service"
 CONTROLS = (
@@ -61,6 +72,13 @@ for my $rc (@ARGV[1 .. $#ARGV]) {
 
 
 def _fail(message: str) -> int:
+    """The process-boundary refusal: prints and returns status 2.
+
+    Distinct from ``core._fail`` and ``dagster._fail``, which raise their
+    own contract errors inside library validation; the collision is a
+    registered exact-name exception (same_name_distinct, #1386).
+    """
+
     print(f"qualify_needrestart_broker_deferral: {message}", file=sys.stderr)
     return 2
 
@@ -105,14 +123,14 @@ def main(argv=None) -> int:
     report = {
         "schema": SCHEMA,
         "config": str(args.config),
-        "config_sha256": hashlib.sha256(raw).hexdigest(),
+        "config_sha256": core.raw_sha256(raw),
         "config_mode": f"{mode:04o}",
         "broker": broker,
         "controls": controls,
         "deferred": broker["deferred"],
     }
     if args.json:
-        print(json.dumps(report, sort_keys=True))
+        print(core._sorted_lf_bytes(report).decode("utf-8"), end="")
     else:
         print(f"config {report['config']} sha256={report['config_sha256']} "
               f"mode={report['config_mode']}")

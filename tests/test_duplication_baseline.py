@@ -10,11 +10,19 @@ existing group fails. So does a baseline entry that no longer exists: each
 consolidation shrinks the baseline in the same change, by running
 ``python tools/duplication_inventory.py --write-baseline``.
 
+A same-name collision whose contracts genuinely differ keeps its name and is
+recorded in the baseline's ``same_name_distinct`` list as an exact
+``(name, path)`` exception with its reason (#1386). The registry is policy,
+not a growth path: a stale or malformed row fails, a third module joining an
+exempt name fails, and the shrink-only map never absorbs an exempt path.
+
 The baseline also ratchets primitive digest sites (PB #1328): a new raw
 ``hashlib`` constructor or literal ``sort_keys=True`` JSON encoding outside
 ``src/prismabuild/core.py`` -- the home of ``_canonical_bytes``,
-``canonical_sha256`` and ``_decode_strict_json`` -- fails, and consolidating
-a site onto the owner lowers the baseline the same way.
+``_canonical_file_bytes``, ``_sorted_lf_bytes``, ``_indented_lf_bytes``,
+``canonical_sha256``, ``raw_sha256``, ``stream_sha256`` and
+``_decode_strict_json`` -- fails, and consolidating a site onto one of those
+named profiles lowers the baseline the same way.
 """
 from __future__ import annotations
 
@@ -67,18 +75,58 @@ def test_near_duplicate_pairs_only_shrink():
 
 
 def test_same_name_helpers_only_shrink():
+    base = _baseline()
     live = inventory.scan()["same_name_helpers"]
-    base = _baseline()["same_name_helpers"]
-    grown = {n: sorted(set(m) - set(base.get(n, ()))) for n, m in live.items()
-             if set(m) - set(base.get(n, ()))}
+    grown = inventory.same_name_growth(live, base["same_name_helpers"],
+                                       inventory.registered_same_name(base))
     assert not grown, (
         f"helpers defined again in another module {grown}: import the existing "
-        "one (PB #1328)")
-    shrunk = {n: sorted(set(m) - set(live.get(n, ()))) for n, m in base.items()
+        "one, or register the exact name and path with its reason in "
+        "same_name_distinct (PB #1328, #1386)")
+    shrunk = {n: sorted(set(m) - set(live.get(n, ())))
+              for n, m in base["same_name_helpers"].items()
               if set(m) - set(live.get(n, ()))}
     assert not shrunk, (
         f"baseline entries gone {shrunk}: shrink the baseline with "
         "tools/duplication_inventory.py --write-baseline")
+
+
+def test_same_name_distinct_records_are_exact_live_paths_with_reasons():
+    """A registered collision names live paths, explains itself, and is not
+    already allowed by the shrink-only baseline (#1386)."""
+
+    live = inventory.scan()["same_name_helpers"]
+    base = _baseline()
+    seen: set[tuple[str, str]] = set()
+    for row in base.get("same_name_distinct", []):
+        assert set(row) == {"name", "modules", "reason"}, row
+        name, modules, reason = row["name"], row["modules"], row["reason"]
+        assert isinstance(name, str) and isinstance(reason, str), row
+        assert isinstance(modules, list) and modules, row
+        assert all(isinstance(module, str) for module in modules), row
+        assert len(reason.split()) >= 8, f"{name} needs a real reason"
+        assert live.get(name), (
+            f"same_name_distinct names a group the code no longer defines: {name}")
+        for module in modules:
+            assert module in live[name], (
+                "same_name_distinct names a path that no longer defines "
+                f"{name}: {module}")
+            assert module not in base["same_name_helpers"].get(name, ()), (
+                f"same_name_distinct lists {module} for {name}, which the "
+                "shrink-only baseline already allows")
+            assert (name, module) not in seen, (
+                f"same_name_distinct repeats {name} {module}")
+            seen.add((name, module))
+
+
+def test_a_third_definition_of_an_exempt_name_is_still_a_growth():
+    """Registering one path never whitelists the name (#1386)."""
+
+    live = {"_observe": ["a.py", "b.py", "c.py", "d.py"]}
+    base = {"_observe": ["a.py", "b.py"]}
+    exempt = {"_observe": {"c.py"}}
+    assert inventory.same_name_growth(live, base, exempt) == {
+        "_observe": ["d.py"]}
 
 
 def test_must_differ_pairs_are_live_and_give_a_reason():

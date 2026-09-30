@@ -91,7 +91,11 @@ def check_pins() -> None:
 
 
 def preflight() -> int:
-    """Check every reviewed pin; ``1`` after saying why, ``0`` when all hold."""
+    """Check every reviewed pin; ``1`` after saying why, ``0`` when all hold.
+
+    Distinct from the diagnostic harness's data-returning ``preflight``
+    (same_name_distinct, #1386); this one is the pytest wrapper's gate.
+    """
     try:
         check_pins()
     except ValueError as exc:
