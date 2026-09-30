@@ -895,12 +895,12 @@ def _numa_node_ids(text: str) -> tuple[int, ...] | None:
     return tuple(sorted(nodes))
 
 
-def memory_numa_nodes(root: str = MEMORY_NUMA_ROOT) -> tuple[int, ...] | None:
-    """Fresh complete memory-node membership, or unknown (never single-node).
+def _memory_numa_memtotal_bytes(root: str) -> dict[int, int] | None:
+    """One membership-bracketed snapshot of every memory node's byte total.
 
     Kernel has_memory is independent of CPU presence/affinity. Every member
     must have readable positive sysfs MemTotal; membership must stay unchanged
-    around that read. This identifies nodes, not per-node capacity admission.
+    around that read. Unknown evidence never proves a single-node host.
     """
 
     directory = Path(root)
@@ -909,6 +909,7 @@ def memory_numa_nodes(root: str = MEMORY_NUMA_ROOT) -> tuple[int, ...] | None:
         nodes = _numa_node_ids(before)
         if not nodes:
             return None
+        memtotal_bytes: dict[int, int] = {}
         for node in nodes:
             text = (directory / f"node{node}" / "meminfo").read_text()
             totals = re.findall(
@@ -916,10 +917,18 @@ def memory_numa_nodes(root: str = MEMORY_NUMA_ROOT) -> tuple[int, ...] | None:
                 text, re.MULTILINE)
             if len(totals) != 1 or int(totals[0]) <= 0:
                 return None
+            memtotal_bytes[node] = int(totals[0]) * 1024
         after = (directory / "has_memory").read_text().strip()
     except (OSError, UnicodeError):
         return None
-    return nodes if before == after else None
+    return memtotal_bytes if before == after else None
+
+
+def memory_numa_nodes(root: str = MEMORY_NUMA_ROOT) -> tuple[int, ...] | None:
+    """Fresh complete memory-node IDs, retaining the tuple-returning API."""
+
+    totals = _memory_numa_memtotal_bytes(root)
+    return None if totals is None else tuple(totals)
 
 
 def _ram_mount_interleaved(options: list[str] | None,
@@ -1056,6 +1065,8 @@ def _ram_numbers(*, ceiling_bytes: int, mem_total: int | None,
         # is larger: a floor the box is already above is not a floor.
         "arc_floor_bytes": arc_floor,
         "system_reserve_bytes": reserve,
+        # The node share uses these same ARC/reserve terms, without rows.
+        "node_required_numerator_bytes": window + committed + reserve,
         "rows_held_bytes": rows_held,
         "allowed_ceiling_bytes": allowed,
         # What the window may grow to: the roof's budget less the host
@@ -1070,12 +1081,17 @@ def ram_admission(*, ceiling_bytes: int, mount_options: list[str] | None,
                   policy: Mapping[str, object], mem_total: int | None,
                   arc: Mapping[str, int],
                   rows_held_gib: int | None = None,
-                  memory_nodes: tuple[int, ...] | None = None) -> dict[str, object]:
+                  memory_nodes: tuple[int, ...] | None = None,
+                  node_memtotal_bytes: Mapping[int, int] | None = None,
+                  ) -> dict[str, object]:
     """Whether the warm path may admit against this mount, and why not.
 
     Existing numeric/noswap refusals precede NUMA placement checks. Complete
     ``memory_nodes`` evidence is required; unknown topology never proves a
     single-node host. Multi-node mounts must interleave over every memory node.
+    After placement, complete positive integer ``node_memtotal_bytes`` facts
+    must prove the configured window/ARC/reserve share fits each node total.
+    This does not assign worker or ARC pages to nodes or prove free headroom.
 
     The existing refusals, each fail-closed and naming the numbers:
 
@@ -1143,6 +1159,28 @@ def ram_admission(*, ceiling_bytes: int, mount_options: list[str] | None,
             and not _ram_mount_interleaved(mount_options, memory_nodes)):
         return {"admissible": False, "reason": "ram_mount_not_interleaved",
                 **numbers}
+    count = len(memory_nodes)
+    numbers.update(memory_node_count=count, node_memtotal_bytes=None,
+                   failing_memory_node=None)
+    if (not isinstance(node_memtotal_bytes, Mapping)
+            or len(node_memtotal_bytes) != count
+            or any(type(node) is not int for node in node_memtotal_bytes)
+            or set(node_memtotal_bytes) != set(memory_nodes)
+            or any(type(total) is not int or total <= 0
+                   for total in node_memtotal_bytes.values())):
+        return {"admissible": False, "reason": "ram_numa_memtotal_unreadable",
+                **numbers}
+    numbers["node_memtotal_bytes"] = {
+        str(node): node_memtotal_bytes[node] for node in memory_nodes}
+    numerator = numbers["node_required_numerator_bytes"]
+    assert isinstance(numerator, int)
+    for node in memory_nodes:
+        # Cross-multiply the issue's share: no fractional-byte rounding.
+        if numerator > node_memtotal_bytes[node] * count:
+            numbers["failing_memory_node"] = node
+            return {"admissible": False,
+                    "reason": "ram_window_exceeds_node_memtotal_floor",
+                    **numbers}
     return {"admissible": True, "reason": None, **numbers}
 
 
@@ -1178,7 +1216,9 @@ def ram_tier(policy: Mapping[str, object], *, host: str,
     epoch = ensure_ram_epoch(mountpoint, host=host, now=now)
     arc = dict(stats) if stats is not None else read_arcstats(arcstats_path)
     mem_total = meminfo_total_bytes(meminfo_path)
-    memory_nodes = memory_numa_nodes(memory_numa_root)
+    node_memtotal_bytes = _memory_numa_memtotal_bytes(memory_numa_root)
+    memory_nodes = (None if node_memtotal_bytes is None
+                    else tuple(node_memtotal_bytes))
     try:
         sampled = statvfs(mountpoint)
         ceiling = int(sampled.f_blocks) * int(sampled.f_frsize)
@@ -1196,13 +1236,15 @@ def ram_tier(policy: Mapping[str, object], *, host: str,
         admission = {**ram_admission(ceiling_bytes=ceiling, mount_options=options,
                                      policy=policy, mem_total=mem_total, arc=arc,
                                      rows_held_gib=rows_held_gib,
-                                     memory_nodes=memory_nodes),
+                                     memory_nodes=memory_nodes,
+                                     node_memtotal_bytes=node_memtotal_bytes),
                      "admissible": False, "reason": "ram_epoch_unwritable"}
     else:
         admission = ram_admission(ceiling_bytes=ceiling, mount_options=options,
                                   policy=policy, mem_total=mem_total, arc=arc,
                                   rows_held_gib=rows_held_gib,
-                                  memory_nodes=memory_nodes)
+                                  memory_nodes=memory_nodes,
+                                  node_memtotal_bytes=node_memtotal_bytes)
     return {
         "schema": TIER_RECORD_SCHEMA_V1,
         "tier": "ram",
