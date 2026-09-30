@@ -1571,13 +1571,15 @@ unreported final population.
 
 `pb-cpu` is the PrismaBuild infrastructure test environment. Its presence on a
 worker does not mean that arbitrary project dependencies are installed there.
-For PrismaQuant CPU tests on the current x86 fleet, use the existing project
-interpreter `/home/rob/venvs/pq-cpu312/bin/python`:
+For project CPU tests, use an interpreter qualified against that project's
+current dependency and runtime pins. Resolve its absolute path on eligible
+workers before submitting. The path below is illustrative, not a qualified
+PrismaQuant environment:
 
 ```bash
 python3 /mnt/shared/prismabuild-fleet/repo/tools/pbtest.py \
   --checkout /path/to/prismaquant \
-  --python /home/rob/venvs/pq-cpu312/bin/python --tag x86 \
+  --python /path/to/project-venv/bin/python --tag x86 \
   --workers-per-shard 2 --threads-per-shard 1 --mem-gb 6 \
   tests/test_shipcard_git_provenance.py tests/test_format_registry.py
 ```
