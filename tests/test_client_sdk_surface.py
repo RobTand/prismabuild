@@ -30,8 +30,15 @@ from pathlib import Path
 import pytest
 
 import prismabuild.client as client
+from prismabuild import (
+    local_scratch,
+    pool,
+    produced_output,
+    reader_lease,
+    residency_map,
+    storage_tiers,
+)
 from prismabuild import core as pb
-from prismabuild import pool, produced_output, reader_lease, residency_map, storage_tiers
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -44,7 +51,7 @@ def _no_outer_launch_identity(monkeypatch):
                  "PRISMABUILD_READER_HELPER_ROOT"):
         monkeypatch.delenv(name, raising=False)
 
-SDK_VERSION = 1
+SDK_VERSION = 2
 
 #: Each callable's parameters as ``[kind]name[=default]``: ``*`` keyword-only,
 #: no prefix positional-or-keyword.
@@ -96,10 +103,13 @@ SIGNATURES = {
     "write_residency_map": "path, mapping",
     "cas_receipt_self_check": "receipt",
     "canonical_sha256": "value",
+    "bind_ephemeral_scratch": "queue, *root_env, *name, *claim_snapshot, *env=None",
+    "ephemeral_scratch_path": "declaration",
 }
 
 CONSTANTS = {
-    "SDK_VERSION": 1,
+    "SDK_VERSION": 2,
+    "EPHEMERAL_SCRATCH_SCHEMA_V1": "prismabuild.ephemeral_scratch.v1",
     "READER_LEASE_TAG": "reader-lease-v1",
     "DATA_MANIFEST_MAX_BYTES": 64 * 1024 * 1024,
     "CLAIMED": "claimed",
@@ -128,10 +138,15 @@ PATTERNS = {
     "ENV_NAME_PATTERN": r"[A-Za-z_][A-Za-z0-9_]*\Z",
 }
 
-TYPES = {"PoolQueue": pool.PoolQueue, "ResidencyMapError": residency_map.ResidencyMapError}
+TYPES = {"PoolQueue": pool.PoolQueue, "ResidencyMapError": residency_map.ResidencyMapError,
+         "LocalScratchError": local_scratch.LocalScratchError}
 
 #: Names the SDK re-exports unchanged, with the internal object each must be.
 REEXPORTS = {
+    "EPHEMERAL_SCRATCH_SCHEMA_V1": local_scratch.EPHEMERAL_SCRATCH_SCHEMA_V1,
+    "LocalScratchError": local_scratch.LocalScratchError,
+    "bind_ephemeral_scratch": local_scratch.bind_ephemeral_scratch,
+    "ephemeral_scratch_path": local_scratch.ephemeral_scratch_path,
     "READER_LEASE_TAG": reader_lease.READER_LEASE_TAG,
     "injected_context": reader_lease.injected_context,
     "acquire_for": reader_lease.acquire_for,
@@ -397,7 +412,12 @@ def test_validate_residency_map_accepts_and_refuses_as_pb_does(tmp_path: Path):
     good = {"schema": client.RESIDENCY_MAP_SCHEMA_V1, "tier_id": "ssd",
             "stage_root": stage, "manifest_sha256": "a" * 64, "leads": ["b" * 64],
             "generation": 1, "entries": {"0:/pool/a": entry}}
-    assert client.validate_residency_map(good)["entries"]["0:/pool/a"]["bytes"] == 4
+    checked = client.validate_residency_map(good)
+    entries = checked["entries"]
+    assert isinstance(entries, dict)
+    entry = entries["0:/pool/a"]
+    assert isinstance(entry, dict)
+    assert entry["bytes"] == 4
     with pytest.raises(client.ResidencyMapError):
         client.validate_residency_map({**good, "unknown": 1})
     with pytest.raises(client.ResidencyMapError):

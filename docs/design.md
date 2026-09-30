@@ -1333,7 +1333,9 @@ through its public interfaces. Those are the fleet tools (`pbrun`, `pbtest`,
 internal. It can change in any release, and a client that imports it takes on
 that risk alone.
 
-**Versioning.** `client.SDK_VERSION` names the contract; it is `1`.
+**Versioning.** `client.SDK_VERSION` names the contract; it is `2`.
+Version 2 adds nondestructive ephemeral scratch naming (Refs #1360); all
+version-1 exports, signatures and capability tags remain unchanged.
 `tests/test_client_sdk_surface.py` pins everything the SDK exports: the set of
 names, each callable's parameters (name, kind, default), each constant's value,
 and, for each re-exported name, that it is the internal object itself. An
@@ -1347,7 +1349,7 @@ generation. A client imports `prismabuild.client` from `<root>/src`, so the
 SDK and the runtime that launched the action are one generation. The variable
 names the generation root, never `src`; the client appends `src` itself.
 
-**The surface (version 1).**
+**The surface (version 2).**
 
 | Area | Names |
 |---|---|
@@ -1356,6 +1358,7 @@ names the generation root, never `src`; the client appends `src` itself.
 | The queue | `PoolQueue`, `CLAIMED`, `RESIDENCY`, `POOL_OUTCOME_SCHEMA_V1`, `read_claimed_record` |
 | Produced output | `declared_template`, `validate_template`, `bind_declared_instance`, `declare_instance`, `admit_instance`, `validate_instance`, `instance_dir`, `checked_instance_maxima`, `owner_demand_terms`, `admit_funded_window`, `refill_window`, `require_prewrite`, `abort_prewrite`, `validate_descriptor`, `output_manifest_sha256`, `batch_namespace`, `output_fragment_root`, `publish_prepaid_batch`, `commit_batch`, `commit_origin_batch`, `retire_batch`, `reclaim_origin`, `recover_batches`, `due_mover_rows`, `materialization_state`, `ensure_batch_materialized`, `safe_release_instance`, `release_produced_instance`, `TEMPLATE_SCHEMA_V1`, `DESCRIPTOR_SCHEMA_V2` |
 | Residency maps | `validate_residency_map`, `read_residency_map`, `read_residency_fragments`, `compose_residency_map`, `write_residency_map`, `residency_map_key`, `ResidencyMapError`, `RESIDENCY_MAP_ENV`, `RESIDENCY_MAP_SCHEMA_V1`, `RESIDENCY_MAP_FRAGMENT_SCHEMA_V1`, `RESIDENCY_LANDING_SCHEMA_V1`, `LANDING_STATES` |
+| Ephemeral scratch naming (no lifetime capability) | `bind_ephemeral_scratch`, `ephemeral_scratch_path`, `EPHEMERAL_SCRATCH_SCHEMA_V1`, `LocalScratchError` |
 | Receipts | `cas_receipt_self_check`, `RECEIPT_REFUSALS`, `CAS_RECEIPT_SCHEMA_V3`, `WORKER_ATTESTATION_SCHEMA_V2` |
 | Identifiers and digests | `ID_PATTERN`, `ENV_NAME_PATTERN`, `canonical_sha256` |
 | Liveness | `TIER_LOOP_LIVENESS_S`, `TIER_RECORD_SCHEMA` |
@@ -1397,7 +1400,9 @@ that are not internal: `produced_output.batch_record` and `batch_records`
 `progress-v1`, and `decomposition-v1` (`pbcampaign` can decompose a logical
 request, #517/#518). A client asks for a capability by tag, never by probing
 files or function names. The surface test fails if a tag is advertised
-without the code behind it.
+without the code behind it. The SDK's scratch additions are naming only:
+`CAPABILITIES` does **not** advertise `scratch-lifetime-v1` or any scratch
+cleanup capability. SDK version 2 is not evidence of a deployed finalizer.
 
 ### Generated files in a pbrun checkout
 
@@ -14287,7 +14292,107 @@ seals exactly the demand it sealed before, and `pbrun` does not import the
 module. PrismaBuild charges the bound; it does not check at run time that a
 root sits on the declared `local_disk` filesystem, or that the action stays
 under its ceiling. PrismaQuant's launcher and the action's own byte bound do
-both.
+both. ROOT/MAX reservation is **not filesystem quota enforcement**; arbitrary
+library/compiler-cache writes are not bounded by PB. Producers remain responsible
+for their own write bounds and local-filesystem checks.
+
+### Nondestructive ephemeral scratch namespace (Refs #1360)
+
+This is a public SDK v2 **naming/declaration slice**, not the scratch lifetime
+contract requested by #1360. It extends the existing sealed ROOT/MAX mechanism;
+it introduces no ledger, allocation, dispatcher, cache or sweeper. Queue
+metadata is read, but no queue record is written and no directory is created,
+registered or deleted. Scratch/cache directories are not inspected or traversed;
+no charged capacity is released or retained on these helpers' behalf.
+
+`client.bind_ephemeral_scratch(queue, *, root_env, name, claim_snapshot,
+env=None)` returns an ephemeral JSON declaration or raises `LocalScratchError`.
+It reads the selected pair from the key-validated sealed CAS request, never
+from mutable launch ROOT/MAX variables. The sealed `params.demand.spool_gb`
+must be a positive integer covering the sum of the existing per-pair rounded
+reservations; the claim's `resources.spool_gb` must equal that sealed demand.
+Extra sealed spool demand, for example a produced-output spool window, remains
+charged by its existing mechanism. This comparison does **not** verify actual
+ledger token funding or allocate another reservation.
+
+Binding requires a complete snapshot and currently readable `claimed/` row
+with identical action key, CAS root, worker, claimed host/time, publication,
+integer `attempts`, resources and control action/nonce/scope metadata. The
+launch `PRISMABUILD_ACTION_KEY/NONCE/SCOPE` must match that control, including
+the existing broker scope-name formula. Missing halves and mismatches refuse;
+there is no nonce/host/generation default. Host resolution uses the queue's
+existing holder resolver and refuses contradictory committed-holder evidence.
+The claim is rechecked after the request/holder reads. These shared reads are
+**not an atomic snapshot**, do not acquire a lifecycle lock, and cannot rule
+out a later successor or jointly stale observations.
+
+Matching these fields proves **metadata consistency only**, not that a broker
+issued the current control, that this process is a member of a live cgroup,
+that the owner is still running, or that descendants are contained/stopped.
+The fixture controls used in tests establish no such runtime proof. The
+numeric claim `attempts` is the count of prior accounted executions (the
+pending execution is ordinarily `attempts + 1`); it participates in snapshot
+matching but is not the namespace identity. The 32-hex nonce plus its checked
+scope name identifies the attempted execution. This helper does not read or
+verify immutable completed-attempt outcomes.
+
+The exact declaration schema is `prismabuild.ephemeral_scratch.v1`
+(`client.EPHEMERAL_SCRATCH_SCHEMA_V1`). Fields are:
+
+- `schema`, `lifetime: "ephemeral"`;
+- `root_env`, `max_env`, `root`, `max_bytes`, `name`;
+- `owner_action_key`, `owner_published_unix`, `owner_host`;
+- `owner_attempt: {nonce, scope_id}`.
+
+`max_bytes` is the **whole selected pair's shared reservation ceiling**, not
+an extra per-child allowance. Multiple child names do not multiply that bound.
+The root is a canonical absolute POSIX path other than `/` (double-leading
+slash is refused). `name` is one ASCII component matching
+`[A-Za-z0-9][A-Za-z0-9._-]{0,127}`; paths, traversal, separators and blank names
+refuse. The host is one ASCII component matching
+`[A-Za-z0-9][A-Za-z0-9._-]{0,254}`. Publication is finite numeric, not bool;
+nonce/key are lowercase hex; unknown or missing declaration fields refuse.
+Returned publication is normalized to float, as the existing
+submission-generation naming recipe does.
+
+`client.ephemeral_scratch_path(declaration)` validates the declaration and
+purely derives:
+
+```text
+<root>/prismabuild-ephemeral/<host-digest>/<action-key>/<submission-generation-digest>/<nonce>/<name>
+```
+
+`host-digest` is PB canonical SHA-256 of `{"host": owner_host}`.
+`submission-generation-digest` is the existing `PoolQueue.attempt_generation`
+recipe: canonical SHA-256 of `{"action_key": owner_action_key,
+"published_unix": float(owner_published_unix)}`. It is the queue publication
+generation, **not** the executing runtime's generation. Different hosts,
+publication generations or execution nonces have disjoint lexical namespaces;
+same declaration gives the same path, including after a JSON roundtrip.
+The scope need not be another path component because its formula is checked
+against the action key and nonce.
+
+The path reader does **not** authenticate a stored declaration or recheck a
+live claim. Neither API establishes filesystem locality, inode identity,
+symlink safety, creation permission or deletion authority. In particular, a
+symlink can make lexically distinct paths alias physical bytes: these helpers
+do not inspect it. A path must never be used as permission to remove a tree.
+
+Persistent triton/inductor caches must use **explicitly separate ROOT/MAX
+pairs and roots**, outside the ephemeral child namespace. Only the pair the
+caller explicitly selects as ephemeral is named here; pair names do not infer
+lifetime. Persistent cache directories/files are not inspected or modified.
+Produced-output release/recovery APIs are not arbitrary scratch finalizers.
+
+**Remaining #1360 gates:** durable registration to the exact owner host,
+publication generation and execution attempt; actual containment and local
+path/inode/symlink proof before deletion; cleanup after success, failure,
+killed launcher and worker recovery; idempotent pending-error retry; successor
+isolation during destructive transitions; and holding charged capacity until
+required cleanup settles. None is implemented by this naming slice. The
+staged-read SM-01/INV-01/INV-07 targets remain owed for scratch finalization;
+this change promotes no requirement/deployment/workload axis in the ledger.
+No full scratch-lifetime capability is advertised, and #1360 remains open.
 
 **Still open.**
 
