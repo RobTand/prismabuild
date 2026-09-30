@@ -1,0 +1,29 @@
+{
+  "schema": "pb.staged_read_acceptance.v1",
+  "step": "merge",
+  "contract_commit": "37b72cc431b876b6dc4889fa1f5889dd1656b97d",
+  "ledger_commit": "e353e3778a354facbccb930c2f35e734302d4f71",
+  "scope": ["RNG-02"],
+  "prelaunch": {"status": "not-this-step"},
+  "merge": {
+    "branch": "sol/issues-ts-811-reader-10",
+    "issue": "https://github.com/RobTand/prismabuild/issues/811",
+    "validated_repairs": [
+      {
+        "id": "RNG-02",
+        "actions": ["d84185d95f05deac99425fd185e15135c46235f8ce8f9d3f7d80fb03cfb98c3d"],
+        "outcome": "Experimental copy_or_reflink retains its selected Linux source object during unsupported-ioctl fallback, through the held descriptor's /proc/self/fd path. CPU-only action done/exit0 on sparky, one execution attempt, 24 passed/0 failed/0 skipped; 24 collected/ran/outcomes, no gaps, duplicated collection or missing files. Receipt 8f77597e46062db159bba93bad4e06bcd30707f563733bda9aff7c72cbddcf51; result 6575 bytes/SHA-256 7d8233a3cfc068995506b3b0aec8f0f3631021840365116cec1a509f502b8eee; worker claim e62d5088d56be8a598f6c6b8c79002870c4b13e1c5e1c8dd1a1e8f575c70a848 passes all nine local-claim checks including payload hash. Full worker attestation not independently checked. Injected ioctl outcomes and real tiny-file pathname races only, not real Git-pack, reflink-kernel, production-lease or performance qualification. Code and test bytes were tested; these acceptance documents were added afterward."
+      }
+    ],
+    "remaining_gaps": [
+      "RNG-02: only retention within one experimental copy is tested. Atomic acquisition against the earlier verified cache identity, production refs, async/mmap lifetime and ABA-fenced lease acquisition remain outside this repair. Global ledger axes unchanged.",
+      "SM-03/INV-07: no production lease, retirement, serialization or charge-ordering implementation or acceptance.",
+      "PB #811: production cache integration, crash recovery and matched deployed claim-path before/after performance acceptance remain open.",
+      "No runtime deployment, default, sealed input, certification or power-loss-durability claim. Linux /proc/self/fd dependency only; no other platform qualified."
+    ],
+    "note": "RED f8d34093130cb065db375551993b608f9b6f788899034f4ccfae5d3343cad9a9 failed/exit1 with two replacement/unlink failures, two passing method controls and zero skips before this repair; four collected/ran/outcomes without gaps. It has no successful CAS receipt or local-result claim. Existing destination digest checks already refused changed bytes; this does not establish prior wrong-artifact acceptance. Both submissions used the coordinator's explicit PB-self-test GB10/pb-cpu route, one shard, two worksteal workers, native1, CPU2/memory2GiB, priority-10 and 600s bounds, and started with WINDOW_ACTIVE absent."
+  },
+  "deploy": {"status": "not-this-step"},
+  "complete": {"status": "not-this-step"},
+  "exceptions": []
+}
