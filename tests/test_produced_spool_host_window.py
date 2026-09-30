@@ -7,8 +7,8 @@ opt-in, the owner's window is a ``spool_gb`` reservation against the budget
 the box declares with ``worker_loop.py --spool-gb``, charged through the
 ordinary host ledger at claim.
 
-Both switches default off.  These tests pin the off path first -- a worker
-declares exactly what it declared before, a producer checks nothing new --
+Both switches default off. These tests pin the spool off path first -- a
+worker declares no spool (metadata is explicitly disabled), a producer checks nothing new --
 and then the on path: the host kind passes through the observed offer and
 the claim unchanged, a claim without enough of it is refused, and a producer
 whose claimed row did not reserve its window refuses to spool.
@@ -69,18 +69,20 @@ def test_a_switch_that_is_not_zero_or_one_is_refused(switch):
 # -- the worker's declaration -------------------------------------------------
 
 
-def test_a_worker_without_the_flag_declares_exactly_what_it_did_before():
+def test_a_worker_without_the_spool_flag_declares_no_spool_budget():
     args = worker_loop.build_parser().parse_args([])
     assert args.spool_gb == 0
-    assert worker_loop.declared_host_capacity(args, cores=10) == {"mem_gb": 96, "cpu": 10}
+    assert worker_loop.declared_host_capacity(args, cores=10) == {
+        "mem_gb": 96, "cpu": 10, "disk_metadata": 0}
     args = worker_loop.build_parser().parse_args(["--mem-gb", "40", "--spool-gb", "0"])
-    assert worker_loop.declared_host_capacity(args, cores=3) == {"mem_gb": 40, "cpu": 3}
+    assert worker_loop.declared_host_capacity(args, cores=3) == {
+        "mem_gb": 40, "cpu": 3, "disk_metadata": 0}
 
 
 def test_a_worker_with_the_flag_declares_its_spool_budget():
     args = worker_loop.build_parser().parse_args(["--spool-gb", "64"])
     assert worker_loop.declared_host_capacity(args, cores=10) == {
-        "mem_gb": 96, "cpu": 10, KIND: 64}
+        "mem_gb": 96, "cpu": 10, "disk_metadata": 0, KIND: 64}
 
 
 def test_a_negative_spool_budget_is_an_argument_error(capsys):

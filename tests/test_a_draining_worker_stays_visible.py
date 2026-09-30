@@ -110,7 +110,7 @@ def test_a_draining_loop_keeps_a_fresh_named_offer_and_reopens(tmp_path, monkeyp
     # Identity and capability are preserved...
     assert offer["host"] == HOST and HOST in offer["tags"] and "x86" in offer["tags"]
     assert offer["has_gpu"] is False
-    assert offer["capacity"] == {"gpu": 0, "cpu": 1, "mem_gb": 2}
+    assert offer["capacity"] == {"gpu": 0, "cpu": 1, "mem_gb": 2, "disk_metadata": 0}
     # ...and the live figure offers nothing: zero on every declared kind.
     assert set(offer["observed_capacity"]) == set(offer["capacity"])
     assert all(value == 0 for value in offer["observed_capacity"].values())
@@ -131,8 +131,8 @@ def test_a_draining_loop_keeps_a_fresh_named_offer_and_reopens(tmp_path, monkeyp
     assert node["drain_changed_unix"] == 123.0
     # The census reports the offer's live figure as written: zero everywhere,
     # never the declared capability beside it.
-    assert node["observed_capacity"] == {"gpu": 0, "cpu": 0, "mem_gb": 0}
-    assert node["capacity"] == {"gpu": 0, "cpu": 1, "mem_gb": 2}
+    assert node["observed_capacity"] == {"gpu": 0, "cpu": 0, "mem_gb": 0, "disk_metadata": 0}
+    assert node["capacity"] == {"gpu": 0, "cpu": 1, "mem_gb": 2, "disk_metadata": 0}
     assert "draining for maintenance" in node["reason"]
     assert "owner x" in node["reason"] and "y" in node["reason"]
     table = "\n".join(pbstatus.pool_node_lines(census["nodes"]))
@@ -148,7 +148,8 @@ def test_a_draining_loop_keeps_a_fresh_named_offer_and_reopens(tmp_path, monkeyp
     reopened = json.loads(_offer_path(queue).read_text())
     assert reopened.get("state") in (None, "live")
     assert "drain_owner" not in reopened and "drain_reason" not in reopened
-    assert reopened["observed_capacity"] == {"gpu": 0, "cpu": 1, "mem_gb": 2}
+    assert reopened["observed_capacity"] == {
+        "gpu": 0, "cpu": 1, "mem_gb": 2, "disk_metadata": 0}
     node = next(n for n in pbstatus.read_pool(queue.root)["nodes"]
                 if n["node"] == HOST)
     assert node["state"] == "live" and node["healthy"] is True

@@ -1188,6 +1188,11 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--cpu-slots", type=int, default=0,
                     help="cores this box offers the queue; 0 = the cores this "
                          "loop is actually pinned to")
+    ap.add_argument("--disk-metadata-capacity", type=int, choices=(0, 1), default=0,
+                    help="cooperative same-host disk_metadata admission token; "
+                         "0 disables (default), 1 serializes actions declaring "
+                         "disk_metadata=1 on this host's shared ledger, not "
+                         "ordinary work, tier egress or external I/O (#1008)")
     ap.add_argument("--spool-gb", type=int, default=0,
                     help="local disk this box offers produced-output spool "
                          "windows and declared bounded local scratch, in GiB; "
@@ -1204,19 +1209,28 @@ def validate_args(ap: argparse.ArgumentParser, args: argparse.Namespace) -> None
         ap.error("--gpu-slots cannot be negative")
     if args.spool_gb < 0:
         ap.error("--spool-gb cannot be negative")
+    if (type(args.disk_metadata_capacity) is not int
+            or args.disk_metadata_capacity not in (0, 1)):
+        ap.error("--disk-metadata-capacity must be 0 or 1")
 
 
 def declared_host_capacity(args: argparse.Namespace, *, cores: int) -> dict[str, int]:
-    """The stable host kinds this loop declares: memory, cores, and spool.
+    """The stable host kinds: memory, cores, cooperative metadata, and spool.
+
+    ``disk_metadata`` is configured, not measured disk headroom. All loops on
+    the host share one ledger; the token serializes only actions declaring it.
+    Explicit zero lets the normal poll retire stale free tokens on opt-out,
+    without revoking a running holder's reservation.
 
     ``spool_gb`` is the local disk budget produced-output producers reserve
     their spool windows against at claim (#747), and that actions declaring
-    bounded local scratch reserve their pairs against (#911).  It is declared only when
-    ``--spool-gb`` is positive, so a box started without the flag offers
-    exactly what it offered before the kind existed.
+    bounded local scratch reserve their pairs against (#911). It is declared
+    only when ``--spool-gb`` is positive; a box started without that flag
+    declares no spool budget.
     """
 
-    declared = {"mem_gb": args.mem_gb, "cpu": cores}
+    declared = {"mem_gb": args.mem_gb, "cpu": cores,
+                "disk_metadata": args.disk_metadata_capacity}
     if args.spool_gb > 0:
         declared["spool_gb"] = args.spool_gb
     return declared

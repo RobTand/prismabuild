@@ -1100,11 +1100,11 @@ def main() -> int:
     ap.add_argument("--mem-gb", type=int, default=3,
                     help="memory each shard demands of its box")
     ap.add_argument("--disk-metadata", action="store_true",
-                    help="reserve every shard's box's disk-metadata capacity "
-                         "(a box offers one unit of it), so a timing-sensitive "
-                         "test does not share its box's directory/file "
-                         "metadata throughput with another shard or a live "
-                         "egress (#1008 item 4)")
+                    help="request disk_metadata=1 per shard (pool only); "
+                         "workers must opt into capacity 1 (default 0). "
+                         "Serializes declaring actions on the same host "
+                         "ledger, not ordinary work, tier egress or external "
+                         "I/O; no disk-throughput isolation (Refs #1008)")
     ap.add_argument("--gpu", action="store_true",
                     help="request a GPU for every shard; a tag alone does not "
                          "request one. Requires --timeout-s or --test-timeout-s, "

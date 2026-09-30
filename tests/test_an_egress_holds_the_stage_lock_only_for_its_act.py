@@ -54,9 +54,11 @@ lock for its act, not its census".
 The 1.22 s number above is exactly the distortion #1008 item 4 names: this
 test's own two 20,000-entry egresses shared one box's disk-metadata
 throughput with each other, which neither ``cpu`` nor ``mem_gb`` demand
-prices.  Run through ``pbtest`` with the new ``disk_metadata`` reservation
-(``pbtest.py --disk-metadata --tag sparky ...``) so a re-measurement is not
-also distorted by whatever else is sharing the box.
+prices. ``pbtest --disk-metadata`` can serialize separately declaring shards
+on a host whose worker opts into capacity 1 (default 0). It does not serialize
+this test's two internal egresses or isolate ordinary work, live tier egress,
+external I/O or other hosts sharing the filesystem. Use the existing measured
+admission contract for timing qualification; this token is not that proof.
 """
 from __future__ import annotations
 
