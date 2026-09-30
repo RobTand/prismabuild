@@ -1,7 +1,9 @@
 """A sampled claim pass is not proof that the holder-read path ran."""
 from copy import deepcopy
 import importlib.util
+import json
 from pathlib import Path
+import sys
 
 import pytest
 
@@ -76,3 +78,29 @@ def test_malformed_or_uncovered_profiles_refuse_by_name(diagnostic, invalid):
         data["profiles"][0]["unit"] = "bytes"
     with pytest.raises(ValueError, match="profile"):
         diagnostic.summarize_profile(data, pid=pid, generation_root=GENERATION)
+
+
+@pytest.mark.parametrize("sign", [-1, 1])
+def test_unrepresentable_json_weight_is_refused_by_name(diagnostic, sign):
+    data = profile()
+    data["profiles"][0]["weights"][0] = sign * (1 << sys.float_info.max_exp)
+    data = json.loads(json.dumps(data))
+    with pytest.raises(ValueError, match="profile weight"):
+        diagnostic.summarize_profile(data, pid=123, generation_root=GENERATION)
+
+
+@pytest.mark.parametrize("separate_threads", [False, True])
+def test_inclusive_seconds_cannot_overflow(diagnostic, separate_threads):
+    data = profile()
+    data["profiles"][0]["weights"] = [sys.float_info.max, 0.0, 0.0]
+    if separate_threads:
+        data["profiles"].append({
+            "name": 'Process 123 Thread 124 "OtherThread"',
+            "type": "sampled", "unit": "seconds",
+            "samples": [[0]], "weights": [sys.float_info.max],
+        })
+    else:
+        data["profiles"][0]["weights"][1] = sys.float_info.max
+    data = json.loads(json.dumps(data))
+    with pytest.raises(ValueError, match="profile.*inclusive_seconds"):
+        diagnostic.summarize_profile(data, pid=123, generation_root=GENERATION)

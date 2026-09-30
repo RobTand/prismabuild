@@ -58,13 +58,20 @@ def summarize_profile(profile: Mapping[str, Any], *, pid: int,
         for stack, weight in zip(samples, weights):
             if not isinstance(stack, list) or any(type(i) is not int or i < 0 or i >= len(frames) for i in stack):
                 raise ValueError("profile stack contains an invalid frame index")
-            if type(weight) not in (int, float) or not math.isfinite(weight) or weight < 0:
+            try:
+                finite_weight = type(weight) in (int, float) and math.isfinite(weight)
+            except OverflowError:
+                finite_weight = False
+            if not finite_weight or weight < 0:
                 raise ValueError("profile weight must be a finite nonnegative number")
             # Recursion/duplicate frames are inclusive once per sample, not a
             # multiplier. The seconds are sampled occupancy, not call latency.
             for name in {indices[i] for i in stack if i in indices}:
+                seconds = counts[name]["inclusive_seconds"] + float(weight)
+                if not math.isfinite(seconds):
+                    raise ValueError(f"profile {name} inclusive_seconds must remain finite")
                 counts[name]["samples"] += 1
-                counts[name]["inclusive_seconds"] += float(weight)
+                counts[name]["inclusive_seconds"] = seconds
             total += 1
     if not total:
         raise ValueError("profile contains no samples for the requested process")
