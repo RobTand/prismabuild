@@ -395,8 +395,14 @@ def verify_entry(
         if not isinstance(manifest, dict):
             raise E1Error("entry publication manifest is not an object")
         created = manifest.get("created_unix")
-        if (isinstance(created, bool) or not isinstance(created, (int, float))
-                or not math.isfinite(created)):
+        try:
+            created_is_finite = (
+                not isinstance(created, bool)
+                and isinstance(created, (int, float))
+                and math.isfinite(created))
+        except OverflowError:
+            created_is_finite = False
+        if not created_is_finite:
             raise E1Error("entry publication manifest created_unix is not finite")
         pack, idx = entry_paths(entry, framing)
         idx_sha = sha256_stream(idx)

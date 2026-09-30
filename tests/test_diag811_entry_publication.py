@@ -9,6 +9,7 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import sys
 
 import pytest
 
@@ -107,6 +108,22 @@ def test_unpublished_or_misbound_entry_is_refused(entry_case, fault):
     verdict = verify()
     assert verdict["ok"] is False, "unpublished or misbound cache entry accepted"
     assert "manifest" in verdict["reason"]
+    assert not memo
+
+
+@pytest.mark.parametrize("sign", [-1, 1])
+@pytest.mark.parametrize("primed", [False, True])
+def test_extreme_creation_time_is_a_named_refusal(entry_case, sign, primed):
+    """Binary64 conversion overflow must not escape the refusal boundary."""
+    manifest, publication, verify, memo = entry_case
+    if primed:
+        assert verify()["ok"] is True
+    # Derived from the timestamp check's floating-point exponent range.
+    manifest["created_unix"] = sign * (1 << sys.float_info.max_exp)
+    publication.write_text(json.dumps(manifest))
+    verdict = verify()
+    assert verdict["ok"] is False
+    assert "created_unix" in verdict["reason"]
     assert not memo
 
 
