@@ -11,9 +11,15 @@ workload proof (owed); it claims neither.
 `RESIDENCY_REFUSAL_STATES` in `src/prismabuild/pool.py` omitted that state.
 Both callers of the shared list — the claim pass (`PoolQueue._claim`) and the
 ready-GPU row's kept room (`PoolQueue._ready_gpu_row_room`) — therefore
-admitted a row whose ram bytes were deleted by a reboot: host tokens taken,
-the pass aged, no denial filed. Existing coverage called `residency_verdict`
-only, never `claim`, so the gate could not catch its own missing member.
+admitted a synthetic prior-epoch or unannounced-tier row instead of refusing
+it: the RED `claim()` call returned a claimed record and no residency denial
+was filed. Existing coverage called
+`residency_verdict` only, never `claim`, so the gate could not catch its own
+missing member. The reboot case is the hazard the epoch gate exists for; what
+this lane observes is the incorrect admission of synthetic stale and
+unannounced-tier maps, not a data read. No payload read, pool fallback,
+wrong-byte read or corruption was executed or measured, and no real reboot or
+tmpfs epoch move occurred.
 
 ## Repair
 
@@ -73,20 +79,27 @@ shared ram source):
 
 **168 passed / 0 failed / 0 skipped**, 168 collected/ran/outcomes, no
 reconciliation gaps. All four local-result claims pass `pb_verify_claim`'s
-claim/payload/receipt binding checks (`checks_passed: true`); worker
-attestation is not independently verified (`attestation_verified: null`).
+claim/payload/receipt binding and self-consistency checks
+(`checks_passed: true`); no full worker-attestation claim is made.
 The extended file's 3 previously failing assertions now pass, including the
 `residency_ram_epoch_stale` denial, the empty ledger, and `passes == 0`.
 
-Tested source: each shard sealed the dirty checkout whose parent is
-`03374e98c267bda33904be9c329fd0c5da51b683`; the four snapshot commits
-(`4e262a5e4f95`, `5d771f9a4afe`, `784cf9ba16e4`, `c8eef8362e9e`) differ only
-by pbtest-generated files at identical size class (1137172x bytes).
+Tested source: equality was checked by fetching each of the four sealed CAS
+checkout bundles into its own repository and diffing against final HEAD
+`6ae67755dfc7`. All four carry `src/prismabuild/pool.py` blob
+`3dfe19506299d846c8dae01ea3910dafab29d99b`,
+`tests/test_a_prior_epoch_ram_range_is_not_resident.py` blob
+`40f9682f47114422dda4e4df8c4295c89ca4f9cb` and `docs/design.md` blob
+`05b3359472c5fd4fcaf7170efeecc6a27d1a3194`, byte-identical to HEAD. Each
+sealed tree differs from HEAD only by its per-shard
+`.pbrun-closure.<stamp>.json` (sealed-tree-only) and by the two evidence
+documents added after GREEN.
 
 ## Owed
 
-- Deployment: branch unmerged, no PR, no runtime generation carries the
-  change. `deploy: pending`.
+- Deployment: this is a prepared source-merge record — PR #1375 is open for
+  parent review and no runtime generation carries the change.
+  `deploy: pending`.
 - Workload proof: no real reboot/tmpfs epoch move and no live consumer
   admission against a real prior-epoch map; only in-process queue/map
   fixtures. Issue #1374 stays open until root accepts actual resolution.

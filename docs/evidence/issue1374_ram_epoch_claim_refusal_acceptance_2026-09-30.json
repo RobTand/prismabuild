@@ -17,7 +17,7 @@
           "052ae0054fc12d51d2356c3f6bb2e528c45fdda5f2e83bc6a5e81d79a624de9f",
           "26ce0a295c692bb844a8fe8479044a556a227a4ab49b00bf28d123dbe9973e9c"
         ],
-        "outcome": "The claim gate now refuses `ram_epoch_stale` on the shared `RESIDENCY_REFUSAL_STATES` list: the item stays READY, no host token is taken, no pass is aged, and the denial is filed as `residency_ram_epoch_stale`. All four CPU shards executed/exit 0 on dl380g10, one attempt each, 2 cpu/4 GiB, priority -10: 42+26+36+64 = 168 passed, 0 failed, 0 skipped, 168 collected/ran/outcomes with no reconciliation gaps. All four local-result claims pass `pb_verify_claim` claim/payload/receipt binding checks; attestation not independently verified (`attestation_verified: null`)."
+        "outcome": "Observed: the claim gate refuses a synthetic stale-epoch map and a synthetic unannounced-tier map on the shared `RESIDENCY_REFUSAL_STATES` list — the item stays READY, no host token is taken, no pass is aged, and the denial is filed as `residency_ram_epoch_stale`. All four CPU shards executed/exit 0 on dl380g10, one attempt each, 2 cpu/4 GiB, priority -10: 42+26+36+64 = 168 passed, 0 failed, 0 skipped, 168 collected/ran/outcomes with no reconciliation gaps. All four local-result claims pass `pb_verify_claim` claim/payload/receipt binding and self-consistency checks; a full worker-attestation claim is not made."
       },
       {
         "id": "INV-06",
@@ -28,17 +28,17 @@
           "26ce0a295c692bb844a8fe8479044a556a227a4ab49b00bf28d123dbe9973e9c",
           "3e34b49e69784e827da71d1f35aa7755784dda06dbfc8355d0abb72e7755d0ba"
         ],
-        "outcome": "Pool-side admission of a prior-epoch ram map is a bounded wait, never a read: a composed map whose `ram_epoch` differs from the announced epoch, and a map naming a ram tier nobody announced, both refuse before any token with a named denial. RED first reproduced the missing refusal: action 3e34b49e69784e827da71d1f35aa7755784dda06dbfc8355d0abb72e7755d0ba, terminal failed rc 1, 3 failed/5 passed of 8 collected, 0 skipped, on snapshot parent 03374e98c267. PQ reader-side behavior and the reader-lease epoch path are untouched by this lane; no real reboot, tmpfs epoch move or live consumer was exercised."
+        "outcome": "Observed: pool-side admission of a prior-epoch ram map is refused before any token with a named denial — a composed map whose `ram_epoch` differs from the announced epoch, and a map naming a ram tier nobody announced. Unmeasured: no payload read, pool fallback, wrong-byte read or corruption was executed or measured, and no real reboot or tmpfs epoch move occurred; the maps are synthetic and the consumers are never admitted, so the tests observe the admission decision only. RED first reproduced the missing refusal: action 3e34b49e69784e827da71d1f35aa7755784dda06dbfc8355d0abb72e7755d0ba, terminal failed rc 1, 3 failed/5 passed of 8 collected, 0 skipped, on snapshot parent 03374e98c267. PQ reader-side behavior and the reader-lease epoch path are untouched by this lane."
       }
     ],
     "remaining_gaps": [
       "INV-02: the broader claim gate (lead pinning/adoption, filed-plan leads, plan refusals) is validated only as regression coverage here; this record adds the epoch member, not a re-qualification of those paths.",
-      "INV-06: the ledger's PQ:readers half is unchanged; this is the PB pool-side refusal only. No stale-epoch read, lease or fallback path is qualified by these synthetic maps.",
-      "Deployment is owed: branch unmerged, no PR published runtime generation carries the change; `deploy: pending`, and a merge is not deployment.",
+      "INV-06: the ledger's PQ:readers half is unchanged; this is the PB pool-side refusal only. No stale-epoch read, lease or fallback path is qualified by these synthetic maps, and a consumer's actual read behavior against a stale map remains unmeasured.",
+      "Deployment is owed: this is a prepared source-merge record — PR #1375 is open for parent review and no runtime generation carries the change; `deploy: pending`, and a merge is not deployment.",
       "Workload proof is owed: no real mount-epoch change (reboot/tmpfs) and no live consumer admission against a real prior-epoch map; only in-process queue/map fixtures were run.",
       "Review: parent (Astra) owns merge and final acceptance; this executor claims no deployment or campaign proof."
     ],
-    "note": "Source-only repair of one shared tuple (`RESIDENCY_REFUSAL_STATES`) plus its claim/room callers' comments and the design.md epoch paragraph. The tested source is the dirty working tree snapshotted per shard (parents all 03374e98c267); snapshot commits differ per shard only by pbtest-generated files at identical 1137172x-byte size class: 4e262a5e4f95, 5d771f9a4afe, 784cf9ba16e4, c8eef8362e9e. GREEN ran the same 13-file targeted suite on the fixed source; RED ran the extended test file alone on the unfixed source. No payload, GPU, fleet state or other branch was touched."
+    "note": "Source-only repair of one shared tuple (`RESIDENCY_REFUSAL_STATES`) plus its claim/room callers' comments and the design.md epoch paragraph. Prepared source-merge record: PR #1375 is open; parent review owns merge. Tested-source equality was checked by fetching each of the four sealed CAS checkout bundles into its own repository and diffing against final HEAD 6ae67755dfc7: all four carry `src/prismabuild/pool.py` blob 3dfe19506299d846c8dae01ea3910dafab29d99b, `tests/test_a_prior_epoch_ram_range_is_not_resident.py` blob 40f9682f47114422dda4e4df8c4295c89ca4f9cb and `docs/design.md` blob 05b3359472c5fd4fcaf7170efeecc6a27d1a3194, byte-identical to HEAD. Each sealed tree differs from HEAD only by its per-shard `.pbrun-closure.<stamp>.json` (present in the sealed tree only) and by the two evidence documents added after GREEN. GREEN ran the same 13-file targeted suite on the fixed source; RED ran the extended test file alone on the unfixed source. No payload, GPU, fleet state or other branch was touched."
   },
   "deploy": {"status": "not-this-step"},
   "complete": {"status": "not-this-step"},
