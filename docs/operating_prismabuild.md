@@ -2086,6 +2086,18 @@ read what it waited on before reading any host's logs:
     ram tier the box refuses to admit, shows up here even when no action is
     stuck on it yet.
 
+For a RAM tier, `tiers[].memory_nodes`, `node_memfree_bytes` and
+`node_shmem_bytes` expose the tier host's last persisted NUMA sample (#1032),
+not current facts about the status reader's host. Maps have ascending string
+node IDs and integer bytes (kernel `kB` multiplied by 1024); zero is a valid
+observation. Null per node means that optional counter was missing or invalid;
+a whole-map null means unknown topology/totals, or a record without the field.
+Non-RAM and unannounced rows report null rather than RAM observations. Read
+`sampled_age_s`: liveness re-announcements do not refresh the sample. These
+observations do not change admission, establish available capacity or prove
+page placement, balanced Shmem or absence of swapping. This source slice awaits
+admitted GREEN and independent review; no live deployment claim is made.
+
 A staged consumer that sits READY with a `residency_lead_terminal` denial may
 have had its window retired: a mover of its plan refused terminally, with
 `staged_destination_conflict` (a live owner holds other bytes under a staged
