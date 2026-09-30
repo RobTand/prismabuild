@@ -5602,6 +5602,13 @@ there is no current epoch, so every ram fragment is a prior one. Until
 fresh ranges land, nothing reads as ram-resident, and `residency_verdict`
 denies `ram_epoch_stale` whenever a composed map's ram epoch is not the one
 the tier announces now — the same one-cycle wait as `map_not_composed`.
+`ram_epoch_stale` is a member of the shared `RESIDENCY_REFUSAL_STATES` the
+claim pass and the ready GPU row's kept room read, so admission refuses on
+it exactly as on `map_not_composed`: no host token is taken, no pass is
+aged, the row stays `READY`, and the denial is filed as
+`residency_ram_epoch_stale`. A map naming ram whose tier is not announced
+at all is the same refusal — unknown is not a residence, so no announcement
+must never read as agreement.
 
 Epoch reclamation distinguishes material from unconsumed advance credit
 (#879). An exact current blind grant is a future reservation, not a RAM copy:
