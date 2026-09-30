@@ -84,3 +84,63 @@ python tools/maintenance/diag940_profile_coverage.py \
 
 The decision above is unchanged: #940 remains open, and no speculative
 optimization or speedup is claimed.
+
+## Numeric refusal repair: 2026-09-30
+
+Reviewing the coverage tool uncovered two malformed-input paths. A JSON integer
+outside Python float's representable range escaped the weight check as
+`OverflowError: int too large to convert to float`. Individually finite weights
+could also accumulate to an infinite `inclusive_seconds`, within one thread or
+across threads. The latter could produce a nonfinite report rather than a
+named refusal.
+
+The tool now translates conversion overflow into its existing weight refusal
+and checks each accumulated total before storing it. Weights and inclusive
+seconds must be representable as finite Python floats; there is no heuristic
+weight limit. Normal coverage semantics, worker selection and the report's
+unknown performance delta are unchanged. This is a diagnostic repair, not a
+worker, cache, lifecycle or deployment change.
+
+### CPU evidence
+
+Both arms used the published `pbtest.py`, one shard, two worksteal workers,
+native threads limited to one, 2 CPUs and 2 GiB memory, priority -10 and a 600 s
+action timeout. They ran on sparklina with Python 3.12.3, GPU demand absent and
+`CUDA_VISIBLE_DEVICES=''`. No GPU-surface or live-contention proof is claimed.
+
+- RED action `9bacbe6eab2b681f0c49c3f3eaf7ad48764e37d04837acc3be7c67f8d77e1d01`:
+  terminal failed, exit 1, one attempt; **4 failed / 7 passed / 0 skipped**.
+  Both integer-sign cases failed with the `OverflowError` above. Both
+  same/cross-thread sum cases failed with `Failed: DID NOT RAISE ValueError`.
+  No successful CAS receipt exists for this failed action.
+- GREEN action `154babb155f3233fe38593107f0d1b8481f8e42bf71df09bbc0160f5e1bfced2`:
+  terminal executed, client exit 0, one attempt; **11 passed / 0 failed/skipped**.
+  Both arms collected and ran all 11 cases; outcome reconciliation was clean,
+  with no missing or uncollected files. The successful CAS receipt's canonical
+  digest and its result blob's SHA-256 and byte count were checked. This is
+  integrity verification, not an independent full producer-attestation audit.
+
+The file selected in each arm was `tests/test_diag940_profile_coverage.py`:
+
+```sh
+export TMPDIR=/home/rob/tmp/claude-campaign-20260926/tmp
+test ! -e "$TMPDIR/u4-release/WINDOW_ACTIVE" || exit 3
+OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+python3 /mnt/shared/prismabuild-fleet/repo/tools/pbtest.py \
+  --checkout WORKTREE --python /home/rob/venvs/pb-cpu/bin/python \
+  --tag gb10 --shards 1 --workers-per-shard 2 --threads-per-shard 1 \
+  --mem-gb 2 --priority -10 --timeout-s 600 --wait-s 600 \
+  --pytest-args '["--dist","worksteal","--durations","20"]' \
+  --json RECORD tests/test_diag940_profile_coverage.py
+```
+
+Logs and reconciled JSON are retained under the campaign's
+`tmp/p2p3/prismabuild/940-numeric-{red,green}-ts.*`. The GREEN receipt is
+`/mnt/shared/prismabuild-fleet/cas/actions/v3/15/154babb155f3233fe38593107f0d1b8481f8e42bf71df09bbc0160f5e1bfced2.json`;
+its canonical SHA-256 is
+`29316dc6c4064291fa319de24e9e345b7aee4f1222a755088d0b5d871fa31658`.
+The result blob is 2976 bytes, SHA-256
+`97f65d6abb0673d3b0657a6130f3d2299629faf0efcf2bbcadcd79591349e7ab`.
+
+#940 still needs the eligible several-holder path and, if optimization is
+supported by it, a matched after-profile. This repair supplies neither.
