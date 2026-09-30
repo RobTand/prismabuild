@@ -85,12 +85,13 @@ Declare only images that are already local when the action is claimed.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 import fcntl
 import hashlib
 import json
 import math
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import select
 import shutil
@@ -133,6 +134,16 @@ MAX_INVENTORY_ENTRIES = 4096
 PROBE_CHUNK_BYTES = 64 * 1024
 
 INVENTORY_SCHEMA = "prismabuild.container_image_inventory.v2"
+CLASS_REQUIREMENTS_SCHEMA = "prismabuild.container_class_requirements.v1"
+CLASS_VERDICT_SCHEMA = "prismabuild.container_class_verdict.v1"
+MAX_REQUIREMENT_CLASSES = 64
+MAX_CLASS_IMAGES = 256
+_CLASS_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\Z")
+_IMAGE_DOMAIN = r"[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?(?::[0-9]+)?"
+_IMAGE_PATH = r"[a-z0-9]+(?:(?:[._]|__|[-]+)[a-z0-9]+)*"
+_NAMED_IMAGE = re.compile(
+    rf"(?:(?:{_IMAGE_DOMAIN})/)?{_IMAGE_PATH}(?:/{_IMAGE_PATH})*"
+    r":[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}\Z")
 
 #: Bound into the hashed payload, so the covered set is part of the identity.
 #: Widening or narrowing that set changes every digest, which is the intended
@@ -451,6 +462,231 @@ def parse_inspect(text: str) -> frozenset[str]:
             raise ValueError("docker image inspect row is not JSON") from error
         entries.add(content_ref(row))
     return frozenset(entries)
+
+
+@dataclass(frozen=True)
+class ClassImageRequirement:
+    """One class's named content requirements and lexical DockerRootDir."""
+
+    store_root: str
+    images: tuple[tuple[str, str], ...]
+
+
+def _canonical_store_root(value: object) -> str:
+    if (not isinstance(value, str) or len(value) > 1024
+            or not value.isprintable() or not value.startswith("/")
+            or value.startswith("//")):
+        raise ValueError("image store root must be a canonical absolute path")
+    path = PurePosixPath(value)
+    if str(path) != value or ".." in path.parts:
+        raise ValueError("image store root must be a canonical absolute path")
+    return value
+
+
+def _named_image(value: object) -> str:
+    if (not isinstance(value, str) or len(value) > 512
+            or not _NAMED_IMAGE.fullmatch(value)
+            or value.startswith(("sha256:", "content:"))):
+        raise ValueError("class image name must be an explicit repository:tag")
+    return value
+
+
+def _content_requirement(value: object) -> str:
+    if not isinstance(value, str) or not _CONTENT_REF.fullmatch(value):
+        raise ValueError("class image content must be a content:sha256 reference")
+    return value
+
+
+def normalize_class_image_requirements(value: object) -> dict[str, ClassImageRequirement]:
+    """Validate a versioned declaration without borrowing another class's set.
+
+    Names are resolution requirements, not action identities. Their expected
+    content is always the existing store-independent reference. An explicit
+    empty class is valid, but still needs a known inventory and matching store.
+    """
+
+    try:
+        if (not isinstance(value, dict) or set(value) != {"schema", "classes"}
+                or value.get("schema") != CLASS_REQUIREMENTS_SCHEMA):
+            raise ValueError("invalid schema or fields")
+        classes = value["classes"]
+        if not isinstance(classes, dict) or len(classes) > MAX_REQUIREMENT_CLASSES:
+            raise ValueError("classes must be a bounded object")
+        result: dict[str, ClassImageRequirement] = {}
+        for name, row in classes.items():
+            if not isinstance(name, str) or not _CLASS_NAME.fullmatch(name):
+                raise ValueError("invalid class name")
+            if not isinstance(row, dict) or set(row) != {"store_root", "images"}:
+                raise ValueError("class must declare only store_root and images")
+            store = _canonical_store_root(row["store_root"])
+            images = row["images"]
+            if not isinstance(images, dict) or len(images) > MAX_CLASS_IMAGES:
+                raise ValueError("images must be a bounded name-to-content object")
+            pairs = tuple(sorted((_named_image(alias), _content_requirement(ref))
+                                 for alias, ref in images.items()))
+            result[name] = ClassImageRequirement(store, pairs)
+        return {name: result[name] for name in sorted(result)}
+    except ValueError as error:
+        raise ValueError(f"class image requirements: {error}") from error
+
+
+def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for name, value in pairs:
+        if name in result:
+            raise ValueError("duplicate JSON key in image evidence")
+        result[name] = value
+    return result
+
+
+def parse_named_inspect(text: str) -> dict[str, str]:
+    """Extract a complete alias projection from supplied inspect rows only.
+
+    No Docker read occurs here. Missing tag projections or conflicting aliases
+    refuse the whole answer; last-write-wins must not hide image drift. Null
+    RepoTags is Docker's explicit untagged form. The legacy parse_inspect API
+    and its content identity remain unchanged.
+    """
+
+    if not isinstance(text, str) or len(text.encode("utf-8")) > MAX_INVENTORY_BYTES:
+        raise ValueError("named image inspect must be bounded text")
+    result: dict[str, str] = {}
+    rows = 0
+    for line in text.splitlines():
+        if not line:
+            continue
+        rows += 1
+        if rows > MAX_INVENTORY_ENTRIES:
+            raise ValueError("too many named image inspect rows")
+        try:
+            row = json.loads(line, object_pairs_hook=_unique_json_object)
+        except (ValueError, RecursionError) as error:
+            raise ValueError("named image inspect row is not unambiguous JSON") from error
+        ref = content_ref(row)
+        if not isinstance(row, dict) or "RepoTags" not in row:
+            raise ValueError("named image inspect row has no tag projection")
+        tags = [] if row["RepoTags"] is None else row["RepoTags"]
+        if not isinstance(tags, list) or len(tags) > MAX_INVENTORY_ENTRIES:
+            raise ValueError("named image inspect tags must be a bounded list")
+        for tag in tags:
+            if tag == "<none>:<none>":
+                continue
+            alias = _named_image(tag)
+            previous = result.get(alias)
+            if previous is not None and previous != ref:
+                raise ValueError("conflicting named image inspect alias")
+            result[alias] = ref
+            if len(result) > MAX_INVENTORY_ENTRIES:
+                raise ValueError("too many named image inspect aliases")
+    return {name: result[name] for name in sorted(result)}
+
+
+def _inventory_record_fields(record: object, *, now: float,
+                             ttl_s: float) -> tuple[float, frozenset[str] | None] | None:
+    """The shared cache's schema, freshness and reference validation."""
+
+    if not isinstance(record, dict) or record.get("schema") != INVENTORY_SCHEMA:
+        return None
+    observed = record.get("observed_unix")
+    if isinstance(observed, bool) or not isinstance(observed, (int, float)):
+        return None
+    try:
+        observed = float(observed)
+    except OverflowError:
+        return None
+    if not math.isfinite(observed) or observed <= 0:
+        return None
+    age = now - observed
+    if age < 0 or age > ttl_s:
+        return None
+    entries = record.get("entries")
+    if entries is None:
+        return observed, None
+    if not isinstance(entries, list) or len(entries) > MAX_INVENTORY_ENTRIES:
+        return None
+    normalized: set[str] = set()
+    for entry in entries:
+        if not isinstance(entry, str):
+            return None
+        try:
+            normalized.add(validate_ref(entry))
+        except ValueError:
+            return None
+    return observed, frozenset(normalized)
+
+
+def _snapshot_verdict(klass: str, now: float) -> dict[str, object]:
+    return {"schema": CLASS_VERDICT_SCHEMA, "class": klass,
+            "scope": "container_work_only", "authority": "supplied_snapshot_only",
+            "evaluated_unix": now, "status": "unknown",
+            "container_work_eligible": False, "reason": "inventory_unknown",
+            "missing_images": [], "mismatched_images": []}
+
+
+def class_image_verdict(requirements: object, klass: str, inventory: object, *,
+                        now: float, max_age_s: float = INVENTORY_TTL_S) -> dict[str, object]:
+    """Evaluate supplied evidence; this is not live permission to claim.
+
+    A caller must supply a complete named projection and DockerRootDir beside
+    the existing v2 inventory fields. Current cache producers do not supply
+    those fields and therefore remain unknown to this offline contract. This
+    function neither probes a daemon nor changes native-work admission.
+    """
+
+    parsed = normalize_class_image_requirements(requirements)
+    if not isinstance(klass, str) or not _CLASS_NAME.fullmatch(klass):
+        raise ValueError("class image requirements: invalid class name")
+    bounds: list[float] = []
+    for label, number in (("clock", now), ("freshness", max_age_s)):
+        if isinstance(number, bool) or not isinstance(number, (int, float)):
+            raise ValueError(f"class image evaluation {label} must be finite and positive")
+        try:
+            bound = float(number)
+        except OverflowError as error:
+            raise ValueError(f"class image evaluation {label} is not representable") from error
+        if not math.isfinite(bound) or bound <= 0:
+            raise ValueError(f"class image evaluation {label} must be finite and positive")
+        bounds.append(bound)
+    now, max_age_s = bounds
+    if max_age_s > INVENTORY_TTL_S:
+        raise ValueError("class image freshness cannot exceed the offer TTL")
+    result = _snapshot_verdict(klass, float(now))
+    requirement = parsed.get(klass)
+    if requirement is None:
+        result["reason"] = "class_requirements_missing"
+        return result
+    fields = _inventory_record_fields(inventory, now=now, ttl_s=max_age_s)
+    if fields is None or fields[1] is None or not isinstance(inventory, dict):
+        return result
+    try:
+        store = _canonical_store_root(inventory.get("store_root"))
+        aliases = inventory.get("image_contents")
+        if not isinstance(aliases, dict) or len(aliases) > MAX_INVENTORY_ENTRIES:
+            return result
+        contents = {_named_image(name): _content_requirement(ref)
+                    for name, ref in aliases.items()}
+        if any(ref not in fields[1] for ref in contents.values()):
+            return result
+    except ValueError:
+        return result
+    result.update(observed_unix=fields[0], expected_store_root=requirement.store_root,
+                  observed_store_root=store)
+    if store != requirement.store_root:
+        result.update(status="refused", reason="image_store_mismatch")
+        return result
+    missing = [name for name, _ in requirement.images if name not in contents]
+    mismatched = [{"name": name, "expected": ref, "observed": contents[name]}
+                  for name, ref in requirement.images
+                  if name in contents and contents[name] != ref]
+    result.update(missing_images=missing, mismatched_images=mismatched)
+    if missing:
+        result.update(status="refused", reason="required_image_missing")
+    elif mismatched:
+        result.update(status="refused", reason="image_content_mismatch")
+    else:
+        result.update(status="satisfied", reason="class_images_present",
+                      container_work_eligible=True)
+    return result
 
 
 def image_ids(text: str) -> tuple[str, ...]:
@@ -875,34 +1111,7 @@ class InventoryCache:
             record = json.loads(payload.decode("utf-8"))
         except (UnicodeDecodeError, ValueError):
             return None
-        if not isinstance(record, dict) or record.get("schema") != INVENTORY_SCHEMA:
-            return None
-        observed = record.get("observed_unix")
-        if isinstance(observed, bool) or not isinstance(observed, (int, float)):
-            return None
-        observed = float(observed)
-        if not math.isfinite(observed) or observed <= 0:
-            return None
-        age = now - observed
-        if age < 0 or age > self.ttl_s:
-            # A timestamp in the future or older than the TTL is not evidence;
-            # accepting the future form made a corrupt record fresh forever.
-            return None
-        entries = record.get("entries")
-        if entries is None:
-            return observed, None
-        if (not isinstance(entries, list)
-                or len(entries) > MAX_INVENTORY_ENTRIES):
-            return None
-        normalized: set[str] = set()
-        for entry in entries:
-            if not isinstance(entry, str):
-                return None
-            try:
-                normalized.add(validate_ref(entry))
-            except ValueError:
-                return None
-        return observed, frozenset(normalized)
+        return _inventory_record_fields(record, now=now, ttl_s=self.ttl_s)
 
     def _refresh(self, directory: int, *, limit: float) -> None:
         """Re-probe the shared record, or wait for the sibling that is.
@@ -1034,6 +1243,51 @@ def local_content_ref(
     return next(iter(refs)) if len(refs) == 1 else None
 
 
+def _read_offline_json(path: Path) -> object:
+    """Size-capped input or None, never a cache read or Docker fallback."""
+
+    try:
+        with path.open("rb") as source:
+            payload = source.read(MAX_INVENTORY_BYTES + 1)
+        if len(payload) > MAX_INVENTORY_BYTES:
+            return None
+        return json.loads(payload.decode("utf-8"), object_pairs_hook=_unique_json_object)
+    except (OSError, UnicodeError, ValueError, RecursionError):
+        return None
+
+
+def _class_verdict_main(names: list[str]) -> int:
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="python3 -m prismabuild.container_images --class-verdict",
+        description="Evaluate explicit snapshots only; never probe or authorize a claim.")
+    parser.add_argument("--requirements", type=Path, required=True)
+    parser.add_argument("--class", dest="klass", required=True)
+    parser.add_argument("--inventory", type=Path, required=True)
+    parser.add_argument("--max-age-s", type=float, default=INVENTORY_TTL_S)
+    args = parser.parse_args(names)
+    try:
+        requirements = _read_offline_json(args.requirements)
+        normalize_class_image_requirements(requirements)
+    except (OSError, UnicodeError, ValueError, RecursionError):
+        result = _snapshot_verdict(args.klass, time.time())
+        result["reason"] = "requirements_invalid"
+        print(json.dumps(result, sort_keys=True))
+        return 2
+    try:
+        inventory = _read_offline_json(args.inventory)
+    except (OSError, UnicodeError, ValueError, RecursionError):
+        inventory = None
+    try:
+        result = class_image_verdict(requirements, args.klass, inventory,
+                                     now=time.time(), max_age_s=args.max_age_s)
+    except ValueError as error:
+        parser.error(str(error))
+    print(json.dumps(result, sort_keys=True))
+    return 0 if result["status"] == "satisfied" else 1
+
+
 def main(argv=None) -> int:
     """``python3 -m prismabuild.container_images REF [REF ...]``.
 
@@ -1045,6 +1299,8 @@ def main(argv=None) -> int:
     import sys
 
     names = list(sys.argv[1:] if argv is None else argv)
+    if names and names[0] == "--class-verdict":
+        return _class_verdict_main(names[1:])
     if not names:
         print("usage: python3 -m prismabuild.container_images REF [REF ...]",
               file=sys.stderr)

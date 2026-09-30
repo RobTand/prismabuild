@@ -2954,6 +2954,54 @@ side effect. An item naming no interpreter is byte-identical to before.
   action that declares one when another producer submits it there, because
   that lane has no inventory to verify.
 
+### Offline class-image contracts (#807)
+
+`container_images.normalize_class_image_requirements` validates
+`prismabuild.container_class_requirements.v1`: a `classes` object keyed by
+explicit worker class, each with `store_root` and an `images` object mapping
+explicit `repository:tag` names to `content:sha256:<64 lowercase hex>`.
+Declarations use no local image IDs or peer comparison. They are bounded to
+64 classes and 256 names per class, normalized deterministically, and do not
+mutate the caller. Unknown fields are refused. An explicit empty class is
+valid but does not waive the requirement for known store/inventory evidence;
+an absent class never inherits another class's requirements.
+
+`class_image_verdict` evaluates a **supplied snapshot only**. Its schema is
+`prismabuild.container_class_verdict.v1`; `authority` is
+`supplied_snapshot_only` and `scope` is `container_work_only`. A satisfied
+verdict is not permission to claim. Input uses the existing v2 inventory
+schema, timestamp and immutable-reference entries, supplemented with a
+complete `image_contents` name-to-content projection and `store_root`.
+The shared cache validator supplies the same schema, entry-count and 30 s
+freshness checks; a caller may request the stricter 5 s claim bound, but may
+not weaken the offer bound. Missing, unreadable, stale, future-dated,
+malformed or contradictory evidence is unknown, never an empty inventory.
+All projected content must occur in the inventory entries. Projection and
+entry counts are bounded by `MAX_INVENTORY_ENTRIES` (4096).
+
+Known evidence yields named refusals for a different image store, a missing
+required name or a different content at that name. The expected content under
+an unrelated tag does not excuse drift. Extra undeclared images are not drift.
+`store_root` identifies the lexical DockerRootDir path only: it must be a
+canonical absolute POSIX path, without filesystem resolution. It does not
+attest the storage driver, daemon identity or filesystem provenance.
+
+`parse_named_inspect` extracts the projection from supplied inspect rows using
+the unchanged `content_ref`. Missing projections, conflicting aliases or
+duplicate JSON keys refuse the whole extraction rather than keeping the last
+value. Null RepoTags means an explicitly untagged image. The existing
+`parse_inspect` API and image-content hash are unchanged.
+
+The snapshot-only CLI reads explicit size-capped JSON inputs and never probes
+Docker or refreshes a cache. Exit 0 means the supplied class snapshot satisfies
+its declaration; 1 means refused or unknown; 2 means invalid configuration or
+usage. JSON output carries the scope and authority above. This slice does not
+enrich the live inventory producer, configure fleet classes, change offers or
+`pbstatus`, remove native-work eligibility, or enforce container-only routes.
+Those membership/claim and live qualification requirements remain open in
+#807. Current cache producers lack the two supplemental fields and therefore
+cannot establish a satisfied offline class verdict without explicit evidence.
+
 ### A kill names what it waited on
 
 An ending at the `no_progress`, `execution_deadline` or `withdrawn` rung
