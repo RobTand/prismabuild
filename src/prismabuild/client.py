@@ -39,6 +39,9 @@ The surface, by area:
   :func:`read_residency_map`, :func:`read_residency_fragments`,
   :func:`compose_residency_map`, :func:`write_residency_map`,
   :func:`residency_map_key`, and the schema names.
+* **Ephemeral scratch naming** (SDK v2, no lifetime capability):
+  :func:`bind_ephemeral_scratch`, :func:`ephemeral_scratch_path`,
+  :data:`EPHEMERAL_SCRATCH_SCHEMA_V1`, :class:`LocalScratchError`.
 * **Receipts**: :func:`cas_receipt_self_check`.
 * **Identifiers and digests**: :data:`ID_PATTERN`, :data:`ENV_NAME_PATTERN`,
   :func:`canonical_sha256`.
@@ -56,6 +59,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from . import core as _core
+from . import local_scratch as _local_scratch
 from . import pool as _pool
 from . import produced_output as _produced_output
 from . import reader_lease as _reader_lease
@@ -64,7 +68,7 @@ from . import storage_tiers as _storage_tiers
 
 #: The contract version.  Bumped on any change to the names below, their
 #: signatures, or the values of the constants.
-SDK_VERSION = 1
+SDK_VERSION = 2
 
 # -- reader leases (capability ``reader-lease-v1``) --------------------------
 
@@ -193,6 +197,13 @@ read_residency_fragments = _residency_map.read_fragments
 compose_residency_map = _residency_map.compose
 write_residency_map = _residency_map.write_map
 
+# -- ephemeral scratch naming (not cleanup authority, Refs #1360) ------------
+
+EPHEMERAL_SCRATCH_SCHEMA_V1 = _local_scratch.EPHEMERAL_SCRATCH_SCHEMA_V1
+LocalScratchError = _local_scratch.LocalScratchError
+bind_ephemeral_scratch = _local_scratch.bind_ephemeral_scratch
+ephemeral_scratch_path = _local_scratch.ephemeral_scratch_path
+
 # -- receipts ----------------------------------------------------------------
 
 CAS_RECEIPT_SCHEMA_V3 = _core.CAS_RECEIPT_SCHEMA_V3
@@ -313,6 +324,9 @@ __all__ = [
     "validate_residency_map", "read_residency_map",
     "read_residency_fragments", "compose_residency_map",
     "write_residency_map",
+    # ephemeral scratch naming (no lifetime capability)
+    "EPHEMERAL_SCRATCH_SCHEMA_V1", "LocalScratchError",
+    "bind_ephemeral_scratch", "ephemeral_scratch_path",
     # receipts
     "CAS_RECEIPT_SCHEMA_V3", "WORKER_ATTESTATION_SCHEMA_V2",
     "RECEIPT_REFUSALS", "cas_receipt_self_check",
