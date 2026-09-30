@@ -1,0 +1,29 @@
+{
+  "schema": "pb.staged_read_acceptance.v1",
+  "step": "merge",
+  "contract_commit": "37b72cc431b876b6dc4889fa1f5889dd1656b97d",
+  "ledger_commit": "e353e3778a354facbccb930c2f35e734302d4f71",
+  "scope": ["RNG-02"],
+  "prelaunch": {"status": "not-this-step"},
+  "merge": {
+    "branch": "sol/issues-ts-811-realpack-11",
+    "issue": "https://github.com/RobTand/prismabuild/issues/811",
+    "validated_repairs": [
+      {
+        "id": "RNG-02",
+        "actions": ["3ea0a7c7122e6c4563bcac306d9375d63e0431aa691d9553fe2f5e46a686330f"],
+        "outcome": "Test-only extension of PR1388: real SHA-1 Git pack/index creation, original digest/index verification, forced unsupported-reflink fallback with selected pack/index replacement or unlink, unchanged-source control, closed-descriptor assertions, and private Git index verification/commit/clean-worktree/payload checks. CPU-only done/executed exit0 on sparky, one attempt;29 passed/0 failed/skipped/uncollected,29 collected/ran/outcomes without gaps, duplicate collection or missing files across all five experiment files. Canonical receipt da65000b296c857ec60d89a450a92b1a3514196db9ba985ec1000752074c9f7b;8644-byte result ceaf28ca99f07f02ae7c7ddfdc19564fc307a19cee98fb334d4a4c2c98365d7f independently checked. Local claim74b7401823993ad516013f74bc4e526cdc9cfe3061afdf59133dfb246b4da8be passes all nine local-claim integrity checks including payload SHA. Full worker attestation not independently checked. No production-code diff. Acceptance docs added after code/test validation."
+      }
+    ],
+    "remaining_gaps": [
+      "RNG-02 globally partial: no atomic acquire against prior verified identity, production refs, epoch/ABA fencing, fork/mmap/async lifetime or crash-recovery acceptance.",
+      "SM-03/INV-07: no production lease, retirement or charge-ordering implementation or acceptance.",
+      "Actual reflink kernel and non-Linux platform behavior are not qualified; ioctl is injected. SHA-256 Git format, larger histories and full repository-state/source-seal parity are not qualified.",
+      "PB #811: production integration and matched deployed claim-path before/after performance remain open. No speedup, energy, runtime/default, sealed-input, durability or GPU claim. Global ledger axes unchanged."
+    ],
+    "note": "Historical RED c14c491880006c48c5c72bf8b7ef9d310017a62085288139f33394095cc03e79 failed/exit1/one attempt:4 failed/1 unchanged-source real-Git control passed/0 skipped,5 collected/ran/outcomes no gaps. Only copy_or_reflink was restored from6d17a00e121f08b5fe71294b7ec3ed4ae8f9cd03 into the fresh c6bbf18e2dcc2da8705bb74323b3d1f100953979 tree, not a whole old-tree baseline. Exact replacement assertions named copied pack/idx differing from originally verified objects; unlink raised FileNotFoundError. No successful RED CAS receipt/claim. Both clients used the explicit coordinator PB-self-test GB10/pb-cpu route, priority-10, shard1/pytest workers2/native1/CPU2/memory2GiB/600s bounds;WINDOW_ACTIVE absent."
+  },
+  "deploy": {"status": "not-this-step"},
+  "complete": {"status": "not-this-step"},
+  "exceptions": []
+}
