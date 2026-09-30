@@ -15,6 +15,7 @@ signal never admits a second writer.
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 import test_a_producers_exports_run_on_its_allowance as al
@@ -293,7 +294,10 @@ def test_a_finished_export_files_its_rate_and_prices_the_next_seal(tmp_path):
     # the held receipt still prices under #1319: the next seal is the
     # achieved rate capped by the offer, not the whole offer.
     assert filed["held_seconds"] > 0.0
-    expected = min(int(filed["mb_per_s_file_side"]), 2)
+    # Production prices max(1, ceil(rate)) capped by the offer
+    # (storage_tiers.export_measured_mb_s, #1327).  The old floor expectation
+    # was stale and only matched integral measurements (#1387).
+    expected = min(max(1, math.ceil(filed["mb_per_s_file_side"])), 2)
     spool.submit_group("b2", base.prepare(spool, "b2", ceiling=1 << 20)[2])
     assert sealed(spool, "b2")["params"]["demand"][FILL_DEMAND] == expected
 
