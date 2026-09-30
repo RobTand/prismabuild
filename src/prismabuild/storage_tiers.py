@@ -63,6 +63,7 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import secrets
 import shutil
 import socket
@@ -871,6 +872,89 @@ def meminfo_total_bytes(path: str = "/proc/meminfo") -> int | None:
     return None
 
 
+MEMORY_NUMA_ROOT = "/sys/devices/system/node"
+# Bound kernel-list parsing before expanding ranges, including corrupt evidence.
+_MAX_NUMA_NODES = 4096
+
+
+def _numa_node_ids(text: str) -> tuple[int, ...] | None:
+    if not text or len(text) > 32768:
+        return None
+    nodes: set[int] = set()
+    for part in text.split(","):
+        if re.fullmatch(r"[0-9]{1,4}(?:-[0-9]{1,4})?", part) is None:
+            return None
+        bounds = part.split("-")
+        first, last = int(bounds[0]), int(bounds[-1])
+        if first > last or last >= _MAX_NUMA_NODES:
+            return None
+        for node in range(first, last + 1):
+            if node in nodes:
+                return None
+            nodes.add(node)
+    return tuple(sorted(nodes))
+
+
+def memory_numa_nodes(root: str = MEMORY_NUMA_ROOT) -> tuple[int, ...] | None:
+    """Fresh complete memory-node membership, or unknown (never single-node).
+
+    Kernel has_memory is independent of CPU presence/affinity. Every member
+    must have readable positive sysfs MemTotal; membership must stay unchanged
+    around that read. This identifies nodes, not per-node capacity admission.
+    """
+
+    directory = Path(root)
+    try:
+        before = (directory / "has_memory").read_text().strip()
+        nodes = _numa_node_ids(before)
+        if not nodes:
+            return None
+        for node in nodes:
+            text = (directory / f"node{node}" / "meminfo").read_text()
+            totals = re.findall(
+                rf"^Node {node}\s+MemTotal:\s+([0-9]{{1,20}})\s+kB\s*$",
+                text, re.MULTILINE)
+            if len(totals) != 1 or int(totals[0]) <= 0:
+                return None
+        after = (directory / "has_memory").read_text().strip()
+    except (OSError, UnicodeError):
+        return None
+    return nodes if before == after else None
+
+
+def _ram_mount_interleaved(options: list[str] | None,
+                           nodes: tuple[int, ...]) -> bool:
+    if options is None:
+        return False
+    policies = [i for i, option in enumerate(options) if option.startswith("mpol=")]
+    if len(policies) != 1:
+        return False
+    index = policies[0]
+    policy = options[index][len("mpol="):]
+    # /proc/mounts separates options and noncontiguous node IDs with the
+    # same comma. Reassemble until an ordinary option; malformed fragments
+    # are retained so the bounded parser refuses rather than reading a prefix.
+    flags = {"rw", "ro", "noswap", "relatime", "noatime", "strictatime",
+             "nodiratime", "inode64", "sync", "async", "dirsync", "lazytime",
+             "noexec", "exec", "nosuid", "suid", "nodev", "dev", "seclabel"}
+    remaining = options[index + 1:]
+    for offset, continuation in enumerate(remaining):
+        if "=" in continuation or continuation in flags:
+            # A numeric/unknown fragment after an ordinary option is not a
+            # second, silently ignored piece of the node policy.
+            if any("=" not in option and option not in flags
+                   for option in remaining[offset:]):
+                return False
+            break
+        policy += "," + continuation
+    if policy == "interleave":
+        return True
+    prefix = "interleave:"
+    if not policy.startswith(prefix):
+        return False
+    return _numa_node_ids(policy[len(prefix):]) == nodes
+
+
 def read_ram_epoch(root: str | Path) -> dict[str, object] | None:
     """The epoch a mounted tmpfs carries, read-only, or ``None``.
 
@@ -985,10 +1069,15 @@ def _ram_numbers(*, ceiling_bytes: int, mem_total: int | None,
 def ram_admission(*, ceiling_bytes: int, mount_options: list[str] | None,
                   policy: Mapping[str, object], mem_total: int | None,
                   arc: Mapping[str, int],
-                   rows_held_gib: int | None = None) -> dict[str, object]:
+                  rows_held_gib: int | None = None,
+                  memory_nodes: tuple[int, ...] | None = None) -> dict[str, object]:
     """Whether the warm path may admit against this mount, and why not.
 
-    Five refusals, each fail-closed and each naming the numbers:
+    Existing numeric/noswap refusals precede NUMA placement checks. Complete
+    ``memory_nodes`` evidence is required; unknown topology never proves a
+    single-node host. Multi-node mounts must interleave over every memory node.
+
+    The existing refusals, each fail-closed and naming the numbers:
 
     * **``noswap`` is absent.** A swappable tmpfs can page the "resident"
       bytes out, and a consumer whose gate says resident then pays a swap
@@ -1043,6 +1132,17 @@ def ram_admission(*, ceiling_bytes: int, mount_options: list[str] | None,
     if window > allowed_window:
         return {"admissible": False, "reason": "ram_window_exceeds_memtotal_floor",
                 **numbers}
+    if (not isinstance(memory_nodes, tuple) or not memory_nodes
+            or len(memory_nodes) > _MAX_NUMA_NODES
+            or any(type(node) is not int or not 0 <= node < _MAX_NUMA_NODES
+                   for node in memory_nodes)
+            or tuple(sorted(set(memory_nodes))) != memory_nodes):
+        return {"admissible": False, "reason": "ram_numa_topology_unreadable",
+                **numbers}
+    if (len(memory_nodes) > 1
+            and not _ram_mount_interleaved(mount_options, memory_nodes)):
+        return {"admissible": False, "reason": "ram_mount_not_interleaved",
+                **numbers}
     return {"admissible": True, "reason": None, **numbers}
 
 
@@ -1050,11 +1150,16 @@ def ram_tier(policy: Mapping[str, object], *, host: str,
              statvfs: Callable[[str], os.statvfs_result] = os.statvfs,
              proc_mounts: str = "/proc/mounts",
              meminfo_path: str = "/proc/meminfo",
+             memory_numa_root: str = MEMORY_NUMA_ROOT,
              arcstats_path: str = ARCSTATS,
              stats: Mapping[str, int] | None = None,
              now: float | None = None,
              rows_held_gib: int | None = None) -> dict[str, object] | None:
     """The ram tier record, or ``None`` when the mount is absent.
+
+    ``memory_numa_root`` is independent of block-device sysfs. Every call
+    samples complete memory-node evidence for shared admission and announces
+    it as ``memory_nodes`` (null when unknown); it does not resize the mount.
 
     Capacity is the tmpfs's own ``statvfs`` -- ``f_bavail x f_frsize``, what
     the mount may still hold -- never ``MemAvailable``, which moves with
@@ -1073,6 +1178,7 @@ def ram_tier(policy: Mapping[str, object], *, host: str,
     epoch = ensure_ram_epoch(mountpoint, host=host, now=now)
     arc = dict(stats) if stats is not None else read_arcstats(arcstats_path)
     mem_total = meminfo_total_bytes(meminfo_path)
+    memory_nodes = memory_numa_nodes(memory_numa_root)
     try:
         sampled = statvfs(mountpoint)
         ceiling = int(sampled.f_blocks) * int(sampled.f_frsize)
@@ -1089,12 +1195,14 @@ def ram_tier(policy: Mapping[str, object], *, host: str,
     elif epoch is None:
         admission = {**ram_admission(ceiling_bytes=ceiling, mount_options=options,
                                      policy=policy, mem_total=mem_total, arc=arc,
-                                     rows_held_gib=rows_held_gib),
+                                     rows_held_gib=rows_held_gib,
+                                     memory_nodes=memory_nodes),
                      "admissible": False, "reason": "ram_epoch_unwritable"}
     else:
         admission = ram_admission(ceiling_bytes=ceiling, mount_options=options,
                                   policy=policy, mem_total=mem_total, arc=arc,
-                                  rows_held_gib=rows_held_gib)
+                                  rows_held_gib=rows_held_gib,
+                                  memory_nodes=memory_nodes)
     return {
         "schema": TIER_RECORD_SCHEMA_V1,
         "tier": "ram",
@@ -1113,6 +1221,7 @@ def ram_tier(policy: Mapping[str, object], *, host: str,
         "promotion_chunk_gib": promotion_chunk_gib_for_window(
             int(policy["window_gib_default"]),
             policy.get("promotion_chunk_gib")),  # type: ignore[arg-type]
+        "memory_nodes": None if memory_nodes is None else list(memory_nodes),
         "ram_admission": admission,
         "sampled_unix": time.time() if now is None else now,
     }
@@ -2510,6 +2619,7 @@ def discover_tiers(
     statvfs: Callable[[str], os.statvfs_result] = os.statvfs,
     proc_mounts: str = "/proc/mounts",
     meminfo_path: str = "/proc/meminfo",
+    memory_numa_root: str = MEMORY_NUMA_ROOT,
     rows_held_gib: int | None = None,
 ) -> dict[str, dict[str, object]]:
     """Every tier this box offers, keyed by tier id, read fresh.
@@ -2526,7 +2636,9 @@ def discover_tiers(
     pool is a stage tier.  ``rows_held_gib`` is what the host ledger says
     rows hold beside the tier (#1222: one pool, two consumers); ``None``
     refuses the ram admission fail-closed, because a ledger that will not
-    say is not evidence of no rows.
+    say is not evidence of no rows. ``memory_numa_root`` supplies memory-node
+    sysfs separately from the block-device ``sysfs`` parameter; unreadable or
+    incomplete topology refuses admission rather than assuming one node.
     """
 
     host = host or socket.gethostname()
@@ -2635,7 +2747,8 @@ def discover_tiers(
     if ram_policy is not None:
         record = ram_tier(
             ram_policy, host=host, statvfs=statvfs, proc_mounts=proc_mounts,
-            meminfo_path=meminfo_path, arcstats_path=arcstats_path,
+            meminfo_path=meminfo_path, memory_numa_root=memory_numa_root,
+            arcstats_path=arcstats_path,
             stats=arc_stats, now=now, rows_held_gib=rows_held_gib)
         if record is not None:
             tiers[str(record["tier_id"])] = record
@@ -2680,6 +2793,7 @@ __all__ = [
     "FILL_KIND",
     "GIB",
     "RAM_CAPACITY_KIND",
+    "MEMORY_NUMA_ROOT",
     "RAM_EPOCH_MARKER",
     "RAM_EPOCH_MARKER_SCHEMA_V1",
     "RAM_POLICY_FILE",
@@ -2695,6 +2809,7 @@ __all__ = [
     "ensure_ram_epoch",
     "fill_rate_from_records",
     "meminfo_total_bytes",
+    "memory_numa_nodes",
     "pool_identity",
     "pool_member_devices",
     "pool_member_paths",

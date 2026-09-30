@@ -133,6 +133,38 @@ def test_a_campaign_shaped_window_stages_and_reads_back_strictly(
     assert result["coverage"]["chunk_edge_inside_entry"] is True
 
 
+@pytest.mark.parametrize("execution_topology", ["unknown", "multi-node"])
+def test_fixture_ram_admission_does_not_borrow_execution_host_topology(
+        tmp_path: Path, small_units, monkeypatch: pytest.MonkeyPatch,
+        execution_topology: str) -> None:
+    """Real fixture discovery works even when the execution host cannot admit."""
+
+    default_root = Path(storage_tiers.MEMORY_NUMA_ROOT)
+    execution_root = tmp_path / "execution-memory-nodes"
+    execution_root.mkdir()
+    if execution_topology == "multi-node":
+        (execution_root / "has_memory").write_text("0-1\n")
+        for node in (0, 1):
+            directory = execution_root / f"node{node}"
+            directory.mkdir()
+            (directory / "meminfo").write_text(
+                f"Node {node} MemTotal:  1048576 kB\n")
+
+    def fixture_path(*parts) -> Path:
+        path = Path(*parts)
+        if path == default_root or default_root in path.parents:
+            return execution_root / path.relative_to(default_root)
+        return path
+
+    # Redirect only the default kernel observation. The harness must supply
+    # its own node root; discovery/admission/minting remain real functions.
+    monkeypatch.setattr(storage_tiers, "Path", fixture_path)
+    result = _run(tmp_path, _campaign_like())
+    assert result["entries_read_strictly"] == result["entries"]
+    assert result["bytes_read_strictly"] == result["read_bytes"]
+    assert result["pool_opens"] == {"promote": 0, "read": 0, "egress": 0}
+
+
 def test_a_plan_that_reads_an_entry_again_moves_and_reads_it_again(
         tmp_path: Path, small_units) -> None:
     """A v2 revisit is staged again: each tier's frontier is linear in read bytes.

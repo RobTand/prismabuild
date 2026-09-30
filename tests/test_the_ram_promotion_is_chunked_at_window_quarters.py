@@ -161,6 +161,11 @@ def test_the_tier_record_announces_the_effective_chunk(tmp_path) -> None:
     mount.mkdir()
     proc = tmp_path / "proc"
     proc.mkdir()
+    nodes = tmp_path / "memory_nodes"
+    (nodes / "node0").mkdir(parents=True)
+    (nodes / "has_memory").write_text("0\n")
+    (nodes / "node0" / "meminfo").write_text(
+        f"Node 0 MemTotal: {(294 * GIB) // 1024} kB\n")
     (proc / "mounts").write_text(f"tmpfs {mount} tmpfs rw,noswap,size=256G 0 0\n")
     (proc / "meminfo").write_text(
         f"MemTotal:  {(294 * GIB) // 1024} kB\n")
@@ -190,7 +195,8 @@ def test_the_tier_record_announces_the_effective_chunk(tmp_path) -> None:
             arcstats_path=str(proc / "arcstats"),
             ram_policy=policy(**over), statvfs=read,
             proc_mounts=str(proc / "mounts"),
-            meminfo_path=str(proc / "meminfo"), rows_held_gib=0)
+            meminfo_path=str(proc / "meminfo"), memory_numa_root=str(nodes),
+            rows_held_gib=0)
         return tiers.get(storage_tiers.tier_id("ram", "dl380g10"))
 
     assert record()["promotion_chunk_gib"] == 40

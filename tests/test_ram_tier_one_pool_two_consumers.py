@@ -36,6 +36,13 @@ def _ram_tier(tmp_path: Path, *, window_gib: int, rows_held_gib: int | None,
     mount.mkdir(exist_ok=True)
     proc = tmp_path / "proc"
     proc.mkdir(exist_ok=True)
+    nodes = tmp_path / "memory_nodes"
+    nodes.mkdir(exist_ok=True)
+    (nodes / "has_memory").write_text("0-3\n")
+    for node in range(4):
+        (nodes / f"node{node}").mkdir(exist_ok=True)
+        (nodes / f"node{node}" / "meminfo").write_text(
+            f"Node {node} MemTotal: {int(memtotal_gib * GIB / 4) // 1024} kB\n")
     (proc / "mounts").write_text(
         f"tmpfs {mount} tmpfs rw,relatime,noswap,size=256G,mpol=interleave:0-3 0 0\n")
     (proc / "meminfo").write_text(
@@ -62,7 +69,8 @@ def _ram_tier(tmp_path: Path, *, window_gib: int, rows_held_gib: int | None,
             "system_reserve_gib": 16, "prefill_depth": None,
         },
         statvfs=statvfs, proc_mounts=str(proc / "mounts"),
-        meminfo_path=str(proc / "meminfo"), rows_held_gib=rows_held_gib)
+        meminfo_path=str(proc / "meminfo"), memory_numa_root=str(nodes),
+        rows_held_gib=rows_held_gib)
     return tiers[RAM_TIER]
 
 
