@@ -339,6 +339,137 @@ def bind_ephemeral_scratch(queue, *, root_env: str, name: str,
         raise LocalScratchError(f"scratch binding refused: {exc}") from exc
 
 
+# -- durable declaration evidence, not required cleanup (Refs #1360) --------
+
+DECLARATIONS_ENV = "PRISMABUILD_EPHEMERAL_SCRATCH_DECLARATIONS"
+SCRATCH_DECLARATION_RECORD_SCHEMA_V1 = "prismabuild.scratch_declaration_record.v1"
+_MAX_DECLARATION_INPUT_BYTES = 16 * 1024
+_MAX_DECLARATIONS = 64
+_MAX_DECLARATION_RECORD_BYTES = 256 * 1024
+_DECLARATION_RECORD_FIELDS = frozenset({
+    "schema", "purpose", "cleanup_required", "claim_envelope", "declarations"})
+
+
+def _sealed_scratch_variables(claim: Mapping[str, object], *,
+                              allow_missing: bool = False) -> Mapping[str, str]:
+    from . import pool
+
+    key = _scratch_hex(claim.get("action_key"), 64, "action_key")
+    root = _canonical_root(claim.get("cas_root"))
+    if root is None:
+        raise LocalScratchError("scratch declarations need a canonical CAS root")
+    action = pool._sealed_action_request(root, key)
+    if action is None:
+        if allow_missing:
+            # Only the existing executor's proven-absent-request legacy path.
+            # Unreadable/malformed/mismatched requests still propagate refusal.
+            return {}
+        raise LocalScratchError("no sealed action request for scratch declarations")
+    environment = action["environment"]
+    assert isinstance(environment, Mapping)
+    variables = environment["variables"]
+    assert isinstance(variables, Mapping)
+    return cast(Mapping[str, str], variables)
+
+
+def _scratch_selections(variables: Mapping[str, str]) -> list[dict[str, str]]:
+    """Read only an explicit, bounded sealed naming selection; off is empty."""
+    from . import core
+
+    raw = variables.get(DECLARATIONS_ENV)
+    if raw is None or raw == "":
+        return []
+    if not isinstance(raw, str):
+        raise LocalScratchError("scratch declaration selection must be JSON text")
+    try:
+        data = raw.encode("utf-8")
+        if len(data) > _MAX_DECLARATION_INPUT_BYTES:
+            raise LocalScratchError("scratch declaration selection exceeds 16 KiB")
+        selected = core._decode_strict_json(data, where="sealed scratch declaration selection")
+    except (ValueError, UnicodeError, RecursionError) as exc:
+        raise LocalScratchError(f"invalid scratch declaration selection: {exc}") from exc
+    if not isinstance(selected, list) or len(selected) > _MAX_DECLARATIONS:
+        raise LocalScratchError("scratch declaration selection must be a list of at most 64 entries")
+    if not selected:
+        return []
+    roots = {pair["root_env"] for pair in scratch_pairs(variables)}
+    result: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for entry in selected:
+        if not isinstance(entry, dict) or set(entry) != {"root_env", "name"}:
+            raise LocalScratchError("scratch selection entries must contain only root_env and name")
+        root, name = entry["root_env"], entry["name"]
+        if not isinstance(root, str) or root not in roots:
+            raise LocalScratchError("scratch selection root_env is not a sealed scratch pair")
+        if not isinstance(name, str) or not _COMPONENT.fullmatch(name):
+            raise LocalScratchError("scratch selection name must be one ASCII path component")
+        if (root, name) in seen:
+            raise LocalScratchError("duplicate scratch declaration selection")
+        seen.add((root, name))
+        result.append({"root_env": root, "name": name})
+    return result
+
+
+def _scratch_declaration_record(value: object) -> dict[str, object]:
+    """Validate audit evidence only; never a cleanup completion or authority."""
+    from . import core
+
+    if (not isinstance(value, Mapping) or set(value) != _DECLARATION_RECORD_FIELDS
+            or value["schema"] != SCRATCH_DECLARATION_RECORD_SCHEMA_V1
+            or value["purpose"] != "declaration-only"
+            or type(value["cleanup_required"]) is not bool or value["cleanup_required"]):
+        raise LocalScratchError("scratch declaration record is not declaration-only evidence")
+    envelope = value["claim_envelope"]
+    if not isinstance(envelope, Mapping):
+        raise LocalScratchError("scratch declaration record lacks its claim envelope")
+    attempt = envelope.get("owner_attempt")
+    if not isinstance(attempt, Mapping):
+        raise LocalScratchError("scratch declaration record lacks its attempt identity")
+    checked = _scratch_claim_envelope({
+        **envelope, "resource_scope": {"action_key": envelope.get("action_key"), **attempt}})
+    if core.canonical_sha256(checked) != core.canonical_sha256(envelope):
+        raise LocalScratchError("scratch declaration envelope fields disagree")
+    declarations = value["declarations"]
+    if not isinstance(declarations, list) or not 0 < len(declarations) <= _MAX_DECLARATIONS:
+        raise LocalScratchError("scratch declaration record needs 1 to 64 declarations")
+    seen: set[tuple[object, object]] = set()
+    normalized = []
+    for raw in declarations:
+        declaration = _scratch_declaration(raw)
+        if (declaration["owner_action_key"] != checked["action_key"]
+                or declaration["owner_published_unix"] != checked["published_unix"]
+                or declaration["owner_host"] != checked["claimed_host"]
+                or declaration["owner_attempt"] != checked["owner_attempt"]):
+            raise LocalScratchError("scratch declaration record has a foreign owner")
+        identity = (declaration["root_env"], declaration["name"])
+        if identity in seen:
+            raise LocalScratchError("scratch declaration record contains duplicates")
+        seen.add(identity)
+        normalized.append(declaration)
+    record = {**value, "claim_envelope": checked, "declarations": normalized}
+    if len(core._canonical_bytes(record)) > _MAX_DECLARATION_RECORD_BYTES:
+        raise LocalScratchError("scratch declaration record exceeds 256 KiB")
+    return record
+
+
+def record_ephemeral_scratch_declarations(
+    queue, *, claim_snapshot: Mapping[str, object],
+    env: Mapping[str, str] | None = None,
+) -> dict[str, object] | None:
+    """Commit sealed naming evidence through the queue's existing key lock.
+
+    Returns None when off. Persistence failures propagate. This is not required
+    cleanup registration, filesystem/quota or broker authenticity proof; no
+    directory is created, traversed or removed and no capacity is changed.
+    """
+    if not isinstance(claim_snapshot, Mapping):
+        raise LocalScratchError("scratch recording needs a claim snapshot mapping")
+    key = _scratch_hex(claim_snapshot.get("action_key"), 64, "action_key")
+    return queue._record_ephemeral_scratch_declarations(
+        key, claim_snapshot=claim_snapshot,
+        env=os.environ if env is None else env)
+
+
 # -- the live offer: measured by the supervisor, read by the loops (#1190) ---
 
 #: Where each box keeps its live ``--spool-gb`` measurement, carried from the

@@ -42,6 +42,9 @@ The surface, by area:
 * **Ephemeral scratch naming** (SDK v2, no lifetime capability):
   :func:`bind_ephemeral_scratch`, :func:`ephemeral_scratch_path`,
   :data:`EPHEMERAL_SCRATCH_SCHEMA_V1`, :class:`LocalScratchError`.
+* **Durable scratch declaration evidence** (SDK v3, not cleanup registration):
+  :func:`record_ephemeral_scratch_declarations`,
+  :data:`SCRATCH_DECLARATION_RECORD_SCHEMA_V1`.
 * **Receipts**: :func:`cas_receipt_self_check`.
 * **Identifiers and digests**: :data:`ID_PATTERN`, :data:`ENV_NAME_PATTERN`,
   :func:`canonical_sha256`.
@@ -68,7 +71,7 @@ from . import storage_tiers as _storage_tiers
 
 #: The contract version.  Bumped on any change to the names below, their
 #: signatures, or the values of the constants.
-SDK_VERSION = 2
+SDK_VERSION = 3
 
 # -- reader leases (capability ``reader-lease-v1``) --------------------------
 
@@ -203,6 +206,8 @@ EPHEMERAL_SCRATCH_SCHEMA_V1 = _local_scratch.EPHEMERAL_SCRATCH_SCHEMA_V1
 LocalScratchError = _local_scratch.LocalScratchError
 bind_ephemeral_scratch = _local_scratch.bind_ephemeral_scratch
 ephemeral_scratch_path = _local_scratch.ephemeral_scratch_path
+SCRATCH_DECLARATION_RECORD_SCHEMA_V1 = _local_scratch.SCRATCH_DECLARATION_RECORD_SCHEMA_V1
+record_ephemeral_scratch_declarations = _local_scratch.record_ephemeral_scratch_declarations
 
 # -- receipts ----------------------------------------------------------------
 
@@ -327,6 +332,7 @@ __all__ = [
     # ephemeral scratch naming (no lifetime capability)
     "EPHEMERAL_SCRATCH_SCHEMA_V1", "LocalScratchError",
     "bind_ephemeral_scratch", "ephemeral_scratch_path",
+    "SCRATCH_DECLARATION_RECORD_SCHEMA_V1", "record_ephemeral_scratch_declarations",
     # receipts
     "CAS_RECEIPT_SCHEMA_V3", "WORKER_ATTESTATION_SCHEMA_V2",
     "RECEIPT_REFUSALS", "cas_receipt_self_check",

@@ -6456,7 +6456,7 @@ class PoolQueue:
         "container_cleanup_pending", "container_cleanup_checked_unix",
         "container_cleanup_attempts", "container_cleanup_first_failed_unix",
         "stop_pending", "resource_scope", "resource_scope_cleanup",
-        "finish_pending", "resource_scope_intent",
+        "finish_pending", "resource_scope_intent", "scratch_declaration_record",
     )
 
     def _shape_as_ready_item(
@@ -11039,7 +11039,7 @@ class PoolQueue:
         # evidence, including the evidence used by finish's cleanup guard.
         _check_claim_lease_identity(action_key, claim, _read_json(self.lease_path(action_key)))
         for field in ("resource_scope", "resource_scope_intent", "resource_scope_cleanup",
-                      "claimed_unix", "published_unix"):
+                      "claimed_unix", "published_unix", "scratch_declaration_record"):
             if field in claim:
                 lease[field] = claim[field]
         _write_json_atomic(self.lease_path(action_key), lease)
@@ -17067,6 +17067,82 @@ class PoolQueue:
         return None
 
     @_serialized_key
+    def _record_ephemeral_scratch_declarations(
+        self, action_key: str, *, claim_snapshot: Mapping[str, object],
+        env: Mapping[str, str],
+    ) -> dict[str, object] | None:
+        """Serialize declaration-only evidence with claim/lease mutations.
+
+        No deletion, new reservation, cleanup obligation or capacity-release
+        rule follows from this record. A matching envelope is not broker or
+        filesystem authenticity proof. Atomic claim publication may precede
+        lease mirroring on failure; replay repairs that mirror before return.
+        """
+        from . import local_scratch
+
+        variables = local_scratch._sealed_scratch_variables(claim_snapshot)
+        selected = local_scratch._scratch_selections(variables)
+        if not selected:
+            return None
+        expected = local_scratch._scratch_claim_envelope(claim_snapshot)
+        if expected["action_key"] != action_key:
+            raise local_scratch.LocalScratchError("scratch declaration action key disagrees")
+        path = self.item_path(CLAIMED, action_key)
+        live = _read_json(path)
+        observed = local_scratch._scratch_claim_envelope(live)
+        if pb.canonical_sha256(observed) != pb.canonical_sha256(expected):
+            raise local_scratch.LocalScratchError("scratch declaration claim envelope changed")
+        assert live is not None
+        lease_path = self.lease_path(action_key)
+        lease = _read_json(lease_path)
+        if lease is None:
+            raise local_scratch.LocalScratchError("scratch recording requires the worker's existing lease")
+        _check_claim_lease_identity(action_key, live, lease)
+        # The generic heartbeat guard predates exact scope evidence. This
+        # new writer must not erase a contradictory recovery authority.
+        for control_field, identities in (
+            ("resource_scope", ("action_key", "nonce", "scope_id")),
+            ("resource_scope_intent", ("action_key", "nonce")),
+        ):
+            if control_field in lease:
+                previous_control = lease[control_field]
+                current_control = live.get(control_field)
+                if (not isinstance(previous_control, Mapping)
+                        or not isinstance(current_control, Mapping)
+                        or any(previous_control.get(identity) != current_control.get(identity)
+                               for identity in identities)):
+                    raise local_scratch.LocalScratchError("scratch recording has contradictory lease scope authority")
+        host = self.resolve_claim_holder(action_key, live)
+        if host != socket.gethostname() or host != observed["claimed_host"]:
+            raise local_scratch.LocalScratchError("scratch declaration writer is not the owner host")
+        declarations = [local_scratch.bind_ephemeral_scratch(
+            self, root_env=entry["root_env"], name=entry["name"],
+            claim_snapshot=live, env=env) for entry in selected]
+        evidence = local_scratch._scratch_declaration_record({
+            "schema": local_scratch.SCRATCH_DECLARATION_RECORD_SCHEMA_V1,
+            "purpose": "declaration-only", "cleanup_required": False,
+            "claim_envelope": observed, "declarations": declarations})
+        field = "scratch_declaration_record"
+        if field in lease:
+            mirrored = local_scratch._scratch_declaration_record(lease[field])
+            if pb.canonical_sha256(mirrored) != pb.canonical_sha256(evidence):
+                raise local_scratch.LocalScratchError("conflicting lease scratch declaration record")
+        if field in live:
+            previous = local_scratch._scratch_declaration_record(live[field])
+            if pb.canonical_sha256(previous) != pb.canonical_sha256(evidence):
+                raise local_scratch.LocalScratchError("conflicting scratch declaration record")
+        else:
+            live[field] = evidence
+            _write_json_atomic(path, live)
+        # Merge only audit evidence: the recorder is not the worker heartbeat
+        # authority and cannot replace pid/child/observations or renew liveness.
+        # An already-correct mirror needs no write. A partial claim commit is
+        # replayable, but never reports success before this mirror settles.
+        if field not in lease:
+            _write_json_atomic(lease_path, {**lease, field: evidence})
+        return evidence
+
+    @_serialized_key
     def _start_resource_scope(self, item: Mapping[str, object]) -> resource_scope.ResourceScope:
         key = str(item["action_key"])
         request = Path(str(item["cas_root"])) / "requests" / key[:2] / f"{key}.json"
@@ -20804,6 +20880,9 @@ class PoolQueue:
                     self.lease_path(key).unlink(missing_ok=True)
                     continue
                 if self.withdrawal_covers(record, action_key=key) is not None:
+                    if "scratch_declaration_record" in record:
+                        self._file_superseded(record, key=key,
+                                              kind="scratch-declarations-after-withdrawal")
                     # A withdrawal that could not finish its own cleanup -- the
                     # operator's box died mid-verb, say -- leaves a claimed record
                     # whose lease nobody refreshes.  Requeueing that is the one
@@ -21789,6 +21868,15 @@ class PoolQueue:
             raise PoolContractError("max_attempts must be a positive integer")
 
         details = dict(detail or {})
+        if "scratch_declaration_record" in record:
+            from . import local_scratch
+
+            evidence = local_scratch._scratch_declaration_record(record["scratch_declaration_record"])
+            if ("scratch_declaration_record" in details
+                    and pb.canonical_sha256(details["scratch_declaration_record"])
+                    != pb.canonical_sha256(evidence)):
+                raise PoolContractError("attempt scratch declaration evidence disagrees")
+            details["scratch_declaration_record"] = evidence
         logs: dict[str, dict[str, object]] = {}
         for stream in ("stdout", "stderr"):
             value = details.pop(stream, "")
@@ -22647,6 +22735,9 @@ class PoolQueue:
             # somebody else, so there is nothing here to file either way.
             if read_claim is None:
                 return self.item_path(WITHDRAWN, action_key)
+            if "scratch_declaration_record" in record:
+                self._file_superseded(record, key=action_key,
+                                      kind="scratch-declarations-after-withdrawal")
             tombstone, mine = self._entomb_claim(action_key, expect=read_claim)
             if not mine or tombstone is None:
                 return self.item_path(WITHDRAWN, action_key)
@@ -24450,7 +24541,20 @@ class PoolQueue:
                 "argv": argv,
                 "cpu_allocation": allocation,
             }
+        from . import local_scratch
+
+        selected = local_scratch._scratch_selections(
+            local_scratch._sealed_scratch_variables(item, allow_missing=True))
+        if selected and not containment:
+            raise local_scratch.LocalScratchError("scratch declarations require contained launch metadata")
         scope = self._start_resource_scope(item) if containment else None
+        if selected:
+            assert scope is not None
+            evidence = self._record_ephemeral_scratch_declarations(
+                key, claim_snapshot=item, env={
+                    pb.ACTION_KEY_ENV: key, pb.ACTION_NONCE_ENV: scope.nonce,
+                    pb.ACTION_SCOPE_ENV: scope.unit})
+            item["scratch_declaration_record"] = evidence
         if scope is not None:
             # The broker launches taskset inside the aggregate slice. The
             # stdio proxy itself is not an attributed action process. The
