@@ -14290,9 +14290,9 @@ Freeze derives the demand again from the final environment and refuses a
 sealed `spool_gb` that differs. A pair is never inferred from a variable's
 name: without the list, an environment that carries scratch-shaped variables
 seals exactly the demand it sealed before, and `pbrun` does not import the
-module. PrismaBuild charges the bound; it does not check at run time that a
-root sits on the declared `local_disk` filesystem, or that the action stays
-under its ceiling. PrismaQuant's launcher and the action's own byte bound do
+module. The capacity-only path charges the bound; it does not check at run time
+that a root sits on the declared `local_disk` filesystem, or that the action
+stays under its ceiling. PrismaQuant's launcher and the action's own byte bound do
 both. ROOT/MAX reservation is **not filesystem quota enforcement**; arbitrary
 library/compiler-cache writes are not bounded by PB. Producers remain responsible
 for their own write bounds and local-filesystem checks.
@@ -14394,6 +14394,235 @@ required cleanup settles. None is implemented by this naming slice. The
 staged-read SM-01/INV-01/INV-07 targets remain owed for scratch finalization;
 this change promotes no requirement/deployment/workload axis in the ledger.
 No full scratch-lifetime capability is advertised, and #1360 remains open.
+### Opt-in measured scratch service placement (Refs #1182, 2026-09-29)
+
+This optional path additionally binds its profile to the current root
+filesystem. Like the capacity-only path, it does not enforce written bytes.
+
+**Source contract, not deployment or performance qualification.** Occupancy
+is not traffic. The issue's `199051640832` byte ceiling rounds to **186 GiB**;
+tests explicitly use the same number as traffic only as a fixture input, not
+a claim about Stage-B writes. No default, #747/#905 price/window, priority band,
+CPU-only-host precedence, GPU isolation, or ordinary token gate changes.
+
+An action opts in through sealed `PRISMABUILD_LOCAL_SCRATCH_IO` JSON with
+exact fields `schema="prismabuild.local_scratch_io.v1"`, integer nonnegative
+`write_bytes` and `read_bytes` (at least one positive), explicit comparable
+`profile_contract`, and positive finite `max_profile_age_s`. This first slice
+requires pool transport and **exactly one** declared scratch pair/root;
+multiple pairs refuse rather than inventing a traffic split. Traffic may exceed
+occupancy. Prepare derives `local-scratch-io-v1` as a worker code fence; freeze
+rechecks declaration/demand/fence consistency. Publication derives the optional
+row projection from the actual CAS-filed sealed request, not an unsealed API
+kwarg. Claim independently rechecks this authority and refuses erased/forged
+projections or absent host-ledger admission. Dynamic rates/profiles do not
+enter action identity. Without the I/O declaration, identity and capacity-only
+placement remain unchanged and no profile inputs are read for that action.
+
+**Producer and scope.** `tools/fleet/local_scratch_profile.py` runs only as a
+PB-admitted child, through an exact isolated command at the checkout root:
+
+```bash
+# Submit through the published runtime, with explicit native bounds/timeout.
+# The root must already exist on an eligible local disk. Class placement is
+# allowed; no application hostname pin or coordinator-side benchmark.
+python3 /mnt/shared/prismabuild-fleet/repo/tools/pbrun.py \
+  --cwd /path/to/prismabuild-checkout --transport pool --tag gb10 \
+  --cpus 1 --demand mem_gb=4 --timeout-s 300 \
+  --env OMP_NUM_THREADS=1 --env MKL_NUM_THREADS=1 --env OPENBLAS_NUM_THREADS=1 \
+  --env PQ_PROFILE_ROOT=/home/rob/pq-scratch/profile \
+  --env PQ_PROFILE_MAX_BYTES=1048576 \
+  --env PRISMABUILD_LOCAL_SCRATCH_PAIRS=PQ_PROFILE_ROOT:PQ_PROFILE_MAX_BYTES \
+  --env PRISMABUILD_PROFILE_OBSERVATION_ID=explicit-new-run-01 \
+  -- /home/rob/venvs/pb-cpu/bin/python -I -S tools/fleet/local_scratch_profile.py \
+     --root /home/rob/pq-scratch/profile --bytes 1048576 \
+     --block-bytes 65536 --repetitions 1 \
+     --result prismabuild-local-scratch-profile.json
+```
+
+These sizes are an illustrative semantic smoke, **not a qualification workload
+or production default**. Use explicit reviewed workload/resource inputs for
+qualification. New observation IDs request new work; identical receipted actions
+reuse their original profile/timestamp, never refresh it on a cache hit. PB owns
+placement; this command neither guarantees both hosts are measured nor supplies
+a paired-host qualification. All non-vLLM execution follows PB policy; profile
+qualification remains coordinator-owned.
+
+The sole implemented producer method is
+`buffered-sequential-write-fdatasync-read.v1`, contract
+`prismabuild.local_scratch_io.buffered_seq_sync.v1`. Explicit bytes, block bytes
+and repetitions bound work. A deterministic repeated SHAKE-256 block is prepared
+before timing; each repetition writes the bounded file, fdatasyncs, then reads
+it through buffered calls. The pattern is `repeated-shake256-block.v1`. Write
+elapsed includes fdatasync; read elapsed is **warm buffered filesystem-call
+service**, not physical-disk read bandwidth. No cache eviction, O_DIRECT,
+pressure multiplier, random-I/O or representative-spill claim. Different
+bytes/block/repetitions/pattern envelopes are not comparable even under the
+same method name. A caller's traffic declaration must explicitly select this
+contract; no universal throughput inference is made. Placement accepts only
+this supported contract/method/pattern triple; an unsupported nonempty method
+or pattern is not a measured price.
+
+This producer alone uses direct isolated interpreter argv and a dedicated
+`prismabuild-local-scratch-profile.json` declared result through existing PB
+file-result/CAS plumbing. There is no shell or PATH-resolved tee in its
+execution; stdout/logs are not profile authority. The fixed producer pair is
+`PQ_PROFILE_ROOT:PQ_PROFILE_MAX_BYTES`, unlike general action scratch pairs.
+Its environment is closed to exact normal defaults, native thread values of
+one, explicit observation ID, the fixed pair and validated derived
+owner/marker/CUDA-empty values; custom PATH, startup, loader and Python-path
+hooks refuse. External profiler/image injection is unsupported. Other pbrun
+commands retain their original wrapper/toolchain/results/environment.
+
+The recorder exclusively creates the dedicated result containing canonical
+`prismabuild.local_scratch_io_profile.v1` BODY plus LF. It records host/root, actual directional
+bytes/elapsed, original `started_unix`/`ended_unix`, `measured_unix=started_unix`,
+completion/errors, producer action key, exact command envelope/pattern and
+start/end filesystem identities. `device` is descriptor `st_dev`; `filesystem`
+is descriptor `statvfs.f_fsid`; `root_inode` is the directory descriptor's
+`st_ino` string and detects same-filesystem root replacement; no mtime/ctime
+comparison is made (the producer changes those itself). `filesystem_type` is
+a separate trait, obtained
+by exact Linux fdinfo mount-ID matching against mountinfo, never a path-prefix
+or ancestor guess. Only exact ext4/xfs/btrfs/zfs types are admitted. tmpfs,
+ramfs, network, unknown, malformed/unreadable identities and changes fail
+closed. The temporary file is descriptor-relative, exclusively created, checked
+on the root filesystem and removed; no scratch data cache is introduced.
+SIGTERM unwinds cleanup; SIGKILL/OOM may leave a bounded scratch file and never
+qualifies a successful profile. Inode reuse/ABA and compromised host/kernel
+observations are not solved by this identity tuple.
+
+**Configured worker inputs, actual offer path.** A worker optionally receives
+`--local-scratch-profile-config /absolute/config.json`; absent configuration
+loads no profile artifacts. Config schema is
+`prismabuild.local_scratch_io_profiles.v1`, with `profiles` references containing
+exact `cas_root`, `action_key`, `artifact_sha256`, `root`, `profile_contract`.
+The operator configures immutable measured inputs, not rates or host choices.
+`artifact_sha256` hashes canonical BODY excluding the digest field; the CAS
+result SHA-256 hashes BODY **plus LF** and is distinct. A hash alone certifies
+bytes, not benchmark execution.
+
+`local_scratch.ProfileInputs` verifies the actual successful canonical CAS
+receipt/result and exact sealed recorder command, envelope, host/root/contract,
+counts, timing and source. It requires the independently operator-configured
+worker `--python` path to match the producer's exact interpreter path (the
+example therefore needs workers independently configured with that venv).
+Actual Python version and executable SHA/bytes must be receipt-verified; the
+consumer's own binary bytes are not compared, preserving heterogeneous hosts.
+This trusts the existing approved PB interpreter/stdlib installation, worker,
+operator configuration and CAS boundary; it is not cryptographic CPython
+provenance or authentication of arbitrary Python-like binaries/hostile CAS.
+Legacy stdout-only records and missing inode/envelope facts refuse; no silent
+migration or manufactured defaults. It uses the existing CAS checkout materializer and
+closure verifier to prove the executed snapshot's three producer files
+(`tools/fleet/local_scratch_profile.py`, `src/prismabuild/local_scratch.py`,
+`src/prismabuild/core.py`) match the installed producer and verifies the derived
+owner/marker against original sealed checkout identity. The isolated -I -S
+producer depends only on stdlib and those verified files. Normal package mode
+imports Core's recipes; isolated mode loads only sibling `core.py` derived from
+the scratch module's own file, without namespace injection, environment paths,
+`sys.path` changes or fallback recipes. The CLI reuses that bound canonical
+BODY+LF writer without loading Core again. Core owns raw source-byte SHA-256,
+the fixed SHAKE-256 block recipe (positive integer length only), and positive
+finite validation; the scratch predicate discards normalization so accepted
+int/float observations retain their original types. Core's self-source capture
+runs at startup, outside I/O timing. All three installed/materialized file
+identities remain in verification and its cache key. This recipe Core identity
+is not the receipt's worker-launcher Core identity, and does not require
+producer/consumer interpreter-byte equality. Full-Core binding means even
+unrelated Core changes invalidate old profiles: explicit remeasurement is
+required, not grandfathering. Materialization uses the existing owned checkout
+root/lifecycle, outside admission, not a parallel cache. Immutable
+verification is cached by CAS/action/receipt/result/installed-source and
+independently configured interpreter identity;
+unchanged offer polls do not rematerialize snapshots. Metadata is bounded to
+64 KiB; changed/missing/malformed proofs/source fail closed. A byte bound does
+not bound JSON nesting: decoder `RecursionError` is contained at the existing
+observation boundary. An invalid configuration publishes no profiles; a broken
+reference invalidates every profile/device observation for that root, including
+older good references. No interpreter recursion-limit change or guessed depth
+threshold is introduced. Recorder params,
+command/demand containers and both declared/result envelopes are validated
+before indexing or interpreting them; a real successful receipt does not make
+malformed params valid. Broken configured refs invalidate their root rather
+than escaping worker polling or falling back to older good input.
+
+The actual loop merges these qualified profiles into
+`observed_detail.local_scratch_io_profiles` and independently observed current
+root identities into `observed_detail.local_scratch_devices`. Refreshing offers
+preserves ORIGINAL measurement time. Config is read-your-profile: a result for
+another host/root or a replaced device/filesystem/root inode is not this worker's profile.
+Source/receipt changes are not silently grandfathered; remeasure explicitly.
+Synthetic tests publish labelled generic observations through `announce`; they
+are not proof of producer execution, hardware rates or deployed worker support.
+
+**Independent placement and durable verdict.** After existing CPU-only-host
+and cross-resource rules, each worker estimates directional service seconds
+`write_bytes/write_rate + read_bytes/read_rate`; only positive traffic directions
+require positive finite measured rates. Unknown required directions never cost
+zero. A strictly cheaper comparable live host must fit the entire current
+reservation (free tokens, preferred CPUs, observed capacity and compatibility).
+That conservative fit approximation applies to PEERS, not the local claimant.
+Local fallback, borrowing/funding, GPU probes and shortage-triggered priority
+preemption remain reachable through normal admission/acquisition; local fit is
+recorded only after the actual winning reservation. Existing per-pass host
+views prevent promising more work than fits; placement
+remains independent and the ordinary atomic rename wins. Equal cost never
+yields. Full/draining/incompatible/gone/invalid peers are not runnable
+alternatives. Current held isolation evidence is separate from a diagnostic
+pass-on. A pass-on needs exact action/publication/attempt/host, refusal no older
+than the offer/requeue, a decision sample whose TOTAL current age is within
+the existing CPU/GPU sample ceiling, and an actual CPU/GPU policy refusal.
+Two separately fresh intervals do not certify a currently fresh sample.
+The closed sample-backed policy subset is CPU `host_pressure` or
+`measurement_foreign_ambient`, with explicit fresh CPU evidence, and GPU
+`host_or_device_congested`, with the existing complete, attributed, correctly
+shaped device/domain/instrument evidence. Unknown samples and early or
+unlisted refusal reasons are not policy authority. Fairness display suffixes
+`_withholding`, `_starved`, and `_past_ceiling` preserve the underlying recorded
+policy class; unknown suffixes do not. Identity, original sample age, and
+policy-evidence checks still apply to decorated records.
+Stale/incorrect/previous-attempt records, transition_busy, admission
+contention, measurement_holder and exclusive_holder do not end yield. There is
+no new guessed capacity-only escape timer. Peer snapshots are not complete
+remote admission or a guarantee of globally optimal scheduling.
+
+After peer ledger and isolation reads, the worker rereads the peer's small
+offer and verifies the original artifact, measurement time, workload, method,
+root identity, eligibility and fit. Original peer price age is checked again
+after the local boundary reads; a refreshed announcement cannot refresh an
+old measurement or silently substitute a new price.
+
+All peer/CAS/identity reads precede host admission. The worker rechecks its
+current offer eligibility/root/profile and exact READY publication/attempt
+after slow reads and immediately before the lock. Captured publication/attempt
+binding, ORIGINAL profile age and offer freshness are checked again under the
+lock at the actual token boundary, without new shared-file reads there.
+After rename, the actual moved bytes must still match that evaluated sealed
+key/publication/attempt/projection. Even a same-demand reentrant replacement
+is restored through existing rollback with tokens/probe credit returned; its
+verdict is not retimestamped from an earlier generation. No filesystem benchmark or slow profile/peer I/O occurs under admission.
+Unknown local profile state leaves READY unchanged without tokens, lease,
+attempt or starvation-pass spending. Real CPU/GPU freshness, memory, isolation,
+borrowing and token acquisition remain authoritative. In particular, stale
+CPU telemetry does not invent a new refusal of ordinary reserved preferred
+CPU work; stricter measurement/unbounded/borrow proofs retain existing policy.
+
+The actual renamed winner carries `local_scratch_io_placement`, schema
+`prismabuild.local_scratch_io_placement.v1`: sealed declaration/root/generation,
+selected host, candidate original profile identities/digests, envelope/pattern,
+directional rates/traffic/seconds, whole-demand fit observations and exclusions.
+Finish and the central immutable attempt archive propagate the actual claim
+into terminal/attempt `detail`, even with empty caller detail; retry strips the
+active claim field and reobserves while preserving immutable attempt history.
+This queue placement receipt is distinct from the outer PB test CAS receipt.
+
+**Acceptance outstanding.** Parent-reproduced old-source behavioral RED is
+recorded separately; source-bound integrated GREEN and independent review are
+owed. Actual worker/producer deployment, representative paired GB10 profiles,
+pressure policy, real Stage-B traffic/calibration and 199-GB workload placement
+and speedup remain unqualified. This slice is **Refs #1182**, not full issue or
+staged-read/campaign completion. No ledger deployment/workload axis is promoted.
 
 ### Durable scratch declaration evidence (SDK v3, Refs #1360)
 

@@ -110,7 +110,7 @@ immediately. Execution deadlines and progress watches use local monotonic time.
 from __future__ import annotations
 
 from collections.abc import Callable, Container, Iterable, Iterator, Mapping, Sequence
-from typing import NamedTuple
+from typing import Any, NamedTuple, cast
 from contextlib import contextmanager, nullcontext, suppress
 import contextvars
 import errno
@@ -154,6 +154,7 @@ from . import resource_scope
 from . import posix_lock
 from . import window_credit
 from . import publication_canary
+from . import local_scratch
 
 POOL_ITEM_SCHEMA_V1 = "prismaquant.prismabuild.pool_item.v1"
 POOL_CLAIM_INTENT_SCHEMA_V1 = "prismaquant.prismabuild.pool_claim_intent.v1"
@@ -6071,6 +6072,10 @@ class PoolQueue:
                 publication_canary.load(self.root, canary_ref, action_key)
             elif publication_canary.CAPABILITY in normalized_tags:
                 raise PoolContractError("publication canary capability requires sealed intent")
+            scratch_io = self._sealed_scratch_io(
+                sealed_request, tags=normalized_tags, resources=demand)
+            if scratch_io is None and local_scratch.IO_CAPABILITY in normalized_tags:
+                raise PoolContractError("scratch I/O capability requires sealed traffic intent")
         except PoolContractError:
             raise
         except (ValueError, OSError) as exc:
@@ -6372,6 +6377,8 @@ class PoolQueue:
             "published_by": socket.gethostname(),
             **addressing,
         }
+        if scratch_io is not None:
+            item[local_scratch.IO_ENV] = scratch_io
         if reason is not None:
             # Optional publication metadata: no key, order or enforcement change.
             item["priority_reason"] = reason
@@ -6457,6 +6464,7 @@ class PoolQueue:
         "container_cleanup_attempts", "container_cleanup_first_failed_unix",
         "stop_pending", "resource_scope", "resource_scope_cleanup",
         "finish_pending", "resource_scope_intent", "scratch_declaration_record",
+        local_scratch.PLACEMENT,
     )
 
     def _shape_as_ready_item(
@@ -8553,7 +8561,7 @@ class PoolQueue:
                 evidence.setdefault("dependent_of", item.get("dependent_of"))
             record = {
                 "action_key": key, "published_unix": float(item["published_unix"]),
-                "host": host, "reason": reason,
+                "host": host, "reason": reason, "attempts": item.get("attempts", 0),
                 "evidence": self._bounded_denial_value(evidence), "denied_unix": _now()}
             batch = _CLAIM_DIAGNOSTICS.get()
             if batch is not None and batch.queue is self:
@@ -17897,6 +17905,310 @@ class PoolQueue:
                         "demand": dict(demand)}
         return None
 
+    @staticmethod
+    def _sealed_scratch_io(request, *, tags, resources):
+        if request is None:
+            return None
+        variables = request["environment"]["variables"]
+        intent = local_scratch.io_intent(variables)
+        if intent is None:
+            return None
+        params = request["params"]
+        required = set(params["placement"]["required_tags"])
+        if (local_scratch.IO_CAPABILITY not in required or not required.issubset(set(tags))
+                or params["demand"] != resources
+                or resources.get(local_scratch.KIND, 0) < local_scratch.scratch_terms(variables)[local_scratch.KIND]):
+            raise PoolContractError("scratch I/O sealed demand/placement disagrees with row")
+        return intent
+
+    def _scratch_record_matches(self, current, evaluated, intent):
+        """Bind optional verdicts to the existing publication and numbered attempt."""
+        if not isinstance(current, Mapping):
+            return False
+        if any(type(r.get("attempts", 0)) is not int or r.get("attempts", 0) < 0
+               for r in (current, evaluated)):
+            return False
+        try:
+            return (self.attempt_generation(current) == self.attempt_generation(evaluated)
+                    and current.get("attempts", 0) == evaluated.get("attempts", 0)
+                    and current.get(local_scratch.IO_ENV) == intent
+                    and all(current.get(k) == evaluated.get(k) for k in (
+                        "cas_root", "resources", "tags", "needs_gpu", "published_by", "requeued_unix")))
+        except (ValueError, TypeError, KeyError, PoolContractError):
+            return False
+
+    def _scratch_peer_passed_on(self, item, offer, view, *, now):
+        """Only current, exact-generation, sample-backed policy refusals count.
+
+        A diagnostic's mere existence is not scheduling authority. Older
+        offers/attempts, stale samples and transient locks/isolation do not
+        end a measured-cost yield; no reason-ring fallback supplies authority.
+        """
+        identity = f"{item['action_key']}:{repr(float(item['published_unix']))}"
+        record = view["denials"].get(identity)
+        if not isinstance(record, Mapping):
+            return False
+        reason = record.get("reason")
+        # Fairness display suffixes do not change the recorded policy evidence.
+        # Recognize the closed vocabulary emitted by _starved_suffix, not an
+        # arbitrary adaptive_* prefix or an unknown suffix.
+        reason_class = next((base for base in (
+            "adaptive_cpu_refused", "adaptive_gpu_refused")
+            if isinstance(reason, str) and reason.split(":", 1)[0] in {
+                base + suffix for suffix in (
+                    "", "_withholding", "_starved", "_past_ceiling")}), None)
+        evidence = record.get("evidence")
+        if not isinstance(evidence, Mapping):
+            return False
+        decision = evidence.get("decision")
+        if (record.get("host") != offer["host"] or record.get("action_key") != item["action_key"]
+                or record.get("published_unix") != item["published_unix"]
+                or type(record.get("attempts")) is not int
+                or record["attempts"] != item.get("attempts", 0)
+                or reason_class is None
+                or not isinstance(decision, Mapping)):
+            return False
+        denied = record.get("denied_unix")
+        sample = decision.get("sample")
+        if not isinstance(sample, Mapping):
+            return False
+        if not self._scratch_refusal_sample_valid(reason_class, decision, sample, offer):
+            return False
+        sampled = sample.get("sampled_unix")
+        ceiling = (gpu_admission.MAX_SAMPLE_AGE_S if reason_class == "adaptive_gpu_refused"
+                   else cpu_admission.MAX_SAMPLE_AGE_S)
+        return (type(denied) in (float, int) and math.isfinite(denied)
+                and type(sampled) in (float, int) and math.isfinite(sampled)
+                and max(offer["announced_unix"], item.get("requeued_unix", item["published_unix"])) <= denied <= now
+                and 0 <= now - denied <= ceiling and 0 <= denied - sampled <= ceiling
+                and 0 <= now - sampled <= ceiling)
+
+    @staticmethod
+    def _scratch_refusal_sample_valid(reason, decision, sample, offer):
+        """A closed subset of controller refusals with affirmative observations.
+
+        Early holder/count refusals and unknown attribution, telemetry or
+        borrowing evidence are not measured pass-on. This is intentionally
+        narrower than admission: e.g. projected_cpu_cost publishes no explicit
+        fresh verdict. New controller reasons gain no authority by default.
+        """
+        policy = decision.get("reason")
+        if not isinstance(policy, str):
+            return False
+        if reason.startswith("adaptive_cpu_refused"):
+            tiers = offer.get("cpu_tiers")
+            if (policy not in {"host_pressure", "measurement_foreign_ambient"}
+                    or decision.get("fresh") is not True or not isinstance(tiers, Mapping)
+                    or not all(isinstance(tiers.get(k), list) for k in ("preferred", "fallback"))):
+                return False
+            # The controller's fresh sample shape, with age checked by the caller.
+            return (sample.get("cpu_count") == len(tiers["preferred"] + tiers["fallback"])
+                    and all(isinstance(sample.get(k), (float, int)) and math.isfinite(sample[k])
+                            for k in ("busy_cpus", "psi_some", "interval_s")))
+        if policy != "host_or_device_congested":
+            return False
+        # Congestion may be returned before the controller's final validity
+        # check. Corroborate its existing sample contract, not merely its time.
+        devices = sample.get("devices")
+        if (sample.get("schema") != "prismabuild.gpu_capacity.v1"
+                or sample.get("complete") is not True or sample.get("attributed") is not True
+                or not isinstance(sample.get("sample_id"), str) or not sample["sample_id"]
+                or not isinstance(devices, list) or len(devices) != 1
+                or not isinstance(devices[0], dict)
+                or not isinstance(sample.get("foreign_processes"), list)
+                or not isinstance(sample.get("jobs"), list)):
+            return False
+        number = gpu_admission._number
+        fields = ("host_total_bytes", "host_available_bytes", "memory_pressure_some",
+                  "memory_pressure_full", "cpu_pressure_some")
+        if (not all(number(sample.get(k)) for k in fields)
+                or not 0 < sample["host_total_bytes"] >= sample["host_available_bytes"]
+                or any(sample[k] > 100 for k in fields if "pressure" in k)):
+            return False
+        device = devices[0]
+        if (not isinstance(device.get("uuid"), str) or not device["uuid"]
+                or device.get("memory_domain") not in ("shared_system", "discrete")):
+            return False
+        if (device.get("telemetry_class") != gpu_admission.MEMORY_ONLY_TELEMETRY
+                and (not number(device.get("power_w")) or type(device.get("limited")) is not bool
+                     or not number(decision.get("power_reference_w"))
+                     or decision["power_reference_w"] <= 0)):
+            return False
+        # A discrete device's invalid memory observation is unknown even if
+        # another gate returned congestion before reaching its memory check.
+        return (device["memory_domain"] != "discrete"
+                or (all(number(device.get(k)) for k in (
+                    "memory_total_bytes", "memory_free_bytes", "memory_used_bytes"))
+                    and device["memory_total_bytes"] > 0
+                    and device["memory_free_bytes"] + device["memory_used_bytes"] <= device["memory_total_bytes"]))
+
+    def _scratch_placement(self, item, intent, demand, *, live, views):
+        """Independent worker choice; all shared offer/ledger reads precede admission."""
+        host, now = socket.gethostname(), _now()
+        matched = {str(o["host"]) for o in self._matching_offers(item, live=live)}
+        own = next((o for o in live if o.get("host") == host), None)
+        if own is None or host not in matched or own.get("state") == "draining":
+            raise local_scratch.LocalScratchError("scratch local offer missing or ineligible")
+        selected = local_scratch.profile_cost(own, intent, now=now)
+        candidates, cheaper, originals = [], [], {}
+        for offer in sorted(live, key=lambda o: str(o.get("host", ""))):
+            remote = str(offer.get("host", ""))
+            candidate = {"host": remote, "fit": False, "exclusion": None}
+            try:
+                candidate.update(local_scratch.profile_cost(offer, intent, now=_now()))
+                originals[remote] = offer
+                if remote == host:
+                    # Local feasibility belongs to the actual controllers and
+                    # acquisition, including fallback/borrowing/funding/probes
+                    # and token-shortage preemption. A peer-fit approximation
+                    # must not turn those normal paths into new local vetoes.
+                    candidate["fit"] = None
+                    candidate["fit_basis"] = "normal_host_admission_pending"
+                elif remote not in matched:
+                    candidate["exclusion"] = "incompatible_placement"
+                elif offer.get("state") == "draining":
+                    candidate["exclusion"] = "draining"
+                elif candidate["method"] != selected["method"]:
+                    candidate["exclusion"] = "incomparable_method"
+                elif (candidate["envelope"] != selected["envelope"]
+                      or candidate["pattern"] != selected["pattern"]):
+                    candidate["exclusion"] = "incomparable_workload"
+                elif self._opposite_resource_load(offer, gpu_job=bool(demand.get("gpu"))) is None:
+                    candidate["exclusion"] = "observations_not_fresh"
+                else:
+                    view = cast(dict[str, Any] | None, self._cpu_host_view(remote, offer, views))
+                    if view is None:
+                        candidate["exclusion"] = "host_view_unknown"
+                    elif not (view["free_preferred"] >= demand.get("cpu", 0)
+                              and all(min(view["available"].get(k, 0),
+                                          view["observed"].get(k, 0)) >= n for k, n in demand.items())):
+                        candidate["exclusion"] = "full_demand_does_not_fit"
+                    elif remote != host and self._scratch_isolated(remote, view):
+                        candidate["exclusion"] = "current_isolation_holder"
+                    else:
+                        candidate["fit"] = True
+                        candidate["available"] = dict(view["available"])
+                        candidate["observed_capacity"] = dict(view["observed"])
+                        candidate["free_preferred"] = view["free_preferred"]
+            except (ValueError, TypeError, OSError, KeyError) as exc:
+                candidate["exclusion"] = str(exc)
+            candidates.append(candidate)
+        # Re-read eligible peers after their ledger/isolation I/O. Never adopt
+        # a replacement's price or let an old denial describe a newer offer.
+        current_offers = {}
+        for candidate in candidates:
+            remote = candidate["host"]
+            if remote == host or not candidate["fit"]:
+                continue
+            try:
+                offer = _read_json(self.root / WORKERS / f"{remote}.json")
+                if (not isinstance(offer, Mapping) or offer.get("host") != remote
+                        or offer.get("state") == "draining"
+                        or not 0 <= _now() - offer["announced_unix"] <= OFFER_TIMEOUT_S
+                        or not self._matching_offers(item, live=[offer])
+                        or offer.get("cpu_tiers") != originals[remote].get("cpu_tiers")):
+                    raise local_scratch.LocalScratchError("scratch peer current offer ineligible")
+                current_cost = local_scratch.profile_cost(offer, intent, now=_now())
+                if any(current_cost[k] != candidate[k] for k in (
+                        "artifact_sha256", "measured_unix", "method", "envelope", "pattern",
+                        "device", "filesystem", "root_inode")):
+                    raise local_scratch.LocalScratchError("scratch peer profile/root changed")
+                observed = offer.get("observed_capacity") or {}
+                if not all(min(candidate["available"].get(k, 0),
+                               candidate["observed_capacity"].get(k, 0), observed.get(k, 0)) >= n
+                           for k, n in demand.items()):
+                    raise local_scratch.LocalScratchError("full_demand_does_not_fit")
+                current_offers[remote] = offer
+            except (ValueError, TypeError, OSError, KeyError) as exc:
+                candidate["fit"], candidate["exclusion"] = False, str(exc)
+        evidence = {"schema": local_scratch.PLACEMENT_SCHEMA,
+                    "action_key": item["action_key"], "published_unix": item["published_unix"],
+                    "generation": self.attempt_generation(item), "attempts": item.get("attempts", 0),
+                    "selected_host": host, "declaration": intent["declaration"],
+                    "root": intent["root"], "candidates": candidates}
+        # Own root/generation reads can also stall. Finish every shared read
+        # before rechecking ORIGINAL peer ages and deciding/charging a yield.
+        self._scratch_boundary(item, intent, evidence, demand)
+        now = _now()
+        for candidate in candidates:
+            remote = candidate["host"]
+            if remote == host or not candidate["fit"]:
+                continue
+            try:
+                local_scratch.profile_cost(originals[remote], intent, now=now)
+                offer = current_offers[remote]
+                local_scratch.profile_cost(offer, intent, now=now)
+                if not 0 <= now - offer["announced_unix"] <= OFFER_TIMEOUT_S:
+                    raise local_scratch.LocalScratchError("scratch peer offer expired")
+                if self._opposite_resource_load(offer, gpu_job=bool(demand.get("gpu"))) is None:
+                    raise local_scratch.LocalScratchError("observations_not_fresh")
+                view = cast(dict[str, Any], views[remote])
+                if self._scratch_peer_passed_on(item, offer, view, now=now):
+                    candidate["fit"], candidate["exclusion"] = False, "current_policy_refusal"
+                elif candidate["io_seconds"] < selected["io_seconds"]:
+                    cheaper.append(candidate)
+            except (ValueError, TypeError, OSError, KeyError) as exc:
+                candidate["fit"], candidate["exclusion"] = False, str(exc)
+        if cheaper:
+            alternative = min(cheaper, key=lambda c: (c["io_seconds"], c["host"]))
+            evidence["yield_to"] = alternative["host"]
+            # Reuse the existing per-pass fit view: one pass must not promise
+            # a faster box more rows than its currently free resources fit.
+            view = cast(dict[str, Any], views[alternative["host"]])
+            for kind, need in demand.items():
+                view["available"][kind] -= need
+                view["observed"][kind] -= need
+            view["free_preferred"] -= demand.get("cpu", 0)
+        return evidence, bool(cheaper)
+
+    def _scratch_isolated(self, host, view):
+        if "scratch_isolated" not in view:
+            ledger = self.ledger(host)
+            isolated = False
+            for key in ledger.held_keys():
+                if key.startswith(cpu_admission.RAM_HOST_MEMORY_PREFIX):
+                    continue
+                cpu = _read_json(ledger.held_dir / key / cpu_admission.METADATA) or {}
+                gpu = _read_json(ledger.held_dir / key / gpu_admission.METADATA) or {}
+                if (cpu.get("measurement") or cpu.get("unbounded_cpu")
+                        or gpu.get("measurement") or gpu.get("exclusive")):
+                    isolated = True
+                    break
+            view["scratch_isolated"] = isolated
+        return view["scratch_isolated"]
+
+    def _scratch_boundary(self, item, intent, evidence, demand):
+        # Re-read this host's small offer and exact root identity AFTER peer
+        # scans/CAS contract reads and BEFORE holding admission. No slow I/O
+        # is added under the host lock. Inside, ORIGINAL age is checked again.
+        host = socket.gethostname()
+        offer = _read_json(self.root / WORKERS / f"{host}.json")
+        if (not isinstance(offer, Mapping) or offer.get("state") == "draining"
+                or not 0 <= _now() - offer["announced_unix"] <= OFFER_TIMEOUT_S
+                or not self._matching_offers(item, live=[offer])):
+            raise local_scratch.LocalScratchError("scratch local current offer ineligible")
+        cost = local_scratch.profile_cost(offer, intent, now=_now())
+        chosen = next(c for c in evidence["candidates"] if c["host"] == host)
+        current = local_scratch.root_identity(intent["root"])
+        if (any(cost[k] != chosen[k] for k in (
+                "artifact_sha256", "measured_unix", "method", "envelope", "pattern",
+                "device", "filesystem", "root_inode"))
+                or any(current[k] != chosen[k] for k in ("device", "filesystem", "root_inode"))):
+            raise local_scratch.LocalScratchError("scratch profile/root changed before admission")
+        current_item = _read_json(self.item_path(READY, str(item["action_key"])))
+        if (not self._scratch_record_matches(current_item, item, intent)
+                or evidence["generation"] != self.attempt_generation(item)
+                or evidence["attempts"] != item.get("attempts", 0)):
+            raise local_scratch.LocalScratchError("scratch evaluated generation changed before admission")
+        # Root and ready-record I/O must not launder the original price age.
+        now = _now()
+        if not (0 <= now - chosen["measured_unix"] <= intent["declaration"]["max_profile_age_s"]
+                and 0 <= now - offer["announced_unix"] <= OFFER_TIMEOUT_S):
+            raise local_scratch.LocalScratchError("scratch original profile/offer expired before admission")
+        checked = cast(Mapping[str, object], current_item)
+        return (chosen["measured_unix"], offer["announced_unix"],
+                self.attempt_generation(checked), checked.get("attempts", 0))
+
     def _cpu_host_view(
         self, host: str, offer: Mapping, views: dict[str, dict[str, object] | None],
     ) -> dict[str, object] | None:
@@ -19361,6 +19673,28 @@ class PoolQueue:
                 adaptive_gpu = None
                 borrow = None
                 gpu_probe = None
+                scratch_intent = scratch_evidence = scratch_boundary = None
+                scratch_expired = scratch_changed = False
+                # The optional row is only a projection, including on legacy
+                # non-adaptive callers. No erased/forged carrier bypasses the
+                # actual sealed request, and opted-in work requires a ledger.
+                try:
+                    request = _sealed_action_request(item["cas_root"], key)
+                    scratch_intent = self._sealed_scratch_io(
+                        request, tags=item.get("tags") or [], resources=sealed_demand)
+                    if (item.get(local_scratch.IO_ENV) != scratch_intent
+                            or (scratch_intent is None and local_scratch.IO_CAPABILITY in
+                                (item.get("tags") or []))):
+                        raise PoolContractError("scratch I/O row lacks/misstates sealed intent")
+                    if scratch_intent is not None:
+                        current = _read_json(self.item_path(READY, key))
+                        if not self._scratch_record_matches(current, item, scratch_intent):
+                            raise PoolContractError("scratch I/O evaluated stale or contradictory publication/attempt")
+                        if ledger is None or not demand:
+                            raise PoolContractError("scratch I/O requires full host-ledger admission")
+                except (ValueError, OSError, KeyError, TypeError) as exc:
+                    self.record_denial(item, "local_scratch_io_intent_invalid", {"error": str(exc)})
+                    continue
                 if controller is not None and not demand:
                     # Adaptive admission needs a durable reservation to make an
                     # unknown CPU consumer visible to subsequent measurements.
@@ -19442,6 +19776,19 @@ class PoolQueue:
                         contract = (gpu_admission.action_contract(item, sealed_host_demand)
                                     if gpu_controller is not None and demand.get("gpu")
                                     else None)
+                        if scratch_intent is not None:
+                            try:
+                                # Full current demand, including any producer
+                                # allowance above; placement never discounts it.
+                                scratch_evidence, yielding = self._scratch_placement(
+                                    item, scratch_intent, reservation_demand,
+                                    live=offer_snapshot(), views=cpu_host_views)
+                                if yielding:
+                                    self.record_denial(item, "deferred_for_local_scratch_io", scratch_evidence)
+                                    continue
+                            except (ValueError, OSError, KeyError, TypeError) as exc:
+                                self.record_denial(item, "local_scratch_io_profile_invalid", {"error": str(exc)})
+                                continue
                         # Host admission's exclusive half, and only that half: read
                         # the headroom, decide against it, and take the tokens out
                         # of ``free/`` before letting go.  ``begin_acquire`` moves
@@ -19458,8 +19805,26 @@ class PoolQueue:
                         room_taken: dict[str, object] | None = None
                         cpu_decision = gpu_decision = token_shortage = None
                         free_at_refusal: dict[str, int] | None = None
+                        if scratch_intent is not None:
+                            try:
+                                scratch_boundary = self._scratch_boundary(
+                                    item, scratch_intent, scratch_evidence, reservation_demand)
+                            except (ValueError, OSError, KeyError, TypeError) as exc:
+                                self.record_denial(item, "local_scratch_io_profile_invalid", {"error": str(exc)})
+                                continue
                         with self._admission_lock(controller):
-                            if controller is not None:
+                            if scratch_boundary is not None:
+                                original, announced, generation, attempt = scratch_boundary
+                                scratch_changed = (
+                                    generation != self.attempt_generation(item)
+                                    or attempt != item.get("attempts", 0)
+                                    or generation != scratch_evidence["generation"]
+                                    or attempt != scratch_evidence["attempts"])
+                                scratch_expired = not (
+                                    0 <= _now() - original <= scratch_intent["declaration"]["max_profile_age_s"]
+                                    and 0 <= _now() - announced <= OFFER_TIMEOUT_S)
+                                refused = scratch_expired or scratch_changed
+                            if controller is not None and not refused:
                                 adaptive = controller.decision(
                                     item, demand, identity=identity, owner=dependent_owner,
                                     allowance=allowance,
@@ -19519,6 +19884,23 @@ class PoolQueue:
                                 refused = adaptive_gpu is None
                                 if refused:
                                     refusal_source = "adaptive_gpu_refused"
+                            if scratch_boundary is not None:
+                                # Normal CPU/GPU decisions can themselves take
+                                # time. Recheck again at the actual token boundary,
+                                # using captured identity and ORIGINAL time only.
+                                original, announced, generation, attempt = scratch_boundary
+                                scratch_changed = (
+                                    generation != self.attempt_generation(item)
+                                    or attempt != item.get("attempts", 0)
+                                    or generation != scratch_evidence["generation"]
+                                    or attempt != scratch_evidence["attempts"])
+                                scratch_expired = not (
+                                    0 <= _now() - original <= scratch_intent["declaration"]["max_profile_age_s"]
+                                    and 0 <= _now() - announced <= OFFER_TIMEOUT_S)
+                                refused = refused or scratch_expired or scratch_changed
+                                if not refused:
+                                    scratch_evidence["admission_checked_unix"] = _now()
+                                    scratch_evidence["reservation_demand"] = dict(reservation_demand)
                             if not refused:
                                 if adaptive_gpu is not None:
                                     handle = ledger.begin_acquire(
@@ -19553,6 +19935,12 @@ class PoolQueue:
                                     free_at_refusal = ledger.available()
                                 except OSError:
                                     free_at_refusal = None
+                        if scratch_changed:
+                            self.record_denial(item, "local_scratch_io_generation_changed")
+                            continue
+                        if scratch_expired:
+                            self.record_denial(item, "local_scratch_io_profile_expired")
+                            continue
                         if refused:
                             # Aging is shared diagnostic/fairness bookkeeping, not
                             # capacity authority. Keep its I/O outside host admission.
@@ -19855,12 +20243,18 @@ class PoolQueue:
                     # tiers' reading sets again (#1091 review 1).
                     claimed_listed = None
                     reader_plans.clear()
-                    moved = _read_json(dst) or item
+                    moved_record = _read_json(dst)
+                    moved = moved_record or item
                     if (not self._placement_matches(moved, tags=tagset, has_gpu=has_gpu)
-                            or self.demand_of(moved) != sealed_demand):
+                            or self.demand_of(moved) != sealed_demand
+                            or (scratch_intent is not None and (
+                                not self._scratch_record_matches(moved_record, item, scratch_intent)
+                                or scratch_evidence["selected_host"] != socket.gethostname()))):
                         # Admission described the scanned generation. A replacement
-                        # may need a different host or more tokens; put it back for a
-                        # fresh admission before committing this claimant's tokens.
+                        # may need a different host or more tokens; an opted-in
+                        # verdict additionally belongs to its exact publication/
+                        # attempt, even when replacement demand is identical.
+                        # Restore the renamed bytes before committing tokens.
                         if ledger is not None and handle is not None:
                             ledger.abandon_acquire(handle)
                             self._return_borrow(controller, borrow)
@@ -20094,6 +20488,17 @@ class PoolQueue:
                 # reason; the record this method returns is the last place that
                 # still did not.
                 claimed = dict(moved)
+                if scratch_evidence is not None:
+                    # Claim evidence belongs to the bytes actually renamed,
+                    # the winning worker and this publication/attempt only.
+                    # Generation was verified above, not relabelled after the
+                    # rename. Only this actual winning reservation establishes
+                    # local fit; peer feasibility stays conservative/advisory.
+                    selected = next(c for c in scratch_evidence["candidates"]
+                                    if c["host"] == scratch_evidence["selected_host"])
+                    selected.update(fit=True, exclusion=None,
+                                    fit_basis="actual_host_admission_and_reservation")
+                    claimed[local_scratch.PLACEMENT] = scratch_evidence
                 # ``passes`` is not a field of the item; it is the aging sidecar,
                 # which ``ready_items`` stamps on its copy so the ready ordering
                 # can read it and which this method deletes four lines below.
@@ -21869,14 +22274,17 @@ class PoolQueue:
 
         details = dict(detail or {})
         if "scratch_declaration_record" in record:
-            from . import local_scratch
-
             evidence = local_scratch._scratch_declaration_record(record["scratch_declaration_record"])
             if ("scratch_declaration_record" in details
                     and pb.canonical_sha256(details["scratch_declaration_record"])
                     != pb.canonical_sha256(evidence)):
                 raise PoolContractError("attempt scratch declaration evidence disagrees")
             details["scratch_declaration_record"] = evidence
+        placement = record.get(local_scratch.PLACEMENT)
+        if isinstance(placement, Mapping):
+            # Every concluding path (including reapers/late outcomes) archives
+            # the actual winning claim, never a caller's guessed placement.
+            details[local_scratch.PLACEMENT] = dict(placement)
         logs: dict[str, dict[str, object]] = {}
         for stream in ("stdout", "stderr"):
             value = details.pop(stream, "")
@@ -22855,6 +23263,10 @@ class PoolQueue:
         # produce.  A legacy claim that still carries the full receipt (filed
         # before the reference) is copied as before.
         finished_detail = dict(detail or {})
+        placement = record.get(local_scratch.PLACEMENT)
+        if isinstance(placement, Mapping):
+            # Always use the actual winner's claim, not caller-supplied detail.
+            finished_detail[local_scratch.PLACEMENT] = dict(placement)
         warmed = record.get("prewarm")
         if isinstance(warmed, Mapping):
             resolved = self.resolve_prewarm_reference(warmed)

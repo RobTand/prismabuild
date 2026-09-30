@@ -1205,6 +1205,17 @@ def spool_window_terms(variables: dict[str, str], *, transport: str) -> dict[str
 #: Spelled here for the same reason as the spool names above; the derivation
 #: is ``local_scratch.scratch_terms``.
 _SCRATCH_PAIRS_ENV = "PRISMABUILD_LOCAL_SCRATCH_PAIRS"
+_SCRATCH_IO_ENV = "PRISMABUILD_LOCAL_SCRATCH_IO"
+
+
+def scratch_io_intent(variables, *, transport):
+    if _SCRATCH_IO_ENV not in variables:
+        return None
+    from prismabuild import local_scratch
+    try:
+        return local_scratch.io_intent(variables, transport=transport)
+    except local_scratch.LocalScratchError as exc:
+        raise SystemExit(f"pbrun: {exc}") from None
 
 
 def scratch_window_terms(variables: Mapping[str, str], *, transport: str) -> dict[str, int]:
@@ -1216,6 +1227,7 @@ def scratch_window_terms(variables: Mapping[str, str], *, transport: str) -> dic
     queue holds.
     """
 
+    scratch_io_intent(variables, transport=transport)
     if not variables.get(_SCRATCH_PAIRS_ENV):
         return {}     # the undeclared path imports and reads nothing new
     from prismabuild import local_scratch
@@ -5183,6 +5195,23 @@ def freeze_action_template(
 
     wrapper_dir = CONTAINER_WRAPPER_DIR if wrapper_dir is None else wrapper_dir
     variables = dict(variables)
+    scratch_io = scratch_io_intent(variables, transport=transport)
+    recorder = None
+    if scratch_io is not None:
+        from prismabuild import local_scratch
+        if local_scratch.IO_CAPABILITY not in placement.get("required_tags", []):
+            raise SystemExit("pbrun: sealed scratch I/O declaration requires local-scratch-io-v1")
+    if "tools/fleet/local_scratch_profile.py" in command:
+        from prismabuild import local_scratch
+        try:
+            recorder = local_scratch.check_profile_request(
+                command, variables, demand, cwd=logical_cwd, determinism=determinism)
+            if transport != "pool":
+                raise local_scratch.LocalScratchError("scratch recorder requires pool admission")
+            if profile is not None or container_image_refs:
+                raise local_scratch.LocalScratchError("scratch recorder does not support injected profiler/image runtime")
+        except local_scratch.LocalScratchError as exc:
+            raise SystemExit(f"pbrun: {exc}") from None
     # A declared spool bound is accounted by default (#905), and this must
     # precede the ownership and stamp fingerprints below: they hash this
     # environment, and the sealed action re-derives its owner from it, so both
@@ -5199,7 +5228,8 @@ def freeze_action_template(
     # the exact action-defining state available before its own two recursive
     # variables are injected, including the deployed wrapper path.
     prior_path = variables.get("PATH") or "/usr/local/bin:/usr/bin:/bin"
-    variables["PATH"] = f"{wrapper_dir}:{prior_path}"
+    variables["PATH"] = (local_scratch.PROFILE_PATH if recorder is not None
+                         else f"{wrapper_dir}:{prior_path}")
     identity = _git_identity(cwd)
     marker_root = SH / "pb-queue" / pool.CONTAINER_OWNERS
     # This owner belongs to the template's own command, and its only job here
@@ -5374,6 +5404,11 @@ def freeze_action_template(
         inputs.append(template_input)
     execution_scope, toolchain = host_class_scope(
         host_class, measurement=measurement, transport=transport)
+    if recorder is not None:
+        # Actual executable/version facts, verified by the normal worker
+        # preflight and bound into its real receipt; never guessed hashes.
+        toolchain = {**toolchain, **pb.executable_toolchain_contract(command[0]),
+                     **pb._probe_python_toolchain(Path(command[0]))}
     if pool_measurement_class and demand.get("gpu", 0) and (
         "cuda_compute_capability" not in toolchain or "nvidia_driver" not in toolchain
     ):
@@ -5387,6 +5422,8 @@ def freeze_action_template(
         "checkout_snapshot": checkout_snapshot,
         "retry_policy": retry_policy,
     }
+    if recorder is not None:
+        params["local_scratch_profile"] = recorder
     declared_interpreter = interpreter_of(command)
     if declared_interpreter is not None:
         # The placement requirement travels in the sealed body (#1263), so
@@ -5604,15 +5641,26 @@ def seal_action_from_template(
     variables[CONTAINER_OWNER_ENV] = owner
     variables[CONTAINER_MARKER_ENV] = str(marker_root / f"{owner}.used")
     log_name = str(template["log_name"])
+    recorder = params.get("local_scratch_profile")
+    if recorder is not None:
+        from prismabuild import local_scratch
+        if (local_scratch.check_profile_request(command, variables, params["demand"],
+                cwd=params["cwd"], determinism=template["task"]["determinism"], derived=True) != recorder
+                or result_path not in (None, local_scratch.PROFILE_RESULT)):
+            raise SystemExit("pbrun: scratch recorder override differs from sealed file-result contract")
+        argv, effective_result = command, local_scratch.PROFILE_RESULT
+    else:
+        argv = [SEALED_ARGV0, "--noprofile", "--norc", "-c",
+                f"export PATH={shlex.quote(variables['PATH'].split(':', 1)[0])}:$PATH; "
+                f"{shlex.join(command)} 2>&1 | tee {shlex.quote(log_name)}; "
+                f"exit ${{PIPESTATUS[0]}}"]
+        effective_result = log_name if result_path is None else result_path
     body = {
         "schema": pb.ACTION_SCHEMA_V2,
         "task": {
             **template["task"],
-            "argv": [SEALED_ARGV0, "--noprofile", "--norc", "-c",
-                     f"export PATH={shlex.quote(variables['PATH'].split(':', 1)[0])}:$PATH; "
-                     f"{shlex.join(command)} 2>&1 | tee {shlex.quote(log_name)}; "
-                     f"exit ${{PIPESTATUS[0]}}"],
-            "result_path": log_name if result_path is None else result_path,
+            "argv": argv,
+            "result_path": effective_result,
         },
         "inputs": [*template["inputs"], *extra_inputs],
         "code_closure": template["code_closure"],
@@ -7214,6 +7262,9 @@ def prepare_submission(args: argparse.Namespace) -> dict[str, object]:
         # item ready.
         tags = pool.normalize_placement_tags(
             [*tags, *container_image_required_tags(images)])
+    if scratch_io_intent(variables, transport=args.transport) is not None:
+        from prismabuild import local_scratch
+        tags = pool.normalize_placement_tags([*tags, local_scratch.IO_CAPABILITY])
     require_reachable_runtime(
         tags, hostname=socket.gethostname(), runtime_root=RUNTIME_ROOT)
     # Its offer scan remains lazy so cache-hit, withdrawal and SLURM paths
