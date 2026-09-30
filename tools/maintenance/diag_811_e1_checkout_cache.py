@@ -42,6 +42,7 @@ import tempfile
 import time
 import uuid
 from pathlib import Path
+from typing import cast
 
 FICLONE = 0x40049409
 WORK_PREFIX = "e1-811."
@@ -80,7 +81,7 @@ def file_bytes(path: Path) -> int:
     return os.stat(path).st_size
 
 
-def rusage_snapshot() -> dict[str, object]:
+def rusage_snapshot() -> dict[str, float]:
     """CPU is split: this Python process vs the Git children it reaped."""
 
     own = resource.getrusage(resource.RUSAGE_SELF)
@@ -94,7 +95,7 @@ def rusage_snapshot() -> dict[str, object]:
     }
 
 
-def rusage_delta(before: dict[str, object]) -> dict[str, object]:
+def rusage_delta(before: dict[str, float]) -> dict[str, float]:
     """Arm deltas; max RSS is reported as an absolute watermark, not a delta."""
 
     after = rusage_snapshot()
@@ -178,7 +179,7 @@ def load_generation():
     import prismabuild.reader_lease as reader_lease
 
     for module in (core, materialize, reader_lease):
-        if not Path(module.__file__).resolve().is_relative_to(root):
+        if not Path(cast(str, module.__file__)).resolve().is_relative_to(root):
             raise E1Error(f"imported {module.__name__} from outside the generation")
     return root, core, materialize, reader_lease
 
@@ -825,8 +826,8 @@ def main() -> int:
         git_version = git.run(["git", "--version"], where="read git version").strip()
         report.update({
             "generation": generation_root.name,
-            "generation_materialize_sha256": sha256_stream(Path(materialize.__file__)),
-            "generation_core_sha256": sha256_stream(Path(core.__file__)),
+            "generation_materialize_sha256": sha256_stream(Path(cast(str, materialize.__file__))),
+            "generation_core_sha256": sha256_stream(Path(cast(str, core.__file__))),
             "host": os.uname().nodename,
             "platform": f"{os.uname().sysname}-{os.uname().machine}",
             "python": sys.version.split()[0],
@@ -847,7 +848,7 @@ def main() -> int:
                          ("cache", cache_root))},
         })
         log(f"generation={generation_root.name} bundle={digest[:12]} "
-            f"pack={framing['pack_sha256'][:12]} offset={framing['pack_offset']} "
+            f"pack={cast(str, framing['pack_sha256'])[:12]} offset={framing['pack_offset']} "
             f"len={framing['pack_len']}")
 
         entry = cache_root / "objects" / digest[:2] / digest
