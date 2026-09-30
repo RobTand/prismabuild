@@ -1000,6 +1000,13 @@ MOVE_PRICING_FIELDS = (
 EXPORTS = "exports"
 #: The schema of one filed export receipt: the export's pacing record with
 #: the identity a next seal needs -- action key, unix, tier, owner.
+#:
+#: Deployed wire ID, added after the #1250 freeze (bb57d0301245, #1014 item 3)
+#: and carried by runtime generation ``3aff9642ab39``: ``record_export``
+#: refuses any other schema and ``export_records`` reads only records spelling
+#: exactly this one, so a rename would stop filed receipts matching.  It is
+#: classified as a legacy ID in ``tests/boundary_allowlists/legacy_ids.txt``
+#: with its deployment evidence (#1384), never migrated or re-spelled.
 POOL_EXPORT_SCHEMA_V1 = "prismaquant.prismabuild.pool_export.v1"
 MOVE_PRICING_PACING_FIELDS = ("pool_read_bytes", storage_tiers.POOL_FILL_FIELD,
                               "held_seconds", storage_tiers.YIELDED_FIELD)

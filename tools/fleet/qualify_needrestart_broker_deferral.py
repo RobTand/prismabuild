@@ -26,7 +26,11 @@ import stat
 import subprocess
 import sys
 
-SCHEMA = "prismaquant.prismabuild.needrestart_broker_deferral.v1"
+#: A new record type uses the independent ``prismabuild.*`` namespace (#1250).
+#: This report type is undeployed by the observed fleet manifest -- no
+#: published generation carries this tool -- so there is no deployed
+#: producer/reader contract to preserve (#1384).
+SCHEMA = "prismabuild.needrestart_broker_deferral.v1"
 DEFAULT_CONFIG = Path("/etc/needrestart/needrestart.conf")
 BROKER = "prismabuild-resource-broker.service"
 CONTROLS = (

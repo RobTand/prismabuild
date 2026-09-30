@@ -190,3 +190,13 @@ def test_the_qualification_cli_reads_only_the_configuration_it_is_given(tmp_path
     assert report["controls"]["ssh.service"]["deferred"] is False
     assert report["config_sha256"] == hashlib.sha256(installed.read_bytes()).hexdigest()
     assert report["config_mode"] == "0644"
+
+
+def test_the_qualification_report_uses_the_independent_record_namespace(tmp_path) -> None:
+    """The report type is new, so it spells ``prismabuild.*``, not a legacy ID (#1384)."""
+
+    installed = tmp_path / "needrestart-installed.conf"
+    installed.write_text(FIXTURE, encoding="utf-8")
+    qualified = _qualify(installed)
+    assert json.loads(qualified.stdout)["schema"] == \
+        "prismabuild.needrestart_broker_deferral.v1"

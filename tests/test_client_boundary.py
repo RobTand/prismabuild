@@ -35,19 +35,24 @@ Two vocabularies are frozen beside it:
   a vocabulary reintroduced under either name fails;
 - ``legacy_ids.txt``: every distinct ``prismaquant.prismabuild.*`` record ID
   the scanned code spells. They are inside hashed action bodies and stay as
-  legacy; a new record type uses ``prismabuild.*``.
+  legacy; a new record type uses ``prismabuild.*``. An ID already deployed in
+  stored records is legacy by deployment even when it was added after this
+  freeze: exact producer/reader equality makes a rename a compatibility break,
+  so it is classified here with its deployment evidence instead (#1384).
 
 Every list is held to exact equality with the code:
 
 - a new reference, member or ID fails;
 - a removed one fails until its line is deleted in the same change.
 
-The lists only shrink; step 0 lands no CI half for them, because PB has no
-pull-request CI that checks out code (see the PR). Step 4 of the plan (#1076)
-moved the Tessera drivers and ``render_identity.py`` to PrismaQuant, took the
-GPU-interpreter signature from configuration and replaced the vocabularies
-with submitter-declared fields, which emptied both lists. The legacy IDs stay
-unless a wire version changes identity anyway (step 8).
+The lists only shrink, except for a deployed-ID classification correction with
+its evidence recorded beside the line (#1384); step 0 lands no CI half for
+them, because PB has no pull-request CI that checks out code (see the PR).
+Step 4 of the plan (#1076) moved the Tessera drivers and ``render_identity.py``
+to PrismaQuant, took the GPU-interpreter signature from configuration and
+replaced the vocabularies with submitter-declared fields, which emptied both
+lists. The legacy IDs stay unless a wire version changes identity anyway
+(step 8).
 """
 from __future__ import annotations
 

@@ -32,6 +32,15 @@ EXPORT_RECEIPT_SCHEMA = "prismaquant.prismabuild.pool_export.v1"
 PRIOR_EXPORT_KEY = "a" * 64
 
 
+def test_the_deployed_export_receipt_schema_is_pinned() -> None:
+    """Stored export receipts spell this exact legacy-namespace ID, and
+    ``record_export``/``export_records`` require exact equality, so renaming
+    it would break producer/reader compatibility (#1384)."""
+
+    assert EXPORT_RECEIPT_SCHEMA == "prismaquant.prismabuild.pool_export.v1"
+    assert pool.POOL_EXPORT_SCHEMA_V1 == EXPORT_RECEIPT_SCHEMA
+
+
 def world_roomy(tmp_path, *, payload_max: int):
     """A producer whose template allows two 1 MiB payloads outstanding."""
 
