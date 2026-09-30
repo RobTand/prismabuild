@@ -1121,13 +1121,10 @@ def require_relocatable_checkout(
         )
 
 
-#: ``disk_metadata`` is a host-scoped consumable exactly like ``cpu`` and
-#: ``mem_gb``, never a byte budget: a box offers a small fixed count of it (one,
-#: today) so a shard that declares ``disk_metadata=1`` gets the box's whole
-#: directory/file metadata throughput to itself, the way a timing-sensitive
-#: stage test needs (#1008 item 4) -- two 20,000-entry egresses sharing a
-#: disk distort each other's measured hold times, and neither ``cpu`` nor
-#: ``mem_gb`` demand serializes them, since neither is what they contend on.
+#: ``disk_metadata`` is a cooperative host-ledger count, not a byte budget
+#: or disk-throughput guarantee (Refs #1008). Workers default to zero; opt-in
+#: capacity one serializes only actions declaring it on the same host ledger.
+#: Ordinary work, tier egress and external I/O may still overlap.
 _FLEET_DEMAND_KINDS = frozenset({"cpu", "gpu", "mem_gb", "disk_metadata"})
 #: The derived host kind a produced-output producer's spool window reserves,
 #: and the two sealed variables it is derived from (#747).  A declared bound
@@ -4028,15 +4025,16 @@ def require_disk_metadata_scope(demand: Mapping[str, object], *, transport: str)
     """Refuse a ``disk_metadata`` reservation on a transport with nothing to enforce it.
 
     ``disk_metadata`` (#1008 item 4) is a host-ledger consumable a pull-queue
-    worker offer prices exactly like ``cpu`` or ``mem_gb``: a box declares a
-    small fixed count, and a claim charges it at admission.  The SLURM lane's
+    worker can opt into offering one of (default zero); a full-demand claim
+    charges it at admission. This serializes declaring actions on the same
+    host ledger, not ordinary work, tier egress or external I/O. The SLURM lane's
     translation (``slurm_lane.LaneResources.from_demand``) reads only ``cpu``,
     ``gpu`` and ``mem_gb`` -- it has no GRES for directory/file metadata
     throughput -- so a ``disk_metadata`` demand sealed there would never be
     enforced, and two such jobs could still land on the same node.  Sealing
     that would be worse than refusing it, the same reasoning
     :func:`require_progress_scope` states for the stall watchdog: the action
-    would be admitted on a promise of exclusivity nothing on that lane keeps.
+    would be admitted on a cooperative reservation that lane cannot enforce.
     """
 
     if demand.get("disk_metadata") and transport != "pool":

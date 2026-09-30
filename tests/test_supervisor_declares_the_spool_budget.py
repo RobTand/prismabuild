@@ -147,7 +147,7 @@ def test_a_box_without_spool_gb_keeps_its_args_byte_for_byte(roster, monkeypatch
     roster(args=BASE_ARGS, local_disk=None, floor=None)
     monkeypatch.setattr(supervise.os, "statvfs", _refuse_statvfs)
     assert supervise.declared_shape("boxa", 0) == (2, BASE_ARGS)
-    assert _worker_offer(BASE_ARGS) == {"mem_gb": 8, "cpu": 2}
+    assert _worker_offer(BASE_ARGS) == {"mem_gb": 8, "cpu": 2, "disk_metadata": 0}
 
 
 def test_the_checked_in_boxes_without_spool_gb_read_exactly_their_file_args(
@@ -176,7 +176,7 @@ def test_a_covered_declaration_reaches_the_worker_and_its_producer_is_claimed(
     assert args == [*BASE_ARGS, "--spool-gb", "32"]
     assert stat.calls == [str(tmp_path)]
     offer = _worker_offer(args)
-    assert offer == {"mem_gb": 8, "cpu": 2, KIND: 32}
+    assert offer == {"mem_gb": 8, "cpu": 2, "disk_metadata": 0, KIND: 32}
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.ensure_layout()
@@ -320,7 +320,7 @@ def test_a_zero_declaration_needs_no_disk(roster, monkeypatch):
     monkeypatch.setattr(supervise.os, "statvfs", _refuse_statvfs)
     args = supervise.declared_shape("boxa", 0)[1]
     assert args == [*BASE_ARGS, "--spool-gb", "0"]
-    assert _worker_offer(args) == {"mem_gb": 8, "cpu": 2}
+    assert _worker_offer(args) == {"mem_gb": 8, "cpu": 2, "disk_metadata": 0}
 
 
 # -- arguments settle once; the disk is measured every tick (#1190) ---------

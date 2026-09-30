@@ -1221,23 +1221,46 @@ input, so forwarding them cannot change an action key.
 `pbrun` and manifests consumed by `pbcampaign` use the closed demand vocabulary
 `cpu`, `gpu`, `mem_gb`, and `disk_metadata`. Validation occurs before a request
 is sealed; a manifest is validated as a whole before its first row is
-published. The live pool offers and SLURM translation both define only these
-resource kinds, so an unknown name would otherwise create an action no worker
-could admit. This does not narrow the generic `PoolQueue` resource ledger,
+published. Unknown names are refused at this client boundary; `disk_metadata`
+is pool-only because SLURM's translation has no metadata reservation and the
+client refuses that demand before sealing. This does not narrow the generic
+`PoolQueue` resource ledger,
 whose direct producers may define resources outside the fleet-command client
 contract.
 
-`disk_metadata` (#1008 item 4) reserves the executing box's directory/file
-metadata throughput, the same way `cpu` and `mem_gb` reserve its cores and
-memory: a consumable count, not a byte budget. A box offers a small fixed
-count of it (one, today), so a shard that declares `disk_metadata=1` gets that
-box's whole metadata throughput to itself for as long as it holds the
-reservation. It exists because two timing-sensitive stage tests sharing a box
-distort each other's measured hold times -- a 20,000-entry egress measured
-0.25 s alone and 1.22 s beside a second one on the same disk (#1005) -- and
-neither `cpu` nor `mem_gb` demand serializes them, since neither is what they
-actually contend on. `pbtest --disk-metadata` requests it for every shard of
-that invocation (see [Test fanout submission](#test-fanout-submission)).
+`disk_metadata` (Refs #1008 item 4) is an opt-in **cooperative same-host
+admission token**, not a byte budget, bandwidth reservation or measurement of
+disk busyness. `worker_loop.py --disk-metadata-capacity 1` offers one unit;
+the default and explicit `0` disable it. Only integer 0/1 values are accepted.
+The operator can supply the flag through the existing versioned host `args`;
+no fleet host is enabled by default. The normal declared/live capacity,
+observer, worker offer and full-demand claim path carry the count unchanged.
+All worker loops on that hostname share one host ledger, not one token per
+loop. A `disk_metadata=1` action holds that token until the ordinary claim
+finish/release, preventing another declaring action on the same ledger from
+acquiring it concurrently. `pbtest --disk-metadata` requests one unit for each
+shard (see [Test fanout submission](#test-fanout-submission)).
+
+Zero is explicitly declared and published rather than omitted: each disabled
+poll retires stale **free** metadata tokens before admission. A running holder
+retains its token; after its actual finish returns it, the next disabled poll
+retires it. Re-enabling can restore the one-unit capacity through normal
+minting. Same-host loops must converge on the configuration: an old or still
+enabled sibling can otherwise leave or restore stale capacity. A legacy offer
+omitting the kind remains unknown under existing placement semantics, whereas
+a new zero offer is known disabled. The offer schema and pool algorithms do
+not change.
+
+This serializes cooperating declaring actions only. Ordinary untagged actions
+can still claim spare CPU/memory; live tier egress, worker housekeeping,
+external I/O, multiple I/O threads inside an action and other hosts sharing
+the filesystem are not isolated by this token. It does **not** give a shard a
+box or filesystem to itself and establishes no throughput or timing guarantee.
+The motivating measured contention (a 20,000-entry egress at 0.25 s alone and
+1.22 s beside another on the same disk, #1005) is not qualification of this
+reservation. Source capability is not fleet activation or live workload proof;
+full #1008 remains open, including durable unlink intent and stronger
+interference/isolation acceptance.
 
 Storage-tier kinds are exactly such a producer-defined resource. `PoolQueue`
 understands a demand key spelled `<kind>@<tier_id>` and reserves it on a

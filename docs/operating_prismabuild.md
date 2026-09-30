@@ -202,7 +202,7 @@ its existing limits. This is not a whole-submission timeout.
 |---|---|---|
 | `--gpu` | Defaults to `gpu=1,mem_gb=16`; explicit demand overrides the defaults. Pool generation actions permit adaptive sharing. | `--gres=shard:1`, partition `gpu`. |
 | `--demand gpu=1,cpu=8,mem_gb=32` | Aggregate resource demand. Without `--gpu`, `mem_gb` defaults to 4; `cpu` defaults to `--cpus`. | `--gres=shard:1 --cpus-per-task=8 --mem=32768M`. |
-| `--demand disk_metadata=1` | Reserve the executing box's whole directory/file metadata throughput, so a timing-sensitive test does not share a box with another shard or a live egress contending for the same disk (#1008 item 4). A box offers one unit of it. Pool only: SLURM's translation has no GRES for it, so a `disk_metadata` demand refuses before sealing rather than being admitted and never enforced. `pbtest --disk-metadata` requests it for every shard of that invocation. | Refused: `require_disk_metadata_scope` rejects it before submission. |
+| `--demand disk_metadata=1` | Request a cooperative same-host admission token (Refs #1008). Workers opt in with `--disk-metadata-capacity 1`; default/explicit `0` disables and retires stale free tokens on polling without revoking running holders. All loops share one host ledger. Only declaring actions serialize: ordinary work, live tier egress, external I/O and other hosts sharing the filesystem may overlap. No whole-host, filesystem or throughput isolation; no fleet activation is implied. Pool only: SLURM cannot enforce it and refuses before sealing. `pbtest --disk-metadata` requests it per shard. | Refused: `require_disk_metadata_scope` rejects it before submission. |
 | `--gpu-memory-gb N` | GPU memory budget in GiB; requires GPU demand. Pool only. See the memory-domain rules below. | Refused: this lane does not enforce a separate VRAM budget. |
 | `--exclusive` | Reserve one box's whole GPU capacity; implies GPU demand and at least 16 GiB host memory. | `--gres=gpu:1` rather than a larger shard count. |
 | `--gpu-capacity N` | Explicit capacity override for `--exclusive`; normally leave it unset so worker offers supply the physical capacity. It does not set shared job concurrency. | Under SLURM, only `1` is accepted: `--gres=gpu:1` is the whole device, so a larger count would be read and discarded. |
@@ -216,8 +216,8 @@ its existing limits. This is not a whole-submission timeout.
 | `--profile MODE` | Run a profiler around the action's child and store the profile as a CAS blob named on the ending. `sample` is py-spy over the whole process tree; `nsys` is Nsight Systems over CUDA and NVTX, optionally windowed (`nsys:600`); `torch` is a contract the action opts into. **Part of the action identity**, unlike `--priority`. | Carried unchanged; the worker resolves the backend on the box that runs it. |
 
 `pbrun` accepts only `cpu`, `gpu`, `mem_gb`, and `disk_metadata` in `--demand`.
-It refuses an unknown resource before sealing, since the live pool offers and
-the SLURM lane can ledger only those names. `pbcampaign` performs the same
+It refuses an unknown resource before sealing at this client boundary;
+`disk_metadata` additionally refuses on SLURM as described above. `pbcampaign` performs the same
 client validation while loading the entire manifest, before it publishes even
 an earlier valid row. This is a command-client boundary: the generic
 `PoolQueue` API retains its producer-defined resource vocabulary.
@@ -1543,12 +1543,13 @@ SLURM, which cannot enforce this separate budget. PB owns GPU placement and
 sharing; shard count supplies work and does not prescribe GPU concurrency.
 
 `--disk-metadata` requests `disk_metadata=1` for **every shard** of the
-invocation (#1008 item 4), so a timing-sensitive suite gets its box's whole
-directory/file metadata throughput rather than sharing it with another shard
-or a live egress on the same disk -- two 20,000-entry egresses on one disk
-distort each other's measured hold times (#1005). It is off by default, since
-most suites do not measure hold times and do not need a box to themselves.
-Refused with SLURM transport, which has no way to enforce it.
+invocation (#1008 item 4). A worker must opt in with
+`--disk-metadata-capacity 1`; its default is zero. The shared host ledger
+serializes only actions that declare this demand. Untagged work, tier egress,
+external I/O and other hosts sharing the filesystem can still overlap. This
+cooperative token does not provide whole-host isolation or qualify metadata
+timing measurements. The client flag is off by default and is refused with
+SLURM transport, which does not enforce this pool-ledger resource.
 
 Use `--pytest-args` with a JSON array to forward population and report options:
 

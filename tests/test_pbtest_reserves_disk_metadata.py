@@ -8,8 +8,10 @@ Neither ``cpu`` nor ``mem_gb`` demand serializes them, since directory/file
 metadata throughput is not what either one prices.
 
 ``--disk-metadata`` reserves the new ``disk_metadata`` fleet demand kind
-(``pbrun._FLEET_DEMAND_KINDS``) at 1 -- a box offers exactly one unit of it,
-so declaring it is what gets a shard a box to itself for that contention.
+(``pbrun._FLEET_DEMAND_KINDS``) at 1. A worker opts into offering one unit
+(default zero); only declaring actions on the same host ledger serialize.
+Ordinary work, live tier egress and external I/O may overlap. This client-only
+coverage proves demand wiring, not worker admission or a box to itself.
 """
 from __future__ import annotations
 
