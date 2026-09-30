@@ -44,3 +44,43 @@ Capture artifact directories under the campaign's `tmp/p2p3/prismabuild/`:
 `940-before-20260929T2048`, `940-coverage-ts-20260929T2130`, and
 `940-claim-ts-20260929T2214`. They contain the original profiles and matched
 Netdata, not manufactured timing receipts.
+
+## Follow-up: 2026-09-30
+
+A fourth authorized observation sampled the same live worker and generation
+at 1790737282.2061265–1790737585.0962844 (302.890 s). Sampling returned 0;
+all recorded capture hashes match and matched Netdata has no fetch errors.
+The root process has 14,999 samples, including 116 `_claim_pass` samples
+(2.32 s inclusive). No `holder_bound`, `_withhold_verdict` or
+`_declared_run_bound` frame was sampled. This is another claim-pass observation,
+not the missing eligible-holder read-cost measurement or an after-profile.
+
+A preceding fleet census at 1790737214.4822521 reported seven dl380g10 ledger
+entries, including metadata records. That count is not proof that seven real
+holders blocked this worker's eligible ready item during the profile. Do not
+turn a ledger count into evidence that the unobserved function executed.
+
+Artifact: `940-holder-before-ts-20260930T030120`, beneath the same campaign
+artifact directory. Speedscope SHA-256:
+`20afa5fb8740f96bb27dd8d691a3ec00506d8b450f8f3b994ccd38c0ce3b5356`.
+
+`tools/maintenance/diag940_profile_coverage.py` now provides one reproducible
+coverage calculation. It selects only the requested PID's threads and the
+exact published generation's pool module, counts duplicate/recursive frames
+once per sample, and refuses invalid indices, weights, units and missing
+worker samples. A claim-pass sample alone does not establish holder-read cost;
+same-named functions in another tree or a child process do not count. Its
+report always distinguishes sampling absence from zero cost and leaves the
+performance delta unknown. It neither attaches to a worker nor changes caches.
+
+Run analysis in an admitted action with the existing profile, explicit PID and
+published generation root:
+
+```sh
+python tools/maintenance/diag940_profile_coverage.py \
+  --profile CAPTURE/worker.speedscope.json --pid 1367870 \
+  --generation-root /mnt/shared/prismabuild-fleet/runtime-generations/3aff9642ab39-1790654284-1eed70850170
+```
+
+The decision above is unchanged: #940 remains open, and no speculative
+optimization or speedup is claimed.
