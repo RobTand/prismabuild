@@ -13704,16 +13704,30 @@ live export. Any other value is refused when the spool is built.
 one group, so an A/B can interleave paced and unpaced exports from one
 producer. A replay keeps whatever the first submission sealed.
 
-**Reservation.** When the export is opted in and the batch's prewrite tier
-announces a fill offer, `ProducedSpool.submit_group` seals `fill_mb_s_pool_side@<tier>` into the
-export's demand. It prices that demand with `storage_tiers.current_fill_offer`,
-the rule pbrun's movers use, and its measured side is the producer's own
-newest complete export receipt on that tier (#1014 item 3): the achieved
-file-side rate the export filed queue-side when it finished, which the seal
-caps at the tier's offer. It also seals `--pace-mb-s N --pace-tier <tier>`
-into the command. The publish row carries exactly the sealed demand, and a
-replay keeps the price it was sealed at. A tier that announces no fill offer
-leaves the export unreserved and unpaced, as before.
+**Reservation.** A new opted-in export must resolve a fill price for the
+batch's prewrite tier. `ProducedSpool.submit_group` seals
+`fill_mb_s_pool_side@<tier>` into the export's demand and
+`--pace-mb-s N --pace-tier <tier>` into its command. It uses
+`storage_tiers.current_fill_offer`, the rule pbrun's movers use. The measured
+side is the producer's own newest complete export receipt on that tier
+(#1014 item 3); an announced offer caps that achieved file-side rate. A valid
+measured-only price remains usable without an announced offer. The publish
+row carries exactly the sealed demand; admission still requires available
+fill tokens.
+
+If the shared rule cannot resolve a price, a new opted-in submission raises
+`SpoolError` before writing its manifest, ingesting CAS inputs or publishing
+an export action. It retains the payload, canonical prewrite and local
+reservation for retry after pricing becomes available. It does not invent a
+rate or silently downgrade to unpaced export. This strengthens the previous
+permissive fallback only for new opted-in requests; unpaced defaults and
+explicit `paced=False` remain unchanged.
+
+**Replay.** A previously sealed export keeps its original demand and command,
+even if its price disappears or the caller changes the requested mode.
+Replay does not reprice or retroactively reject either paced or unpaced
+requests. This change does not flip either #905-gated default or establish
+Phase 0, deployment or complete #747 acceptance.
 
 **Publish attribution.** The #595 gate refuses tier demand that carries no
 residency block or produced-output template, because such demand names bytes

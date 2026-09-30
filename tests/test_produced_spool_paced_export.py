@@ -22,7 +22,7 @@ import pytest
 
 import test_prepaid_writer_integration as fx
 import test_produced_spool as base
-from prismabuild import pool, produced_spool as ps, storage_tiers
+from prismabuild import pool, produced_output as po, produced_spool as ps, storage_tiers
 
 FILL = storage_tiers.FILL_KIND
 FILL_DEMAND = f"{FILL}{storage_tiers.TIER_DEMAND_SEPARATOR}{fx.TIER}"
@@ -95,13 +95,249 @@ def test_a_group_override_must_be_a_bool(tmp_path):
         spool.submit_group("b1", entries, paced="1")
 
 
-def test_a_tier_offering_no_fill_leaves_the_export_unreserved(tmp_path):
+def tree_snapshot(root):
+    """Observe only the tiny fixture tree, including new directories and bytes."""
+
+    return {str(path.relative_to(root)): path.read_bytes() if path.is_file() else None
+            for path in Path(root).rglob("*")}
+
+
+def execute_export(spool, handle, destination, payload, *, rate=None):
+    """Use the sealed worker and real claim/finish, not a direct copy helper."""
+
+    key = handle["export_key"]
+    demand = sealed(spool)["params"]["demand"]
+    claim = spool.queue.claim(owner="spool-export-test", tags=[spool.host])
+    assert claim is not None and claim["action_key"] == key
+    assert claim["resources"] == demand
+    ledger = spool.queue.tier_ledger(fx.TIER)
+    assert ledger.holder_tokens(key).get(FILL, 0) == (rate or 0)
+    outcome = spool.queue.execute(claim, timeout_s=120)
+    assert outcome.get("returncode") == 0, outcome
+    spool.queue.finish(key, status="executed")
+    assert not ledger.holder_tokens(key)
+    assert spool.poll_group("b1")["complete"]
+    assert destination.read_bytes() == payload
+    receipt = ps._read(spool._group("b1") / "receipt.json")
+    assert isinstance(receipt, dict)
+    assert receipt["export_key"] == key
+    if rate is None:
+        assert "pacing" not in receipt
+    else:
+        pacing = receipt["pacing"]
+        ps._check_pacing(pacing)
+        assert pacing["tier_id"] == fx.TIER and pacing["rate_mb_s"] == rate
+        assert pacing["bytes"] == len(payload)
+    return receipt
+
+
+def file_price_receipt(spool, *, key="1" * 64, unix=1000.0, measured=True):
+    """File the actual pool-export schema; these are pricing inputs, not results."""
+
+    return spool.queue.record_export({
+        "schema": pool.POOL_EXPORT_SCHEMA_V1, "action_key": key,
+        "unix": unix, "tier_id": fx.TIER, "owner": spool.owner,
+        "rate_mb_s": 7, "bytes": 3_200_000 if measured else 0,
+        "seconds": 1.0, "held_seconds": 0.0, "flushes": 1,
+        "mb_per_s_file_side": 3.2 if measured else 0.0,
+    })
+
+
+def refuse_unpriced_export_then_retry(spool, source, destination, entries, *, paced):
+    """The old-source success branch must witness an actual unsafe write before RED."""
+
+    group = spool._group("b1")
+    payload = source.read_bytes()
+    identity = ps._identity(source)
+    reservation = (group / "reservation.json").read_bytes()
+    prewrite = po._prewrites_dir(spool.queue.root, spool.instance) / "b1.prewrite.json"
+    authority = prewrite.read_bytes()
+    bound = po._read_prewrite(prewrite)
+    assert isinstance(bound, dict)
+    assert bound["owner_action_key"] == spool.owner
+    assert bound["owner_attempt"] == spool.instance["owner_attempt"]
+    holds = spool.queue.tier_ledger(fx.TIER).holder_tokens(spool.owner)
+    cas_before = tree_snapshot(Path(spool.cas_root))
+    states = (pool.READY, pool.CLAIMED, pool.DONE, pool.FAILED, pool.WITHDRAWN)
+    rows_before = {state: tree_snapshot(spool.queue.root / state) for state in states}
+    group_before = tree_snapshot(group)
+    assert not destination.exists() and not Path(str(destination) + ".tmp").exists()
+    assert ps.export_fill(spool.queue, fx.TIER, spool.owner) is None
+
+    try:
+        handle = spool.submit_group("b1", entries, paced=paced)
+    except ps.SpoolError as refusal:
+        assert str(refusal), "unresolved explicit pacing must report its refusal"
+    else:
+        assert handle["ok"], handle
+        action = sealed(spool)
+        assert unpaced(action), "unexpected success must expose the unresolved-price downgrade"
+        assert "--pace-tier" not in action["params"]["command"]
+        row = pool._read_json(spool.queue.item_path(pool.READY, handle["export_key"]))
+        assert isinstance(row, dict)
+        assert row["resources"] == {"cpu": 1, "mem_gb": 1}
+        assert row["dependent_of"] == spool.owner
+        execute_export(spool, handle, destination, payload)
+        assert all(record["action_key"] != handle["export_key"]
+                   for record in spool.queue.export_records(spool.owner, fx.TIER))
+        pytest.fail(
+            "explicit paced export silently downgraded without a resolvable fill price: "
+            f"{handle['export_key']} sealed CPU/memory-only demand, was really claimed, "
+            "executed and finished, wrote canonical bytes, and acknowledged with no pacing receipt"
+        )
+
+    # Refuse before the manifest, CAS input/action publication, or any canonical copy.
+    assert not (group / "export.json").exists()
+    assert not (group / "manifest.json").exists()
+    assert not (group / "receipt.json").exists()
+    assert not destination.exists() and not Path(str(destination) + ".tmp").exists()
+    assert tree_snapshot(Path(spool.cas_root)) == cas_before
+    assert {state: tree_snapshot(spool.queue.root / state) for state in states} == rows_before
+    group_after = tree_snapshot(group)
+    group_after.pop(".export.lock", None)  # taking the transition lock is not publication
+    group_before.pop(".export.lock", None)
+    assert group_after == group_before
+    assert source.read_bytes() == payload and ps._identity(source) == identity
+    assert (group / "reservation.json").read_bytes() == reservation
+    assert prewrite.read_bytes() == authority
+    assert spool.queue.tier_ledger(fx.TIER).holder_tokens(spool.owner) == holds
+    assert spool.poll_group("b1") == {"ok": True, "complete": False}
+    assert not spool.release_group("b1")["ok"]
+    assert spool.reserve_group("b1", 64) == source.parent
+
+    # The same ownership, batch, entries and local allocation remain retryable.
+    if not any(tier.get("tier_id") == fx.TIER for tier in spool.queue.tiers()):
+        fx._announce_tier(spool.queue, spool.queue.root.parent / "stage")
+    offer_fill(spool.queue, 7)
+    handle = spool.submit_group("b1", entries, paced=paced)
+    assert handle["ok"], handle
+    assert sealed(spool)["params"]["demand"][FILL_DEMAND] == 7
+    assert sealed(spool)["params"]["command"][-4:] == [
+        "--pace-mb-s", "7", "--pace-tier", fx.TIER]
+    assert prewrite.read_bytes() == authority
+    assert (group / "reservation.json").read_bytes() == reservation
+    assert list((spool.queue.root / pool.READY).glob("*.json")) == [
+        spool.queue.item_path(pool.READY, handle["export_key"])]
+    execute_export(spool, handle, destination, payload, rate=7)
+    assert source.read_bytes() == payload and ps._identity(source) == identity
+
+
+def test_new_explicit_paced_export_without_price_refuses_before_publication(tmp_path):
+    """Primary #747 RED selection: True overrides a default-off sealed producer."""
+
+    spool = base.world(tmp_path)
+    assert spool.paced_export is False
+    source, destination, entries = base.prepare(spool)
+    refuse_unpriced_export_then_retry(spool, source, destination, entries, paced=True)
+
+
+@pytest.mark.parametrize("paced", [None, True], ids=["sealed-env1", "sealed-env1-override"])
+def test_new_env_paced_export_without_price_refuses_before_publication(tmp_path, paced):
     spool = base.world(tmp_path, env=PACED)
-    _source, _destination, entries = base.prepare(spool)
-    spool.submit_group("b1", entries)
-    action = sealed(spool)
-    assert action["params"]["demand"] == {"cpu": 1, "mem_gb": 1}
-    assert "--pace-mb-s" not in action["params"]["command"]
+    assert spool.paced_export is True
+    source, destination, entries = base.prepare(spool)
+    refuse_unpriced_export_then_retry(spool, source, destination, entries, paced=paced)
+
+
+@pytest.mark.parametrize("damage", [
+    "missing-tier", "zero", "negative", "bool", "string", "float", "tokens-shape",
+    "newest-unmeasurable",
+])
+def test_new_explicit_paced_export_cannot_guess_an_unresolved_price(tmp_path, damage):
+    spool = base.world(tmp_path)
+    source, destination, entries = base.prepare(spool)
+    path = spool.queue.root / "tiers" / f"{fx.TIER}.json"
+    if damage == "missing-tier":
+        path.unlink()
+    elif damage == "newest-unmeasurable":
+        file_price_receipt(spool)
+        file_price_receipt(spool, key="2" * 64, unix=2000.0, measured=False)
+        assert len(spool.queue.export_records(spool.owner, fx.TIER)) == 2
+    else:
+        record = pool._read_json(path)
+        assert isinstance(record, dict)
+        values = {"zero": 0, "negative": -1, "bool": True, "string": "7", "float": 7.0}
+        record["tokens"] = [] if damage == "tokens-shape" else {FILL: values[damage]}
+        pool._write_json_atomic(path, record)
+    refuse_unpriced_export_then_retry(spool, source, destination, entries, paced=True)
+
+
+@pytest.mark.parametrize("env, paced", [
+    (None, None), ({ps.PACED_EXPORT_ENV: ""}, None),
+    ({ps.PACED_EXPORT_ENV: "0"}, None), (PACED, False),
+], ids=["absent", "empty", "zero", "explicit-off"])
+def test_an_unpaced_export_without_price_still_executes(tmp_path, env, paced):
+    spool = base.world(tmp_path, env=env)
+    _source, destination, entries = base.prepare(spool)
+    assert ps.export_fill(spool.queue, fx.TIER, spool.owner) is None
+    handle = spool.submit_group("b1", entries, paced=paced)
+    assert unpaced(sealed(spool))
+    execute_export(spool, handle, destination, b"hello")
+
+
+def test_a_measured_only_price_still_reserves_and_executes(tmp_path):
+    spool = base.world(tmp_path, env=PACED)
+    file_price_receipt(spool)
+    assert ps.export_fill(spool.queue, fx.TIER, spool.owner) == 4  # shared ceil rule
+    # Capacity for claim is independent of whether the tier announces an offer.
+    spool.queue.mint_tier_capacity(fx.TIER, {fx.KIND: 4, FILL: 4})
+    _source, destination, entries = base.prepare(spool)
+    handle = spool.submit_group("b1", entries)
+    assert sealed(spool)["params"]["demand"][FILL_DEMAND] == 4
+    assert sealed(spool)["params"]["command"][-4:] == [
+        "--pace-mb-s", "4", "--pace-tier", fx.TIER]
+    execute_export(spool, handle, destination, b"hello", rate=4)
+
+
+@pytest.mark.parametrize("original_paced", [False, True], ids=["sealed-unpaced", "sealed-paced"])
+def test_a_sealed_export_replays_after_its_price_disappears(tmp_path, original_paced):
+    spool = base.world(tmp_path)
+    offer_fill(spool.queue, 7)
+    _source, destination, entries = base.prepare(spool)
+    first = spool.submit_group("b1", entries, paced=original_paced)
+    record = (spool._group("b1") / "export.json").read_bytes()
+    manifest = (spool._group("b1") / "manifest.json").read_bytes()
+    cas_before = tree_snapshot(Path(spool.cas_root))
+    path = spool.queue.root / "tiers" / f"{fx.TIER}.json"
+    tier = pool._read_json(path)
+    assert isinstance(tier, dict)
+    tier.pop("tokens", None)
+    pool._write_json_atomic(path, tier)
+    assert ps.export_fill(spool.queue, fx.TIER, spool.owner) is None
+    # Republish an absent row from its immutable action, not today's price or mode.
+    spool.queue.item_path(pool.READY, first["export_key"]).unlink()
+    again = spool.submit_group("b1", entries, paced=not original_paced)
+    assert again["export_key"] == first["export_key"]
+    assert (spool._group("b1") / "export.json").read_bytes() == record
+    assert (spool._group("b1") / "manifest.json").read_bytes() == manifest
+    assert tree_snapshot(Path(spool.cas_root)) == cas_before
+    assert unpaced(sealed(spool)) is not original_paced
+    execute_export(spool, again, destination, b"hello", rate=7 if original_paced else None)
+
+
+def test_a_resolved_price_with_no_free_fill_is_an_admission_refusal(tmp_path):
+    spool = base.world(tmp_path, env=PACED)
+    offer_fill(spool.queue, 7)
+    source, destination, entries = base.prepare(spool)
+    handle = spool.submit_group("b1", entries)
+    record = (spool._group("b1") / "export.json").read_bytes()
+    ledger = spool.queue.tier_ledger(fx.TIER)
+    stranger = "3" * 64
+    assert ledger.acquire(stranger, {FILL: 7})
+    assert spool.queue.claim(owner="spool-export-test", tags=[spool.host]) is None
+    denials = spool.queue.latest_denials({handle["export_key"]})
+    assert any(denial["reason"] == "tier_reservation_unavailable"
+               for denial in denials.get(handle["export_key"], [])), denials
+    assert spool.queue.item_path(pool.READY, handle["export_key"]).exists()
+    assert not ledger.holder_tokens(handle["export_key"])
+    assert ledger.holder_tokens(stranger).get(FILL) == 7
+    assert not destination.exists() and source.read_bytes() == b"hello"
+    assert not Path(str(destination) + ".tmp").exists()
+    assert not (spool._group("b1") / "receipt.json").exists()
+    assert spool.submit_group("b1", entries)["export_key"] == handle["export_key"]
+    assert (spool._group("b1") / "export.json").read_bytes() == record
+    ledger.release(stranger)
+    execute_export(spool, handle, destination, b"hello", rate=7)
 
 
 def test_a_paced_export_reserves_the_fill_and_holds_its_rate(tmp_path):
@@ -129,7 +365,9 @@ def test_a_paced_export_reserves_the_fill_and_holds_its_rate(tmp_path):
     assert spool.poll_group("b1")["complete"]
     assert destination.read_bytes() == payload
 
-    pacing = ps._read(spool._group("b1") / "receipt.json")["pacing"]
+    receipt = ps._read(spool._group("b1") / "receipt.json")
+    assert isinstance(receipt, dict)
+    pacing = receipt["pacing"]
     assert pacing["schema"] == ps.PACING_SCHEMA and pacing["tier_id"] == fx.TIER
     assert pacing["rate_mb_s"] == 1 and pacing["bytes"] == len(payload)
     print("PACING", pacing)
@@ -235,6 +473,7 @@ def test_a_paced_export_names_both_its_rate_and_its_tier(tmp_path):
     handle = spool.submit_group("b1", entries)
     group = spool._group("b1")
     record = ps._read(group / "export.json")
+    assert isinstance(record, dict)
     with pytest.raises(ps.SpoolError, match="names both"):
         ps.export_group(spool.queue, group / "manifest.json", record["manifest_sha256"],
                         handle["export_key"], pace_mb_s=1)
