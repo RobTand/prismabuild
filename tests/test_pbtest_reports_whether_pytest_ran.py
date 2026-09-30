@@ -120,22 +120,24 @@ DID_RUN = [
 
 
 @pytest.mark.parametrize("output, returncode", DID_NOT_RUN)
-def test_a_shard_that_never_reached_a_case_does_not_read_as_having_run(
+def test_a_shard_without_a_terminal_summary_reports_unknown_coverage(
     tmp_path: Path, monkeypatch, output: str, returncode: int,
 ) -> None:
-    """No terminal summary means ``ran`` is False, whatever words appeared.
+    """No terminal summary means ``ran`` is False, not zero execution.
 
     The argparse row is the precise case the substring test got wrong: its
     second line contains ``" error"``, so it was captured as the summary and
-    the shard reported ``ran=True`` with zero cases executed.
+    the shard reported ``ran=True`` with zero cases executed. The flag keeps
+    its terminal-summary meaning; missing output cannot certify coverage.
     """
 
     record = _one_shard(tmp_path, monkeypatch, output, returncode)
 
     assert record["ran"] is False, record["summary"]
     assert record["summary"].startswith("NO PYTEST SUMMARY")
-    # The count that did not run, not an absence for the reader to infer.
-    assert "1 file(s) did not run" in record["summary"]
+    assert "1 file(s) have no verified final result" in record["summary"]
+    assert "execution/coverage unknown" in record["summary"]
+    assert "did not run" not in record["summary"]
 
 
 @pytest.mark.parametrize("output, returncode", DID_RUN)

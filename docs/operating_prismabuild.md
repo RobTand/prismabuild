@@ -1600,23 +1600,28 @@ different runs. File discovery and partitioning remain PB's responsibility.
 Each shard prints its pytest terminal summary, and `--json` records the same
 text plus a `ran` flag. `ran` is true when pytest reported a terminal summary
 — the `1 failed, 531 passed, 1 skipped in 17.82s` line — and false otherwise.
-A shard that died before or outside pytest prints `NO PYTEST SUMMARY`, the
-number of files that did not run, and how the shard ended (`rc=N`, or
-`signal N` when it was killed), because a shard starved of I/O, one whose
-submission was refused, and one that ran clean are three different events that
-used to print the same blank.
+Without a terminal summary, the shard prints `NO PYTEST SUMMARY`, the number
+of files with no verified final result, and how it ended (`rc=N`, or `signal N`
+when killed). Execution and coverage remain unknown: pytest may have executed
+partially before a deadline or signal prevented its final summary. Missing
+counts do not establish zero execution, and `ran=false` is not a claim that no
+case ran. Such a shard remains non-green even if its process returned zero.
+Retained logs can identify individual observed failures, but cannot certify an
+unreported final population.
 
 ### Choose the project's test environment
 
 `pb-cpu` is the PrismaBuild infrastructure test environment. Its presence on a
 worker does not mean that arbitrary project dependencies are installed there.
-For PrismaQuant CPU tests on the current x86 fleet, use the existing project
-interpreter `/home/rob/venvs/pq-cpu312/bin/python`:
+For project CPU tests, use an interpreter qualified against that project's
+current dependency and runtime pins. Resolve its absolute path on eligible
+workers before submitting. The path below is illustrative, not a qualified
+PrismaQuant environment:
 
 ```bash
 python3 /mnt/shared/prismabuild-fleet/repo/tools/pbtest.py \
   --checkout /path/to/prismaquant \
-  --python /home/rob/venvs/pq-cpu312/bin/python --tag x86 \
+  --python /path/to/project-venv/bin/python --tag x86 \
   --workers-per-shard 2 --threads-per-shard 1 --mem-gb 6 \
   tests/test_shipcard_git_provenance.py tests/test_format_registry.py
 ```

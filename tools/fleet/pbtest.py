@@ -1531,22 +1531,19 @@ def main() -> int:
         out = replayed_output(out or "") or (out or "")
         tail = [line for line in out.strip().splitlines() if line.strip()]
         summary = pytest_summary(tail)
-        # A shard whose pytest never reported is a shard whose tests never
-        # ran, and it is not the same event as a shard that ran clean -- but
-        # with an empty summary it printed the same blank space, which is how
-        # a submission killed before it queued anything (#208) cost 74 tests
-        # silently.  Say the count that did not run; do not let the reader
-        # infer it from an absence.
+        # Missing terminal output must stay visible: an empty summary once
+        # hid 74 tests behind a killed submission (#208). But absence of the
+        # summary cannot establish absence of execution (#1365): a deadline
+        # can cut off a shard after some cases ran and before final counts.
         # ``ran`` now means "pytest reported a terminal summary", which is the
         # question the flag is actually asked.  It used to mean "some line
         # mentioned passing, failing or an error", and those are not the same
         # claim: the second is true of a shard that died in argparse.
         ran = bool(summary)
         if not ran:
-            # Name how it ended as well as that it did not run.  A shard killed
-            # by a signal, one that timed out, and one whose pbrun refused to
-            # submit all printed the same sentence, and the reader had to go
-            # find the returncode elsewhere to tell them apart.
+            # Preserve the observed ending without inventing coverage. A
+            # signal, timeout, or refused submission may leave no summary;
+            # their return codes distinguish endings, not executed cases.
             rc = returncode
             how = f"signal {-rc}" if rc < 0 else f"rc={rc}"
             unobserved = unobserved_outcome(tail) if rc == 74 else None
@@ -1560,8 +1557,9 @@ def main() -> int:
                            f"pb-queue/{{done,failed,withdrawn}}/{unobserved}*.json "
                            "before rerunning)")
             else:
-                summary = (f"NO PYTEST SUMMARY -- {len(bucket)} file(s) did not run "
-                           f"(the shard ended {how}, before or outside pytest)")
+                summary = (f"NO PYTEST SUMMARY -- {len(bucket)} file(s) have no "
+                           f"verified final result (the shard ended {how}; "
+                           "execution/coverage unknown)")
         # Each skip by node ID, with its reason (#942).  ``None`` is "this
         # shard printed no record", which is not "it skipped nothing".
         skipped = recorded_skips(pbtest_outcomes.parse(out))
