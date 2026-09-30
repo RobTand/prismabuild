@@ -1,9 +1,9 @@
 # Shrink-only allowlist for tests/test_client_boundary.py: the legacy prismaquant.prismabuild.* record IDs the
 # scanned code spells. They stay unless a wire version changes identity (step 8).
-# New record types use prismabuild.*. A record ID that is already deployed inside stored records is legacy by
-# deployment: producer/reader equality makes a rename a compatibility break, so it is classified here with its
-# evidence instead (#1384). Otherwise this list only shrinks.
-# One line per occurrence. Delete lines; never add without recorded deployment evidence.
+# New record types use prismabuild.*.
+# The pool_export.v1 line below is a one-time compatibility correction for an already deployed wire ID (#1384);
+# it is not a permission to add other IDs or to grow this list.
+# One line per occurrence. Delete lines; never add.
 prismaquant.prismabuild.action.v1
 prismaquant.prismabuild.action.v2
 prismaquant.prismabuild.canary_status.v1
@@ -31,8 +31,8 @@ prismaquant.prismabuild.pbrun_detach.v1
 prismaquant.prismabuild.pool_attempt.v1
 prismaquant.prismabuild.pool_claim_intent.v1
 prismaquant.prismabuild.pool_egress.v1
-# Deployed wire ID, not a new record type: added by bb57d0301245 (#1014 item 3) after the #1250 freeze, live in
-# runtime 3aff9642ab39-1790654284-1eed70850170, and required verbatim by record_export/export_records.
+# One-time #1384 correction: deployed wire ID, added by bb57d0301245 (#1014 item 3) after the #1250 freeze,
+# live in runtime 3aff9642ab39-1790654284-1eed70850170, and required verbatim by record_export/export_records.
 prismaquant.prismabuild.pool_export.v1
 prismaquant.prismabuild.pool_item.v1
 prismaquant.prismabuild.pool_lease.v1

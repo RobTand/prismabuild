@@ -199,6 +199,7 @@ def test_the_qualification_report_uses_the_independent_record_namespace(tmp_path
     installed = tmp_path / "needrestart-installed.conf"
     installed.write_text(FIXTURE, encoding="utf-8")
     qualified = _qualify(installed)
+    assert qualified.returncode == 1, qualified.stderr
     assert json.loads(qualified.stdout)["schema"] == \
         "prismabuild.needrestart_broker_deferral.v1"
 

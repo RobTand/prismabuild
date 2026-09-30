@@ -34,9 +34,9 @@ sys.path.insert(0, str(generation_root(__file__) / "src"))
 from prismabuild import core  # noqa: E402
 
 #: A new record type uses the independent ``prismabuild.*`` namespace (#1250).
-#: This report type is undeployed by the observed fleet manifest -- no
-#: published generation carries this tool -- so there is no deployed
-#: producer/reader contract to preserve (#1384).
+#: This report type is absent from the observed current runtime generation,
+#: and the inspected history found no deployed reader, so there is no known
+#: deployed producer/reader contract to preserve (#1384).
 SCHEMA = "prismabuild.needrestart_broker_deferral.v1"
 DEFAULT_CONFIG = Path("/etc/needrestart/needrestart.conf")
 BROKER = "prismabuild-resource-broker.service"
