@@ -254,24 +254,39 @@ def parse_bundle(bundle: Path) -> dict[str, object]:
     }
 
 
-def entry_identity(entry: Path, framing: dict, reader_lease) -> dict[str, object]:
-    identity: dict[str, object] = {}
+def local_file_identity(info, reader_lease) -> dict[str, int]:
+    """Reuse the reader's identity rule with this process's device fence."""
+
+    return {**reader_lease.portable_identity(info), "device": info.st_dev}
+
+
+def entry_identity(entry: Path, framing: dict, reader_lease) -> dict[str, dict[str, int]]:
+    identity: dict[str, dict[str, int]] = {}
     pack, idx = entry_paths(entry, framing)
     for label, path in (("pack", pack), ("idx", idx),
                         ("manifest", entry / "manifest.json")):
         info = os.lstat(path)
         if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
             raise E1Error(f"cache {label} is not a regular file: {path}")
-        identity[label] = {**reader_lease.portable_identity(info),
-                           "device": info.st_dev}
+        identity[label] = local_file_identity(info, reader_lease)
     return identity
 
 
-def copy_or_reflink(source: Path, destination: Path) -> str:
-    """Retain the selected object across this Linux helper's copy fallback."""
+def copy_or_reflink(source: Path, destination: Path, *,
+                    expected_identity: dict[str, int] | None = None,
+                    reader_lease=None) -> str:
+    """Fence a verified caller's actual descriptor, then retain its object."""
 
+    if expected_identity is not None and reader_lease is None:
+        raise E1Error("verified copy requires the reader identity rule")
     destination.unlink(missing_ok=True)
     with open(source, "rb") as src:
+        if expected_identity is not None:
+            info = os.fstat(src.fileno())
+            actual = local_file_identity(info, reader_lease)
+            if (not stat.S_ISREG(info.st_mode)
+                    or not same_manifest_binding(actual, expected_identity)):
+                raise E1Error(f"cache object identity changed before copy: {source}")
         try:
             with open(destination, "wb") as dst:
                 fcntl.ioctl(dst.fileno(), FICLONE, src.fileno())
@@ -670,9 +685,11 @@ def arm_b_rep(
         objects = repository / ".git" / "objects" / "pack"
         entry_pack, entry_idx = entry_paths(entry, framing)
         methods = []
-        for source in (entry_pack, entry_idx):
+        for label, source in (("pack", entry_pack), ("idx", entry_idx)):
             destination = objects / source.name
-            methods.append(copy_or_reflink(source, destination))
+            methods.append(copy_or_reflink(
+                source, destination, expected_identity=identity[label],
+                reader_lease=reader_lease))
             os.chmod(destination, 0o444)
         phase.done("copy_objects")
         copy_pack_sha = sha256_stream(objects / entry_pack.name)

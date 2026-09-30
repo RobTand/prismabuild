@@ -1,0 +1,27 @@
+{
+  "schema": "pb.staged_read_acceptance.v1",
+  "step": "merge",
+  "contract_commit": "37b72cc431b876b6dc4889fa1f5889dd1656b97d",
+  "ledger_commit": "e353e3778a354facbccb930c2f35e734302d4f71",
+  "scope": ["RNG-02"],
+  "prelaunch": {"status": "not-this-step"},
+  "merge": {
+    "branch": "sol/issues-ts-811-acquire-12",
+    "issue": "https://github.com/RobTand/prismabuild/issues/811",
+    "validated_repairs": [{
+      "id": "RNG-02",
+      "actions": ["5290d3e39e27c9f53a87f21425efb7f2a09790c086893640df71b8c042da3876"],
+      "outcome": "Experimental arm B now compares the actual opened copy descriptor's regular-file/local-reader identity against its banked per-object identity before ioctl or byte copy. Shared local identity construction reuses reader_lease.portable_identity. CPU-only executed/exit0 on sparky, one attempt, 32 passed/0 failed/skipped/uncollected across six files; all32 reconciled, no missing/duplicate collection. Receipt ea9cdcc939560f563328066abfbd11de4748cd427d7b30d31607d383b175a6bd; payload9251bytes/SHA08bb7fc4d7ead77cf7ad01809873a64843326dd992c6384726f5fa76755190ac. Claim70f03419a8caed5cdd5b0c50a960057a1b95915dfc21cc47dacfb61897b0b484 passes all9 local integrity checks including payload hash. Full worker attestation not independently checked. The three new acquisition cases scaffold Git/CAS/preflight/control plumbing, while actual filesystem/descriptors/copy execute. Neighboring real-Git regression files also passed. These evidence docs were added after tested code/test bytes."
+    }],
+    "remaining_gaps": [
+      "Global RNG-02 remains partial: no atomic pack/index/manifest acquisition, live production ref/epoch, async or mmap lifetime, or complete ABA-fenced production lease qualification.",
+      "SM-03/INV-07: no production retirement, serialization or charge-ordering implementation or acceptance.",
+      "PB811: production cache integration, crash recovery and matched deployed claim-path before/after performance acceptance remain open.",
+      "No deployment/default, sealed-input, source-certification, power-loss-durability, actual reflink-kernel or GPU qualification claim; no new performance measurement."
+    ],
+    "note": "REDfafb99b09f377c07677af4f1212201ac229d47dee760fb5ac903c6f5a4124c0a failed1 on sparky, one attempt, 2 failed/1 unchanged control passed/0 skipped,3 reconciled. Both failures were Failed: DID NOT RAISE E1Error before the fix. No successful RED CAS receipt. Same-byte replacement previously passed destination digest checks; no wrong-byte artifact claim. Both clients used the explicit coordinator PB-self-test GB10/pb-cpu route, shard1/worksteal2/native1/CPU2/memory2GiB/priority-10/600s bounds, with WINDOW_ACTIVE absent. Ledger axes unchanged."
+  },
+  "deploy": {"status": "not-this-step"},
+  "complete": {"status": "not-this-step"},
+  "exceptions": []
+}
