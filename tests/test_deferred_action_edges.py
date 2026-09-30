@@ -205,10 +205,12 @@ def test_a_consumer_filed_before_its_producer_runs_reads_the_committed_bytes(
 
     detach = _submit(work, monkeypatch, capsys,
                      "--after", f"{producer}:{template['template_id']}",
-                     "--residency", "stage")
+                     "--residency", "stage", "--priority-reason", "producer gate")
     pending = detach["pending_id"]
     assert detach["status"] == "deferred" and detach["action_key"] is None
-    assert ae.read_deferred(queue.root, pending) is not None
+    deferred = ae.read_deferred(queue.root, pending)
+    assert deferred is not None
+    assert deferred["publication"]["priority_reason"] == "producer gate"
     assert {row.stem for row in queue.dir(pool.READY).glob("*.json")} == {
         producer}, "nothing is queued for the consumer yet"
 
@@ -233,7 +235,8 @@ def test_a_consumer_filed_before_its_producer_runs_reads_the_committed_bytes(
     summary = [event for event in events if event["event"] == dr.TICK_EVENT]
     assert summary[0]["released"] == 1 and summary[0]["elapsed_s"] >= 0
     assert ae.read_published(queue.root, pending)["action_key"] == key
-    assert queue.item_path(pool.READY, key).exists()
+    assert json.loads(queue.item_path(pool.READY, key).read_text())["priority_reason"] == "producer gate"
+    assert "priority_reason" not in _request(tmp_path, key)["params"]
     # Declared against the batch (#914), so its retirement waits for it.
     assert (po._consumers_dir(queue.root, instance, "b1")
             / f"{key}.json").exists()

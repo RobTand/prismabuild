@@ -1002,6 +1002,7 @@ def submit(
     local_checkout_root: str | Path | None = None,
     partition: str | None = None,
     priority: int = 0,
+    priority_reason: str | None = None,
     attempt: int = 1,
     sbatch: Command = "sbatch",
     squeue: Command = "squeue",
@@ -1026,6 +1027,7 @@ def submit(
     is not the same as knowing it was refused.
     """
 
+    reason = pool.normalize_priority_reason(priority_reason)
     key = str(action["action_key"])
     directory = lane_directory(key, root=root)
     directory.mkdir(parents=True, exist_ok=True)
@@ -1217,6 +1219,8 @@ def submit(
         "max_attempts": int(max_attempts),
         "resources": resources.demand(),
     }
+    if reason is not None:
+        record["priority_reason"] = reason
     record_path = submission_record_path(
         directory, published_unix=generation, attempt=attempt
     )
@@ -3097,6 +3101,7 @@ def run(
     local_checkout_root: str | Path | None = None,
     partition: str | None = None,
     priority: int = 0,
+    priority_reason: str | None = None,
     sbatch: Command = "sbatch",
     sacct: Command = "sacct",
     scontrol: Command = "scontrol",
@@ -3171,6 +3176,7 @@ def run(
             local_checkout_root=local_checkout_root,
             partition=partition,
             priority=priority,
+            priority_reason=priority_reason,
             attempt=attempt,
             sbatch=sbatch,
             squeue=squeue,

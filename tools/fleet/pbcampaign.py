@@ -53,6 +53,7 @@ and each one is exactly one ``pbrun`` flag:
 ``gpu_capacity``     ``--gpu-capacity``
 ``gpu_memory_gb``     ``--gpu-memory-gb``: pool GPU budget in GiB
 ``priority``         ``--priority``
+``priority_reason``  ``--priority-reason`` (submission annotation, not identity)
 ``profile``          ``--profile``: a profiler mode, sealed into the row's key
 ``measurement``      ``--measurement``
 ``host_class``       ``--host-class``: worker class (pool measurement) or SLURM Feature
@@ -256,6 +257,7 @@ _VALUE_FIELDS = (
     ("gpu_capacity", "--gpu-capacity"),
     ("gpu_memory_gb", "--gpu-memory-gb"),
     ("priority", "--priority"),
+    ("priority_reason", "--priority-reason"),
     ("profile", "--profile"),
     ("host_class", "--host-class"),
     ("max_attempts", "--max-attempts"),
@@ -320,7 +322,7 @@ _CHOICE_FIELDS = (
 
 #: Fields whose value reaches ``pbrun`` as text.
 _TEXT_FIELDS = ("cwd", "host_class", "profile", "data_manifest",
-                "produced_output_template", "as_sealed_by")
+                "produced_output_template", "as_sealed_by", "priority_reason")
 
 #: An absolute path mention inside a command word or an environment value.  A
 #: mention starts where a path can start -- the beginning of the string, or a
@@ -481,6 +483,11 @@ def _require_row_shape(row, *, index: int) -> None:
         value = row.get(field)
         if value is not None and value not in choices:
             raise _refuse(index, field, f"must be one of {', '.join(choices)}", value)
+    if "priority_reason" in row:
+        try:
+            pbrun.pool.normalize_priority_reason(row["priority_reason"])
+        except ValueError as exc:
+            raise _refuse(index, "priority_reason", str(exc), row["priority_reason"]) from None
     if "as_sealed_by" in row:
         try:
             pbrun.require_reseal_key(row["as_sealed_by"])
@@ -744,7 +751,11 @@ def pbrun_argv(row) -> list[str]:
     flags: list[str] = []
     for field, flag in _VALUE_FIELDS:
         if row.get(field) is not None:
-            flags += [flag, str(row[field])]
+            if field == "priority_reason":
+                # A legal note can begin with '--'; keep it one option value.
+                flags.append(f"{flag}={row[field]}")
+            else:
+                flags += [flag, str(row[field])]
     demand = row.get("demand") or {}
     if not isinstance(demand, dict):
         raise ManifestError("demand must be an object of name to count")
