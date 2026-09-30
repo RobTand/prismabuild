@@ -293,6 +293,35 @@ Practical rules:
   record that is malformed, foreign, future-dated or symlinked reads as
   unknown.
 
+### Check a supplied class-image snapshot
+
+For an **offline contract check**, not live membership or admission, run:
+
+```bash
+python3 -m prismabuild.container_images --class-verdict \
+  --requirements class-images.json --class gb10 --inventory inventory.json
+```
+
+The requirements schema is `prismabuild.container_class_requirements.v1`.
+`classes.gb10` declares a canonical absolute `store_root` (DockerRootDir) and
+`images`, an object mapping explicit `repository:tag` names to their portable
+`content:sha256:<64 lowercase hex>` references. The inventory uses the existing
+v2 schema, `observed_unix` and `entries`, plus a **complete** `image_contents`
+name-to-content mapping and observed `store_root`. Current live cache records
+do not supply these supplemental fields; missing fields mean unknown.
+
+The command prints a JSON verdict with `authority: supplied_snapshot_only` and
+`scope: container_work_only`. Exit 0 means the supplied snapshot satisfies the
+class requirements, 1 means refused or unknown, and 2 means configuration or
+usage error (argument errors print argparse usage). It never reads Docker,
+refreshes a cache or grants claim authority. Extra images are allowed, but the
+required content under an unrelated tag cannot excuse a wrong required tag.
+Both input files are capped at `MAX_INVENTORY_BYTES` (8 MiB); ambiguous duplicate
+JSON keys are unreadable evidence. Freshness defaults to the 30 s offer TTL;
+`--max-age-s 5` requests the stricter claim-age check, not a claim. Do not use
+this command to qualify a live worker or alter its offer; #807's runtime wiring
+and live qualification remain outstanding.
+
 ### `--profile`: an opt-in profile, sealed into the key
 
 `--profile sample` runs py-spy at 100 Hz over the action's whole process tree
