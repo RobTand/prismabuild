@@ -545,6 +545,12 @@ def test_a_measurement_withholds_while_its_holders_drain_and_through_their_tail(
     # The holders are gone; the sample still carries their load.
     assert claim() is None
     assert _denial(queue, measurement)["evidence"]["withhold"]["why"] == "holder_tail"
+    item = pool._read_json(queue.item_path(pool.READY, measurement))
+    assert isinstance(item, dict)
+    carried = queue._carried_withhold(queue._host_denial_records(), item,
+                                     host=queue.ledger().base.name, now=clock[0])
+    assert carried is not None, "fresh known holder overlap must retain its original protection"
+    assert carried["measurement_unmeasured"] is False
     clock[0] += 30
     assert claim() is None
     state["busy_cpus"] = 0.
