@@ -371,9 +371,11 @@ def export_fill(queue, tier_id, owner=None):
     MB, which over-charges a write (the same bins displace about 0.4
     read MB per written MB) and so errs toward the movers -- the stated
     bound, which runs one export at a time and never admits a second
-    writer on a missing signal.  A tier that announces no fill offer
-    prices nothing, and the export stays unreserved and unpaced exactly
-    as before.
+    writer on a missing signal.  A valid measured receipt can price an
+    export even without a current fill offer.  If neither input resolves
+    a price, return ``None``: new opted-in paced submissions refuse before
+    publication, while sealed requests replay their original demand and
+    pacing behavior.
 
     The newest receipt is the last of :meth:`PoolQueue.export_records`:
     one directory listing over the producer's own per-tier receipts,
@@ -550,8 +552,9 @@ class ProducedSpool:
 
         ``paced`` overrides the producer's :data:`PACED_EXPORT_ENV` for this
         group only, which is how an A/B interleaves paced and unpaced exports
-        from one producer.  ``None`` takes the producer's setting.  A replay
-        keeps whatever the first submission sealed.
+        from one producer.  ``None`` takes the producer's setting.  A new
+        paced export refuses before publication if its tier has no resolvable
+        fill price.  A replay keeps whatever the first submission sealed.
         """
 
         if paced is not None and not isinstance(paced, bool):
@@ -622,6 +625,14 @@ class ProducedSpool:
             declared = {str(path) for path in prewrite["paths"] if not str(path).endswith(".tmp")}
             if {entry["destination_path"] for entry in checked} != declared:
                 raise SpoolError("export group does not cover the canonical prewrite")
+            # Price only new opted-in work, after entry validation but before
+            # manifest/CAS publication.  The payload and prewrite remain
+            # reserved for a retry; old sealed requests replay above unchanged.
+            tier_id = str(prewrite.get("tier") or "")
+            fill = (export_fill(self.queue, tier_id, self.owner)
+                    if paced and tier_id else None)
+            if paced and fill is None:
+                raise SpoolError("paced export requires a resolvable fill price for its prewrite tier")
             manifest = {"schema": SCHEMA, "owner": self.owner,
                         "instance": self.instance, "template": self.template,
                         "batch_id": batch_id, "group": str(group), "host": self.host,
@@ -643,9 +654,6 @@ class ProducedSpool:
             # it through -- and is paced to it (#747).  The rate
             # is sealed in the command, so it is part of the export's
             # identity.  Not opted in, the export is sealed as before.
-            tier_id = str(prewrite.get("tier") or "")
-            fill = (export_fill(self.queue, tier_id, self.owner)
-                    if paced and tier_id else None)
             if fill:
                 demand[f"{storage_tiers.FILL_KIND}{storage_tiers.TIER_DEMAND_SEPARATOR}{tier_id}"] = fill
                 command += ["--pace-mb-s", str(fill), "--pace-tier", tier_id]
