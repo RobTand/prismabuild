@@ -5566,7 +5566,8 @@ need no interleave option. Unknown topology refuses even with bare interleave.
 `discover_tiers` and `ram_tier` expose the separate keyword-only
 `memory_numa_root` (default `/sys/devices/system/node`); block-device `sysfs`
 keeps its existing meaning. Direct `ram_admission` callers must supply known
-sorted, unique `memory_nodes` (tuple); its default null is fail-closed.
+sorted, unique `memory_nodes` (tuple) and complete positive integer-byte
+`node_memtotal_bytes` keyed by integer node IDs; missing facts are fail-closed.
 
 Both normal and epoch-failure admission branches receive this evidence;
 `ram_statvfs_unreadable` and `ram_epoch_unwritable` still override it. No
@@ -5582,6 +5583,47 @@ Fleet-managed mount provisioning, per-node sizing and MemFree/Shmem
 visibility, deployment/page turnover, and live dl380g10 Shmem balance within
 10% with no pswpout growth over one campaign hour remain owed. Full #1032
 stays open; scoped source acceptance is not staged-read workload completion.
+
+**Per-memory-node configured capacity (next bounded source slice, Refs #1032).**
+The existing node reader now retains each node's positive MemTotal bytes from
+one membership-bracketed snapshot; `memory_numa_nodes` retains its tuple-returning
+compatibility API. Production `ram_tier` derives IDs and totals from that same
+snapshot and forwards both to shared admission in normal and epoch-failure
+branches. Reader failures retain `ram_numa_topology_unreadable`. After the existing
+global and topology/interleave checks, direct callers with missing, nonpositive,
+non-integer (including boolean), or mismatched node totals refuse
+`ram_numa_memtotal_unreadable`; no single-node or partial-coverage fallback exists.
+
+For every memory node, admission now requires the issue-specified share
+`(window + max(arc_c_max, arc_floor, arc_meta_used) + system_reserve) / N <=
+node MemTotal`. The exact ARC term and configured reserve are reused from the
+existing numeric guard. Integer cross-multiplication compares the numerator
+against `N * node MemTotal`, so equality admits and even a one-byte deficit
+refuses without division or rounding. Held rows remain in the existing global
+window guard, not apportioned across nodes. Capacity failure is
+`ram_window_exceeds_node_memtotal_floor`, with additive diagnostics inside the
+existing `ram_admission`: ordered string-node-key `node_memtotal_bytes`,
+`memory_node_count`, `node_required_numerator_bytes` and the first ascending
+`failing_memory_node`. No record schema, epoch, token algorithm, window, ceiling,
+policy default, mount option or allocation ledger changes. The existing token
+path therefore mints no RAM occupancy on this refusal, while statvfs and epoch
+errors still take precedence.
+
+Parent verified the untouched-production capacity RED under PB action
+`12ec894778d12023058fb6046cb0bf3307bc7fe7130c9df04ddc391d40625596`:
+1 failed, 1 passed, 0 skipped (two tests reconciled). Synthetic totals60/234 GiB
+on a coherent294 GiB host admitted and minted112 `ram_gib` despite a required
+75 GiB/node share; balanced147/147 admitted as the control. Those are fixture
+observations, not a live memory measurement. Window112 is an explicit test
+input, not a change to the published policy's window160; ceiling256, ARC-floor20
+and reserve16 remain configured policy values. The added equality, KiB-deficit,
+single-node, noncontiguous/CPU-less, malformed-fact, ARC-term and precedence
+controls and this implementation await parent-owned admitted GREEN and
+independent review. This condition guards configured resident/ARC/reserve share
+against each node's total, not actual worker/ARC per-node allocation, MemFree,
+page placement or universal physical OOM safety. Provisioning, per-node
+MemFree/Shmem visibility, deployment/page turnover and live Shmem balance within
+10% with no pswpout growth over a campaign hour remain owed; full #1032 is open.
 
 **Mount-epoch identity — the rule the whole safety argument rests on.**
 tmpfs empties on reboot; the ledger and the residency-map fragments on the
