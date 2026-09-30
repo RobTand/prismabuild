@@ -3036,12 +3036,30 @@ value. Null RepoTags means an explicitly untagged image. The existing
 The snapshot-only CLI reads explicit size-capped JSON inputs and never probes
 Docker or refreshes a cache. Exit 0 means the supplied class snapshot satisfies
 its declaration; 1 means refused or unknown; 2 means invalid configuration or
-usage. JSON output carries the scope and authority above. This slice does not
-enrich the live inventory producer, configure fleet classes, change offers or
-`pbstatus`, remove native-work eligibility, or enforce container-only routes.
-Those membership/claim and live qualification requirements remain open in
-#807. Current cache producers lack the two supplemental fields and therefore
-cannot establish a satisfied offline class verdict without explicit evidence.
+usage. JSON output carries the scope and authority above. This does not
+configure fleet classes, change offers or `pbstatus`, remove native-work
+eligibility, or enforce container-only routes. Those membership/claim and
+live qualification requirements remain open in #807.
+
+The existing `InventoryCache` refresh retains optional class inputs in its
+existing v2 record. `image_contents` comes from the same inspect bytes used
+for content references, not a second inspect. `store_root` comes from a
+bounded local-daemon `docker info --format '{{json .DockerRootDir}}'` read;
+it is never copied from a declaration. Listing, inspect and optional info
+share the refresh's remaining timeout and forced local endpoint/environment
+scrubbing. The public `observe()` API remains a two-read reference inventory.
+No parallel cache or qualification mechanism is introduced.
+
+Failed, malformed, noncanonical, oversized or out-of-budget supplemental
+evidence is unknown for class evaluation; valid legacy references remain
+usable. A failed listing/inspect still makes those references unknown. An
+empty successful listing gives an empty name projection, not unknown. Refresh
+replaces prior supplemental proof, including on failure; a cached record does
+not retain old store proof under a new timestamp. If adding metadata would
+exceed the existing 8 MiB record bound, discard the supplemental fields rather
+than make a valid legacy record unreadable. `get()` still returns only the
+legacy reference set. Injected-probe tests establish producer wiring, not a
+live daemon/store observation or runtime membership authority.
 
 ### A kill names what it waited on
 
