@@ -1,0 +1,33 @@
+{
+  "schema": "prismabuild.pb725.source_render_integration.v1",
+  "issue": 725,
+  "prepared_checkpoint": "behavioral-red-inactive-policy",
+  "harness_baseline": "9ae8817700a918c696563b30f0913449d8473a51",
+  "verifier_sha256": "7ec1e3b1a3fcb268f07bc0d92e557567f1de48391161c2c24f3ec7093e1d57e9",
+  "pq": {
+    "ref": "pb-sched-725-pq-source",
+    "commit": "a3f8d01a4fdb26cfa81c5f6879ae5b17af367c89",
+    "archive_paths": ["prismaquant"]
+  },
+  "pb_tools": {
+    "ref": "pb-sched-725-sdk1-tools",
+    "commit": "059953bc3793f539600d333cd3311773e592b0e6",
+    "archive_paths": ["tools/fleet"]
+  },
+  "pb_installed_commit": "059953bc3793f539600d333cd3311773e592b0e6",
+  "pb_sdk_version": 1,
+  "tessera_commit": "b40c93cb73745097e57a1ba4cf5b9eee166c759a",
+  "python": "/home/rob/venvs/pq-pb059953bc-tessera-b40c93cb/bin/python",
+  "operands": {
+    "shape": [8, 4],
+    "tensor_elements": 32,
+    "source_names": ["a.covered", "z.omitted"],
+    "render_names": ["pb725.covered", "pb725.omitted"],
+    "render_format": "BF16",
+    "max_file_bytes": 65664,
+    "lru_max_bytes": 256,
+    "prefetch_max_workers": 1,
+    "tier_id": "prismabuild-stage:pb725-fixture"
+  },
+  "scope": "source and CPU BF16 rendered-weight reader components only; RED receipt pending, not ACC-03, join, deployment, current SDK3, numerical or performance qualification"
+}

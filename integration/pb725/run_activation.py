@@ -5,6 +5,7 @@ by pbrun --snapshot-ref, never coordinator paths or copied activation payloads.
 """
 from __future__ import annotations
 
+import argparse
 import hashlib
 import io
 import json
@@ -15,7 +16,6 @@ import sys
 import tarfile
 import tempfile
 from pathlib import Path, PurePosixPath
-
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
@@ -100,7 +100,15 @@ def assert_origins(package_root, pq_root, tools_root):
 def main():
     if not sys.flags.isolated:
         raise RuntimeError("launcher requires interpreter -I; ambient PYTHONPATH is not a closure")
-    binding_path = HERE / "activation_binding.json"
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--test-path", choices=(
+        "integration/pb725/test_activation_reader.py",
+        "integration/pb725/test_source_render_reader.py"),
+        default="integration/pb725/test_activation_reader.py")
+    selected = parser.parse_args().test_path
+    test_path = ROOT / selected
+    binding_path = HERE / ("activation_binding.json" if test_path.name ==
+                           "test_activation_reader.py" else "source_render_binding.json")
     binding = json.loads(binding_path.read_text())
     if Path(sys.executable).absolute() != Path(binding["python"]).absolute():
         raise RuntimeError("use the explicitly selected PQ interpreter")
@@ -124,7 +132,7 @@ def main():
         "binding": binding,
         "harness_snapshot_commit": git("rev-parse", "HEAD").decode().strip(),
         "integration_files_sha256": {p.name: digest(p) for p in (
-            binding_path, HERE / "test_activation_reader.py", Path(__file__), verifier)},
+            binding_path, test_path, HERE / "pb725_scaffold.py", Path(__file__), verifier)},
         "installed": installed,
         "pq_source": extract_ref(binding["pq"], pq_root),
         "pb_tool_source": extract_ref(binding["pb_tools"], tools_root),
@@ -133,6 +141,7 @@ def main():
     # Tools prepend generation_root/src themselves. It MUST stay absent:
     # every behavioral PB import resolves to the verified installed package.
     assert not (tools_root / "src").exists()
+    sys.path.insert(0, str(HERE))  # Only the explicit integration scaffold, never PB src/tests.
     sys.path.insert(0, str(pq_root))
     sys.path.insert(0, str(tools_root / "tools/fleet"))
     os.environ["PB725_PRIVATE_ROOT"] = str(private)
@@ -156,7 +165,7 @@ def main():
                               "-p", "no:cacheprovider", "-v", "-s", "--tb=short",
                               "-o", "faulthandler_timeout=30",
                               "--basetemp", str(private / "pytest"),
-                              str(HERE / "test_activation_reader.py")])
+                              str(test_path)])
     finally:
         evidence["final_import_origins"] = assert_origins(package_root, pq_root, tools_root)
         path.write_text(json.dumps(evidence, sort_keys=True, indent=2))
