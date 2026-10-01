@@ -273,3 +273,46 @@ def test_a_group_that_reappears_before_the_absence_check_is_never_touched(
     assert scope not in b.stopped
     if replacement:
         assert b.identity[scope] == [64, 700_777]
+
+
+def test_a_failed_metadata_write_keeps_the_scope_active_and_retries(
+        authority, monkeypatch):
+    """A durable write failure must not release the scope in memory only.
+
+    The replacement record is persisted before the in-memory record changes;
+    a failed write leaves the record active and the pass unhealthy, and a
+    later successful pass still releases it.  No kernel operation is involved
+    either way.
+    """
+
+    a, b = authority
+    request, record, scope = _retired(a, b, monkeypatch)
+    _vanish(b, scope)
+    b.ops.clear()
+    path = _state(a, scope)
+    before = path.read_bytes()
+
+    module_globals = a._maintenance_status.__func__.__globals__
+    real_atomic = module_globals["_atomic"]
+
+    def unwritable(target, value, **kwargs):
+        if target == path:
+            raise OSError("durable metadata write failed")
+        return real_atomic(target, value, **kwargs)
+
+    monkeypatch.setitem(module_globals, "_atomic", unwritable)
+    status = _pass(a)
+    assert status["health"] is False
+    assert any("durable metadata write failed" in error for error in status["errors"])
+    assert scope in status["active_scope_ids"]
+    assert "released_unix" not in a.records[scope]
+    assert path.read_bytes() == before
+    assert b.ops == []
+
+    monkeypatch.setitem(module_globals, "_atomic", real_atomic)
+    status = _pass(a)
+    assert status["health"] is True and status["active_scopes"] == 0
+    after = json.loads(path.read_text())
+    assert after["released_unix"] > 0
+    assert after["maintenance_cleanup"] != "settled container transaction"
+    assert b.ops == []
