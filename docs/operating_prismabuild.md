@@ -483,13 +483,24 @@ What is worth knowing before using it:
     its sidecar holds the final profile rather than the partial checkpoint.
     Status writes are best effort; a failed refresh can leave the earlier
     checkpoint.
-    A trace still being generated or ingested at that instant can be lost.
-    For a handled signal outside that hard-stop path, the worker tries to
-    flush, reap and ingest what survives. py-spy writes on SIGINT, not SIGTERM
-    (0.4.2 wrote a measured probe in 102 ms). The flush and reap budgets can
-    together consume the pool's 15-second grace before ingest; preservation
-    is not guaranteed by the 12-second reap budget alone. Recorded partial
-    profiles include the relay's `action_phase` when available.
+    A contained deadline now gives the exact profiled worker one bounded
+    chance to preserve that evidence: the pool sends it a catchable SIGTERM
+    and waits for the worker itself to exit within the first
+    `timeout_grace_s` the hard stop already had, discovery included (the
+    escalation then gets only what remains), before the broker scope is
+    killed unconditionally. The worker is the unique scope member whose
+    complete pre-wrapper argv matches, proven with a pidfd; an ambiguous,
+    unreadable, stale or unsupported identity skips the opportunity and
+    falls straight through to the existing hard stop. py-spy writes on
+    SIGINT, not SIGTERM (0.4.2 wrote a measured probe in 102 ms); the flush
+    and reap budgets can together consume the pool's 15-second grace before
+    ingest, so a trace still being generated or ingested can still be lost,
+    and a refused or hung flush cannot prevent the hard stop. Recorded
+    partial profiles include the relay's `action_phase` when available and
+    are marked `partial: true`: they cover only the part of the run before
+    the stop. Sampler lag warnings mean the samples are incomplete and
+    biased; a preserved timeout profile is diagnostic evidence, not a
+    complete or representative profile and not a performance claim.
     Optional `nsys stats` has a five-second subprocess timeout, followed by
     0.5-second TERM and KILL waits for its owned process group. On timeout the
     primary report remains usable and `kernel_summary_absent` explains why

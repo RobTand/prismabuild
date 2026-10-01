@@ -124,6 +124,7 @@ import math
 import os
 from pathlib import Path
 import resource
+import select
 import shutil
 import signal
 import socket
@@ -3091,6 +3092,270 @@ def find_launcher_pids(action_key: str) -> list[int]:
         if needle in raw and b"run-local" in raw:
             found.append(int(entry.name))
     return found
+
+
+#: How often the contained-deadline settle looks at the signalled worker.
+#: Short enough to end the wait promptly, long enough not to spin.
+_CONTAINED_SETTLE_POLL_SECONDS = 0.05
+
+
+def _sealed_profile_requested(item: Mapping[str, object]) -> bool:
+    """Whether the sealed request asks for a profile (#1401).
+
+    The deadline's flush opportunity is offered only to an action that asked
+    for a profile.  An absent, unreadable or unverifiable request is not
+    proof of one, so it refuses the opportunity rather than guessing; the
+    hard stop then ends the attempt exactly as it did before this existed.
+    """
+
+    key = str(item["action_key"])
+    cas_root = item.get("cas_root")
+    if not isinstance(cas_root, (str, Path)):
+        return False
+    try:
+        action = pb.PrismaBuildCAS(cas_root).read_action_request(key)
+    except (OSError, ValueError):
+        # ``read_action_request`` turns unreadable or invalid bytes into
+        # ``None``; a root it refuses outright (relative, ``/``, ``..``) is
+        # the same answer: no proof of a profile, so no opportunity.
+        return False
+    if action is None:
+        return False
+    mode = action["params"].get("profile")
+    return isinstance(mode, str) and bool(mode)
+
+
+def _scope_directory_identity(path: Path) -> tuple[int, int] | None:
+    """The exact scope directory's ``(st_dev, st_ino)``, or ``None``."""
+
+    try:
+        info = path.stat()
+    except OSError:
+        return None
+    if not stat.S_ISDIR(info.st_mode):
+        return None
+    return (info.st_dev, info.st_ino)
+
+
+def _process_cmdline(pid: int) -> list[bytes] | None:
+    """The NUL-split argv ``/proc/<pid>/cmdline`` carries.
+
+    ``None`` means the process is gone.  An unreadable identity raises
+    ``OSError``, which every caller turns into a refusal rather than a guess.
+    """
+
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except (FileNotFoundError, ProcessLookupError):
+        return None
+    argv = raw.split(b"\0")
+    if argv and argv[-1] == b"":
+        argv.pop()
+    return argv
+
+
+def _contained_worker_start_ticks(pid: int) -> int | None:
+    """Field 22 of ``/proc/<pid>/stat``, or ``None`` when unreadable."""
+
+    try:
+        raw = Path(f"/proc/{pid}/stat").read_bytes()
+    except OSError:
+        return None
+    _, _, tail = raw.rpartition(b")")
+    fields = tail.split()
+    if len(fields) <= 19:
+        return None
+    try:
+        return int(fields[19])
+    except ValueError:
+        return None
+
+
+def _contained_worker_pid(
+    cgroup: Path, worker_argv: Sequence[str], *, directory: tuple[int, int]
+) -> int | None:
+    """The unique scope member whose complete argv is this worker's, or None.
+
+    The census is the attempt's own scope directory tree (``scope_pids``),
+    not a whole-host process scan: a process outside this scope cannot be a
+    candidate, and an unrelated process's unreadable record cannot deny a
+    valid scope.  ``scope_pids`` reports what its own fallback could not read
+    as diagnostics; those records are not this scope's identity, so they are
+    collected rather than treated as fatal.  The complete argv the queue
+    launched -- captured before any taskset or resource_exec wrapper, which
+    is what ``/proc/<pid>/cmdline`` shows once those wrappers exec -- is what
+    makes the match exact, and the resource_exec proxy is not in the scope at
+    all.  The scope directory's identity is rechecked after the census, so a
+    directory rebound underneath the scan is refused rather than guessed at.
+    Absent, unreadable or ambiguous identity is ``None``, never a guess.
+    """
+
+    if _scope_directory_identity(cgroup) != directory:
+        return None
+    errors: list[str] = []
+    members = resource_scope.scope_pids(cgroup, errors=errors)
+    if not members:
+        return None
+    expected = [os.fsencode(word) for word in worker_argv]
+    candidates: list[int] = []
+    for pid in sorted(set(members)):
+        if not _process_alive(pid):
+            continue
+        try:
+            argv = _process_cmdline(pid)
+        except OSError:
+            return None
+        if argv == expected:
+            candidates.append(pid)
+    if _scope_directory_identity(cgroup) != directory:
+        return None
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def _contained_worker_pidfd(
+    pid: int, cgroup: Path, worker_argv: Sequence[str], *,
+    directory: tuple[int, int],
+) -> int | None:
+    """A pidfd proving the exact worker, or ``None``.
+
+    ``pidfd_open`` is the only handle that makes signalling a pid safe
+    against reuse, and it is required: a kernel or interpreter without it
+    refuses the flush opportunity and the existing hard stop ends the
+    attempt, because there is no raw ``os.kill`` fallback.  After the open
+    the identity is re-proven -- the scope directory's inode, the process's
+    start time, and the unique exact worker the scope census still names --
+    so a pid the kernel recycled between discovery and open is refused
+    rather than signalled.  The recheck is total: an identity that cannot be
+    read after the open closes the descriptor and refuses, so no refusal
+    path leaks a pidfd.
+    """
+
+    open_pidfd = getattr(os, "pidfd_open", None)
+    if open_pidfd is None or getattr(signal, "pidfd_send_signal", None) is None:
+        return None
+    start_ticks = _contained_worker_start_ticks(pid)
+    if start_ticks is None:
+        return None
+    try:
+        descriptor = open_pidfd(pid, 0)
+    except OSError:
+        return None
+    keep = False
+    try:
+        keep = (_scope_directory_identity(cgroup) == directory
+                and _contained_worker_start_ticks(pid) == start_ticks
+                and _contained_worker_pid(
+                    cgroup, worker_argv, directory=directory) == pid)
+    except Exception:                             # noqa: BLE001
+        keep = False
+    if not keep:
+        with suppress(OSError):
+            os.close(descriptor)
+        return None
+    return descriptor
+
+
+def _wait_for_pidfd_exit(descriptor: int, *, deadline: float) -> bool:
+    """Wait for the pidfd's process to exit, until an absolute deadline.
+
+    ``select.select`` takes seconds, so the poll interval is in the units it
+    declares; a millisecond interface here would spin at the wrong scale.
+    """
+
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        ready, _, _ = select.select(
+            [descriptor], [], [],
+            min(remaining, _CONTAINED_SETTLE_POLL_SECONDS),
+        )
+        if ready:
+            return True
+
+
+def _settle_contained_profile(
+    scope: object, worker_argv: Sequence[str], *,
+    item: Mapping[str, object], deadline: float,
+) -> dict[str, object] | None:
+    """Offer a contained, profiled worker its flush opportunity (#1401).
+
+    The broker's only stop is ``cgroup.kill``: a contained worker is
+    SIGKILLed before ``core._reap_and_settle`` can flush the sampler or write
+    the status sidecar, which is how the reported timeout lost its profile.
+    On a deadline this sends the exact worker one catchable SIGTERM and waits
+    until the worker itself exits, or until the caller's absolute
+    ``deadline`` -- the first grace the hard stop already had, discovery
+    included -- runs out.  The caller's hard stop follows unconditionally, so
+    a refused or hung flush cannot prevent escalation, and a status sidecar
+    appearing is not settlement: only worker exit or the deadline ends the
+    wait.
+
+    The wait is charged to that one absolute deadline on the monotonic
+    clock, after the action was already stopped by its deadline: it is
+    evidence collection, never a fresh execution allowance, and it cannot
+    turn the timeout into a success.  Every refusal -- an unprofiled action, an absent or ambiguous
+    worker, an unreadable identity, a recycled pid, a kernel without pidfds,
+    an expired deadline -- returns without signalling and leaves the hard
+    stop to end the attempt.  Filesystem calls (the sealed request read, the
+    scope census, ``/proc``) are cooperative: they are not bounded by the
+    deadline, and a mount that never answers stalls the branch exactly as any
+    other pool read on that mount does.
+    """
+
+    if not _sealed_profile_requested(item):
+        return None
+    cgroup = getattr(scope, "cgroup_path", None)
+    if cgroup is None:
+        return None
+    cgroup = Path(cgroup)
+    started = time.monotonic()
+
+    def record(**extra: object) -> dict[str, object]:
+        return {"elapsed_s": time.monotonic() - started, **extra}
+
+    directory = _scope_directory_identity(cgroup)
+    if directory is None:
+        return record(settled=False, refused="scope directory is not readable")
+    if time.monotonic() >= deadline:
+        return record(settled=False, refused="grace expired before discovery")
+    try:
+        pid = _contained_worker_pid(cgroup, worker_argv, directory=directory)
+    except Exception as exc:                      # noqa: BLE001
+        return record(settled=False,
+                      refused=f"worker discovery failed: {type(exc).__name__}")
+    if pid is None:
+        return record(settled=False,
+                      refused="no unique exact worker in the scope")
+    if time.monotonic() >= deadline:
+        return record(worker_pid=pid, settled=False,
+                      refused="grace expired before signalling")
+    try:
+        descriptor = _contained_worker_pidfd(
+            pid, cgroup, worker_argv, directory=directory)
+    except Exception as exc:                      # noqa: BLE001
+        return record(worker_pid=pid, settled=False,
+                      refused=f"pidfd identity check failed: "
+                              f"{type(exc).__name__}")
+    if descriptor is None:
+        return record(worker_pid=pid, settled=False,
+                      refused="pidfd identity not proven")
+    try:
+        if _scope_directory_identity(cgroup) != directory:
+            return record(worker_pid=pid, settled=False,
+                          refused="scope directory identity changed")
+        if time.monotonic() >= deadline:
+            return record(worker_pid=pid, settled=False,
+                          refused="grace expired before signalling")
+        signal.pidfd_send_signal(descriptor, signal.SIGTERM)
+        settled = _wait_for_pidfd_exit(descriptor, deadline=deadline)
+    except (AttributeError, OSError) as exc:
+        return record(worker_pid=pid, settled=False,
+                      refused=f"pidfd signal failed: {type(exc).__name__}")
+    finally:
+        with suppress(OSError):
+            os.close(descriptor)
+    return record(worker_pid=pid, settled=settled)
 
 
 def _docker_containers_with_label(label: str, value: str) -> list[str]:
@@ -24912,13 +25177,18 @@ class PoolQueue:
 
         key = str(item["action_key"])
         timeout_s = _execution_timeout(item, timeout_s)
-        argv = [str(python)] + worker_argv(
+        # The complete worker argv, captured before any taskset or
+        # resource_exec wrapper: once those wrappers have exec'd, this is
+        # exactly what ``/proc/<pid>/cmdline`` shows, and it is what the
+        # deadline's contained flush opportunity matches against (#1401).
+        worker_argv_exact = [str(python)] + worker_argv(
             worker_script=item["worker_script"],
             action_key=key,
             cas_root=item["cas_root"],
             checkout_root=checkout_root,
             recompute=item.get("recompute") is True,
         )
+        argv = list(worker_argv_exact)
         allocation = item.get("cpu_allocation")
         if allocation is not None:
             host = str(item.get("reserved_on") or "")
@@ -25343,18 +25613,38 @@ class PoolQueue:
                     if watch is not None:
                         watch.shift(time.monotonic() - checkpoint_started)
                     if deadline is not None and time.monotonic() >= deadline:
-                        # Worst case this branch spends three grace budgets
-                        # -- TERM wait, KILL wait, drain (~45 s) -- without
-                        # refreshing the lease, against a 300 s expiry.
+                        # The branch's worst case stays the old three grace
+                        # budgets.  The profiled flush opportunity, discovery
+                        # included, is charged to the *first* grace: the
+                        # settle spends at most ``timeout_grace_s`` of it, the
+                        # TERM/KILL escalation gets only what is left
+                        # (2*(g-f)), and the drain keeps its own bound (g), so
+                        # f + 2*(g-f) + g <= 3*g.  Nothing here may prevent
+                        # the hard stop or change the timeout verdict; the
+                        # lease is not refreshed during any of it, against a
+                        # 300 s expiry.
+                        settled = None
+                        stop_grace_s = timeout_grace_s
                         if scope is not None:
+                            settle_deadline = time.monotonic() + timeout_grace_s
+                            # Best effort by construction: an unexpected
+                            # failure still leaves the hard stop below to end
+                            # the attempt with the timeout verdict.
+                            with suppress(Exception):
+                                settled = _settle_contained_profile(
+                                    scope, worker_argv_exact, item=item,
+                                    deadline=settle_deadline,
+                                )
                             scope.terminate_owned("timeout")
+                            stop_grace_s = max(
+                                0.0, settle_deadline - time.monotonic())
                         pb._terminate_process_group(
-                            process, grace_s=timeout_grace_s
+                            process, grace_s=stop_grace_s
                         )
                         out, err, survived = _drain(
                             process, timeout_s=timeout_grace_s
                         )
-                        return ending({
+                        outcome = {
                             "status": "timeout",
                             "termination_reason": "execution_deadline",
                             "execution_observation": observation,
@@ -25385,7 +25675,13 @@ class PoolQueue:
                                 resource.getrusage(resource.RUSAGE_CHILDREN)),
                             "argv": argv,
                             "cpu_allocation": allocation,
-                        })
+                        }
+                        if settled is not None:
+                            # The elapsed flush opportunity, accounted on the
+                            # ending: what the deadline gave the profiled
+                            # worker and whether the worker exited within it.
+                            outcome["profile_settle"] = settled
+                        return ending(outcome)
                     if (watch is not None
                             and time.monotonic() >= watch.stall_deadline()):
                         # One more read before ending it.  The boundary is
