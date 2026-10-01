@@ -982,16 +982,20 @@ def check_mode(cfg: Config, mode: str) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--config", required=True)
+    parser.add_argument("--config", required=True,
+                        help="the repository's queue config (JSON)")
     sub = parser.add_subparsers(dest="command", required=True)
     enqueue = sub.add_parser("enqueue", help="queue a pull request (any process)")
-    enqueue.add_argument("pr", type=int)
-    enqueue.add_argument("sha", nargs="?")
+    enqueue.add_argument("pr", type=int, help="pull request number")
+    enqueue.add_argument("sha", nargs="?",
+                         help="head SHA the caller approved; a later push is refused")
     daemon = sub.add_parser("daemon", help="run the queue until stopped")
-    daemon.add_argument("--mode", choices=MODES, required=True)
+    daemon.add_argument("--mode", choices=MODES, required=True,
+                        help="dry-run posts nothing; status posts; merge also merges")
     once = sub.add_parser("once", help="test one batch of named PRs, outside the queue")
-    once.add_argument("--mode", choices=MODES, required=True)
-    once.add_argument("prs", type=int, nargs="+")
+    once.add_argument("--mode", choices=MODES, required=True,
+                      help="dry-run posts nothing; status posts; merge also merges")
+    once.add_argument("prs", type=int, nargs="+", help="pull request numbers, in merge order")
     sub.add_parser("status", help="print the status file")
     args = parser.parse_args(argv)
     cfg = load_config(args.config)
