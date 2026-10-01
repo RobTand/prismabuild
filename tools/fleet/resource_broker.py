@@ -49,6 +49,12 @@ MAINTENANCE_PROTOCOL=2
 # attempt token, same authority, same caller -- and it is what turns a
 # retained tombstone into something the inventory pass may remove.
 SETTLEMENT_SCHEMA='prismabuild.container-settlement.v1'
+# A retired, settled scope whose kernel group is already gone -- an operator
+# removed the slice out of band, or a reboot lost it -- has no group left to
+# stop, reclaim or release.  Its administrative lifetime may still close on
+# the same settlement proof the tombstone path trusts, but the reason it
+# stamps must not read as a verified reclamation of page charge.
+VANISHED_CLEANUP_REASON='retired scope disappeared externally; reclamation unverified'
 
 
 def _settlement_evidence(value):
@@ -68,6 +74,20 @@ def _settlement_evidence(value):
         raise ValueError('invalid container settlement evidence')
     return {'schema':SETTLEMENT_SCHEMA,'marker_absent':True,'owner_container_ids':[],
             'scope_container_ids':[],'checked_unix':float(checked)}
+
+
+def _recorded_identity(value):
+    """Whether ``value`` is the two-integer device/inode identity this broker records.
+
+    Kernel rows and authority records both carry ``[st_dev, st_ino]``.  A
+    missing or malformed shape -- a bool (an int subclass), a string, a
+    mapping, the wrong length, a float, a negative device or a non-positive
+    inode -- is not an identity this broker can compare, so a vanished scope
+    that carries one must fail closed rather than retire on it.
+    """
+    return (isinstance(value,list) and len(value)==2
+            and all(type(part) is int for part in value)
+            and value[0]>=0 and value[1]>0)
 
 
 def scope_id(key, nonce):
@@ -996,6 +1016,25 @@ class Authority:
         _atomic(self.state_dir/(scope+'.json'),record)
         return True
 
+    def _release_vanished_retired_scope(self,scope,record):
+        """Close a retired tombstone whose kernel group is already gone.
+
+        Metadata only: no kernel operation can act on a group that is not
+        there, so the record's identity, stop, settlement and any earlier
+        reclaim observation are carried over unchanged and only
+        ``released_unix`` plus the explicit ``maintenance_cleanup`` reason are
+        added.  The replacement is persisted under the caller's authority lock
+        BEFORE the in-memory record changes: a durable write that fails must
+        leave the record active rather than release it in memory only, and the
+        caller keeps it active and reports the failure.
+        """
+        released=dict(record)
+        released['released_unix']=time.time()
+        released['maintenance_cleanup']=VANISHED_CLEANUP_REASON
+        _atomic(self.state_dir/(scope+'.json'),released)
+        self.records[scope]=released
+        return released
+
     def _maintenance_status(self):
         errors=[];active=set();inventory={}
         if self.maintenance_error:errors.append(self.maintenance_error)
@@ -1053,6 +1092,31 @@ class Authority:
                         else:
                             self._reclaim_retired_scope(scope,record)
                     continue
+            if record.get('retired_unix') and kernel is None:
+                # The group this tombstone names is no longer in the kernel.
+                # Nothing can be stopped, reclaimed or released, and without
+                # this branch the record was counted active forever -- the
+                # wedge left after an out-of-band slice removal.  Close only
+                # the administrative lifetime, and only on proof this broker
+                # already trusts: a stopped, retired record whose stored
+                # settlement the holder's own validator accepts, observed by a
+                # complete healthy inventory with no unknown namespace group,
+                # with a fresh absence check still saying absent.  A missing
+                # or malformed identity, unsettled tickets, a malformed or
+                # reappearing group and any inventory error all fail closed.
+                if (record.get('stopped_unix') and record.get('settled_unix')
+                        and _recorded_identity(record.get('cgroup_identity'))
+                        and not errors and not unknown):
+                    try:
+                        _settlement_evidence(record.get('container_settlement'))
+                    except ValueError:
+                        active.add(scope);continue
+                    try:
+                        if not self.backend.exists(scope):
+                            self._release_vanished_retired_scope(scope,record)
+                            continue
+                    except (OSError,ValueError) as exc:errors.append(str(exc)[:1500])
+                active.add(scope);continue
             active.add(scope)
         for scope in inventory:
             if scope not in self.records:

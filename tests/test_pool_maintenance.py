@@ -62,6 +62,13 @@ def test_same_commit_new_generation_exits_before_any_queue_access(tmp_path, monk
     monkeypatch.setattr(worker, 'RUNTIME_VERSION', active)
     monkeypatch.setattr(worker, 'SH', tmp_path)
     class Untouchable:
+        # Startup housekeeping (#1040) sweeps this box's dead offer
+        # temporaries under the queue root before the first poll; a private
+        # empty root makes that one scan inert.  Every other queue operation
+        # still fails here, so the generation fence still exits before any
+        # queue-record access.
+        root = tmp_path / "pb-queue"
+
         def __getattr__(self, name):
             raise AssertionError('stale generation touched queue: ' + name)
     monkeypatch.setattr(worker.pool, 'PoolQueue', lambda *args: Untouchable())
@@ -81,6 +88,13 @@ def test_maintenance_gate_blocks_claims_before_queue_reads(tmp_path, monkeypatch
     # than letting it contend with a live loop or a sibling pytest worker.
     monkeypatch.setattr(worker, 'PUBLICATION_LOCK_ROOT', tmp_path / 'publish-lock')
     class Untouchable:
+        # Startup housekeeping (#1040) sweeps this box's dead offer
+        # temporaries under the queue root before the first poll; a private
+        # empty root makes that one scan inert.  Every other queue operation
+        # still fails here, so the gate still blocks admission before any
+        # queue-record access.
+        root = tmp_path / "pb-queue"
+
         def __getattr__(self, name):
             raise AssertionError('maintenance worker touched queue: ' + name)
     monkeypatch.setattr(worker.pool, 'PoolQueue', lambda *args: Untouchable())

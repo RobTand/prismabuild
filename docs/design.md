@@ -1167,6 +1167,21 @@ their removal needs the offline evidence described in
 [resource authority](resource_authority.md#recovery-evidence). Late-finish
 cleanup has no authority to settle the action-wide container transaction.
 
+A retired, settled scope whose kernel group is already gone -- removed out of
+band, or lost across a reboot -- cannot be stopped, reclaimed or released.
+Maintenance reconciliation closes only its administrative lifetime, and only
+when the recorded identity has the real two-integer device/inode shape, the
+stored settlement passes the same validator `settle` uses, the pass sees a
+complete healthy inventory with no unknown namespace group, and a fresh
+`backend.exists` still says absent. The replacement record preserves
+identity, stop, settlement and any earlier reclaim observation, adds an
+explicit `maintenance_cleanup` reason that the scope disappeared externally
+and reclamation was unverified, and is persisted before the in-memory record
+changes, so a failed durable write leaves the scope active. A missing or
+malformed identity, unsettled tickets, malformed settlement, an unknown or
+reappearing group, or any inventory error retains the record as active, and
+no kernel stop, reclaim or release may act on a missing or replacement group.
+
 Unproven cleanup retains the late-finish record with its original result, exact
 scope authority, failure count and first/last failure times. A restart can retry
 it without the original worker, and it is never converted to a lost lease or
@@ -3464,6 +3479,17 @@ unhealthy. Missing, unparsable and malformed gates keep their existing meaning
 (draining), and this visibility changes no admission decision. The offer fields
 are additive on the existing offer schema, like the other optional fields; an
 offer without `state` is read as live.
+A drain poll also retries this host's own saved finishes
+(`PoolQueue.retry_own_pending_finishes`): a payload that already returned
+retains its claim, scope and reservation in `finish_pending`, a saved outcome
+claims nothing, and only the claiming host can prove its kernel scope empty.
+The retry is the same `finish` call the reaper makes, under the same per-key
+transition lock and on the same host-local sweep schedule as `serve_once`;
+foreign-host, non-pending and malformed rows are left untouched, and ordinary
+expired leases are still requeued only by the full reaper. Without it a
+drained owner held the claim, its scope and its tokens until an operator ran
+the reaper by hand, and the drain waited on the very scope it was trying to
+empty (#1403).
 The updater creates the directory for the unprivileged
 worker uid and reports whether every serving process has a marker for the
 current drain and the broker reports no active scopes. Processes count by argv

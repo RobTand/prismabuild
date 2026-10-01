@@ -165,6 +165,24 @@ and records `released_unix` with `maintenance_cleanup` of `settled container
 transaction`. A pass that has already found something wrong in its own
 namespace defers instead.
 
+When the kernel group is already gone -- removed out of band, or lost across a
+reboot -- there is no group to reclaim, stop or release, and the record would
+otherwise count active forever. The inventory pass may close only its
+administrative lifetime, and only on every fact the removal path would have
+checked: the record is stopped, retired and settled, its recorded identity is
+the real two-integer `[st_dev, st_ino]` shape, the stored settlement is the one
+`settle` accepts, the pass has a complete healthy inventory with no group this
+broker does not own, and a fresh absence check (`exists`, a `stat` that treats
+only `FileNotFoundError` as absent) still says absent. The replacement record
+keeps its identity, stop, settlement and any earlier reclaim observation, and
+adds `released_unix` plus a `maintenance_cleanup` reason saying the scope
+disappeared externally and reclamation was unverified; the file is persisted
+before the in-memory record changes, so a failed durable write leaves the
+record active. This is metadata only: no kernel stop, reclaim or release may
+act on a missing group, no physical reclaim is claimed or proven, and a
+missing or malformed identity, unsettled tickets, a malformed settlement, an
+unknown or reappearing group or any inventory error leaves the record active.
+
 A failed reclaim, or any reclaim with residual or unknown page charge,
 leaves the group online for a later pass to retry without marking it released
 or failing maintenance health. A partial reclaim can proceed to removal when

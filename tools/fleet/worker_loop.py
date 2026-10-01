@@ -1637,6 +1637,29 @@ def _run_loop(stop_requested):
             except Exception as exc:                             # noqa: BLE001
                 print(f"[{host}] membership reconciliation skipped in drain: "
                       f"{type(exc).__name__}: {exc}", flush=True)
+            # Retry this box's own saved finishes under the closed gate
+            # (#1403).  A saved outcome claims nothing, so it is safe while
+            # admission is paused, and the queue applies the owner-host rule
+            # itself: only the claiming box may retry, foreign and non-pending
+            # rows are left alone, and ordinary expired leases are not
+            # requeued.  This is the maintenance branch's only reach into the
+            # reaper's retry path -- ``serve_once`` is never called here, which
+            # is what left a drained owner holding its scope and its tokens
+            # until an operator ran the reaper by hand.  The retry runs on the
+            # queue's host-local heartbeat throttle, the same deliberately
+            # unlocked ``_sweep_due`` marker ``serve_once`` uses: two loops may
+            # race a redundant pass; no strict at-most-one pass is promised.
+            # It is exception-isolated like the membership reconciliation
+            # above: a failure only skips this poll's retry and the parked
+            # offer below still publishes.
+            try:
+                retried = queue.retry_own_pending_finishes()
+                if retried:
+                    print(f"[{host}] saved finishes concluded in drain: "
+                          f"{retried}", flush=True)
+            except Exception as exc:                             # noqa: BLE001
+                print(f"[{host}] saved-finish retry skipped in drain: "
+                      f"{type(exc).__name__}: {exc}", flush=True)
             # Keep the parked box visible (#1204).  A loop that waits without
             # announcing leaves its last offer to expire, and then a
             # deliberately drained box and a dead worker read identically:
@@ -1677,10 +1700,13 @@ def _run_loop(stop_requested):
             drain_fields = drain_offer_fields(gate)
             # What the last open poll declared, not a fresh ledger read: the
             # spool figure ``stable_host_capacity`` holds up survives the gate
-            # closing, and a drain poll adds no queue read.  The declared
-            # capability is what ``placeable`` answers from, so preserving it
-            # keeps a waiting submission queueable; the zero live figure below
-            # is what stops any admission reading this box as admittable.
+            # closing, and this capacity still comes from that declaration --
+            # the drain branch's own saved-finish retry (#1403) reads
+            # ``claimed/``, but it changes nothing this offer declares.  The
+            # declared capability is what ``placeable`` answers from, so
+            # preserving it keeps a waiting submission queueable; the zero live
+            # figure below is what stops any admission reading this box as
+            # admittable.
             drain_capacity = dict(last_declared)
 
             def announce_drain(queue=queue, host=host, tags=offered,

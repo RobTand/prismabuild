@@ -2198,11 +2198,16 @@ for that reason.
 In the pull queue, a payload that has returned but whose scope cleanup is
 still pending retains its claim, lease and reservation. The claim's
 `finish_pending` field preserves the original status and detail, including
-timeout or OOM evidence. The claiming host retries that finish on each queue
-poll even while the lease is fresh; foreign hosts leave it alone. Once the
-broker proves the exact attempt's scope empty, the original outcome is
-archived once and capacity returns. A cleanup retry does not count as another
-attempt or turn a completed action into a lease-loss failure.
+timeout or OOM evidence. The claiming host retries that finish while the
+lease is fresh; foreign hosts leave it alone. On an open gate the retry rides
+the ordinary queue poll through `serve_once`; a host whose maintenance gate
+is closed -- where `serve_once` is never reached -- retries it in the drain
+branch on the same host-local sweep schedule (#1403). Only a saved outcome is
+retried there: ordinary expired or missing leases are still requeued by the
+full reaper, not by the drain. Once the broker proves the exact attempt's
+scope empty, the original outcome is archived once and capacity returns. A
+cleanup retry does not count as another attempt or turn a completed action
+into a lease-loss failure.
 
 A job's node-side cleanup is the Epilog's, and it reads what to clean out of a
 state file under `.../slurm/jobs/`. When that root is unreadable, which is what
@@ -3461,6 +3466,20 @@ containers. The reservation is released only after the scope is empty. Missing
 broker attachment, an unaccounted container or incomplete telemetry refuses
 lending. A new worker needs broker installation and qualification before it can
 join this execution path; runtime publication alone does not install the broker.
+
+A retired tombstone's kernel group can disappear while its record lives -- an
+out-of-band slice removal, or a reboot. A maintenance status pass then closes
+only the record's administrative lifetime, and only on the full proof:
+stopped, retired and settled, a real two-integer device/inode identity, a
+stored settlement the `settle` validator accepts, a complete healthy
+inventory with no unknown namespace group, and a fresh absence check. The
+record keeps its identity, stop, settlement and earlier reclaim evidence and
+gains an explicit `maintenance_cleanup` reason saying the scope disappeared
+externally and reclamation was unverified; it is written durably before the
+broker's memory changes. A missing or malformed identity, unsettled tickets,
+malformed settlement, an unknown or reappearing group or any inventory error
+leaves the record active, no stop, reclaim or release is ever sent to a
+missing or replacement group, and no physical reclaim is claimed.
 
 After a skipped or failed snapshot copy, later admission passes retry from the
 host-local files even when they have no new CPU/GPU sample to write. This also
