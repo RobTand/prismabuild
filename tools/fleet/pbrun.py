@@ -67,6 +67,7 @@ import math
 import uuid
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import NoReturn
 
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
 from runtime_paths import generation_root
@@ -254,6 +255,11 @@ def git_repository_root(cwd: Path) -> Path | None:
     return root
 
 
+def _snapshot_fail(message: str) -> NoReturn:
+    """Map a checked snapshot failure to the caller's refusal contract."""
+    raise SystemExit(f"pbrun: cannot snapshot checkout: {message}")
+
+
 def _snapshot_git(
     cwd: Path,
     argv: list[str],
@@ -272,12 +278,10 @@ def _snapshot_git(
             timeout=120,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        raise SystemExit(f"pbrun: cannot snapshot checkout: {exc}") from exc
+        _snapshot_fail(str(exc))
     if completed.returncode not in accepted_returncodes:
         detail = (completed.stderr or completed.stdout).strip()
-        raise SystemExit(
-            f"pbrun: cannot snapshot checkout: {detail or completed.returncode}"
-        )
+        _snapshot_fail(str(detail or completed.returncode))
     return completed.stdout.strip() if strip else completed.stdout
 
 
@@ -864,12 +868,10 @@ def write_deterministic_bundle(
                 timeout=BUNDLE_PACK_TIMEOUT_S,
             )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        raise SystemExit(f"pbrun: cannot snapshot checkout: {exc}") from exc
+        _snapshot_fail(str(exc))
     if completed.returncode != 0:
         detail = (completed.stderr or b"").decode("utf-8", "replace").strip()
-        raise SystemExit(
-            f"pbrun: cannot snapshot checkout: {detail or completed.returncode}"
-        )
+        _snapshot_fail(str(detail or completed.returncode))
 
 
 def build_stamp_closure(stamp_name: str, payload: str) -> dict[str, object]:
