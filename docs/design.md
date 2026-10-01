@@ -14911,3 +14911,15 @@ requests need no receipt census. Per-tier pricing and admission remain unchanged
 there is no global receipt cache. Empty-read cached tasks declare no bulk input. The closed
 policy, identity binding, scope and client-only compatibility contract are in
 [the decomposition design](design_work_decomposition_2026-09-11.md#per-child-read-manifests-through-the-existing-staging-lane-862).
+
+### Explicit profiler binding for the contended observer (#940)
+
+The opt-in observer accepts `--py-spy PATH` to select the profiler already
+installed on its admitted host. The path must be absolute; relative values
+refuse before target identity reads or capture effects. There is no PATH search,
+installation or fallback. Without the option, the existing
+`/usr/local/bin/py-spy` default is unchanged. CLI configuration is owned separately
+from observation effects. The selected program supplies the existing version
+query, capture command and binary digest; report fields and Core byte recipes
+remain unchanged. This dependency choice is not holder eligibility, a live
+profile receipt, runtime deployment, cache authorization or a speedup claim.

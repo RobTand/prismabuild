@@ -87,7 +87,8 @@ def netdata(base: str, started: float, ended: float, out: Path) -> dict:
     return errors
 
 
-def main() -> int:
+def _observer_arguments() -> argparse.Namespace:
+    """Own CLI configuration independently of observation side effects."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--pid", required=True, type=int)
     parser.add_argument("--start-ticks", required=True, type=int)
@@ -96,7 +97,16 @@ def main() -> int:
     parser.add_argument("--duration", required=True, type=int)
     parser.add_argument("--netdata-url", required=True)
     parser.add_argument("--out", required=True, type=Path)
+    parser.add_argument("--py-spy", type=Path, default=Path("/usr/local/bin/py-spy"),
+                        help="Absolute path to the profiler installed on the admitted host")
     args = parser.parse_args()
+    if not args.py_spy.is_absolute():
+        raise ValueError("observer py-spy path must be absolute")
+    return args
+
+
+def main() -> int:
+    args = _observer_arguments()
     if args.pid <= 0 or not 0 < args.duration <= 600:
         raise ValueError("observer pid/duration must be positive, duration at most 600s")
     if len(args.holder_key) != 64 or any(c not in "0123456789abcdef" for c in args.holder_key):
@@ -109,7 +119,7 @@ def main() -> int:
     args.out.mkdir(exist_ok=False)
     queue = Path("/mnt/shared/prismabuild-fleet/pb-queue")
     holder_before = holder(queue, args.holder_key)
-    pyspy = Path("/usr/local/bin/py-spy")
+    pyspy = args.py_spy
     version = subprocess.check_output([str(pyspy), "--version"], text=True).strip()
     profile = args.out / "worker.speedscope.json"
     command = ["sudo", "-n", "--preserve-env=TMPDIR", str(pyspy), "record", "--pid", str(args.pid), "--idle", "--threads",
