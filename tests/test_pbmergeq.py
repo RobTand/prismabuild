@@ -128,12 +128,16 @@ class Origin:
         git("config", "user.email", "t@t", cwd=self.work)
         git("config", "user.name", "t", cwd=self.work)
         (self.work / "base.txt").write_text("base\n")
+        (self.work / "tests").mkdir()
+        for name in ("test_a.py", "test_b.py"):
+            (self.work / "tests" / name).write_text("")
         git("add", "-A", cwd=self.work)
         git("commit", "-q", "-m", "base", cwd=self.work)
 
     def pr(self, number: int, files: dict[str, str]) -> str:
         git("checkout", "-q", "-b", f"pr{number}", "main", cwd=self.work)
         for name, text in files.items():
+            (self.work / name).parent.mkdir(parents=True, exist_ok=True)
             (self.work / name).write_text(text)
         git("add", "-A", cwd=self.work)
         git("commit", "-q", "-m", f"pr {number}", cwd=self.work)
@@ -176,7 +180,8 @@ class FakeGitHub(mq.GitHub):
 class FakeRunner:
     """Each checkout file ``fail-<anything>`` holds node IDs that fail there.
 
-    A line ``flaky:<node>`` fails only on a checkout's first run.
+    A line ``flaky:<node>`` fails only on a checkout's first run. Like
+    pbtest, a job naming a file the checkout lacks observes nothing.
     """
 
     def __init__(self):
@@ -190,6 +195,10 @@ class FakeRunner:
         results = {}
         for name, checkout, files in jobs:
             self.runs.append((name, sorted(files)))
+            if any(not (Path(checkout) / f).exists() for f in files):
+                results[name] = mq.RunResult(failed=set(), inconclusive=list(files),
+                                             files=list(files), receipts=[])
+                continue
             failed = set()
             for path in Path(checkout).glob("fail-*"):
                 for line in path.read_text().split():
@@ -259,6 +268,23 @@ def test_red_batch_blames_the_culprit_only_and_requeues_the_rest(tmp_path):
     assert [e["pr"] for e in queue.store.state["queue"]] == [1, 3]
     # Bisection and the base ran only the failing file.
     assert all(files == ["tests/test_b.py"] for name, files in runner.runs if name != "candidate")
+
+
+def test_a_new_test_file_is_judged_where_it_exists_and_passes_where_it_does_not(tmp_path):
+    # b00006: a pull request that adds a failing test file. The base and the
+    # prefixes before it lack the file; asking pbtest for it there made the
+    # whole judgment inconclusive and wedged the queue.
+    queue, origin, github, runner = make_queue(tmp_path)
+    origin.pr(1, {"one.txt": "1\n"})
+    bad = origin.pr(2, {"tests/test_new.py": "", "fail-2": "tests/test_new.py::broken\n"})
+    batch = queue.run_batch(entries(1, 2))
+    assert batch["verdict"] == "red", batch
+    assert batch["culprit"]["pr"] == 2 and batch["new"] == ["tests/test_new.py::broken"]
+    assert statuses(github) == [(bad, "failure")]
+    assert [e["pr"] for e in queue.store.state["queue"]] == [1]
+    # Only checkouts that hold the file were asked to run it.
+    assert ("base", ["tests/test_new.py"]) not in runner.runs
+    assert ("prefix1", ["tests/test_new.py"]) not in runner.runs
 
 
 def test_a_flake_is_recorded_and_does_not_block(tmp_path):
