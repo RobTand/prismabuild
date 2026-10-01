@@ -1646,10 +1646,12 @@ def _run_loop(stop_requested):
             # reaper's retry path -- ``serve_once`` is never called here, which
             # is what left a drained owner holding its scope and its tokens
             # until an operator ran the reaper by hand.  The retry runs on the
-            # queue's host-local sweep schedule (at most one pass per heartbeat
-            # per box), and is exception-isolated like the membership
-            # reconciliation above: a failure only skips this poll's retry and
-            # the parked offer below still publishes.
+            # queue's host-local heartbeat throttle, the same deliberately
+            # unlocked ``_sweep_due`` marker ``serve_once`` uses: two loops may
+            # race a redundant pass; no strict at-most-one pass is promised.
+            # It is exception-isolated like the membership reconciliation
+            # above: a failure only skips this poll's retry and the parked
+            # offer below still publishes.
             try:
                 retried = queue.retry_own_pending_finishes()
                 if retried:
