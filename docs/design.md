@@ -4825,6 +4825,68 @@ workers. The supervisor is single-threaded; synchronous subprocess status reads
 finish between these boundaries, and worker-loop exit statuses have no other
 consumer. `SIGCHLD` remains unchanged so descendants retain real failure statuses.
 
+Role diagnostics have a separate periodic hysteresis policy (#1396), owned by
+`tools/fleet/supervise.py`. `_role_log_name` spells only the existing
+`pb-role-storage.log`, `pb-role-tiers.log` and `pb-role-metrics.log` leaves under
+`LOG_DIR` (`/home/rob/tmp`). `_open_role_log` creates **new** leaves with mode
+**0600**, including under the usual umask 002, using no-follow, nonblocking,
+close-on-exec append open and regular/current-UID/single-link/name proof. It
+never chmods existing leaves. `_spawn_role` closes its parent append handle
+after `Popen`, including on failure; the child's inherited stdout/stderr append
+open-file description remains unchanged. After the existing proven role census
+and `ensure_roles`, each **regular claim-owning cycle** calls
+`_maintain_role_logs`. `--once`, nonowners and systemd-managed no-op/handover
+branches do not run this maintenance. No extra census, timer, collector or
+thread is introduced; current candidates and newly spawned role PIDs are
+rechecked without a process-table rescan.
+
+`ROLE_LOG_TRIGGER_BYTES` is **64 MiB**, eligible at `>=`; on a successful
+nonconcurrent pass, `ROLE_LOG_KEEP_BYTES` retains the newest **8 MiB of raw
+bytes** in place, on the same inode. The directory must be current-user owned,
+non-symlinked and match its held FD/current name; normal owned **0775** directories
+are allowed. Existing leaves are opened relative to its held FD with
+`O_RDWR | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK`, never create/truncate or append
+flags. A regular current-UID, single-link, safely writable leaf must
+still match its current name, and every candidate writer's current proven role
+identity and FD 1/2 inode/writable-append flags must agree. An eligible leaf with
+no proven current writer (including undeclared, refused or vanished roles) is
+refused, not assumed inactive. Leaves with group/world write bits, including
+legacy **0664** diagnostics, remain appendable but are refused for retention
+when oversized; they need a separately authorized permission migration. Neither
+launch nor maintenance chmods, replaces or truncates an unsafe existing leaf.
+Missing and in-bounds leaves are quiet.
+
+Bounded positional reads capture only the newest 8 MiB; advancing reads/writes
+allow partial results and only a finite number of interrupted-call retries.
+After identity/size/writer rechecks, complete non-append `pwrite` copies the tail
+to offset zero. Only after full copy and renewed checks may `ftruncate` retain
+that tail. Maintenance FDs close on every path. Each trim or refusal reports
+role/stage and observed/copied/kept bytes as appropriate, with bounded error
+text, to supervisor diagnostics. A file error does not stop other roles or
+worker supervision. There is no rename/recreate/rollover, sham writer flock,
+child signal, descriptor replacement or rollback promise.
+
+This is **not an all-times byte cap or disk-recovery guarantee**. Inter-tick
+overshoot has no finite bound: role output is unbounded and queue/census I/O can
+block or the supervisor can be absent. Unsafe/refused/undeclared/vanished-writer
+leaves can remain oversized indefinitely. Writers are not serialized with copy:
+concurrent append may be lost, prefix/tail observations may mix lines or begin
+mid-UTF-8/JSON, and a late write/truncate/crash failure may leave a partially
+changed prefix without a smaller file. Preflight/read failures do not mutate;
+copy failure never licenses truncation. Existing and reopened append writers
+continue at the compacted EOF. Observed external rename/name-FD mismatch
+refuses maintenance; checks do not atomically exclude a path swap during I/O.
+Maintenance never follows a proc FD to reclaim an unnamed old log.
+
+These leaves contain **diagnostics only**, not action evidence. Tiers verdict
+sidecars and storage prewarm receipts remain separate. Real action stdout/stderr
+PIPEs and attempt/CAS log streams in `src/prismabuild/pool.py` are untouched,
+as are worker/supervisor logs, arbitrary storage `--log`, archives and the
+separately bounded mount collector. The focused owning-cycle fixture checks a
+local size/inode/append consumer contract, not end-to-end receipt integrity.
+Source support alone establishes no deployed retention, live trim, restart,
+root-disk recovery or performance result; those require separate qualification.
+
 On SIGTERM the supervisor stops replenishment and retains its box-local claim
 while cooperatively draining its attributed workers and stopping auxiliary
 roles. It uses pidfds for ownership-rechecked signals and exit waits; it never

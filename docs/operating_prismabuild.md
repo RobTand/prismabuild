@@ -3579,6 +3579,60 @@ live workers continue running. Publishing the fix lets the existing supervisor
 collect its backlog without a restart. Normal publication constraints still
 apply; a merge alone does not change the running supervisor.
 
+#### Role diagnostic log retention (#1396)
+
+`tools/fleet/supervise.py` maintains only the existing diagnostic leaves under
+`LOG_DIR` (default `/home/rob/tmp`): `pb-role-storage.log`, `pb-role-tiers.log`
+and `pb-role-metrics.log`. A regular claim-owning supervisor cycle checks them
+after its proven role census and role-start pass. `--once`, nonowners and
+systemd-managed no-op/handover paths do not maintain logs. No new timer or
+restart is required by the source policy, but the running supervisor must
+actually load the qualified successor; a source merge is not deployment.
+
+The trigger is **at least 64 MiB** (`ROLE_LOG_TRIGGER_BYTES`); successful
+nonconcurrent maintenance retains the newest **8 MiB of raw bytes**
+(`ROLE_LOG_KEEP_BYTES`) on the **same inode**. The retained prefix can start
+mid-line or mid-UTF-8/JSON. The supervisor closes its parent append handle after
+launch; **new** leaves are opened no-follow/nonblocking with explicit **0600**
+mode even under umask 002. Existing inherited stdout/stderr and ordinary reopened
+append writers continue at the compacted EOF. There are no renamed backups, rotations,
+archives, child signals or descriptor replacements.
+
+The maintenance directory must be current-user owned, non-symlinked and match
+its held/current name; normal owned **0775** directories are allowed. Only
+regular current-user, single-link leaves without group/world write bits whose
+current name/inode and proven role writer stdout/stderr append FDs agree are
+eligible. Missing/in-bounds leaves are quiet. Unsafe metadata, external rename,
+unreadable identity/FD flags, no current proven PID, short reads and copy or
+truncate failures produce bounded role/stage diagnostics in supervisor output;
+there is no unsafe fallback. Undeclared, refused or vanished-writer oversized
+leaves can remain large. An old unnamed inode still held after external rename
+is not reclaimed by following the writer's proc FD. Rechecks do not atomically
+exclude a path swap during I/O.
+
+Legacy **0664** role leaves still append normally but are refused for retention
+when oversized. Launch and maintenance never chmod or replace those files.
+Their permission migration needs separate coordinator authority/qualification;
+new-leaf defaults and source rollout alone do not qualify existing unsafe logs
+or prove recovery of a pressured root disk.
+
+This is **periodic hysteresis, not an all-times cap or universal disk roof**.
+There is no finite inter-tick overshoot bound; queue/census I/O can block the
+supervisor, or it can be down, and refusal can repeat indefinitely. Writers do
+not participate in a maintenance lock: concurrent append can be discarded and
+copy can expose mixed diagnostic lines. Preflight/read failures leave bytes
+untouched, but a late copy/truncate/crash failure may leave a partly modified
+prefix without shrinking the file; no rollback/atomic forensic history is
+promised. Truncation follows only a complete tail copy and renewed checks.
+
+These role leaves are not authoritative action stdout/stderr: actual action
+PIPE capture and attempt/CAS streams in `src/prismabuild/pool.py`, tiers verdict
+sidecars and storage prewarm receipts remain separate and untouched. So do
+worker/supervisor logs, custom storage `--log`, existing archives and the
+separately bounded mount collector. The local diagnostic fixture is not an
+end-to-end receipt-integrity test. This change alone claims no live file trim,
+role restart, root-disk recovery or measured speedup.
+
 Worker offer publication uses a child with a five-second waiting budget. A
 failed, busy or timed-out publication skips admission for that poll and logs
 `offer publication <status> ...; skipping admission this poll`. Admission
