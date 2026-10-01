@@ -302,8 +302,9 @@ def producer_allowance(item, rates=None):
 
 
 def counters(cpus):
-    """Per-CPU busy/total jiffies: guest time is already included in user."""
+    """Raw busy/total and observed IRQ jiffies; guest is included in user."""
     values = {}
+    interrupts = {}
     try:
         for line in Path('/proc/stat').read_text().splitlines():
             fields = line.split()
@@ -317,6 +318,7 @@ def counters(cpus):
                 return None
             total = sum(ticks)
             values[str(cpu)] = [total - ticks[3] - ticks[4], total]
+            interrupts[str(cpu)] = [ticks[5], ticks[6]]
         # Only "some" exists for the CPU resource at the system level: the
         # kernel records FULL for CPU under a cgroup, never for psi_system
         # (kernel/sched/psi.c -- "the FULL state doesn't exist for the CPU
@@ -334,7 +336,26 @@ def counters(cpus):
         return None
     if len(values) != len(cpus):
         return None
-    return {'cpus': values, 'psi_total': pressure, 'sampled_unix': time.time()}
+    return {'cpus': values, 'irq_cpus': interrupts,
+            'psi_total': pressure, 'sampled_unix': time.time()}
+
+
+def _irq_ticks(previous, current, busy):
+    """Only complete, non-reset IRQ/softirq interval evidence earns credit."""
+    result = dict.fromkeys(busy, 0)
+    if (not isinstance(previous, dict) or not isinstance(current, dict)
+            or set(previous) != set(busy) or set(current) != set(busy)):
+        return result
+    for cpu in busy:
+        old, now = previous[cpu], current[cpu]
+        if (not isinstance(old, (list, tuple)) or not isinstance(now, (list, tuple))
+                or len(old) != 2 or len(now) != 2
+                or any(type(value) is not int or value < 0 for value in (*old, *now))):
+            continue
+        deltas = [end - start for start, end in zip(old, now)]
+        if all(value >= 0 for value in deltas) and sum(deltas) <= busy[cpu]:
+            result[cpu] = sum(deltas)
+    return result
 
 
 class AdmissionBusy(RuntimeError):
@@ -1108,10 +1129,28 @@ class Controller:
                                'cpu_count': len(self.cpus), 'interval_s': elapsed,
                                'per_cpu_busy': {key: busy / total for key, (busy, total)
                                                 in zip(current['cpus'], deltas)}}
-                excluded = attributed_ticks(previous.get('control_threads', {}), control_before,
-                                            {key: busy for key, (busy, _) in zip(current['cpus'], deltas)})
+                raw_busy = {key: busy for key, (busy, _) in zip(current['cpus'], deltas)}
+                prior_threads = previous.get('control_threads', {})
+                control = attributed_ticks(prior_threads, control_before, raw_busy, kind='control')
+                kernel = attributed_ticks(prior_threads, control_before, raw_busy, kind='kernel')
+                irq = _irq_ticks(previous.get('irq_cpus'), current.get('irq_cpus'), raw_busy)
+                # Thread and IRQ accounting need not be disjoint. Their max
+                # is a proven union lower bound, not an invented threshold.
+                # Reject incoherent kernel+control credit, retaining the
+                # independently valid pre-existing control attribution.
+                threaded = {key: control[key] + kernel[key]
+                            if control[key] + kernel[key] <= raw_busy[key] else control[key]
+                            for key in raw_busy}
+                excluded = {key: max(threaded[key], irq[key]) for key in raw_busy}
                 observation['control_plane_busy'] = {
-                    key: excluded[key] / total for key, (_, total) in zip(current['cpus'], deltas)}
+                    key: control[key] / total for key, (_, total) in zip(current['cpus'], deltas)}
+                observation['kernel_thread_busy'] = {
+                    key: kernel[key] / total for key, (_, total) in zip(current['cpus'], deltas)}
+                observation['irq_busy'] = {
+                    key: irq[key] / total for key, (_, total) in zip(current['cpus'], deltas)}
+                observation['system_baseline_busy'] = {
+                    key: (excluded[key] - control[key]) / total
+                    for key, (_, total) in zip(current['cpus'], deltas)}
                 observation['foreign_per_cpu_busy'] = {
                     key: (busy - excluded[key]) / total
                     for key, (busy, total) in zip(current['cpus'], deltas)}
