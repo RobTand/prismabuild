@@ -124,8 +124,9 @@ class RunResult:
     failed: set[str]
     inconclusive: list[str]          # files no shard observed
     files: list[str]
-    receipts: list[str]
+    receipts: list[str]              # CAS receipts; a failed shard files none
     report: str = ""                 # the --json path
+    actions: list[str] = dataclasses.field(default_factory=list)  # every shard's key
     wall_s: float = 0.0
 
 
@@ -151,8 +152,11 @@ def reduce_report(report: list[dict], outcomes) -> RunResult:
     inconclusive: list[str] = []
     files: list[str] = []
     receipts: list[str] = []
+    actions: list[str] = []
     for shard in report:
         files.extend(shard.get("files") or ())
+        if shard.get("action_key"):
+            actions.append(shard["action_key"])
         if shard.get("receipt_path"):
             receipts.append(shard["receipt_path"])
         record = outcomes.parse(shard.get("output") or "") if shard.get("ran") else None
@@ -167,7 +171,7 @@ def reduce_report(report: list[dict], outcomes) -> RunResult:
         failed.update(f"{nodeid} (never ran)" for nodeid in reconciliation.get("never_ran") or ())
         inconclusive.extend(reconciliation.get("missing_files") or ())
     return RunResult(failed=failed, inconclusive=sorted(set(inconclusive)),
-                     files=files, receipts=receipts)
+                     files=files, receipts=receipts, actions=actions)
 
 
 def node_file(nodeid: str) -> str:
@@ -581,6 +585,7 @@ class Runner:
                                      | again[key].failed)
                     merged.inconclusive = again[key].inconclusive
                     merged.receipts += again[key].receipts
+                    merged.actions += again[key].actions
                     merged.wall_s += again[key].wall_s
         return results
 
@@ -674,7 +679,8 @@ class Queue:
         batch.setdefault("runs", {})[name] = {
             "report": result.report, "wall_s": round(result.wall_s, 1),
             "files": len(result.files), "failed": sorted(result.failed),
-            "inconclusive": result.inconclusive, "receipts": result.receipts}
+            "inconclusive": result.inconclusive, "receipts": result.receipts,
+            "actions": result.actions}
         self.store.save()
         if result.inconclusive:
             raise Inconclusive(f"{name}: {len(result.inconclusive)} file(s) never observed")

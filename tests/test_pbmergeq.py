@@ -28,6 +28,7 @@ def shard(files, rows=(), ran=True, record=True, never_ran=(), missing=()):
         out += "\n" + pbtest_outcomes.PREFIX + json.dumps(
             {"schema": pbtest_outcomes.SCHEMA, "reports": [list(r) for r in rows]})
     return {"files": list(files), "ran": ran, "output": out, "receipt_path": "/r/x",
+            "action_key": "k-" + files[0],
             "reconciliation": {"never_ran": list(never_ran), "missing_files": list(missing)}}
 
 
@@ -49,6 +50,8 @@ def test_a_report_reduces_to_failing_node_ids_and_unobserved_files():
                              "tests/test_a.py::t_lost (never ran)", "tests/test_b.py"}
     assert result.inconclusive == ["tests/test_c.py", "tests/test_d.py", "tests/test_e.py"]
     assert mq.files_of(result.failed) == ["tests/test_a.py", "tests/test_b.py"]
+    assert result.actions == ["k-tests/test_a.py", "k-tests/test_b.py", "k-tests/test_c.py",
+                              "k-tests/test_d.py", "k-tests/test_e.py"]
 
 
 @pytest.mark.parametrize("culprit", range(1, 9))
