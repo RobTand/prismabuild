@@ -522,9 +522,17 @@ def test_an_incomplete_scope_census_never_reaches_a_signal(monkeypatch) -> None:
 
     opened: list[int] = []
     signals: list[tuple[int, int]] = []
+
+    def never_reached(pid, flags):
+        # If this is ever called, hand back a real descriptor this test owns
+        # so the production close can never touch a framework FD.
+        read_end, write_end = os.pipe()
+        os.close(write_end)
+        opened.append(read_end)
+        return read_end
+
     monkeypatch.setattr(pool, "_sealed_profile_requested", lambda i: True)
-    monkeypatch.setattr(
-        pool.os, "pidfd_open", lambda pid, flags: opened.append(pid) or 7)
+    monkeypatch.setattr(pool.os, "pidfd_open", never_reached)
     monkeypatch.setattr(
         pool.signal, "pidfd_send_signal",
         lambda fd, sig: signals.append((fd, sig)))
@@ -546,17 +554,31 @@ def test_a_pidfd_proves_the_worker_or_the_opportunity_is_refused(
     directory = (1, 2)
     worker = ["/usr/bin/python3", "/gen/worker.py", "run-local"]
     signals: list[tuple[int, int]] = []
-    closed: list[int] = []
-    real_close = os.close
+    opened: list[int] = []
+
+    def owned_descriptor(pid, flags):
+        # A real descriptor this test owns, so the production close reaches
+        # only this test's FD and never a synthetic number that could name a
+        # framework FD.  The write end is closed so the read end is pollable.
+        read_end, write_end = os.pipe()
+        os.close(write_end)
+        opened.append(read_end)
+        return read_end
+
+    def closed(descriptor: int) -> bool:
+        try:
+            os.fstat(descriptor)
+        except OSError:
+            return True
+        return False
+
     monkeypatch.setattr(
         pool, "_scope_directory_identity", lambda path: directory)
     monkeypatch.setattr(
         pool, "_contained_worker_start_ticks", lambda pid: next(ticks))
     monkeypatch.setattr(
         pool, "_contained_worker_pid", lambda c, a, *, directory: 4242)
-    monkeypatch.setattr(pool.os, "pidfd_open", lambda pid, flags: 7)
-    monkeypatch.setattr(
-        pool.os, "close", lambda fd: (closed.append(fd), real_close(fd))[1])
+    monkeypatch.setattr(pool.os, "pidfd_open", owned_descriptor)
     monkeypatch.setattr(
         pool.signal, "pidfd_send_signal",
         lambda fd, sig: signals.append((fd, sig)))
@@ -565,7 +587,7 @@ def test_a_pidfd_proves_the_worker_or_the_opportunity_is_refused(
     ticks = iter([100, 999])
     assert pool._contained_worker_pidfd(
         4242, cgroup, worker, directory=directory) is None
-    assert closed == [7]
+    assert len(opened) == 1 and closed(opened[0])
     assert signals == []
 
     # A worker that vanished across the open: no unique identity remains.
@@ -574,7 +596,7 @@ def test_a_pidfd_proves_the_worker_or_the_opportunity_is_refused(
         pool, "_contained_worker_pid", lambda c, a, *, directory: None)
     assert pool._contained_worker_pidfd(
         4242, cgroup, worker, directory=directory) is None
-    assert closed == [7, 7]
+    assert len(opened) == 2 and all(closed(fd) for fd in opened)
 
     # An identity that cannot be read after the open closes the pidfd.
     ticks = iter([100, 100])
@@ -585,7 +607,7 @@ def test_a_pidfd_proves_the_worker_or_the_opportunity_is_refused(
     monkeypatch.setattr(pool, "_contained_worker_pid", explode)
     assert pool._contained_worker_pidfd(
         4242, cgroup, worker, directory=directory) is None
-    assert closed == [7, 7, 7]
+    assert len(opened) == 3 and all(closed(fd) for fd in opened)
     assert signals == []
 
     # A kernel without pidfds refuses; there is no raw os.kill fallback.
@@ -594,7 +616,7 @@ def test_a_pidfd_proves_the_worker_or_the_opportunity_is_refused(
     monkeypatch.delattr(pool.os, "pidfd_open", raising=False)
     assert pool._contained_worker_pidfd(
         4242, cgroup, worker, directory=directory) is None
-    assert closed == [7, 7, 7]
+    assert len(opened) == 3 and all(closed(fd) for fd in opened)
     assert signals == []
 
 
