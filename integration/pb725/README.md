@@ -1,6 +1,6 @@
-# Refs #725 — opt-in exact-activation reader integration
+# Refs #725 — opt-in reader component integration
 
-New integration files only. Default PB discovery remains `tests/`; this directory
+Integration-only files. Default PB discovery remains `tests/`; this directory
 is opt-in and is not a production reader dependency. No scheduler, cache,
 reader, pin, API, runtime pairing or production default changes.
 
@@ -40,14 +40,14 @@ automatic pin selection or activation-payload copy is involved.
 
 ## Parent-only submission
 
-Do not run locally. Parent owns WINDOW guards, priority, serial admission,
-receipt verification and review. The supported command refuses an active
-window immediately before starting the client:
+Do not run locally. Parent owns GO/admission, priority, serial execution,
+receipt verification and review. Ordinary x86 CPU submission under the current
+05:00 coordinator GO ignores WINDOW; GB10/GPU remains WINDOW/SSH gated.
+The default command preserves the accepted activation regression:
 
 ```bash
-test ! -e /home/rob/tmp/claude-campaign-20260926/tmp/u4-release/WINDOW_ACTIVE || exit 75
 python3 /mnt/shared/prismabuild-fleet/repo/tools/pbrun.py \
-  --cwd /home/rob/tmp/claude-campaign-20260926/wt-sol-prismabuild-sched-11 \
+  --cwd /home/rob/tmp/claude-campaign-20260926/wt-sol-prismabuild-sched-15 \
   --snapshot-ref pb-sched-725-pq-source \
   --snapshot-ref pb-sched-725-sdk1-tools \
   --priority -10 --timeout-s 180 --tag x86 --cpus 2 --demand mem_gb=4 \
@@ -131,11 +131,124 @@ state and live environment are restored; all mutations are private fixtures.
 Audit hooks cannot be removed by CPython, so they are disarmed on exit and die
 with this dedicated action process.
 
+## Source/render extension — verified CPU component RED/GREEN
+
+The serial writer first extracted `pb725_scaffold.py`: private SDK1 injection,
+queue/claim, manifest metadata, pinned real mover, fragments/material/map,
+origin/stage observation, import attribution and restoration. Activation
+producers remain in `test_activation_reader.py`; its three accepted assertions
+and strict `reader_policy` are unchanged. Parent-admitted refactor regression
+`0cdaa0a658e97b3e9c0f0546cbebdaa2a1d8c3f7608e4c8d14f05ce5c7a9c8ec`
+passed all three cases with no failures/skips, 8.28s. Full immutable/log/CAS/result
+and executed file hashes were verified; historical evidence is not substituted.
+
+Only `--test-path integration/pb725/test_source_render_reader.py` selects the
+new `source_render_binding.json`. The launcher explicitly allowlists those two
+paths, defaults to activation, reuses the same `verify_install`/RECORD and
+immutable extraction, and hashes the selected binding/test plus shared scaffold.
+No whole test-tree extraction or join-helper closure expansion is involved.
+
+Parent submits the same command above with this final launcher argument:
+
+```text
+integration/pb725/run_activation.py --test-path integration/pb725/test_source_render_reader.py
+```
+
+Three behaviors are independently parameterized over source/render (six
+sequential test invocations, no fanout). The RED checkpoint deliberately used
+`nullcontext()`; after attributable RED the only behavior change was activating
+`staged_tier_policy_test_context(DEFAULT_ALLOWED_TIERS)` for positives/negatives.
+Independent old-boundary controls remain inactive. This fixture activation does
+not activate production or establish a current SDK3 pairing.
+
+- Source: real `safetensors.torch.save_file`, real `selection_spans`, a sealed
+  nonzero-offset covered payload span and a valid omitted span in the same
+  shard. `_source_safe_open(..., framework="pt")` is the actual reader.
+- Render: tiny CPU BF16 `render_production_weight` then
+  `_store_rendered_weight_entry`; one covered shard and one valid omitted shard.
+  Actual `ProductionWeightCache` uses SHA-256 binding, 65664-byte serialized
+  bound, 256-byte LRU budget, `prefetch(max_workers=1)` and resident `get`.
+  Producer expectations are cloned and retained before movement for both kinds.
+- The real mover stages both covered entries in one private sealed manifest;
+  no payload copying occurs in fixture staging. The strict assertions require
+  stage bytes, zero pool bytes, live actual SDK pin/range/digest identity at
+  descriptor open, no pool source handle, and empty lease census after exit.
+  Valid omissions must refuse `readset-not-staged` (source) or
+  `staged-not-serving` (render) before payload.
+- Source header `os.pread` is transparently observed and bounded by the real
+  producer's header extent. A native opener wrapper calls the **real**
+  safetensors constructor, then independently compares exact origin device/inode
+  in `/proc/self/maps` and `/proc/self/fd` before/after acquisition. It closes
+  the real handle and proves those new kernel handles gone **before** raising
+  `OriginPayloadOpened`. Invocation alone or CPython audit is never source
+  proof. `NativeAcquisitionUnproven`/`source_observer_limit` is a qualification
+  limit, **not RED**; no fabricated reader or fallback witness exists.
+- Render uses the independent actual CPython payload-open tripwire. Its inactive
+  control uses the **valid omitted shard**: covered inactive PWC still uses stage.
+  Source observations and audit events are recorded separately, never conflated.
+
+Recorded RED is **4 failed, 2 passed, zero skipped**, with all six
+`PB725_SETUP_COMPLETE` records and genuine native-source acquisition witnesses
+in `PB725_SOURCE_NATIVE_ACQUIRED` (new handles plus empty `handles_after_close`).
+Both source positive/omitted strict assertions should fail from the released
+actual native origin acquisition; both render assertions should fail from the
+valid **omitted** origin payload open for the negative, while the covered
+positive should fail its strict live-pin assertion (inactive covered PWC serves
+stage without a pin). `PB725_RENDER_INACTIVE_STAGE_PIN_WITNESS` must show actual
+staged descriptor opens, producer tensor equality, exact staged-byte accounting
+and no live refs at those opens; a policy label alone is not this witness.
+Both inactive controls should independently catch origin and pass. This
+covered-render positive is a stage-without-live-pin witness, not an origin-open
+witness. The parent explicitly approved this distinction after inspecting the
+pinned inactive stage-selection branch; coverage/resolver remain unchanged. Setup/import/mover failures, scanner limits or wrong
+witnesses do not establish RED. Parent owns logs, terminal/CAS receipts and the
+review barrier; **no new tests/import probes/compilation ran in the writer**.
+
+Observer patches are confined to each call context and restored even on refusal;
+helper/injection/resolver/policy and live environment restore at fixture exit.
+CPython audit hooks cannot unregister, so they are disarmed and die with the
+worker process. No runtime dependency, package pin, API, wire, score, numerical,
+production policy or residency contract changes; #1399's PQ-pin wait is unrelated.
+
+Target ACC-03 remains source + render + activation defaults end to end; this is
+only prepared component evidence. INV-03/SAFE-02 and SM-03 assertions are present
+and source/render CPU component execution is now verified below. Deployment
+and full workload acceptance remain **pending**. No ledger status is promoted.
+
+### Verified source/render action evidence
+
+- RED `3f6b552803d5bb86ba35f0775ad80b57e0a77992f2bd5edc3d68f37e3e6e86b8`:
+  4 failed, 2 passed, zero skipped, 10.94s. All six setups complete. Three real
+  native origin mappings were independently observed then released; covered
+  render consumed 1810 staged bytes/equal producer tensor without a live pin.
+  Omitted render reached actual origin. No setup/scanner error is counted RED.
+- GREEN `1c1fa755bd6a273bef2899f8865e4e38affad74b1a251ef15c21e33ba92ec02b`:
+  6 passed, zero failures/skips, 14.67s. Strict source consumed 128 staged bytes;
+  strict render consumed 1810. Both had matching actual live pin/lease at the
+  staged descriptor open, zero origin/pool payload, and released leases. Both
+  valid omissions refused before payload; independent inactive controls caught
+  actual origin acquisition/open. Exact tensors are asserted against producer
+  expectations retained before staging.
+- Both are ordinary CPU-only admitted actions on dl380g10, priority -10,
+  timeout180, CPU2/memory4GiB/native1. Parent checked terminal/immutable identity,
+  full log size/SHA and released containment; GREEN canonical CASv3 receipt,
+  result blob and executed source/binding/verifier/scaffold hashes also match.
+- Initial refactor `803689748c36ca5b1b0f0285c805ddf0f16869f47fe6dd9e0094223e70192a78`
+  timed out in actual DiskPacer.wait after two setups; not acceptance or RED.
+  Pinned `--unpaced` skips topology validation but still constructs a pacer.
+  This non-storage private fixture now uses the existing supported empty
+  pool/disks/NFS configuration instead of discovering unrelated host ZFS.
+  No production/admission/deadline change or performance claim follows.
+- Full-source and configuration-correction independent reviews approved the
+  inspected source; final exact-delta and compile receipts remain shipment
+  checks, separate from the executed behavioral evidence. #725 stays open; no join, complete campaign,
+ACC-03, both-Spark, SDK3, native/container, GPU or performance claim follows.
+
 ## Target versus evidence
 
 ACC-03 targets source **and** render **and** activation with defaults; this
-file prepares only one exact-activation component. It does not satisfy full
-ACC-03. INV-03/SAFE-02 strict origin refusal and SM-03 live pins/release are
+directory retains accepted exact-activation and source/render CPU component
+RED/GREEN evidence. It does not satisfy full ACC-03. INV-03/SAFE-02 strict origin refusal and SM-03 live pins/release are
 validated component assertions in the parent-verified RED/GREEN above, with
 independent full-delta source review. The static binding's
 `prepared_checkpoint: behavioral-red-inactive-policy` records fixture history;
