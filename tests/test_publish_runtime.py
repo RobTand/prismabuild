@@ -348,6 +348,17 @@ def test_every_fleet_tool_is_published_or_excluded_on_purpose() -> None:
         publish_runtime._publication_manifest()) == []
 
 
+def test_qualified_scratch_recorder_sources_travel_with_the_generation() -> None:
+    """A published loader must have every source byte it independently binds."""
+    from prismabuild import local_scratch
+
+    manifest = publish_runtime._publication_manifest()
+    for member in local_scratch.PRODUCER_FILES:
+        assert member in manifest, f"qualified scratch producer source missing: {member}"
+    for layout in ("tools", "tools/fleet"):
+        assert f"{layout}/local_scratch_profile.py" in manifest
+
+
 def _generation_store(tmp_path: Path) -> Path:
     """A mirror whose sibling holds the published generations."""
 

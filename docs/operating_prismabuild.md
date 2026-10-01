@@ -3998,6 +3998,72 @@ a consumer you want sealed under a newer generation. There is no command that
 withdraws a pending id. "Deferred consumers: action edges (#913)" in
 `docs/design.md` lists the rules and the limits.
 
+### Persisting the RAM tmpfs for a future boot (#1032)
+
+The published `tools/install_ram_mount_unit.py` (also `tools/fleet/` spelling)
+provides separate **render** and **root install** modes. Publication installs
+nothing, and the rob-only supervisor installer below stays unchanged. Before
+privileged invocation, independently qualify the trusted interpreter, pinned
+source generation and policy closure, actual tier writer UID/GID, chosen size,
+kernel `noswap`/interleave support and host configuration. Resolving a shared
+`repo` symlink is not a root source-integrity attestation. Use the reviewed
+absolute generation path, not a moving runtime pointer; the explicit policy
+must resolve strictly inside the same generation, including custom policies.
+
+Render without root using the qualified interpreter with isolation/bytecode
+disabled (replace every placeholder with independently qualified inputs):
+
+```bash
+/usr/bin/python3 -I -B /path/to/pinned-generation/tools/install_ram_mount_unit.py \
+  --policy /path/to/pinned-generation/tools/ram_tier_policy.json \
+  --size-bytes <chosen-positive-bytes> --owner-uid <writer-uid> \
+  --owner-gid <writer-gid> --render
+```
+
+Render emits only the install bytes on stdout and writes nothing. Size and IDs
+have no defaults: ceiling256 GiB is a maximum, window160 GiB is a different
+quantity, and neither supplies the chosen size. IDs must be canonical decimal
+1..4294967294, not names, zero or the uint32 sentinel. Only `/ram/prewarm` is
+supported. Malformed/duplicate options, invalid/extra policy fields and size
+above the declared policy ceiling refuse before installation effects. Existing
+runtime admission remains the load authority, not this host provisioner.
+
+After separately authorized root review, invoke the same qualified command with
+`--install` instead of `--render`, as EUID0. It requires existing safe root:root
+nonsymlink `/etc/systemd/system` and ancestors; it creates no directories. Resolve
+fstab entries for `/ram/prewarm` (octal escapes and lexical absolute slash/dot
+aliases are detected; effective namespace/symlink aliases still need operator
+qualification), fixed/prefix/type mount drop-ins, masks, vendor and volatile
+units, and fixed units in `/run/systemd/generator{,.early,.late}`
+before retrying a conflict refusal. Only explicit `lstat` absence is accepted:
+missing paths are absent, dangling links are present, and unknown metadata errors
+refuse before file installation or manager commands. `/lib` vendor aliases may be read, never used
+as a write target. No existing unit permissions/content are migrated or overwritten:
+only an identical nonsymlink single-link root:root0644 unit can repeat without
+rewriting. New bytes are fully written/fsynced and atomically linked without
+overwrite at `/etc/systemd/system/ram-prewarm.mount`; own temporary names are
+cleaned on failure. A committed unit remains if reload/enable subsequently fails,
+so inspect the retained file and error rather than assuming rollback/success.
+
+The only manager commands are absolute `/usr/bin/systemctl daemon-reload`, then
+`enable ram-prewarm.mount` **without `--now`**. This does not start, stop, remount,
+restart, signal, chown current contents or touch the epoch/pages. The options
+`size=<bytes>,noswap,mpol=interleave,uid=<uid>,gid=<gid>,mode=0755` affect a future
+mount root only. Default local mount dependencies and `local-fs.target` supply
+the system-manager boot hook, not an invented ordering against rob's user manager.
+Trusted root administrators remain trusted; conflict checks are observations,
+not a guarantee against concurrent root mutation or arbitrary unit search paths.
+
+Candidate source qualification passed 382 admitted cases with no skips, including
+122 installer controls. Compile and refreshed-head gates are tracked in
+`docs/evidence/issue1032_ram_mount_provision_2026-09-26.json`. Private synthetic
+root tests and systemd syntax/graph checks are not real privilege or deployment
+proof. Separately authorized installation/readback, reboot mount/writer access,
+RAM epoch/adoption/old-residency recovery and cross-manager boot qualification
+remain owed. No live mount change is authorized here. Safe page turnover,
+dl380g10 per-node Shmem within10% and an hour of unchanged pswpout remain the
+open live #1032 acceptance gates; source/render coverage does not close them.
+
 ### Keeping a supervisor alive across a reboot
 
 Each box runs its supervisor as a systemd **user** unit,
