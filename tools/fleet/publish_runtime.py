@@ -126,6 +126,10 @@ FLEET_SCRIPTS = (
     # source asks it which files in the pbrun checkout PrismaBuild generated.
     # It has to be the executing generation's copy, found by published path.
     "pbsnapshot.py",
+    # pbmergeq.py is a client a repository's merge flow runs from a box with
+    # no PB checkout; it imports pbtest.py and pbtest_outcomes.py from its own
+    # directory, so it must be the same generation's copy (#1417).
+    "pbmergeq.py",
     # pbmcp.py is the same case as pbstatus.py and then some: an agent
     # registers it by absolute published path so that every session starts on
     # the current generation, and the boxes it is registered from are exactly
