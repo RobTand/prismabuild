@@ -1,8 +1,9 @@
-"""Conservative per-CPU attribution of supervised control threads (#1210).
+"""Conservative per-CPU attribution of control and kernel threads.
 
 No descendant exemption and no last-CPU guess for a migrating thread. Unknown
-work stays in the raw host reading. This is cooperative accounting, not a
-security boundary against a process deliberately impersonating the supervisor.
+work stays in the raw host reading. Control accounting is cooperative, not a
+security boundary against impersonation. Kernel identity uses Linux flags,
+never a process name, an empty cmdline or a low PID (#1399).
 """
 from pathlib import Path
 import socket
@@ -13,6 +14,7 @@ import socket
 RUNTIME_ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = frozenset(('worker_loop.py', 'tier_loop.py', 'prewarm_loop.py', 'pbmetrics.py'))
 OWNERSHIP_ENV = 'PRISMABUILD_SUPERVISED_WORKER'
+PF_KTHREAD = 0x00200000  # Linux include/linux/sched.h, stat field 9.
 
 
 def _stat(path):
@@ -22,7 +24,7 @@ def _stat(path):
         raise ValueError('missing process comm')
     fields = raw[close + 1:].split()
     return {'start': int(fields[19]), 'cpu': int(fields[36]),
-            'ticks': int(fields[11]) + int(fields[12])}
+            'ticks': int(fields[11]) + int(fields[12]), 'flags': int(fields[6])}
 
 
 def _identity(process, runtime_root, hostname):
@@ -45,14 +47,50 @@ def _identity(process, runtime_root, hostname):
     return str(path), _stat(process / 'stat')['start']
 
 
+def _process_identity(process, runtime_root, hostname):
+    """Mutually exclusive, positively established attribution classes."""
+    status = _stat(process / 'stat')
+    if status['flags'] >= 0 and status['flags'] & PF_KTHREAD:
+        return 'kernel', ('kernel-thread', status['start'])
+    identity = _identity(process, runtime_root, hostname)
+    return None if identity is None else ('control', identity)
+
+
+def _thread_counters(process, identity, kind, cpus):
+    """Read stable inner tick bounds for one established process identity."""
+    threads = {}
+    for thread in (process / 'task').iterdir():
+        try:
+            before = _stat(thread / 'stat')
+            migrations = int(next(line.split(':', 1)[1].strip()
+                                  for line in (thread / 'sched').read_text().splitlines()
+                                  if line.split(':', 1)[0].strip() == 'se.nr_migrations'))
+            after = _stat(thread / 'stat')
+            if (before['start'] != after['start'] or before['cpu'] != after['cpu']
+                    or before['cpu'] not in cpus or migrations < 0
+                    or before['ticks'] < 0 or after['ticks'] < before['ticks']
+                    or before['flags'] < 0 or after['flags'] < 0
+                    or bool(before['flags'] & PF_KTHREAD) != (kind == 'kernel')
+                    or bool(after['flags'] & PF_KTHREAD) != (kind == 'kernel')):
+                continue
+            # Start at the later tick; end at the earlier tick. The entire
+            # credited interval lies inside the host-counter interval.
+            threads[f'{process.name}/{thread.name}'] = {
+                **before, 'end_ticks': after['ticks'], 'migrations': migrations,
+                'process_identity': list(identity), 'attribution_kind': kind}
+        except (OSError, ValueError, IndexError, StopIteration):
+            continue
+    return threads
+
+
 def control_plane_counters(cpus, *, proc_root=Path('/proc'), runtime_root=RUNTIME_ROOT,
                            hostname=None):
-    """Verified thread jiffies with stable pid/start/CPU/migration identity.
+    """Verified control/kernel jiffies with stable thread/CPU identity.
 
-    Exact scripts plus supervisor ownership, not an inherited environment flag
-    alone. Read every thread, never child processes. A disappearing process,
-    exec, PID reuse or unavailable scheduler migration counter grants no credit.
-    All process reads are host-local; no subprocess or shared census is used.
+    One existing host-local scan, not an extra kernel census. Control scripts
+    need supervisor ownership; kernel threads need PF_KTHREAD at both inner
+    bounds. Exec, PID reuse, migration or unavailable evidence grants no credit.
+    Attribution kinds keep control-only reporting distinct from system work.
     """
     result = {}
     hostname = socket.gethostname() if hostname is None else hostname
@@ -64,41 +102,25 @@ def control_plane_counters(cpus, *, proc_root=Path('/proc'), runtime_root=RUNTIM
         if not process.name.isdigit():
             continue
         try:
-            identity = _identity(process, runtime_root, hostname)
-            if identity is None:
+            classified = _process_identity(process, runtime_root, hostname)
+            if classified is None:
                 continue
-            threads = {}
-            for thread in (process / 'task').iterdir():
-                try:
-                    before = _stat(thread / 'stat')
-                    migrations = int(next(line.split(':', 1)[1].strip()
-                                          for line in (thread / 'sched').read_text().splitlines()
-                                          if line.split(':', 1)[0].strip() == 'se.nr_migrations'))
-                    after = _stat(thread / 'stat')
-                    if (before['start'] != after['start'] or before['cpu'] != after['cpu']
-                            or before['cpu'] not in cpus or migrations < 0
-                            or before['ticks'] < 0 or after['ticks'] < before['ticks']):
-                        continue
-                    # The two bounds are used differently at interval ends:
-                    # start at the later tick, end at the earlier tick.
-                    threads[f'{process.name}/{thread.name}'] = {
-                        **before, 'end_ticks': after['ticks'], 'migrations': migrations,
-                        'process_identity': list(identity)}
-                except (OSError, ValueError, IndexError, StopIteration):
-                    continue
-            if _identity(process, runtime_root, hostname) == identity:
+            kind, identity = classified
+            threads = _thread_counters(process, identity, kind, cpus)
+            if _process_identity(process, runtime_root, hostname) == classified:
                 result.update(threads)
         except (OSError, ValueError, IndexError, RuntimeError):
             continue
     return result
 
 
-def attributed_ticks(previous, current, busy):
-    """Only same-thread, non-migrating ticks within the host interval count.
+def attributed_ticks(previous, current, busy, *, kind=None):
+    """Credit only stable, non-migrating work within the host interval.
 
-    ``previous`` was collected AFTER the previous host counters; ``current``
-    BEFORE the current counters. An inconsistent per-CPU sum is unknown, not
-    a request to clamp away arbitrary foreign work.
+    ``previous`` follows previous host counters; ``current`` precedes current
+    host counters. Missing kind in historical records means control, the only
+    class the old collector could prove. Kernel credit requires explicit flags
+    at both ends. Inconsistent per-CPU totals are unknown, never clamped.
     """
     excluded = dict.fromkeys(busy, 0)
     if not isinstance(previous, dict) or not isinstance(current, dict):
@@ -106,6 +128,15 @@ def attributed_ticks(previous, current, busy):
     for tid, now in current.items():
         old = previous.get(tid)
         if not isinstance(old, dict) or not isinstance(now, dict):
+            continue
+        category = now.get('attribution_kind', 'control')
+        if (category not in ('control', 'kernel')
+                or old.get('attribution_kind', 'control') != category
+                or (kind is not None and category != kind)):
+            continue
+        if category == 'kernel' and any(
+                type(record.get('flags')) is not int or record['flags'] < 0
+                or not record['flags'] & PF_KTHREAD for record in (old, now)):
             continue
         if any(old.get(k) != now.get(k) for k in ('start', 'cpu', 'migrations', 'process_identity')):
             continue

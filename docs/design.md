@@ -4346,12 +4346,35 @@ and other unproven control processes remain conservatively unattributed; the
 idle-token fallback still prevents one such busy CPU blocking the entire box.
 This is cooperative attribution, not hostile-process isolation.
 
-The sample retains raw `per_cpu_busy`, `busy_cpus` and PSI, adds diagnostic
-`control_plane_busy`, and exposes the residual `foreign_per_cpu_busy` only to
-the high-pressure per-CPU corroboration. Saturation, projected physical CPU
-cost, measurements, full-width and unbounded isolation still use raw load.
-Neither `.05` nor any pressure threshold is raised. No new queue/claim schema
-or CPU-map identity is introduced. Old readers ignore added sample/metadata
+**Measured system attribution (#1399).** The same host-local thread scan
+also recognizes Linux `PF_KTHREAD` (stat field9, bit0x00200000), independent of
+PID, name, cmdline or supervisor mark. Kernel and control identities are
+mutually exclusive; kernel classification must hold at both inner collection
+bounds and both interval ends. Start time, CPU, migration and bounded tick
+checks are unchanged. Missing/changing flags, unavailable evidence, PID reuse,
+migration and inconsistent totals earn no kernel subtraction. A suspect PID
+census is diagnostic only, never proof that a CPU's busy time is kernel work.
+
+The existing host sample retains cumulative IRQ and softirq jiffies alongside
+its unchanged busy/total pairs. Complete matching per-CPU endpoints,
+nonnegative individual deltas and a total no larger than raw busy are required
+for IRQ credit. Old or incomplete endpoints, resets and impossible deltas are
+conservative. Thread and IRQ accounting are not assumed disjoint: per CPU,
+exclude `max(proven control + kernel ticks, proven IRQ + softirq ticks)`, a
+measured union lower bound, not their sum or an increased prior. Incoherent
+combined thread credit rejects the new kernel component rather than clamping
+away arbitrary work.
+
+The sample retains raw `per_cpu_busy`, `busy_cpus` and PSI; `control_plane_busy`
+stays control-only. `kernel_thread_busy`, `irq_busy` and
+`system_baseline_busy` expose the proof, while residual
+`foreign_per_cpu_busy` drives per-CPU pressure corroboration and measurement
+ambient classification. Saturation, projected physical CPU cost, host idle,
+full-width and unbounded isolation still use raw load. A complete residual
+clearance uses the existing CPU/GPU historical-veto retirement and bounded
+measurement drain; it neither admits beside holders nor renews drain deadlines.
+Neither `.05`, `PER_CPU_FOREIGN_MAX`, nor any pressure threshold is raised.
+No new queue/claim schema or CPU-map identity is introduced. Old readers ignore added sample/metadata
 fields and remain conservative; new readers use raw occupancy for old samples.
 Old and new readers share the admission lock and unchanged token ordinals.
 Existing reservations retain their actual stored allocation on either reader.
