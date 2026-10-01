@@ -21388,12 +21388,16 @@ class PoolQueue:
         reaper takes it, and the retry is :meth:`_retry_own_pending_finish` --
         the same ``finish`` call ``reap_stale`` makes.  Ordinary expired or
         missing leases are never requeued here, and foreign-host, non-pending
-        and malformed records are left untouched; a malformed saved outcome is
-        said on stderr and skipped, because a drain must survive this box's own
-        bad record.  The pass runs on :meth:`_sweep_due`'s host-local schedule,
-        the same one ``serve_once`` uses: at most one pass per heartbeat per
-        box across all of its loops.  Returns the keys a saved outcome requeued
-        to ``ready``; an ordinary terminal conclusion returns an empty list.
+        and malformed records are left untouched.  Failures are isolated per
+        row: a record whose filename is not its ``action_key``, a read that
+        fails, or a transition or contract error is said on stderr and skipped
+        without touching its bytes, lease or reservation, so one bad file
+        cannot pin the box's other saved finishes.  The pass runs on
+        :meth:`_sweep_due`'s host-local schedule, the same one ``serve_once``
+        uses; that marker is deliberately unlocked, so two loops may race a
+        redundant pass and no strict at-most-one pass is promised.  Returns
+        the keys a saved outcome requeued to ``ready``; an ordinary terminal
+        conclusion returns an empty list.
         """
 
         if not self._sweep_due():
@@ -21404,20 +21408,32 @@ class PoolQueue:
             return retried
         for path in sorted(claimed.glob("*.json")):
             key = path.stem
-            with self._transition_locked(key, blocking=False) as acquired:
-                if not acquired:
-                    continue
-                record = _read_json(path)
-                try:
+            try:
+                with self._transition_locked(key, blocking=False) as acquired:
+                    if not acquired:
+                        continue
+                    record = _read_json(path)
+                    if (record or {}).get("action_key") != key:
+                        # The filename is the identity.  A row that does not
+                        # carry the key it is filed under -- corrupt, truncated
+                        # or filed under the wrong name -- is not a saved finish
+                        # this host may conclude under that name.  Leave its
+                        # bytes, lease and reservation exactly as they are.
+                        print(f"pool pending-finish retry skipped {key}: "
+                              f"record does not carry its filename key",
+                              file=sys.stderr)
+                        continue
                     result = self._retry_own_pending_finish(key, record)
-                except AmbiguousClaimHolder as exc:
-                    print(f"pool reaper: {exc}", file=sys.stderr)
-                    continue
-                except PoolContractError as exc:
-                    print(f"pool pending-finish retry: {exc}", file=sys.stderr)
-                    continue
-                if result is not None and result == self.item_path(READY, key):
-                    retried.append(key)
+            except (OSError, PoolContractError) as exc:
+                # One untrusted row must not stop the pass: this is the drain's
+                # only retry path, and an unreadable file or a contract failure
+                # would otherwise pin every other own saved finish in claimed/.
+                # Nothing here mutates a row it could not read or trust.
+                print(f"pool pending-finish retry skipped {key}: "
+                      f"{type(exc).__name__}: {exc}", file=sys.stderr)
+                continue
+            if result is not None and result == self.item_path(READY, key):
+                retried.append(key)
         return retried
 
     def reap_stale(self, *, timeout_s: float = LEASE_TIMEOUT_S) -> list[str]:

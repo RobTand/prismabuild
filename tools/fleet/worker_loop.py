@@ -1698,10 +1698,13 @@ def _run_loop(stop_requested):
             drain_fields = drain_offer_fields(gate)
             # What the last open poll declared, not a fresh ledger read: the
             # spool figure ``stable_host_capacity`` holds up survives the gate
-            # closing, and a drain poll adds no queue read.  The declared
-            # capability is what ``placeable`` answers from, so preserving it
-            # keeps a waiting submission queueable; the zero live figure below
-            # is what stops any admission reading this box as admittable.
+            # closing, and this capacity still comes from that declaration --
+            # the drain branch's own saved-finish retry (#1403) reads
+            # ``claimed/``, but it changes nothing this offer declares.  The
+            # declared capability is what ``placeable`` answers from, so
+            # preserving it keeps a waiting submission queueable; the zero live
+            # figure below is what stops any admission reading this box as
+            # admittable.
             drain_capacity = dict(last_declared)
 
             def announce_drain(queue=queue, host=host, tags=offered,

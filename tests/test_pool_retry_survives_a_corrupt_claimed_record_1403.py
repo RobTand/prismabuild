@@ -110,23 +110,28 @@ def test_an_empty_claimed_entry_is_absent_and_does_not_stop_the_retry(
 
 @pytest.mark.parametrize("mutation,case", [
     ({"action_key": "f" * 64}, "divergent-key"),
-    ({}, "no-key"),
+    (None, "missing-key"),
 ])
 def test_a_row_whose_identity_disagrees_with_its_name_is_left_alone(
         scoped, monkeypatch, mutation, case):
     """The filename is the identity; an untrusted row is not concluded under it.
 
-    A valid-looking record filed under a name it does not carry is not this
-    host's saved finish whichever way it is broken, and the retry must skip it
-    without mutating it while the healthy finish still concludes.
+    The row is filed under a valid, distinct action key that it does not carry
+    -- its own key rewritten to another valid key, or deleted entirely -- so
+    this tests a missing or divergent identity rather than an invalid
+    filename.  The retry must skip it without mutating it while the healthy
+    finish still concludes.
     """
 
     queue, item, release = _pending_owner(scoped, monkeypatch)
     monkeypatch.setattr(resource_scope.ResourceScope, "release", release)
     live = json.loads(queue.item_path(pool.CLAIMED, item["action_key"]).read_text())
-    queued_key = "not-a-key"
+    queued_key = "d" * 64
+    assert queued_key != item["action_key"]
+    record = ({**live, **mutation} if mutation is not None else {
+        name: value for name, value in live.items() if name != "action_key"})
     path = queue.item_path(pool.CLAIMED, queued_key)
-    pool._write_json_atomic(path, {**live, **mutation})
+    pool._write_json_atomic(path, record)
     before = path.read_bytes()
 
     monkeypatch.setattr(queue, "_sweep_due", lambda: True)

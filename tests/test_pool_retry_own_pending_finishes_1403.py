@@ -5,8 +5,9 @@ retry a saved outcome with the admission gate closed: ``worker_loop``'s
 maintenance branch, which never reaches ``serve_once`` and therefore never
 reached ``reap_stale``.  It must conclude this host's own ``finish_pending``
 records through the ordinary ``finish`` lifecycle while touching nothing else:
-no claim, no expired-lease requeue, no foreign row, no malformed row, and at
-most one pass per heartbeat per box.
+no claim, no expired-lease requeue, no foreign row, no malformed row, and no
+schedule of its own -- it reuses the host-local sweep throttle the open path
+already has.
 """
 
 from __future__ import annotations
@@ -181,12 +182,14 @@ def test_a_foreign_boxes_saved_finish_is_left_alone(scoped, monkeypatch):
     assert queue.item_path(pool.DONE, key).exists()
 
 
-def test_the_narrow_retry_sweeps_once_per_heartbeat(tmp_path, monkeypatch):
-    """One pass per heartbeat per box, not one per drain poll.
+def test_the_narrow_retry_reuses_the_host_sweep_throttle(tmp_path, monkeypatch):
+    """The host-local marker, not a fresh pass per drain poll.
 
     A saved finish that lands after this heartbeat's pass waits for the next
     one, exactly as ``serve_once``'s reaper does; the marker is host-local and
-    shared, so the drain and the open path spend the same sweep budget.
+    shared, so the drain and the open path spend the same sweep budget.  The
+    marker is deliberately unlocked, so two loops may still race a redundant
+    pass; this pins sequential reuse, not a strict limit.
     """
 
     at = [1_788_700_000.0]
@@ -215,7 +218,8 @@ def test_the_narrow_retry_sweeps_once_per_heartbeat(tmp_path, monkeypatch):
     save_finish(second)
     assert queue.retry_own_pending_finishes() == []
     assert queue.item_path(pool.CLAIMED, second).exists(), (
-        "a second pass inside the same heartbeat must not re-read the queue")
+        "a second sequential pass inside the same heartbeat must not re-read "
+        "the queue")
 
     at[0] += pool.HEARTBEAT_S
     assert queue.retry_own_pending_finishes() == []
