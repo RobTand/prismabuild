@@ -675,6 +675,34 @@ class Queue:
         return self.cfg.where.format(batch=batch) if self.cfg.where else str(
             self.store.batches / batch)
 
+    def run(self, batch: dict, outdir: Path,
+            jobs: list[tuple[str, Path, list[str]]]) -> dict[str, RunResult]:
+        """Run jobs; a file absent from a job's checkout passes there untested.
+
+        A test file a pull request adds is absent from main and from every
+        prefix before that pull request. It holds no tests there, so it fails
+        nothing; pbtest refuses an argument that is not a file, and passing
+        it would make the whole invocation inconclusive.
+        """
+
+        absent: dict[str, list[str]] = {}
+        submit = []
+        for name, checkout, files in jobs:
+            here = [f for f in files if (Path(checkout) / f).exists()]
+            absent[name] = [f for f in files if f not in here]
+            if absent[name]:
+                self.store.event(batch["id"], f"run {name}: {len(absent[name])} file(s) absent "
+                                              f"from this checkout pass untested: "
+                                              + clip(", ".join(absent[name]), 160))
+            if here:
+                submit.append((name, checkout, here))
+        results = self.runner.run_many(batch["id"], outdir, submit) if submit else {}
+        for name, _, _ in jobs:
+            got = results.get(name) or RunResult(failed=set(), inconclusive=[], files=[],
+                                                 receipts=[])
+            results[name] = dataclasses.replace(got, files=[*got.files, *absent[name]])
+        return results
+
     def checked(self, batch: dict, name: str, results: dict[str, RunResult]) -> RunResult:
         result = results[name]
         batch.setdefault("runs", {})[name] = {
@@ -823,8 +851,8 @@ class Queue:
                    f"{batch['base'][:8]} + " + ", ".join(f"#{p['pr']}" for p in included)
                    + f"; {len(files)} files" + (f", {len(left_out)} fleet-data file(s) "
                                                "left out" if left_out else ""))
-        full = self.checked(batch, "candidate", self.runner.run_many(
-            batch["id"], outdir, [("candidate", checkout, files)]))
+        full = self.checked(batch, "candidate", self.run(
+            batch, outdir, [("candidate", checkout, files)]))
         self.store.state["history_report"] = full.report
         if full.failed:
             new, shared, flakes = self.judge(batch, outdir, checkout, full)
@@ -852,7 +880,7 @@ class Queue:
         self.phase(batch, "judging", f"{len(full.failed)} failing node(s) in "
                    f"{len(failing_files)} file(s); base needs {len(missing)} file(s), "
                    f"{len(failing_files) - len(missing)} known")
-        results = self.runner.run_many(batch["id"], outdir, jobs)
+        results = self.run(batch, outdir, jobs)
         rerun = self.checked(batch, "rerun", results)
         if missing:
             base = self.checked(batch, "base", results)
@@ -928,8 +956,8 @@ class Queue:
                 if not self.mirror.merge(checkout, p["sha"], f"prefix {k}"):
                     raise RuntimeError(f"prefix {k} no longer merges")
             name = f"prefix{k}"
-            result = self.checked(batch, name, self.runner.run_many(
-                batch["id"], outdir, [(name, checkout, files)]))
+            result = self.checked(batch, name, self.run(
+                batch, outdir, [(name, checkout, files)]))
             self.mirror.drop(checkout)
             hit = bool(result.failed & set(new))
             self.store.event(batch["id"], f"prefix {k} ({', '.join(f'#{p['pr']}' for p in included[:k])}): "
