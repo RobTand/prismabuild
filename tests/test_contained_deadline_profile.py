@@ -753,7 +753,7 @@ def test_the_prelaunch_read_is_the_profile_authority(tmp_path: Path) -> None:
 
     # A missing request is the legacy path: the ceiling, no profile claim.
     absent = {"action_key": "c" * 64, "cas_root": tmp_path / "absent"}
-    assert pool._sealed_execution_policy(absent, None) is None
+    assert pool._sealed_execution_policy(absent, None) == (None, False)
     assert pool._sealed_execution_policy(absent, 4.0) == (4.0, False)
 
     # A request filed under the wrong key is refused before launch.
