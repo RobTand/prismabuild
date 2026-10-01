@@ -327,3 +327,29 @@ def test_enqueue_goes_through_the_inbox_and_keeps_order(tmp_path):
     assert [(e["pr"], e["sha"]) for e in store.state["queue"]] == [(3, SHA), (5, SHA)]
     assert list(store.inbox.iterdir()) == []
     assert "#3" in store.status_text() and "queue (2)" in store.status_text()
+
+
+def test_a_merge_github_keeps_refusing_leaves_the_queue_after_max_attempts(tmp_path):
+    queue, origin, github, runner = make_queue(tmp_path, mode="merge")
+    origin.pr(1, {"one.txt": "1\n"})
+    origin.pr(2, {"two.txt": "2\n"})
+    refuse = github._write
+
+    def refusing(what, command, stdin=None):
+        if command[:4] == ["gh", "pr", "merge", "1"]:
+            return False
+        return refuse(what, command, stdin)
+
+    github._write = refusing
+    queue.store.add(1, None, front=False)
+    queue.store.add(2, None, front=False)
+    verdicts = []
+    while queue.store.state["queue"] and len(verdicts) < 6:
+        verdicts.append(queue.tick()["verdict"])
+    # #1 is refused three times, then dropped with a comment; #2, bumped by it,
+    # is never charged and merges once #1 is gone.
+    assert verdicts == ["partial"] * 3 + ["merged"], verdicts
+    comments = [c for c in github.calls if c[:4] == ["gh", "pr", "comment", "1"]]
+    assert len(comments) == 1
+    assert ["gh", "pr", "merge", "2"] == [c for c in github.calls
+                                          if c[:4] == ["gh", "pr", "merge", "2"]][0][:4]

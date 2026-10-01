@@ -75,6 +75,7 @@ class Config:
     poll_s: float = 30.0
     inconclusive_retries: int = 2
     stuck_backoff_s: float = 600.0
+    max_attempts: int = 3        # charged re-queues before an entry is dropped
     where: str = ""              # human pointer to a batch dir, {batch} expands
     flake_labels: tuple[str, ...] = ("P2",)
     merge_enabled_file: str = ""
@@ -310,9 +311,9 @@ class Store:
             self.save()
         return taken
 
-    def add(self, pr: int, sha: str | None, *, front: bool) -> None:
+    def add(self, pr: int, sha: str | None, *, front: bool, attempts: int = 0) -> None:
         queue = [entry for entry in self.state["queue"] if entry["pr"] != pr]
-        entry = {"pr": pr, "sha": sha, "at": now()}
+        entry = {"pr": pr, "sha": sha, "at": now(), "attempts": attempts}
         self.state["queue"] = [entry, *queue] if front else [*queue, entry]
 
     def baseline(self, tree: str) -> dict[str, list[str]]:
@@ -693,6 +694,11 @@ class Queue:
 
         chosen, skipped = [], []
         for entry in entries:
+            if entry.get("attempts", 0) >= self.cfg.max_attempts:
+                skipped.append({**entry, "exhausted": True, "why": (
+                    f"re-queued {entry['attempts']} times without a verdict it could "
+                    "leave the queue on")})
+                continue
             try:
                 pr = self.github.pr(entry["pr"])
             except subprocess.CalledProcessError as exc:
@@ -707,7 +713,8 @@ class Queue:
                 # ``pin`` is what the caller enqueued; a re-queue keeps it, so
                 # a later push is refused rather than silently adopted.
                 chosen.append({"pr": entry["pr"], "sha": pr["headRefOid"],
-                               "pin": entry.get("sha"), "title": pr.get("title", "")})
+                               "pin": entry.get("sha"), "title": pr.get("title", ""),
+                               "attempts": entry.get("attempts", 0)})
         return chosen, skipped
 
     def build(self, batch: dict, prs: list[dict]) -> Path:
@@ -749,11 +756,11 @@ class Queue:
         except Inconclusive as exc:
             # Nobody observed some files: no verdict, nothing posted, retry later.
             verdict = {"verdict": "inconclusive", "summary": str(exc)}
-            self.requeue(entries, front=True)
+            self.requeue(entries, front=True, charge=True)
             state["not_before"] = time.time() + self.cfg.stuck_backoff_s
         except Exception as exc:  # noqa: BLE001 -- a daemon logs and backs off
             verdict = {"verdict": "error", "summary": f"{type(exc).__name__}: {exc}"[:300]}
-            self.requeue(entries, front=True)
+            self.requeue(entries, front=True, charge=True)
             state["not_before"] = time.time() + self.cfg.stuck_backoff_s
         finally:
             for path in list(self.mirror.worktrees.glob(f"{batch['id']}-*")):
@@ -771,11 +778,17 @@ class Queue:
         self.store.write_status()
         return batch
 
-    def requeue(self, prs: list[dict], *, front: bool) -> None:
+    def requeue(self, prs: list[dict], *, front: bool, charge: bool) -> None:
+        """Put entries back. ``charge`` counts it against them: a PR that keeps
+        coming back for its own reason (refused merge, unobserved run, a
+        conflict) is dropped after ``max_attempts`` instead of holding the
+        queue head forever; one bumped by another PR's verdict is not."""
+
         if self.once:
             return
         for p in reversed(prs) if front else prs:
-            self.store.add(p["pr"], p.get("pin", p.get("sha")), front=front)
+            self.store.add(p["pr"], p.get("pin", p.get("sha")), front=front,
+                           attempts=p.get("attempts", 0) + (1 if charge else 0))
         self.store.save()
 
     def _run(self, batch: dict, outdir: Path) -> dict:
@@ -783,6 +796,11 @@ class Queue:
         batch["skipped"] = skipped
         for s in skipped:
             self.store.event(batch["id"], f"skip #{s['pr']}: {s['why']}")
+            if s.get("exhausted"):
+                self.github.comment(batch["id"], s["pr"], f"exhausted-{batch['id']}",
+                                    f"pbmergeq {batch['id']}: this pull request left the "
+                                    f"merge queue: {s['why']}. See the batch history in "
+                                    f"`{self.where(batch['id'])}` and enqueue it again.")
         if not chosen:
             return {"verdict": "empty", "summary": "nothing eligible"}
         self.phase(batch, "building")
@@ -790,7 +808,7 @@ class Queue:
         for d in batch["dropped"]:
             self.store.event(batch["id"], f"drop #{d['pr']}: {d['why']}")
             if d.get("requeue"):
-                self.requeue([d], front=False)
+                self.requeue([d], front=False, charge=True)
             elif d["why"] == "conflicts with main":
                 self.github.comment(batch["id"], d["pr"], f"conflict-{d['sha']}",
                                     f"pbmergeq {batch['id']}: this pull request does not "
@@ -879,13 +897,14 @@ class Queue:
     def merge(self, batch: dict, summary: str) -> dict:
         self.phase(batch, "merging")
         if self.mirror.remote_base() != batch["base"]:
-            self.requeue(batch["included"], front=True)
+            self.requeue(batch["included"], front=True, charge=False)
             return {"verdict": "green-stale", "summary": summary + "; main moved, re-testing"}
         merged = []
         for index, p in enumerate(batch["included"]):
             if not self.github.merge(batch["id"], p["pr"], p["sha"]):
                 rest = batch["included"][index:]
-                self.requeue(rest, front=True)
+                self.requeue(rest[1:], front=True, charge=False)
+                self.requeue(rest[:1], front=True, charge=True)
                 return {"verdict": "partial", "summary": f"merged {merged}; "
                         f"#{p['pr']} refused, {len(rest)} re-queued"}
             merged.append(p["pr"])
@@ -932,7 +951,7 @@ class Queue:
                             f"to prefix {k} of {len(included)}):\n\n{listed}\n\n"
                             f"Reports: `{self.where(batch['id'])}`. Fix it and enqueue it again.\n")
         innocents = [p for p in included if p["pr"] != guilty["pr"]]
-        self.requeue(innocents, front=True)
+        self.requeue(innocents, front=True, charge=False)
         return {"verdict": "red", "summary": f"culprit #{guilty['pr']}: {len(new)} new "
                 f"failing node(s); re-queued " + ", ".join(f"#{p['pr']}" for p in innocents)}
 
