@@ -4407,9 +4407,17 @@ The sample retains raw `per_cpu_busy`, `busy_cpus` and PSI; `control_plane_busy`
 stays control-only. `kernel_thread_busy`, `irq_busy` and
 `system_baseline_busy` expose the proof, while residual
 `foreign_per_cpu_busy` drives per-CPU pressure corroboration and measurement
-ambient classification. Saturation, projected physical CPU cost, host idle,
-full-width and unbounded isolation still use raw load. A complete residual
-clearance uses the existing CPU/GPU historical-veto retirement and bounded
+ambient classification. Saturation, projected physical CPU cost, full-width
+and unbounded isolation still use raw load. For a measurement, complete fresh
+clearance on its actual predicted CPUs supersedes aggregate CPU-busy rejection
+from load elsewhere (#1422). It does not grant admission: the same cached idle
+reference still judges PSI, unknown attribution remains conservative, and the
+existing holder, GPU, raw-cost and token gates run afterward. A forced holder
+tail with no selected reference is not an empty reference and cannot clear.
+Measured PSI keeps the existing maximum/strict-greater comparison; unmeasured
+PSI keeps the existing 0.10 prior. Projecting PSI reuses `_judge_idle` without
+rereading, reseeding or rewriting the raw sample/history. A complete residual
+clearance also uses the existing CPU/GPU historical-veto retirement and bounded
 measurement drain; it neither admits beside holders nor renews drain deadlines.
 Neither `.05`, `PER_CPU_FOREIGN_MAX`, nor any pressure threshold is raised.
 No new queue/claim schema or CPU-map identity is introduced. Old readers ignore added sample/metadata

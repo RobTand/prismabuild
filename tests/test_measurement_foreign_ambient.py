@@ -10,8 +10,8 @@ unchanged idle gate:
 
 * foreign above ambient on the measurement's own CPUs refuses
   ``measurement_foreign_ambient`` -- typed, never drainable, never green;
-* foreign anywhere else is not the measurement's problem and keeps the old
-  ``measurement_host_not_idle`` withhold;
+* complete clear attribution on assigned CPUs continues past aggregate busy
+  elsewhere, preserving PSI and the subsequent holder/raw/token/GPU gates;
 * the typed check runs on every fresh attributed sample, so a persistent
   excess on those CPUs keeps refusing no matter how long it runs -- no
   excursion promotion for the measurement's CPUs;
@@ -139,20 +139,14 @@ def test_foreign_excess_on_the_measurements_own_cpus_is_typed_ambient(
     assert decision["per_cpu_foreign_max"] == pytest.approx(0.10), decision
 
 
-def test_foreign_only_off_the_measurements_cpus_keeps_the_withhold(
+def test_foreign_only_off_the_measurements_cpus_admits_the_measurement(
     queue: pool.PoolQueue, clock, monkeypatch,
 ) -> None:
-    """RED: foreign load everywhere except where the measurement goes.
+    """Clear assigned CPUs can claim despite busy CPUs elsewhere (#1422).
 
-    CPUs 10-19 read 0.30 foreign (S = 3.0, over every baseline) while the
-    measurement's CPUs 0-3 read 0.01.  The old sum starves the measurement
-    for load it will never run on.  GREEN: no typed verdict -- the refusal
-    stays ``measurement_host_not_idle``.  Pool mechanics: with no holders
-    in the way there is nothing a drain could clear, so the pool reports
-    the measurement starved and the admittable row behind still claims;
-    what the redesign pins is the DECISION -- host_not_idle, never the
-    typed ambient and never the old box-wide sum -- while the measurement
-    stays portable to the box that is actually idle.
+    CPUs 10-19 read 0.30 foreign while the measurement's CPUs 0-3 read
+    0.01. No PB holder or PSI pressure is present. The real queue must
+    admit the measurement, not route around a false aggregate refusal.
     """
 
     capacity = {"cpu": 20, "mem_gb": 120}
@@ -170,12 +164,9 @@ def test_foreign_only_off_the_measurements_cpus_keeps_the_withhold(
     for _ in range(pool.STARVATION_FLOOR - 1):
         queue.record_pass(measurement)
     behind = _publish(queue, clock, _key("behind"), {"cpu": 4, "mem_gb": 40})
-    assert _claim(queue, capacity, tiers=tiers) == behind, (
-        "the box flows around a measurement no drain can place")
-    denial = _denial(queue, measurement)
-    assert denial["reason"] == "adaptive_cpu_refused_starved", denial
-    decision = denial["evidence"]["decision"]
-    assert decision["reason"] == "measurement_host_not_idle", decision
+    assert _claim(queue, capacity, tiers=tiers) == measurement
+    assert queue.item_path(pool.CLAIMED, measurement).exists()
+    assert queue.item_path(pool.READY, behind).exists()
 
 
 def test_provisional_depth_measures_a_loaded_host(

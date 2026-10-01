@@ -914,6 +914,23 @@ class Controller:
         self._idle = (key, verdict, reference, prior_rule)
         return verdict
 
+    def _measurement_idle_refusal(self, sample, idle, ambient):
+        """Classify idle evidence without granting resources or isolation."""
+        if not idle['exceeds']:
+            return None
+        if ambient is not None and ambient['exceeds']:
+            return 'measurement_foreign_ambient'
+        if ambient is not None and ambient['clear'] and self._idle is not None:
+            reference, prior_rule = self._idle[2:]
+            # Clear assigned CPUs supersede aggregate CPU busy, not PSI.
+            # Project PSI against THIS cached window; never reread/reseed it.
+            # None is a forced holder tail, not an empty unmeasured reference.
+            if reference is not None and not _judge_idle(
+                    {}, reference, {'busy_cpus': 0., 'psi_some': sample['psi_some']},
+                    ('psi_some',), prior_rule):
+                return None
+        return 'measurement_host_not_idle'
+
     def _held_cpus(self, holders) -> set:
         """The CPUs this host's own rows hold, from the same ledger rows
         the admission path holds and releases (#1185)."""
@@ -1390,22 +1407,13 @@ class Controller:
             # without reserving a drain for sampler silence (#1317).
             return refuse("measurement_sampler_unknown", fresh=False, baseline=idle,
                           sample_max_age_s=MAX_SAMPLE_AGE_S)
-        if measurement and idle['exceeds']:
-            # A measurement reads the machine it runs on, so load on the
-            # CPUs it would actually occupy is ambient contamination, not
-            # contention (#1185): the typed per-CPU check runs first, on the
-            # measurement's own predicted CPUs, with PB-held busy excluded
-            # and load anywhere else out of scope. Fresh but unattributed
-            # readings, or an unknowable CPU prediction, retain the
-            # conservative host_not_idle refusal below.
-            # (#1233's box-wide surviving-sum is retired: it let foreign
-            # load far from the measurement's CPUs overtake a row no drain
-            # could ever place, and its re-judge re-armed an unproven
-            # window on the same unproven load.)
-            if ambient is not None and ambient['exceeds']:
-                return refuse("measurement_foreign_ambient", fresh=fresh,
-                              baseline=idle, **ambient['evidence'])
-            return refuse("measurement_host_not_idle", fresh=fresh, baseline=idle)
+        if measurement:
+            idle_refusal = self._measurement_idle_refusal(sample, idle, ambient)
+            if idle_refusal is not None:
+                evidence = (ambient['evidence']
+                            if idle_refusal == 'measurement_foreign_ambient'
+                            and ambient is not None else {})
+                return refuse(idle_refusal, fresh=fresh, baseline=idle, **evidence)
         if full_width and fresh and not holders and idle['exceeds']:
             # A reservation of every CPU needs the host idle too.
             return refuse("host_pressure", fresh=fresh, baseline=idle)
