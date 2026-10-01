@@ -3178,23 +3178,25 @@ def _contained_worker_pid(
 
     The census is the attempt's own scope directory tree (``scope_pids``),
     not a whole-host process scan: a process outside this scope cannot be a
-    candidate, and an unrelated process's unreadable record cannot deny a
-    valid scope.  ``scope_pids`` reports what its own fallback could not read
-    as diagnostics; those records are not this scope's identity, so they are
-    collected rather than treated as fatal.  The complete argv the queue
-    launched -- captured before any taskset or resource_exec wrapper, which
-    is what ``/proc/<pid>/cmdline`` shows once those wrappers exec -- is what
-    makes the match exact, and the resource_exec proxy is not in the scope at
-    all.  The scope directory's identity is rechecked after the census, so a
-    directory rebound underneath the scan is refused rather than guessed at.
-    Absent, unreadable or ambiguous identity is ``None``, never a guess.
+    candidate, and an unrelated process's unreadable record does not deny a
+    valid scope.  A census that reports errors is a different thing: it is
+    incomplete, and one observed match against an incomplete census does not
+    prove uniqueness, so any reported error refuses the opportunity rather
+    than narrowing to the members that happened to be readable.  The complete
+    argv the queue launched -- captured before any taskset or resource_exec
+    wrapper, which is what ``/proc/<pid>/cmdline`` shows once those wrappers
+    exec -- is what makes the match exact, and the resource_exec proxy is not
+    in the scope at all.  The scope directory's identity is rechecked after
+    the census, so a directory rebound underneath the scan is refused rather
+    than guessed at.  Absent, unreadable or ambiguous identity is ``None``,
+    never a guess.
     """
 
     if _scope_directory_identity(cgroup) != directory:
         return None
     errors: list[str] = []
     members = resource_scope.scope_pids(cgroup, errors=errors)
-    if not members:
+    if errors or not members:
         return None
     expected = [os.fsencode(word) for word in worker_argv]
     candidates: list[int] = []

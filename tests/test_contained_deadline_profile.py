@@ -466,16 +466,16 @@ def test_only_a_unique_exact_worker_is_eligible(monkeypatch) -> None:
     assert pool._contained_worker_pid(
         cgroup, worker, directory=directory) is None
 
-    # The census's own diagnostics name unrelated records, not this scope's
-    # identity: they do not deny a unique exact worker.
+    # A census that reports errors is incomplete: one observed match is not
+    # uniqueness, so nothing is eligible.
     def diagnosed(path, **kwargs):
-        (kwargs.get("errors") or []).append("unrelated record unreadable")
+        (kwargs.get("errors") or []).append("one subtree unreadable")
         return [11]
 
     monkeypatch.setattr(resource_scope, "scope_pids", diagnosed)
     cmdlines[11] = list(worker)
     assert pool._contained_worker_pid(
-        cgroup, worker, directory=directory) == 11
+        cgroup, worker, directory=directory) is None
 
     # An unreadable member identity refuses rather than guessing.
     monkeypatch.setattr(
@@ -495,6 +495,46 @@ def test_only_a_unique_exact_worker_is_eligible(monkeypatch) -> None:
         pool, "_scope_directory_identity", lambda path: next(rebound))
     assert pool._contained_worker_pid(
         cgroup, worker, directory=directory) is None
+
+
+def test_an_incomplete_scope_census_never_reaches_a_signal(monkeypatch) -> None:
+    """One observed match is not uniqueness when discovery reports errors."""
+
+    directory = (1, 2)
+    cgroup = Path("/sys/fs/cgroup/scope")
+    worker = [b"/usr/bin/python3", b"/gen/worker.py", b"run-local"]
+    monkeypatch.setattr(
+        pool, "_scope_directory_identity", lambda path: directory)
+    monkeypatch.setattr(pool, "_process_alive", lambda pid: True)
+    monkeypatch.setattr(pool, "_process_cmdline", lambda pid: list(worker))
+
+    def incomplete(path, **kwargs):
+        (kwargs.get("errors") or []).append("one subtree unreadable")
+        return [4242]
+
+    monkeypatch.setattr(resource_scope, "scope_pids", incomplete)
+    assert pool._contained_worker_pid(
+        cgroup, worker, directory=directory) is None
+
+    # The whole opportunity refuses: no pidfd is opened and no signal sent.
+    class _Scope:
+        cgroup_path = "/sys/fs/cgroup/scope"
+
+    opened: list[int] = []
+    signals: list[tuple[int, int]] = []
+    monkeypatch.setattr(pool, "_sealed_profile_requested", lambda i: True)
+    monkeypatch.setattr(
+        pool.os, "pidfd_open", lambda pid, flags: opened.append(pid) or 7)
+    monkeypatch.setattr(
+        pool.signal, "pidfd_send_signal",
+        lambda fd, sig: signals.append((fd, sig)))
+    result = pool._settle_contained_profile(
+        _Scope(), worker, item={"action_key": "a" * 64, "cas_root": "/cas"},
+        deadline=time.monotonic() + 1.0)
+    assert result is not None and result["settled"] is False
+    assert "no unique exact worker" in str(result["refused"])
+    assert opened == []
+    assert signals == []
 
 
 def test_a_pidfd_proves_the_worker_or_the_opportunity_is_refused(
