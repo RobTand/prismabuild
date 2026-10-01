@@ -1,0 +1,40 @@
+{
+  "schema": "prismabuild.pb725.activation_integration.v1",
+  "issue": 725,
+  "prepared_checkpoint": "behavioral-red-inactive-policy",
+  "dependency_preflight": {
+    "action_key": "e8215f06c6cfb672641e4930ca96b86010c8f45e37b3400aadde2ffde4268f4c",
+    "verified_summary_sha256": "72b7fbdcfe2fc614e2e1ac1547ebd3db89361af7f938c30878414697fd796589",
+    "receipt_sha256": "4b3aa2a3659d9b7420b01d3c7d418da8267aad932df2c71a043b2b34967879d2",
+    "result_sha256": "c9e41f78dabe3a870277920c02d57c12fc910b5b4dcdcc863da119c9f8f16019",
+    "host": "dl380g10",
+    "returncode": 0,
+    "scope": "dependency-only; not behavioral RED"
+  },
+  "selected_inputs_sha256": "423e1f02b854da5296479864092ee41a032c53cb22dd5f35980151fba876b94c",
+  "harness_baseline": "be674a35f30da209075e237a9d380afb857c05c2",
+  "verifier_sha256": "7ec1e3b1a3fcb268f07bc0d92e557567f1de48391161c2c24f3ec7093e1d57e9",
+  "pq": {
+    "ref": "pb-sched-725-pq-source",
+    "commit": "a3f8d01a4fdb26cfa81c5f6879ae5b17af367c89",
+    "archive_paths": ["prismaquant"]
+  },
+  "pb_tools": {
+    "ref": "pb-sched-725-sdk1-tools",
+    "commit": "059953bc3793f539600d333cd3311773e592b0e6",
+    "archive_paths": ["tools/fleet"]
+  },
+  "pb_installed_commit": "059953bc3793f539600d333cd3311773e592b0e6",
+  "pb_sdk_version": 1,
+  "tessera_commit": "b40c93cb73745097e57a1ba4cf5b9eee166c759a",
+  "python": "/home/rob/venvs/pq-pb059953bc-tessera-b40c93cb/bin/python",
+  "operands": {
+    "session": "pb725-exact-activation",
+    "names": ["covered", "omitted"],
+    "shape": [8, 4],
+    "tensor_elements": 32,
+    "max_file_bytes": 65664,
+    "tier_id": "prismabuild-stage:pb725-fixture"
+  },
+  "scope": "activation reader component only; not ACC-03, both-Spark, native container, current SDK3 runtime pairing or campaign completion"
+}
