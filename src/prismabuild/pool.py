@@ -16852,8 +16852,8 @@ class PoolQueue:
     def residency_verdict(self, item: Mapping[str, object]) -> dict[str, object]:
         """Whether this item's declared bytes are resident, and why not.
 
-        ``not_requested`` for everything the fleet publishes today; written onto
-        the claim record whenever an item carries a block.  A lead counts as
+        ``not_requested`` when an item has no residency request; the verdict is
+        written onto the claim record when residency is requested. A lead counts as
         resident only when its ``done/`` record says ``executed`` **and** that
         record names the same manifest the consumer does: a ``cache_hit``
         finished without moving a byte, and a mover that made a range of some
@@ -16864,7 +16864,20 @@ class PoolQueue:
 
         residency = item.get("residency")
         if not isinstance(residency, Mapping):
-            return {"state": "not_requested"}
+            # The manifest planner files a plan without rewriting the READY
+            # row. Tier discovery already derives this same first-lead block
+            # (#1332); admission must not mistake that consumer for advisory
+            # prewarm (#1350). Explicit range blocks are never reinterpreted.
+            from . import residency_plan
+            unreadable: list[Exception] = []
+            residency, _ = residency_plan.consumer_residency(
+                self, item, on_unreadable=unreadable.append)
+            if unreadable:
+                return {"state": "plan_unreadable",
+                        "consumer": item.get("action_key"),
+                        "error": str(unreadable[0])}
+            if not isinstance(residency, Mapping):
+                return {"state": "not_requested"}
         leads = residency.get("leads") or []
         if not isinstance(leads, list) or not leads:
             return {"state": "no_leads"}
