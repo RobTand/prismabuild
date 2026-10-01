@@ -8,6 +8,7 @@ sampling coverage, not a wall-time benchmark, cache authorization or speedup.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -19,11 +20,6 @@ import tarfile
 import time
 import urllib.parse
 import urllib.request
-
-
-# The admitted standalone tool uses the same checkout for its byte owner and CAS.
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
-from prismabuild import core
 
 
 def identity(pid: int) -> dict:
@@ -38,9 +34,9 @@ def identity(pid: int) -> dict:
     root = script.parent.parent
     pool = root / "src/prismabuild/pool.py"
     return {"pid": pid, "start_ticks": int((proc / "stat").read_text().rsplit(")", 1)[1].split()[19]),
-            "command_sha256": core.raw_sha256(command),
+            "command_sha256": hashlib.sha256(command).hexdigest(),
             "worker_script": str(script), "generation_root": str(root),
-            "pool_sha256": core.raw_sha256(pool.read_bytes()),
+            "pool_sha256": hashlib.sha256(pool.read_bytes()).hexdigest(),
             "exe": str((proc / "exe").resolve(strict=True))}
 
 
@@ -136,7 +132,7 @@ def main() -> int:
     report = {"schema": "prismabuild.diag940.contended_observation.v1", "target": before,
               "observer_host": socket.gethostname(), "observer_affinity": sorted(os.sched_getaffinity(0)),
               "started_unix": started, "ended_unix": ended, "pyspy_returncode": result.returncode,
-              "pyspy_version": version, "pyspy_sha256": core.raw_sha256(pyspy.read_bytes()),
+              "pyspy_version": version, "pyspy_sha256": hashlib.sha256(pyspy.read_bytes()).hexdigest(),
               "holder_before": holder_before, "holder_after": holder_after,
               "netdata_source": args.netdata_url, "netdata_errors": errors, "coverage": coverage,
               "performance_delta": None,
@@ -145,16 +141,18 @@ def main() -> int:
                          "sampled occupancy is not call latency; absence is not zero cost",
                          "no cache change or before/after speedup is claimed"]}
     (args.out / "capture.json").write_text(json.dumps(report, indent=2) + "\n")
-    report["files"] = {p.name: {"bytes": p.stat().st_size, "sha256": core.raw_sha256(p.read_bytes())}
+    report["files"] = {p.name: {"bytes": p.stat().st_size, "sha256": hashlib.sha256(p.read_bytes()).hexdigest()}
                        for p in args.out.iterdir() if p.is_file()}
     archive = args.out.with_suffix(".tar.gz")
     with tarfile.open(archive, "w:gz") as bundle:
         for path in sorted(args.out.iterdir()):
             bundle.add(path, arcname=path.name)
-    artifact, _ = core.PrismaBuildCAS("/mnt/shared/prismabuild-fleet/cas").ingest_input(
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+    from prismabuild.core import PrismaBuildCAS
+    artifact, _ = PrismaBuildCAS("/mnt/shared/prismabuild-fleet/cas").ingest_input(
         archive, input_id="diag940.observer-artifacts")
     report["artifact_blob"] = artifact
-    sys.stdout.write(core._sorted_lf_bytes(report).decode("utf-8"))
+    print(json.dumps(report, sort_keys=True))
     return result.returncode or int(bool(errors) or coverage_error is not None)
 
 
