@@ -4856,6 +4856,17 @@ when oversized; they need a separately authorized permission migration. Neither
 launch nor maintenance chmods, replaces or truncates an unsafe existing leaf.
 Missing and in-bounds leaves are quiet.
 
+The separate [exact metadata operator](role_log_metadata_migration.md),
+`tools/fleet/migrate_role_logs.py`, defaults to read-only planning for exactly
+these three leaves, acting/owning UID1000 and target0600. Its explicit `--apply`
+consumer uses only `fchmod` on original fully qualified held FDs, after full
+three-leaf preflight and immediate per-leaf current proof. It reuses publisher
+receipt/member integrity without weakening the barrier updater prerequisite.
+Observed sealed sources are not loaded-import memory, ownership or adoption
+attestation. Missing/uncertain proof refuses; late rename can leave a changed
+held old inode and a partial-uncertain result, never atomic success. No supervisor
+cycle invokes this operator. Source/private controls are not deployed evidence.
+
 Bounded positional reads capture only the newest 8 MiB; advancing reads/writes
 allow partial results and only a finite number of interrupted-call retries.
 After identity/size/writer rechecks, complete non-append `pwrite` copies the tail
