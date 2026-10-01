@@ -138,23 +138,71 @@ class _HardStopScope:
     """The pool's side of the broker stop, with the broker's destructive step.
 
     ``terminate_owned`` is the only stop the deployed broker offers: freeze
-    and ``cgroup.kill``.  The double reproduces that by SIGKILLing the exact
+    and ``cgroup.kill``.  The double reproduces that by SIGKILLing this
     attempt's worker and every process group it leads, which is what the
     kernel does to the scope's members.
+
+    The worker is selected by the attempt's own sealed request path, not by
+    the action key alone: the same action key can run in two tests at once
+    (same bytes, different CAS roots), and a key-only match would let one
+    test's double kill the other's worker.  More than one match is refused
+    rather than guessed at, so an unproven identity is never killed; a worker
+    that is already gone is left alone.
     """
 
-    def __init__(self, action_key: str) -> None:
-        self.action_key = action_key
+    def __init__(self, request_path: Path) -> None:
+        self.request_path = Path(request_path)
         self.cgroup_path = _cgroup_path()
         self.stops: list[str] = []
         self.killed: list[int] = []
+        self.ambiguous: list[int] = []
+        self.gone = 0
+        self.samples: list[dict] = []
+        self.telemetry: list[dict] = []
 
     def wrap_argv(self, argv, *, worker_script):
         return list(argv)
 
+    def _own_worker_pids(self) -> list[int]:
+        needle = os.fsencode(str(self.request_path))
+        found: list[int] = []
+        for entry in Path("/proc").iterdir():
+            if not entry.name.isdigit():
+                continue
+            try:
+                argv = (entry / "cmdline").read_bytes().split(b"\0")
+            except OSError:
+                continue
+            if needle in argv and b"run-local" in argv:
+                found.append(int(entry.name))
+        return sorted(found)
+
+    # -- what ``_sample_resource_scope`` asks of a live scope ---------------
+
+    def sample(self):
+        record = {
+            "action_key": self.request_path.stem, "complete": True,
+            "oom_local": 0, "sampled_unix": pool._now(),
+        }
+        self.samples.append(record)
+        return record
+
+    def _request(self, op, **extra):
+        return {}
+
+    def write_telemetry(self, record):
+        self.telemetry.append(dict(record))
+
     def terminate_owned(self, reason):
         self.stops.append(reason)
-        for pid in pool.find_launcher_pids(self.action_key):
+        pids = self._own_worker_pids()
+        if len(pids) > 1:
+            self.ambiguous.append(len(pids))
+            return {"stopped": True}
+        if not pids:
+            self.gone += 1
+            return {"stopped": True}
+        for pid in pids:
             for pgid in pool.action_process_groups(pid):
                 try:
                     os.killpg(pgid, signal.SIGKILL)
@@ -207,13 +255,13 @@ def _claimed(tmp_path: Path):
     )
     item = queue.claim()
     assert item is not None
-    return queue, item, cas
+    return queue, item, cas, checkout
 
 
 def test_a_contained_deadline_preserves_the_partial_sample_profile(
     tmp_path: Path, monkeypatch
 ) -> None:
-    queue, item, cas = _claimed(tmp_path)
+    queue, item, cas, _checkout = _claimed(tmp_path)
     key = item["action_key"]
     marker = tmp_path / "sampler.events"
     sampler = tmp_path / "fake_sampler.py"
@@ -229,7 +277,8 @@ def test_a_contained_deadline_preserves_the_partial_sample_profile(
     monkeypatch.setenv("PYTHONPATH", os.pathsep.join(
         part for part in (str(inject), existing) if part))
 
-    scope = _HardStopScope(key)
+    request_path = cas.root / "requests" / key[:2] / f"{key}.json"
+    scope = _HardStopScope(request_path)
     monkeypatch.setattr(queue, "_start_resource_scope", lambda item: scope)
 
     outcome = queue.execute(
@@ -248,6 +297,10 @@ def test_a_contained_deadline_preserves_the_partial_sample_profile(
     assert outcome["termination_reason"] == "execution_deadline"
     assert outcome["returncode"] is None, "a timeout is the worker's verdict"
     assert scope.stops == ["timeout"]
+    assert scope.samples, "the pool never sampled the scope before the deadline"
+    assert scope.ambiguous == [], (
+        f"the hard-stop double found more than one worker for this attempt's "
+        f"request path and refused to kill any: {scope.ambiguous}")
 
     profile = outcome.get("profile")
     assert isinstance(profile, dict), (
