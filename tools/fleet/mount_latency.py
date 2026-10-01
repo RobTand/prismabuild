@@ -854,6 +854,13 @@ class MountSampler:
             self._outstanding_pid = None
             self._outstanding_since = None
 
+    def _reap_or_remember(self, pid: int, started: float) -> None:
+        """Bound reaping and retain ownership unless the child is proved gone."""
+
+        if not self._reap_within(pid, KILL_GRACE_S):
+            self._outstanding_pid = pid
+            self._outstanding_since = started
+
     def _run_probe(self) -> dict[str, object]:
         """The syscall leg, in a child this process is willing to abandon.
 
@@ -932,7 +939,8 @@ class MountSampler:
             except ValueError as exc:
                 result = {"status": "error",
                           "error": f"unreadable probe payload: {exc}"}
-            self._reap_within(pid, KILL_GRACE_S)
+            # Pipe EOF proves completed output, not that the child exited.
+            self._reap_or_remember(pid, started)
             result["elapsed_s"] = round(elapsed, 4)
             if result.get("status") == "ok":
                 self._setup_done = True
@@ -953,9 +961,7 @@ class MountSampler:
         # grace instead -- long enough for the scheduler to deliver a signal
         # to a runnable process, far too short to be confused with a mount
         # timeout, and never blocking on a child that may remain in the kernel.
-        if not self._reap_within(pid, KILL_GRACE_S):
-            self._outstanding_pid = pid
-            self._outstanding_since = started
+        self._reap_or_remember(pid, started)
         return {"status": "timed_out",
                 "elapsed_s": round(elapsed, 4),
                 "deadline_s": self.deadline_s,
