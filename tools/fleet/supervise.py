@@ -130,6 +130,10 @@ ROLE_SCRIPTS = {"storage": "prewarm_loop.py", "tiers": "tier_loop.py",
                 # queue costs a scrape one ``lstat`` per directory.
                 "metrics": "pbmetrics.py"}
 
+# Periodic diagnostic hysteresis, not an all-times cap (#1396).
+ROLE_LOG_TRIGGER_BYTES = 64 * 1024 * 1024
+ROLE_LOG_KEEP_BYTES = 8 * 1024 * 1024
+
 #: A role child that exits ``ROLE_SINGLETON_HELD_EXIT`` refused to run: its
 #: singleton lock or, for ``metrics``, its port is held by something this
 #: supervisor's lock probe cannot see (a unit whose ``PrivateTmp`` hides its
@@ -1688,17 +1692,229 @@ def _stopped_pending_note(pending: dict[int, int],
             + ", ".join(named))
 
 
+def _role_log_name(role: str) -> str:
+    """The shared diagnostic leaf used by launch, refusal and maintenance."""
+
+    return f"pb-role-{role}.log"
+
+
+def _safe_role_log_metadata(info: os.stat_result, *, directory: bool = False) -> bool:
+    """Owned directory or unshared, safely writable regular diagnostic leaf."""
+
+    return (info.st_uid == os.getuid()
+            and (stat.S_ISDIR(info.st_mode) if directory else
+                 stat.S_ISREG(info.st_mode) and info.st_nlink == 1
+                 and not info.st_mode & 0o022))
+
+
+def _open_role_log_directory() -> int:
+    """Hold the owned non-symlink namespace; normal group-writable dirs are valid."""
+
+    fd = os.open(LOG_DIR, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC |
+                 os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        held = os.fstat(fd)
+        named = LOG_DIR.stat(follow_symlinks=False)
+        if (not _safe_role_log_metadata(held, directory=True)
+                or not _safe_role_log_metadata(named, directory=True)
+                or (held.st_dev, held.st_ino) != (named.st_dev, named.st_ino)):
+            raise OSError("unsafe or renamed diagnostic log directory")
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def _open_role_log(role: str) -> TextIO:
+    """Create new diagnostics privately; never chmod existing append leaves."""
+
+    directory_fd = _open_role_log_directory()
+    fd = -1
+    try:
+        name = _role_log_name(role)
+        fd = os.open(name, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_CLOEXEC |
+                     os.O_NOFOLLOW | os.O_NONBLOCK, 0o600, dir_fd=directory_fd)
+        held = os.fstat(fd)
+        named = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+        # Existing 0664 diagnostics still append normally, but maintenance
+        # refuses them. Nonblocking open plus regular-file proof rejects FIFO.
+        if (not stat.S_ISREG(held.st_mode) or held.st_uid != os.getuid()
+                or held.st_nlink != 1
+                or (held.st_dev, held.st_ino) != (named.st_dev, named.st_ino)):
+            raise OSError("unsafe or renamed role append log")
+        handle = os.fdopen(fd, "a", buffering=1)
+        fd = -1  # The returned stream now owns the description.
+        return handle
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        os.close(directory_fd)
+
+
+def _check_role_log(fd: int, directory_fd: int, name: str,
+                    minimum_size: int) -> None:
+    """Recheck held/current names and refuse shrink before destructive work."""
+
+    directory = os.fstat(directory_fd)
+    named_directory = LOG_DIR.stat(follow_symlinks=False)
+    held = os.fstat(fd)
+    named = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+    if (not _safe_role_log_metadata(directory, directory=True)
+            or not _safe_role_log_metadata(named_directory, directory=True)
+            or (directory.st_dev, directory.st_ino) !=
+               (named_directory.st_dev, named_directory.st_ino)
+            or not _safe_role_log_metadata(held)
+            or not _safe_role_log_metadata(named)
+            or (held.st_dev, held.st_ino) != (named.st_dev, named.st_ino)
+            or held.st_size < minimum_size or named.st_size < minimum_size):
+        raise OSError("unsafe, renamed or shrunken diagnostic log")
+
+
+def _check_role_log_writers(role: str, fd: int, pids: Collection[int],
+                            roots: list[Path]) -> None:
+    """Use only the cycle's proven candidates, never a proc FD as a trim target."""
+
+    if not pids:
+        raise OSError("no current proven role writer")
+    held = os.fstat(fd)
+    for pid in pids:
+        if not _is_fleet_loop(pid, roots, script_name=ROLE_SCRIPTS[role]):
+            raise OSError("role writer ownership no longer proven")
+        for descriptor in (1, 2):
+            writer = os.stat(PROC / str(pid) / "fd" / str(descriptor))
+            if (writer.st_dev, writer.st_ino) != (held.st_dev, held.st_ino):
+                raise OSError("role writer FD does not name the current log")
+            with (PROC / str(pid) / "fdinfo" / str(descriptor)).open("rb") as stream:
+                raw = stream.read(4097)
+            flags = [line.split(b":", 1)[1].strip() for line in raw.splitlines()
+                     if line.startswith(b"flags:")]
+            try:
+                if len(raw) > 4096 or len(flags) != 1:
+                    raise ValueError("missing or oversized fdinfo flags")
+                mode = int(flags[0], 8)
+            except ValueError as exc:
+                raise OSError("role writer append flags unreadable") from exc
+            if (not mode & os.O_APPEND
+                    or mode & os.O_ACCMODE not in (os.O_WRONLY, os.O_RDWR)):
+                raise OSError("role writer FD is not writable append")
+
+
+def _maintain_role_log(role: str, directory_fd: int, pids: Collection[int],
+                       roots: list[Path]) -> None:
+    """Best-effort in-place byte tail; late failure can leave a changed prefix."""
+
+    name = _role_log_name(role)
+    fd = -1
+    observed = copied = 0
+    stage = "stat"
+    try:
+        observed = os.stat(name, dir_fd=directory_fd, follow_symlinks=False).st_size
+        if observed < ROLE_LOG_TRIGGER_BYTES:
+            return
+        stage = "open"
+        # A new non-append description is essential: Linux pwrite on an
+        # O_APPEND description ignores the positional offset and appends.
+        fd = os.open(name, os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK,
+                     dir_fd=directory_fd)
+        observed = os.fstat(fd).st_size
+        if observed < ROLE_LOG_TRIGGER_BYTES:
+            return
+        stage = "identity"
+        _check_role_log(fd, directory_fd, name, observed)
+        stage = "writer"
+        _check_role_log_writers(role, fd, pids, roots)
+        stage = "read"
+        tail = bytearray()
+        interrupts = 0
+        while len(tail) < ROLE_LOG_KEEP_BYTES:
+            try:
+                chunk = os.pread(fd, min(1 << 20, ROLE_LOG_KEEP_BYTES - len(tail)),
+                                 observed - ROLE_LOG_KEEP_BYTES + len(tail))
+            except InterruptedError:
+                interrupts += 1
+                if interrupts >= 3:
+                    raise
+                continue
+            if not chunk:
+                raise OSError("short diagnostic tail read")
+            tail.extend(chunk)
+        stage = "writer"
+        _check_role_log_writers(role, fd, pids, roots)
+        stage = "identity"
+        _check_role_log(fd, directory_fd, name, observed)
+        stage = "write"
+        view = memoryview(tail)
+        interrupts = 0
+        while copied < len(tail):
+            try:
+                count = os.pwrite(fd, view[copied:], copied)
+            except InterruptedError:
+                interrupts += 1
+                if interrupts >= 3:
+                    raise
+                continue
+            if count <= 0 or count > len(tail) - copied:
+                raise OSError("invalid diagnostic tail write count")
+            copied += count
+        # No truncate after an incomplete copy. Growth is allowed, not locked:
+        # truncation may discard concurrent append and expose mixed lines.
+        stage = "writer"
+        _check_role_log_writers(role, fd, pids, roots)
+        stage = "identity"
+        _check_role_log(fd, directory_fd, name, observed)
+        stage = "truncate"
+        os.ftruncate(fd, len(tail))
+        print(f"role {role} diagnostic log trimmed: observed {observed} B; "
+              f"kept {len(tail)} B (concurrent append may be lost)", flush=True)
+    except OSError as exc:
+        if not (stage in ("stat", "open") and isinstance(exc, FileNotFoundError)):
+            print(f"role {role} diagnostic log failed at {stage}: "
+                  f"observed {observed} B; copied {copied} B; "
+                  f"{str(exc)[:200]!r}", flush=True)
+    finally:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError as exc:
+                print(f"role {role} diagnostic log failed at close: "
+                      f"{str(exc)[:200]!r}", flush=True)
+
+
+def _maintain_role_logs(census: dict[str, list[int]], roots: list[Path]) -> None:
+    """Fixed diagnostic leaves only, called from the regular owning cycle."""
+
+    directory_fd = -1
+    try:
+        directory_fd = _open_role_log_directory()
+        for role in ROLE_SCRIPTS:
+            _maintain_role_log(role, directory_fd, census.get(role, ()), roots)
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        print(f"role diagnostic logs refused at directory: {str(exc)[:200]!r}",
+              flush=True)
+    finally:
+        if directory_fd >= 0:
+            try:
+                os.close(directory_fd)
+            except OSError as exc:
+                print(f"role diagnostic logs failed at directory close: "
+                      f"{str(exc)[:200]!r}", flush=True)
+
+
 def _spawn_role(role: str, args: list[str]) -> int:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
-    handle = (LOG_DIR / f"pb-role-{role}.log").open("a", buffering=1)
-    handle.write(f"\n=== spawned {time.strftime('%F %T')} ===\n")
-    script = (_current_root() / "tools" / ROLE_SCRIPTS[role]).resolve(strict=True)
-    proc = subprocess.Popen(
-        [sys.executable, str(script), *args],
-        cwd=str(MIRROR), stdout=handle, stderr=subprocess.STDOUT,
-        start_new_session=True,
-        env={**os.environ, OWNERSHIP_ENV: socket.gethostname()},
-    )
+    # Popen duplicates this append description into the child. Closing the
+    # parent's handle, including on launch failure, leaves those FDs intact.
+    with _open_role_log(role) as handle:
+        handle.write(f"\n=== spawned {time.strftime('%F %T')} ===\n")
+        script = (_current_root() / "tools" / ROLE_SCRIPTS[role]).resolve(strict=True)
+        proc = subprocess.Popen(
+            [sys.executable, str(script), *args],
+            cwd=str(MIRROR), stdout=handle, stderr=subprocess.STDOUT,
+            start_new_session=True,
+            env={**os.environ, OWNERSHIP_ENV: socket.gethostname()},
+        )
     return proc.pid
 
 
@@ -1799,7 +2015,7 @@ def ensure_roles(host: str, stop_requested=lambda: False, *,
                           f"{refusal['pid']} exit "
                           f"{runtime_gate.ROLE_SINGLETON_HELD_EXIT} "
                           f"({refusal['count']} consecutive; see "
-                          f"{LOG_DIR / f'pb-role-{role}.log'}); next attempt "
+                          f"{LOG_DIR / _role_log_name(role)}); next attempt "
                           f"in {wait:.0f}s", flush=True)
                 continue
         # No owned role is running.  The lock, not this census, is what keeps
@@ -2062,6 +2278,7 @@ def _run_supervisor(stop_requested) -> int:
         # box that declares no role pays none of this.
         roles = declared_roles(host)
         census: dict[str, list[int]] = {}
+        roots: list[Path] = []
         if roles:
             roots = _proven_roots()
             census = {role: _live_role_loops(ROLE_SCRIPTS[role], roots=roots)
@@ -2072,6 +2289,9 @@ def _run_supervisor(stop_requested) -> int:
         for role, pid in ensure_roles(host, stop_requested, holders=holders,
                                       declared=roles, census=census):
             print(f"[{host}] spawned role {role} pid {pid}", flush=True)
+            census.setdefault(role, []).append(pid)
+        if not args.once and not stop_requested():
+            _maintain_role_logs(census, roots)
         # The file is the authority, so a loop running other arguments is
         # stale in the same sense a loop running other bytes is.  Stop the
         # idle ones and let the top-up below respawn them on the declared
