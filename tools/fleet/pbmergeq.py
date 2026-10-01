@@ -533,6 +533,14 @@ class Mirror:
 # pbtest runs
 
 
+def test_command(cfg: Config, checkout: Path, files: list[str], report: Path,
+                 history: list[str], *, python: str) -> list[str]:
+    """Build the submitted argv independently of interpreter selection policy."""
+    return [cfg.client_python, str(cfg.pbtest),
+            "--checkout", str(checkout), "--python", python,
+            "--json", str(report), *cfg.pbtest_args, *history, *files]
+
+
 class Runner:
     """Submits ``pbtest.py`` runs and waits for them with a heartbeat."""
 
@@ -560,9 +568,8 @@ class Runner:
         return ["--history", latest] if latest and Path(latest).is_file() else []
 
     def command(self, checkout: Path, files: list[str], report: Path) -> list[str]:
-        return [self.cfg.client_python, str(self.cfg.pbtest),
-                "--checkout", str(checkout), "--python", self.cfg.test_python,
-                "--json", str(report), *self.cfg.pbtest_args, *self.history(), *files]
+        return test_command(self.cfg, checkout, files, report, self.history(),
+                            python=self.cfg.test_python)
 
     def run_many(self, batch: str, outdir: Path,
                  jobs: list[tuple[str, Path, list[str]]]) -> dict[str, RunResult]:
