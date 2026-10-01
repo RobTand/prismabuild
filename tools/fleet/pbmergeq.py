@@ -32,6 +32,7 @@ exists. Queue, batch and a ledger of every status and merge live in
 from __future__ import annotations
 
 import argparse
+from collections.abc import Callable, Iterable
 import contextlib
 import dataclasses
 import fcntl
@@ -43,7 +44,6 @@ import shutil
 import subprocess
 import sys
 import time
-from typing import Callable, Iterable
 
 #: GitHub refuses a commit status description longer than this.
 DESCRIPTION_LIMIT = 140
@@ -165,7 +165,7 @@ def reduce_report(report: list[dict], outcomes) -> RunResult:
             inconclusive.extend(shard.get("files") or ())
             continue
         for row in record.get("reports") or ():
-            entry = dict(zip(outcomes.REPORT_FIELDS, row))
+            entry = dict(zip(outcomes.REPORT_FIELDS, row, strict=False))
             if entry["category"] in ("failed", "error"):
                 failed.add(entry["nodeid"])
         reconciliation = shard.get("reconciliation") or {}
@@ -316,8 +316,11 @@ class Store:
         entry = {"pr": pr, "sha": sha, "at": now(), "attempts": attempts}
         self.state["queue"] = [entry, *queue] if front else [*queue, entry]
 
+    def baseline_path(self, identity: str) -> Path:
+        return self.baselines / f"{identity}.json"
+
     def baseline(self, tree: str) -> dict[str, list[str]]:
-        path = self.baselines / f"{tree}.json"
+        path = self.baseline_path(tree)
         return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
 
     def remember_baseline(self, tree: str, files: Iterable[str], failed: Iterable[str]) -> None:
@@ -326,7 +329,7 @@ class Store:
         for nodeid in failed:
             by_file.setdefault(node_file(nodeid), []).append(nodeid)
         known.update({name: sorted(nodes) for name, nodes in by_file.items()})
-        write_atomic(self.baselines / f"{tree}.json", json.dumps(known, indent=1))
+        write_atomic(self.baseline_path(tree), json.dumps(known, indent=1))
 
     def status_text(self) -> str:
         state = self.state
@@ -360,7 +363,7 @@ def single_instance(root: Path):
         try:
             fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            raise SystemExit(f"pbmergeq: another instance holds {root / 'lock'}")
+            raise SystemExit(f"pbmergeq: another instance holds {root / 'lock'}") from None
         yield
 
 
@@ -584,7 +587,7 @@ class Runner:
             for name, _, files in retry:
                 self.store.event(batch, f"run {name}: {len(files)} inconclusive file(s) re-run")
             again = self._wait(batch, outdir, retry)
-            for name, checkout, _ in jobs:
+            for name, _, _ in jobs:
                 key = f"{name}.retry{attempt}"
                 if key in again:
                     redo = set(results[name].inconclusive)
@@ -619,29 +622,31 @@ class Runner:
             time.sleep(2)
             if time.monotonic() - last >= HEARTBEAT_S:
                 last = time.monotonic()
-                for name, (process, _, _, log, count, started) in live.items():
+                for name, (process, _, _, log, _, started) in live.items():
                     if process.poll() is None:
                         self.store.event(batch, f"run {name} waiting "
                                                 f"{time.monotonic() - started:.0f}s: "
                                                 f"{self._progress(log)} shard(s) reported")
                 self.store.write_status()
         results = {}
-        for name, (process, handle, report, log, count, started) in live.items():
+        for name, (process, handle, report, _, _, started) in live.items():
             handle.close()
             wall = time.monotonic() - started
-            if report.exists():
-                result = reduce_report(json.loads(report.read_text(encoding="utf-8")),
-                                       self.outcomes)
-            else:
-                files = next(f for n, _, f in jobs if n == name)
-                result = RunResult(failed=set(), inconclusive=list(files), files=list(files),
-                                   receipts=[])
+            files = next(f for n, _, f in jobs if n == name)
+            result = self.read_result(report, files)
             result.report, result.wall_s = str(report), wall
             results[name] = result
             self.store.event(batch, f"run {name} ended rc={process.returncode} in {wall:.0f}s: "
                                     f"{len(result.failed)} failing node(s), "
                                     f"{len(result.inconclusive)} inconclusive file(s)")
         return results
+
+    def read_result(self, report: Path, files: list[str]) -> RunResult:
+        if report.exists():
+            return reduce_report(json.loads(report.read_text(encoding="utf-8")),
+                                 self.outcomes)
+        return RunResult(failed=set(), inconclusive=list(files), files=list(files),
+                         receipts=[])
 
     @staticmethod
     def _progress(log: Path) -> int:
@@ -1041,7 +1046,7 @@ def check_mode(cfg: Config, mode: str) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
     parser.add_argument("--config", required=True,
                         help="the repository's queue config (JSON)")
     sub = parser.add_subparsers(dest="command", required=True)
