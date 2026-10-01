@@ -1167,6 +1167,21 @@ their removal needs the offline evidence described in
 [resource authority](resource_authority.md#recovery-evidence). Late-finish
 cleanup has no authority to settle the action-wide container transaction.
 
+A retired, settled scope whose kernel group is already gone -- removed out of
+band, or lost across a reboot -- cannot be stopped, reclaimed or released.
+Maintenance reconciliation closes only its administrative lifetime, and only
+when the recorded identity has the real two-integer device/inode shape, the
+stored settlement passes the same validator `settle` uses, the pass sees a
+complete healthy inventory with no unknown namespace group, and a fresh
+`backend.exists` still says absent. The replacement record preserves
+identity, stop, settlement and any earlier reclaim observation, adds an
+explicit `maintenance_cleanup` reason that the scope disappeared externally
+and reclamation was unverified, and is persisted before the in-memory record
+changes, so a failed durable write leaves the scope active. A missing or
+malformed identity, unsettled tickets, malformed settlement, an unknown or
+reappearing group, or any inventory error retains the record as active, and
+no kernel stop, reclaim or release may act on a missing or replacement group.
+
 Unproven cleanup retains the late-finish record with its original result, exact
 scope authority, failure count and first/last failure times. A restart can retry
 it without the original worker, and it is never converted to a lost lease or

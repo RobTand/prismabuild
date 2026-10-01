@@ -76,6 +76,20 @@ def _settlement_evidence(value):
             'scope_container_ids':[],'checked_unix':float(checked)}
 
 
+def _recorded_identity(value):
+    """Whether ``value`` is the two-integer device/inode identity this broker records.
+
+    Kernel rows and authority records both carry ``[st_dev, st_ino]``.  A
+    missing or malformed shape -- a bool (an int subclass), a string, a
+    mapping, the wrong length, a float, a negative device or a non-positive
+    inode -- is not an identity this broker can compare, so a vanished scope
+    that carries one must fail closed rather than retire on it.
+    """
+    return (isinstance(value,list) and len(value)==2
+            and all(type(part) is int for part in value)
+            and value[0]>=0 and value[1]>0)
+
+
 def scope_id(key, nonce):
     """The scope identity the broker issues for an action+nonce.
 
@@ -1088,10 +1102,10 @@ class Authority:
                 # settlement the holder's own validator accepts, observed by a
                 # complete healthy inventory with no unknown namespace group,
                 # with a fresh absence check still saying absent.  A missing
-                # identity, unsettled tickets, a malformed or reappearing
-                # group and any inventory error all fail closed below.
+                # or malformed identity, unsettled tickets, a malformed or
+                # reappearing group and any inventory error all fail closed.
                 if (record.get('stopped_unix') and record.get('settled_unix')
-                        and record.get('cgroup_identity')
+                        and _recorded_identity(record.get('cgroup_identity'))
                         and not errors and not unknown):
                     try:
                         _settlement_evidence(record.get('container_settlement'))

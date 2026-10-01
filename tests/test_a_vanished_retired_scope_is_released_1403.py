@@ -8,7 +8,7 @@ by hand -- inventory no longer has a row for it, the retired branch (which
 requires a kernel group) is skipped, and the record is counted active
 forever.  Restarting the broker does not help; no operator path clears it.
 
-The approved direction, tested here before any source change: a stopped +
+The approved direction, tested here: a stopped +
 retired + settled record with a complete empty container settlement, a
 complete healthy inventory with no unknown namespace group, and a fresh
 ``backend.exists`` false may be released as *metadata* -- with an explicit
@@ -43,6 +43,29 @@ def _vanish(b, scope):
     b.identity.pop(scope, None)
     b.charge.pop(scope, None)
     b.stopped[:] = [name for name in b.stopped if name != scope]
+
+
+def _seed(a, scope, **changes):
+    """Set fields on both the loaded record and its state file."""
+
+    a.records[scope].update(changes)
+    path = _state(a, scope)
+    stored = json.loads(path.read_text())
+    stored.update(changes)
+    path.write_text(json.dumps(stored))
+    return path
+
+
+def _drop(a, scope, *fields):
+    """Remove fields from both the loaded record and its state file."""
+
+    a.records[scope] = {name: value for name, value in a.records[scope].items()
+                        if name not in fields}
+    path = _state(a, scope)
+    stored = json.loads(path.read_text())
+    path.write_text(json.dumps({name: value for name, value in stored.items()
+                                if name not in fields}))
+    return path
 
 
 def test_a_settled_retired_scope_whose_group_vanished_is_released(
@@ -315,4 +338,60 @@ def test_a_failed_metadata_write_keeps_the_scope_active_and_retries(
     after = json.loads(path.read_text())
     assert after["released_unix"] > 0
     assert after["maintenance_cleanup"] != "settled container transaction"
+    assert b.ops == []
+
+
+@pytest.mark.parametrize("missing", [
+    "cgroup_identity", "stopped_unix", "settled_unix",
+])
+def test_a_vanished_scope_missing_a_release_marker_is_retained(
+        authority, monkeypatch, missing):
+    """Every marker the removal path checks is required by the absent path too."""
+
+    a, b = authority
+    request, record, scope = _retired(a, b, monkeypatch)
+    path = _drop(a, scope, missing)
+    _vanish(b, scope)
+    b.ops.clear()
+    before = path.read_bytes()
+
+    status = _pass(a)
+    assert scope in status["active_scope_ids"], missing
+    assert path.read_bytes() == before, missing
+    assert b.ops == []
+
+    _pass(a)
+    assert path.read_bytes() == before, missing
+
+
+@pytest.mark.parametrize("identity,case", [
+    ([64, "629624"], "string-inode"),
+    ([True, 629624], "bool-device"),
+    ({"device": 64, "inode": 629624}, "mapping"),
+    ([64], "short"),
+    ([64, 0], "zero-inode"),
+    ([64, -1], "negative-inode"),
+    ([-1, 629624], "negative-device"),
+    ([64.0, 629624], "float-device"),
+    ("64:629624", "string"),
+])
+def test_a_vanished_scope_with_a_malformed_identity_is_retained(
+        authority, monkeypatch, identity, case):
+    """An identity that is not two integers cannot grant a metadata release.
+
+    The recorded identity is the only identity a vanished scope can be
+    checked against, so its shape must be the real two-integer device/inode
+    pair rather than anything truthy.
+    """
+
+    a, b = authority
+    request, record, scope = _retired(a, b, monkeypatch)
+    path = _seed(a, scope, cgroup_identity=identity)
+    _vanish(b, scope)
+    b.ops.clear()
+    before = path.read_bytes()
+
+    status = _pass(a)
+    assert scope in status["active_scope_ids"], case
+    assert path.read_bytes() == before, case
     assert b.ops == []

@@ -3467,6 +3467,20 @@ broker attachment, an unaccounted container or incomplete telemetry refuses
 lending. A new worker needs broker installation and qualification before it can
 join this execution path; runtime publication alone does not install the broker.
 
+A retired tombstone's kernel group can disappear while its record lives -- an
+out-of-band slice removal, or a reboot. A maintenance status pass then closes
+only the record's administrative lifetime, and only on the full proof:
+stopped, retired and settled, a real two-integer device/inode identity, a
+stored settlement the `settle` validator accepts, a complete healthy
+inventory with no unknown namespace group, and a fresh absence check. The
+record keeps its identity, stop, settlement and earlier reclaim evidence and
+gains an explicit `maintenance_cleanup` reason saying the scope disappeared
+externally and reclamation was unverified; it is written durably before the
+broker's memory changes. A missing or malformed identity, unsettled tickets,
+malformed settlement, an unknown or reappearing group or any inventory error
+leaves the record active, no stop, reclaim or release is ever sent to a
+missing or replacement group, and no physical reclaim is claimed.
+
 After a skipped or failed snapshot copy, later admission passes retry from the
 host-local files even when they have no new CPU/GPU sample to write. This also
 works after worker replacement. A successful unchanged copy is not republished;
