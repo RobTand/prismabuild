@@ -271,6 +271,22 @@
    ],
    "name": "preflight",
    "reason": "pbtest_pins.preflight is the pytest wrapper's exit-code gate over reviewed dependency pins; diag_811's preflight records a checkout-identity proof as experiment data and maps a failure to ok=false, so the two share only the vocabulary word."
+  },
+  {
+   "modules": [
+    "src/prismabuild/control_cpu.py",
+    "src/prismabuild/gpu_memory.py"
+   ],
+   "name": "_process_identity",
+   "reason": "control_cpu positively classifies kernel threads or qualified control processes using flags, runtime and host attribution; gpu_memory reads a PID start tick and unified cgroup path without attribution. Their return values, inputs and refusal contracts differ."
+  },
+  {
+   "modules": [
+    "src/prismabuild/publication_canary.py",
+    "tools/maintenance/diag940_contended_observer.py"
+   ],
+   "name": "identity",
+   "reason": "publication_canary validates a declared generation-and-host mapping; the observer reads a live PID incarnation, executable and published worker/source bytes. Their inputs, returned fields and refusal contracts differ, so neither can replace the other."
   }
  ],
  "same_name_helpers": {
