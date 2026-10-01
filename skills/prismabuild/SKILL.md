@@ -301,6 +301,17 @@ exit never reaches publication, so the complete report travels on the error and
 is written beside the returncode. A failed status write can still leave the
 earlier checkpoint. This checkpoint publishes no
 action success and cannot preserve a trace that has not reached ingestion.
+On a contained deadline the pool first gives the exact profiled worker one
+catchable SIGTERM and waits, within the first `timeout_grace_s` the hard stop
+already had (discovery included; the escalation gets only what remains), for
+the worker itself to exit; the broker scope is then killed unconditionally,
+so a refused or hung flush cannot prevent the stop. The worker is the unique
+scope member whose complete pre-wrapper argv matches, proven with a pidfd; an
+ambiguous, unreadable, stale or unsupported identity skips the opportunity
+and falls straight through to the hard stop. A
+preserved profile is marked `partial` and covers only the run before the
+stop; sampler lag warnings mean the samples are incomplete and biased, never
+a complete or representative profile and never a performance claim.
 Optional `nsys stats` extraction has a five-second subprocess timeout and
 0.5-second TERM/KILL waits for its own process group. A timeout retains the
 primary report, records `kernel_summary_absent`, and leaves the action verdict

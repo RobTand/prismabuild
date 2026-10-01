@@ -1930,9 +1930,21 @@ matters). Rules:
   bound filesystem reads, CAS ingestion, or uninterruptible kernel cleanup;
   the enclosing broker scope remains the containment authority.
   A windowed profiler also checkpoints the enriched report before waiting
-  for the action. A contained deadline kills the broker scope without Python
-  cleanup, so only already-checkpointed evidence is guaranteed to survive
-  that path; an unfinished or not-yet-ingested trace can still be lost.
+  for the action. On a contained deadline the pool first offers the exact
+  profiled worker one catchable SIGTERM and waits for the worker itself to
+  exit within the first `timeout_grace_s` the hard stop already had,
+  discovery included; the escalation then gets only what remains of that
+  grace, so the branch's worst case is unchanged, and the broker scope is
+  killed unconditionally: the worker's flush, reap and ingest get that
+  bounded opportunity, while a refused or hung flush cannot prevent the hard
+  stop. The worker is identified from the attempt's own scope census by its
+  complete pre-wrapper argv, exact scope membership, a stable scope
+  directory identity and a pidfd (no raw pid signal, and no fallback when
+  pidfds are unavailable), so only the unique matching worker is eligible.
+  A preserved deadline profile is marked `partial` and covers only the part
+  of the run before the stop; sampler lag warnings mean the sample set is
+  incomplete and biased, never a complete or representative profile, and a
+  profile is evidence about the run, never a success receipt for it.
   Checkpointing a profile never publishes a success receipt for the action.
   A windowed profiler ending is not an action deadline: once its trace is
   checkpointed, the relayed workload remains governed by the sealed execution
