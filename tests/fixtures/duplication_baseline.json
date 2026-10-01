@@ -294,6 +294,27 @@
    ],
    "name": "identity",
    "reason": "publication_canary validates a declared generation-and-host mapping; the observer reads a live PID incarnation, executable and published worker/source bytes. Their inputs, returned fields and refusal contracts differ, so neither can replace the other."
+  },
+  {
+   "modules": [
+    "tools/fleet/migrate_role_logs.py"
+   ],
+   "name": "_read",
+   "reason": "The migration reader returns bounded raw process/runtime observation bytes and raises on transport or size failure. Existing _read helpers parse JSON action/reconciliation/retirement objects, validate spool receipts, or cache resource and census records; their result and absence/error contracts cannot replace this byte observation."
+  },
+  {
+   "modules": [
+    "tools/fleet/migrate_role_logs.py"
+   ],
+   "name": "_observe",
+   "reason": "The migration observer qualifies one boot, complete sealed members, supervisor source and three declared PID/incarnation/append-writer contexts. Existing _observe helpers collect Docker image inventory or filesystem path identity/version facts; neither establishes this closed process/source qualification contract."
+  },
+  {
+   "modules": [
+    "tools/fleet/migrate_role_logs.py"
+   ],
+   "name": "run",
+   "reason": "The migration consumer returns a closed three-leaf read-only plan or original-FD-only mode change with partial-effect reporting. Existing run helpers execute actions, broker scopes, canary watches, benchmark loops or stage/upgrade operations; their arguments, effects and returned evidence are different."
   }
  ],
  "same_name_helpers": {

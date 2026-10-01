@@ -78,6 +78,7 @@ from typing import Collection, TextIO
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
 from runtime_paths import generation_root  # noqa: E402
 import fleet_roster  # noqa: E402
+import role_log_identity  # noqa: E402
 # The generation readers, and the drift-record writer beside them, live in
 # the worker loop module -- the same object the role loops import as
 # ``runtime_gate`` -- so the supervisor, the workers and the roles all stamp
@@ -1713,12 +1714,7 @@ def _open_role_log_directory() -> int:
     fd = os.open(LOG_DIR, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC |
                  os.O_NOFOLLOW | os.O_NONBLOCK)
     try:
-        held = os.fstat(fd)
-        named = LOG_DIR.stat(follow_symlinks=False)
-        if (not _safe_role_log_metadata(held, directory=True)
-                or not _safe_role_log_metadata(named, directory=True)
-                or (held.st_dev, held.st_ino) != (named.st_dev, named.st_ino)):
-            raise OSError("unsafe or renamed diagnostic log directory")
+        role_log_identity.check_directory(fd, LOG_DIR, os.getuid())
     except BaseException:
         os.close(fd)
         raise
@@ -1780,23 +1776,7 @@ def _check_role_log_writers(role: str, fd: int, pids: Collection[int],
     for pid in pids:
         if not _is_fleet_loop(pid, roots, script_name=ROLE_SCRIPTS[role]):
             raise OSError("role writer ownership no longer proven")
-        for descriptor in (1, 2):
-            writer = os.stat(PROC / str(pid) / "fd" / str(descriptor))
-            if (writer.st_dev, writer.st_ino) != (held.st_dev, held.st_ino):
-                raise OSError("role writer FD does not name the current log")
-            with (PROC / str(pid) / "fdinfo" / str(descriptor)).open("rb") as stream:
-                raw = stream.read(4097)
-            flags = [line.split(b":", 1)[1].strip() for line in raw.splitlines()
-                     if line.startswith(b"flags:")]
-            try:
-                if len(raw) > 4096 or len(flags) != 1:
-                    raise ValueError("missing or oversized fdinfo flags")
-                mode = int(flags[0], 8)
-            except ValueError as exc:
-                raise OSError("role writer append flags unreadable") from exc
-            if (not mode & os.O_APPEND
-                    or mode & os.O_ACCMODE not in (os.O_WRONLY, os.O_RDWR)):
-                raise OSError("role writer FD is not writable append")
+        role_log_identity.check_append_descriptors(pid, held, PROC)
 
 
 def _maintain_role_log(role: str, directory_fd: int, pids: Collection[int],

@@ -72,6 +72,7 @@ FLEET_SCRIPTS = (
     "docker", "pbrun.py", "pbtest.py", "pbtest_outcomes.py", "pbtest_pins.py", "require_pool.py", "worker_loop.py", "worker.py",
     "seal_and_publish.py",
     "publish_runtime.py", "pool_reset.py", "runtime_paths.py", "supervise.py",
+    "role_log_identity.py", "migrate_role_logs.py",
     # The supervisor spawns prewarm_loop.py on a box declaring the storage
     # role, by published path like every other child. A generation without it
     # makes that role a log line saying the script is not there (#487).
@@ -1213,8 +1214,12 @@ def _require_no_epoch():
                          "use --resume-barrier, not another publication")
 
 
-def _barrier_generation(name):
-    """Revalidate the immutable generation before trusting its rollout inputs."""
+def _sealed_generation(name):
+    """Read-only receipt/member integrity shared by rollout and metadata inspection.
+
+    This proves sealed filesystem bytes, not a process's loaded Python memory.
+    Rollout-specific updater authority remains in ``_barrier_generation``.
+    """
     if not isinstance(name, str) or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", name) is None:
         raise SystemExit(f"invalid barrier generation: {name!r}")
     store = (MIRROR.parent / "runtime-generations").resolve(strict=True)
@@ -1223,7 +1228,8 @@ def _barrier_generation(name):
         raise SystemExit(f"barrier generation is not sealed: {name}")
     try:
         receipt = json.loads((root / "RUNTIME_VERSION.json").read_text())
-        if (receipt.get("schema") != "prismaquant.prismabuild.runtime_version.v1"
+        if (not isinstance(receipt, dict)
+                or receipt.get("schema") != "prismaquant.prismabuild.runtime_version.v1"
                 or receipt.get("generation") != name
                 or re.fullmatch(r"[0-9a-f]{40}", str(receipt.get("commit", ""))) is None
                 or not isinstance(receipt.get("files"), dict)):
@@ -1236,6 +1242,15 @@ def _barrier_generation(name):
             if (path.resolve(strict=True) != path or not path.is_file()
                     or path.stat().st_mode & 0o222 or _sha256(path) != expected):
                 raise ValueError(f"unsealed or changed generation member: {member}")
+        return root, receipt
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise SystemExit(f"cannot qualify barrier generation {name}: {exc}") from exc
+
+
+def _barrier_generation(name):
+    """Revalidate integrity AND the existing rollout updater prerequisite."""
+    root, receipt = _sealed_generation(name)
+    try:
         agent_path = "tools/upgrade_client.py"
         if agent_path not in receipt["files"]:
             raise ValueError("no updater in generation")

@@ -3614,7 +3614,13 @@ Legacy **0664** role leaves still append normally but are refused for retention
 when oversized. Launch and maintenance never chmod or replace those files.
 Their permission migration needs separate coordinator authority/qualification;
 new-leaf defaults and source rollout alone do not qualify existing unsafe logs
-or prove recovery of a pressured root disk.
+or prove recovery of a pressured root disk. The separate
+[exact metadata operator](role_log_metadata_migration.md) defaults to a read-only
+three-leaf plan; only explicit `--apply` attempts held-FD 0600 metadata changes
+under qualified UID1000/name/inode/current-writer proof. Publication inventory,
+private qualification, admitted live apply/readback and normal runtime adoption
+are separate gates. Uncertainty stops remaining leaves; no automatic retry,
+rollback, local/SSH chmod fallback or loaded-import attestation is provided.
 
 This is **periodic hysteresis, not an all-times cap or universal disk roof**.
 There is no finite inter-tick overshoot bound; queue/census I/O can block the
