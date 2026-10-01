@@ -2198,11 +2198,16 @@ for that reason.
 In the pull queue, a payload that has returned but whose scope cleanup is
 still pending retains its claim, lease and reservation. The claim's
 `finish_pending` field preserves the original status and detail, including
-timeout or OOM evidence. The claiming host retries that finish on each queue
-poll even while the lease is fresh; foreign hosts leave it alone. Once the
-broker proves the exact attempt's scope empty, the original outcome is
-archived once and capacity returns. A cleanup retry does not count as another
-attempt or turn a completed action into a lease-loss failure.
+timeout or OOM evidence. The claiming host retries that finish while the
+lease is fresh; foreign hosts leave it alone. On an open gate the retry rides
+the ordinary queue poll through `serve_once`; a host whose maintenance gate
+is closed -- where `serve_once` is never reached -- retries it in the drain
+branch on the same host-local sweep schedule (#1403). Only a saved outcome is
+retried there: ordinary expired or missing leases are still requeued by the
+full reaper, not by the drain. Once the broker proves the exact attempt's
+scope empty, the original outcome is archived once and capacity returns. A
+cleanup retry does not count as another attempt or turn a completed action
+into a lease-loss failure.
 
 A job's node-side cleanup is the Epilog's, and it reads what to clean out of a
 state file under `.../slurm/jobs/`. When that root is unreadable, which is what

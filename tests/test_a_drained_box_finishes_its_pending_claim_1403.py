@@ -264,3 +264,27 @@ def test_a_drained_box_leaves_a_foreign_hosts_saved_finish_alone(
     assert queue.item_path(pool.CLAIMED, FOREIGN_KEY).read_bytes() == record_before
     assert queue.lease_path(FOREIGN_KEY).read_bytes() == lease_before
     assert not [op for key, op in broker["calls"] if key == FOREIGN_KEY]
+
+
+def test_a_failed_saved_finish_retry_does_not_stop_the_drain(
+        drained_box, tmp_path, monkeypatch):
+    """The retry is exception-isolated: the parked offer still publishes.
+
+    A maintenance poll must not die because the retry raised.  The claim is
+    left exactly as it was and the drain keeps advertising itself, the same
+    way a failed membership reconciliation only skips its own step.
+    """
+
+    queue, broker = drained_box
+    _forbid_execute(monkeypatch)
+
+    def explode(self):
+        raise OSError("mount unavailable")
+
+    monkeypatch.setattr(pool.PoolQueue, "retry_own_pending_finishes", explode)
+    assert _drain_one_poll(tmp_path, monkeypatch) == 0
+
+    assert queue.item_path(pool.CLAIMED, OWNER_KEY).exists()
+    offer = json.loads((queue.root / pool.WORKERS / f"{HOST}.json").read_text())
+    assert offer["state"] == "draining"
+    assert all(value == 0 for value in offer["observed_capacity"].values())

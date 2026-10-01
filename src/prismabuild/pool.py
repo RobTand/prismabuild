@@ -21327,6 +21327,99 @@ class PoolQueue:
             os.close(descriptor)
         return True
 
+    @staticmethod
+    def _saved_finish(
+        key: str, record: Mapping[str, object] | None
+    ) -> dict[str, object] | None:
+        """This host's validated ``finish_pending`` for one claimed record.
+
+        The one reader for the guard ``reap_stale`` has always applied and the
+        drain-time retry needs identically.  Only the claiming host may retry
+        a saved outcome -- a payload has already returned, so lease freshness
+        is irrelevant, but only the owner can prove its kernel scope empty.
+        A ``finish_pending`` that is not a status/detail object is a contract
+        error, never something to act on.  ``None`` means the record is not
+        this host's pending finish: absent, foreign or already concluded, and
+        the caller must leave it exactly as it is.
+        """
+
+        pending = (record or {}).get("finish_pending")
+        if pending is None:
+            return None
+        if (record or {}).get("claimed_host") != socket.gethostname():
+            return None
+        if (not isinstance(pending, dict)
+                or not isinstance(pending.get("status"), str)
+                or not isinstance(pending.get("detail"), dict)):
+            raise PoolContractError(f"invalid pending finish for {key}")
+        return pending
+
+    def _retry_own_pending_finish(
+        self, key: str, record: Mapping[str, object] | None
+    ) -> Path | None:
+        """Retry one saved outcome through the single ``finish`` lifecycle.
+
+        ``None`` when the record is not this host's pending finish.  Callers
+        hold the key's transition lock; the exact claim generation, the
+        original saved status and detail, immutable attempt filing, the
+        reservation release and the reader/scope cleanup proof all stay
+        ``finish``'s own behaviour, so there is no second conclusion path to
+        keep in step with the reaper's.
+        """
+
+        pending = self._saved_finish(key, record)
+        if pending is None:
+            return None
+        return self.finish(key, status=str(pending["status"]),
+                           detail=pending["detail"], claim_snapshot=record)
+
+    def retry_own_pending_finishes(self) -> list[str]:
+        """Retry this box's saved finishes; claim nothing, sweep nothing else.
+
+        ``reap_stale`` is the only retry path for ``finish_pending``, and its
+        only caller is ``serve_once`` -- which a closed maintenance gate never
+        reaches.  Before this method a drained owner therefore held its saved
+        finish, its scope and its tokens forever while the window drain waited
+        for the scope to empty (#1403).  A saved outcome claims no work and
+        only the claiming host can prove its kernel scope empty, so this is the
+        narrow subset of :meth:`reap_stale` that is safe with admission paused.
+
+        The per-key transition lock is taken non-blocking, exactly as the
+        reaper takes it, and the retry is :meth:`_retry_own_pending_finish` --
+        the same ``finish`` call ``reap_stale`` makes.  Ordinary expired or
+        missing leases are never requeued here, and foreign-host, non-pending
+        and malformed records are left untouched; a malformed saved outcome is
+        said on stderr and skipped, because a drain must survive this box's own
+        bad record.  The pass runs on :meth:`_sweep_due`'s host-local schedule,
+        the same one ``serve_once`` uses: at most one pass per heartbeat per
+        box across all of its loops.  Returns the keys a saved outcome requeued
+        to ``ready``; an ordinary terminal conclusion returns an empty list.
+        """
+
+        if not self._sweep_due():
+            return []
+        retried: list[str] = []
+        claimed = self.dir(CLAIMED)
+        if not claimed.is_dir():
+            return retried
+        for path in sorted(claimed.glob("*.json")):
+            key = path.stem
+            with self._transition_locked(key, blocking=False) as acquired:
+                if not acquired:
+                    continue
+                record = _read_json(path)
+                try:
+                    result = self._retry_own_pending_finish(key, record)
+                except AmbiguousClaimHolder as exc:
+                    print(f"pool reaper: {exc}", file=sys.stderr)
+                    continue
+                except PoolContractError as exc:
+                    print(f"pool pending-finish retry: {exc}", file=sys.stderr)
+                    continue
+                if result is not None and result == self.item_path(READY, key):
+                    retried.append(key)
+        return retried
+
     def reap_stale(self, *, timeout_s: float = LEASE_TIMEOUT_S) -> list[str]:
         """Return claims whose lease has expired to ``ready``.
 
@@ -21412,22 +21505,14 @@ class PoolQueue:
                 if not acquired:
                     continue
                 record = _read_json(path)
-                pending_finish = (record or {}).get("finish_pending")
-                if pending_finish is not None:
+                if (record or {}).get("finish_pending") is not None:
                     # Only the owner host can prove its kernel scope is empty.
                     # A payload has already returned here, so lease freshness is
                     # irrelevant; preserve that result rather than file lease_lost.
                     if record.get("claimed_host") != socket.gethostname():
                         continue
-                    if (not isinstance(pending_finish, dict)
-                            or not isinstance(pending_finish.get("status"), str)
-                            or not isinstance(pending_finish.get("detail"), dict)):
-                        raise PoolContractError(f"invalid pending finish for {key}")
                     try:
-                        result = self.finish(
-                            key, status=pending_finish["status"],
-                            detail=pending_finish["detail"], claim_snapshot=record,
-                        )
+                        result = self._retry_own_pending_finish(key, record)
                     except AmbiguousClaimHolder as exc:
                         print(f"pool reaper: {exc}", file=sys.stderr)
                         continue

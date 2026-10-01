@@ -3464,6 +3464,17 @@ unhealthy. Missing, unparsable and malformed gates keep their existing meaning
 (draining), and this visibility changes no admission decision. The offer fields
 are additive on the existing offer schema, like the other optional fields; an
 offer without `state` is read as live.
+A drain poll also retries this host's own saved finishes
+(`PoolQueue.retry_own_pending_finishes`): a payload that already returned
+retains its claim, scope and reservation in `finish_pending`, a saved outcome
+claims nothing, and only the claiming host can prove its kernel scope empty.
+The retry is the same `finish` call the reaper makes, under the same per-key
+transition lock and on the same host-local sweep schedule as `serve_once`;
+foreign-host, non-pending and malformed rows are left untouched, and ordinary
+expired leases are still requeued only by the full reaper. Without it a
+drained owner held the claim, its scope and its tokens until an operator ran
+the reaper by hand, and the drain waited on the very scope it was trying to
+empty (#1403).
 The updater creates the directory for the unprivileged
 worker uid and reports whether every serving process has a marker for the
 current drain and the broker reports no active scopes. Processes count by argv
