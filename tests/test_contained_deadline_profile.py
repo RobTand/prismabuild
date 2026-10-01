@@ -469,7 +469,7 @@ def test_only_a_unique_exact_worker_is_eligible(monkeypatch) -> None:
     # A census that reports errors is incomplete: one observed match is not
     # uniqueness, so nothing is eligible.
     def diagnosed(path, **kwargs):
-        (kwargs.get("errors") or []).append("one subtree unreadable")
+        kwargs["errors"].append("one subtree unreadable")
         return [11]
 
     monkeypatch.setattr(resource_scope, "scope_pids", diagnosed)
@@ -509,7 +509,7 @@ def test_an_incomplete_scope_census_never_reaches_a_signal(monkeypatch) -> None:
     monkeypatch.setattr(pool, "_process_cmdline", lambda pid: list(worker))
 
     def incomplete(path, **kwargs):
-        (kwargs.get("errors") or []).append("one subtree unreadable")
+        kwargs["errors"].append("one subtree unreadable")
         return [4242]
 
     monkeypatch.setattr(resource_scope, "scope_pids", incomplete)
