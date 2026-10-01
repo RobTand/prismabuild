@@ -7,10 +7,10 @@ now checks only the measurement's own predicted CPUs against
 
 * foreign above the line on those CPUs refuses ``measurement_foreign_ambient``
   and starves (no drain clears it; the rows behind keep claiming),
-* anything else -- sub-threshold foreign, load off those CPUs, a sample
-  that cannot answer the question -- refuses ``measurement_host_not_idle``
-  and withholds, exactly as before,
-* holder-only busy keeps the #924 withhold-then-admit behavior.
+* unknown/incomplete attribution retains ``measurement_host_not_idle``,
+* complete clearance continues past aggregate busy, preserving PSI; PB
+  holders still refuse ``measurement_holder`` and keep bounded withholding,
+* holder-free complete clearance can actually claim (#1422).
 """
 from __future__ import annotations
 
@@ -87,10 +87,10 @@ def test_a_busy_holder_with_subthreshold_foreign_withholds(
 ) -> None:
     """The mixed shape (#1233 case 1, retired): held CPU busy AND foreign.
 
-    The foreign 0.06 on the measurement's predicted CPUs sits under the
-    0.10 per-CPU line, so the typed check does not fire: the refusal stays
-    ``measurement_host_not_idle`` and the box withholds behind the busy
-    holder.  Above-line foreign on those same CPUs starves instead -- see
+    Foreign 0.06 on the predicted CPUs is complete subthreshold clearance.
+    With PSI safe, evaluation reaches ``measurement_holder`` and the box
+    still withholds behind the real busy holder. Above-line foreign starves
+    instead -- see
     ``test_measurement_foreign_ambient.py``.
     """
 
@@ -119,24 +119,17 @@ def test_a_busy_holder_with_subthreshold_foreign_withholds(
     denial = _denial(queue, measurement)
     assert denial["reason"] == "adaptive_cpu_refused_withholding", denial
     decision = denial["evidence"]["decision"]
-    assert decision["reason"] == "measurement_host_not_idle", decision
+    assert decision["reason"] == "measurement_holder", decision
+    assert decision["holder"] == holder
 
 
-def test_thin_foreign_spread_below_the_per_cpu_line_withholds(
+def test_thin_foreign_spread_below_the_per_cpu_line_admits(
     queue: pool.PoolQueue, clock, monkeypatch,
 ) -> None:
-    """The thin shape (#1233 case 2, retired): every CPU under the line.
+    """Complete subthreshold CPUs and unchanged PSI can claim (#1422).
 
-    Foreign busy spreads 0.04 across all 20 CPUs: S = 0.8 exceeds the
-    measured baseline maximum 0.3 while no CPU crosses the per-CPU line, so
-    the typed check does not fire and the refusal stays
-    ``measurement_host_not_idle``.  Pool mechanics (see the off-CPUs test):
-    with no holders to drain, the pool reports the measurement starved and
-    the admittable row behind still claims; the redesign pins the DECISION
-    -- host_not_idle, never the typed ambient and never the retired sum.
-    The #1233 sum is retired by design: sub-line foreign is
-    contention-unknown, and refusing the measurement (not the box) is the
-    conservative answer (#1185).
+    Aggregate busy0.8 exceeds measured0.3; each assigned CPU remains0.04
+    and PSI equals its selected reference. The real queue admits the row.
     """
 
     capacity = {"cpu": 20, "mem_gb": 120}
@@ -162,12 +155,9 @@ def test_thin_foreign_spread_below_the_per_cpu_line_withholds(
     for _ in range(pool.STARVATION_FLOOR - 1):
         queue.record_pass(measurement)
     behind = _publish(queue, clock, _key("behind"), {"cpu": 4, "mem_gb": 40})
-    assert claim() == behind, (
-        "the box flows around a measurement no drain can place")
-    denial = _denial(queue, measurement)
-    assert denial["reason"] == "adaptive_cpu_refused_starved", denial
-    decision = denial["evidence"]["decision"]
-    assert decision["reason"] == "measurement_host_not_idle", decision
+    assert claim() == measurement
+    assert queue.item_path(pool.CLAIMED, measurement).exists()
+    assert queue.item_path(pool.READY, behind).exists()
 
 
 def test_holder_only_busy_with_foreign_below_the_verdict_keeps_the_withhold(
@@ -176,9 +166,8 @@ def test_holder_only_busy_with_foreign_below_the_verdict_keeps_the_withhold(
     """#1233 case 3: no foreign-alone excess, the #924 withhold stands.
 
     The holder's own held CPUs are the busy ones and the unheld CPUs read
-    quiet: S is far below the prior, so the re-judged verdict does not
-    exceed, the refusal stays measurement_host_not_idle, and the box
-    withholds while the holder drains and admits the measurement once the
+    quiet: complete clearance reaches measurement_holder, and the box
+    still withholds while the holder drains and admits the measurement once the
     host reads idle.
     """
 
@@ -209,7 +198,8 @@ def test_holder_only_busy_with_foreign_below_the_verdict_keeps_the_withhold(
     assert claim() is None, "the holder's own busy load must still withhold"
     denial = _denial(queue, measurement)
     assert denial["reason"] == "adaptive_cpu_refused_withholding", denial
-    assert denial["evidence"]["decision"]["reason"] == "measurement_host_not_idle"
+    assert denial["evidence"]["decision"]["reason"] == "measurement_holder"
+    assert denial["evidence"]["decision"]["holder"] == holder
     assert denial["evidence"]["withhold"]["why"] == "draining_for_measurement"
     queue.finish(holder, status="executed")
     state["busy"] = False

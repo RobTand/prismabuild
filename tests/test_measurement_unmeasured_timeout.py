@@ -25,13 +25,16 @@ def _unmeasured(fleet, *, gpu=1, holder_gpu=None):
         "schema": adaptive_cpu.IDLE_BASELINE_SCHEMA, "identity": 20, "samples": [],
     })
     readings["busy_cpus"] = 2.0
+    # Genuine unknown attribution, not complete clearance that now correctly
+    # reaches measurement_holder (#1422). Keep the unknown-budget proof.
+    readings["foreign"] = {}
     measurement = publish("measurement", measurement=True, pinned=True, gpu=gpu)
     assert claim() is None
     decision = denial(measurement)["evidence"]["decision"]
     assert decision["reason"] == "measurement_host_not_idle"
     assert decision["fresh"] is True
     assert decision["baseline"]["basis"] == "unmeasured"
-    assert decision["measurement_pool_drain"]["foreign_clear"] is True
+    assert pool._measurement_foreign_clear(decision) is False
     first = denial(measurement)["evidence"]["withhold"]
     assert first["withhold"] is True
     return holder, measurement, first, clock[0]
