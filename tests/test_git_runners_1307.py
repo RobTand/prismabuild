@@ -203,3 +203,55 @@ def test_identity_git_falls_back_on_plain_directory(monkeypatch, tmp_path):
     monkeypatch.setattr(subprocess, "run", _norc)
     identity = pb.git_checkout_identity(tmp_path)
     assert identity["head"] == "no-git"
+
+
+def test_snapshot_timeout_keeps_120s_bound_and_refuses(monkeypatch, tmp_path):
+    """#1409: a stalled source seal must not become a partial snapshot."""
+    import pbrun
+
+    captured = {}
+
+    def _hang(cwd, *args, **kwargs):
+        captured.update(cwd=cwd, argv=args, **kwargs)
+        raise subprocess.TimeoutExpired(cmd=["git", *args], timeout=kwargs["timeout"])
+
+    monkeypatch.setattr(pb, "_git_run", _hang)
+    argv = ["add", "-f", "--pathspec-from-file=-", "--pathspec-file-nul"]
+    with pytest.raises(SystemExit, match=r"^pbrun: cannot snapshot checkout: .*120"):
+        pbrun._snapshot_git(tmp_path, argv, input_text="tracked.txt\0")
+    assert captured["timeout"] == 120
+    assert captured["argv"] == tuple(argv)
+    assert captured["input_text"] == "tracked.txt\0"
+    assert captured["errors"] == "surrogateescape"
+
+
+def test_tracked_diff_timeout_is_not_no_git(monkeypatch, tmp_path):
+    """#1410: repository read failure must not mint a no-git identity."""
+    root = tmp_path / "checkout"
+    subprocess.run(["git", "init", "-q", str(root)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(root), "-c", "user.name=Test", "-c",
+         "user.email=test@example.invalid", "commit", "--allow-empty", "-qm", "init"],
+        check=True, capture_output=True,
+    )
+    run_git = pb._git_run
+    captured = {}
+
+    def _hang_on_diff(cwd, *args, **kwargs):
+        if "diff-index" in args:
+            captured.update(cwd=cwd, argv=args, **kwargs)
+            raise subprocess.TimeoutExpired(
+                cmd=["git", *args], timeout=kwargs["timeout"],
+            )
+        return run_git(cwd, *args, **kwargs)
+
+    monkeypatch.setattr(pb, "_git_run", _hang_on_diff)
+    with pytest.raises(
+        pb.ActionContractError,
+        match=r"^cannot compute pbrun checkout identity: .*timed out after 30",
+    ):
+        pb.git_checkout_identity(root)
+    assert captured["timeout"] == 30
+    assert captured["argv"][-6:] == (
+        "-p", "--binary", "-M", "--no-ext-diff", "--no-textconv", "HEAD",
+    )
