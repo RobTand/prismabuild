@@ -380,3 +380,55 @@ def test_a_merge_github_keeps_refusing_leaves_the_queue_after_max_attempts(tmp_p
     assert len(comments) == 1
     assert ["gh", "pr", "merge", "2"] == [c for c in github.calls
                                           if c[:4] == ["gh", "pr", "merge", "2"]][0][:4]
+
+
+PIN_REFUSAL = ("pbtest: dependency pin refused before pytest: "
+               "tools/resolve_prismabuild_dev_pin.py: expected commit=" + "a" * 40
+               + "; distribution=prismabuild installed commit=" + "b" * 40)
+
+
+def refused_process(monkeypatch, launches):
+    class Refused:
+        def __init__(self, command, *, stdout, **kwargs):
+            launches.append(command)
+            stdout.write(PIN_REFUSAL + "\n")
+            stdout.flush()
+            self.pid, self.returncode = 4242, 1
+
+        def poll(self):
+            return self.returncode
+
+    monkeypatch.setattr(mq.subprocess, "Popen", Refused)
+
+
+def test_pin_runtime_refusal_is_not_retried_as_an_unobserved_test(tmp_path, monkeypatch):
+    cfg = config(tmp_path)
+    store = mq.Store(cfg.state_dir)
+    runner = mq.Runner(cfg, store)
+    launches = []
+    refused_process(monkeypatch, launches)
+    result = runner.run_many("b00001", tmp_path / "reports",
+                             [("candidate", tmp_path, ["tests/test_a.py"])])["candidate"]
+    assert len(launches) == 1, "an unchanged bad runtime cannot observe another retry"
+    assert result.inconclusive == ["tests/test_a.py"]  # coverage is still absent
+    assert result.failed == set()  # no pytest failure was observed
+
+
+def test_pin_runtime_refusal_is_named_and_does_not_charge_or_blame_pr(tmp_path, monkeypatch):
+    queue, _, github, _ = make_queue(tmp_path)
+    runner = mq.Runner(queue.cfg, queue.store)
+    launches = []
+    refused_process(monkeypatch, launches)
+
+    def drive(batch, outdir):
+        batch["included"] = [{"pr": 1, "sha": SHA}]
+        return queue.checked(batch, "candidate", runner.run_many(
+            batch["id"], outdir, [("candidate", tmp_path, ["tests/test_a.py"])]))
+
+    monkeypatch.setattr(queue, "_run", drive)
+    batch = queue.run_batch(entries(1))
+    assert batch["verdict"] == "runtime-blocked", batch
+    assert queue.store.state["queue"][0]["attempts"] == 0
+    assert batch["runs"]["candidate"]["runtime_refusal"] == PIN_REFUSAL
+    assert batch["runs"]["candidate"]["runtime"]["python"] == queue.cfg.test_python
+    assert github.calls == []  # neither success nor code-failure status
