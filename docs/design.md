@@ -4797,7 +4797,13 @@ client in a state-recovery storm by two orders of magnitude rather than by a
 chosen margin. The syscall leg runs in a forked child abandoned at a deadline,
 because a hard mount blocks uninterruptibly and no signal reaches it, and at
 most one such child is ever outstanding: a wedged mount suppresses the next
-probe instead of accumulating one blocked process per scrape. The third
+probe instead of accumulating one blocked process per scrape. Completed pipe
+output, including an error payload, is not proof of child exit. Both completed
+and timed-out probes retain the original PID/start time when bounded reaping
+does not prove exit; later samples suppress another fork until nonblocking
+`waitpid` or `ECHILD` proves that child is gone. Completed measurements retain
+their existing status and values. This lifecycle guarantee does not establish
+the cause of a mount timeout or certify recovery. The third
 reading is not about the mount: admission is gated by a local `flock` whose
 critical section still contains shared operations, so a slow mount still
 makes the *holder* slow. What it no longer does is convert into a local queue.
