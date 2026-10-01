@@ -24,9 +24,11 @@ import os
 import select
 import signal
 import sys
+import threading
 import time
 from pathlib import Path
 
+import pytest
 from prismabuild import core as pb
 from prismabuild import pool, resource_scope
 
@@ -266,10 +268,13 @@ class _HardStopScope:
         return {"stopped": True}
 
 
-def _claimed(tmp_path: Path):
+def _claimed(tmp_path: Path, *, profile: str | None = "flush-on-signal"):
     checkout = tmp_path / "checkout"
     checkout.mkdir()
     (checkout / "task.py").write_text(_SLEEP_WORK, encoding="utf-8")
+    params: dict[str, object] = {"execution_timeout_s": 30.0}
+    if profile is not None:
+        params["profile"] = profile
     action = pb.seal_action({
         "schema": pb.ACTION_SCHEMA_V2,
         "task": {
@@ -287,7 +292,7 @@ def _claimed(tmp_path: Path):
         "code_closure": pb.build_code_closure(checkout, ["task.py"]),
         # The sealed budget is long; the test's shorter ceiling is what fires,
         # so the sampler is up and sampling before the deadline lands.
-        "params": {"execution_timeout_s": 30.0, "profile": "flush-on-signal"},
+        "params": params,
         "environment": {"variables": {}, "toolchain": {}},
         "execution_scope": {
             "portability": "portable", "platform_key": None, "host_class": None,
@@ -434,6 +439,72 @@ def test_a_flush_that_outlives_its_bound_still_reaches_the_hard_stop(
         f"the flush opportunity outlived its shared grace: {settle}")
 
 
+def test_the_flush_opportunity_needs_no_request_read_after_launch(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Once launched, the deadline must not touch the shared request again."""
+
+    queue, item, cas, _checkout = _claimed(tmp_path)
+    key = item["action_key"]
+    request_path = cas.root / "requests" / key[:2] / f"{key}.json"
+    marker = tmp_path / "sampler.events"
+    sampler = tmp_path / "fake_sampler.py"
+    sampler.write_text(_FAKE_SAMPLER, encoding="utf-8")
+    inject = tmp_path / "inject"
+    inject.mkdir()
+    (inject / "sitecustomize.py").write_text(_SITECUSTOMIZE, encoding="utf-8")
+    monkeypatch.setenv(
+        "PB_TEST_1401_SRC", str(Path(pb.__file__).resolve().parents[1]))
+    monkeypatch.setenv("PB_TEST_1401_SAMPLER", str(sampler))
+    monkeypatch.setenv("PB_TEST_1401_MARKER", str(marker))
+    existing = os.environ.get("PYTHONPATH", "")
+    monkeypatch.setenv("PYTHONPATH", os.pathsep.join(
+        part for part in (str(inject), existing) if part))
+
+    scope = _HardStopScope(request_path)
+    monkeypatch.setattr(queue, "_start_resource_scope", lambda item: scope)
+    monkeypatch.setattr(
+        resource_scope, "cgroup_membership",
+        lambda path: _cgroup_membership_text())
+
+    removed: list[bool] = []
+
+    def remove_once_launched():
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline:
+            try:
+                started = "started" in marker.read_text(encoding="utf-8")
+            except OSError:
+                started = False
+            if started:
+                try:
+                    request_path.unlink()
+                except FileNotFoundError:
+                    pass
+                removed.append(True)
+                return
+            time.sleep(0.02)
+
+    watcher = threading.Thread(target=remove_once_launched, daemon=True)
+    watcher.start()
+    try:
+        outcome = queue.execute(
+            item, timeout_s=5.0, containment=True,
+            heartbeat_s=0.25, timeout_grace_s=5.0,
+        )
+    finally:
+        watcher.join(timeout=5.0)
+
+    assert removed == [True], "the request was not removed after launch"
+    assert not request_path.exists()
+    assert outcome["status"] == "timeout"
+    assert scope.stops == ["timeout"]
+    profile = outcome.get("profile")
+    assert isinstance(profile, dict) and profile["partial"] is True, (
+        "a request that is gone after launch must not prevent the flush")
+    assert "SIGINT" in marker.read_text(encoding="utf-8").splitlines()
+
+
 def test_only_a_unique_exact_worker_is_eligible(monkeypatch) -> None:
     """Discovery refuses ambiguity, the proxy argv and unreadable identities."""
 
@@ -531,13 +602,12 @@ def test_an_incomplete_scope_census_never_reaches_a_signal(monkeypatch) -> None:
         opened.append(read_end)
         return read_end
 
-    monkeypatch.setattr(pool, "_sealed_profile_requested", lambda i: True)
     monkeypatch.setattr(pool.os, "pidfd_open", never_reached)
     monkeypatch.setattr(
         pool.signal, "pidfd_send_signal",
         lambda fd, sig: signals.append((fd, sig)))
     result = pool._settle_contained_profile(
-        _Scope(), worker, item={"action_key": "a" * 64, "cas_root": "/cas"},
+        _Scope(), worker, profiled=True,
         deadline=time.monotonic() + 1.0)
     assert result is not None and result["settled"] is False
     assert "no unique exact worker" in str(result["refused"])
@@ -626,7 +696,6 @@ def test_the_flush_opportunity_is_gated_and_fails_closed(monkeypatch) -> None:
     class _Scope:
         cgroup_path = "/sys/fs/cgroup/scope"
 
-    item = {"action_key": "a" * 64, "cas_root": "/cas"}
     discovered: list[int] = []
     monkeypatch.setattr(pool, "_scope_directory_identity", lambda path: (1, 2))
     monkeypatch.setattr(
@@ -635,17 +704,16 @@ def test_the_flush_opportunity_is_gated_and_fails_closed(monkeypatch) -> None:
     monkeypatch.setattr(
         pool, "_contained_worker_pidfd",
         lambda p, c, a, *, directory: None)
-    monkeypatch.setattr(pool, "_sealed_profile_requested", lambda i: False)
 
+    # The prevalidated declaration is the whole gate: no request is consulted.
     assert pool._settle_contained_profile(
-        _Scope(), ["w"], item=item,
+        _Scope(), ["w"], profiled=False,
         deadline=time.monotonic() + 1.0) is None
     assert discovered == []
 
     # An expired grace refuses before discovery.
-    monkeypatch.setattr(pool, "_sealed_profile_requested", lambda i: True)
     expired = pool._settle_contained_profile(
-        _Scope(), ["w"], item=item, deadline=time.monotonic() - 1.0)
+        _Scope(), ["w"], profiled=True, deadline=time.monotonic() - 1.0)
     assert expired is not None and expired["settled"] is False
     assert "grace expired" in str(expired["refused"])
     assert discovered == []
@@ -656,7 +724,7 @@ def test_the_flush_opportunity_is_gated_and_fails_closed(monkeypatch) -> None:
 
     monkeypatch.setattr(pool, "_contained_worker_pid", explode)
     broke = pool._settle_contained_profile(
-        _Scope(), ["w"], item=item, deadline=time.monotonic() + 1.0)
+        _Scope(), ["w"], profiled=True, deadline=time.monotonic() + 1.0)
     assert broke is not None and broke["settled"] is False
     assert "worker discovery failed" in str(broke["refused"])
 
@@ -665,22 +733,41 @@ def test_the_flush_opportunity_is_gated_and_fails_closed(monkeypatch) -> None:
         pool, "_contained_worker_pid",
         lambda c, a, *, directory: (discovered.append(1), 4242)[1])
     refused = pool._settle_contained_profile(
-        _Scope(), ["w"], item=item, deadline=time.monotonic() + 1.0)
+        _Scope(), ["w"], profiled=True, deadline=time.monotonic() + 1.0)
     assert refused is not None and refused["settled"] is False
     assert refused["worker_pid"] == 4242
     assert "pidfd" in str(refused["refused"])
     assert discovered == [1]
 
 
-def test_an_unreadable_sealed_request_is_not_a_profile() -> None:
-    """A request this process cannot read or verify refuses the opportunity."""
+def test_the_prelaunch_read_is_the_profile_authority(tmp_path: Path) -> None:
+    """One validated request read answers deadline and profile before launch."""
 
-    key = "a" * 64
-    assert pool._sealed_profile_requested({"action_key": key}) is False
-    assert pool._sealed_profile_requested(
-        {"action_key": key, "cas_root": "/"}) is False
-    assert pool._sealed_profile_requested(
-        {"action_key": key, "cas_root": "relative/cas"}) is False
+    _queue, item, cas, _checkout = _claimed(tmp_path)
+    assert pool._sealed_execution_policy(item, None) == (30.0, True)
+    assert pool._sealed_execution_policy(item, 5.0) == (5.0, True)
+
+    (tmp_path / "plain").mkdir()
+    _queue, plain, _cas, _checkout = _claimed(tmp_path / "plain", profile=None)
+    assert pool._sealed_execution_policy(plain, 5.0) == (5.0, False)
+
+    # A missing request is the legacy path: the ceiling, no profile claim.
+    absent = {"action_key": "c" * 64, "cas_root": tmp_path / "absent"}
+    assert pool._sealed_execution_policy(absent, None) is None
+    assert pool._sealed_execution_policy(absent, 4.0) == (4.0, False)
+
+    # A request filed under the wrong key is refused before launch.
+    other = "b" * 64
+    key = item["action_key"]
+    mismatch = cas.root / "requests" / other[:2] / f"{other}.json"
+    mismatch.parent.mkdir(parents=True, exist_ok=True)
+    mismatch.write_text(
+        (cas.root / "requests" / key[:2] / f"{key}.json").read_text(
+            encoding="utf-8"),
+        encoding="utf-8")
+    with pytest.raises(pool.PoolContractError, match="does not match"):
+        pool._sealed_execution_policy(
+            {"action_key": other, "cas_root": cas.root}, None)
 
 
 def test_a_flush_that_outlives_its_bound_ends_at_the_bound(monkeypatch) -> None:

@@ -2331,8 +2331,20 @@ def _read_wait_record(path: Path, *, token: str | None, schema: str,
     return {field: list(keys), "since_unix": float(since)}, ""
 
 
-def _execution_timeout(item: Mapping[str, object], ceiling: float | None) -> float | None:
-    """Read the deadline from the sealed request, never mutable queue metadata."""
+def _sealed_execution_policy(
+    item: Mapping[str, object], ceiling: float | None
+) -> tuple[float | None, bool]:
+    """The sealed deadline and profile declaration from one request read.
+
+    The effective timeout is exactly what :func:`_execution_timeout` always
+    returned: the sealed ``execution_timeout_s`` bounded by ``ceiling``, with
+    the same validation, key binding and legacy missing-request handling.  The
+    second element says whether the same validated request declares a
+    nonempty ``params.profile``.  Reading both here, before launch, is what
+    lets the deadline's flush opportunity use the declaration as immutable
+    local authority instead of rereading shared CAS at the deadline.
+    """
+
     key = str(item["action_key"])
     request = Path(str(item["cas_root"])) / "requests" / key[:2] / f"{key}.json"
     try:
@@ -2340,17 +2352,26 @@ def _execution_timeout(item: Mapping[str, object], ceiling: float | None) -> flo
     except FileNotFoundError:
         # Legacy/custom launchers can have no request. The canonical worker
         # independently refuses a missing request before executing any action.
-        return ceiling
+        return ceiling, False
     action = pb.validate_action(pb._decode_strict_json(raw, where="pool action request"))
     if action["action_key"] != key:
         raise PoolContractError("pool action request does not match the claimed key")
+    mode = action["params"].get("profile")
+    profiled = isinstance(mode, str) and bool(mode)
     requested = action["params"].get("execution_timeout_s")
     if requested is None:
-        return ceiling
+        return ceiling, profiled
     if (type(requested) not in (int, float) or not math.isfinite(requested)
             or requested <= 0):
         raise PoolContractError("execution_timeout_s must be a positive finite number")
-    return float(requested) if ceiling is None else min(float(requested), ceiling)
+    return (float(requested) if ceiling is None
+            else min(float(requested), ceiling)), profiled
+
+
+def _execution_timeout(item: Mapping[str, object], ceiling: float | None) -> float | None:
+    """Read the deadline from the sealed request, never mutable queue metadata."""
+
+    return _sealed_execution_policy(item, ceiling)[0]
 
 
 def _requested_execution_timeout(item: Mapping[str, object]) -> float | None:
@@ -3099,32 +3120,6 @@ def find_launcher_pids(action_key: str) -> list[int]:
 _CONTAINED_SETTLE_POLL_SECONDS = 0.05
 
 
-def _sealed_profile_requested(item: Mapping[str, object]) -> bool:
-    """Whether the sealed request asks for a profile (#1401).
-
-    The deadline's flush opportunity is offered only to an action that asked
-    for a profile.  An absent, unreadable or unverifiable request is not
-    proof of one, so it refuses the opportunity rather than guessing; the
-    hard stop then ends the attempt exactly as it did before this existed.
-    """
-
-    key = str(item["action_key"])
-    cas_root = item.get("cas_root")
-    if not isinstance(cas_root, (str, Path)):
-        return False
-    try:
-        action = pb.PrismaBuildCAS(cas_root).read_action_request(key)
-    except (OSError, ValueError):
-        # ``read_action_request`` turns unreadable or invalid bytes into
-        # ``None``; a root it refuses outright (relative, ``/``, ``..``) is
-        # the same answer: no proof of a profile, so no opportunity.
-        return False
-    if action is None:
-        return False
-    mode = action["params"].get("profile")
-    return isinstance(mode, str) and bool(mode)
-
-
 def _scope_directory_identity(path: Path) -> tuple[int, int] | None:
     """The exact scope directory's ``(st_dev, st_ino)``, or ``None``."""
 
@@ -3278,9 +3273,15 @@ def _wait_for_pidfd_exit(descriptor: int, *, deadline: float) -> bool:
 
 def _settle_contained_profile(
     scope: object, worker_argv: Sequence[str], *,
-    item: Mapping[str, object], deadline: float,
+    profiled: bool, deadline: float,
 ) -> dict[str, object] | None:
     """Offer a contained, profiled worker its flush opportunity (#1401).
+
+    ``profiled`` is the immutable local answer :func:`_sealed_execution_policy`
+    read from the validated sealed request before the worker was launched, so
+    this deadline path never touches shared CAS again: a request that becomes
+    unreadable or unavailable after launch cannot prevent the flush or the
+    hard stop.
 
     The broker's only stop is ``cgroup.kill``: a contained worker is
     SIGKILLed before ``core._reap_and_settle`` can flush the sampler or write
@@ -3299,13 +3300,13 @@ def _settle_contained_profile(
     turn the timeout into a success.  Every refusal -- an unprofiled action, an absent or ambiguous
     worker, an unreadable identity, a recycled pid, a kernel without pidfds,
     an expired deadline -- returns without signalling and leaves the hard
-    stop to end the attempt.  Filesystem calls (the sealed request read, the
-    scope census, ``/proc``) are cooperative: they are not bounded by the
-    deadline, and a mount that never answers stalls the branch exactly as any
-    other pool read on that mount does.
+    stop to end the attempt.  Filesystem calls (the scope census, ``/proc``)
+    are cooperative: they are not bounded by the deadline, and a mount that
+    never answers stalls the branch exactly as any other pool read on that
+    mount does.
     """
 
-    if not _sealed_profile_requested(item):
+    if not profiled:
         return None
     cgroup = getattr(scope, "cgroup_path", None)
     if cgroup is None:
@@ -25178,7 +25179,11 @@ class PoolQueue:
         """
 
         key = str(item["action_key"])
-        timeout_s = _execution_timeout(item, timeout_s)
+        # One read of the sealed request answers both the deadline and whether
+        # this attempt asked for a profile; the boolean is the immutable local
+        # authority the deadline's flush opportunity uses, so that path never
+        # rereads shared CAS after launch.
+        timeout_s, profiled = _sealed_execution_policy(item, timeout_s)
         # The complete worker argv, captured before any taskset or
         # resource_exec wrapper: once those wrappers have exec'd, this is
         # exactly what ``/proc/<pid>/cmdline`` shows, and it is what the
@@ -25634,7 +25639,7 @@ class PoolQueue:
                             # the attempt with the timeout verdict.
                             with suppress(Exception):
                                 settled = _settle_contained_profile(
-                                    scope, worker_argv_exact, item=item,
+                                    scope, worker_argv_exact, profiled=profiled,
                                     deadline=settle_deadline,
                                 )
                             scope.terminate_owned("timeout")
