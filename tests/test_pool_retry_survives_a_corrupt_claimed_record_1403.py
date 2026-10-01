@@ -24,6 +24,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from prismabuild import pool, resource_scope  # noqa: E402
+from test_pool_resource_scope import scoped  # noqa: E402
 from test_pool_retry_own_pending_finishes_1403 import _pending_owner  # noqa: E402
 
 BAD_KEY = "0" * 64
