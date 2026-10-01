@@ -6121,9 +6121,9 @@ class NsysProfileBackend:
 
     #: Where Nsight Systems installs itself, checked after ``PATH``.  py-spy's
     #: lesson, in the one form that applies: the worker loop's ``PATH`` is not
-    #: the operator's, and sparky's ``--profile sample`` refuses today for
-    #: exactly that reason.  nsys is a system binary at a known place, so this
-    #: mode does not have to inherit the same accident.
+    #: necessarily the operator's. The mode must check the actual launcher's
+    #: lookup, not infer eligibility from a historical host observation.
+    #: nsys is a system binary at known places, so this mode also checks those.
     INSTALL_CANDIDATES = (
         "/usr/local/bin/nsys",
         "/usr/local/cuda/bin/nsys",
