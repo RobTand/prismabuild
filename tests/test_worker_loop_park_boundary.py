@@ -6,8 +6,10 @@ republishes an advisory offer -- a queue *write* that reserves nothing -- and
 since #1403 it retries this box's own saved finishes -- a narrow, claim-free
 pass over ``claimed/``.  The fixture allows exactly those two bounded
 operations (as stubs, so the bounded writer's helper processes and their
-sleeps never enter this loop's poll count) and still fails the test on any
-other queue operation.
+sleeps never enter this loop's poll count), plus the startup housekeeping
+that scans this box's own dead offer temporaries under the queue root before
+the first poll: the fake exposes only that root, pointing at the private
+empty directory, and still fails the test on any other queue operation.
 
 The three orderings this pins, in one poll:
 
@@ -71,6 +73,11 @@ def test_park_precedes_announce_sleep_and_queue_access(tmp_path, monkeypatch,
     class UntouchableQueue:
         def __init__(self, root):
             assert root == tmp_path / "pb-queue"
+            # Startup housekeeping (#1040) sweeps this box's dead offer
+            # temporaries under the queue root before the first poll.  The
+            # private root holds no queue state, so that one scan is inert;
+            # every other operation still fails below.
+            self.root = root
 
         def dir(self, *args, **kwargs):
             # Drain-path membership reconciliation may census the
