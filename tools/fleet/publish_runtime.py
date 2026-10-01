@@ -107,6 +107,10 @@ FLEET_SCRIPTS = (
     # the epoch.  A generation without it leaves the ram window publishing
     # promotions nothing can run.
     "ram_promote.py",
+    # Root operator provisioning is separate from publication and discovery.
+    "install_ram_mount_unit.py",
+    # Qualified scratch profiles bind this producer's bytes in the generation.
+    "local_scratch_profile.py",
     # The SLURM lane's two halves: the shared submit every producer routes
     # through, and the job entry it names.  A runtime published without them
     # has producers importing a module that is not there and a batch script

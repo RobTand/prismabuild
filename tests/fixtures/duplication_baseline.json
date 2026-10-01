@@ -274,6 +274,13 @@
   },
   {
    "modules": [
+    "tools/fleet/install_ram_mount_unit.py"
+   ],
+   "name": "_positive",
+   "reason": "The installer converts canonical decimal CLI text and raises argparse.ArgumentTypeError; produced_spool and residency_map validate already-typed domain integers and raise their respective domain errors. Sharing them would change lexical acceptance or error contracts."
+  },
+  {
+   "modules": [
     "src/prismabuild/control_cpu.py",
     "src/prismabuild/gpu_memory.py"
    ],

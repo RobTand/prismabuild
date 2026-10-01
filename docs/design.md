@@ -5847,6 +5847,75 @@ no deployment or live balance/swap evidence follows. Mount provisioning,
 qualification/deployment, page turnover, Shmem within 10% and a campaign hour
 without pswpout growth remain owed. Full #1032 stays open.
 
+**Persistent RAM mount provisioner (bounded NEWFEATURE source slice, Refs #1032).**
+`tools/fleet/install_ram_mount_unit.py` is a separate operator CLI, shipped in
+both publisher tool layouts. The existing rob-only user-supervisor installer
+is unchanged. The new CLI requires an independently qualified pinned generation,
+a trusted interpreter invoked with `-I -B`, and explicit `--policy`, canonical
+positive `--size-bytes`, non-root numeric `--owner-uid` and `--owner-gid`, plus
+exactly one of `--render` or `--install`. There are no size/identity defaults or
+name lookups. Source imports and the strictly validated policy resolve inside
+that same pinned generation; path pinning is not integrity attestation. Duplicate
+options/JSON fields, unknown policy fields, unusable uint32 IDs (including
+4294967295), unsupported paths and size above `ceiling_gib_max * GiB` refuse
+before privileged effects. The ceiling is not a target and the window is not a
+mount size. No existing policy, admission, node-budget or visibility behavior
+changes; real runtime admission remains load authority.
+
+One authoritative plan renders `ram-prewarm.mount` for `/ram/prewarm` only:
+`What=tmpfs`, `Type=tmpfs`, and
+`Options=size=<bytes>,noswap,mpol=interleave,uid=<uid>,gid=<gid>,mode=0755`,
+with `WantedBy=local-fs.target` and normal mount default dependencies. Render
+is read-only/stdout-only and needs no root, filesystem writes or bytecode,
+mount commands, systemctl or chmod. Installation requires EUID0 before writes,
+existing root-owned nonsymlink non-writable-by-group/other system directories
+and their ancestors, and current directory identity. A new unit is root:root0644,
+fully written/fsynced to an exclusive same-directory temporary and committed by
+no-overwrite hard link. Only that new inode is chmodded. Differing, symlink,
+nonregular, unsafe-metadata or multiply linked existing units refuse; identical
+trusted0644 content is a no-rewrite repeat. Own temporary names are cleaned on
+failure; a committed unit is never falsely rolled back after a later failure.
+
+Fixed-mountpoint fstab entries (including octal escapes and lexically normalized
+absolute slash/dot aliases), fixed/prefix/type mount drop-ins, masks,
+vendor/volatile units and fixed units in systemd's three runtime generator
+directories require operator resolution. Effective-namespace/symlink aliases
+remain operator qualification, without filesystem path resolution. Presence uses
+explicit `lstat`: only `FileNotFoundError` means absent. Dangling links are present;
+other metadata failures refuse before persistence or manager commands. This is bounded
+conflict observation, not recursive discovery or protection from concurrent root
+administrators. The production target is `/etc/systemd/system/ram-prewarm.mount`;
+no public installation-root option exists. After persistence it runs only absolute
+`/usr/bin/systemctl daemon-reload` then `enable ram-prewarm.mount`, without
+`--now`. Neither operation starts/remounts/stops anything. Failures remain failures
+with the committed file retained. Mount contents, epoch and existing pages are
+untouched; UID/GID options apply only to a future mount root, enabling the actual
+writer to create its epoch and ranges after separate operator qualification.
+
+Actual-CLI/render, independent INI, private installer, pinned publisher closure
+and private `systemd-analyze verify` controls passed in the admitted candidate
+suite: 382 cases, including 122 installer controls, with no skips. Missing analyzer
+is failure/not-qualified, not a skip/pass. Three reached EIO faults demonstrated
+unknown conflicts being accepted before the shared `lstat` repair; earlier unsafe
+fixture-ancestor failures are not behavioral RED. Receipts, fingerprints, review
+and remaining final-head gates are recorded in
+`docs/evidence/issue1032_ram_mount_provision_2026-09-26.json`. This is NEWFEATURE
+coverage, not an OLD RED from a missing new filename/API; the original admission
+RED is separately recorded above. No root installation, live activation, kernel
+option support, cross-manager user-supervisor boot ordering or reboot/epoch/adoption
+proof is claimed. Trusted-root race limits and storage power-loss guarantees remain
+separate from atomic publication. SC-01/SC-02 authority is preserved; SC-03 unknown
+axes remain unknown. INV-07 retirement and BUD-01/02/03 quantities are unchanged,
+not satisfied by a mount unit. Deployment, safe page turnover, dl380g10 Shmem
+within10% and an hour without pswpout growth remain owed; full #1032 is open.
+
+Related inventory repairs (Refs #1182/#1386) publish the existing nested scratch
+recorder and register exact, genuinely different helper contracts without growing
+shrink baselines. Scratch qualification still binds the exact
+`tools/fleet/local_scratch_profile.py` command and its three source files. The
+publisher's flat copy supplies inventory bytes, not an executable recorder alias;
+no producer bytes, command identity or qualification rules change.
+
 **Mount-epoch identity — the rule the whole safety argument rests on.**
 tmpfs empties on reboot; the ledger and the residency-map fragments on the
 shared mount survive. Without an epoch, a reboot would leave a map naming

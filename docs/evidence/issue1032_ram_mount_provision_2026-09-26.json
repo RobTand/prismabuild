@@ -1,0 +1,109 @@
+{
+  "schema": "pb.issue1032.ram_mount_provision.validation.v1",
+  "date": "2026-09-26",
+  "date_basis": "campaign identifier; preparation record, not an execution timestamp",
+  "issue": "https://github.com/RobTand/prismabuild/issues/1032",
+  "scope": "NEWFEATURE persistent fixed-path RAM mount operator CLI; not whole-issue acceptance",
+  "branch": "sol/issues-pb-1032-provision",
+  "supplied_base": "9ae8817700a918c696563b30f0913449d8473a51",
+  "base_independently_checked_by_worker": false,
+  "base_independently_checked_by_parent": true,
+  "candidate_source_hashes": {
+    "tools/fleet/install_ram_mount_unit.py": "7d56f112f57ebabd9df602a48e323877910e20646b5a48255f72857db7671c0c",
+    "tools/fleet/publish_runtime.py": "ec5090454c0a46bd20017aa94684ffab9fdea9fc7434decf004e57c9efafc183",
+    "tests/fixtures/duplication_baseline.json": "17c0b7c18591b0b02e058c1eac95e2b6dd92ee7f83ced03b8c8b8ed6412f1635"
+  },
+  "candidate_test_hashes": {
+    "tests/test_install_ram_mount_unit.py": "6f939e4be68eb455a735582d710d9229e791f091f02da0a0c8beef494a2207f9",
+    "tests/test_publish_runtime.py": "4818eea05dc35364f0d28f5453d8ec75a84bc906d38e3ab7ff5bc8d99077c004"
+  },
+  "source_acceptance": "Candidate PB qualification PASS, syntax4 verified and independent source-only review OK; refreshed-head and PR gates pending",
+  "qualification": {
+    "status": "PASS candidate, not final refreshed head or deployment",
+    "actions": ["84fcfc5ba99a69d7627db757064a0696a31ea557c2bdb990e7b3d8d10a919e09"],
+    "host": "dl380g10",
+    "elapsed_s": 117.41,
+    "verification_artifact": "/home/rob/tmp/claude-campaign-20260926/tmp/p2p3/prismabuild/1032-provision-corrected-green-verification.json",
+    "terminal_records": "authoritative terminal and immutable attempt verified",
+    "immutable_logs": "exact log lengths and SHA-256 verified",
+    "cas_receipts": "canonical receipt and result blob verified; scope cleanup released",
+    "collected": 382,
+    "ran": 382,
+    "passed": 382,
+    "failed": 0,
+    "skipped": 0,
+    "deselected": 0,
+    "installer_cases": 122,
+    "systemd_analyze": "Actual private-root verify control passed inside admitted action; no missing-tool skip"
+  },
+  "behavioral_red": {
+    "action": "8b9ddfdca07ffe4527bed0dcc1e0d3830bc24f809490ce99f58174616f042084",
+    "failed": 4,
+    "passed": 126,
+    "collected_ran_outcomes": 130,
+    "skipped": 0,
+    "attribution": "Three EIO faults reached actual stat/lstat then demonstrated accepted unknown conflicts; fourth failure is exact-name registry policy. Earlier35 unsafe-private-ancestor setup failures are not EIO RED.",
+    "repair": "One shared explicit lstat presence helper catches only FileNotFoundError; unknown metadata failures refuse before installation effects."
+  },
+  "related_source_repairs": {
+    "issue1182": "Publish existing nested scratch recorder source and its three bound files; uniform flat copy is source-byte inventory, NOT a supported flat recorder CLI or new producer qualification.",
+    "issue1386": "Exact name/path different-contract exceptions only; shrink baselines, thresholds and implementation bodies unchanged."
+  },
+  "independent_review": "Retained 1f4dac62 SOURCE-ONLY OK with notes; no execution by reviewer, full privilege/boot/adoption still unqualified",
+  "syntax": {
+    "action": "5b62efb5f7e25cf233650d070615cac8796dd4f1cf0b304aadabe9a3889a9f06",
+    "host": "dl380g10",
+    "witness": "COMPILE_OK 4 files",
+    "result_sha256": "2a372b9647375e357eeb962ab5cd9bb46cbadb72be47d9d9cc930c257e62d4a2",
+    "receipt_sha256": "e0f68f4f1dcb213780af73fc62a5db3ab467cebcea419cc960b8bdfe456abcaa",
+    "verification": "Terminal, immutable attempt, exact logs, canonical CAS/result and released cleanup verified by parent"
+  }, 
+  "prepared_controls": [
+    "tests/test_install_ram_mount_unit.py: actual isolated CLI renders independently expected bytes and raw INI from both actual publisher-materialized layouts with real package/validator/policy closure",
+    "Canonical positive numbers, explicit size/IDs/mode, unusable uint32 IDs, duplicates/conflicting CLI flags, malformed/ambiguous/extra-field policy, fixed path and policy ceiling refusal",
+    "Policy must resolve inside the once-pinned entrypoint generation; outside and symlink-escape inputs refuse",
+    "Render purity, inherited Python path poison, no bytecode/filesystem writes; private main checks validation before privileged effects",
+    "Real private persistence/main branch with controlled low-level EUID, lstat/stat/fstat owner facts, fchown and manager recorder; no worker root or service access",
+    "Root denial, safe ancestors/current directory identity, existing unit metadata/content conflicts, no chmod/chown or rewrite of identical unit, decoded and lexically normalized absolute fstab aliases/drop-in/mask/vendor/generator conflicts",
+    "Short fullwrites, write/fsync/chown/commit failure cleanup, exclusive link commit conflict, retained committed unit on directory-fsync/reload/enable failure, exact reload then enable without now",
+    "Actual render artifact with systemd-analyze verify --root private tree --man=no and local-fs enablement fixture"
+  ],
+  "untouched_regression_guards_for_parent": [
+    "tests/test_publish_runtime.py",
+    "tests/test_the_ram_policy_is_a_publish_not_an_ssh.py",
+    "tests/test_the_ram_tier_refuses_a_noninterleaved_tmpfs.py",
+    "tests/test_the_ram_window_fits_every_memory_node.py",
+    "tests/test_ram_numa_observations_reach_operator_status.py"
+  ],
+  "old_red_discipline": {
+    "provisioning": "NEWFEATURE: absent proposed script/API/options are not an OLD behavioral RED",
+    "original_admission_red_recorded_separately": "docs/design.md records parent-verified PB action 9e4235b372c3d36de127cdfc45baad1ebd3101ec32cbbfb47357bc2c8b3dc38b; not run or requalified by this worker"
+  },
+  "requirement_axes": {
+    "SC-01": "Target PB-owned admission/placement remains implemented at existing pool decision points; no change or deployment qualification here",
+    "SC-02": "Target PB-owned movement/residency remains existing implementation; no new mover/cache/scheduler or deployment proof",
+    "SC-03": "Target honest axes preserved: this source preparation is PENDING validation; deployment/workload unknown; whole ledger requirement not promoted",
+    "INV-07": "Target retirement/pinning remains existing partial implementation and open workload obligations; unit persistence touches no epoch/pages/charge and satisfies none of the remaining requirement",
+    "BUD-01": "Target distinct quantities retained; explicit mount size is only policy-bounded roof, not tier window/process RAM/reservation; no requirement-axis change",
+    "BUD-02": "Target geometry/planning guards unchanged; no root headroom planner added; no requirement-axis change",
+    "BUD-03": "Target recorded sealed overrides unchanged; policy/defaults/requests not rewritten; no requirement-axis change",
+    "DUR-01": "Atomic link/fullwrite/fsync are not power-loss durability or runtime receipt evidence; storage guarantees remain unqualified"
+  },
+  "authority_limits": [
+    "Root operator must independently qualify trusted pinned source/interpreter/policy closure and real writer UID/GID and size before invocation; path pinning is not attestation",
+    "Production target only /etc/systemd/system/ram-prewarm.mount; no public install-root; production systemctl refuses private roots",
+    "Synthetic metadata tests do not establish real root privileges, kernel noswap/interleave support or live mount ownership",
+    "Trusted root administrators remain trusted; conflict/identity observations are not protection from malicious root races, generic unit-path discovery or effective-namespace/symlink fstab aliases",
+    "No install/start/restart/remount/stop/signals/current-content migration/live workload/measurement work authorized or performed"
+  ],
+  "deploy": "PENDING separately authorized operator installation/readback and runtime publication; no observed deployment",
+  "live_qualification_owed": [
+    "Actual root installation and readback, trusted configuration/identity and kernel option support",
+    "Post-reboot mount and writer root access, RAM tier epoch/adoption and old-residency recovery",
+    "Actual system-manager mount versus user-supervisor boot ordering",
+    "Authorized safe real page turnover; existing epoch/pages never changed by installer",
+    "dl380g10 per-node Shmem within 10% after one window and unchanged pswpout over a real campaign hour"
+  ],
+  "tooling_note": "Worker executed no commands. Parent owns admitted tests and read-only integrity verification; automatic diagnostics are not test evidence. Existing publisher warnings were compared to exact base expressions without suppression or unrelated cleanup.",
+  "completion": "Full #1032 remains OPEN; no merge/deploy/complete acceptance record is claimed"
+}
