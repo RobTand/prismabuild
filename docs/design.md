@@ -159,14 +159,16 @@ private `prismabuild._bounded_reader` boundary; `pbstatus.bounded` and
 `pbstatus.Deadline` preserve their diagnostic interfaces. Callers still own
 and fence retained readers by their exact PID/starttime identity. This
 infrastructure does not certify a complete measurement census: `ready_items`
-still supplies an advisory, potentially skipping snapshot. Reservation-aware current-census admission (#1419) is now implemented in the
-private `_measurement_reservation` domain boundary for capacity-backed claims,
-with component qualification only. It is **not deployed or end-to-end accepted**.
-The owner's enforce-admission decision now refuses executable claims without
-capacity or positive declared host demand, including implicit/empty/all-zero
-and tier-only hostless demand. Compatibility migration and one exact integrated
-qualification are still required before merge/deployment. Moving the reader
-alone never established a queue or fairness guarantee.
+still supplies an advisory, potentially skipping snapshot. Reservation-aware
+current-census admission (#1419) is implemented in the private
+`_measurement_reservation` domain boundary for capacity-backed claims and
+integrated with explicit fixture compatibility. The combined source qualification
+at `e5abdd29291064f1efc228c3054ffed9b8a682b3` is independently verified and
+accepted by Astra (2026-10-02); its evidence is recorded below. **Deployment and
+end-to-end acceptance remain HOLD.** The owner's enforce-admission decision
+refuses executable claims without capacity or positive declared host demand,
+including implicit/empty/all-zero and tier-only hostless demand. Moving the
+reader alone never established a queue or fairness guarantee.
 The private reader also offers an opt-in parent `on_spawn` ownership callback
 and a separate read-release handshake. A child closes unrelated descriptors,
 then waits; it cannot enter its read until the parent proves its PID/starttime,
@@ -471,7 +473,7 @@ refuse until the measurement can actually claim. Denials report
 and stop withholding. Portable backfill remains eligible on other hosts, and
 priority ordering is unchanged.
 
-**Canonical UNKNOWN-first reservation slice (#1419, source only).** Bounded
+**Canonical UNKNOWN-first reservation slice (#1419, source accepted; deployment HOLD).** Bounded
 legacy attention above is distinct from a host election. On affirmative fresh
 CPU/GPU attribution and a readable finite sealed incumbent deadline, exactly one
 host is selected for this measurement publication under its transition key and
@@ -538,9 +540,15 @@ original declarations, and plain-Queue invalid/default/schema controls stay
 fail-closed. The prewarm fixture takes real host tokens rather than fabricating
 its normal claims; historical torn/zero-token recovery inputs remain explicit
 legacy states and never authorize execution. Funding movers declare host demand
-separately from their unchanged tier entitlements. Both source and compatibility
-deliveries HOLD merge/deployment until the single combined exact integrated-head
-gate and independent review.
+separately from their unchanged tier entitlements. Source and compatibility are
+integrated and qualified at `e5abdd29291064f1efc228c3054ffed9b8a682b3`: 137 test
+files, 2,069 passes with no skips or missing collection, and 104 compiled modules
+across 17 PrismaBuild actions. Astra independently verified the actual CAS
+receipts, immutable attempts, source snapshot parents and closure-only deltas,
+and accepted the source scope on 2026-10-02. The qualification and its retained
+negative results are recorded in
+`docs/evidence/compatibility_1419_qualification_2026-10-02.json`. Subsequent
+evidence/prose commits do not change the qualified executable sources.
 The integrated source also carries `pbmergeq_runtime.py` beside its importing
 client in the publication manifest; this bundle closure correction does not
 publish or activate a runtime.
@@ -550,8 +558,9 @@ optional paired reader preserves its ordinary physical dataset/mount default;
 it runs inside the existing mint lock and does not bypass qualification or
 alter token/funding accounting. A scaled gate must never resample the live host
 filesystem under its simulated GiB unit.
-This partial slice is Refs #1419; finite safe-fit/release proof (#1429), final
-exact-head independent review and live acceptance remain owed.
+This source-accepted partial slice is Refs #1419. Deployment and end-to-end live
+acceptance remain HOLD; finite safe-fit/release proof (#1429) remains UNKNOWN/HOLD.
+No prospective timed backfill or physical resource-reclaim bound is certified.
 
 CPU sampler silence is not a drain-resolvable measurement refusal (#1317).
 Missing, stale, future-dated or incomplete host samples produce
