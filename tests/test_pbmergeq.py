@@ -338,6 +338,52 @@ def test_merge_mode_merges_in_order_only_while_main_is_the_tested_base(tmp_path)
     assert [e["pr"] for e in queue2.store.state["queue"]] == [1]
 
 
+def test_selected_head_is_fetched_when_github_pull_ref_lags(tmp_path, monkeypatch):
+    queue, origin, github, runner = make_queue(tmp_path)
+    stale = origin.pr(1, {"one.txt": "old\n"})
+    git("checkout", "-q", "pr1", cwd=origin.work)
+    (origin.work / "one.txt").write_text("new\n")
+    git("commit", "-q", "-am", "branch advanced before pull ref", cwd=origin.work)
+    selected = git("rev-parse", "HEAD", cwd=origin.work)
+    git("checkout", "-q", "main", cwd=origin.work)
+    assert git("rev-parse", "refs/pull/1/head", cwd=origin.work) == stale
+    assert git("rev-parse", "pr1", cwd=origin.work) == selected
+    advertised = github.pr
+    monkeypatch.setattr(github, "pr",
+                        lambda number: {**advertised(number), "headRefOid": selected})
+
+    batch = queue.run_batch([{"pr": 1, "sha": selected, "at": "now"}])
+
+    assert batch["verdict"] == "green", batch
+    assert batch["dropped"] == []
+    assert [(p["pr"], p["sha"]) for p in batch["included"]] == [(1, selected)]
+    assert queue.mirror.rev("refs/mq/pr/1") == selected
+    assert queue.mirror.git("cat-file", "-t", selected).stdout.strip() == "commit"
+    assert queue.mirror.git("show", batch["candidate"] + ":one.txt").stdout == "new\n"
+    assert statuses(github) == [(selected, "success")]
+    assert len(runner.runs) == 1
+
+
+@pytest.mark.parametrize("object_kind", ["missing", "blob"])
+def test_unfetchable_or_noncommit_selected_head_is_an_explicit_error(
+        tmp_path, monkeypatch, object_kind):
+    queue, origin, github, runner = make_queue(tmp_path)
+    origin.pr(1, {"one.txt": "old\n"})
+    selected = (SHA if object_kind == "missing" else
+                git("rev-parse", "main:base.txt", cwd=origin.work))
+    advertised = github.pr
+    monkeypatch.setattr(github, "pr",
+                        lambda number: {**advertised(number), "headRefOid": selected})
+
+    batch = queue.run_batch([{"pr": 1, "sha": selected, "at": "now"}])
+
+    assert batch["verdict"] == "error", batch
+    assert ("CalledProcessError" if object_kind == "missing" else
+            "is not a commit") in batch["summary"]
+    assert runner.runs == []
+    assert github.calls == []
+
+
 def test_an_enqueued_pin_refuses_a_later_push(tmp_path):
     queue, origin, github, runner = make_queue(tmp_path)
     origin.pr(1, {"one.txt": "1\n"})
