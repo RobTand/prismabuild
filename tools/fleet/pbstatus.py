@@ -1112,6 +1112,7 @@ def read_pool(queue_root: str | Path) -> dict:
             "observed_capacity": offer.get("observed_capacity"),
             "foreign": offer.get("foreign"), "observed_detail": offer.get("observed_detail"),
             "features": offer.get("tags"), "has_gpu": offer.get("has_gpu"),
+            "container_class_verdict": offer.get("container_class_verdict"),
             "runtime_commit": offer.get("runtime_commit"),
             # Absent on a pre-#254 offer, and that is "not measured": the
             # reader below prints it as unknown and never as zero.

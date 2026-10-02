@@ -334,6 +334,30 @@ JSON keys are unreadable evidence. Freshness defaults to the 30 s offer TTL;
 this command to qualify a live worker or alter its offer; #807's runtime wiring
 and live qualification remain outstanding.
 
+### Configure a worker's optional class image gate (Refs #807)
+
+`worker_loop.py --class-image-config fleet/class-images.json --class gb10`
+loads an explicit versioned class declaration relative to that worker's
+immutable runtime generation. Configuration must be contained, regular,
+bounded JSON with no duplicate keys. The selected class requires its named
+images' comparable `content:sha256:` identities and lexical DockerRootDir;
+extra images are allowed. A missing class, missing/unreadable/stale inventory
+or absent supplemental store/name evidence refuses declared container work
+only. The source ships no declaration and enables no fleet policy by default.
+
+Worker offers and the JSON/MCP `pbstatus` census expose
+`container_class_verdict` with its reason and requirements digest. The claim
+checks current shared-cache evidence again at five-second freshness, including
+a recheck after reservation I/O and rename. Offers are advisory. Class refusal
+leaves attempts unspent and reservations uncommitted; native and archive-backed
+rows retain their existing eligibility. A successful claim records the class
+proof in its ordinary history.
+
+This source gate covers actions that declare `--container-image` (or equivalent
+sealed campaign references). Undeclared Docker launches still need the separate
+shim integration, and deployment/live class qualification remains open in #807.
+Class evidence is not a daemon lock or a guarantee against later image deletion.
+
 ### `--profile`: an opt-in profile, sealed into the key
 
 `--profile sample` runs py-spy at 100 Hz over the action's whole process tree

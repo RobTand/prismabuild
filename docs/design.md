@@ -3281,6 +3281,47 @@ than make a valid legacy record unreadable. `get()` still returns only the
 legacy reference set. Injected-probe tests establish producer wiring, not a
 live daemon/store observation or runtime membership authority.
 
+### Opt-in worker class admission (Refs #807)
+
+A worker may name `--class-image-config RELATIVE_PATH`, a bounded strict JSON
+`container_class_requirements.v1` declaration contained in its loaded runtime
+generation. Its explicit `--class` selects the class; a missing class remains
+unknown. The normalized full declaration is bound by SHA-256. Without this
+option, worker offers and action admission retain the existing image-reference
+contract. No fleet declaration or live activation is supplied by this source
+slice.
+
+`InventoryCache.snapshot()` exposes a detached complete record from the same
+host-local cache, refresh lock, probe budget and freshness validation used by
+`get()`. The worker reads once for both references and the class evaluator.
+Absent supplemental store/name evidence refuses the class without discarding
+valid legacy references. Open and parked offers report `container_class_verdict`;
+`pbstatus` and its MCP census retain it. Derived offer evidence is advisory and
+expires against both observation and evaluation time within the existing 30 s
+inventory bound, even if the worker has republished the offer more recently.
+
+Only rows declaring `container_images` consume this first gate. A configured
+claim re-evaluates the existing `class_image_verdict` against its actual supplied
+inventory at the five-second claim bound, before reservation, after reservation
+I/O and after the claim rename. It never uses the offer verdict to authorize a
+claim. Failure before rename leaves the row ready; expiry after rename restores
+the moved generation through the existing lost-admission path before committing
+tokens. Rollback returns only that claimant's reservation handles and preserves
+a competing successor. A named `container_class_<reason>` denial includes the
+configuration digest and observed/refused class evidence. A successful claim
+retains that evidence in its existing claim/terminal history. Incompatible GPU
+rows whose transition is busy retain no synthetic room for this gate.
+
+Native rows stay eligible, including archive-backed actions whose own admitted
+loader supplies an image. Extra undeclared image names remain allowed. This
+slice does **not** cover a native row's undeclared Docker launch, freeze daemon
+state or prevent a later image removal. The existing Docker shim needs a fresh
+launch-time class check for that remaining part of #807. Explicit fleet class
+sets, runtime rollout and live qualification also remain owed. No admission,
+lease, cleanup, quota or physical reclamation authority is inferred from an
+offline fixture or a derived offer. No staged-read requirement's deployment or
+workload-proof axis changes.
+
 ### A kill names what it waited on
 
 An ending at the `no_progress`, `execution_deadline` or `withdrawn` rung
