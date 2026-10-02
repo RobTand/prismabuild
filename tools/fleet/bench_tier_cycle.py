@@ -51,7 +51,7 @@ copy.  The same script, run against both trees, measures what sharing does
 to the cycle.
 
 Run it through PrismaBuild, never against the live queue. Ordinary CPU
-qualification uses an eligible GB10. When an issue requires dl380g10
+qualification uses any eligible CPU worker. When an issue requires dl380g10
 before/after evidence (#1027), submit from dl380g10 with
 ``--measurement --host-class dl380g10 --tag dl380g10`` so PB owns host
 isolation. Measurement submissions bind the submitting box's executable,
@@ -59,9 +59,14 @@ platform and accelerator facts; a GB10 submitter cannot stand in for this
 CPU-only host. Retain admission evidence plus matching Netdata series.
 Do not request a manual window or execute the benchmark outside PB::
 
-    pbrun.py --cwd <checkout> --tag gb10 --cpus 2 --demand mem_gb=8 \\
-        --priority -10 --timeout-s 600 -- python3 tools/fleet/bench_tier_cycle.py \\
+    pbrun.py --cwd <checkout> --cpus 1 --demand mem_gb=8 \\
+        --priority -10 --timeout-s 600 -- /home/rob/venvs/pb-cpu/bin/python \\
+        tools/fleet/bench_tier_cycle.py \\
         --work <scratch dir> --out <results dir> --py-spy <path to py-spy>
+
+A matched dl380g10 measurement uses the same command from that host with
+``--measurement --host-class dl380g10``; retain both arms in one admitted
+action, interleave their order, and collect the corresponding Netdata windows.
 """
 from __future__ import annotations
 
