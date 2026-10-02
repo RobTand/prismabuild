@@ -15,6 +15,7 @@ tmpfs state directory with its same-directory guard lock.
 from __future__ import annotations
 
 import fcntl
+import json
 import os
 from pathlib import Path
 import shutil
@@ -64,8 +65,10 @@ def tmpfs_mount() -> Path:
     """A real tmpfs mount this box holds, or a recorded skip."""
 
     points = _mount_points(lambda kind: kind == "tmpfs")
-    # The affected worker's BOX_STATE_ROOT lives on /dev/shm-style tmpfs;
-    # prefer it so the control exercises the production mount when present.
+    # /dev/shm is not the production mount -- the affected worker's
+    # BOX_STATE_ROOT is /tmp, which is tmpfs there.  Prefer /dev/shm as a
+    # representative writable tmpfs of the same filesystem type so the
+    # control never mounts or repoints anything.
     points.sort(key=lambda point: 0 if point == Path("/dev/shm") else 1)
     mount = _an_accessible_directory(points, writable=True)
     if mount is None:
@@ -174,8 +177,10 @@ def test_the_census_reader_runs_on_a_real_tmpfs_state_directory(
     assert set(value) == {"measurements", "elections", "selections",
                           "opportunities", "keys"}
     assert value["keys"] == []
-    # The reader ran from this exact directory: its guard lives here and stays
-    # (a permanent guard is the design; a cleared /tmp only lapses it).
+    # The reader ran from this exact directory: its guard lives here and stays.
+    # A permanent guard is the design, and the state root must never be cleared
+    # or repointed while census readers or admission claimants can survive: a
+    # cleared /tmp only lapses that mutual exclusion.
     guard = state / (census.name + ".guard")
     assert guard.exists()
     # Reuse control: a settled reader fence leaves the guard reusable.
@@ -193,6 +198,26 @@ def test_a_malformed_reader_fence_refuses_instead_of_being_ignored(
     census = reservation.CensusReader(queue, queue.ledger())
     (state / census.name).write_text("{", encoding="utf-8")
     with pytest.raises(reservation.CensusUnavailable):
+        reservation.CensusReader(queue, queue.ledger()).capture()
+
+
+def test_a_live_retained_census_fence_refuses_the_next_reader(
+    fleet, tmpfs_state: Path, monkeypatch
+):
+    queue, *_ = fleet
+    state = tmpfs_state / "box-state"
+    monkeypatch.setattr(adaptive_cpu, "BOX_STATE_ROOT", state)
+    census = reservation.CensusReader(queue, queue.ledger())
+    census.capture()  # settles the reader and writes its ownership fence
+    marker = state / census.name
+    record = json.loads(marker.read_text(encoding="utf-8"))
+    # Point the fence at a live process on this boot, with its real start time:
+    # the next reader must refuse the retained fence, never read past it.
+    fields = Path("/proc/1/stat").read_text(encoding="utf-8").rsplit(") ", 1)[1].split()
+    record["pid"] = 1
+    record["starttime_ticks"] = int(fields[19])
+    marker.write_text(json.dumps(record), encoding="utf-8")
+    with pytest.raises(reservation.CensusUnavailable, match="retained"):
         reservation.CensusReader(queue, queue.ledger()).capture()
 
 
