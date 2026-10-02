@@ -175,3 +175,22 @@ pbmergeq.py --config C once --mode dry-run PR [PR ...]  # one batch, outside the
 pbmergeq.py --config C status                # print STATUS.txt
 pbmergeq.py --config C resume-runtime BATCH   # request fresh validation; daemon stopped
 ```
+
+
+### Duration hints across source changes (#1438)
+
+Failure/baseline reuse retains the full current-tree runtime/config identity.
+Historical file durations are placement advice only. The queue validates the
+previous report's stored v3 identity against its own source tree and the current
+runtime, full pins/pin-source bytes, configuration, domain and frozen pbtest path.
+A completed existing v3 batch can supply its recorded source identity;
+unidentified legacy reports remain ignored.
+
+Git file modes/blobs must agree for every file/duration key in a reused shard.
+Changed or missing files, including their mixed shard rows, use ordinary default
+estimates. Changed collection plugins, pytest configuration or test-package
+initializers invalidate the entire optional hint set. The derived duration-hints report retains only complete untouched
+original rows, stdout and receipts; it grants no pass/fail/result/skip reuse and
+does not alter the source report, test population, or sealed action. Missing
+source objects or unusable history simply omit the optional advice. These are
+historical estimates, not a speed measurement.

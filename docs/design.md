@@ -15162,6 +15162,19 @@ mechanism, not a second source registry or dispatcher (#1436). Deployment of
 this queue-only source requires separate coordinator acceptance.
 
 
+Duration-hint selection is separate from baseline verdict reuse (#1438).
+Current-tree baseline identity remains unchanged. A prior report's own source
+tree validates its recorded v3 runtime/config identity, while Git mode/blob
+agreement limits scheduling hints to untouched complete original shard rows.
+Changed/missing-file rows fall back to the existing estimates. Changes to
+collection plugins, pytest configuration or test-package initializers invalidate
+all optional hints. Full pins,
+pin-source bytes, interpreter, test domain/config and frozen published tool
+must still agree. Existing typed terminal metadata can identify prior source;
+legacy unbound reports remain ignored. No source receipt/output is edited,
+no result or skipped test is adopted, and no new cache or dispatcher is added.
+
+
 The ordinary and movement action log capture share one sealed shell generator
 (#1439). Its existing action PATH chooses gnutee when available, otherwise tee;
 the resolved executable is recorded in ordinary stderr evidence. Both pipeline
