@@ -29,21 +29,30 @@ merges, and refuses to start unless the config's ``merge_enabled_file``
 exists. Queue, batch and a ledger of every status and merge live in
 ``state_dir``, so a restart resumes without a double post or merge.
 """
+
 from __future__ import annotations
 
 import argparse
 import contextlib
 import dataclasses
 import fcntl
-import importlib
+import importlib.util
 import json
 import os
-from pathlib import Path
 import shutil
 import subprocess
 import sys
 import time
-from typing import Callable, Iterable
+from collections.abc import Callable, Iterable
+from pathlib import Path
+
+from pbmergeq_runtime import (
+    RuntimeSelectionError,
+    baseline_identity,
+    runtime_refusal,
+    select_runtime,
+    validate_policy,
+)
 
 #: GitHub refuses a commit status description longer than this.
 DESCRIPTION_LIMIT = 140
@@ -63,7 +72,7 @@ class Config:
     state_dir: Path
     pbtest: Path                 # the PUBLISHED pbtest.py
     client_python: str           # an interpreter with pytest, to run pbtest.py
-    test_python: str             # the interpreter on the target box
+    test_python: str             # static path or declared pin template
     pbtest_args: tuple[str, ...]
     test_paths: tuple[str, ...] = ("tests",)
     exclude: tuple[str, ...] = ()
@@ -80,6 +89,12 @@ class Config:
     flake_labels: tuple[str, ...] = ("P2",)
     merge_enabled_file: str = ""
     tmpdir: str = ""
+    runtime_pins: dict = dataclasses.field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        # Freeze the operator's published link once, before any discovery/import
+        # or submission. A new queue/config may bind a newer generation.
+        object.__setattr__(self, "pbtest", self.pbtest.resolve())
 
     @property
     def fetch_url(self) -> str:
@@ -109,8 +124,12 @@ def load_config(path: str | Path) -> Config:
     if "--priority" not in args:
         raise SystemExit("pbmergeq: pbtest_args must carry --priority")
     for owned in ("--checkout", "--python", "--json", "--history"):
-        if owned in args:
+        if any(arg.split("=", 1)[0] == owned for arg in args):
             raise SystemExit(f"pbmergeq: pbtest_args may not set {owned}; the queue owns it")
+    try:
+        validate_policy(cfg.test_python, cfg.runtime_pins)
+    except RuntimeSelectionError as exc:
+        raise SystemExit(f"pbmergeq: {exc}") from exc
     return cfg
 
 
@@ -129,15 +148,35 @@ class RunResult:
     report: str = ""                 # the --json path
     actions: list[str] = dataclasses.field(default_factory=list)  # every shard's key
     wall_s: float = 0.0
+    runtime: dict = dataclasses.field(default_factory=dict)
+    runtime_refusal: str = ""
+    log: str = ""
+
+
+def load_published_module(path: Path):
+    """One owner for modules belonging to the selected published entrypoint."""
+    where = str(path.parent)
+    if where not in sys.path:
+        sys.path.insert(0, where)
+    # Normal import caching can return another generation (or the admitted
+    # shard's embedded outcome recorder). Load exactly this owner's file.
+    name = f"pbmergeq_published_{path.stem}:{path.parent}"
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load published module {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        sys.modules.pop(name, None)
+        raise
+    return module
 
 
 def load_outcomes(pbtest: Path):
     """``pbtest_outcomes`` from beside the published ``pbtest.py``."""
-
-    where = str(pbtest.parent)
-    if where not in sys.path:
-        sys.path.insert(0, where)
-    return importlib.import_module("pbtest_outcomes")
+    return load_published_module(pbtest.with_name("pbtest_outcomes.py"))
 
 
 def reduce_report(report: list[dict], outcomes) -> RunResult:
@@ -154,6 +193,7 @@ def reduce_report(report: list[dict], outcomes) -> RunResult:
     files: list[str] = []
     receipts: list[str] = []
     actions: list[str] = []
+    refusals: list[str] = []
     for shard in report:
         files.extend(shard.get("files") or ())
         if shard.get("action_key"):
@@ -162,17 +202,21 @@ def reduce_report(report: list[dict], outcomes) -> RunResult:
             receipts.append(shard["receipt_path"])
         record = outcomes.parse(shard.get("output") or "") if shard.get("ran") else None
         if record is None:
+            refusal = runtime_refusal(shard.get("output") or "")
+            if refusal:
+                refusals.append(refusal)
             inconclusive.extend(shard.get("files") or ())
             continue
         for row in record.get("reports") or ():
-            entry = dict(zip(outcomes.REPORT_FIELDS, row))
+            entry = dict(zip(outcomes.REPORT_FIELDS, row, strict=False))
             if entry["category"] in ("failed", "error"):
                 failed.add(entry["nodeid"])
         reconciliation = shard.get("reconciliation") or {}
         failed.update(f"{nodeid} (never ran)" for nodeid in reconciliation.get("never_ran") or ())
         inconclusive.extend(reconciliation.get("missing_files") or ())
     return RunResult(failed=failed, inconclusive=sorted(set(inconclusive)),
-                     files=files, receipts=receipts, actions=actions)
+                     files=files, receipts=receipts, actions=actions,
+                     runtime_refusal="\n".join(dict.fromkeys(refusals)))
 
 
 def node_file(nodeid: str) -> str:
@@ -316,8 +360,11 @@ class Store:
         entry = {"pr": pr, "sha": sha, "at": now(), "attempts": attempts}
         self.state["queue"] = [entry, *queue] if front else [*queue, entry]
 
+    def baseline_path(self, identity: str) -> Path:
+        return self.baselines / f"{identity}.json"
+
     def baseline(self, tree: str) -> dict[str, list[str]]:
-        path = self.baselines / f"{tree}.json"
+        path = self.baseline_path(tree)
         return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
 
     def remember_baseline(self, tree: str, files: Iterable[str], failed: Iterable[str]) -> None:
@@ -326,13 +373,17 @@ class Store:
         for nodeid in failed:
             by_file.setdefault(node_file(nodeid), []).append(nodeid)
         known.update({name: sorted(nodes) for name, nodes in by_file.items()})
-        write_atomic(self.baselines / f"{tree}.json", json.dumps(known, indent=1))
+        write_atomic(self.baseline_path(tree), json.dumps(known, indent=1))
 
     def status_text(self) -> str:
         state = self.state
         lines = [f"pbmergeq {self.root}  updated {now()}  mode {state.get('mode')}"]
         if state.get("not_before", 0) > time.time():
             lines.append(f"backing off until {time.strftime('%H:%M:%SZ', time.gmtime(state['not_before']))}")
+        for bid, blocked in state.get("runtime_blocked", {}).items():
+            lines.append(f"runtime-blocked {bid}: {blocked['reason']}")
+            lines.append(f"  repair/provision the named runtime, then resume-runtime {bid}; "
+                         "fresh checkout selection and worker guards still apply")
         batch = state.get("batch")
         if batch:
             prs = ", ".join(f"#{p['pr']}@{p['sha'][:8]}" for p in batch.get("included", []))
@@ -360,7 +411,7 @@ def single_instance(root: Path):
         try:
             fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            raise SystemExit(f"pbmergeq: another instance holds {root / 'lock'}")
+            raise SystemExit(f"pbmergeq: another instance holds {root / 'lock'}") from None
         yield
 
 
@@ -533,6 +584,32 @@ class Mirror:
 # pbtest runs
 
 
+def checkout_source(checkout: Path) -> dict:
+    source = call_tool(["git", "rev-parse", "HEAD", "HEAD^{tree}"],
+                       cwd=checkout, check=False)
+    return {"checkout": str(checkout),
+            "source": source.stdout.splitlines() if source.returncode == 0 else []}
+
+
+def checkout_runtime(cfg: Config, checkout: Path) -> dict:
+    return {**select_runtime(checkout, cfg.test_python, cfg.runtime_pins),
+            **checkout_source(checkout), "pbtest": str(cfg.pbtest)}
+
+
+def baseline_key(cfg: Config, tree: str, runtime: dict) -> str:
+    # Runtime evidence names the actually launched entrypoint; the config's
+    # publisher link was frozen before discovery and is never resolved here.
+    return baseline_identity(tree, runtime, dataclasses.asdict(cfg))
+
+
+def test_command(cfg: Config, checkout: Path, files: list[str], report: Path,
+                 history: list[str], *, python: str) -> list[str]:
+    """Build the submitted argv independently of interpreter selection policy."""
+    return [cfg.client_python, str(cfg.pbtest),
+            "--checkout", str(checkout), "--python", python,
+            "--json", str(report), *cfg.pbtest_args, *history, *files]
+
+
 class Runner:
     """Submits ``pbtest.py`` runs and waits for them with a heartbeat."""
 
@@ -545,8 +622,7 @@ class Runner:
         """Every test file the suite holds, and the fleet-data files left out."""
 
         if self._pbtest is None:
-            load_outcomes(self.cfg.pbtest)          # puts pbtest's dir on sys.path
-            self._pbtest = importlib.import_module("pbtest")
+            self._pbtest = load_published_module(self.cfg.pbtest)
         files = [f for f in self._pbtest.discover(checkout, list(self.cfg.test_paths))
                  if f not in self.cfg.exclude]
         left_out: list[str] = []
@@ -555,14 +631,19 @@ class Runner:
             files = [f for f in files if f not in left_out]
         return files, left_out
 
-    def history(self) -> list[str]:
+    def history(self, runtime: dict) -> list[str]:
         latest = self.store.state.get("history_report")
-        return ["--history", latest] if latest and Path(latest).is_file() else []
+        source = runtime.get("source") or []
+        identity = baseline_key(self.cfg, source[1], runtime) if len(source) == 2 else None
+        if (identity and identity == self.store.state.get("history_runtime")
+                and latest and Path(latest).is_file()):
+            return ["--history", latest]
+        return []
 
     def command(self, checkout: Path, files: list[str], report: Path) -> list[str]:
-        return [self.cfg.client_python, str(self.cfg.pbtest),
-                "--checkout", str(checkout), "--python", self.cfg.test_python,
-                "--json", str(report), *self.cfg.pbtest_args, *self.history(), *files]
+        runtime = checkout_runtime(self.cfg, checkout)
+        return test_command(self.cfg, checkout, files, report, self.history(runtime),
+                            python=runtime["python"])
 
     def run_many(self, batch: str, outdir: Path,
                  jobs: list[tuple[str, Path, list[str]]]) -> dict[str, RunResult]:
@@ -571,13 +652,14 @@ class Runner:
         results = self._wait(batch, outdir, jobs)
         for attempt in range(1, self.cfg.inconclusive_retries + 1):
             retry = [(f"{name}.retry{attempt}", checkout, results[name].inconclusive)
-                     for name, checkout, _ in jobs if results[name].inconclusive]
+                     for name, checkout, _ in jobs if results[name].inconclusive
+                     and not results[name].runtime_refusal]
             if not retry:
                 break
             for name, _, files in retry:
                 self.store.event(batch, f"run {name}: {len(files)} inconclusive file(s) re-run")
             again = self._wait(batch, outdir, retry)
-            for name, checkout, _ in jobs:
+            for name, _, _ in jobs:
                 key = f"{name}.retry{attempt}"
                 if key in again:
                     redo = set(results[name].inconclusive)
@@ -588,6 +670,8 @@ class Runner:
                     merged.receipts += again[key].receipts
                     merged.actions += again[key].actions
                     merged.wall_s += again[key].wall_s
+                    merged.runtime_refusal = again[key].runtime_refusal
+                    merged.log = again[key].log
         return results
 
     def _wait(self, batch: str, outdir: Path,
@@ -596,15 +680,30 @@ class Runner:
         env = dict(os.environ)
         if self.cfg.tmpdir:
             env["TMPDIR"] = self.cfg.tmpdir
-        live = {}
+        live, results = {}, {}
         for name, checkout, files in jobs:
             report = outdir / f"{name}.json"
             log = outdir / f"{name}.log"
             report.unlink(missing_ok=True)
+            try:
+                runtime = checkout_runtime(self.cfg, checkout)
+            except RuntimeSelectionError as exc:
+                reason = f"pbmergeq: runtime selection refused: {exc}"
+                write_atomic(log, reason + "\n")
+                results[name] = RunResult(set(), list(files), list(files), [],
+                                         report=str(report), log=str(log),
+                                         runtime={"python": self.cfg.test_python,
+                                                  "pbtest": str(self.cfg.pbtest),
+                                                  **checkout_source(checkout),
+                                                  "policy": self.cfg.runtime_pins},
+                                         runtime_refusal=reason)
+                continue
+            command = test_command(self.cfg, checkout, files, report, self.history(runtime),
+                                   python=runtime["python"])
             handle = log.open("w", encoding="utf-8")
-            process = subprocess.Popen(self.command(checkout, files, report), stdout=handle,
+            process = subprocess.Popen(command, stdout=handle,
                                        stderr=subprocess.STDOUT, env=env, text=True)
-            live[name] = (process, handle, report, log, len(files), time.monotonic())
+            live[name] = (process, handle, report, log, runtime, time.monotonic())
             self.store.event(batch, f"run {name} started: {len(files)} file(s) on "
                                     f"{checkout.name}, pid {process.pid}, log {log}")
         last = time.monotonic()
@@ -612,29 +711,37 @@ class Runner:
             time.sleep(2)
             if time.monotonic() - last >= HEARTBEAT_S:
                 last = time.monotonic()
-                for name, (process, _, _, log, count, started) in live.items():
+                for name, (process, _, _, log, _, started) in live.items():
                     if process.poll() is None:
                         self.store.event(batch, f"run {name} waiting "
                                                 f"{time.monotonic() - started:.0f}s: "
                                                 f"{self._progress(log)} shard(s) reported")
                 self.store.write_status()
-        results = {}
-        for name, (process, handle, report, log, count, started) in live.items():
+        for name, (process, handle, report, log, runtime, started) in live.items():
             handle.close()
             wall = time.monotonic() - started
-            if report.exists():
-                result = reduce_report(json.loads(report.read_text(encoding="utf-8")),
-                                       self.outcomes)
-            else:
-                files = next(f for n, _, f in jobs if n == name)
-                result = RunResult(failed=set(), inconclusive=list(files), files=list(files),
-                                   receipts=[])
+            files = next(f for n, _, f in jobs if n == name)
+            result = self.read_result(report, files, log=log, returncode=process.returncode)
+            result.runtime, result.log = runtime, str(log)
             result.report, result.wall_s = str(report), wall
             results[name] = result
             self.store.event(batch, f"run {name} ended rc={process.returncode} in {wall:.0f}s: "
                                     f"{len(result.failed)} failing node(s), "
                                     f"{len(result.inconclusive)} inconclusive file(s)")
         return results
+
+    def read_result(self, report: Path, files: list[str], *, log: Path,
+                    returncode: int) -> RunResult:
+        if report.exists():
+            # The report owns classification: only its unobserved shards can
+            # name a refusal. Failed-client echoes of observed pytest cannot.
+            return reduce_report(json.loads(report.read_text(encoding="utf-8")),
+                                 self.outcomes)
+        result = RunResult(failed=set(), inconclusive=list(files), files=list(files),
+                           receipts=[])
+        if returncode:
+            result.runtime_refusal = runtime_refusal(log.read_text(encoding="utf-8", errors="replace"))
+        return result
 
     @staticmethod
     def _progress(log: Path) -> int:
@@ -648,6 +755,10 @@ class Runner:
 
 # --------------------------------------------------------------------------
 # The queue
+
+
+class RuntimeBlocked(Exception):
+    """No compatible reviewed runtime observed; operator repair/resume is required."""
 
 
 class Inconclusive(Exception):
@@ -697,23 +808,45 @@ class Queue:
             if here:
                 submit.append((name, checkout, here))
         results = self.runner.run_many(batch["id"], outdir, submit) if submit else {}
-        for name, _, _ in jobs:
+        for name, checkout, _ in jobs:
             got = results.get(name) or RunResult(failed=set(), inconclusive=[], files=[],
                                                  receipts=[])
+            if not got.runtime:
+                try:
+                    got.runtime = checkout_runtime(self.cfg, checkout)
+                except RuntimeSelectionError as exc:
+                    got.runtime_refusal = f"pbmergeq: runtime selection refused: {exc}"
+                    got.runtime = {"python": self.cfg.test_python, **checkout_source(checkout),
+                                   "pbtest": str(self.cfg.pbtest), "policy": self.cfg.runtime_pins}
             results[name] = dataclasses.replace(got, files=[*got.files, *absent[name]])
+            self.record_run(batch, name, results[name])
         return results
 
-    def checked(self, batch: dict, name: str, results: dict[str, RunResult]) -> RunResult:
-        result = results[name]
+    def record_run(self, batch: dict, name: str, result: RunResult) -> None:
         batch.setdefault("runs", {})[name] = {
             "report": result.report, "wall_s": round(result.wall_s, 1),
             "files": len(result.files), "failed": sorted(result.failed),
             "inconclusive": result.inconclusive, "receipts": result.receipts,
-            "actions": result.actions}
+            "actions": result.actions, "runtime": result.runtime,
+            "runtime_refusal": result.runtime_refusal, "log": result.log}
         self.store.save()
-        if result.inconclusive:
-            raise Inconclusive(f"{name}: {len(result.inconclusive)} file(s) never observed")
-        return result
+
+    def check_results(self, batch: dict, results: dict[str, RunResult]) -> None:
+        """Record and classify the results owned by one concurrent invocation."""
+        for name, result in results.items():
+            self.record_run(batch, name, result)
+        # Classification belongs to the complete concurrent result set, not
+        # caller iteration order. Repairable runtime blocks take precedence.
+        for name, result in results.items():
+            if result.runtime_refusal:
+                raise RuntimeBlocked(f"{name}: {result.runtime_refusal}")
+        for name, result in results.items():
+            if result.inconclusive:
+                raise Inconclusive(f"{name}: {len(result.inconclusive)} file(s) never observed")
+
+    def checked(self, batch: dict, name: str, results: dict[str, RunResult]) -> RunResult:
+        self.check_results(batch, results)
+        return results[name]
 
     # -- selection and build -----------------------------------------------
 
@@ -781,6 +914,18 @@ class Queue:
         outdir = self.store.batches / batch["id"]
         try:
             verdict = self._run(batch, outdir)
+        except RuntimeBlocked as exc:
+            verdict = {"verdict": "runtime-blocked", "summary": str(exc)}
+            # Keep queued pins/attempts, but skip only this batch's entries until
+            # an operator requests fresh validation. Other queue entries can run.
+            affected = batch.get("included", entries)
+            state.setdefault("runtime_blocked", {})[batch["id"]] = {
+                "reason": str(exc), "entries": affected,
+                "runs": batch.get("runs", {}), "base": batch.get("base"),
+                "candidate": batch.get("candidate"), "config": dataclasses.asdict(self.cfg)}
+            state["runtime_blocked"][batch["id"]]["config"] = json.loads(
+                json.dumps(state["runtime_blocked"][batch["id"]]["config"], default=str))
+            self.requeue(affected, front=True, charge=False)
         except Inconclusive as exc:
             # Nobody observed some files: no verdict, nothing posted, retry later.
             verdict = {"verdict": "inconclusive", "summary": str(exc)}
@@ -854,12 +999,15 @@ class Queue:
         full = self.checked(batch, "candidate", self.run(
             batch, outdir, [("candidate", checkout, files)]))
         self.store.state["history_report"] = full.report
+        self.store.state["history_runtime"] = baseline_key(
+            self.cfg, batch["candidate_tree"], full.runtime)
         if full.failed:
             new, shared, flakes = self.judge(batch, outdir, checkout, full)
         else:
             new, shared, flakes = [], [], []
         batch.update({"new": new, "shared": shared, "flakes": flakes})
-        self.store.remember_baseline(batch["candidate_tree"], full.files,
+        self.store.remember_baseline(baseline_key(self.cfg, batch["candidate_tree"],
+                                                 full.runtime), full.files,
                                      set(full.failed) - set(flakes))
         for nodeid in flakes:
             self.flake(batch, nodeid)
@@ -871,11 +1019,20 @@ class Queue:
         """New, shared-with-main, and flaky node IDs among the candidate's failures."""
 
         failing_files = files_of(full.failed)
-        known = self.store.baseline(batch["base_tree"])
+        base_checkout = self.mirror.worktree(f"{batch['id']}-base", batch["base"])
+        try:
+            base_runtime = checkout_runtime(self.cfg, base_checkout)
+        except RuntimeSelectionError as exc:
+            reason = f"pbmergeq: runtime selection refused: {exc}"
+            self.record_run(batch, "base", RunResult(set(), failing_files, failing_files, [],
+                runtime={"python": self.cfg.test_python, **checkout_source(base_checkout),
+                         "pbtest": str(self.cfg.pbtest), "policy": self.cfg.runtime_pins}, runtime_refusal=reason))
+            raise RuntimeBlocked(f"base: {reason}") from exc
+        identity = baseline_key(self.cfg, batch["base_tree"], base_runtime)
+        known = self.store.baseline(identity)
         missing = [f for f in failing_files if f not in known]
         jobs = [("rerun", checkout, failing_files)]
         if missing:
-            base_checkout = self.mirror.worktree(f"{batch['id']}-base", batch["base"])
             jobs.append(("base", base_checkout, missing))
         self.phase(batch, "judging", f"{len(full.failed)} failing node(s) in "
                    f"{len(failing_files)} file(s); base needs {len(missing)} file(s), "
@@ -884,8 +1041,8 @@ class Queue:
         rerun = self.checked(batch, "rerun", results)
         if missing:
             base = self.checked(batch, "base", results)
-            self.store.remember_baseline(batch["base_tree"], missing, base.failed)
-            known = self.store.baseline(batch["base_tree"])
+            self.store.remember_baseline(identity, missing, base.failed)
+            known = self.store.baseline(identity)
         base_failed = {n for nodes in known.values() for n in nodes}
         shared = sorted(full.failed & base_failed)
         candidate_new = full.failed - base_failed
@@ -916,7 +1073,7 @@ class Queue:
         batch["description"] = description
         posted = [p for p in batch["included"]
                   if self.github.post_status(batch["id"], p["sha"], "success", description)]
-        summary = (f"green: " + ", ".join(f"#{p['pr']}" for p in posted)
+        summary = ("green: " + ", ".join(f"#{p['pr']}" for p in posted)
                    + f" ({len(shared)} failure(s) shared with main)")
         if self.mode != "merge":
             return {"verdict": "green", "summary": summary}
@@ -1007,8 +1164,15 @@ class Queue:
             self.store.event(None, f"queue: {[e['pr'] for e in self.store.state['queue']]}")
         if not self.store.state["queue"] or self.store.state["not_before"] > time.time():
             return None
-        entries = self.store.state["queue"][:self.cfg.batch_cap]
-        self.store.state["queue"] = self.store.state["queue"][self.cfg.batch_cap:]
+        blocked_prs = {entry["pr"] for block in self.store.state.get("runtime_blocked", {}).values()
+                       for entry in block["entries"]}
+        entries = [entry for entry in self.store.state["queue"]
+                   if entry["pr"] not in blocked_prs][:self.cfg.batch_cap]
+        if not entries:
+            return None
+        selected = {entry["pr"] for entry in entries}
+        self.store.state["queue"] = [entry for entry in self.store.state["queue"]
+                                     if entry["pr"] not in selected]
         self.store.save()
         return self.run_batch(entries)
 
@@ -1034,7 +1198,7 @@ def check_mode(cfg: Config, mode: str) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
     parser.add_argument("--config", required=True,
                         help="the repository's queue config (JSON)")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1049,6 +1213,8 @@ def main(argv: list[str] | None = None) -> int:
     once.add_argument("--mode", choices=MODES, required=True,
                       help="dry-run posts nothing; status posts; merge also merges")
     once.add_argument("prs", type=int, nargs="+", help="pull request numbers, in merge order")
+    resume = sub.add_parser("resume-runtime", help="request fresh validation of a repaired runtime")
+    resume.add_argument("batch", help="runtime-blocked batch ID from STATUS.txt")
     sub.add_parser("status", help="print the status file")
     args = parser.parse_args(argv)
     cfg = load_config(args.config)
@@ -1062,6 +1228,17 @@ def main(argv: list[str] | None = None) -> int:
         path = cfg.state_dir / "STATUS.txt"
         print(path.read_text(encoding="utf-8") if path.exists() else "no status yet")
         return 0
+    if args.command == "resume-runtime":
+        with single_instance(cfg.state_dir):
+            store = Store(cfg.state_dir)
+            blocked = store.state.get("runtime_blocked", {})
+            if args.batch not in blocked:
+                raise SystemExit(f"pbmergeq: {args.batch} is not runtime-blocked")
+            del blocked[args.batch]
+            store.save()
+            store.event(args.batch, "operator requested fresh runtime validation; worker guards remain on")
+            store.write_status()
+        return 0
     check_mode(cfg, args.mode)
     with single_instance(cfg.state_dir):
         queue = open_queue(cfg, args.mode, once=args.command == "once")
@@ -1073,7 +1250,7 @@ def main(argv: list[str] | None = None) -> int:
                 "new", "shared", "flakes", "description", "wall_s")}, indent=1))
             if queue.github.would:
                 print("would:\n  " + "\n  ".join(queue.github.would))
-            return 0
+            return 2 if batch["verdict"] == "runtime-blocked" else 0
         queue.store.event(None, f"daemon started in {args.mode} mode, pid {os.getpid()}")
         while True:
             queue.tick()

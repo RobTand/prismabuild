@@ -234,13 +234,19 @@ def persist_unit(unit: bytes) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
-    parser.add_argument("--policy", required=True, action=_Once)
-    parser.add_argument("--size-bytes", required=True, type=_positive, action=_Once)
-    parser.add_argument("--owner-uid", required=True, type=_owner, action=_Once)
-    parser.add_argument("--owner-gid", required=True, type=_owner, action=_Once)
+    parser.add_argument("--policy", required=True, action=_Once,
+                        help="RAM policy JSON inside the pinned entrypoint generation")
+    parser.add_argument("--size-bytes", required=True, type=_positive, action=_Once,
+                        help="positive decimal mount size in bytes, bounded by the policy ceiling")
+    parser.add_argument("--owner-uid", required=True, type=_owner, action=_Once,
+                        help="mount owner UID: canonical decimal non-root uint32 (1..4294967294)")
+    parser.add_argument("--owner-gid", required=True, type=_owner, action=_Once,
+                        help="mount owner GID: canonical decimal non-root uint32 (1..4294967294)")
     mode = parser.add_mutually_exclusive_group(required=True)
-    mode.add_argument("--render", nargs=0, action=_Once)
-    mode.add_argument("--install", nargs=0, action=_Once)
+    mode.add_argument("--render", nargs=0, action=_Once,
+                      help="render the fixed unit to stdout without installing or activating it")
+    mode.add_argument("--install", nargs=0, action=_Once,
+                      help="persist as root, reload and enable the unit without starting the mount")
     args = parser.parse_args(argv)
     try:
         unit = plan_unit(policy=args.policy, size_bytes=args.size_bytes,

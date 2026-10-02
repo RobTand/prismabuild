@@ -380,16 +380,19 @@ What is worth knowing before using it:
     comparable only through the `rate_hz` each one carries.
 *   **The backend has to be visible to the launcher's interpreter.** The
     backend is looked up beside `sys.executable` first and then on `PATH`, and
-    `sys.executable` is the worker loop's `--python`. dl380g10 launches under
-    `/home/rob/venvs/pb-cpu/bin/python` and sparklina under
-    `/home/rob/dq-runs/venvs/prismaquant-cu130/bin/python`; py-spy 0.4.2 is in
-    both, so `--profile sample` is backed on both. sparky's worker loop passes
-    no `--python`, so it launches under `/usr/bin/python3`, and its unit `PATH`
-    has no `~/.local/bin` -- where sparky's py-spy actually lives. There
-    `--profile sample` **refuses** with `profile backend 'py-spy' is not
-    installed on sparky` rather than running unprofiled. Refusing is the
-    designed behaviour; making sparky eligible is a worker-loop change, not a
-    flag.
+    `sys.executable` is the worker loop's `--python`. Eligibility comes from
+    that launcher's lookup, not a fixed host roster. If neither lookup finds
+    py-spy, the mode refuses rather than running unprofiled; verify the actual
+    attempt's backend identity and produced-profile record.
+
+    The 2026-09-07 observations were: dl380g10 launched under
+    `/home/rob/venvs/pb-cpu/bin/python`, sparklina under
+    `/home/rob/dq-runs/venvs/prismaquant-cu130/bin/python`, and both had py-spy
+    0.4.2. Sparky then launched under `/usr/bin/python3` with no
+    `~/.local/bin` on the unit's `PATH`, and its lookup refused. These are
+    historical observations, not the current fleet inventory. A later
+    installation or launcher change needs its own observed evidence; do not
+    infer eligibility from those old paths.
 *   **py-spy writes its own scratch file under `TMPDIR`** -- the speedscope
     output goes under the action's working directory, but the profiler's
     intermediate does not. It reads the action's sealed environment, whose

@@ -2273,6 +2273,21 @@ miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
   The hard 512 MiB fleet ceiling applies independently to logical
   materialized bytes (summed per path) and compressed bundle bytes; a caller
   may lower but never raise it.
+  Checked snapshot Git text operations share `core._git` with pbrun's
+  fail factory: nonzero and transport refusals retain `SystemExit` and
+  `pbrun: cannot snapshot checkout:` while naming the full Git operation
+  (#1430). Identity reads keep their 30-second bound; snapshot text reads
+  keep 120 seconds, accepted codes, surrogate decoding and optional stripping.
+  Their caller adapter preserves explicit OSError/TimeoutExpired causes;
+  a nonzero exit does not turn an unrelated active caller exception into a
+  direct cause. Delegation retains the canonical runner's broader
+  SubprocessError catch, a compatibility qualification with no demonstrated
+  ordinary-production trigger; the canonical runner is unchanged.
+  Deterministic bundle packing remains a separate binary-streaming subprocess
+  (`stdout=file`, UTF-8 tip bytes on stdin, 1800-second pack bound); its
+  refusals name the pinned pack operation without text-capturing pack bytes
+  and preserve explicit OSError/TimeoutExpired causes.
+  This is diagnostic consolidation, not storage-stall recovery or a speed claim.
 
 The supported preparation boundary is `PrismaBuildCAS.ingest_input()` or the
 dependency-free `ingest-input` CLI. It takes a stable regular-file snapshot,
@@ -7436,8 +7451,18 @@ reaper finds the stale lease.
 
 ### The residency gate
 
-An item may carry a `residency` block naming its lead movement nodes. It is
-admitted only when every lead has a `done/` record whose status is `executed`;
+An item may carry a `residency` block naming its lead movement nodes. A bare
+manifest-planner consumer with a filed plan uses the same derived first-lead
+block that tier discovery uses (`consumer_residency`, #1350), without rewriting
+its READY record. An unreadable filed plan is a `plan_unreadable` denial, not
+advisory prewarm. Explicit mover/egress range blocks are not reinterpreted, and
+an ordinary row with neither a block nor a filed plan remains advisory. This
+is a first-window gate, never a barrier over every later phase.
+
+The existing executed/manifest/pin-or-adoption checks and the readable,
+current composed-map gate (including RAM epoch when declared) apply to that
+derived block unchanged. Except for a matching pinned range already adopted,
+each lead needs a `done/` record whose status is `executed`;
 otherwise the claim is denied before any token
 moves, and the box goes and does other work.  A lead that may still arrive
 reads `residency_lead_not_resident`; a lead that ended somewhere no later
@@ -15051,3 +15076,50 @@ from observation effects. The selected program supplies the existing version
 query, capture command and binary digest; report fields and Core byte recipes
 remain unchanged. This dependency choice is not holder eligibility, a live
 profile receipt, runtime deployment, cache authorization or a speedup claim.
+
+### Merge-queue reviewed interpreter family (#1427)
+
+`tools/fleet/pbmergeq_runtime.py` owns declarative runtime selection and
+compatibility identity; `pbmergeq.py` owns Git/queue lifecycle and pbtest
+submission. Configuration freezes the resolved published pbtest entrypoint once,
+before discovery/module loading/submission. File-owned discovery/outcome modules
+and all batch phases use that exact retained path, also preserved in run evidence.
+Later publisher replacement cannot relabel history or baseline generation.
+Optional `runtime_pins` maps template fields to contained relative
+Python sources and literal assignment names. AST-only selection requires full
+lowercase Git commits and never imports or runs candidate resolvers on the
+coordinator. Static `test_python` configurations remain static. Every candidate,
+base, rerun, retry and bisected prefix uses its own frozen checkout policy.
+Full pins/source digests and checkout commits/trees accompany run evidence;
+path abbreviations never establish compatibility. The installed provenance,
+RECORD and import-owner guard remains the published worker's authority, and
+PB's existing interpreter-path capability owns eligibility/placement.
+
+An explicit pre-pytest pin or interpreter-placement refusal becomes a named
+`runtime-blocked` result, not a code failure, flake or missing-summary retry.
+Reports classify only unobserved shards as refusals; an observed failing outcome
+with echoed refusal text remains code-failure evidence. Client-log fallback is
+limited to no-report invocations. The shared result-set checker records every
+concurrent result and prioritizes runtime refusal over ordinary inconclusiveness,
+so an unobserved rerun cannot hide a refused base or charge PR attempts.
+The affected batch's entries are requeued uncharged and skipped until explicit
+`resume-runtime <batch>` (under the existing single-writer lock) requests fresh
+source/runtime validation. Other entries can run. A runtime-blocked `once`
+exits 2 with its machine-readable verdict; other once exit semantics are unchanged.
+Resume does not attest repair
+or bypass any gate; a still-invalid dependency blocks again. State preserves
+reason, config, source/runtime evidence and all observed actions/logs across
+restart. Unknown interpreter presence retains PB's waiting semantics rather
+than being asserted absent. Generic client failures remain non-green.
+
+The existing baseline store is keyed by source tree, selected interpreter,
+full pins/pin-source digests, complete config and published pbtest generation;
+version3 also binds the actually launched pbtest path. Legacy tree-only and
+version2 post-run-resolved generation results are ignored. History reports require matching
+identity. This is one compatibility definition and the existing evidence store,
+not a runtime registry, installer, cache or dispatcher. See
+[the merge-queue guide](pbmergeq.md) for configuration and operator recovery.
+This source change modifies no staged-read requirement's implementation,
+deployment or workload-proof axis: SC-01/SC-02 placement/movement remain
+PB-owned; ID-08/ID-09 and SAFE-03 distinctions remain binding. No staged-read,
+live queue/runtime activation, numerical, wire or default ship-gate claim is made.

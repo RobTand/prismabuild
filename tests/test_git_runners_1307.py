@@ -6,7 +6,8 @@ every ``git -C`` invocation except ``pbsnapshot._git``, which stays a
 different primitive shape). Each site keeps its current timeout;
 ``seal_and_publish._git`` gains the 30 s core default (it had none).
 
-Read-only: every test runs ``rev-parse`` against this repository itself.
+Tests use read-only repository probes, controlled runner faults and private
+Git fixtures. Execute through PrismaBuild, not on the coordinator.
 """
 
 from __future__ import annotations
@@ -203,3 +204,135 @@ def test_identity_git_falls_back_on_plain_directory(monkeypatch, tmp_path):
     monkeypatch.setattr(subprocess, "run", _norc)
     identity = pb.git_checkout_identity(tmp_path)
     assert identity["head"] == "no-git"
+
+
+def test_snapshot_timeout_keeps_120s_bound_and_refuses(monkeypatch, tmp_path):
+    """#1409: a stalled source seal must not become a partial snapshot."""
+    import pbrun
+
+    captured = {}
+
+    def _hang(cwd, *args, **kwargs):
+        captured.update(cwd=cwd, argv=args, **kwargs)
+        raise subprocess.TimeoutExpired(cmd=["git", *args], timeout=kwargs["timeout"])
+
+    monkeypatch.setattr(pb, "_git_run", _hang)
+    argv = ["add", "-f", "--pathspec-from-file=-", "--pathspec-file-nul"]
+    with pytest.raises(SystemExit, match=r"^pbrun: cannot snapshot checkout: .*120"):
+        pbrun._snapshot_git(tmp_path, argv, input_text="tracked.txt\0")
+    assert captured["timeout"] == 120
+    assert captured["argv"] == tuple(argv)
+    assert captured["input_text"] == "tracked.txt\0"
+    assert captured["errors"] == "surrogateescape"
+
+
+def test_tracked_diff_timeout_is_not_no_git(monkeypatch, tmp_path):
+    """#1410: repository read failure must not mint a no-git identity."""
+    root = tmp_path / "checkout"
+    subprocess.run(["git", "init", "-q", str(root)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(root), "-c", "user.name=Test", "-c",
+         "user.email=test@example.invalid", "commit", "--allow-empty", "-qm", "init"],
+        check=True, capture_output=True,
+    )
+    run_git = pb._git_run
+    captured = {}
+
+    def _hang_on_diff(cwd, *args, **kwargs):
+        if "diff-index" in args:
+            captured.update(cwd=cwd, argv=args, **kwargs)
+            raise subprocess.TimeoutExpired(
+                cmd=["git", *args], timeout=kwargs["timeout"],
+            )
+        return run_git(cwd, *args, **kwargs)
+
+    monkeypatch.setattr(pb, "_git_run", _hang_on_diff)
+    with pytest.raises(
+        pb.ActionContractError,
+        match=r"^cannot compute pbrun checkout identity: .*timed out after 30",
+    ):
+        pb.git_checkout_identity(root)
+    assert captured["timeout"] == 30
+    assert captured["argv"][-6:] == (
+        "-p", "--binary", "-M", "--no-ext-diff", "--no-textconv", "HEAD",
+    )
+
+
+_SNAPSHOT_OPERATIONS = (
+    ("rev-parse", "HEAD"),
+    ("ls-files", "-z"),
+    ("check-attr", "-z", "--stdin", "filter"),
+    ("cat-file", "--batch-check"),
+    ("diff-tree", "--name-only", "HEAD"),
+    ("read-tree", "HEAD"),
+    ("add", "-f", "--pathspec-from-file=-", "--pathspec-file-nul"),
+    ("write-tree",),
+    ("commit-tree", "fixture-tree"),
+    ("update-ref", "refs/heads/fixture", "fixture-commit"),
+    ("bundle", "create", "fixture.bundle", "HEAD"),
+)
+
+
+@pytest.mark.parametrize("argv", _SNAPSHOT_OPERATIONS)
+@pytest.mark.parametrize(
+    "stderr,stdout,detail",
+    (("generic failure\n", "", "generic failure"),
+     ("", "fallback failure\n", "fallback failure"),
+     ("", "", "17")),
+)
+def test_snapshot_nonzero_refusal_identifies_operation(
+    monkeypatch, tmp_path, argv, stderr, stdout, detail,
+):
+    """#1430: a generic failure must identify every checked seal operation."""
+    import pbrun
+
+    def _failed(*args, **kwargs):
+        return subprocess.CompletedProcess(args, 17, stdout=stdout, stderr=stderr)
+
+    monkeypatch.setattr(pb, "_git_run", _failed)
+    with pytest.raises(SystemExit) as caught:
+        pbrun._snapshot_git(tmp_path, list(argv))
+    message = str(caught.value)
+    assert message.startswith("pbrun: cannot snapshot checkout: ")
+    assert f"Git {' '.join(argv)} failed: {detail}" in message
+
+
+@pytest.mark.parametrize("argv", _SNAPSHOT_OPERATIONS)
+def test_snapshot_transport_refusal_identifies_operation(monkeypatch, tmp_path, argv):
+    import pbrun
+
+    def _failed(*args, **kwargs):
+        raise OSError("generic transport failure")
+
+    monkeypatch.setattr(pb, "_git_run", _failed)
+    with pytest.raises(SystemExit) as caught:
+        pbrun._snapshot_git(tmp_path, list(argv))
+    assert f"Git {' '.join(argv)} failed: generic transport failure" in str(caught.value)
+
+
+@pytest.mark.parametrize("strip", (True, False))
+@pytest.mark.parametrize("returncode", (0, 17))
+def test_snapshot_positive_output_and_options_stay_equivalent(
+    monkeypatch, tmp_path, strip, returncode,
+):
+    import pbrun
+
+    captured = {}
+    output = "\udcffraw\0output\n"
+    environment = {"GIT_INDEX_FILE": "private-index"}
+    argv = ["add", "-f", "--pathspec-from-file=-", "--pathspec-file-nul"]
+
+    def _completed(cwd, *args, **kwargs):
+        captured.update(cwd=cwd, argv=args, **kwargs)
+        return subprocess.CompletedProcess(args, returncode, stdout=output, stderr="")
+
+    monkeypatch.setattr(pb, "_git_run", _completed)
+    actual = pbrun._snapshot_git(
+        tmp_path, argv, environment=environment, input_text="tracked\0",
+        accepted_returncodes=(0, 17), strip=strip,
+    )
+    assert actual == (output.strip() if strip else output)
+    assert captured == {
+        "cwd": tmp_path, "argv": tuple(argv), "env": environment,
+        "input_text": "tracked\0", "errors": "surrogateescape", "timeout": 120,
+    }
