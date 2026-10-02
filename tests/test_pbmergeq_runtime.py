@@ -300,3 +300,129 @@ def test_once_runtime_blocked_is_exit_two_and_carries_verdict_without_enqueuing(
     assert result == 2 and len(launches) == 1
     assert '"verdict": "runtime-blocked"' in capsys.readouterr().out
     assert not queue.store.state["queue"] and not github.calls
+
+
+def _duration_history_two_trees(tmp_path, *, recorded_source=True):
+    cfg = policy(tmp_path)
+    pin(tmp_path, OLD)
+    git("init", "-q", "-b", "main", cwd=tmp_path)
+    git("config", "user.email", "t@t", cwd=tmp_path)
+    git("config", "user.name", "t", cwd=tmp_path)
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    for name in ("test_stable.py", "test_changed.py", "test_removed.py"):
+        (tests / name).write_text("def test_one(): pass\n")
+    git("add", "pins.py", "tests", cwd=tmp_path)
+    git("commit", "-q", "-m", "measured source", cwd=tmp_path)
+    previous = mq.checkout_runtime(cfg, tmp_path)
+    store = mq.Store(cfg.state_dir)
+    outdir = store.batches / "b00001"
+    outdir.mkdir()
+    report = outdir / "candidate.json"
+    rows = []
+    for name, seconds in [("test_stable.py", 900), ("test_changed.py", 200),
+                          ("test_removed.py", 100)]:
+        path = "tests/" + name
+        row = shard([path], rows=[(path + "::test_one", "call", "passed", None, None)])
+        record = mq.load_outcomes(cfg.pbtest).parse(row["output"])
+        record["file_durations"] = {path: seconds}
+        row["output"] = "pbtest-outcomes: " + json.dumps(record)
+        rows.append(row)
+    report.write_text(json.dumps(rows))
+    store.state["history_report"] = str(report)
+    store.state["history_runtime"] = mq.baseline_key(cfg, previous["source"][1], previous)
+    if recorded_source:
+        store.state["history_source"] = previous["source"]
+    else:
+        (outdir / "batch.json").write_text(json.dumps({
+            "candidate_tree": previous["source"][1], "runs": {"candidate": {
+                "report": str(report), "runtime": previous}}}))
+    store.remember_baseline(store.state["history_runtime"], ["tests/test_stable.py"],
+                            ["tests/test_stable.py::old"])
+    (tests / "test_changed.py").write_text("def test_one(): assert True\n")
+    (tests / "test_removed.py").unlink()
+    (tests / "test_new.py").write_text("def test_new(): pass\n")
+    git("add", "tests", cwd=tmp_path)
+    git("commit", "-q", "-m", "new candidate", cwd=tmp_path)
+    current = mq.checkout_runtime(cfg, tmp_path)
+    assert current["source"][1] != previous["source"][1]
+    return cfg, store, previous, current, report, rows
+
+
+@pytest.mark.parametrize("recorded_source", [True, False])
+def test_duration_hints_cross_trees_without_reusing_baseline_results(tmp_path, recorded_source):
+    cfg, store, previous, current, report, rows = _duration_history_two_trees(
+        tmp_path, recorded_source=recorded_source)
+    original = report.read_bytes()
+    hints = mq.Runner(cfg, store).history(current)
+
+    assert hints and hints[0] == "--history"
+    selected = json.loads(Path(hints[1]).read_text())
+    assert selected == [rows[0]], "only untouched original measured shard rows are hints"
+    assert report.read_bytes() == original
+    assert store.baseline(mq.baseline_key(cfg, current["source"][1], current)) == {}
+    assert store.baseline(mq.baseline_key(cfg, previous["source"][1], previous))
+
+
+@pytest.mark.parametrize("changed", ["python", "full_pin", "source_bytes", "config",
+                                     "published", "domain"])
+def test_duration_hint_compatibility_keeps_runtime_config_and_domain_guards(tmp_path, changed):
+    cfg, store, _, current, _, _ = _duration_history_two_trees(tmp_path)
+    other = json.loads(json.dumps(current))
+    if changed == "python":
+        other["python"] = "/another/python"
+    elif changed == "full_pin":
+        other["pins"]["sdk"] = OLD[:8] + "b" * 32
+    elif changed == "source_bytes":
+        other["pin_sources"]["sdk"]["sha256"] = "different"
+    elif changed == "config":
+        cfg = dataclasses.replace(cfg, pbtest_args=(*cfg.pbtest_args, '--pytest-args=["-k","one"]'))
+    elif changed == "published":
+        alternate = tmp_path / "other-published"
+        alternate.mkdir()
+        (alternate / "pbtest_outcomes.py").write_bytes(
+            cfg.pbtest.with_name("pbtest_outcomes.py").read_bytes())
+        (alternate / "pbtest.py").write_bytes(cfg.pbtest.read_bytes())
+        cfg = dataclasses.replace(cfg, pbtest=alternate / "pbtest.py")
+        other["pbtest"] = str(cfg.pbtest)
+    else:
+        cfg = dataclasses.replace(cfg, test_paths=("tests/test_stable.py",))
+    assert mq.Runner(cfg, store).history(other) == []
+
+
+def test_mixed_changed_file_shards_remain_untouched_and_use_fallback_estimates(tmp_path):
+    cfg, store, _, current, report, rows = _duration_history_two_trees(tmp_path)
+    mixed = dict(rows[0])
+    mixed["files"] = rows[0]["files"] + rows[1]["files"]
+    record = mq.load_outcomes(cfg.pbtest).parse(mixed["output"])
+    record["file_durations"].update({"tests/test_changed.py": 200})
+    mixed["output"] = "pbtest-outcomes: " + json.dumps(record)
+    report.write_text(json.dumps([mixed]))
+    original = report.read_bytes()
+    assert mq.Runner(cfg, store).history(current) == []
+    assert report.read_bytes() == original
+
+
+@pytest.mark.parametrize("name", ["conftest.py", "pytest.ini"])
+def test_changed_collection_configuration_invalidates_all_duration_hints(tmp_path, name):
+    cfg, store, _, _, _, _ = _duration_history_two_trees(tmp_path)
+    (tmp_path / name).write_text("# new collection policy\n")
+    git("add", name, cwd=tmp_path)
+    git("commit", "-q", "-m", "changed collection domain", cwd=tmp_path)
+    current = mq.checkout_runtime(cfg, tmp_path)
+    assert mq.Runner(cfg, store).history(current) == []
+
+
+@pytest.mark.parametrize("source", ["invalid", [], [None, None], ["--help", "--help"]])
+def test_malformed_prior_source_has_no_duration_hints(tmp_path, source):
+    cfg, store, _, current, _, _ = _duration_history_two_trees(tmp_path)
+    store.state["history_source"] = source
+    assert mq.Runner(cfg, store).history(current) == []
+
+
+def test_missing_prior_git_objects_has_no_duration_hints(tmp_path):
+    cfg, store, _, current, _, _ = _duration_history_two_trees(tmp_path)
+    missing = ["0" * 40, "f" * 40]
+    store.state["history_source"] = missing
+    store.state["history_runtime"] = mq.baseline_key(cfg, missing[1], current)
+    assert mq.Runner(cfg, store).history(current) == []

@@ -36,6 +36,7 @@ import argparse
 import contextlib
 import dataclasses
 import fcntl
+import hashlib
 import importlib.util
 import json
 import os
@@ -601,6 +602,20 @@ def checkout_source(checkout: Path) -> dict:
             "source": source.stdout.splitlines() if source.returncode == 0 else []}
 
 
+def checkout_file_identities(checkout: Path, tree: str) -> dict[str, str] | None:
+    """Read immutable Git file modes/blobs without evaluating source code."""
+    result = call_tool(["git", "ls-tree", "-r", "--full-tree", "-z", tree],
+                       cwd=checkout, check=False)
+    if result.returncode:
+        return None
+    identities = {}
+    for entry in result.stdout.split("\0"):
+        if entry:
+            identity, name = entry.split("\t", 1)
+            identities[name] = identity
+    return identities
+
+
 def checkout_runtime(cfg: Config, checkout: Path) -> dict:
     return {**select_runtime(checkout, cfg.test_python, cfg.runtime_pins),
             **checkout_source(checkout), "pbtest": str(cfg.pbtest)}
@@ -641,14 +656,87 @@ class Runner:
             files = [f for f in files if f not in left_out]
         return files, left_out
 
+    def _history_source(self, latest: Path) -> list[str]:
+        """Read the prior report's source, including existing typed v3 records."""
+        source = self.store.state.get("history_source")
+        def valid(value):
+            return (isinstance(value, list) and len(value) == 2
+                    and all(isinstance(part, str) and len(part) == 40
+                            and all(c in "0123456789abcdef" for c in part) for part in value))
+
+        if valid(source):
+            return source
+        # Pre-1438 typed records already bind their full runtime/source in the
+        # terminal batch. Unidentified legacy reports gain no identity here.
+        try:
+            batch = json.loads(latest.with_name("batch.json").read_text())
+            run = batch["runs"]["candidate"]
+            source = run["runtime"]["source"]
+            if (run["report"] == str(latest) and valid(source)
+                    and source[1] == batch["candidate_tree"]):
+                return source
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+        return []
+
     def history(self, runtime: dict) -> list[str]:
         latest = self.store.state.get("history_report")
         source = runtime.get("source") or []
         identity = baseline_key(self.cfg, source[1], runtime) if len(source) == 2 else None
-        if (identity and identity == self.store.state.get("history_runtime")
-                and latest and Path(latest).is_file()):
+        if not latest or not Path(latest).is_file():
+            return []
+        if identity and identity == self.store.state.get("history_runtime"):
             return ["--history", latest]
-        return []
+        previous = self._history_source(Path(latest))
+        if (len(source) != 2 or len(previous) != 2
+                or baseline_key(self.cfg, previous[1], runtime)
+                    != self.store.state.get("history_runtime")):
+            return []
+        # This is historical placement advice, never a baseline verdict.
+        # Preserve complete original rows/receipts; a mixed changed-file row
+        # is discarded rather than manufacturing a smaller outcome record.
+        old_files = checkout_file_identities(Path(runtime["checkout"]), previous[1])
+        new_files = checkout_file_identities(Path(runtime["checkout"]), source[1])
+        if old_files is None or new_files is None:
+            return []
+        # Collection plugins and pytest configuration govern every module's
+        # meaning, so their changes invalidate the whole optional hint set.
+        def domain_file(name):
+            leaf = name.rsplit("/", 1)[-1]
+            return (leaf in {"conftest.py", "pytest.ini", "pyproject.toml", "setup.cfg", "tox.ini"}
+                    or (leaf == "__init__.py" and "tests" in name.split("/")[:-1]))
+
+        common = {name for name in old_files.keys() | new_files.keys() if domain_file(name)}
+        if any(old_files.get(name) != new_files.get(name) for name in common):
+            return []
+        try:
+            report = json.loads(Path(latest).read_text())
+            if not isinstance(report, list):
+                return []
+            rows = []
+            for row in report:
+                if not isinstance(row, dict) or not row.get("ran"):
+                    continue
+                record = self.outcomes.parse(row.get("output") or "")
+                durations = record.get("file_durations") if record else None
+                files = row.get("files")
+                if (not isinstance(durations, dict) or not durations
+                        or not isinstance(files, list) or not files
+                        or record.get("collect_only")):
+                    continue
+                names = [*files, *durations]
+                if all(isinstance(name, str) and name in old_files
+                       and old_files[name] == new_files.get(name) for name in names):
+                    rows.append(row)
+            if not rows:
+                return []
+            data = json.dumps(rows, sort_keys=True)
+            digest = hashlib.sha256(data.encode()).hexdigest()
+            hint = self.store.baselines / f"duration-hints-{digest}.json"
+            write_atomic(hint, data)
+            return ["--history", str(hint)]
+        except (OSError, ValueError, TypeError):
+            return []
 
     def command(self, checkout: Path, files: list[str], report: Path) -> list[str]:
         runtime = checkout_runtime(self.cfg, checkout)
@@ -1011,6 +1099,7 @@ class Queue:
         self.store.state["history_report"] = full.report
         self.store.state["history_runtime"] = baseline_key(
             self.cfg, batch["candidate_tree"], full.runtime)
+        self.store.state["history_source"] = full.runtime.get("source") or []
         if full.failed:
             new, shared, flakes = self.judge(batch, outdir, checkout, full)
         else:
