@@ -254,3 +254,10 @@ def test_real_worker_poll_publishes_class_refusal_and_preserves_native_polling(t
         assert not seen and offer['state'] == 'draining'
     else:
         assert len(seen) == 1 and seen[0]['container_class_policy'].klass == 'x86'
+
+
+def test_configuration_identity_uses_the_existing_canonical_unicode_contract():
+    declaration = copy.deepcopy(DECLARATION)
+    declaration['classes']['gb10']['store_root'] = '/var/lib/δοκιμή'
+    selected = ci.ClassImagePolicy(declaration, klass='gb10')
+    assert selected.requirements_sha256 == pb.canonical_sha256(declaration)

@@ -3286,7 +3286,9 @@ live daemon/store observation or runtime membership authority.
 A worker may name `--class-image-config RELATIVE_PATH`, a bounded strict JSON
 `container_class_requirements.v1` declaration contained in its loaded runtime
 generation. Its explicit `--class` selects the class; a missing class remains
-unknown. The normalized full declaration is bound by SHA-256. Without this
+unknown. The normalized full declaration is bound by the existing
+`core.canonical_sha256` contract (UTF-8 JSON, Unicode retained, sorted keys,
+no nonfinite values). Without this
 option, worker offers and action admission retain the existing image-reference
 contract. No fleet declaration or live activation is supplied by this source
 slice.

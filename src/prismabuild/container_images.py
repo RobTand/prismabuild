@@ -709,9 +709,8 @@ class ClassImagePolicy:
                                "images": dict(row.images)}
                         for name, row in parsed.items()},
         }
-        self.requirements_sha256 = hashlib.sha256(json.dumps(
-            self._requirements, sort_keys=True, separators=(",", ":"),
-            ensure_ascii=True, allow_nan=False).encode()).hexdigest()
+        from .core import canonical_sha256
+        self.requirements_sha256 = canonical_sha256(self._requirements)
 
     @classmethod
     def from_file(cls, path: str, *, source_root: Path, klass: str) -> "ClassImagePolicy":
