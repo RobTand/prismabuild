@@ -15160,3 +15160,13 @@ and do not choose the source. Enqueued pins and later GitHub head/source checks
 remain independent guards. This uses the existing Git mirror and fetch-by-SHA
 mechanism, not a second source registry or dispatcher (#1436). Deployment of
 this queue-only source requires separate coordinator acceptance.
+
+
+The ordinary and movement action log capture share one sealed shell generator
+(#1439). Its existing action PATH chooses gnutee when available, otherwise tee;
+the resolved executable is recorded in ordinary stderr evidence. Both pipeline
+statuses are copied immediately. A failed producer retains its original code,
+and a successful producer with failed capture fails rather than publishing a
+partial log. This changes newly sealed capture argv identities; retained sealed
+requests and receipts remain immutable and can be recovered as sealed. No system
+tool, fleet runtime, active queue, placement or result-population policy changes.

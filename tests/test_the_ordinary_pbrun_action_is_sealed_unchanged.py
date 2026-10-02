@@ -276,7 +276,7 @@ def test_every_masked_value_is_re_derived_from_the_body(
     assert [entry["path"] for entry in body["code_closure"]["files"]] == [
         stamp_name
     ], "the closure stamp is not the one this submission's fingerprint names"
-    assert f"tee {shlex.quote(log_name)}" in body["task"]["argv"][-1], (
+    assert f'| "$_pb_capture" {shlex.quote(log_name)};' in body["task"]["argv"][-1], (
         "the action would tee its output somewhere other than its declared "
         "result path"
     )
