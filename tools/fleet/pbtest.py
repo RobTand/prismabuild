@@ -818,7 +818,7 @@ raise SystemExit(load("pbtest_outcomes").main(
 """
 
 
-def shard_entry(python: str, checkout: Path) -> list[str]:
+def shard_entry(python: str, checkout: Path, *, tmpdir: str | None = None) -> list[str]:
     """The argv that runs a shard's pytest under the outcome recorder.
 
     Every shard reports each counted outcome by node ID (#942), so every
@@ -833,7 +833,22 @@ def shard_entry(python: str, checkout: Path) -> list[str]:
     sources = {"pbtest_outcomes": here.with_name("pbtest_outcomes.py").read_text()}
     if any((checkout / "tools").glob("resolve_*_dev_pin.py")):
         sources["pbtest_pins"] = here.with_name("pbtest_pins.py").read_text()
-    return [python, "-c", SHARD_PROGRAM.replace("@SOURCES@", repr(sources))]
+    program = SHARD_PROGRAM.replace("@SOURCES@", repr(sources))
+    if tmpdir is not None:
+        # Explicit scratch placement must refuse on the worker rather than let
+        # tempfile silently choose another filesystem. The default entry stays
+        # byte-identical, and a worker-only path needs no coordinator access.
+        program = (
+            "import tempfile\n"
+            f"_pb_requested_tmpdir = {tmpdir!r}\n"
+            "try:\n"
+            "    with tempfile.TemporaryFile(dir=_pb_requested_tmpdir):\n"
+            "        pass\n"
+            "except (OSError, ValueError) as exc:\n"
+            "    raise SystemExit('pbtest: cannot use requested --tmpdir: ' + "
+            "str(exc)) from exc\n"
+        ) + program
+    return [python, "-c", program]
 
 
 def recorded_skips(record: dict | None) -> list[dict] | None:
@@ -1071,6 +1086,9 @@ def main() -> int:
                     help="Git tree to snapshot and test on the pool")
     ap.add_argument("--python", required=True,
                     help="interpreter on the TARGET box, not this one")
+    ap.add_argument("--tmpdir", default=None,
+                    help="absolute scratch directory on eligible TARGET workers; "
+                         "default /home/rob/tmp (not checked on the coordinator)")
     ap.add_argument("--tag", action="append", default=[],
                     help="placement tag; published default is x86, or gb10 with --gpu")
     ap.add_argument("--shards", type=int, default=20,
@@ -1189,6 +1207,8 @@ def main() -> int:
     args = ap.parse_args()
 
     try:
+        if args.tmpdir is not None and not Path(args.tmpdir).is_absolute():
+            raise ValueError("--tmpdir must be an absolute worker-visible path")
         if args.mem_gb < 1:
             raise ValueError("--mem-gb must be at least 1")
         require_gpu_memory_scope(gpu_memory_gb=args.gpu_memory_gb,
@@ -1316,7 +1336,7 @@ def main() -> int:
     # an older receipt can silently omit the check. Unpinned projects retain
     # their existing commands and identities.
     try:
-        python_entry = shard_entry(args.python, checkout)
+        python_entry = shard_entry(args.python, checkout, tmpdir=args.tmpdir)
     except OSError as exc:
         sys.stderr.write(f"pbtest: cannot load the shard program: {exc}\n")
         return 2
@@ -1489,7 +1509,7 @@ def main() -> int:
         explicit_env = ["PYTEST_ADDOPTS="] if args.pytest_args is not None else []
         explicit_options = ["-o", "addopts="] if args.pytest_args is not None else []
         command = flags + [
-            "--", "env", "TMPDIR=/home/rob/tmp",
+            "--", "env", f"TMPDIR={args.tmpdir if args.tmpdir is not None else '/home/rob/tmp'}",
             *threads, *test_bound, *explicit_env,
             "PYTHONPATH=src:experiments",
             *python_entry, "-q", "--no-header",

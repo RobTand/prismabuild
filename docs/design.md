@@ -1617,6 +1617,18 @@ default placement class is `x86` for CPU and `gb10` for GPU, overridable by
 explicit tags. CPU demand remains pytest workers times their native thread
 ceiling, or a larger explicit reservation; host memory covers the entire shard.
 
+Each shard retains its own pytest temporary-directory and outcome ownership.
+`--tmpdir PATH` supplies an absolute worker-visible parent through the existing
+sealed child `TMPDIR` assignment; its default remains `/home/rob/tmp`. The path
+is passed as one argv element, with no shell evaluation or coordinator-side
+existence check. The caller supplies a directory usable on every eligible worker;
+this flag adds no direct-I/O qualification or placement capability. An explicitly
+selected parent is preflighted on the worker by creating and closing an anonymous
+temporary file before pytest; an absent or unusable directory refuses instead of
+silently falling back. The default retains its legacy behavior. This startup
+check does not reserve capacity or guarantee availability throughout the test.
+Changing the selected parent changes the child command and its action identity.
+
 A shard's native-thread ceiling and its CPU reservation stay paired.
 `--threads-per-shard` keeps its 2-per-worker default, and one unset
 `--cpus-per-shard` reserves `--workers-per-shard` times that ceiling. With

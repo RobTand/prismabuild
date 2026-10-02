@@ -1473,6 +1473,18 @@ Each shard is one `pbrun` action, so the checkout travels through the CAS and
 the interpreter is the target box's, not this one's. `--tag` defaults to `x86`,
 which is also the claim that owns the named interpreter.
 
+`--tmpdir /absolute/worker/scratch` selects the shards' temporary parent instead
+of the unchanged `/home/rob/tmp` default. Supply an existing writable directory
+on every eligible target worker; the coordinator validates only that the path
+is absolute, since a remote directory need not exist on the submitting box.
+The path is sealed as one literal `TMPDIR` environment argument. Each pytest
+shard keeps its own temporary children and outcome record. This is configurable
+scratch placement, not proof of direct-I/O support or of an earlier disk-write
+failure's cause. With an explicit option, the child checks the directory by
+creating and closing an anonymous temporary file before pytest and refuses an
+unavailable or unusable parent. The default keeps its existing fallback behavior.
+This startup check does not guarantee free space or later availability.
+
 Every requested path must be a file or directory. A missing or invalid path
 refuses the whole submission with exit code 2 and a diagnostic before any
 shard starts; valid paths cannot hide a misspelled path by yielding a green
