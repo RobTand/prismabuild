@@ -14971,7 +14971,9 @@ An explicit pre-pytest pin or interpreter-placement refusal becomes a named
 `runtime-blocked` result, not a code failure, flake or missing-summary retry.
 The affected batch's entries are requeued uncharged and skipped until explicit
 `resume-runtime <batch>` (under the existing single-writer lock) requests fresh
-source/runtime validation. Other entries can run. Resume does not attest repair
+source/runtime validation. Other entries can run. A runtime-blocked `once`
+exits 2 with its machine-readable verdict; other once exit semantics are unchanged.
+Resume does not attest repair
 or bypass any gate; a still-invalid dependency blocks again. State preserves
 reason, config, source/runtime evidence and all observed actions/logs across
 restart. Unknown interpreter presence retains PB's waiting semantics rather

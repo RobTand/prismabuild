@@ -1216,7 +1216,7 @@ def main(argv: list[str] | None = None) -> int:
                 "new", "shared", "flakes", "description", "wall_s")}, indent=1))
             if queue.github.would:
                 print("would:\n  " + "\n  ".join(queue.github.would))
-            return 0
+            return 2 if batch["verdict"] == "runtime-blocked" else 0
         queue.store.event(None, f"daemon started in {args.mode} mode, pid {os.getpid()}")
         while True:
             queue.tick()

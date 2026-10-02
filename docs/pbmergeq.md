@@ -142,7 +142,10 @@ lock applies), repair/provision the environment or policy, then run
 only removes the named entry block; eligibility, fresh source/pin selection,
 PB placement and the worker guard run again. A still-invalid runtime blocks
 again without charging attempts. A manually requested `once` likewise validates
-fresh sources; it never enqueues entries. These are source contracts, not a
+fresh sources; it never enqueues entries. A `runtime-blocked` once prints its
+machine-readable verdict and exits 2. Other once verdicts retain their existing
+exit 0 processing-completion semantics: read the verdict/statuses, not exit 0,
+to decide whether tests were green. These are source contracts, not a
 claim of live configuration or fleet activation.
 
 ## Commands

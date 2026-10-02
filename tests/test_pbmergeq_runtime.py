@@ -285,3 +285,18 @@ def test_refusal_text_in_an_observed_pytest_result_is_not_a_preflight_block():
     report["output"] = PIN_REFUSAL + "\n" + report["output"]
     result = mq.reduce_report([report], __import__("pbtest_outcomes"))
     assert not result.runtime_refusal and not result.inconclusive
+
+
+def test_once_runtime_blocked_is_exit_two_and_carries_verdict_without_enqueuing(tmp_path, monkeypatch, capsys):
+    queue, origin, github, fake = make_queue(tmp_path)
+    origin.pr(1, {"one.txt": "1\n"})
+    queue.once = True
+    queue.runner = mq.Runner(queue.cfg, queue.store)
+    monkeypatch.setattr(queue.runner, "discover", fake.discover)
+    monkeypatch.setattr(mq, "open_queue", lambda *args, **kwargs: queue)
+    launches = []
+    refused_process(monkeypatch, launches)
+    result = mq.main(["--config", str(tmp_path / "config.json"), "once", "--mode", "status", "1"])
+    assert result == 2 and len(launches) == 1
+    assert '"verdict": "runtime-blocked"' in capsys.readouterr().out
+    assert not queue.store.state["queue"] and not github.calls
