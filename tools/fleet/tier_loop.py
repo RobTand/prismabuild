@@ -408,7 +408,7 @@ RECEIPT_READERS = 64
 class ReceiptCache:
     """What the tier loop reads every cycle and keeps from one to the next (#992).
 
-    Four things, all re-read only where they changed:
+    Five things, all re-read only where they changed:
 
     * ``records`` (:class:`stage_release.DirectoryRecords`): the active
       movement and prewarm receipts the fill supply is folded from, every
@@ -419,6 +419,10 @@ class ReceiptCache:
       is unchanged is not read again.
     * ``census`` (:class:`stage_release.CensusIndex`): the validated fragment
       census every sweep and reconciliation takes.
+    * ``ledger_records`` (:class:`stage_release.DirectoryRecords`): token
+      directory names for explicitly guarded tier ledgers inside a cycle
+      (#1027). These reads preserve missing/unreadable census errors, recheck
+      filesystem trust on every reuse, and never cache host-ledger reads.
     * The retired movement-receipt projections (#992 item 2): ``pb_gc
       --queue-root`` moves a terminal consumer's receipt out of ``movers/``,
       and the compact projection it leaves behind is merged with the active
@@ -451,6 +455,7 @@ class ReceiptCache:
     def __init__(self) -> None:
         self.records = stage_release.DirectoryRecords()
         self.census = stage_release.CensusIndex()
+        self.ledger_records = stage_release.DirectoryRecords()
         self._directories: tuple[Path, ...] = ()
         self._records: list[dict[str, object]] = []
         self._folds: dict[str, tuple[tuple, dict[str, object]]] = {}
@@ -9799,8 +9804,10 @@ def _read_counts(receipts: ReceiptCache) -> dict[str, int]:
 
     records = getattr(receipts, "records", None)
     census = getattr(receipts, "census", None)
+    ledger = getattr(receipts, "ledger_records", None)
     counts: dict[str, int] = {}
-    for prefix, source in (("records", records), ("census", census)):
+    for prefix, source in (("records", records), ("census", census),
+                           ("ledger", ledger)):
         # stale_skipped/stale_censused: dead owners the stale-mention skip
         # checkpoint passed over, and those censused (#1056); a skip files
         # no receipt, so this line is where it is counted.
@@ -9871,6 +9878,13 @@ def cycle(
     before = _read_counts(receipts)
     completed = False
     records = getattr(receipts, "records", None)
+    ledger = getattr(receipts, "ledger_records", None)
+    ledger_directories: set[Path] = set()
+
+    def ledger_names(directory: Path) -> frozenset[str]:
+        ledger_directories.add(directory)
+        return ledger.names(directory, select=lambda _name: True, missing_ok=False)
+
     _STAGED_WAITS[0] = {}
     _SHARED_MOVERS[0] = {}
     _CYCLE_COMMITMENTS.clear()
@@ -9878,7 +9892,9 @@ def cycle(
     # that names it (#1026).
     residency_plan._SHARE_NAMESPACE_MEMO[0] = {}
     try:
-        with pool.transition_locks_never_wait(refused):
+        with pool.transition_locks_never_wait(refused), pool.tier_ledger_names_from(
+                ledger_names if isinstance(ledger, stage_release.DirectoryRecords)
+                else None):
             if isinstance(records, stage_release.DirectoryRecords):
                 with stage_release.queue_records_from(records):
                     announced = _cycle(queue, host=host, source_pool=source_pool,
@@ -9899,6 +9915,8 @@ def cycle(
         _STAGED_WAITS[0] = None
         _SHARED_MOVERS[0] = None
         residency_plan._SHARE_NAMESPACE_MEMO[0] = None
+        if isinstance(ledger, stage_release.DirectoryRecords):
+            ledger.retain(ledger_directories)
         after = _read_counts(receipts)
         LAST_CYCLE = {
             "cycle_seconds": round(time.perf_counter() - phases.started, 6),

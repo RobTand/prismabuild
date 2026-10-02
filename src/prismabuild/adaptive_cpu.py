@@ -783,25 +783,25 @@ def idle_judgement_with_reference(
       the host's own variation.
     * With no idle history nothing about this host is measured, and
       ``prior_rule`` (the caller's pre-#997 fixed line) judges the sample,
-      labelled ``basis: unmeasured``.  A sample the rule refuses is foreign
-      load, not idle evidence, and does not seed the window (#1014): the host
-      stays unmeasured, refused by the same fixed line, for as long as the
-      load runs, rather than becoming its own baseline maximum and being
-      admitted on the very next pass.  A sample the rule does not refuse
-      seeds the window, so the next idle pass is judged against it.  Without a
-      prior rule there is no rule to have refused the sample, so it exceeds
-      and still seeds -- the window has to start somewhere, and nothing here
-      can tell that sample apart from a genuinely idle one.
+      labelled ``basis: unmeasured``.  A holder-free sample the rule refuses
+      joins as a provisional seed (#1185), excluded from judgement until
+      PROVISIONAL_MIN_SAMPLES span PROVISIONAL_MIN_SPAN_S.  The completing
+      pass promotes the provisional window to measured evidence; one refused
+      seed cannot make its own load the next pass's measured maximum (#1014).
+      A sample the rule does not refuse seeds the firm window immediately.
+      Without a prior rule there is no rule to have refused the sample, so it
+      exceeds and still seeds -- the window has to start somewhere, and
+      nothing here can tell that sample apart from a genuinely idle one.
     * With holders present the sample is judged against the whole window
       (``state: holders_present``) but never joins it: it measures the
       holders too, so exceeding says the host is not idle, and not exceeding
       leaves the holders to refuse an exclusive claim themselves.
-    * Every sample joins the window except one an empty baseline's
-      ``prior_rule`` refuses, bounded by :data:`IDLE_WINDOW`.  An excursion
+    * Eligible holder-free samples join the window, bounded by
+      :data:`IDLE_WINDOW`; an empty baseline's refused seed remains
+      provisional until the depth/span gate above completes.  An excursion
       sample joins even though it exceeds an established baseline, so it can
-      later become the baseline itself; only the seed of an unmeasured window
-      is held to the stricter rule, since nothing yet distinguishes it from
-      foreign load.
+      later become the baseline itself.  Holders and holder-tail intervals
+      never seed either window.
 
     ``interval_s`` is how far back the sample's reading reaches, when the
     sample does not say (the GPU broker's PSI fields are the kernel's 10 s
@@ -857,8 +857,8 @@ def idle_judgement_with_reference(
     if run is not None and exceeds:
         verdict['excursion_s'] = round(now - run, 3)
     # A sample an empty baseline's prior_rule refuses is foreign load, not
-    # idle evidence, and must not seed the window: seeding it becomes the
-    # window's only (and therefore maximum) sample, so the same load reads as
+    # firm idle evidence, and must not seed the measured reference: doing so
+    # makes it the only (and therefore maximum) sample, so the same load reads as
     # its own baseline and is admitted on the very next pass (#1014). Without
     # a prior_rule there was no rule to have refused it -- the unmeasured
     # default always exceeds, and still seeds, since the window has to start

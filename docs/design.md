@@ -6644,7 +6644,7 @@ copy the map already vouched for, which is what makes a stale ram entry a
 cache miss rather than an ENOENT. The map's header names the ram tier, root
 and epoch, which is what the verdict compares.
 
-### What the tier loop reads per cycle (#992, #1004)
+### What the tier loop reads per cycle (#992, #1004, #1027)
 
 The tier loop runs one cycle every 5 s on the tier host: the fleet role
 passes `--interval-s 5` (`tools/fleet/fleet_boxes.json`), and
@@ -6668,6 +6668,31 @@ The loop now keeps what it read from one cycle to the next, on its
 - `stage_release.CensusIndex` holds the residency census: each namespace's
   fragments and each level's classified children. The dead-owner sweep, the
   orphan sweep's `reconcile` and the held-mover census read through it.
+- `ReceiptCache.ledger_records` reuses the existing `DirectoryRecords` reader
+  for tier token names: `free/`, `held/`, each holder, `minted/` and
+  `minted/dead/`. A cycle scopes the reader through
+  `pool.tier_ledger_names_from`; only explicitly guarded tier ledgers use it.
+  Host ledgers and calls outside the cycle retain fresh reads. The reader is
+  reset even when a cycle raises, and names for directories not reached in
+  that cycle are dropped. `LAST_CYCLE["reads"]` reports `ledger_listed` and
+  `ledger_kept` separately from queue records.
+
+Tier token reuse changes enumeration, not mutation authority. Acquisition,
+release, growth, retirement and holder replacement change the directory
+stamps and invalidate the affected names. Holder type checks remain fresh;
+required mint censuses propagate missing or unreadable directories rather
+than treating them as cached empty. The optional `minted/dead/` namespace is
+absent only when a fresh-or-trusted census of its `minted/` parent excludes
+it; a present but unreadable or non-directory child remains unknown. Creating
+or removing that child changes the parent's stamp. An unreadable holder remains unknown and
+retains the existing conservative shrink accounting. Names on NFS, on an
+untrusted filesystem, or changed in the coarse clock's current tick are read
+again. No token payload or admission decision is cached.
+
+The #1027 campaign-shaped regression measures physical ledger listings, not
+elapsed-time speedup. Live deployment and the issue's requested before/after
+py-spy and Netdata profile remain separate acceptance evidence; source reuse
+and a passing fixture do not establish them.
 
 **A directory is listed again only when it moved.** Each listing is kept
 under a stamp, `(device, inode, mtime_ns, ctime_ns)`, taken by
@@ -14928,6 +14953,17 @@ on the root filesystem and removed; no scratch data cache is introduced.
 SIGTERM unwinds cleanup; SIGKILL/OOM may leave a bounded scratch file and never
 qualifies a successful profile. Inode reuse/ABA and compromised host/kernel
 observations are not solved by this identity tuple.
+
+Host-local *state* -- the admission lock directory
+(`adaptive_cpu.BOX_STATE_ROOT`) and the measurement census fence written under
+it -- is observed by that same exact fdinfo/mountinfo descriptor identity but
+under its own closed purpose policy: the four local disk types above plus
+tmpfs, and nothing else; network, unknown and malformed identities still fail
+closed (#1451). It is a small-file rendezvous, not an I/O profile, so the
+profile qualification above is unchanged. The state root must never be cleared
+or repointed while census readers or admission claimants can survive: a
+cleared `/tmp` only lapses that mutual exclusion, and the permanent guard
+files are left in place for exactly that reason.
 
 **Configured worker inputs, actual offer path.** A worker optionally receives
 `--local-scratch-profile-config /absolute/config.json`; absent configuration
