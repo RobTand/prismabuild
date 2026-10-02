@@ -55,7 +55,6 @@ import json
 import os
 import posixpath
 import re
-import shlex
 import shutil
 import socket
 import stat
@@ -5667,9 +5666,9 @@ def seal_action_from_template(
             raise SystemExit("pbrun: scratch recorder override differs from sealed file-result contract")
         argv, effective_result = command, local_scratch.PROFILE_RESULT
     else:
-        argv = [SEALED_ARGV0, "--noprofile", "--norc", "-c",
-                f"export PATH={shlex.quote(variables['PATH'].split(':', 1)[0])}:$PATH; "
-                + movement_actions.captured_command(command, log_name)]
+        argv = movement_actions.standard_capture_argv(
+            command, log_name,
+            path_prefix=variables['PATH'].split(':', 1)[0])
         effective_result = log_name if result_path is None else result_path
     body = {
         "schema": pb.ACTION_SCHEMA_V2,
