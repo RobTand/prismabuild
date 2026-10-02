@@ -530,9 +530,17 @@ inputs still reach real refusal, and all PoolQueue transitions/reservations stay
 real. It is not autouse, demand-derived capacity, a production shim or a blanket
 migration of existing schema/unbounded/funding fixtures. Those independent
 compatibility families require explicit declarations and unchanged byte/funding/
-cancellation assertions in a coordinator-assigned dependency delivery. Both
-source and compatibility deliveries HOLD merge/deployment until the single
-combined exact integrated-head gate and independent review.
+cancellation assertions. The coordinator-assigned compatibility candidate maps
+all 100 original lead families in
+`docs/evidence/compatibility_1419_family_manifest_2026-10-02.json`: real execution
+factories opt into fixed host inputs, already admitted helper calls retain their
+original declarations, and plain-Queue invalid/default/schema controls stay
+fail-closed. The prewarm fixture takes real host tokens rather than fabricating
+its normal claims; historical torn/zero-token recovery inputs remain explicit
+legacy states and never authorize execution. Funding movers declare host demand
+separately from their unchanged tier entitlements. Both source and compatibility
+deliveries HOLD merge/deployment until the single combined exact integrated-head
+gate and independent review.
 This partial slice is Refs #1419; finite safe-fit/release proof (#1429), final
 exact-head independent review and live acceptance remain owed.
 
