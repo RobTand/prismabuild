@@ -4813,12 +4813,11 @@ class PrismaBuildCAS:
         receipt refuses before any of its content is decoded.  ``None`` keeps
         the uncapped read this method began with.
 
-        The declared payload size is checked first, so a payload over the cap
-        refuses without opening it.  The bytes are then read once through
-        Core's stable, no-follow, read-only regular-file reader, bounded both
-        by the opening size and by the streamed byte count, and are verified
-        against the receipt's digest and size.  No path is returned to reopen
-        and no second hash pass is made.
+        The payload itself goes through :meth:`read_declared_blob`, the one
+        owner of the bounded owned-blob read: the declared size is checked
+        before the blob is opened, the bytes are read once and verified
+        against the declared digest and size, and no path is returned to
+        reopen.
         """
 
         if type(max_result_bytes) is not int or max_result_bytes < 0:
@@ -4839,23 +4838,40 @@ class PrismaBuildCAS:
             raise CASTamperError("execution receipt differs from the requested digest")
         result = receipt["result"]
         assert isinstance(result, Mapping)
-        digest = str(result["sha256"])
-        size = int(result["bytes"])
+        payload = self.read_declared_blob(
+            result, max_bytes=max_result_bytes, where="CAS payload")
+        return receipt, payload
+
+    def read_declared_blob(
+        self, contract: Mapping[str, object], *, max_bytes: int, where: str
+    ) -> bytes:
+        """Owned bytes of one declared CAS blob, under one explicit cap (#1446).
+
+        One owner for the bounded owned-blob read: the execution payload and
+        each selected declared input go through here, so the declared-size
+        check before the open, the stable no-follow read-only read, and the
+        size/digest binding against the declared address cannot drift between
+        callers.  ``max_bytes`` bounds both the opening size and the streamed
+        byte count, and a blob over it refuses without being opened.
+        """
+
+        if type(max_bytes) is not int or max_bytes < 0:
+            raise ActionContractError(
+                "declared blob byte bound must be a non-negative integer")
+        digest = str(contract["sha256"])
+        size = int(contract["bytes"])
         path = self._blob_path(digest)
-        if size > max_result_bytes:
-            raise CASTamperError(
-                f"CAS payload exceeds the byte bound: {path}")
+        if size > max_bytes:
+            raise CASTamperError(f"{where} exceeds the byte bound: {path}")
         try:
             payload = _read_regular_file_nofollow(
-                path, where="CAS payload", require_readonly=True,
-                max_bytes=max_result_bytes,
-            )
+                path, where=where, require_readonly=True, max_bytes=max_bytes)
         except FileNotFoundError as exc:
-            raise CASTamperError(f"CAS payload is missing: {path}") from exc
+            raise CASTamperError(f"{where} is missing: {path}") from exc
         if len(payload) != size or raw_sha256(payload) != digest:
             raise CASTamperError(
-                f"CAS payload content differs from receipt: {path}")
-        return receipt, payload
+                f"{where} content differs from its declared address: {path}")
+        return payload
 
     def _verified_receipt_result_path(self, receipt: Mapping[str, object]) -> Path:
         """Return the blob path after ``lookup`` has already verified it."""

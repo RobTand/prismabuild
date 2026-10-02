@@ -300,20 +300,23 @@ def _read_declared_input(
     *,
     cap: int,
 ) -> bytes:
-    """Owned bytes of one declared input, under its explicit per-input cap."""
+    """Owned bytes of one selected declared input, under its explicit cap.
 
-    digest = str(entry["sha256"])
-    size = int(entry["bytes"])
-    path = cas.blob_path(digest)
-    if size > cap:
+    This reader owns the *selection* and the per-input cap; the bounded
+    owned-blob read itself is Core's one owner
+    (:meth:`PrismaBuildCAS.read_declared_blob`), so the CAS blob validation
+    recipe is not spelled twice (#1446).
+    """
+
+    if int(entry["bytes"]) > cap:
         raise ActionResultError(
-            f"declared input {entry['id']!r} exceeds its byte cap: {path}")
-    payload = _read_bounded(
-        path, where="CAS input payload", max_bytes=cap, require_readonly=True)
-    if len(payload) != size or pb.raw_sha256(payload) != digest:
-        raise ActionResultError(
-            f"CAS input payload differs from its declared address: {path}")
-    return payload
+            f"declared input {entry['id']!r} exceeds its byte cap {cap}: "
+            f"{cas.blob_path(str(entry['sha256']))}")
+    try:
+        return cas.read_declared_blob(
+            entry, max_bytes=cap, where="CAS input payload")
+    except (pb.PrismaBuildError, OSError) as exc:
+        raise ActionResultError(str(exc)) from exc
 
 
 def read_verified_action_result(

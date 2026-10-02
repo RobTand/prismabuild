@@ -277,6 +277,59 @@ def test_input_limits_return_owned_bytes_for_selected_inputs_only(tmp_path: Path
             input_limits={"pq.absent": 16})
 
 
+def test_selected_input_tamper_and_over_cap_refuse_without_reading_unchosen(
+    tmp_path: Path, monkeypatch
+):
+    base = tmp_path / "t"
+    base.mkdir()
+    (base / "checkout").mkdir()
+    cas = pb.PrismaBuildCAS(base / "cas")
+    source_a = base / "a.json"
+    source_a.write_bytes(b'{"a": 1}\n')
+    a_entry, _won = cas.ingest_input(source_a, input_id="pq.a")
+    source_b = base / "b.json"
+    source_b.write_bytes(b'{"b": 2}\n')
+    b_entry, _won = cas.ingest_input(source_b, input_id="pq.b")
+    action = _standard_action(base / "checkout", command=["/bin/echo", "hi"],
+                              inputs=[a_entry, b_entry])
+    _cas, receipt = _publish_result(base, action, b"payload\n")
+    queue, record = _finish(base, action, receipt)
+    key = str(action["action_key"])
+    b_blob = cas.blob_path(str(b_entry["sha256"]))
+    seen: list[Path] = []
+    original = pb._read_regular_file_nofollow
+
+    def spy(path, **kwargs):
+        seen.append(Path(path))
+        return original(path, **kwargs)
+
+    monkeypatch.setattr(pb, "_read_regular_file_nofollow", spy)
+    result = client.read_verified_action_result(
+        queue, key, published_unix=float(record["published_unix"]), attempt=1,
+        max_result_bytes=64, max_evidence_bytes=1 << 20,
+        input_limits={"pq.a": 4096})
+    assert result["input_payloads"] == {"pq.a": b'{"a": 1}\n'}
+    assert result["inputs"] == [a_entry, b_entry]
+    assert b_blob not in seen, "an unchosen declared input must never be opened"
+    # Over cap: refused before the selected blob is opened.
+    with pytest.raises(client.ActionResultError, match="byte cap"):
+        client.read_verified_action_result(
+            queue, key, published_unix=float(record["published_unix"]),
+            attempt=1, max_result_bytes=64, max_evidence_bytes=1 << 20,
+            input_limits={"pq.a": int(a_entry["bytes"]) - 1})
+    # Tamper: the selected input's bytes no longer match its declared address,
+    # refused through the shared Core owned-blob owner.
+    a_blob = cas.blob_path(str(a_entry["sha256"]))
+    a_blob.chmod(0o644)
+    a_blob.write_bytes(b'{"a": 9}\n')
+    a_blob.chmod(0o444)
+    with pytest.raises(client.ActionResultError, match="declared address"):
+        client.read_verified_action_result(
+            queue, key, published_unix=float(record["published_unix"]),
+            attempt=1, max_result_bytes=64, max_evidence_bytes=1 << 20,
+            input_limits={"pq.a": 4096})
+
+
 # -- every byte is bounded, and loosely-typed evidence is refused ------------
 
 def _rewrite_readonly(path: Path, payload: bytes) -> None:
