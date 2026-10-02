@@ -1128,6 +1128,11 @@ def shard_pytest_args(arguments: list[str], index: int) -> list[str]:
     return result
 
 
+def shard_command(flags, *, environment, python_entry, arguments):
+    """Bind a shard's child environment and entry at the pbrun boundary."""
+    return [*flags, "--", "env", *environment, *python_entry, *arguments]
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--checkout", required=True,
@@ -1562,15 +1567,16 @@ def main() -> int:
         # no-forwarding command remains byte-identical for existing receipts.
         explicit_env = ["PYTEST_ADDOPTS="] if args.pytest_args is not None else []
         explicit_options = ["-o", "addopts="] if args.pytest_args is not None else []
-        command = flags + [
-            "--", "env", f"TMPDIR={args.tmpdir if args.tmpdir is not None else '/home/rob/tmp'}",
-            *threads, *test_bound, *explicit_env,
-            "PYTHONPATH=src:experiments",
-            *python_entry, json.dumps({"files": bucket, "roots": requested_roots}),
+        environment = [f"TMPDIR={args.tmpdir if args.tmpdir is not None else '/home/rob/tmp'}",
+                       *threads, *test_bound, *explicit_env, "PYTHONPATH=src:experiments"]
+        arguments = [
+            json.dumps({"files": bucket, "roots": requested_roots}),
             "-q", "--no-header",
             "-p", "no:cacheprovider", *explicit_options,
             *shard_pytest_args(pytest_args, index), *pytest_workers, *bucket,
         ]
+        command = shard_command(flags, environment=environment,
+                                python_entry=python_entry, arguments=arguments)
         # Hold at most ``--max-clients`` pbrun clients (#1348): the next shard
         # starts when one exits.  Its wait budget starts here, at its own
         # submission, not while it queued behind the others.
