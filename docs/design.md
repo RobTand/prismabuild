@@ -15284,6 +15284,9 @@ cleanup needed no reader proof; an insufficient stored export is re-queried for
 that exact scope. Cleanup opens the recorded nofollow chain and recursively
 unlinks through held descriptors, never pathname `rmtree`. Link checks bracket
 destructive operations; replacement, rename, mount and owner ambiguity refuse.
+Private owner-only permissions and filesystem identity are rechecked on
+registration replay and every cleanup guard; chmod to a writable foreign-user
+namespace is not accepted merely because inode/creation identity still matches.
 Content symlinks are unlinked without following them. These checks do not
 provide an adversarial same-UID filesystem sandbox: the admitted producer may
 not mutate PB's state or private namespace control, and the owning UID remains

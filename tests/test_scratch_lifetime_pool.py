@@ -282,3 +282,11 @@ def test_cleanup_mirror_failure_keeps_capacity_until_repaired(lifetime, monkeypa
     monkeypatch.setattr(pool, "_write_json_atomic", write)
     queue.reap_stale()
     assert queue.ledger().held() == {} and queue.item_path(pool.DONE, item["action_key"]).exists()
+
+
+def test_replay_rechecks_private_namespace_permissions_before_launch(lifetime, monkeypatch):
+    queue, item, variables, outcome = launch(lifetime, monkeypatch)
+    leaf(item).chmod(0o777)
+    with pytest.raises(scratch.LocalScratchError, match="permissions"):
+        queue._record_scratch_lifetimes(item["action_key"], claim_snapshot=item, env={})
+    assert (leaf(item) / "temp").read_bytes() == b"temporary" and queue.ledger().held()

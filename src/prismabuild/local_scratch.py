@@ -707,6 +707,17 @@ def _check_scratch_links(fds: list[int], identities: list[dict[str, object]]) ->
         _check_directory_link(fds[index - 1], str(identities[index]["name"]), identities[index])
 
 
+def _check_scratch_permissions(declaration: Mapping[str, object], fds: list[int]) -> None:
+    root_index = len(Path(str(declaration["root"])).parts) - 1
+    root = _directory_identity(fds[root_index], ".")
+    for fd in fds[root_index + 1:]:
+        info = os.fstat(fd)
+        identity = _directory_identity(fd, ".")
+        if (info.st_uid != os.getuid() or info.st_mode & 0o777 != 0o700
+                or identity["dev"] != root["dev"] or identity["mnt_id"] != root["mnt_id"]):
+            raise LocalScratchError("scratch namespace permissions or filesystem changed")
+
+
 def _prepare_scratch_directory(declaration: Mapping[str, object]) -> list[dict[str, object]]:
     """Prepare private namespace ancestors only; never create the payload leaf."""
     checked = _scratch_declaration(declaration)
@@ -735,6 +746,7 @@ def _prepare_scratch_directory(declaration: Mapping[str, object]) -> list[dict[s
                         or identities[-1]["mnt_id"] != identities[root_index]["mnt_id"]):
                     raise LocalScratchError("scratch namespace is not private on the root filesystem")
             _check_scratch_links(fds, identities)
+        _check_scratch_permissions(checked, fds)
         return identities
     finally:
         for fd in reversed(fds):
@@ -806,6 +818,7 @@ def _create_scratch_directory(declaration: Mapping[str, object], parent_identity
                 or identities[-1]["mnt_id"] != identities[-2]["mnt_id"]):
             raise LocalScratchError("scratch leaf is not private on the parent filesystem")
         _check_scratch_links(fds, identities)
+        _check_scratch_permissions(declaration, fds)
         return identities
     finally:
         for fd in reversed(fds):
@@ -820,6 +833,7 @@ def _uncreated_scratch_directory(declaration: Mapping[str, object], parent_ident
     identities = _scratch_directory_identity(declaration, parent_identity, parent=True)
     fds = _open_scratch_identity_chain(identities)
     try:
+        _check_scratch_permissions(declaration, fds)
         try:
             os.stat(ephemeral_scratch_path(declaration).name, dir_fd=fds[-1], follow_symlinks=False)
         except FileNotFoundError:
@@ -834,8 +848,11 @@ def _uncreated_scratch_directory(declaration: Mapping[str, object], parent_ident
 def _check_registered_scratch_directory(declaration: Mapping[str, object], identity: object) -> None:
     identities = _scratch_directory_identity(declaration, identity)
     fds = _open_scratch_identity_chain(identities)
-    for fd in reversed(fds):
-        os.close(fd)
+    try:
+        _check_scratch_permissions(declaration, fds)
+    finally:
+        for fd in reversed(fds):
+            os.close(fd)
 
 
 def _remove_scratch_contents(fd: int, guard) -> None:
@@ -895,11 +912,14 @@ def _clean_scratch_directory(declaration: Mapping[str, object], identity: object
                 if index != len(identities) - 1:
                     raise
                 _check_scratch_links(fds, identities)
+                _check_scratch_permissions(checked, fds)
                 return
             fds.append(fd)
             if _directory_identity(fd, str(expected["name"])) != expected:
                 raise LocalScratchError("scratch directory identity changed")
-        guard = lambda: _check_scratch_links(fds, identities)
+        def guard():
+            _check_scratch_links(fds, identities)
+            _check_scratch_permissions(checked, fds)
         guard()
         _remove_scratch_contents(fds[-1], guard)
         guard()

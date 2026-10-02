@@ -159,3 +159,16 @@ def test_unknown_birthtime_refuses_before_namespace_creation(declaration, monkey
     with pytest.raises(scratch.LocalScratchError, match="fixture unknown birthtime"):
         scratch._create_scratch_directory(declaration)
     assert list(Path(declaration["root"]).iterdir()) == []
+
+
+@pytest.mark.parametrize("level", ["namespace", "parent", "leaf"])
+def test_permissions_changed_after_registration_refuse_before_deletion(declaration, level):
+    path, identity = owned(declaration)
+    sentinel = path / "temp"
+    sentinel.write_bytes(b"do not delete with unsafe control")
+    target = {"namespace": Path(declaration["root"]) / "prismabuild-ephemeral",
+              "parent": path.parent, "leaf": path}[level]
+    target.chmod(0o777)
+    with pytest.raises(scratch.LocalScratchError, match="permissions"):
+        scratch._clean_scratch_directory(declaration, identity)
+    assert sentinel.read_bytes() == b"do not delete with unsafe control"
