@@ -1650,6 +1650,17 @@ a file nor a directory, or a discovery error, refuses with exit code 2 before
 any shard is submitted. Valid paths never hide a missing member of the request;
 directory discovery and deduplication retain their existing semantics.
 
+The original directory/file request roots remain pytest's collection targets
+inside each shard (#1458). `tools/fleet/pbtest_collection.py` limits traversal
+to the shard's immutable assigned files and their ancestor directories;
+pytest and project hooks decide the population within that membership.
+Directory requests therefore honor native root/nested `collect_ignore`,
+`collect_ignore_glob` and `pytest_ignore_collect`. An explicitly requested
+file keeps pytest's explicit-file override. The sealed child carries this
+collection owner as source beside the outcome recorder, with no coordinator
+import or second project-ignore implementation. A post-collection check
+refuses items from outside the assigned files before they can execute.
+
 `pbtest` file fanout is a public submission contract. CPU-only remains the
 default; `--gpu` adds GPU demand to every shard, with an optional pool-only
 `--gpu-memory-gb` budget validated by the same helpers as `pbrun`. The published
@@ -1798,7 +1809,13 @@ controller's selected collection alone cannot prove a file was intentionally
 excluded. Node IDs are resolved against pytest's rootdir relative to the
 shard checkout before comparing with assigned file paths. A listed file that
 silently yields none of these fails by name; a module skipped at collection
-covers its file. A `--collect-only`
+covers its file. Native ignore decisions also cover their assigned files:
+the collection owner records actual ignore-hook results, removes files later
+visited explicitly, and returns `file_selection` through the same workeroutput
+channel. Missing, inconsistent or foreign selection evidence refuses. An
+entirely ignored, collection-skipped or deselected shard can resolve with zero
+items beside useful shards; the complete run still refuses a globally empty
+collected population and claims no passing coverage. A `--collect-only`
 shard is matched on its collected count instead. Two differences are not
 failures, and the report names each: an outcome at collection (a module that
 skipped or failed at import, which the summary counts and a `--collect-only`

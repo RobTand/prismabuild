@@ -71,6 +71,9 @@ def pytest_sessionfinish(session, exitstatus):
     if output is not None:
         output["pbtest_deselected"] = _deselected
         output["pbtest_collect_seen"] = _collect_seen
+        selection = session.config.pluginmanager.getplugin("pbtest-file-selection")
+        if selection is not None:
+            output["pbtest_file_selection"] = selection.report()
 '''
 
 # This plugin runs in the test process, including each xdist worker. Reports
@@ -301,7 +304,8 @@ from pbtest_collection import ignored_named_paths
 
 
 def main(argv: list[str] | None = None, *, preflight=None,
-         resource_source: str | None = None) -> int:
+         resource_source: str | None = None, collection_spec=None,
+         collection_source: str | None = None) -> int:
     """Run pytest on ``argv`` with the recorder, then return its exit code.
 
     ``preflight`` runs first and ends the shard, before pytest, on a
@@ -334,6 +338,8 @@ def main(argv: list[str] | None = None, *, preflight=None,
             self.uncounted: list[list] = []
             self.file_durations: dict[str, float] = {}
             self.written = False
+            self.selection_views = []
+            self.last_record = None
 
         def pytest_configure(self, config) -> None:
             self.config = config
@@ -371,6 +377,8 @@ def main(argv: list[str] | None = None, *, preflight=None,
 
         @pytest.hookimpl(tryfirst=True)
         def pytest_collection(self, session):
+            if collection_spec is not None:
+                return None
             # pytest never asks its ignore rules about a path named on the
             # command line, and pbtest names every file (#1304).  Drop the
             # named files a loaded conftest's ``collect_ignore`` /
@@ -412,6 +420,8 @@ def main(argv: list[str] | None = None, *, preflight=None,
             if isinstance(output, dict):
                 self.deselected.extend(output.get("pbtest_deselected") or ())
                 self.collect_seen.extend(output.get("pbtest_collect_seen") or ())
+                if collection_spec is not None:
+                    self.selection_views.append(output.get("pbtest_file_selection"))
 
         def pytest_collectreport(self, report) -> None:
             if report.failed:
@@ -466,7 +476,7 @@ def main(argv: list[str] | None = None, *, preflight=None,
 
         def record(self) -> str:
             config = self.config
-            return PREFIX + json.dumps({
+            record = {
                 "schema": SCHEMA,
                 "rootdir_relative": (os.path.relpath(config.rootpath,
                     config.invocation_params.dir) if config is not None else "."),
@@ -483,7 +493,26 @@ def main(argv: list[str] | None = None, *, preflight=None,
                 "file_durations": {
                     name: round(seconds, 3)
                     for name, seconds in self.file_durations.items()},
-            }, separators=(",", ":"))
+            }
+            if collection_spec is not None:
+                view = None
+                error = None
+                if xdist:
+                    if (self.selection_views and self.selection_views[0] is not None
+                            and all(v == self.selection_views[0] for v in self.selection_views)):
+                        view = self.selection_views[0]
+                    else:
+                        error = "missing or inconsistent worker file selection evidence"
+                else:
+                    plugin = config.pluginmanager.getplugin("pbtest-file-selection")
+                    if plugin is not None:
+                        view = plugin.report()
+                    else:
+                        error = "file selection owner is unavailable"
+                record["file_selection"] = view
+                record["file_selection_error"] = error
+            self.last_record = record
+            return PREFIX + json.dumps(record, separators=(",", ":"))
 
         def pytest_terminal_summary(self, terminalreporter) -> None:
             terminalreporter.write_line(self.record())
@@ -501,14 +530,30 @@ def main(argv: list[str] | None = None, *, preflight=None,
     trace_enabled = TRACE_OPTION in arguments
     xdist = "-n" in arguments or any(arg.startswith("-n") and arg != "-n"
                                      for arg in arguments)
+    if collection_spec is not None:
+        if collection_source is None:
+            raise ValueError("pbtest file selection needs its sealed collection owner")
+        owner = {"__name__": "pbtest_selection_owner"}
+        exec(compile(collection_source, "<pbtest collection owner>", "exec"), owner)
+        selection = owner["selection_plugin"](collection_spec)
+        files = collection_spec["files"]
+        if arguments[-len(files):] != files:
+            raise ValueError("pbtest assigned files do not match the sealed pytest argv")
+        arguments = arguments[:-len(files)] + selection.targets
+    recorder = OutcomeRecorder()
     if trace_enabled and resource_source is None:
         raise ValueError("--pbtest-trace needs the sealed resource accounting source")
-    if xdist or trace_enabled:
+    if xdist or trace_enabled or collection_spec is not None:
         # The shard is already inside one admitted PB action. The worker
         # plugin lives only for this pytest invocation and changes no checkout
         # or sealed input. xdist's workeroutput is the transport it owns.
         with tempfile.TemporaryDirectory(prefix="pbtest-xdist-roster-") as folder:
             Path(folder, "pbtest_xdist_roster.py").write_text(XDIST_ROSTER_PLUGIN)
+            if collection_spec is not None:
+                Path(folder, "pbtest_file_selection.py").write_text(
+                    collection_source + "\n\ndef pytest_configure(config):\n"
+                    "    config.pluginmanager.register(selection_plugin("
+                    + repr(collection_spec) + "), 'pbtest-file-selection')\n")
             if trace_enabled:
                 Path(folder, "pbtest_resource_scope.py").write_text(resource_source)
                 Path(folder, "pbtest_resource_trace.py").write_text(RESOURCE_TRACE_PLUGIN)
@@ -517,10 +562,12 @@ def main(argv: list[str] | None = None, *, preflight=None,
             os.environ["PYTHONPATH"] = folder + os.pathsep + (old_path or "")
             try:
                 plugins = ["-p", "pbtest_xdist_roster"]
+                if collection_spec is not None:
+                    plugins += ["-p", "pbtest_file_selection"]
                 if trace_enabled:
                     plugins += ["-p", "pbtest_resource_trace"]
                 code = pytest.main([*plugins, *arguments],
-                                   plugins=[OutcomeRecorder()])
+                                   plugins=[recorder])
             finally:
                 sys.path.remove(folder)
                 if old_path is None:
@@ -528,6 +575,20 @@ def main(argv: list[str] | None = None, *, preflight=None,
                 else:
                     os.environ["PYTHONPATH"] = old_path
     else:
-        code = pytest.main(arguments, plugins=[OutcomeRecorder()])
+        code = pytest.main(arguments, plugins=[recorder])
     sys.stdout.flush()
+    # Excluded/collection-skipped file quanta are resolved work, not test
+    # passes. The parent still refuses a globally empty population.
+    record = recorder.last_record
+    if (int(code) == 5 and collection_spec is not None and record is not None
+            and not record.get("collected") and not record.get("file_selection_error")
+            and isinstance(record.get("file_selection"), dict)):
+        covered = set(record["file_selection"]["ignored"])
+        rootdir = record["rootdir_relative"]
+        covered.update(source_file(row[0], rootdir) for row in record["reports"]
+                       if row[1:3] == ["collect", "skipped"])
+        covered.update(source_file(nodeid, rootdir) for nodeid in record["deselected"])
+        if set(collection_spec["files"]) <= covered and all(
+                row[2] == "skipped" for row in record["reports"]):
+            code = 0
     return int(code)

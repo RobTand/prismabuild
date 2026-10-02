@@ -307,7 +307,7 @@ def test_explicit_tmpdir_refuses_on_the_worker_before_pytest(
         # entry falls back to another parent and reaches pytest. The explicit
         # preflight, rather than a pytest collection error, causes refusal.
         payload[payload.index("-c") + 1] = pbtest.shard_entry(
-            sys.executable, checkout,
+            sys.executable, checkout, collection=True,
         )[2]
         legacy = subprocess.run(payload, cwd=checkout, capture_output=True, text=True)
         assert legacy.returncode == 0, legacy.stdout + legacy.stderr
