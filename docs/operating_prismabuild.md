@@ -3780,6 +3780,37 @@ not name the kind, `pbrun` queues it, and every claim records
 `never_fits_capacity`. The refusals are listed in `docs/design.md` under
 "Bounded local scratch draws from the same budget".
 
+### Select scratch lifetime explicitly
+
+On a runtime offering `scratch-lifetime-v1`, a contained action can opt into
+the versioned pool lifetime contract (#1360). Keep temporary and persistent
+cache roots in separate charged ROOT/MAX pairs, and seal this selection:
+
+```json
+{"schema":"prismabuild.scratch_lifetime_selection.v1","entries":[
+  {"root_env":"TEMP_ROOT","name":"row-temp","lifetime":"ephemeral"},
+  {"root_env":"CACHE_ROOT","name":"compile","lifetime":"persistent"}
+]}
+```
+
+Pass that JSON as `PRISMABUILD_EPHEMERAL_SCRATCH_DECLARATIONS`. PB derives the
+worker capability requirement, registers a private ephemeral leaf before
+launch and cleans it only after exact stopped-attempt proof. The existing
+`bind_ephemeral_scratch`/`ephemeral_scratch_path` helpers address the leaf;
+neither the root variable nor TMPDIR is automatically redirected. The root
+must already exist on a qualified local filesystem with Linux immutable
+creation-time support. Persistent entries are never traversed or removed.
+
+The legacy `{root_env,name}` JSON list still records naming evidence only.
+It does not opt into cleanup. ROOT/MAX is reservation accounting, not arbitrary
+write quota enforcement; producers must bound temporary and persistent writes.
+Cleanup failure, inode/ancestry replacement or an existing leaf whose identity
+was never committed retains the owning claim and charged capacity. Existing
+finish/reaper/late-finish recovery retries deterministic ownership, never
+adopts an ambiguous path. The owner UID may not mutate PB's private state or
+namespace control. Source CPU fixtures are not deployment qualification: check
+the actual worker offers before using this feature in PQ or another workload.
+
 ### Write outputs that a later action reads
 
 A producer whose outputs only a later action reads declares a write-only

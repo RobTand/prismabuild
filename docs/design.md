@@ -14920,7 +14920,9 @@ isolation during destructive transitions; and holding charged capacity until
 required cleanup settles. None is implemented by this naming slice. The
 staged-read SM-01/INV-01/INV-07 targets remain owed for scratch finalization;
 this change promotes no requirement/deployment/workload axis in the ledger.
-No full scratch-lifetime capability is advertised, and #1360 remains open.
+No SDK scratch-lifetime capability is advertised by these naming helpers;
+the separate versioned pool input is described below. #1360 deployment and
+PQ workload acceptance remain open.
 ### Opt-in measured scratch service placement (Refs #1182, 2026-09-29)
 
 This optional path additionally binds its profile to the current root
@@ -15224,7 +15226,83 @@ Required-cleanup registration must include the aggregate terminal/recovery
 barrier and authorized idempotent settlement, not an orphaned requirement that
 pins capacity forever. Full #1360 cleanup/recovery, unsafe-path checks,
 successor-safe destructive transitions, deployment and PQ acceptance remain
-open. No scratch-lifetime or cleanup capability is advertised or promoted.
+open for the legacy naming slice. The SDK helpers still grant no deletion
+authority; the separate versioned pool input below supplies an opt-in lifetime
+contract without changing those helpers or SDK4's exported surface.
+
+### Generation-bound scratch lifetime (Refs #1360, source contract)
+
+The existing `PRISMABUILD_EPHEMERAL_SCRATCH_DECLARATIONS` input also accepts an
+exact versioned object, never silently upgrading a legacy naming array:
+
+```json
+{"schema":"prismabuild.scratch_lifetime_selection.v1","entries":[
+  {"root_env":"TEMP_ROOT","name":"row-temp","lifetime":"ephemeral"},
+  {"root_env":"CACHE_ROOT","name":"compile","lifetime":"persistent"}
+]}
+```
+
+Every pair is sealed and charged through the existing `spool_gb` host ledger.
+The bounded parser uses the naming limits (16 KiB, 64 entries), rejects unknown
+fields, duplicate selections and overlapping ephemeral/persistent roots, and
+never infers a lifetime from a variable name. ROOT/MAX is a reservation, not a
+filesystem quota. Persistent entries convey no directory/deletion identity;
+PB neither creates nor traverses their paths. Ordinary persistent Triton and
+Inductor caches therefore remain producer-owned and must be separately bounded.
+
+Pool publication derives the `scratch-lifetime-v1` worker requirement from
+nonempty versioned intent and refuses inadequate sealed scratch funding. Old
+workers do not offer it. The source worker loop offers this code capability;
+this is not evidence of a deployed runtime generation or PQ workload acceptance.
+SDK4 exports, signatures, legacy arrays and SDK `CAPABILITIES` remain unchanged.
+
+`PoolQueue._record_scratch_lifetimes` uses the existing transition lock and
+contained prelaunch owner. It files `prismabuild.scratch_lifetime_record.v1` in
+the claim and existing lease before filesystem mutation or payload launch.
+Each ephemeral path retains the existing host/key/publication-generation/nonce
+namespace. The complete claim envelope binds key, publication, host, worker,
+attempt count, resources and exact broker nonce/scope. Directory identity binds
+every ancestor from `/`, parent and leaf by device, inode, owner UID, mount ID
+and immutable Linux `statx` birth time. Missing birth time refuses rather than
+using mutable ctime/mtime or a reusable inode alone. Nofollow descriptor walks
+refuse symlink ancestry; private namespaces must be owner-only on the same
+qualified local filesystem. The declared root must already exist. A foreign
+existing leaf is never adopted. Producers use the existing naming helper to
+address the registered leaf; the lifetime contract does not redirect TMPDIR.
+
+Intent precedes namespace preparation, parent identity precedes leaf creation,
+and leaf identity precedes `Popen`. Claim/lease commits are monotone; a failed
+mirror prevents launch and replay repairs it without renewing heartbeat.
+An interruption before leaf creation can settle proven absence. An existing
+leaf whose identity was never committed is ambiguous: recovery retains the
+claim/capacity and refuses adoption or deletion until explicitly repaired.
+Empty private namespace ancestors may remain; PB never removes the root.
+
+The existing payload containment/finalize owner, not a new sweeper, performs
+cleanup. Exact stopped-scope export proof is required even where legacy payload
+cleanup needed no reader proof; an insufficient stored export is re-queried for
+that exact scope. Cleanup opens the recorded nofollow chain and recursively
+unlinks through held descriptors, never pathname `rmtree`. Link checks bracket
+destructive operations; replacement, rename, mount and owner ambiguity refuse.
+Content symlinks are unlinked without following them. These checks do not
+provide an adversarial same-UID filesystem sandbox: the admitted producer may
+not mutate PB's state or private namespace control, and the owning UID remains
+the existing PB trust boundary.
+
+Each consumed entry is atomically committed and mirrored before the existing
+finish/reap path may release charged host capacity, archive the attempt, publish
+a retry or remove a withdrawn owner. Partial deletion retries the same identity;
+an absent leaf is completion only with matching recorded ancestry. A durable
+consumed entry is never revisited. Existing `finish_pending`, late-finish and
+tombstone recovery retain the owner; a late predecessor cannot rewrite the
+successor's claim, lease or reservation. Central immutable attempt detail and
+withdrawal evidence retain the lifetime record; retry shaping strips it.
+
+File fsync and atomic record publication use the existing process-crash storage
+contract, not new NFS/server power-loss qualification (DUR-01). CPU tempdir fault
+fixtures qualify only the source behavior. Deployment, real worker-crash/cross-
+host recovery, real PQ Stage A/B sizing and persistent-cache bounds remain owed;
+no live scratch, model bytes, serving gate or GPU workload is changed here.
 
 **Still open.**
 

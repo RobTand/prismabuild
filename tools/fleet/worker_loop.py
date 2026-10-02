@@ -1562,6 +1562,8 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
         # observations separately decide admission. Old workers cannot ignore
         # opted-in sealed traffic during a rolling publication.
         tags.append(local_scratch.IO_CAPABILITY)
+        # Versioned lifetime actions cannot run on declaration-only workers.
+        tags.append(local_scratch.SCRATCH_LIFETIME_TAG)
         if loaded_generation:
             tags.extend((publication_canary.CAPABILITY,
                          f"runtime-generation:{loaded_generation}"))
