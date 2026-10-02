@@ -36,7 +36,6 @@ import argparse
 import contextlib
 import dataclasses
 import fcntl
-import hashlib
 import importlib.util
 import json
 import os
@@ -54,6 +53,7 @@ from pbmergeq_runtime import (
     select_runtime,
     validate_policy,
 )
+from prismabuild import core
 
 #: GitHub refuses a commit status description longer than this.
 DESCRIPTION_LIMIT = 140
@@ -730,8 +730,9 @@ class Runner:
                     rows.append(row)
             if not rows:
                 return []
-            data = json.dumps(rows, sort_keys=True)
-            digest = hashlib.sha256(data.encode()).hexdigest()
+            raw = core._sorted_json_bytes(rows)
+            data = raw.decode("utf-8")
+            digest = core.raw_sha256(raw)
             hint = self.store.baselines / f"duration-hints-{digest}.json"
             write_atomic(hint, data)
             return ["--history", str(hint)]

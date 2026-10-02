@@ -23,7 +23,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Literal
 
-from prismabuild.core import _sigterm_unwinds_this_process
+from prismabuild.core import _sigterm_unwinds_this_process, _sorted_json_bytes
 
 #: How long to wait for a killed child before treating it as retained. Same
 #: reasoning as mount_latency.KILL_GRACE_S: SIGKILL is delivered at the child's
@@ -287,7 +287,8 @@ def _retain_owned_reader(pid: int, section: str, started: float, abandoned: list
         child["ownership"] = ownership.to_record()
     abandoned.append(child)
     if _ANNOUNCE_RETAINED.get() or sys.exc_info()[1] is not None:
-        print(f"pbstatus: retained reader {json.dumps(child, sort_keys=True)}", file=sys.stderr)
+        print(f"pbstatus: retained reader {_sorted_json_bytes(child).decode('utf-8')}",
+              file=sys.stderr)
 
 
 def _stop_owned_reader(pid: int, descriptor: int | None, ownership: ReaderOwnership | None,
@@ -516,7 +517,7 @@ def _stop_reader(pid: int, section: str, started: float, abandoned: list) -> Non
                  "since_unix": round(time.time() - (time.monotonic() - started), 3)}
         abandoned.append(child)
         if _ANNOUNCE_RETAINED.get() or sys.exc_info()[1] is not None:
-            print(f"pbstatus: retained reader {json.dumps(child, sort_keys=True)}",
+            print(f"pbstatus: retained reader {_sorted_json_bytes(child).decode('utf-8')}",
                   file=sys.stderr)
 
 
