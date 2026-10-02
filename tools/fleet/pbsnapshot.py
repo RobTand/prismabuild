@@ -199,9 +199,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
     check = sub.add_parser("verify", help="verify a checkout's generated files")
-    check.add_argument("checkout")
-    check.add_argument("commit")
-    check.add_argument("--cas-root", default=str(DEFAULT_CAS_ROOT))
+    check.add_argument("checkout", help="Git checkout containing the commit to inspect")
+    check.add_argument("commit", help="Git commit or ref whose generated files must verify")
+    check.add_argument("--cas-root", default=str(DEFAULT_CAS_ROOT),
+                       help="CAS root used to verify the generated-file request and content bindings")
     check.add_argument("--owner", default=None,
                        help=f"default: ${pool.CONTAINER_OWNER_ENV}")
     args = parser.parse_args(argv)
