@@ -29,21 +29,22 @@ merges, and refuses to start unless the config's ``merge_enabled_file``
 exists. Queue, batch and a ledger of every status and merge live in
 ``state_dir``, so a restart resumes without a double post or merge.
 """
+
 from __future__ import annotations
 
 import argparse
-from collections.abc import Callable, Iterable
 import contextlib
 import dataclasses
 import fcntl
 import importlib
 import json
 import os
-from pathlib import Path
 import shutil
 import subprocess
 import sys
 import time
+from collections.abc import Callable, Iterable
+from pathlib import Path
 
 from pbmergeq_runtime import (
     RuntimeSelectionError,
@@ -147,13 +148,17 @@ class RunResult:
     log: str = ""
 
 
-def load_outcomes(pbtest: Path):
-    """``pbtest_outcomes`` from beside the published ``pbtest.py``."""
-
-    where = str(pbtest.parent)
+def load_published_module(path: Path):
+    """One owner for modules belonging to the selected published entrypoint."""
+    where = str(path.parent)
     if where not in sys.path:
         sys.path.insert(0, where)
-    return importlib.import_module("pbtest_outcomes")
+    return importlib.import_module(path.stem)
+
+
+def load_outcomes(pbtest: Path):
+    """``pbtest_outcomes`` from beside the published ``pbtest.py``."""
+    return load_published_module(pbtest.with_name("pbtest_outcomes.py"))
 
 
 def reduce_report(report: list[dict], outcomes) -> RunResult:
@@ -600,8 +605,7 @@ class Runner:
         """Every test file the suite holds, and the fleet-data files left out."""
 
         if self._pbtest is None:
-            load_outcomes(self.cfg.pbtest)          # puts pbtest's dir on sys.path
-            self._pbtest = importlib.import_module("pbtest")
+            self._pbtest = load_published_module(self.cfg.pbtest)
         files = [f for f in self._pbtest.discover(checkout, list(self.cfg.test_paths))
                  if f not in self.cfg.exclude]
         left_out: list[str] = []
@@ -699,9 +703,7 @@ class Runner:
             handle.close()
             wall = time.monotonic() - started
             files = next(f for n, _, f in jobs if n == name)
-            result = self.read_result(report, files)
-            if process.returncode and not result.runtime_refusal:
-                result.runtime_refusal = runtime_refusal(log.read_text(encoding="utf-8", errors="replace"))
+            result = self.read_result(report, files, log=log, returncode=process.returncode)
             result.runtime, result.log = runtime, str(log)
             result.report, result.wall_s = str(report), wall
             results[name] = result
@@ -710,12 +712,17 @@ class Runner:
                                     f"{len(result.inconclusive)} inconclusive file(s)")
         return results
 
-    def read_result(self, report: Path, files: list[str]) -> RunResult:
+    def read_result(self, report: Path, files: list[str], *, log: Path,
+                    returncode: int) -> RunResult:
         if report.exists():
-            return reduce_report(json.loads(report.read_text(encoding="utf-8")),
-                                 self.outcomes)
-        return RunResult(failed=set(), inconclusive=list(files), files=list(files),
-                         receipts=[])
+            result = reduce_report(json.loads(report.read_text(encoding="utf-8")),
+                                   self.outcomes)
+        else:
+            result = RunResult(failed=set(), inconclusive=list(files), files=list(files),
+                               receipts=[])
+        if returncode and not result.runtime_refusal:
+            result.runtime_refusal = runtime_refusal(log.read_text(encoding="utf-8", errors="replace"))
+        return result
 
     @staticmethod
     def _progress(log: Path) -> int:
@@ -805,14 +812,18 @@ class Queue:
             "runtime_refusal": result.runtime_refusal, "log": result.log}
         self.store.save()
 
+    def check_results(self, batch: dict, results: dict[str, RunResult]) -> None:
+        """Record and classify the results owned by one concurrent invocation."""
+        for name, result in results.items():
+            self.record_run(batch, name, result)
+            if result.runtime_refusal:
+                raise RuntimeBlocked(f"{name}: {result.runtime_refusal}")
+            if result.inconclusive:
+                raise Inconclusive(f"{name}: {len(result.inconclusive)} file(s) never observed")
+
     def checked(self, batch: dict, name: str, results: dict[str, RunResult]) -> RunResult:
-        result = results[name]
-        self.record_run(batch, name, result)
-        if result.runtime_refusal:
-            raise RuntimeBlocked(f"{name}: {result.runtime_refusal}")
-        if result.inconclusive:
-            raise Inconclusive(f"{name}: {len(result.inconclusive)} file(s) never observed")
-        return result
+        self.check_results(batch, {name: results[name]})
+        return results[name]
 
     # -- selection and build -----------------------------------------------
 
