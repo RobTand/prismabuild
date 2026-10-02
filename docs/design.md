@@ -473,7 +473,7 @@ refuse until the measurement can actually claim. Denials report
 and stop withholding. Portable backfill remains eligible on other hosts, and
 priority ordering is unchanged.
 
-**Canonical UNKNOWN-first reservation slice (#1419, source accepted; deployment HOLD).** Bounded
+**Canonical UNKNOWN-first reservation slice (#1419, source accepted; worker generation adopted).** Bounded
 legacy attention above is distinct from a host election. On affirmative fresh
 CPU/GPU attribution and a readable finite sealed incumbent deadline, exactly one
 host is selected for this measurement publication under its transition key and
@@ -558,9 +558,18 @@ optional paired reader preserves its ordinary physical dataset/mount default;
 it runs inside the existing mint lock and does not bypass qualification or
 alter token/funding accounting. A scaled gate must never resample the live host
 filesystem under its simulated GiB unit.
-This source-accepted partial slice is Refs #1419. Deployment and end-to-end live
-acceptance remain HOLD; finite safe-fit/release proof (#1429) remains UNKNOWN/HOLD.
-No prospective timed backfill or physical resource-reclaim bound is certified.
+This source-accepted partial slice is Refs #1419. The 2026-10-02 readback shows
+all three live workers on generation `d028dfee920b-1790960385-1d815cff72d1`, whose source parent
+`9dd0af2d52050469c01901a7b4c5110ecc8f7dd6` contains the accepted reservation
+slice and its tmpfs state-root correction. The published reservation and CPU
+controller bytes match main at `dc4803daaf09b6426083d2d36bd2a2da3d6832fe`;
+that main head also contains newer SDK-v4 pool changes which this generation
+does not carry. This worker-generation readback does not qualify an organic
+continuous-backfill wait bound. That live acceptance remains open, and finite
+safe-fit/release proof (#1429) remains UNKNOWN/HOLD. No prospective timed backfill
+or physical resource-reclaim bound is certified. The retained source, receipt
+and live-readback distinctions are recorded in
+[the P1 runtime checkpoint](evidence/p1_runtime_checkpoint_2026-10-02.json).
 
 CPU sampler silence is not a drain-resolvable measurement refusal (#1317).
 Missing, stale, future-dated or incomplete host samples produce
