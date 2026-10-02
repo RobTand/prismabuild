@@ -323,6 +323,41 @@ def test_a_collection_skip_covers_its_assigned_file():
     assert result["reconciliation"]["missing_files"] == []
 
 
+@pytest.mark.parametrize("selection,error,valid", [
+    ({"files": ["tests/test_ignored.py"], "ignored": ["tests/test_ignored.py"]}, None, True),
+    (None, "missing worker evidence", False),
+    ({"files": ["tests/test_ignored.py"], "ignored": ["tests/test_ignored.py"]},
+     "inconsistent workers", False),
+    ({"files": ["tests/test_other.py"], "ignored": ["tests/test_ignored.py"]}, None, False),
+    ({"files": ["tests/test_ignored.py"], "ignored": ["tests/test_other.py"]}, None, False),
+    ({"files": ["tests/test_ignored.py"],
+      "ignored": ["tests/test_ignored.py", "tests/test_ignored.py"]}, None, False),
+])
+def test_only_complete_consistent_ignore_evidence_covers_a_file(selection, error, valid):
+    record = outcomes.parse(_record([], []))
+    record.update(file_selection=selection, file_selection_error=error)
+    result = {"shard": 0, "files": ["tests/test_ignored.py"], "ran": True,
+              "summary": "no tests ran in 0.01s",
+              "output": outcomes.PREFIX + json.dumps(record)}
+    pbtest.reconcile_shards([result])
+    rec = result["reconciliation"]
+    assert (rec["problems"] == []) is valid
+    assert rec["missing_files"] == ([] if valid else ["tests/test_ignored.py"])
+
+
+def test_a_collected_file_cannot_also_claim_to_be_ignored():
+    name = "tests/test_one.py"
+    nodeid = name + "::test_one"
+    record = outcomes.parse(_record([nodeid], [[nodeid, "call", "passed", None, None]]))
+    record.update(file_selection={"files": [name], "ignored": [name]},
+                  file_selection_error=None)
+    result = {"shard": 0, "files": [name], "ran": True,
+              "summary": "1 passed in 0.01s",
+              "output": outcomes.PREFIX + json.dumps(record)}
+    pbtest.reconcile_shards([result])
+    assert "invalid or inconsistent file selection evidence" in result["reconciliation"]["problems"]
+
+
 def test_failed_shard_shows_full_failure_section(tmp_path, monkeypatch, capsys):
     nodeid = "tests/test_0.py::test_x"
     record = _record([nodeid], [[nodeid, "call", "failed", None, None]])

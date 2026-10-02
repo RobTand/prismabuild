@@ -33,16 +33,17 @@ Four constraints shape this:
   own gives each worker its share of those cores: each xdist worker would
   otherwise inherit the whole row's thread count (#1192).
 
-Shards are round-robin by file, which balances only if files cost roughly the
-same.  They do not -- but the alternative is a duration model nobody has
-measured, and an unbalanced shard costs wall-clock while a wrong one costs
-trust.  The imbalance is reported so it can be seen rather than assumed.
+Shards use receipt-backed duration history when available and round-robin by
+file otherwise. The report records predicted and actual durations so a bad
+estimate or an unbalanced shard remains visible.
 """
 from __future__ import annotations
 
 import argparse
+import ast
 import importlib.util
 import json
+import os
 import posixpath
 import re
 import statistics
@@ -617,7 +618,9 @@ def fleet_data_files(checkout: Path, files: list[str]) -> list[str]:
 
     A file declares it with ``@pytest.mark.fleet_data`` on a test, or
     ``pytestmark = pytest.mark.fleet_data`` for the module.  The scan is
-    textual, so it never imports the target's plugins.
+    static, so it never imports the target's plugins. Strings and comments
+    are not declarations; unparseable target syntax keeps the conservative
+    text fallback and remains pytest's collection responsibility (#1460).
     """
 
     marked = []
@@ -626,7 +629,17 @@ def fleet_data_files(checkout: Path, files: list[str]) -> list[str]:
             text = (checkout / name).read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        if _FLEET_DATA_USE.search(text):
+        try:
+            tree = ast.parse(text)
+        except (SyntaxError, ValueError):
+            declared = bool(_FLEET_DATA_USE.search(text))
+        else:
+            declared = any(
+                isinstance(node, ast.Attribute) and node.attr == FLEET_DATA_MARKER
+                and isinstance(node.value, ast.Attribute) and node.value.attr == "mark"
+                for node in ast.walk(tree)
+            )
+        if declared:
             marked.append(name)
     return marked
 
@@ -819,14 +832,21 @@ def load(name):
 
 
 pins = load("pbtest_pins") if "pbtest_pins" in SOURCES else None
+load("pbtest_collection")
+selection = None
+if @COLLECTION@:
+    import json
+    selection = json.loads(sys.argv.pop(1))
 raise SystemExit(load("pbtest_outcomes").main(
     preflight=None if pins is None else pins.preflight,
-    resource_source=SOURCES.get("pbtest_resource_scope")))
+    resource_source=SOURCES.get("pbtest_resource_scope"),
+    collection_spec=selection,
+    collection_source=SOURCES["pbtest_collection"]))
 """
 
 
 def shard_entry(python: str, checkout: Path, *, tmpdir: str | None = None,
-                trace: bool = False) -> list[str]:
+                trace: bool = False, collection: bool = False) -> list[str]:
     """The argv that runs a shard's pytest under the outcome recorder.
 
     Every shard reports each counted outcome by node ID (#942), so every
@@ -838,7 +858,8 @@ def shard_entry(python: str, checkout: Path, *, tmpdir: str | None = None,
     """
 
     here = Path(__file__)
-    sources = {"pbtest_outcomes": here.with_name("pbtest_outcomes.py").read_text()}
+    sources = {"pbtest_outcomes": here.with_name("pbtest_outcomes.py").read_text(),
+               "pbtest_collection": here.with_name("pbtest_collection.py").read_text()}
     if trace:
         # The diagnostic plugin reuses the existing exact-process I/O reader.
         # Carry its standalone source into any target project/interpreter.
@@ -846,7 +867,8 @@ def shard_entry(python: str, checkout: Path, *, tmpdir: str | None = None,
             RUNTIME_ROOT / "src" / "prismabuild" / "resource_scope.py").read_text()
     if any((checkout / "tools").glob("resolve_*_dev_pin.py")):
         sources["pbtest_pins"] = here.with_name("pbtest_pins.py").read_text()
-    program = SHARD_PROGRAM.replace("@SOURCES@", repr(sources))
+    program = SHARD_PROGRAM.replace("@SOURCES@", repr(sources)).replace(
+        "@COLLECTION@", repr(collection))
     if tmpdir is not None:
         # Explicit scratch placement must refuse on the worker rather than let
         # tempfile silently choose another filesystem. The default entry stays
@@ -956,6 +978,18 @@ def reconcile_shards(results: list[dict]) -> None:
                         if row[1] == "collect")
         observed.update(source_file(nodeid)
                         for nodeid in record.get("collect_seen") or ())
+        selection = record.get("file_selection")
+        if "file_selection" in record:
+            if (not isinstance(selection, dict) or set(selection) != {"files", "ignored"}
+                    or selection["files"] != result["files"]
+                    or not isinstance(selection["ignored"], list)
+                    or any(path not in result["files"] for path in selection["ignored"])
+                    or selection["ignored"] != sorted(set(selection["ignored"]))
+                    or set(selection["ignored"]) & observed
+                    or record.get("file_selection_error")):
+                reconciliation["problems"].append("invalid or inconsistent file selection evidence")
+            else:
+                observed.update(selection["ignored"])
         missing = sorted(set(result["files"]) - observed)
         reconciliation["missing_files"] = missing
         if missing:
@@ -1351,7 +1385,8 @@ def main() -> int:
     # their existing commands and identities.
     try:
         python_entry = shard_entry(args.python, checkout, tmpdir=args.tmpdir,
-                                   trace=pbtest_outcomes.TRACE_OPTION in pytest_args)
+                                   trace=pbtest_outcomes.TRACE_OPTION in pytest_args,
+                                   collection=True)
     except OSError as exc:
         sys.stderr.write(f"pbtest: cannot load the shard program: {exc}\n")
         return 2
@@ -1460,6 +1495,10 @@ def main() -> int:
           f"transport={args.transport}",
           flush=True)
     procs = []
+    requested_roots = [
+        [os.path.normpath(os.path.relpath(checkout / raw, checkout)),
+         "directory" if (checkout / raw).is_dir() else "file"]
+        for raw in args.paths or ["tests"]]
     for index, bucket in enumerate(buckets):
         # Built in order rather than spliced into.  The repeatable --tag used
         # to be inserted at a fixed index, which once landed between --demand
@@ -1527,7 +1566,8 @@ def main() -> int:
             "--", "env", f"TMPDIR={args.tmpdir if args.tmpdir is not None else '/home/rob/tmp'}",
             *threads, *test_bound, *explicit_env,
             "PYTHONPATH=src:experiments",
-            *python_entry, "-q", "--no-header",
+            *python_entry, json.dumps({"files": bucket, "roots": requested_roots}),
+            "-q", "--no-header",
             "-p", "no:cacheprovider", *explicit_options,
             *shard_pytest_args(pytest_args, index), *pytest_workers, *bucket,
         ]
@@ -1686,6 +1726,16 @@ def main() -> int:
     # doubled result that no exit code reports (#941).
     failed = [r for r in results if r["returncode"] != 0 or not r["ran"]
               or (r.get("reconciliation") or {}).get("problems")]
+    # A positively excluded or collection-skipped quantum may succeed beside
+    # useful shards. The complete run still needs a real collected population.
+    population_empty = (bool(results) and all(
+        pbtest_outcomes.parse(r["output"]) is not None and
+        pbtest_outcomes.parse(r["output"]).get("file_selection") is not None
+        for r in results) and not any(
+            (r.get("reconciliation") or {}).get("collected", 0) for r in results))
+    if population_empty:
+        print("pbtest: no tests collected in the requested population; no passing test coverage")
+        failed = results
     print(f"\n{len(results) - len(failed)}/{len(results)} shards green")
     for r in failed:
         print(f"\n--- shard {r['shard']} ({', '.join(r['files'])})")

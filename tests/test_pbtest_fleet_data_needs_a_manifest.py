@@ -127,3 +127,23 @@ def test_fleet_data_files_finds_both_spellings(tmp_path: Path) -> None:
     (tmp_path / "c.py").write_text("def test_x():\n    pass\n", encoding="utf-8")
 
     assert pbtest.fleet_data_files(tmp_path, ["a.py", "b.py", "c.py"]) == ["a.py", "b.py"]
+
+
+@pytest.mark.parametrize("source,marked", [
+    ('MARKED = "@pytest.mark.fleet_data\\ndef test_reads(): pass"\n', False),
+    ('# pytestmark = pytest.mark.fleet_data\ndef test_one(): pass\n', False),
+    ('import pytest\npytestmark = pytest.mark.fleet_data\n', True),
+    ('@pytest.mark.fleet_data()\ndef test_one(): pass\n', True),
+    ('broken syntax\n# pytest.mark.fleet_data\n', True),
+    ('broken syntax\n', False),
+])
+def test_marker_text_is_not_a_declaration_and_unparsed_syntax_stays_conservative(
+        tmp_path, source, marked):
+    (tmp_path / "target.py").write_text(source)
+    assert pbtest.fleet_data_files(tmp_path, ["target.py"]) == (
+        ["target.py"] if marked else [])
+
+
+def test_marker_fixtures_do_not_mark_this_actual_file():
+    source = Path(__file__).resolve()
+    assert pbtest.fleet_data_files(source.parent, [source.name]) == []

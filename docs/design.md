@@ -1650,6 +1650,17 @@ a file nor a directory, or a discovery error, refuses with exit code 2 before
 any shard is submitted. Valid paths never hide a missing member of the request;
 directory discovery and deduplication retain their existing semantics.
 
+The original directory/file request roots remain pytest's collection targets
+inside each shard (#1458). `tools/fleet/pbtest_collection.py` limits traversal
+to the shard's immutable assigned files and their ancestor directories;
+pytest and project hooks decide the population within that membership.
+Directory requests therefore honor native root/nested `collect_ignore`,
+`collect_ignore_glob` and `pytest_ignore_collect`. An explicitly requested
+file keeps pytest's explicit-file override. The sealed child carries this
+collection owner as source beside the outcome recorder, with no coordinator
+import or second project-ignore implementation. A post-collection check
+refuses items from outside the assigned files before they can execute.
+
 `pbtest` file fanout is a public submission contract. CPU-only remains the
 default; `--gpu` adds GPU demand to every shard, with an optional pool-only
 `--gpu-memory-gb` budget validated by the same helpers as `pbrun`. The published
@@ -1688,6 +1699,11 @@ A test file that reads fleet data declares it with `@pytest.mark.fleet_data`
 --data-manifest` takes; `pbtest` forwards it, and `--residency {none,stage}`,
 to every shard only when given, so a run without them keeps its action keys.
 `--residency stage` without a manifest is refused with exit 2.
+
+This declaration scan parses source without importing target modules (#1460).
+Marker text inside strings or comments does not declare a fleet read. If the
+coordinator cannot parse the target's syntax, the conservative text scan remains
+the fallback; parsing never masks genuine pytest collection errors.
 
 A `--gpu` run must declare its per-test bound (#975): `--test-timeout-s`, or
 `--timeout-s`, from which the bound is derived one heartbeat inside the sealed
@@ -1798,7 +1814,13 @@ controller's selected collection alone cannot prove a file was intentionally
 excluded. Node IDs are resolved against pytest's rootdir relative to the
 shard checkout before comparing with assigned file paths. A listed file that
 silently yields none of these fails by name; a module skipped at collection
-covers its file. A `--collect-only`
+covers its file. Native ignore decisions also cover their assigned files:
+the collection owner records actual ignore-hook results, removes files later
+visited explicitly, and returns `file_selection` through the same workeroutput
+channel. Missing, inconsistent or foreign selection evidence refuses. An
+entirely ignored, collection-skipped or deselected shard can resolve with zero
+items beside useful shards; the complete run still refuses a globally empty
+collected population and claims no passing coverage. A `--collect-only`
 shard is matched on its collected count instead. Two differences are not
 failures, and the report names each: an outcome at collection (a module that
 skipped or failed at import, which the summary counts and a `--collect-only`
@@ -2106,6 +2128,17 @@ matters). Rules:
   PyTorch, `--profile torch` with `PRISMABUILD_PROFILE_TORCH_OUT` forwarded
   and mounted). Callers retain the shim and its resource scope/CPU affinity
   contract (#562).
+- **Diagnostic files stay outside the source checkout** — each profile
+  session plans a unique `.prismabuild-profile-<key>-<nonce>` sibling of the
+  complete Git checkout, or the declared checkout when there is no Git marker
+  (#1459). Allocation is exclusive, mode `0700`, and lazy after preflight;
+  a nested task cwd or a `TMPDIR` inside the source cannot move PB's profile,
+  exit relay or container-route marker into that tree. An unusable parent or
+  collision refuses before launch. Settlement retains the existing CAS
+  ingestion and removes only the directory this session created. Genuine
+  dirty inputs remain visible to source checks, and a caller-owned
+  `.prismabuild-profile` is neither adopted nor removed. This is diagnostic
+  placement, not a new cache or public scratch lifecycle.
 - **An in-process profiler is a contract, not a monkeypatch** — `torch.profiler`
   cannot be started from outside the process it profiles, so `--profile torch`
   names a path in an environment variable and validates what the action wrote

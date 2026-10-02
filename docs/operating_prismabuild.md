@@ -418,7 +418,8 @@ What is worth knowing before using it:
     installation or launcher change needs its own observed evidence; do not
     infer eligibility from those old paths.
 *   **py-spy writes its own scratch file under `TMPDIR`** -- the speedscope
-    output goes under the action's working directory, but the profiler's
+    output and PB's relay/route files go into a private sibling outside the
+    complete source checkout (#1459), but the profiler's
     intermediate does not. It reads the action's sealed environment, whose
     `pbrun` default is already `TMPDIR=/home/rob/tmp`; `--no-default-env` drops
     that default, and then the scratch lands wherever the replacement points.
