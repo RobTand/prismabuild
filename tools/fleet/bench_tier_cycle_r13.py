@@ -272,7 +272,8 @@ def _bind_owner(queue: pool.PoolQueue, template: dict, owner: str) -> dict:
                   checkout_root=str(Path(queue.root).parent / "bench-checkout"),
                   resources={"cpu": 1, "mem_gb": 1}, max_attempts=1,
                   produced_output_template=template)
-    claimed = queue.claim(owner="bench-write-only")
+    from worker_loop import private_claim_parameters
+    claimed = queue.claim(owner="bench-write-only", **private_claim_parameters(queue))
     assert claimed is not None and claimed["action_key"] == owner
     nonce = secrets.token_hex(16)
     control = {"action_key": owner, "nonce": nonce,

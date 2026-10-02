@@ -852,7 +852,8 @@ class ShapeGate:
                  if str(item.get("action_key")) == self.consumer]
         if not ready:
             return None
-        got = self.queue.claim(tags=[self.host], owner=self.reader_owner, ready=ready)
+        got = self.queue.claim(tags=[self.host], owner=self.reader_owner,
+                               capacity=self.capacity, ready=ready)
         if got is None:
             return None
         if str(got.get("action_key")) != self.consumer:

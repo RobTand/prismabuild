@@ -161,10 +161,12 @@ and fence retained readers by their exact PID/starttime identity. This
 infrastructure does not certify a complete measurement census: `ready_items`
 still supplies an advisory, potentially skipping snapshot. Reservation-aware current-census admission (#1419) is now implemented in the
 private `_measurement_reservation` domain boundary for capacity-backed claims,
-with component qualification only. It is **not deployed or end-to-end accepted**:
-legacy unmanaged `capacity=None` claim/execute, including the one-shot worker,
-remains an explicit bypass awaiting an operator API/migration decision. Moving
-the reader alone never established a queue or fairness guarantee.
+with component qualification only. It is **not deployed or end-to-end accepted**.
+The owner's enforce-admission decision now refuses executable claims without
+capacity or positive declared host demand, including implicit/empty/all-zero
+and tier-only hostless demand. Compatibility migration and one exact integrated
+qualification are still required before merge/deployment. Moving the reader
+alone never established a queue or fairness guarantee.
 The private reader also offers an opt-in parent `on_spawn` ownership callback
 and a separate read-release handshake. A child closes unrelated descriptors,
 then waits; it cannot enter its read until the parent proves its PID/starttime,
@@ -505,10 +507,32 @@ Host exclusion is now separate from adaptive CPU policy: `AdmissionGate`
 reuses Controller's permanent inode/nonblocking flock; Controller delegates and
 retains its advisory diagnostic publication outside the gate. Capacity-backed
 non-adaptive claims use the same M/H census and guard without evaluating adaptive
-CPU policy. **Unmanaged `capacity=None` remains a demonstrated protection gap**,
-not an exemption: it can return/execute resource-declaring work without a handle.
-Its default API, one-shot entrypoint and standalone private-pool compatibility
-need an operator decision before final combined qualification or deployment.
+CPU policy. The owner explicitly chose **enforce admission**: executable claims
+with `capacity=None` return no claim with `admission_capacity_required`; missing,
+empty, all-zero or tier-only hostless demand is `admission_demand_required` even
+when capacity is supplied. No implicit CPU/memory default is fabricated into
+publication/sealed projections. Metadata reads remain reads; using executable
+claim for bookkeeping supplies no cannot-execute exception. Private roots and
+an already-admitted parent's environment alone are not an outer reservation.
+
+The one-shot worker now delegates to the existing loop's once path for actual
+topology, observed/bracketed host capacity, trusted GPU evidence, image inventory
+and generation/resign fences. A narrow structured result callback preserves its
+JSON stdout, with loop diagnostics on stderr; no outcome is parsed from text.
+Its existing GPU capability and 120-second execution ceiling are retained. Raw
+private benchmark callers use the same fresh capacity producer; the shape
+simulator's consumer uses its existing profile-derived host capacity. None of
+these migrations submits an already-admitted child recursively.
+
+One opt-in TEST-ONLY composed fixture owner permits family factories to declare
+fixed simulated capacity and fixed default test demand. Explicit None/empty/zero
+inputs still reach real refusal, and all PoolQueue transitions/reservations stay
+real. It is not autouse, demand-derived capacity, a production shim or a blanket
+migration of existing schema/unbounded/funding fixtures. Those independent
+compatibility families require explicit declarations and unchanged byte/funding/
+cancellation assertions in a coordinator-assigned dependency delivery. Both
+source and compatibility deliveries HOLD merge/deployment until the single
+combined exact integrated-head gate and independent review.
 This partial slice is Refs #1419; finite safe-fit/release proof (#1429), final
 exact-head independent review and live acceptance remain owed.
 
