@@ -630,8 +630,8 @@ def class_image_verdict(requirements: object, klass: str, inventory: object, *,
     """Evaluate supplied evidence; this is not live permission to claim.
 
     A caller must supply a complete named projection and DockerRootDir beside
-    the existing v2 inventory fields. Current cache producers do not supply
-    those fields and therefore remain unknown to this offline contract. This
+    the existing v2 inventory fields. Failed supplemental observations leave
+    those fields unknown without discarding valid legacy references. This
     function neither probes a daemon nor changes native-work admission.
     """
 
