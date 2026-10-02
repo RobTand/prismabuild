@@ -56,6 +56,42 @@ def _view(ledger: pool.ResourceLedger) -> tuple[int, int, int]:
             ledger.holder_tokens(MOVER).get(KIND, 0))
 
 
+def test_a_token_glob_does_not_materialize_unmatched_paths(ledger, monkeypatch):
+    """Eliminating directory reads must also eliminate redundant Python work."""
+    _queue, held, reader = ledger
+    for ordinal in range(64):
+        (held.free_dir / f"unrelated-{ordinal:04d}.tmp").touch()
+    _settle()
+    pattern = f"{KIND}-*"
+    directory = held.free_dir
+    expected = sorted(directory.glob(pattern))
+    original = type(directory).__truediv__
+    materialized = []
+
+    def join_path(parent, name):
+        if parent == directory:
+            materialized.append(name)
+        return original(parent, name)
+
+    monkeypatch.setattr(type(directory), "__truediv__", join_path)
+    with pool.tier_ledger_names_from(_names(reader)):
+        assert held._census_glob(directory, pattern) == expected
+    assert sorted(materialized) == sorted(path.name for path in expected), (
+        "the token filter constructed or sorted unrelated paths")
+
+
+@pytest.mark.parametrize("pattern", ["*", "stage_gib-*", "*.tmp", "[a-m]*", "missing-*"])
+def test_cached_token_selection_keeps_legacy_order(ledger, pattern):
+    _queue, held, reader = ledger
+    for name in ("aux-10.tmp", "aux-2.tmp", ".hidden.tmp", "AUX-1.tmp", "é.tmp"):
+        (held.free_dir / name).touch()
+    _settle()
+    expected = sorted(held.free_dir.glob(pattern))
+    with pool.tier_ledger_names_from(_names(reader)):
+        assert held._census_glob(held.free_dir, pattern) == expected
+        assert held._census_glob(held.free_dir, pattern) == expected
+
+
 @pytest.mark.parametrize("change,expected", [
     ("acquire", (4, 2, 1)),
     ("release", (4, 4, 0)),

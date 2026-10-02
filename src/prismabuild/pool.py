@@ -3876,7 +3876,10 @@ class ResourceLedger:
         try:
             if optional and directory.name not in reader(directory.parent):
                 return []
-            return sorted(directory / name for name in reader(directory))
+            # All entries share one parent. Sort leaf names before creating
+            # Paths so their common parent is not parsed for every comparison.
+            return [directory / name for name in sorted(reader(directory),
+                                                       key=os.path.normcase)]
         except (FileNotFoundError, NotADirectoryError):
             if strict:
                 raise
@@ -3890,8 +3893,12 @@ class ResourceLedger:
             return (_glob_visible(directory, pattern) if strict
                     else _glob(directory, pattern))
         try:
-            return sorted(path for path in self._scan_names(directory, strict=True)
-                          if fnmatch.fnmatchcase(path.name, pattern))
+            # Filter before constructing Paths, and sort exactly once. The
+            # prior scan adapter sorted all Paths and this glob sorted them a
+            # second time, erasing the savings from trusted directory reuse.
+            return [directory / name for name in sorted(
+                (name for name in reader(directory)
+                 if fnmatch.fnmatchcase(name, pattern)), key=os.path.normcase)]
         except OSError:
             if strict:
                 raise
