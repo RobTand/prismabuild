@@ -630,8 +630,8 @@ def class_image_verdict(requirements: object, klass: str, inventory: object, *,
     """Evaluate supplied evidence; this is not live permission to claim.
 
     A caller must supply a complete named projection and DockerRootDir beside
-    the existing v2 inventory fields. Current cache producers do not supply
-    those fields and therefore remain unknown to this offline contract. This
+    the existing v2 inventory fields. Failed supplemental observations leave
+    those fields unknown without discarding valid legacy references. This
     function neither probes a daemon nor changes native-work admission.
     """
 
@@ -689,6 +689,78 @@ def class_image_verdict(requirements: object, klass: str, inventory: object, *,
         result.update(status="satisfied", reason="class_images_present",
                       container_work_eligible=True)
     return result
+
+
+class ClassImagePolicy:
+    """An explicit immutable-generation declaration, evaluated against fresh evidence.
+
+    Native work does not consume this policy. Configuration is copied and bound
+    by canonical digest; inventory stays in the existing host-local cache.
+    """
+
+    def __init__(self, requirements: object, *, klass: str) -> None:
+        parsed = normalize_class_image_requirements(requirements)
+        if not isinstance(klass, str) or not _CLASS_NAME.fullmatch(klass):
+            raise ValueError("class image requirements: invalid class name")
+        self.klass = klass
+        self._requirements = {
+            "schema": CLASS_REQUIREMENTS_SCHEMA,
+            "classes": {name: {"store_root": row.store_root,
+                               "images": dict(row.images)}
+                        for name, row in parsed.items()},
+        }
+        from .core import canonical_sha256
+        self.requirements_sha256 = canonical_sha256(self._requirements)
+
+    @classmethod
+    def from_file(cls, path: str, *, source_root: Path, klass: str) -> "ClassImagePolicy":
+        """Read one bounded declaration contained in the loaded generation."""
+        relative = PurePosixPath(path)
+        if (relative.is_absolute() or str(relative) != path
+                or any(part in {".", ".."} for part in relative.parts)
+                or not relative.parts):
+            raise ValueError("class image config must be a contained relative path")
+        source = source_root.resolve(strict=True)
+        candidate = (source / relative).resolve(strict=True)
+        if not candidate.is_relative_to(source):
+            raise ValueError("class image config must be contained in its generation")
+        from .core import _read_regular_file_nofollow
+        payload = _read_regular_file_nofollow(
+            candidate, where="class image config", max_bytes=MAX_INVENTORY_BYTES)
+        declaration = json.loads(payload, object_pairs_hook=_unique_json_object)
+        return cls(declaration, klass=klass)
+
+    def evaluate(self, inventory: object, *, now: float,
+                 max_age_s: float = INVENTORY_TTL_S) -> dict[str, object]:
+        verdict = class_image_verdict(self._requirements, self.klass, inventory,
+                                      now=now, max_age_s=max_age_s)
+        return {**verdict, "requirements_sha256": self.requirements_sha256}
+
+
+def offer_class_image_eligible(verdict: object, *, now: float) -> bool:
+    """Validate advisory positive offer evidence; never used to admit a claim."""
+    if not isinstance(verdict, dict):
+        return False
+    if not (verdict.get("schema") == CLASS_VERDICT_SCHEMA
+            and verdict.get("authority") == "supplied_snapshot_only"
+            and verdict.get("scope") == "container_work_only"
+            and verdict.get("status") == "satisfied"
+            and verdict.get("container_work_eligible") is True
+            and verdict.get("reason") == "class_images_present"
+            and isinstance(verdict.get("requirements_sha256"), str)
+            and re.fullmatch(r"[0-9a-f]{64}", verdict["requirements_sha256"])):
+        return False
+    for field in ("observed_unix", "evaluated_unix"):
+        value = verdict.get(field)
+        if type(value) not in (int, float):
+            return False
+        try:
+            timestamp = float(value)
+        except OverflowError:
+            return False
+        if not math.isfinite(timestamp) or not 0 <= now - timestamp <= INVENTORY_TTL_S:
+            return False
+    return True
 
 
 def image_ids(text: str) -> tuple[str, ...]:
@@ -1129,7 +1201,7 @@ class InventoryCache:
     def record_name(self) -> str:
         return "inventory.json"
 
-    def _record(self, directory: int, *, now: float):
+    def _snapshot(self, directory: int, *, now: float):
         """The parsed record, or ``None`` when it is not usable evidence."""
 
         payload = _read_regular(directory, self.record_name,
@@ -1137,9 +1209,13 @@ class InventoryCache:
         if payload is None:
             return None
         try:
-            record = json.loads(payload.decode("utf-8"))
-        except (UnicodeDecodeError, ValueError):
+            record = json.loads(payload.decode("utf-8"), object_pairs_hook=_unique_json_object)
+        except (UnicodeDecodeError, ValueError, RecursionError):
             return None
+        return record if _inventory_record_fields(record, now=now, ttl_s=self.ttl_s) is not None else None
+
+    def _record(self, directory: int, *, now: float):
+        record = self._snapshot(directory, now=now)
         return _inventory_record_fields(record, now=now, ttl_s=self.ttl_s)
 
     def _refresh(self, directory: int, *, limit: float) -> None:
@@ -1213,34 +1289,35 @@ class InventoryCache:
             except OSError:
                 pass
 
-    def get(self, *, max_age_s: float | None = None) -> frozenset[str] | None:
-        """The inventory for this poll, or ``None`` when it is unknown.
+    def snapshot(self, *, max_age_s: float | None = None) -> dict[str, object] | None:
+        """Fresh complete record from the existing cache; no second probe path.
 
-        ``max_age_s`` is how stale the evidence a caller will act on may be;
-        it defaults to the offer TTL.  A claim passes
-        :data:`CLAIM_FRESHNESS_S`, which re-probes while image-pinned work is
-        waiting -- once for the box, under the local lock, outside every pool
-        lock.
+        Supplemental fields may be absent: the class evaluator then refuses
+        as unknown while legacy reference consumers keep their valid entries.
+        Each call decodes a detached record, so callers cannot mutate the cache.
         """
-
         limit = self.ttl_s if max_age_s is None else min(self.ttl_s, max_age_s)
         directory = _open_private_directory(self.root)
         if directory is None:
             return None
         try:
-            cached = self._record(directory, now=self.clock())
-            if cached is not None and self.clock() - cached[0] <= limit:
-                return cached[1]
+            cached = self._snapshot(directory, now=self.clock())
+            if cached is not None and 0 <= self.clock() - cached["observed_unix"] <= limit:
+                return cached
             self._refresh(directory, limit=limit)
-            cached = self._record(directory, now=self.clock())
-            if cached is not None and self.clock() - cached[0] <= limit:
-                return cached[1]
+            cached = self._snapshot(directory, now=self.clock())
+            if cached is not None and 0 <= self.clock() - cached["observed_unix"] <= limit:
+                return cached
             return None
         finally:
-            try:
-                os.close(directory)
-            except OSError:
-                pass
+            os.close(directory)
+
+    def get(self, *, max_age_s: float | None = None) -> frozenset[str] | None:
+        """The legacy reference inventory, using the same cache and refresh."""
+        record = self.snapshot(max_age_s=max_age_s)
+        if record is None or record["entries"] is None:
+            return None
+        return frozenset(record["entries"])
 
 
 def local_content_ref(

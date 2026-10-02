@@ -5539,6 +5539,7 @@ class PoolQueue:
         progress_contracts: Sequence[str] | None = None,
         addresses: Sequence[str] | None = None,
         observed_images: Sequence[str] | None = None,
+        container_class_verdict: Mapping[str, object] | None = None,
         interpreters: Sequence[str] | None = None,
         interpreters_absent: Sequence[str] | None = None,
         state: str | None = None,
@@ -5681,6 +5682,8 @@ class PoolQueue:
             # declares images must read that absence as unknown (#714).
             record["container_images"] = sorted(
                 {str(entry) for entry in observed_images})
+        if container_class_verdict is not None:
+            record["container_class_verdict"] = dict(container_class_verdict)
         if interpreters is not None:
             # The absolute interpreter paths this box positively answers for,
             # looked up per poll from exactly the paths READY items name
@@ -5801,6 +5804,10 @@ class PoolQueue:
             if needs_gpu and not offer.get("has_gpu"):
                 continue
             if declared_images:
+                if ("container_class_verdict" in offer
+                        and not image_inventory.offer_class_image_eligible(
+                            offer["container_class_verdict"], now=_now())):
+                    continue
                 # Presence is positive evidence only.  An offer that did not
                 # report an inventory -- a loop from before the field, a box
                 # whose Docker could not be read -- is unknown, and unknown
@@ -6923,6 +6930,8 @@ class PoolQueue:
         self, item: Mapping[str, object], *, ledger: "ResourceLedger",
         total: Mapping[str, int], controller: object | None,
         gpu_controller: object | None, observed_images: Container[str] | None,
+        container_class_policy: image_inventory.ClassImagePolicy | None = None,
+        container_inventory: Mapping[str, object] | None = None,
     ) -> dict[str, object] | None:
         """The room a GPU row this pass could not evaluate keeps (#1169).
 
@@ -6953,6 +6962,11 @@ class PoolQueue:
                     return None
             declared_images = item.get("container_images")
             if declared_images:
+                if (container_class_policy is not None
+                        and not container_class_policy.evaluate(
+                            container_inventory, now=_now(),
+                            max_age_s=image_inventory.CLAIM_FRESHNESS_S)["container_work_eligible"]):
+                    return None
                 if (observed_images is None or not isinstance(declared_images, list)
                         or image_inventory.missing(
                             declared_images, {str(entry) for entry in observed_images})):
@@ -18666,6 +18680,8 @@ class PoolQueue:
         adaptive_cpu: bool = False,
         ready: list[dict[str, object]] | None = None,
         observed_images: Container[str] | None = None,
+        container_class_policy: image_inventory.ClassImagePolicy | None = None,
+        container_inventory: Mapping[str, object] | None = None,
         admission_open: Callable[[], bool] | None = None,
     ) -> dict[str, object] | None:
         """Take one ready item, atomically.  ``None`` when nothing matches.
@@ -18726,6 +18742,8 @@ class PoolQueue:
                                    controller=controller,
                                    gpu_controller=gpu_controller, ready=ready,
                                    observed_images=observed_images,
+                                   container_class_policy=container_class_policy,
+                                   container_inventory=container_inventory,
                                    admission_open=admission_open)
             except cpu_admission.AdmissionBusy as exc:
                 # Another loop on this box is mid-decision. Waiting here means
@@ -18746,6 +18764,8 @@ class PoolQueue:
             return self._claim(tags=tags, has_gpu=has_gpu, owner=owner,
                                capacity=capacity, cpu_tiers=cpu_tiers,
                                ready=ready, observed_images=observed_images,
+                               container_class_policy=container_class_policy,
+                               container_inventory=container_inventory,
                                admission_open=admission_open)
         except cpu_admission.AdmissionBusy as exc:
             self._report_admission_busy(exc, evaluating=True)
@@ -19351,6 +19371,8 @@ class PoolQueue:
         gpu_controller: gpu_admission.Controller | None = None,
         ready: list[dict[str, object]] | None = None,
         observed_images: Container[str] | None = None,
+        container_class_policy: image_inventory.ClassImagePolicy | None = None,
+        container_inventory: Mapping[str, object] | None = None,
         admission_open: Callable[[], bool] | None = None,
     ) -> dict[str, object] | None:
         """Take one ready item, atomically.  ``None`` when nothing matches.
@@ -19729,7 +19751,9 @@ class PoolQueue:
                                     item, ledger=ledger, total=total,
                                     controller=controller,
                                     gpu_controller=gpu_controller,
-                                    observed_images=observed_images)
+                                    observed_images=observed_images,
+                                    container_class_policy=container_class_policy,
+                                    container_inventory=container_inventory)
                         if room is not None:
                             if carried is None and not whole_box_held:
                                 room["binds"] = "all"
@@ -19821,7 +19845,16 @@ class PoolQueue:
                         "tags": item_tags,
                     })
                     continue
+                class_verdict = None
                 if declared_images:
+                    if container_class_policy is not None:
+                        class_verdict = container_class_policy.evaluate(
+                            container_inventory, now=_now(),
+                            max_age_s=image_inventory.CLAIM_FRESHNESS_S)
+                        if not class_verdict["container_work_eligible"]:
+                            self.record_denial(item, "container_class_" + str(class_verdict["reason"]),
+                                               {"container_class_verdict": class_verdict})
+                            continue
                     if (not isinstance(declared_images, list)
                             or not all(isinstance(image, str)
                                        for image in declared_images)):
@@ -20577,6 +20610,23 @@ class PoolQueue:
                                            {"checked": "before_rename",
                                             **({"error": why} if why else {})})
                         continue
+                    if declared_images and container_class_policy is not None:
+                        # Re-evaluate after reservation I/O; a fresh offer or
+                        # earlier verdict cannot renew old inventory proof.
+                        class_verdict = container_class_policy.evaluate(
+                            container_inventory, now=_now(),
+                            max_age_s=image_inventory.CLAIM_FRESHNESS_S)
+                        if not class_verdict["container_work_eligible"]:
+                            self._abandon_tier_acquire(tier_handles)
+                            tier_handles.clear()
+                            if ledger is not None and handle is not None:
+                                ledger.abandon_acquire(handle)
+                                self._return_borrow(controller, borrow)
+                                self._return_gpu_probe(controller, gpu_controller, gpu_probe)
+                            self.record_denial(item, "container_class_" + str(class_verdict["reason"]),
+                                               {"container_class_verdict": class_verdict,
+                                                "checked": "before_rename"})
+                            continue
                     self._write_claim_intent(key, owner=owner)
                     src = self.item_path(READY, key)
                     dst = self.item_path(CLAIMED, key)
@@ -20619,7 +20669,14 @@ class PoolQueue:
                     reader_plans.clear()
                     moved_record = _read_json(dst)
                     moved = moved_record or item
-                    if (not self._placement_matches(moved, tags=tagset, has_gpu=has_gpu)
+                    if container_class_policy is not None:
+                        class_verdict = (container_class_policy.evaluate(
+                            container_inventory, now=_now(),
+                            max_age_s=image_inventory.CLAIM_FRESHNESS_S)
+                            if moved.get("container_images") else None)
+                    class_refused = class_verdict is not None and not class_verdict["container_work_eligible"]
+                    if (class_refused
+                            or not self._placement_matches(moved, tags=tagset, has_gpu=has_gpu)
                             or self.demand_of(moved) != sealed_demand
                             or (scratch_intent is not None and (
                                 not self._scratch_record_matches(moved_record, item, scratch_intent)
@@ -20643,9 +20700,12 @@ class PoolQueue:
                         else:
                             dst.unlink(missing_ok=True)
                             self.item_path(INTENT, key).unlink(missing_ok=True)
-                        self.record_denial(item, "claimed_record_changed", {
+                        self.record_denial(item,
+                            "container_class_" + str(class_verdict["reason"]) if class_refused else "claimed_record_changed", {
                             "scanned_demand": demand, "moved_demand": self.demand_of(moved),
                             "moved_tags": moved.get("tags"), "moved_needs_gpu": moved.get("needs_gpu"),
+                            **({"container_class_verdict": class_verdict, "checked": "after_rename"}
+                               if class_refused else {}),
                         })
                         continue
                     # Tier handles commit first: a failure here leaves the host
@@ -20862,6 +20922,9 @@ class PoolQueue:
                 # reason; the record this method returns is the last place that
                 # still did not.
                 claimed = dict(moved)
+                claimed.pop("container_class_verdict", None)
+                if class_verdict is not None:
+                    claimed["container_class_verdict"] = class_verdict
                 if scratch_evidence is not None:
                     # Claim evidence belongs to the bytes actually renamed,
                     # the winning worker and this publication/attempt only.
@@ -26144,6 +26207,8 @@ class PoolQueue:
         containment: bool = False,
         ready: list[dict[str, object]] | None = None,
         observed_images: Container[str] | None = None,
+        container_class_policy: image_inventory.ClassImagePolicy | None = None,
+        container_inventory: Mapping[str, object] | None = None,
         admission_open: Callable[[], bool] | None = None,
     ) -> dict[str, object] | None:
         """Reap, claim, run, record.  ``None`` when the queue had nothing.
@@ -26170,6 +26235,8 @@ class PoolQueue:
         item = self.claim(tags=tags, has_gpu=has_gpu, capacity=capacity,
                           cpu_tiers=cpu_tiers, adaptive_cpu=adaptive_cpu,
                           ready=ready, observed_images=observed_images,
+                          container_class_policy=container_class_policy,
+                          container_inventory=container_inventory,
                           admission_open=admission_open)
         if item is None:
             return None
