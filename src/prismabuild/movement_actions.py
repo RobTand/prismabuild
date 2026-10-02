@@ -44,6 +44,28 @@ def captured_command(command: Sequence[str], log_name: str) -> str:
         'exit "${_pb_status[1]}"'
     )
 
+
+def standard_capture_argv(
+    command: Sequence[str], log_name: str, *, path_prefix: str
+) -> list[str]:
+    """The sealed ``task.argv`` for a standard captured-log result, byte for byte.
+
+    One wrapper, one owner.  ``pbrun`` seals exactly this list for an ordinary
+    submission whose declared result is the log the wrapper tees
+    (``task.result_path == log_name``): the first ``PATH`` component is
+    exported ahead of the inherited ``PATH``, then :func:`captured_command`
+    runs the command through the scoped capture.  A client that must prove the
+    sealed ``params.command`` is the one the worker actually executed
+    reconstructs this list from the validated request and compares it with
+    ``task.argv``; nothing else in the tree may spell the wrapper (#1446).
+    """
+
+    return [
+        SEALED_ARGV0, "--noprofile", "--norc", "-c",
+        f"export PATH={shlex.quote(path_prefix)}:$PATH; "
+        + captured_command(command, log_name),
+    ]
+
 #: Parameters a movement action may restate off its submission template.
 #: ``retry_policy`` is not one of them (#950): a mover's is its own.
 _MOVEMENT_PARAM_KEYS = ("cwd", "checkout_snapshot", "data_manifest")

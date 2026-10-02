@@ -2564,6 +2564,61 @@ def _read_json_fresh(path: Path) -> dict[str, object] | None:
     return _read_json(path)
 
 
+def _read_json_bounded(
+    path: Path, *, max_bytes: int | None
+) -> dict[str, object] | None:
+    """``_read_json`` through Core's bounded, no-follow replaced-leaf reader.
+
+    ``max_bytes is None`` is exactly :func:`_read_json`, so every uncapped
+    caller keeps its behaviour.  With a cap the record is read as a stable,
+    non-symlink regular file no larger than the bound (the writer replaces
+    the name with ``os.replace``, so the replaced-leaf retry is the correct
+    one) and decoded by Core's strict JSON reader, which refuses duplicate
+    keys and non-finite numbers.  The mutable queue rows are writable by
+    design, so no read-only requirement is imposed here; the immutable
+    attempt logs and CAS objects keep their own stricter checks (#1446).
+
+    A present leaf that is empty, oversized or invalid is refused, never read
+    as absent: a terminal slot silently skipped here would let a readable
+    success outrank a newer failure or withdrawal the census never parsed.
+    Only a genuinely missing name is ``None``.
+    """
+
+    if max_bytes is None:
+        return _read_json(path)
+    try:
+        raw = pb._read_regular_file_nofollow(
+            path, where="queue record", max_bytes=max_bytes,
+            replaced_leaf=True)
+    except FileNotFoundError:
+        return None
+    if not raw:
+        raise PoolContractError(f"queue record is present but empty: {path}")
+    try:
+        value = pb._decode_strict_json(raw, where="queue record")
+    except pb.PrismaBuildError as exc:
+        raise PoolContractError(str(exc)) from exc
+    if not isinstance(value, dict):
+        raise PoolContractError(f"queue record is not an object: {path}")
+    return value
+
+
+def _finite_generation(value: object) -> float | None:
+    """A record's generation as a finite float, or ``None``.
+
+    A huge integer is ``None``, never an ``OverflowError``: hostile durable
+    input stays in the pool's fail-closed error vocabulary (#1446).
+    """
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        number = float(value)
+    except OverflowError:
+        return None
+    return number if math.isfinite(number) else None
+
+
 def _is_hex64(value: object) -> bool:
     return (isinstance(value, str) and len(value) == 64
             and all(character in "0123456789abcdef" for character in value))
@@ -22979,17 +23034,24 @@ class PoolQueue:
         )
         return history
 
-    def attempt_outcomes(
+    def _attempt_history_links(
         self, record: Mapping[str, object]
-    ) -> list[dict[str, object]]:
-        """Read and verify the immutable attempts linked by a queue outcome."""
+    ) -> tuple[int, list[dict[str, object]]]:
+        """Validate a terminal's history-link structure, reading no attempt.
+
+        The one owner of the immutable-history *shape*: the missing prefix, a
+        count that agrees with the links, contiguous 1-based numbering and each
+        link's canonical outcome path.  :meth:`attempt_outcomes` reads every
+        linked attempt after this; a reader that needs only the selected
+        attempt validates the same structure here and opens exactly one file
+        (#1446).  Returns ``(missing, links)`` with links as detached copies.
+        """
 
         raw_history = (
             record["attempt_history"] if "attempt_history" in record else []
         )
         if not isinstance(raw_history, list):
             raise PoolContractError("attempt_history must be a list")
-        outcomes: list[dict[str, object]] = []
         missing = record.get("attempt_history_missing_before", 0)
         if type(missing) is not int or missing < 0:
             raise PoolContractError(
@@ -23005,6 +23067,7 @@ class PoolQueue:
                 "pool attempt count does not match its missing prefix and "
                 "history links"
             )
+        links: list[dict[str, object]] = []
         for expected_attempt, raw_link in enumerate(
             raw_history, start=missing + 1
         ):
@@ -23020,6 +23083,70 @@ class PoolQueue:
                 raise PoolContractError(
                     f"attempt {attempt} outcome link is not its canonical path"
                 )
+            links.append(dict(raw_link))
+        return missing, links
+
+    def _bind_linked_attempt(
+        self,
+        record: Mapping[str, object],
+        value: Mapping[str, object],
+        *,
+        attempt: int,
+        where: str,
+    ) -> None:
+        """The exact identity one immutable attempt row shares with its ending.
+
+        One owner for the fields a linked attempt must restate from the record
+        that links it: schema, action key, generation, attempt number, retry
+        bound, retry safety and the preemption context.  :meth:`attempt_outcomes`
+        applies this to every linked attempt; a reader that opens exactly one
+        attempt applies it to that one, so the two can never drift on which
+        fields must agree -- the preemption context included.  The attempt
+        number and retry bound are enforced as exact integers and the
+        generation as a finite number, so a JSON ``true`` can never stand in
+        for attempt ``1`` (#1446).
+        """
+
+        recorded_attempt = value.get("attempt")
+        recorded_limit = value.get("max_attempts")
+        terminal_limit = record.get("max_attempts", DEFAULT_MAX_ATTEMPTS)
+        published = _finite_generation(value.get("published_unix"))
+        terminal_published = _finite_generation(record.get("published_unix"))
+        if (
+            value.get("schema") != POOL_ATTEMPT_SCHEMA_V1
+            or value.get("action_key") != record.get("action_key")
+            or type(recorded_attempt) is not int
+            or recorded_attempt != attempt
+            or type(recorded_limit) is not int
+            or type(terminal_limit) is not int
+            or recorded_limit != terminal_limit
+            or value.get("retry_safe") != record.get("retry_safe")
+            or published is None
+            or published != terminal_published
+        ):
+            raise PoolContractError(
+                f"pool attempt outcome differs from its history link: {where}"
+            )
+        if "preemption_context" in value:
+            expected_context = {
+                field: record.get(field) for field in (
+                    "preempted_by", "supersedes_withdrawal",
+                    "attempt_history_missing_before")
+            }
+            if value["preemption_context"] != expected_context:
+                raise PoolContractError(
+                    "immutable attempt preemption context differs")
+
+    def attempt_outcomes(
+        self, record: Mapping[str, object]
+    ) -> list[dict[str, object]]:
+        """Read and verify the immutable attempts linked by a queue outcome."""
+
+        _missing, links = self._attempt_history_links(record)
+        outcomes: list[dict[str, object]] = []
+        for raw_link in links:
+            attempt = raw_link["attempt"]
+            expected = self.attempt_path(record, attempt)
             raw = self._read_attempt_file(expected, where="pool attempt outcome")
             try:
                 value = json.loads(raw)
@@ -23031,26 +23158,8 @@ class PoolQueue:
                 raise PoolContractError(
                     f"pool attempt outcome is not an object: {expected}"
                 )
-            if (
-                value.get("schema") != POOL_ATTEMPT_SCHEMA_V1
-                or value.get("action_key") != record.get("action_key")
-                or value.get("published_unix") != record.get("published_unix")
-                or value.get("attempt") != attempt
-                or value.get("max_attempts")
-                != record.get("max_attempts", DEFAULT_MAX_ATTEMPTS)
-                or value.get("retry_safe") != record.get("retry_safe")
-            ):
-                raise PoolContractError(
-                    f"pool attempt outcome differs from its history link: {expected}"
-                )
-            if "preemption_context" in value:
-                expected_context = {
-                    field: record.get(field) for field in (
-                        "preempted_by", "supersedes_withdrawal",
-                        "attempt_history_missing_before")
-                }
-                if value["preemption_context"] != expected_context:
-                    raise PoolContractError("immutable attempt preemption context differs")
+            self._bind_linked_attempt(
+                record, value, attempt=attempt, where=str(expected))
             raw_logs = value.get("logs")
             if not isinstance(raw_logs, Mapping):
                 raise PoolContractError(f"pool attempt logs are missing: {expected}")
@@ -24208,7 +24317,7 @@ class PoolQueue:
         return None
 
     def read_terminal_candidates(
-        self, action_key: str,
+        self, action_key: str, *, max_bytes: int | None = None,
     ) -> tuple[dict[str, tuple[Path, dict[str, object]]],
                list[dict[str, object]]]:
         """One capture of the three mutable terminal slots for this key.
@@ -24220,6 +24329,12 @@ class PoolQueue:
         a census and a resolution built from two different reads can order
         one record and report another when the key is replaced between them,
         so a caller that needs both derives them from one capture.
+
+        ``max_bytes`` is opt-in and belongs to a caller that must bound the
+        mutable record it reads before consuming it (#1446): each candidate is
+        read through Core's bounded, no-follow replaced-leaf reader, and a
+        record over the bound lands in ``unreadable`` rather than being read.
+        ``None`` keeps every existing caller's uncapped read exactly.
         """
 
         key = str(action_key)
@@ -24228,8 +24343,8 @@ class PoolQueue:
         for state in (DONE, FAILED, WITHDRAWN):
             path = self.item_path(state, key)
             try:
-                record = _read_json(path)
-            except (OSError, PoolContractError) as exc:
+                record = _read_json_bounded(path, max_bytes=max_bytes)
+            except (OSError, pb.PrismaBuildError) as exc:
                 unreadable.append({
                     "state": state, "path": path,
                     "reason": str(exc) or type(exc).__name__})
@@ -24281,11 +24396,10 @@ class PoolQueue:
         """
 
         def generation(state: str) -> float | None:
-            value = readable[state][1].get("published_unix")
-            if (isinstance(value, (int, float)) and not isinstance(value, bool)
-                    and math.isfinite(float(value))):
-                return float(value)
-            return None
+            # The one finite-generation owner: an integer past the binary64
+            # range is an unorderable generation (``None``), never an escaped
+            # ``OverflowError`` out of a status census (#1446).
+            return _finite_generation(readable[state][1].get("published_unix"))
 
         present = [state for state in (DONE, FAILED, WITHDRAWN)
                    if state in readable]
@@ -24349,7 +24463,9 @@ class PoolQueue:
         return result(failure() or (present[0] if present else None),
                       ambiguous=len(coexisting) > 1)
 
-    def current_ending(self, action_key: str) -> dict[str, object]:
+    def current_ending(
+        self, action_key: str, *, max_bytes: int | None = None,
+    ) -> dict[str, object]:
         """One capture and its generation-resolved answer (#1178).
 
         The convenience the key-level readers call; see
@@ -24357,7 +24473,8 @@ class PoolQueue:
         capture and the pure rule a status census must not split.
         """
 
-        readable, unreadable = self.read_terminal_candidates(action_key)
+        readable, unreadable = self.read_terminal_candidates(
+            action_key, max_bytes=max_bytes)
         return self.resolve_ending(readable, unreadable)
 
     def withdrawn_keys(self) -> frozenset[str]:

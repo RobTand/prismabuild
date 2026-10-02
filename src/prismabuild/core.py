@@ -875,6 +875,12 @@ def _decode_strict_json(raw: bytes, *, where: str) -> object:
         )
     except ActionContractError:
         raise
+    except RecursionError as exc:
+        # A document nested deeper than the interpreter's stack is hostile
+        # durable input too: normalize it into the same fail-closed
+        # PrismaBuild vocabulary instead of letting an implementation-specific
+        # parser exception escape the refusal API (#1446).
+        raise ActionContractError(f"{where} nests too deeply for strict JSON") from exc
     except (UnicodeDecodeError, ValueError) as exc:
         # ``json.loads`` can raise a plain ValueError when an integer exceeds
         # Python's configured digit limit.  Durable hostile input must stay in
@@ -4641,10 +4647,13 @@ class PrismaBuildCAS:
             return None
         return value if value["action_key"] == key else None
 
-    def _load_receipt_bytes(self, path: Path) -> bytes:
+    def _load_receipt_bytes(
+        self, path: Path, *, max_bytes: int | None = None
+    ) -> bytes:
         try:
             return _read_regular_file_nofollow(
-                path, where="CAS receipt", require_readonly=True
+                path, where="CAS receipt", require_readonly=True,
+                max_bytes=max_bytes,
             )
         except FileNotFoundError as exc:
             raise FileNotFoundError(path) from exc
@@ -4788,6 +4797,87 @@ class PrismaBuildCAS:
             raise CASTamperError("execution receipt differs from the requested digest")
         self._verify_blob(receipt["result"])
         return receipt
+
+    def read_execution_result(
+        self,
+        action: object,
+        receipt_sha256: str,
+        *,
+        max_result_bytes: int,
+        max_receipt_bytes: int | None = None,
+    ) -> tuple[dict[str, object], bytes]:
+        """The execution receipt and its payload, under one result-size cap.
+
+        :meth:`lookup_execution` proves the receipt but consumes its blob with
+        :meth:`_verify_blob`, which hashes the whole file before a caller can
+        impose a bound.  A caller that must not read an oversized or racing
+        payload needs the cap applied *before* the blob is opened and the exact
+        verified bytes returned from that one held read (#1446).
+
+        ``max_receipt_bytes`` bounds the receipt read too, so the same caller
+        holds one cap over every byte it consumes: a sparse or oversized
+        receipt refuses before any of its content is decoded.  ``None`` keeps
+        the uncapped read this method began with.
+
+        The payload itself goes through :meth:`read_declared_blob`, the one
+        owner of the bounded owned-blob read: the declared size is checked
+        before the blob is opened, the bytes are read once and verified
+        against the declared digest and size, and no path is returned to
+        reopen.
+        """
+
+        if type(max_result_bytes) is not int or max_result_bytes < 0:
+            raise ActionContractError("max_result_bytes must be a non-negative integer")
+        if max_receipt_bytes is not None and (
+                type(max_receipt_bytes) is not int or max_receipt_bytes < 0):
+            raise ActionContractError(
+                "max_receipt_bytes must be a non-negative integer")
+        normalized = validate_action(action)
+        raw = self._load_receipt_bytes(
+            self._execution_receipt_path(receipt_sha256),
+            max_bytes=max_receipt_bytes)
+        receipt = self._validate_receipt(
+            _decode_strict_json(raw, where="execution receipt"), action=normalized
+        )
+        if (receipt["receipt_sha256"] != receipt_sha256
+                or raw != _canonical_file_bytes(receipt)):
+            raise CASTamperError("execution receipt differs from the requested digest")
+        result = receipt["result"]
+        assert isinstance(result, Mapping)
+        payload = self.read_declared_blob(
+            result, max_bytes=max_result_bytes, where="CAS payload")
+        return receipt, payload
+
+    def read_declared_blob(
+        self, contract: Mapping[str, object], *, max_bytes: int, where: str
+    ) -> bytes:
+        """Owned bytes of one declared CAS blob, under one explicit cap (#1446).
+
+        One owner for the bounded owned-blob read: the execution payload and
+        each selected declared input go through here, so the declared-size
+        check before the open, the stable no-follow read-only read, and the
+        size/digest binding against the declared address cannot drift between
+        callers.  ``max_bytes`` bounds both the opening size and the streamed
+        byte count, and a blob over it refuses without being opened.
+        """
+
+        if type(max_bytes) is not int or max_bytes < 0:
+            raise ActionContractError(
+                "declared blob byte bound must be a non-negative integer")
+        digest = str(contract["sha256"])
+        size = int(contract["bytes"])
+        path = self._blob_path(digest)
+        if size > max_bytes:
+            raise CASTamperError(f"{where} exceeds the byte bound: {path}")
+        try:
+            payload = _read_regular_file_nofollow(
+                path, where=where, require_readonly=True, max_bytes=max_bytes)
+        except FileNotFoundError as exc:
+            raise CASTamperError(f"{where} is missing: {path}") from exc
+        if len(payload) != size or raw_sha256(payload) != digest:
+            raise CASTamperError(
+                f"{where} content differs from its declared address: {path}")
+        return payload
 
     def _verified_receipt_result_path(self, receipt: Mapping[str, object]) -> Path:
         """Return the blob path after ``lookup`` has already verified it."""

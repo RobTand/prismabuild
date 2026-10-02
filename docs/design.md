@@ -1483,10 +1483,12 @@ through its public interfaces. Those are the fleet tools (`pbrun`, `pbtest`,
 internal. It can change in any release, and a client that imports it takes on
 that risk alone.
 
-**Versioning.** `client.SDK_VERSION` names the contract; it is `3`.
+**Versioning.** `client.SDK_VERSION` names the contract; it is `4`.
 Version 2 adds nondestructive ephemeral scratch naming; version 3 adds durable
-sealed declaration evidence before pool payload launch (Refs #1360). All
-version-1/2 exports, signatures and capability tags remain unchanged.
+sealed declaration evidence before pool payload launch (Refs #1360); version 4
+adds the bounded verified action-result read and the standard-capture command
+binding (#1446). All version-1/2/3 exports, signatures and capability tags
+remain unchanged.
 `tests/test_client_sdk_surface.py` pins everything the SDK exports: the set of
 names, each callable's parameters (name, kind, default), each constant's value,
 and, for each re-exported name, that it is the internal object itself. An
@@ -1500,7 +1502,7 @@ generation. A client imports `prismabuild.client` from `<root>/src`, so the
 SDK and the runtime that launched the action are one generation. The variable
 names the generation root, never `src`; the client appends `src` itself.
 
-**The surface (version 3).**
+**The surface (version 4).**
 
 | Area | Names |
 |---|---|
@@ -1511,12 +1513,13 @@ names the generation root, never `src`; the client appends `src` itself.
 | Residency maps | `validate_residency_map`, `read_residency_map`, `read_residency_fragments`, `compose_residency_map`, `write_residency_map`, `residency_map_key`, `ResidencyMapError`, `RESIDENCY_MAP_ENV`, `RESIDENCY_MAP_SCHEMA_V1`, `RESIDENCY_MAP_FRAGMENT_SCHEMA_V1`, `RESIDENCY_LANDING_SCHEMA_V1`, `LANDING_STATES` |
 | Ephemeral scratch naming (no lifetime capability) | `bind_ephemeral_scratch`, `ephemeral_scratch_path`, `EPHEMERAL_SCRATCH_SCHEMA_V1`, `LocalScratchError` |
 | Receipts | `cas_receipt_self_check`, `RECEIPT_REFUSALS`, `CAS_RECEIPT_SCHEMA_V3`, `WORKER_ATTESTATION_SCHEMA_V2` |
+| Verified action results (`verified-action-result-v1`) | `read_verified_action_result`, `bind_standard_capture_command`, `ActionResultError`, `ACTION_RESULT_SCHEMA_V1`, `VERIFIED_ACTION_RESULT_TAG` |
 | Identifiers and digests | `ID_PATTERN`, `ENV_NAME_PATTERN`, `canonical_sha256` |
 | Liveness | `TIER_LOOP_LIVENESS_S`, `TIER_RECORD_SCHEMA` |
 | Capabilities | `CAPABILITIES`, `DECOMPOSITION_TAG` |
 
 Most names are the internal objects, re-exported unchanged. The SDK defines
-three functions of its own, each because the behaviour a client needed had no
+five functions of its own, each because the behaviour a client needed had no
 public name:
 
 - `read_claimed_record(queue, action_key)` returns an action's claimed-queue
@@ -1536,6 +1539,33 @@ public name:
   `attestation_sha256`). It does not re-derive the attestation from the sealed
   action, as a CAS lookup does, so the reader still binds the action key,
   inputs and result it expects.
+- `read_verified_action_result(queue, action_key, *, published_unix, attempt,
+  max_result_bytes, max_evidence_bytes=4*1024*1024, input_limits=None)` reads
+  one exact generation and attempt of an action and returns a freshly owned
+  mapping with the `prismabuild.verified_action_result.v1` schema, the exact
+  identity (action key, publication, attempt, generation digest, selected
+  worker and host), the validated sealed request, the validated execution
+  receipt, the verified `payload` bytes, the declared input descriptors and,
+  for each input named in `input_limits`, its owned bytes under that cap. Every
+  read is bounded before it is consumed: the selected terminal row, the
+  selected immutable attempt, that attempt's stdout, the sealed request and
+  the exact execution receipt each go through Core's stable, no-follow
+  regular-file reader. The result cap is applied before the payload is opened
+  or hashed, the selected attempt's stdout is the only log read, and no
+  historical attempt expansion or canonical action-winner fallback runs. The
+  read rechecks the selected ending before returning; it is a point-in-time
+  read, not a lease, and the caps bound each read, not a hard NFS syscall
+  deadline. Every refusal is `ActionResultError`.
+- `bind_standard_capture_command(request)` proves that a validated request is
+  pbrun's standard captured-log recipe, byte for byte: it reconstructs the one
+  wrapper pbrun seals from the request's `environment.variables.PATH`,
+  `params.command` and `task.result_path` and requires `task.argv` to equal it.
+  The generic result reader returns the sealed request honestly but does not
+  claim this binding, because `validate_action` checks the schema and not the
+  executed argv. The first implementation supports the standard captured-log
+  result only (`result_path` is the captured log's name); a file-result,
+  scratch-recorder, legacy or other wrapper refuses explicitly. It parses no
+  shell and imports no CLI.
 
 Two read-only answers are published outside the SDK, as module-level names
 that are not internal: `produced_output.batch_record` and `batch_records`
@@ -1548,9 +1578,10 @@ that are not internal: `produced_output.batch_record` and `batch_records`
 `tier_loop_liveness_s`, and a reader should prefer the record's value.
 
 `CAPABILITIES` names what this tree supports: `reader-lease-v1`,
-`progress-v1`, and `decomposition-v1` (`pbcampaign` can decompose a logical
-request, #517/#518). A client asks for a capability by tag, never by probing
-files or function names. The surface test fails if a tag is advertised
+`progress-v1`, `decomposition-v1` (`pbcampaign` can decompose a logical
+request, #517/#518), and `verified-action-result-v1` (the bounded
+verified-result read, #1446). A client asks for a capability by tag, never by
+probing files or function names. The surface test fails if a tag is advertised
 without the code behind it. The SDK's scratch additions are naming only:
 `CAPABILITIES` does **not** advertise `scratch-lifetime-v1` or any scratch
 cleanup capability. SDK version 2 is not evidence of a deployed finalizer.
