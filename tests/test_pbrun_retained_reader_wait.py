@@ -103,7 +103,7 @@ def _kernel_holds_the_reader_until(monkeypatch, *, release_at: float | None,
     at that moment. ``release_at=None`` never releases it.
     """
 
-    real = pbrun.pbstatus._reap_within
+    real = pbrun.pbstatus._reader._reap_within
     released = []
 
     def reap_within(pid, grace_s):
@@ -115,7 +115,7 @@ def _kernel_holds_the_reader_until(monkeypatch, *, release_at: float | None,
                 on_release()
         return real(pid, grace_s)
 
-    monkeypatch.setattr(pbrun.pbstatus, "_reap_within", reap_within)
+    monkeypatch.setattr(pbrun.pbstatus._reader, "_reap_within", reap_within)
 
 
 def test_a_patient_wait_outlasts_a_reader_stuck_in_the_kernel(
@@ -232,7 +232,7 @@ def _hold_one_reader(monkeypatch, readers: Readers, *, index: int,
     mark counts only what the wait itself started.
     """
 
-    real = pbrun.pbstatus._reap_within
+    real = pbrun.pbstatus._reader._reap_within
     seen = {"calls": 0, "released": False}
 
     def reap_within(pid, grace_s):
@@ -249,7 +249,7 @@ def _hold_one_reader(monkeypatch, readers: Readers, *, index: int,
                     on_release()
         return real(pid, grace_s)
 
-    monkeypatch.setattr(pbrun.pbstatus, "_reap_within", reap_within)
+    monkeypatch.setattr(pbrun.pbstatus._reader, "_reap_within", reap_within)
 
 
 def test_a_failed_reader_that_cannot_be_reaped_still_ends_at_once(
@@ -275,9 +275,9 @@ def test_a_failed_reader_that_cannot_be_reaped_still_ends_at_once(
     # diagnostic); the cleanup path still asks ``_reap_within``.  Both must
     # fail, or this test drives a reaped reader and proves nothing about an
     # unreaped one.
-    monkeypatch.setattr(pbrun.pbstatus, "_reap_status_within",
+    monkeypatch.setattr(pbrun.pbstatus._reader, "_reap_status_within",
                         lambda pid, grace_s: (False, None))
-    monkeypatch.setattr(pbrun.pbstatus, "_reap_within", lambda pid, grace_s: False)
+    monkeypatch.setattr(pbrun.pbstatus._reader, "_reap_within", lambda pid, grace_s: False)
     try:
         started = time.monotonic()
         assert pbrun.await_outcome(queue, KEY, wait_s=5) == \
@@ -348,7 +348,7 @@ def test_a_retained_verification_reader_is_waited_out_too(
             budget_s = 0.05
         return real_verify(q, outcome_path, outcome, budget_s=budget_s, **kwargs)
 
-    real_reap = pbrun.pbstatus._reap_within
+    real_reap = pbrun.pbstatus._reader._reap_within
 
     def reap_within(pid, grace_s):
         if (held["pid"] is None and held["from"] is not None
@@ -362,7 +362,7 @@ def test_a_retained_verification_reader_is_waited_out_too(
         return real_reap(pid, grace_s)
 
     monkeypatch.setattr(pbrun, "bounded_outcome_render", verify)
-    monkeypatch.setattr(pbrun.pbstatus, "_reap_within", reap_within)
+    monkeypatch.setattr(pbrun.pbstatus._reader, "_reap_within", reap_within)
     try:
         assert pbrun.await_outcome(queue, KEY, wait_s=60) == 0
         out, err = capsys.readouterr()

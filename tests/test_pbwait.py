@@ -151,7 +151,7 @@ def test_prefix_resolution_retained_reader_stops_before_another_scan(
 
     monkeypatch.setattr(pbwait, "PREFIX_RESOLUTION_READ_TIMEOUT_S", 0.05)
     monkeypatch.setattr(pbwait, "_prefix_candidates", block)
-    monkeypatch.setattr(pbrun.pbstatus, "_stop_reader", retain)
+    monkeypatch.setattr(pbrun.pbstatus._reader, "_stop_reader", retain)
     try:
         with pytest.raises(SystemExit) as raised:
             pbwait.resolve_key(queue, "a")

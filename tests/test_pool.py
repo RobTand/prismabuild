@@ -22,6 +22,8 @@ import pathlib
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import pool  # noqa: E402
 
+from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
+
 # Real fixture launchers are visible to the host-wide cancellation census.
 # Fixed keys let another xdist worker's private queue cancel this one's action.
 KEY_A = uuid.uuid4().hex + uuid.uuid4().hex
@@ -30,6 +32,15 @@ KEY_B = uuid.uuid4().hex + uuid.uuid4().hex
 
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
+    q = AdmittedQueueFixture(
+        pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
+        default_demand={"cpu": 1, "mem_gb": 1})
+    q.ensure_layout()
+    return q
+
+
+@pytest.fixture()
+def plain_queue(tmp_path: Path) -> pool.PoolQueue:
     q = pool.PoolQueue(tmp_path / "pb-queue")
     q.ensure_layout()
     return q
@@ -50,9 +61,10 @@ def test_pool_root_must_be_absolute(tmp_path: Path) -> None:
         pool.PoolQueue("relative/path")
 
 
-def test_action_key_must_be_a_digest(queue: pool.PoolQueue) -> None:
+def test_action_key_must_be_a_digest(plain_queue: pool.PoolQueue) -> None:
     with pytest.raises(pool.PoolContractError):
-        _publish(queue, "short")
+        _publish(plain_queue, "short")
+
 
 
 def test_publish_then_claim_moves_between_directories(queue: pool.PoolQueue) -> None:
@@ -125,6 +137,7 @@ def test_priority_then_age_orders_the_queue(
     """
 
     published = [300.0]
+    real_now = pool._now
     monkeypatch.setattr(pool, "_now", lambda: published[0])
     key_oldest = "c" * 64
     _publish(queue, key_oldest, priority=0)
@@ -132,7 +145,7 @@ def test_priority_then_age_orders_the_queue(
     _publish(queue, KEY_B, priority=5)
     published[0] = 500.0
     _publish(queue, KEY_A, priority=0)
-    monkeypatch.undo()
+    monkeypatch.setattr(pool, "_now", real_now)
 
     assert queue.claim()["action_key"] == KEY_B         # the band outranks age
     assert queue.claim()["action_key"] == key_oldest    # then oldest first
@@ -691,7 +704,7 @@ def test_snapshot_execution_is_isolated_from_midrun_submitter_mutation(
             "params": {
                 "command": [sys.executable, "task.py"],
                 "cwd": ".",
-                "demand": {},
+                "demand": {"cpu": 1, "mem_gb": 1},
                 "checkout_snapshot": snapshot,
             },
             "environment": {
@@ -1128,7 +1141,9 @@ def test_reap_does_not_steal_a_claim_made_moments_ago(tmp_path):
     CAS.  Simulated here by deleting the lease immediately after a claim.
     """
 
-    queue = pool.PoolQueue(tmp_path / "q")
+    queue = AdmittedQueueFixture(
+        pool.PoolQueue(tmp_path / "q"), capacity={"cpu": 8, "mem_gb": 16},
+        default_demand={"cpu": 1, "mem_gb": 1})
     queue.publish(
         action_key="a" * 64,
         cas_root=tmp_path / "cas",
@@ -1369,13 +1384,17 @@ def test_a_claim_clears_its_own_denial_history(queue: pool.PoolQueue) -> None:
     assert queue.passes(KEY_A) == 0
 
 
-def test_admission_is_skipped_when_no_capacity_is_declared(
-    queue: pool.PoolQueue,
+def test_admission_requires_explicit_capacity(
+    plain_queue: pool.PoolQueue,
 ) -> None:
-    """Pre-ledger behaviour is intact for callers that declare nothing."""
+    """The plain API refuses execution without a declared host capacity."""
 
-    _publish(queue, KEY_A, resources={"gpu": 99})
-    assert queue.claim() is not None
+    _publish(plain_queue, KEY_A, resources={"gpu": 99})
+    assert plain_queue.claim() is None
+    assert plain_queue.item_path(pool.READY, KEY_A).exists()
+    assert not plain_queue.item_path(pool.CLAIMED, KEY_A).exists()
+    assert not plain_queue.ledger().held_keys()
+
 
 
 def test_reaping_a_foreign_claimant_returns_capacity_to_that_host(
@@ -1541,8 +1560,12 @@ def test_a_keyless_ready_record_is_filed_rather_than_left_to_starve(
     stub = queue.item_path(pool.READY, KEY_B)
     stub.write_text(json.dumps({"claimed_host": "sparky", "attempts": 1}))
 
-    assert queue.claim() is not None                      # KEY_A still runnable
+    assert queue.claim() is None                         # incomplete census
+    assert queue.item_path(pool.READY, KEY_A).exists()
+    assert not queue.ledger().held_keys()
     assert queue.quarantine_orphans() == [KEY_B]
+    assert queue.claim() is not None                      # KEY_A still runnable
+    assert queue.quarantine_orphans() == []
     assert not stub.exists()
 
     filed = json.loads(queue.item_path(pool.FAILED, KEY_B).read_text())
@@ -1552,11 +1575,11 @@ def test_a_keyless_ready_record_is_filed_rather_than_left_to_starve(
 
 
 def test_an_unplaceable_item_is_knowable_before_it_is_published(
-    queue: pool.PoolQueue,
+    plain_queue: pool.PoolQueue,
 ) -> None:
-    """The queue must be able to say "no box can run this".
+    """The plain_queue must be able to say "no box can run this".
 
-    Without an offer registry the queue knows what work was asked for and
+    Without an offer registry the plain_queue knows what work was asked for and
     nothing about what the fleet can do, so an item whose required tags no
     worker offers is indistinguishable from an item whose box is merely busy.
     A test suite submitted with tag ``dl380`` sat in ``ready`` for ten minutes
@@ -1564,59 +1587,64 @@ def test_an_unplaceable_item_is_knowable_before_it_is_published(
     there for a day.
     """
 
-    queue.announce(host="dl380g10", tags=["x86", "dl380g10", "cpu"],
+    plain_queue.announce(host="dl380g10", tags=["x86", "dl380g10", "cpu"],
                    has_gpu=False, capacity={"mem_gb": 60})
-    queue.announce(host="sparky", tags=["gb10", "sparky"],
+    plain_queue.announce(host="sparky", tags=["gb10", "sparky"],
                    has_gpu=True, capacity={"gpu": 4, "mem_gb": 100})
 
-    assert queue.placeable({"tags": ["x86"], "resources": {"mem_gb": 4}}) is True
-    assert queue.placeable({"tags": ["dl380"], "resources": {"mem_gb": 4}}) is False
-    assert queue.offered_tags() == ["cpu", "dl380g10", "gb10", "sparky", "x86"]
+    assert plain_queue.placeable({"tags": ["x86"], "resources": {"mem_gb": 4}}) is True
+    assert plain_queue.placeable({"tags": ["dl380"], "resources": {"mem_gb": 4}}) is False
+    assert plain_queue.offered_tags() == ["cpu", "dl380g10", "gb10", "sparky", "x86"]
 
 
-def test_a_gpu_demand_is_not_placeable_on_a_cpu_box(queue: pool.PoolQueue) -> None:
+
+def test_a_gpu_demand_is_not_placeable_on_a_cpu_box(plain_queue: pool.PoolQueue) -> None:
     """Tags alone would match; the offer has to carry the GPU fact too."""
 
-    queue.announce(host="dl380g10", tags=["x86", "cpu"], has_gpu=False,
+    plain_queue.announce(host="dl380g10", tags=["x86", "cpu"], has_gpu=False,
                    capacity={"mem_gb": 60})
-    assert queue.placeable({"tags": [], "resources": {"gpu": 1}}) is False
-    assert queue.placeable({"tags": ["x86"], "needs_gpu": True}) is False
-    assert queue.placeable({"tags": ["x86"], "resources": {"mem_gb": 4}}) is True
+    assert plain_queue.placeable({"tags": [], "resources": {"gpu": 1}}) is False
+    assert plain_queue.placeable({"tags": ["x86"], "needs_gpu": True}) is False
+    assert plain_queue.placeable({"tags": ["x86"], "resources": {"mem_gb": 4}}) is True
+
 
 
 def test_a_demand_larger_than_any_box_is_refused_not_queued(
-    queue: pool.PoolQueue,
+    plain_queue: pool.PoolQueue,
 ) -> None:
     """An idle box that can never fit the item is not a reason to wait for it."""
 
-    queue.announce(host="sparky", tags=["gb10"], has_gpu=True,
+    plain_queue.announce(host="sparky", tags=["gb10"], has_gpu=True,
                    capacity={"gpu": 4, "mem_gb": 100})
-    assert queue.placeable({"tags": [], "resources": {"mem_gb": 400}}) is False
+    assert plain_queue.placeable({"tags": [], "resources": {"mem_gb": 400}}) is False
+
 
 
 def test_an_empty_registry_answers_unknown_rather_than_no(
-    queue: pool.PoolQueue,
+    plain_queue: pool.PoolQueue,
 ) -> None:
     """Three-valued on purpose: refusing on silence breaks the submit path.
 
     A fleet whose worker loops predate the registry announces nothing, and a
-    queue whose workers are down announces nothing.  Neither is evidence that
+    plain_queue whose workers are down announces nothing.  Neither is evidence that
     the work is unrunnable, and turning either into a refusal would replace a
     missing diagnostic with a broken submitter.
     """
 
-    assert queue.placeable({"tags": ["x86"]}) is None
-    assert queue.offered_tags() == []
+    assert plain_queue.placeable({"tags": ["x86"]}) is None
+    assert plain_queue.offered_tags() == []
 
 
-def test_a_stale_offer_does_not_vouch_for_a_dead_box(queue: pool.PoolQueue) -> None:
+
+def test_a_stale_offer_does_not_vouch_for_a_dead_box(plain_queue: pool.PoolQueue) -> None:
     """An offer is a claim refreshed by its own box; expiry is what makes it one."""
 
-    queue.announce(host="dl380g10", tags=["x86"], has_gpu=False,
+    plain_queue.announce(host="dl380g10", tags=["x86"], has_gpu=False,
                    capacity={"mem_gb": 60})
-    assert queue.placeable({"tags": ["x86"]}, max_age_s=1e6) is True
-    assert queue.placeable({"tags": ["x86"]}, max_age_s=-1.0) is None
-    assert queue.offered_tags(max_age_s=-1.0) == []
+    assert plain_queue.placeable({"tags": ["x86"]}, max_age_s=1e6) is True
+    assert plain_queue.placeable({"tags": ["x86"]}, max_age_s=-1.0) is None
+    assert plain_queue.offered_tags(max_age_s=-1.0) == []
+
 
 
 def test_finish_does_not_republish_a_payloadless_stub(
@@ -1733,7 +1761,9 @@ def test_a_lease_beside_its_record_is_never_swept(tmp_path) -> None:
 
     from prismabuild import pool
 
-    queue = pool.PoolQueue(tmp_path / "q")
+    queue = AdmittedQueueFixture(
+        pool.PoolQueue(tmp_path / "q"), capacity={"cpu": 8, "mem_gb": 16},
+        default_demand={"cpu": 1, "mem_gb": 1})
     queue.ensure_layout()
     _publish(queue, KEY_A)
     assert queue.claim() is not None

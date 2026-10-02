@@ -47,6 +47,8 @@ from storage_host_ledger import mint_storage_host_ledger  # noqa: E402
 import tier_loop  # noqa: E402
 import residency_publication  # noqa: E402
 
+from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
+
 TIER = "prismabuild-stage:dl380g10"
 RAM_TIER = "ram:dl380g10"
 STAGE_KIND = f"stage_gib@{TIER}"
@@ -70,7 +72,9 @@ def _row(key: str, resources: dict[str, int],
 
 
 def _queue(tmp_path: Path, *, stage_gib: int, ram_gib: int = 0) -> pool.PoolQueue:
-    queue = pool.PoolQueue(tmp_path / "pb-queue")
+    queue = AdmittedQueueFixture(
+        pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 4, "mem_gb": 8},
+        default_demand={"cpu": 1, "mem_gb": 1})
     queue.ensure_layout()
     queue.ledger().ensure_capacity({"cpu": 4, "mem_gb": 8})
     queue.mint_tier_capacity(TIER, {"stage_gib": stage_gib})

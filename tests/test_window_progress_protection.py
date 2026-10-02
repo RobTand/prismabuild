@@ -43,6 +43,8 @@ import stage_release  # noqa: E402
 import stage_move  # noqa: E402
 import tier_loop  # noqa: E402
 
+from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
+
 TIER = "prismabuild-stage:dl380g10"
 RAM_TIER = "ram:dl380g10"
 STAGE_KIND = f"stage_gib@{TIER}"
@@ -127,7 +129,9 @@ def _plan(queue: pool.PoolQueue, consumer: str, digest: str, *,
 
 
 def _queue(tmp_path: Path, *, stage_gib: int, ram_gib: int = 0) -> pool.PoolQueue:
-    queue = pool.PoolQueue(tmp_path / "pb-queue")
+    queue = AdmittedQueueFixture(
+        pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 4, "mem_gb": 8},
+        default_demand={"cpu": 1, "mem_gb": 1})
     queue.ensure_layout()
     queue.ledger().ensure_capacity({"cpu": 4, "mem_gb": 8})
     queue.mint_tier_capacity(TIER, {"stage_gib": stage_gib})
@@ -242,7 +246,7 @@ def _stealer_row(queue: pool.PoolQueue, key: str, gib: int) -> None:
     queue.publish(
         action_key=key, cas_root=queue.root / "cas",
         checkout_root=queue.root / "co", worker_script=queue.root / "worker.py",
-        tags=["dl380g10"], resources={STAGE_KIND: gib},
+        tags=["dl380g10"], resources={"cpu": 1, "mem_gb": 1, STAGE_KIND: gib},
         residency={"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER,
                    "manifest_sha256": "7" * 64, "manifest_bytes": span,
                    "range_start_bytes": 0, "range_end_bytes": span})

@@ -10,6 +10,8 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from prismabuild import pool  # noqa: E402
 
+from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
+
 KEY = "c" * 64
 
 
@@ -39,7 +41,9 @@ def test_a_claim_between_rename_and_rewrite_is_not_reaped(tmp_path: Path) -> Non
     it, a second worker runs the same action while the first is live, and the
     retry's refusal is what the client reads (the live #36 incident)."""
 
-    queue = pool.PoolQueue(tmp_path / "q")
+    queue = AdmittedQueueFixture(
+        pool.PoolQueue(tmp_path / "q"), capacity={"cpu": 8, "mem_gb": 16},
+        default_demand={"cpu": 1, "mem_gb": 1})
     queue.ensure_layout()
     _publish(queue, tmp_path)
     claimed = _enter_claim_window(queue)
@@ -52,7 +56,9 @@ def test_a_claim_between_rename_and_rewrite_is_not_reaped(tmp_path: Path) -> Non
 
 
 def test_a_claimant_dead_inside_the_window_is_still_reaped(tmp_path: Path) -> None:
-    queue = pool.PoolQueue(tmp_path / "q")
+    queue = AdmittedQueueFixture(
+        pool.PoolQueue(tmp_path / "q"), capacity={"cpu": 8, "mem_gb": 16},
+        default_demand={"cpu": 1, "mem_gb": 1})
     queue.ensure_layout()
     _publish(queue, tmp_path)
     _enter_claim_window(queue)
@@ -70,7 +76,9 @@ def test_a_claimant_dead_inside_the_window_is_still_reaped(tmp_path: Path) -> No
 def test_a_claimed_record_with_no_clock_at_all_is_still_reaped(tmp_path: Path) -> None:
     """No lease, no ``claimed_unix``, no intent: nothing vouches for it."""
 
-    queue = pool.PoolQueue(tmp_path / "q")
+    queue = AdmittedQueueFixture(
+        pool.PoolQueue(tmp_path / "q"), capacity={"cpu": 8, "mem_gb": 16},
+        default_demand={"cpu": 1, "mem_gb": 1})
     queue.ensure_layout()
     _publish(queue, tmp_path)
     _enter_claim_window(queue)

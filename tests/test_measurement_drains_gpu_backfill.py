@@ -227,8 +227,11 @@ def test_a_restart_and_higher_priority_refill_do_not_renew_the_measurement_episo
     tick(until - clock[0] + 1)
     assert claim(q=restarted) is None
     expired = denial(measurement)["evidence"]["withhold"]
-    assert expired["withhold"] is False
-    assert expired["why"] == "measurement_drain_expired"
+    # #1419: this finite original opportunity elected a host. Time alone
+    # neither retires that election nor proves either incumbent released.
+    assert expired["withhold"] is True
+    assert expired["why"] == "measurement_reservation_waiting"
+    assert expired["selection"]["host"] == "sparklina"
     assert expired["drain_until_unix"] == until
     tick(10)
     assert claim(q=restarted) is None

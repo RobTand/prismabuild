@@ -28,6 +28,8 @@ from prismabuild import pool  # noqa: E402
 import pbrun  # noqa: E402
 import pool_reset  # noqa: E402
 
+from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
+
 
 KEY_POOL = "d" * 64
 KEY_SLURM = "e" * 64
@@ -42,7 +44,9 @@ def endings(tmp_path: Path) -> dict:
     the adoption at all, while both carry evidence the reset can destroy.
     """
 
-    queue = pool.PoolQueue(tmp_path / "queue")
+    queue = AdmittedQueueFixture(
+        pool.PoolQueue(tmp_path / "queue"), capacity={"cpu": 8, "mem_gb": 16},
+        default_demand={"cpu": 1, "mem_gb": 1})
     queue.ensure_layout()
     queue.publish(
         action_key=KEY_POOL,

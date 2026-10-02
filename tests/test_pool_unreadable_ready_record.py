@@ -25,6 +25,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from prismabuild import pool  # noqa: E402
 
+from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
+
 KEY_GOOD = "a" * 64
 KEY_TRUNCATED = "b" * 64
 KEY_INVALID = "c" * 64
@@ -33,7 +35,9 @@ KEY_EMPTY = "d" * 64
 
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
-    q = pool.PoolQueue(tmp_path / "pb-queue")
+    q = AdmittedQueueFixture(
+        pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
+        default_demand={"cpu": 1, "mem_gb": 1})
     q.ensure_layout()
     return q
 
@@ -66,6 +70,10 @@ def test_ready_items_serves_the_healthy_items(queue: pool.PoolQueue) -> None:
 def test_claim_serves_the_healthy_items(queue: pool.PoolQueue) -> None:
     _publish(queue, KEY_GOOD)
     _foreign_writes_a_broken_record(queue)
+    assert queue.claim() is None
+    assert queue.item_path(pool.READY, KEY_GOOD).exists()
+    assert not queue.ledger().held_keys()
+    assert queue.quarantine_orphans() == [KEY_TRUNCATED, KEY_INVALID]
     claimed = queue.claim()
     assert claimed is not None and claimed["action_key"] == KEY_GOOD
 

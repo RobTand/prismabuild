@@ -46,9 +46,7 @@ import math
 import os
 from pathlib import Path
 import re
-import select
 import shlex
-import signal
 import stat
 import subprocess
 import sys
@@ -63,13 +61,12 @@ import upgrade_client  # noqa: E402
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from prismabuild import (  # noqa: E402
-    core as pb, pool, slurm_lane as sl,
+    _bounded_reader as _reader, core as pb, pool, slurm_lane as sl,
 )
 from prismabuild import action_edges  # noqa: E402
 from prismabuild import produced_output  # noqa: E402
 from prismabuild import residency_map, residency_plan, storage_tiers  # noqa: E402
 from prismabuild import window_credit  # noqa: E402
-from prismabuild.core import _sigterm_unwinds_this_process  # noqa: E402
 
 #: Where the fleet keeps the queue both transports file their endings in.  The
 #: same spelling ``pbrun`` and ``pool_reset`` use.
@@ -242,7 +239,7 @@ EXIT_INCOMPLETE = 3
 #: reasoning as ``mount_latency.KILL_GRACE_S``: ``SIGKILL`` is delivered at the
 #: child's next scheduling point, so an immediate ``WNOHANG`` says "still
 #: running" about a child that is already dying.
-KILL_GRACE_S = 0.25
+KILL_GRACE_S = _reader.KILL_GRACE_S
 
 #: The host helper the NFS readahead reading is taken through, relative to the
 #: runtime generation this command was launched from.  It is a script rather
@@ -2961,51 +2958,8 @@ def ending_lines(endings: Sequence[Mapping[str, object]],
     return render_table(headers, rows)
 
 
-class Deadline:
-    """The whole run's budget, so that one slow section cannot spend another's.
-
-    Held in ``time.monotonic`` because a status screen must not change its
-    mind about how long it has waited when NTP steps the clock.  A budget of
-    zero or less means no deadline at all, which is what this command did
-    before issue #350 and what ``--timeout-s 0`` still asks for.
-
-    Only zero asks for that, so a non-finite budget is refused rather than
-    quietly granted one.  ``NaN`` compares false against everything, so it
-    would leave ``bounded`` false and select the unbounded path without ever
-    saying so; positive infinity would reach ``select`` as an infinite timeout,
-    which is the same waiting-forever this class exists to end.
-    """
-
-    def __init__(self, timeout_s: float) -> None:
-        self.timeout_s = float(timeout_s)
-        if not math.isfinite(self.timeout_s):
-            raise ValueError(
-                f"a deadline must be a finite number of seconds, not {timeout_s!r}")
-        self.bounded = self.timeout_s > 0
-        self._expires = time.monotonic() + self.timeout_s if self.bounded else None
-
-    def remaining(self) -> float | None:
-        if self._expires is None:
-            return None
-        return self._expires - time.monotonic()
-
-
-def _proc_stat_fields(pid: int, proc: Path) -> list[bytes] | None:
-    """The fields of ``/proc/<pid>/stat`` after ``comm``, or ``None``.
-
-    Split on the last ``)`` because ``comm`` is the only field that can hold a
-    space or a parenthesis.  ``fields[0]`` is the state and ``fields[19]`` is
-    ``starttime`` -- fields 3 and 22 of ``proc(5)``.
-    """
-    try:
-        raw = (proc / str(pid) / "stat").read_bytes()
-    except OSError:
-        return None
-    close = raw.rfind(b")")
-    if close < 0:
-        return None
-    fields = raw[close + 2:].split()
-    return fields if len(fields) > 19 else None
+Deadline = _reader.Deadline
+_proc_stat_fields = _reader._proc_stat_fields
 
 
 def _load_module(path: Path, name: str):
@@ -3192,341 +3146,33 @@ def wedged_peers(*, proc: Path = Path("/proc"), self_pid: int | None = None,
     return {"peers": peers, "scanned": scanned, "truncated": truncated, "note": None}
 
 
-def _reap_status_within(pid: int, grace_s: float) -> tuple[bool, int | None]:
-    """Bounded reap, preserving the kernel status for failure diagnostics.
-
-    ``None`` means unknown, not exit 0: another reaper may already have taken
-    the status, or the reader may still be alive. Never join a child in ``D``.
-    """
-    deadline = time.monotonic() + grace_s
-    while True:
-        try:
-            done, status = os.waitpid(pid, os.WNOHANG)
-        except ChildProcessError:
-            return True, None
-        except OSError:
-            return False, None
-        if done == pid:
-            return True, status
-        if time.monotonic() >= deadline:
-            return False, None
-        time.sleep(0.01)
-
-
-def _reap_within(pid: int, grace_s: float) -> bool:
-    """Compatibility wrapper for cleanup callers that only need ownership."""
-    return _reap_status_within(pid, grace_s)[0]
-
-
-def _reader_exit_detail(pid: int, status: int | None) -> str:
-    if status is None:
-        return f"reader pid={pid} exit status unavailable"
-    if os.WIFSIGNALED(status):
-        signum = os.WTERMSIG(status)
-        try:
-            name = signal.Signals(signum).name
-        except ValueError:                          # pragma: no cover - kernel
-            name = "unknown"
-        return f"reader pid={pid} signal {signum} ({name})"
-    if os.WIFEXITED(status):
-        return f"reader pid={pid} exit code {os.WEXITSTATUS(status)}"
-    return f"reader pid={pid} unexpected wait status {status}"
-
-
-def _write_reader_payload(write_fd: int, payload: bytes) -> None:
-    """Complete a pipe write even after a short write or interrupted syscall."""
-    pending = memoryview(payload)
-    while pending:
-        try:
-            written = os.write(write_fd, pending)
-        except InterruptedError:
-            continue
-        if written <= 0:
-            raise OSError("reader pipe write made no progress")
-        pending = pending[written:]
-
-
-def _isolate_child_fds(write_fd: int) -> int:
-    """Leave the forked reader owning its own pipe and nothing else.
-
-    A child this process may have to abandon inherits every descriptor the
-    caller held, and a descriptor is not a private copy: the open file
-    description behind it is shared, so an abandoned reader keeps the caller's
-    resources alive after the caller has let go of them.  Two consequences were
-    reproduced by the review of #358, and they are one defect seen twice.
-
-    A wrapper that captures ``pbstatus``'s output waits for EOF on the pipe, and
-    EOF arrives when the last writer closes.  The parent exiting ``3`` is not
-    that: the abandoned child still holds the write end, so the wrapper blocks
-    on a command that has already returned.  And an ``flock`` lives on the open
-    file description rather than on the process, so an inherited lock fd left
-    open in the child holds the caller's lock after the caller closed it --
-    against a lock the child was never told about and cannot release.
-
-    So the child keeps exactly two things: the IPC writer it must answer on,
-    and ``/dev/null`` on the three standard streams so that a write from
-    anything it calls has somewhere to go.  Everything else is closed here,
-    before the section runs.  ``/proc/self/fd`` is the list the kernel already
-    keeps; the ``SC_OPEN_MAX`` sweep is for a box without ``/proc`` mounted,
-    where a status screen still has to answer.
-
-    Returns the descriptor the caller must write on, which is ``write_fd``
-    moved out of the way first when the pipe landed on 0, 1 or 2.  It is moved
-    in a loop, not once: ``os.dup`` hands back the lowest free descriptor, and
-    when the caller closed its own standard streams the lowest free descriptor
-    is another one below 3 -- the read end this child has just closed.  Each
-    turn of the loop spends one of the three low slots, so it ends after at
-    most three, and the copies left behind are closed by the ``dup2`` below.
-    """
-    while write_fd < 3:
-        write_fd = os.dup(write_fd)
-    null = os.open(os.devnull, os.O_RDWR)
-    for target in (0, 1, 2):                       # write_fd is above these now
-        try:
-            os.dup2(null, target)
-        except OSError:                            # pragma: no cover - kernel
-            pass
-    if null > 2:
-        try:
-            os.close(null)
-        except OSError:                            # pragma: no cover - kernel
-            pass
-    try:
-        # Materialised before any closing: the listing's own directory
-        # descriptor is gone by the time this list is walked, and closing a
-        # closed descriptor is the ``OSError`` swallowed below.
-        open_fds = [int(name) for name in os.listdir("/proc/self/fd")
-                    if name.isdigit()]
-    except OSError:                                # pragma: no cover - no /proc
-        try:
-            limit = int(os.sysconf("SC_OPEN_MAX"))
-        except (ValueError, OSError):
-            limit = 4096
-        open_fds = list(range(3, min(limit, 65536)))
-    for fd in open_fds:
-        if fd <= 2 or fd == write_fd:
-            continue
-        try:
-            os.close(fd)
-        except OSError:
-            pass
-    return write_fd
-
-
-def bounded(section: str, read, *, deadline: Deadline, abandoned: list,
+def bounded(section: str, read, *, deadline: _reader.Deadline, abandoned: list,
             cap_s: float | None = None, announce_retained: bool = True) -> dict:
-    """Run one read of the shared mount in a child this process can abandon.
+    """Compatibility entry point for the shared private reader infrastructure.
 
-    The shape is ``tools/fleet/mount_latency.py`` ``MountSampler._run_probe``,
-    and for its reason: a ``stat`` on a hard NFS mount need not return at the
-    caller's deadline, even after a signal, so no in-process timeout -- thread,
-    alarm or otherwise -- can bound it.  Only a separate process can be
-    abandoned.  The parent stops reading at the deadline and never joins a
-    child that may still be blocked in the kernel.
-
-    Two differences from the sampler, both because this is a short-lived
-    command rather than a long-lived daemon.  The whole-run deadline means an
-    expiry in one section leaves nothing for the next, so at most one
-    queue-root child is ever abandoned per run; and an abandoned child is
-    recorded by PID and ``starttime`` in ``abandoned`` so the report names
-    exactly which process it left behind, rather than leaving the operator to
-    guess which of the ``D``-state peers was this run's.
-
-    The returned dict is one of:
-
-    ``{"status": "ok", "value": ...}``
-        the read completed; ``value`` has been through JSON when a child ran.
-    ``{"status": "error", "type": ..., "error": ...}``
-        the read raised, exactly as it would have in-process.
-    ``{"status": "timed_out", "elapsed_s": ...}``
-        the deadline expired first, or a previous section had already spent
-        the budget and this one was never started.
-
-    ``announce_retained=False`` leaves the naming of a retained reader to the
-    caller, which gets the same record in ``abandoned``.  A waiting client
-    meets a retained reader once per turn of its wait and prints its own
-    notice at its own interval (#1048); the line below is not throttled.  A
-    signal that unwinds this call still prints it, because then the caller
-    never sees ``abandoned``.
+    The deadline, status dictionaries, JSON boundary and retained-child notice
+    remain unchanged. The caller still owns and fences its abandoned readers.
     """
-    if not deadline.bounded:
-        # ``--timeout-s 0``: the pre-#350 path, in-process and unchanged.
-        try:
-            return {"status": "ok", "value": read()}
-        except Exception as exc:                   # noqa: BLE001 - diagnostic
-            return {"status": "error", "type": type(exc).__name__, "error": str(exc)}
-
-    remaining = deadline.remaining() or 0.0
-    if cap_s is not None:
-        remaining = min(remaining, cap_s)
-    if remaining <= 0:
-        return {"status": "timed_out", "elapsed_s": 0.0, "started": False}
-
-    # Reuse the worker's signal unwinding contract so a signal aimed only at
-    # this parent still reaches the exact reader it owns through cleanup.
-    with _sigterm_unwinds_this_process():
-        token = _ANNOUNCE_RETAINED.set(announce_retained)
-        try:
-            return _bounded_reader(section, read, deadline=deadline,
-                                   abandoned=abandoned, cap_s=cap_s)
-        finally:
-            _ANNOUNCE_RETAINED.reset(token)
+    return _reader.bounded(section, read, deadline=deadline, abandoned=abandoned,
+                           cap_s=cap_s, announce_retained=announce_retained)
 
 
-#: Whether ``_stop_reader`` names a retained reader on stderr; ``bounded``
-#: sets it for the one call.  A context variable, so a waiting client's threads
-#: (``pbwait.wait_for_keys``) each keep their own, and every stand-in for
-#: ``_stop_reader`` keeps its signature.
-_ANNOUNCE_RETAINED: contextvars.ContextVar[bool] = contextvars.ContextVar(
-    "pbstatus_announce_retained", default=True)
+# Keep existing diagnostic imports discoverable; implementation/fault injection
+# belongs to the core boundary rather than to this CLI's private name bindings.
+def _reap_within(pid: int, grace_s: float) -> bool:
+    """Existing retained-reader consumers use the same core reap boundary."""
+    return _reader._reap_within(pid, grace_s)
 
 
-def _stop_reader(pid: int, section: str, started: float, abandoned: list) -> None:
-    try:
-        os.kill(pid, signal.SIGKILL)
-    except OSError:
-        pass
-    if not _reap_within(pid, KILL_GRACE_S):
-        child = {"section": section, "pid": pid,
-                 "starttime_ticks": _starttime_ticks(pid),
-                 "since_unix": round(time.time() - (time.monotonic() - started), 3)}
-        abandoned.append(child)
-        # Also report ownership during cancellation, when main cannot emit JSON.
-        # A caller that asked to name the reader itself cannot while an
-        # exception (a signal's unwinding) is on its way out, so say it here.
-        if _ANNOUNCE_RETAINED.get() or sys.exc_info()[1] is not None:
-            print(f"pbstatus: retained reader {json.dumps(child, sort_keys=True)}",
-                  file=sys.stderr)
+_reap_status_within = _reader._reap_status_within
+_reader_exit_detail = _reader._reader_exit_detail
+_write_reader_payload = _reader._write_reader_payload
+_isolate_child_fds = _reader._isolate_child_fds
+_ANNOUNCE_RETAINED = _reader._ANNOUNCE_RETAINED
+_stop_reader = _reader._stop_reader
+_bounded_reader = _reader._bounded_reader
+_starttime_ticks = _reader._starttime_ticks
 
-
-def _bounded_reader(section: str, read, *, deadline: Deadline, abandoned: list,
-                    cap_s: float | None) -> dict:
-    read_fd, write_fd = os.pipe()
-    started = time.monotonic()
-    try:
-        pid = os.fork()
-    except BaseException:
-        os.close(read_fd)
-        os.close(write_fd)
-        raise
-    if pid == 0:                                   # child
-        code = 1
-        stage = "close_read_fd"
-        try:
-            os.close(read_fd)
-            # Before the section runs, and before anything can block in it:
-            # what this child still holds is what it holds for as long as it
-            # lives, and this is the child the parent may have to abandon.
-            stage = "isolate_fds"
-            write_fd = _isolate_child_fds(write_fd)
-            stage = "read"
-            value = read()
-            stage = "serialize"
-            payload = json.dumps({"status": "ok", "value": value}).encode("utf-8")
-            stage = "write"
-            _write_reader_payload(write_fd, payload)
-            # A failed write must not masquerade as an exit-0 empty reply.
-            code = 0
-        except BaseException as exc:               # noqa: BLE001 - child boundary
-            try:
-                try:
-                    detail = str(exc)[:4096]
-                except BaseException:              # even a broken __str__ has a type
-                    detail = "exception message unavailable"
-                payload = json.dumps({"status": "error",
-                                      "type": type(exc).__name__,
-                                      "error": f"stage={stage}: {detail}"})
-                _write_reader_payload(write_fd, payload.encode("utf-8"))
-            except BaseException:
-                # A broken IPC channel cannot carry its own diagnosis. The
-                # parent still observes the nonzero exit or terminating signal.
-                pass
-        finally:
-            try:
-                os.close(write_fd)
-            except OSError:
-                pass
-            # ``_exit``, never ``exit``: the child inherited this process's
-            # buffered stdout and must not flush a second copy of it -- into
-            # ``/dev/null`` now, but ``exit`` would also run the parent's
-            # ``atexit`` handlers and finalisers, which are not this child's
-            # to run.
-            os._exit(code)
-
-    reaped = False
-    try:
-        os.close(write_fd)
-        chunks: list[bytes] = []
-        saw_eof = False
-        while True:
-            left = deadline.remaining() or 0.0
-            if cap_s is not None:
-                left = min(left, cap_s - (time.monotonic() - started))
-            if left <= 0:
-                break
-            try:
-                ready, _, _ = select.select([read_fd], [], [], left)
-            except OSError:
-                break
-            if not ready:
-                break
-            try:
-                chunk = os.read(read_fd, 65536)
-            except OSError:
-                break
-            if not chunk:
-                saw_eof = True
-                break
-            chunks.append(chunk)
-        elapsed = time.monotonic() - started
-
-        # EOF is the only proof the payload is whole.  A census can be larger than
-        # the pipe buffer, so "some bytes arrived" is compatible with a child that
-        # is still writing, and reporting that as a parse error would file a mount
-        # timeout under the wrong cause.
-        if saw_eof:
-            if chunks:
-                try:
-                    result = json.loads(b"".join(chunks).decode("utf-8"))
-                except ValueError as exc:
-                    result = {"status": "error", "type": "ValueError",
-                              "error": f"unreadable {section} payload: {exc}"}
-            else:
-                result = {"status": "error", "type": "RuntimeError",
-                          "error": f"the {section} reader exited without a payload"}
-            if isinstance(result, dict) and result.get("status") == "error":
-                reaped, status = _reap_status_within(pid, KILL_GRACE_S)
-                result["error"] = (f"{result.get('error', '')}; "
-                                   f"{_reader_exit_detail(pid, status)}")
-            else:
-                # A complete snapshot is still valid if its writer has not
-                # exited yet (#906); preserve the existing cleanup path.
-                reaped = _reap_within(pid, KILL_GRACE_S)
-            return result
-
-        return {"status": "timed_out", "elapsed_s": round(elapsed, 3), "started": True}
-    finally:
-        try:
-            os.close(read_fd)
-        finally:
-            if not reaped:
-                _stop_reader(pid, section, started, abandoned)
-
-
-def _starttime_ticks(pid: int) -> int | None:
-    """The child's ``starttime``, which is what makes the PID an identity.
-
-    A PID alone is reusable and therefore not ownership: #349 asks for exact
-    retained ownership of an abandoned reader, and ``(pid, starttime)`` is the
-    pair the kernel will not hand to a different process.
-    """
-    fields = _proc_stat_fields(pid, Path("/proc"))
-    if fields is None:
-        return None
-    try:
-        return int(fields[19])
-    except ValueError:
-        return None
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(

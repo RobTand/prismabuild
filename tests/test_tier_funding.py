@@ -48,6 +48,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from prismabuild import pool, residency_plan, storage_tiers  # noqa: E402
 from prismabuild import window_credit  # noqa: E402
 
+from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
+
 TIER = "prismabuild-stage:dl380g10"
 RAM_TIER = "ram:dl380g10"
 STAGE_KIND = f"stage_gib@{TIER}"
@@ -78,7 +80,7 @@ def _plan(queue: pool.PoolQueue, consumer: str, mover: str, *,
             "name": f"phase-{tag}",
             "start_bytes": start, "end_bytes": end, "stage_gib": gib,
             "mover_row": {
-                **_row(mover, {STAGE_KIND: gib}, queue),
+                **_row(mover, {"cpu": 1, "mem_gb": 1, STAGE_KIND: gib}, queue),
                 "residency": {
                     "schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER,
                     "manifest_sha256": MANIFEST, "manifest_bytes": end,
@@ -89,7 +91,9 @@ def _plan(queue: pool.PoolQueue, consumer: str, mover: str, *,
 
 
 def _queue(tmp_path: Path, *, stage_gib: int, ram_gib: int = 0) -> pool.PoolQueue:
-    queue = pool.PoolQueue(tmp_path / "pb-queue")
+    queue = AdmittedQueueFixture(
+        pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 4, "mem_gb": 8},
+        default_demand={"cpu": 1, "mem_gb": 1})
     queue.ensure_layout()
     queue.mint_tier_capacity(TIER, {"stage_gib": stage_gib})
     if ram_gib:
@@ -122,7 +126,7 @@ def _stealer_row(queue: pool.PoolQueue, key: str, gib: int) -> None:
     queue.publish(
         action_key=key, cas_root=queue.root / "cas",
         checkout_root=queue.root / "co", worker_script=queue.root / "worker.py",
-        tags=["dl380g10"], resources={STAGE_KIND: gib},
+        tags=["dl380g10"], resources={"cpu": 1, "mem_gb": 1, STAGE_KIND: gib},
         residency={"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER,
                    "manifest_sha256": MANIFEST, "manifest_bytes": span,
                    "range_start_bytes": 0, "range_end_bytes": span})
@@ -328,7 +332,7 @@ def test_denied_claim_preserves_entitlement_for_retry(tmp_path: Path) -> None:
     queue = _queue(tmp_path, stage_gib=4, ram_gib=4)
     mover, consumer = _hexkey("retry-mover"), _hexkey("retry-consumer")
     plan = _plan(queue, consumer, mover, tag="retry")
-    resources = {STAGE_KIND: 2, RAM_KIND: 2}
+    resources = {"cpu": 1, "mem_gb": 1, STAGE_KIND: 2, RAM_KIND: 2}
     row = _publish_mover(queue, plan, mover, resources=resources)
     grant = window_credit.grant_key(consumer, TIER, "mover_row", "phase-retry")
     generation = _reserve_and_transfer(
@@ -427,7 +431,7 @@ def test_consumed_funding_refences_after_finish(tmp_path: Path) -> None:
     queue.publish(action_key=mover, cas_root=queue.root / "cas",
                   checkout_root=queue.root / "co",
                   worker_script=queue.root / "worker.py", tags=["dl380g10"],
-                  resources={STAGE_KIND: 2}, residency=row["residency"])
+                  resources={"cpu": 1, "mem_gb": 1, STAGE_KIND: 2}, residency=row["residency"])
     row2 = pool.read_queue_record(queue.item_path(pool.READY, mover))
     assert isinstance(row2, dict)
     assert queue.reserve_fence(TIER, grant, _fields(
@@ -440,7 +444,9 @@ def test_consumed_funding_refences_after_finish(tmp_path: Path) -> None:
 def _hold_mover_lock(queue_root: str, mover: str, ready, release) -> None:
     """Child side of the cross-process barrier: hold the mover lock."""
     from prismabuild import pool as _pool_mod
-    queue = _pool_mod.PoolQueue(queue_root)
+    queue = AdmittedQueueFixture(
+        _pool_mod.PoolQueue(queue_root), capacity={"cpu": 4, "mem_gb": 8},
+        default_demand={"cpu": 1, "mem_gb": 1})
     with queue.mover_transition_lock(mover, blocking=True) as acquired:
         assert acquired
         ready.set()
@@ -587,7 +593,7 @@ def test_lease_write_failure_returns_remainder_keeps_fence(
     ram_ledger = queue.tier_ledger(RAM_TIER)
     mover, consumer = _hexkey("lease-mover"), _hexkey("lease-consumer")
     plan = _plan(queue, consumer, mover, tag="lease")
-    resources = {STAGE_KIND: 2, RAM_KIND: 2}
+    resources = {"cpu": 1, "mem_gb": 1, STAGE_KIND: 2, RAM_KIND: 2}
     row = _publish_mover(queue, plan, mover, resources=resources)
     grant = window_credit.grant_key(consumer, TIER, "mover_row", "phase-lease")
     generation = _reserve_and_transfer(
@@ -645,7 +651,7 @@ def test_mark_failure_unwinds_without_execution(
     ram_ledger = queue.tier_ledger(RAM_TIER)
     mover, consumer = _hexkey("mark-mover"), _hexkey("mark-consumer")
     plan = _plan(queue, consumer, mover, tag="mark")
-    resources = {STAGE_KIND: 2, RAM_KIND: 2}
+    resources = {"cpu": 1, "mem_gb": 1, STAGE_KIND: 2, RAM_KIND: 2}
     row = _publish_mover(queue, plan, mover, resources=resources)
     grant = window_credit.grant_key(consumer, TIER, "mover_row", "phase-mark")
     generation = _reserve_and_transfer(
@@ -762,7 +768,7 @@ def test_real_copy_lifecycle_stays_charged_until_egress(tmp_path: Path) -> None:
             "name": "phase-real",
             "start_bytes": 0, "end_bytes": span, "stage_gib": 1,
             "mover_row": {
-                **_row(mover, {STAGE_KIND: 1}, queue),
+                **_row(mover, {"cpu": 1, "mem_gb": 1, STAGE_KIND: 1}, queue),
                 "residency": {
                     "schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER,
                     "manifest_sha256": MANIFEST, "manifest_bytes": span,
@@ -906,7 +912,7 @@ def test_funding_write_enforces_binding_and_table(tmp_path: Path) -> None:
     queue.publish(action_key=mover, cas_root=queue.root / "cas",
                   checkout_root=queue.root / "co",
                   worker_script=queue.root / "worker.py", tags=["dl380g10"],
-                  resources={STAGE_KIND: 2}, residency=row["residency"])
+                  resources={"cpu": 1, "mem_gb": 1, STAGE_KIND: 2}, residency=row["residency"])
     row3 = pool.read_queue_record(queue.item_path(pool.READY, mover))
     assert isinstance(row3, dict)
     assert float(row3["published_unix"]) != float(row["published_unix"])

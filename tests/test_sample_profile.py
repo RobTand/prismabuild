@@ -47,6 +47,8 @@ import pbrun  # noqa: E402
 import pbstatus  # noqa: E402
 import pbcampaign  # noqa: E402
 
+from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
+
 
 REPOSITORY = Path(__file__).resolve().parents[1]
 
@@ -1055,7 +1057,9 @@ def test_the_ending_a_worker_files_carries_the_profile(tmp_path: Path):
 
     import uuid
 
-    queue = pool.PoolQueue(tmp_path / "pb-queue")
+    queue = AdmittedQueueFixture(
+        pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
+        default_demand={"cpu": 1, "mem_gb": 1})
     queue.ensure_layout()
     key = uuid.uuid4().hex + uuid.uuid4().hex
     stub = tmp_path / "stub_worker.py"

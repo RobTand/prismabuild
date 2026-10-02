@@ -56,6 +56,8 @@ import prismabuild.pool as pool  # noqa: E402
 import prismabuild.produced_output as po  # noqa: E402
 import stage_release  # noqa: E402
 
+from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
+
 TIER = "prismabuild-stage:dl380g10"
 KIND = "stage_gib"
 REPO = Path(__file__).resolve().parents[1]
@@ -102,7 +104,9 @@ def _template(prefix: str, window_gib: int = 2) -> dict:
 
 
 def _queue(tmp_path: Path, gib: int = 4) -> pool.PoolQueue:
-    q = pool.PoolQueue(tmp_path / "pb-queue")
+    q = AdmittedQueueFixture(
+        pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
+        default_demand={"cpu": 1, "mem_gb": 1})
     q.ensure_layout()
     q.mint_tier_capacity(TIER, {KIND: gib})
     return q

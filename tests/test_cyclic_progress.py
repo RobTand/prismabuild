@@ -162,8 +162,8 @@ def test_cycle_flag_seals_policy_and_blocks_an_old_worker(tmp_path, monkeypatch,
     linear["params"] = {**linear["params"], pb.PROGRESS_PARAM: _policy(False)}
     assert pb.seal_action(linear)["action_key"] != key
     old_tags = [tag for tag in item["tags"] if tag != pb.PROGRESS_CYCLE_TAG]
-    assert queue.claim(tags=old_tags) is None
-    claimed = queue.claim(tags=item["tags"])
+    assert queue.claim(tags=old_tags, capacity={"cpu": 2, "mem_gb": 16}) is None
+    claimed = queue.claim(tags=item["tags"], capacity={"cpu": 2, "mem_gb": 16})
     assert claimed["action_key"] == key
     policy = pool.progress_policy(claimed, 100)
     assert policy.cycle is True

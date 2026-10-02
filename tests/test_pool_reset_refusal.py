@@ -24,6 +24,8 @@ sys.path.insert(0, str(REPOSITORY / "tools" / "fleet"))
 from prismabuild import core, pool  # noqa: E402
 import pool_reset  # noqa: E402
 
+from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
+
 
 REFUSES = """import sys
 sys.stderr.write("pbrun: live code closure differs from the action-pinned closure\\n")
@@ -70,7 +72,9 @@ def fleet(tmp_path: Path) -> dict:
     key = str(action["action_key"])
     core.PrismaBuildCAS(cas_root).publish_action_request(action)
 
-    queue = pool.PoolQueue(queue_root)
+    queue = AdmittedQueueFixture(
+        pool.PoolQueue(queue_root), capacity={"cpu": 8, "mem_gb": 16},
+        default_demand={"cpu": 1, "mem_gb": 1})
     queue.ensure_layout()
     queue.publish(
         action_key=key,

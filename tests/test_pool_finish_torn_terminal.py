@@ -28,6 +28,8 @@ sys.path.insert(0, str(REPOSITORY / "src"))
 
 from prismabuild import pool  # noqa: E402
 
+from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
+
 KEY = "a" * 64
 
 
@@ -35,7 +37,9 @@ KEY = "a" * 64
 def lost(tmp_path: Path) -> tuple[pool.PoolQueue, dict]:
     """A claim a reaper concluded, whose terminal record is torn."""
 
-    queue = pool.PoolQueue(tmp_path / "pb-queue")
+    queue = AdmittedQueueFixture(
+        pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
+        default_demand={"cpu": 1, "mem_gb": 1})
     queue.ensure_layout()
     queue.publish(
         action_key=KEY,

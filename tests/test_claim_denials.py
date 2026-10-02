@@ -14,6 +14,8 @@ sys.path[:0] = [str(ROOT / "src"), str(ROOT / "tools/fleet")]
 from prismabuild import adaptive_cpu, adaptive_gpu, adaptive_snapshot, pool  # noqa: E402
 import pbstatus  # noqa: E402
 
+from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
+
 KEY_A, KEY_B = "a" * 64, "b" * 64
 
 
@@ -27,7 +29,9 @@ def local_records(queue):
 
 
 def test_transition_busy_is_recorded_while_a_neighbour_claims(tmp_path, monkeypatch):
-    queue = pool.PoolQueue(tmp_path / "queue")
+    queue = AdmittedQueueFixture(
+        pool.PoolQueue(tmp_path / "queue"), capacity={"cpu": 8, "mem_gb": 16},
+        default_demand={"cpu": 1, "mem_gb": 1})
     publish(queue, KEY_A, priority=1)
     publish(queue, KEY_B)
     original = queue._transition_locked

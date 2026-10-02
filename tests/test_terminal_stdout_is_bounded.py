@@ -17,6 +17,8 @@ from prismabuild import pool  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import pbstatus  # noqa: E402
 
+from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
+
 
 KEY = "e" * 64
 LEGACY_KEY = "d" * 64
@@ -27,7 +29,9 @@ HUGE = ("chatter line %06d\n" * 500_000) % tuple(range(500_000)) + "FINAL-MARKER
 
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
-    made = pool.PoolQueue(tmp_path / "pb-queue")
+    made = AdmittedQueueFixture(
+        pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
+        default_demand={"cpu": 1, "mem_gb": 1})
     made.ensure_layout()
     return made
 

@@ -26,6 +26,8 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from prismabuild import adaptive_cpu, pool  # noqa: E402
 
+from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
+
 SLOW_S = 0.25
 
 HOLDER = """
@@ -56,7 +58,9 @@ def _snapshot(queue: pool.PoolQueue) -> dict:
 
 def test_a_slow_lookup_under_the_lock_is_timed_and_names_its_key(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    queue = pool.PoolQueue(tmp_path / "pb-queue")
+    queue = AdmittedQueueFixture(
+        pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
+        default_demand={"cpu": 1, "mem_gb": 1})
     keys = [_publish(queue, index, ["here"]) for index in range(3)]
     slow, fast, claimed = keys
     real = queue._claim_blocked_fresh
@@ -104,7 +108,9 @@ def test_a_slow_lookup_under_the_lock_is_timed_and_names_its_key(
 
 def test_a_lock_held_by_another_loop_is_not_a_hold(
         tmp_path: Path) -> None:
-    queue = pool.PoolQueue(tmp_path / "pb-queue")
+    queue = AdmittedQueueFixture(
+        pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
+        default_demand={"cpu": 1, "mem_gb": 1})
     key = _publish(queue, 0, ["here"])
     # Another process, as another loop is: the lock is a POSIX record lock,
     # which one process never contends with itself.
@@ -125,7 +131,9 @@ def test_a_lock_held_by_another_loop_is_not_a_hold(
 
 def test_a_pass_that_raises_under_the_lock_still_times_the_hold(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    queue = pool.PoolQueue(tmp_path / "pb-queue")
+    queue = AdmittedQueueFixture(
+        pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
+        default_demand={"cpu": 1, "mem_gb": 1})
     key = _publish(queue, 0, ["here"])
 
     def lookup(_key: str):

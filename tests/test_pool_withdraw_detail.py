@@ -27,6 +27,8 @@ sys.path.insert(0, str(REPOSITORY / "tools" / "fleet"))
 from prismabuild import pool  # noqa: E402
 import pbrun  # noqa: E402
 
+from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
+
 KEY = "f" * 64
 
 
@@ -34,7 +36,9 @@ KEY = "f" * 64
 def retried(tmp_path: Path) -> pool.PoolQueue:
     """One action that failed once, was requeued, and is claimed again."""
 
-    queue = pool.PoolQueue(tmp_path / "pb-queue")
+    queue = AdmittedQueueFixture(
+        pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
+        default_demand={"cpu": 1, "mem_gb": 1})
     queue.ensure_layout()
     queue.publish(
         action_key=KEY,

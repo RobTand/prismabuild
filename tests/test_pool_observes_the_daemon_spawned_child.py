@@ -31,6 +31,8 @@ import pytest
 
 from prismabuild import pool
 
+from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
+
 
 class _Scope:
     """As much of a resource scope as the observation reads: its cgroup."""
@@ -197,7 +199,9 @@ def test_execute_hands_its_scope_to_the_observation(
 
     script = tmp_path / "worker.py"
     script.write_text("print('done', flush=True)\n", encoding="utf-8")
-    queue = pool.PoolQueue(tmp_path / "queue")
+    queue = AdmittedQueueFixture(
+        pool.PoolQueue(tmp_path / "queue"), capacity={"cpu": 8, "mem_gb": 16},
+        default_demand={"cpu": 1, "mem_gb": 1})
     key = uuid.uuid4().hex * 2
     queue.publish(action_key=key, cas_root="/cas", checkout_root=tmp_path,
                   worker_script=script)

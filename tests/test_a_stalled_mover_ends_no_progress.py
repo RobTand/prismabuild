@@ -41,6 +41,8 @@ from test_a_resident_range_is_adopted_rather_than_recopied import (  # noqa: E40
 from test_a_stage_mover_declares_the_cpu_and_retries_it_owns import (  # noqa: E402
     READERS, _Cas, _manifest, _template)
 
+from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
+
 MIB = 1 << 20
 MB = storage_tiers.MB
 CONSUMER = "c" * 64
@@ -360,7 +362,9 @@ def _claimed_mover(tmp_path: Path, source: str, policy,
     })
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
     cas.publish_action_request(action)
-    queue = pool.PoolQueue(tmp_path / "queue")
+    queue = AdmittedQueueFixture(
+        pool.PoolQueue(tmp_path / "queue"), capacity={"cpu": 8, "mem_gb": 16},
+        default_demand={"cpu": 1, "mem_gb": 1})
     queue.publish(action_key=action["action_key"], cas_root=cas.root,
                   checkout_root=checkout, max_attempts=1,
                   worker_script=ROOT / "tools" / "prismabuild_worker.py")

@@ -29,6 +29,8 @@ from prismabuild import window_credit  # noqa: E402
 import stage_release  # noqa: E402
 import tier_loop  # noqa: E402
 
+from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
+
 TIER = "prismabuild-stage:dl380g10"
 STAGE_KIND = f"stage_gib@{TIER}"
 MANIFEST = "8" * 64
@@ -55,7 +57,7 @@ def _plan(queue: pool.PoolQueue, consumer: str, mover: str) -> dict[str, object]
             "name": "phase-0",
             "start_bytes": start, "end_bytes": end, "stage_gib": 1,
             "mover_row": {
-                **_row(mover, {STAGE_KIND: 1}, queue),
+                **_row(mover, {"cpu": 1, "mem_gb": 1, STAGE_KIND: 1}, queue),
                 "residency": {
                     "schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER,
                     "manifest_sha256": MANIFEST, "manifest_bytes": end,
@@ -66,7 +68,9 @@ def _plan(queue: pool.PoolQueue, consumer: str, mover: str) -> dict[str, object]
 
 
 def test_settle_keeps_consumed_bytes_until_egress(tmp_path: Path) -> None:
-    queue = pool.PoolQueue(tmp_path / "pb-queue")
+    queue = AdmittedQueueFixture(
+        pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
+        default_demand={"cpu": 1, "mem_gb": 1})
     queue.ensure_layout()
     queue.mint_tier_capacity(TIER, {"stage_gib": 5})
     ledger = queue.tier_ledger(TIER)
@@ -184,7 +188,9 @@ def test_settle_honors_terminal_proof_for_transferring(tmp_path: Path) -> None:
     generation and token set -- settle must not free it.  Without the proof
     (legacy shape) the exact-name release still applies.
     """
-    queue = pool.PoolQueue(tmp_path / "pb-queue")
+    queue = AdmittedQueueFixture(
+        pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
+        default_demand={"cpu": 1, "mem_gb": 1})
     queue.ensure_layout()
     queue.mint_tier_capacity(TIER, {"stage_gib": 5})
     ledger = queue.tier_ledger(TIER)

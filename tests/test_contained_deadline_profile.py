@@ -32,6 +32,8 @@ import pytest
 from prismabuild import core as pb
 from prismabuild import pool, resource_scope
 
+from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
+
 
 #: The action's own work: long enough that only the deadline can end it.
 _SLEEP_WORK = "import time\ntime.sleep(120)\n"
@@ -300,7 +302,9 @@ def _claimed(tmp_path: Path, *, profile: str | None = "flush-on-signal"):
     })
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
     cas.publish_action_request(action)
-    queue = pool.PoolQueue(tmp_path / "queue")
+    queue = AdmittedQueueFixture(
+        pool.PoolQueue(tmp_path / "queue"), capacity={"cpu": 8, "mem_gb": 16},
+        default_demand={"cpu": 1, "mem_gb": 1})
     queue.publish(
         action_key=action["action_key"], cas_root=cas.root,
         checkout_root=checkout,

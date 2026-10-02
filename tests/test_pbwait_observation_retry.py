@@ -66,7 +66,7 @@ def test_patient_wait_reports_a_record_that_becomes_readable(
     readable = tmp_path / "readable.json"
     readable.write_text(json.dumps(_outcome(status, returncode)), encoding="utf-8")
     stops: list[str] = []
-    original_stop = pbrun.pbstatus._stop_reader
+    original_stop = pbrun.pbstatus._reader._stop_reader
 
     def stop_then_land(pid, section, started, abandoned):
         original_stop(pid, section, started, abandoned)
@@ -80,7 +80,7 @@ def test_patient_wait_reports_a_record_that_becomes_readable(
                                 pbrun.OUTCOME_READ_TIMEOUT_S)
 
     _fast_reads(monkeypatch)
-    monkeypatch.setattr(pbrun.pbstatus, "_stop_reader", stop_then_land)
+    monkeypatch.setattr(pbrun.pbstatus._reader, "_stop_reader", stop_then_land)
     row = pbwait.wait_one(
         queue, KEY, cas=pb.PrismaBuildCAS(tmp_path / "cas"),
         deadline=time.monotonic() + 5, lane_root=tmp_path / "lane",

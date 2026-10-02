@@ -42,6 +42,8 @@ from prismabuild import pool  # noqa: E402
 import pbstatus  # noqa: E402
 import pbmetrics  # noqa: E402
 
+from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
+
 BOUNCING = "d" * 64
 QUIET = "e" * 64
 BOX = "sparklina"
@@ -57,7 +59,9 @@ def released(tmp_path, monkeypatch):
     """
 
     monkeypatch.setattr(pool.socket, "gethostname", lambda: BOX)
-    queue = pool.PoolQueue(tmp_path / "queue")
+    queue = AdmittedQueueFixture(
+        pool.PoolQueue(tmp_path / "queue"), capacity={"cpu": 8, "mem_gb": 16},
+        default_demand={"cpu": 1, "mem_gb": 1})
     queue.ensure_layout()
     queue.announce(host=BOX, tags=[BOX], has_gpu=False,
                    capacity={"cpu": 4, "mem_gb": 8},

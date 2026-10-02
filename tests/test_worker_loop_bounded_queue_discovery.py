@@ -211,7 +211,8 @@ def test_retained_reader_fences_the_next_poll_and_recovers(
 ) -> None:
     """One unreaped reader blocks a second launch; its exit reopens discovery."""
 
-    bounded_module = sys.modules[worker.bounded.__module__]
+    # Fault injection follows the extracted implementation, not the CLI adapter.
+    bounded_module = sys.modules[worker.bounded.__module__]._reader
     original_stop = bounded_module._stop_reader
     fifo = tmp_path / "hold-reader"
     os.mkfifo(fifo)

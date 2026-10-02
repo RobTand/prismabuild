@@ -19,6 +19,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from prismabuild import pool  # noqa: E402
 
+from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
+
 KEY_A = "a" * 64
 KEY_B = "b" * 64
 
@@ -39,7 +41,9 @@ PER_ACTION = (
 
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
-    q = pool.PoolQueue(tmp_path / "pb-queue")
+    q = AdmittedQueueFixture(
+        pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 1},
+        default_demand={"cpu": 1, "mem_gb": 1})
     q.ensure_layout()
     return q
 
@@ -138,3 +142,4 @@ def test_a_consumer_handles_both(queue: pool.PoolQueue) -> None:
         assert claimed["worker_script"] == "/w.py"
         assert claimed["cas_root"] == "/cas"
         assert claimed["checkout_root"] == "/co"
+        queue.finish(claimed["action_key"], status="executed")

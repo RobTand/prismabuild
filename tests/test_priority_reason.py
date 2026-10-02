@@ -22,6 +22,7 @@ REASON = "G2 re-plan gate, coordinator-approved"
 def test_campaign_and_pbrun_reasons_do_not_change_action_identity(tmp_path, monkeypatch, capsys):
     work, queue = _checkout(tmp_path), _queue(tmp_path)
     monkeypatch.setattr(pbrun, "SH", tmp_path)
+    monkeypatch.setattr(pbrun.socket, "gethostname", lambda: "sparky")
     manifest = tmp_path / "campaign.json"
     manifest.write_text(json.dumps([{
         "argv": ["/bin/bash", "-lc", "printf ok"], "cwd": str(work),
@@ -42,7 +43,10 @@ def test_campaign_and_pbrun_reasons_do_not_change_action_identity(tmp_path, monk
 
 
 def test_reason_survives_claim_and_is_visible_in_status(tmp_path):
-    queue = _queue(tmp_path)
+    from admitted_queue_fixture import AdmittedQueueFixture
+    queue = AdmittedQueueFixture(
+        _queue(tmp_path), capacity={"cpu": 2, "mem_gb": 4},
+        default_demand={"cpu": 1, "mem_gb": 1})
     queue.publish(action_key=KEY, cas_root=tmp_path / "cas", worker_script="/worker.py",
                   checkout_root="/checkout", priority=1, priority_reason=REASON)
     ready = pbstatus.read_pool(queue.root)

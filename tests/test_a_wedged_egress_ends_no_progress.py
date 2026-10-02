@@ -39,6 +39,7 @@ sys.path.insert(0, str(ROOT / "tools" / "fleet"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import pool  # noqa: E402
+from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
 from test_a_resident_range_is_adopted_rather_than_recopied import (  # noqa: E402
     TIER, _hexkey)
 from test_a_stalled_mover_ends_no_progress import (  # noqa: E402
@@ -104,6 +105,9 @@ def _claimed(queue: pool.PoolQueue, cas: pb.PrismaBuildCAS, base: Path,
              name: str, source: str, params: dict[str, object]) -> dict:
     """Publish one action running ``source`` with ``params`` and claim it."""
 
+    queue = AdmittedQueueFixture(
+        queue, capacity={"cpu": 4, "mem_gb": 8},
+        default_demand={"cpu": 1, "mem_gb": 1})
     checkout = base / f"checkout-{name}"
     checkout.mkdir()
     (checkout / "task.py").write_text(source)

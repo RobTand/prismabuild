@@ -1499,7 +1499,7 @@ def test_interrupted_offer_snapshot_reaps_its_owned_reader(tmp_path, monkeypatch
 
     monkeypatch.setattr(queue, "_offer_records", blocked_read)
     monkeypatch.setattr(pbrun.pbstatus.os, "fork", tracked_fork)
-    monkeypatch.setattr(pbrun.pbstatus.select, "select", interrupt)
+    monkeypatch.setattr(pbrun.pbstatus._reader.select, "select", interrupt)
     try:
         with pytest.raises(KeyboardInterrupt):
             pbrun.bounded_offer_snapshot(queue)
@@ -1535,7 +1535,7 @@ def test_retained_offer_reader_reports_identity_and_releases_parent_flock(
         time.sleep(30)
 
     monkeypatch.setattr(queue, "_offer_records", blocked_read)
-    monkeypatch.setattr(pbrun.pbstatus, "_stop_reader", retain)
+    monkeypatch.setattr(pbrun.pbstatus._reader, "_stop_reader", retain)
     monkeypatch.setattr(pbrun, "SUBMISSION_OFFER_READ_TIMEOUT_S", 0.2)
     held = (tmp_path / "parent.lock").open("w")
     fcntl.flock(held, fcntl.LOCK_EX)

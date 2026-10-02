@@ -7,6 +7,8 @@ import pytest
 from prismabuild import core as pb, pool
 from test_pbrun_detach import _checkout, _queue, _run_pbrun
 
+from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
+
 
 def test_pbrun_seals_the_explicit_execution_timeout(tmp_path, monkeypatch, capsys):
     work = _checkout(tmp_path)
@@ -41,7 +43,9 @@ def _claimed(tmp_path, timeout):
     })
     cas = pb.PrismaBuildCAS(tmp_path / 'cas')
     cas.publish_action_request(action)
-    queue = pool.PoolQueue(tmp_path / 'queue')
+    queue = AdmittedQueueFixture(
+        pool.PoolQueue(tmp_path / 'queue'), capacity={"cpu": 8, "mem_gb": 16},
+        default_demand={"cpu": 1, "mem_gb": 1})
     queue.publish(action_key=action['action_key'], cas_root=cas.root,
                   checkout_root=checkout,
                   worker_script=Path(__file__).resolve().parents[1] / 'tools' / 'prismabuild_worker.py')

@@ -154,6 +154,52 @@ instead of refreshing it on no evidence (#16). The snapshot is advisory, as the
 in-process scan was: an intervening claim wins at the rename. This removes
 scan stalls from the worker's wait, but shared transition, lease and token I/O
 remain synchronous and still need ownership-safe recovery qualification (#266).
+The abandonable fork/JSON/deadline/FD-isolation machinery is shared in the
+private `prismabuild._bounded_reader` boundary; `pbstatus.bounded` and
+`pbstatus.Deadline` preserve their diagnostic interfaces. Callers still own
+and fence retained readers by their exact PID/starttime identity. This
+infrastructure does not certify a complete measurement census: `ready_items`
+still supplies an advisory, potentially skipping snapshot. Reservation-aware
+current-census admission (#1419) is implemented in the private
+`_measurement_reservation` domain boundary for capacity-backed claims and
+integrated with explicit fixture compatibility. The combined source qualification
+at `e5abdd29291064f1efc228c3054ffed9b8a682b3` is independently verified and
+accepted by Astra (2026-10-02); its evidence is recorded below. **Deployment and
+end-to-end acceptance remain HOLD.** The owner's enforce-admission decision
+refuses executable claims without capacity or positive declared host demand,
+including implicit/empty/all-zero and tier-only hostless demand. Moving the
+reader alone never established a queue or fairness guarantee.
+The private reader also offers an opt-in parent `on_spawn` ownership callback
+and a separate read-release handshake. A child closes unrelated descriptors,
+then waits; it cannot enter its read until the parent proves its PID/starttime,
+host/boot and caller-supplied pool/read scope, durably records ownership and
+releases the pipe. Parent death before release supplies EOF, not permission.
+The opt-in path requires Linux pidfds: it checks the exact process identity
+around `pidfd_open`, verifies the descriptor's PID and parent relationship with
+non-consuming `waitid(P_PIDFD)`, and signals/reaps only that pinned child.
+Unsupported or unprovable ownership has no PID-only fallback. The default
+diagnostic path has no hook, extra pipe or pidfd requirement. Existing default
+callbacks can also mutate guarded advisory/publication artifacts: worker offer
+publication and publication-canary minting retain their current authority.
+Read-only measurement-census callbacks are a separate domain contract, not a
+global restriction on this shared boundary. The ownership callback must use
+supported bounded protected **host-local** storage; deadline checks before
+and after it cannot preempt arbitrary callbacks or uninterruptible parent I/O,
+and do not make an NFS/CAS callback bounded. Failed/partial persistence retains
+any fence for the caller to reconcile. Restarted consumers use exact local
+host/boot/PID/starttime liveness, not `ECHILD`, to settle an orphan's fence;
+unavailable identity stays fenced and a reused PID cannot supply old-reader
+liveness. The measurement domain now opts into this ownership contract; diagnostic,
+MCP, worker advisory-publication and pbrun delivered-snapshot contracts remain
+deliberately distinct. The domain's persisted local fence is keyed by exact
+queue/host/read identity. It refuses a live or unreadable retained/orphan identity
+before spawning again, and refuses admission even for a complete delivered
+snapshot when reader settlement is unproved. Parent persistence uses the existing
+private box-state directory and the existing open-descriptor local-mount
+predicate, small capped regular files and fsync before grant. It is cooperative,
+not a hard kernel-I/O bound: the supported root MUST remain local/protected and
+preserved while a reader survives. Clearing/repointing that root requires stopped
+readers; an interrupted local ownership write is fail-closed, not silently erased.
 
 A claim pass lists `claimed/` once, and discovery reads `passes/` only for
 records the box could place (#993). Before this, `_claim` listed `claimed/`
@@ -426,6 +472,95 @@ refuse until the measurement can actually claim. Denials report
 `drain_host`, `drain_generation`, and `drain_until_unix`; past the snapshot they report `measurement_drain_expired`
 and stop withholding. Portable backfill remains eligible on other hosts, and
 priority ordering is unchanged.
+
+**Canonical UNKNOWN-first reservation slice (#1419, source accepted; deployment HOLD).** Bounded
+legacy attention above is distinct from a host election. On affirmative fresh
+CPU/GPU attribution and a readable finite sealed incumbent deadline, exactly one
+host is selected for this measurement publication under its transition key and
+host admission. `passes/<key>.json.measurement_reservation` names the schema,
+action key, publication generation, host, priority, election epoch and original
+`opportunity_unix`. The original incumbent `claimed_unix + requested_timeout_s`
+is ONLY selector-opportunity metadata, never proof that preparation, checkpoint
+credits, cleanup or physical resources finish by then. All prospective timed
+backfill candidates remain UNKNOWN, including five-second payloads (#1429).
+
+Discover potential measurement generations and elected sidecars outside H;
+acquire sorted measurement transition keys M **nonblocking before H**, using the
+existing candidate/reentrant lock contract, then refresh strict READY, CLAIMED,
+finish-mark, sidecar and relevant exact terminal/withdrawal authority under H.
+New unlocked M keys, unreadable/incomplete records, unsupported ownership and
+caps (4096 directory entries, 4 MiB per record, five seconds per read) defer the
+pass, never become an empty census. Parent retains M/H only through the actual
+`begin_acquire`; materialization/commit/rename/execute stay outside H. An arbitrary
+publication after the last refresh is not instantaneously fenced: the guarantee
+begins at canonical host election, with no hidden publisher participation.
+
+On the selected host, a lower-priority capacity claim without a verified funded
+measurement dependency cannot refill. The selector survives record_pass, claim,
+unstarted deferral and retry; READY/CLAIMED absence is not retirement, including
+the CLAIMED -> tombstone -> READY gap. Deadline expiry or evidence loss never
+retires it or grants refill/reclaim. Exact locked terminal/withdrawal/successor
+proof may retire it only without old live claim/mark authority; retained tokens
+on its host still keep protection. Other hosts and legitimate equal/higher
+priority work keep existing admission, placement and resource gates. No token,
+probe, borrow, CPU/GPU/foreign/PSI isolation or physical cleanup is waived.
+
+Host exclusion is now separate from adaptive CPU policy: `AdmissionGate`
+reuses Controller's permanent inode/nonblocking flock; Controller delegates and
+retains its advisory diagnostic publication outside the gate. Capacity-backed
+non-adaptive claims use the same M/H census and guard without evaluating adaptive
+CPU policy. The owner explicitly chose **enforce admission**: executable claims
+with `capacity=None` return no claim with `admission_capacity_required`; missing,
+empty, all-zero or tier-only hostless demand is `admission_demand_required` even
+when capacity is supplied. No implicit CPU/memory default is fabricated into
+publication/sealed projections. Metadata reads remain reads; using executable
+claim for bookkeeping supplies no cannot-execute exception. Private roots and
+an already-admitted parent's environment alone are not an outer reservation.
+
+The one-shot worker now delegates to the existing loop's once path for actual
+topology, observed/bracketed host capacity, trusted GPU evidence, image inventory
+and generation/resign fences. A narrow structured result callback preserves its
+JSON stdout, with loop diagnostics on stderr; no outcome is parsed from text.
+Its existing GPU capability and 120-second execution ceiling are retained. Raw
+private benchmark callers use the same fresh capacity producer; the shape
+simulator's consumer uses its existing profile-derived host capacity. None of
+these migrations submits an already-admitted child recursively.
+
+One opt-in TEST-ONLY composed fixture owner permits family factories to declare
+fixed simulated capacity and fixed default test demand. Explicit None/empty/zero
+inputs still reach real refusal, and all PoolQueue transitions/reservations stay
+real. It is not autouse, demand-derived capacity, a production shim or a blanket
+migration of existing schema/unbounded/funding fixtures. Those independent
+compatibility families require explicit declarations and unchanged byte/funding/
+cancellation assertions. The coordinator-assigned compatibility candidate maps
+all 100 original lead families in
+`docs/evidence/compatibility_1419_family_manifest_2026-10-02.json`: real execution
+factories opt into fixed host inputs, already admitted helper calls retain their
+original declarations, and plain-Queue invalid/default/schema controls stay
+fail-closed. The prewarm fixture takes real host tokens rather than fabricating
+its normal claims; historical torn/zero-token recovery inputs remain explicit
+legacy states and never authorize execution. Funding movers declare host demand
+separately from their unchanged tier entitlements. Source and compatibility are
+integrated and qualified at `e5abdd29291064f1efc228c3054ffed9b8a682b3`: 137 test
+files, 2,069 passes with no skips or missing collection, and 104 compiled modules
+across 17 PrismaBuild actions. Astra independently verified the actual CAS
+receipts, immutable attempts, source snapshot parents and closure-only deltas,
+and accepted the source scope on 2026-10-02. The qualification and its retained
+negative results are recorded in
+`docs/evidence/compatibility_1419_qualification_2026-10-02.json`. Subsequent
+evidence/prose commits do not change the qualified executable sources.
+The integrated source also carries `pbmergeq_runtime.py` beside its importing
+client in the publication manifest; this bundle closure correction does not
+publish or activate a runtime.
+The shape simulator supplies both discovery and the locked writable-room reader
+from its declared stage/RAM profile and private directory bytes. The tier loop's
+optional paired reader preserves its ordinary physical dataset/mount default;
+it runs inside the existing mint lock and does not bypass qualification or
+alter token/funding accounting. A scaled gate must never resample the live host
+filesystem under its simulated GiB unit.
+This source-accepted partial slice is Refs #1419. Deployment and end-to-end live
+acceptance remain HOLD; finite safe-fit/release proof (#1429) remains UNKNOWN/HOLD.
+No prospective timed backfill or physical resource-reclaim bound is certified.
 
 CPU sampler silence is not a drain-resolvable measurement refusal (#1317).
 Missing, stale, future-dated or incomplete host samples produce

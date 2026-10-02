@@ -34,6 +34,8 @@ sys.path.insert(0, str(ROOT / "tools/fleet"))
 from prismabuild import box_window, core as pb, pool, resource_scope  # noqa: E402
 import pbstatus  # noqa: E402
 
+from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
+
 MIB = 1024 ** 2
 
 
@@ -62,7 +64,9 @@ def _claimed(tmp_path: Path, body: str):
     })
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
     cas.publish_action_request(action)
-    queue = pool.PoolQueue(tmp_path / "queue")
+    queue = AdmittedQueueFixture(
+        pool.PoolQueue(tmp_path / "queue"), capacity={"cpu": 8, "mem_gb": 16},
+        default_demand={"cpu": 1, "mem_gb": 1})
     queue.publish(action_key=action["action_key"], cas_root=cas.root,
                   checkout_root=checkout,
                   worker_script=ROOT / "tools" / "prismabuild_worker.py")

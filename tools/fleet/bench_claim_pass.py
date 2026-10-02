@@ -34,6 +34,8 @@ def build_and_poll(checkout: Path, work: Path, ready: int, claimed: int,
                    passes: int) -> None:
     sys.path.insert(0, str(checkout / "src"))
     from prismabuild import pool
+    sys.path.insert(0, str(checkout / "tools" / "fleet"))
+    from worker_loop import private_claim_parameters
 
     queue = pool.PoolQueue(work / "pb-queue")
     queue.ensure_layout()
@@ -65,7 +67,8 @@ def build_and_poll(checkout: Path, work: Path, ready: int, claimed: int,
         else:
             with placement(("here",), False):
                 snapshot = queue.ready_items()
-        result = queue.claim(tags=["here"], owner="worker", ready=snapshot)
+        result = queue.claim(tags=["here"], owner="worker", ready=snapshot,
+                             **private_claim_parameters(queue))
         os.path.exists(work / f"POLL{poll}-END")
         print(json.dumps({"poll": poll,
                           "ready_placement": placement is not None,

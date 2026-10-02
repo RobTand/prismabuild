@@ -56,6 +56,8 @@ from test_pbrun_residency_stage_submission import (  # noqa: E402
     TIER, _announce_tier, _detach_key, _tier_cycle,
 )
 
+from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
+
 _isolated_synthetic_launch_context = fx._isolated_synthetic_launch_context
 
 KIND = "stage_gib"
@@ -97,7 +99,9 @@ def _read_back_body() -> dict:
 
 
 def _queue(tmp_path: Path) -> pool.PoolQueue:
-    queue = pool.PoolQueue(tmp_path / "pb-queue")
+    queue = AdmittedQueueFixture(
+        pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
+        default_demand={"cpu": 1, "mem_gb": 1})
     queue.ensure_layout()
     queue.mint_tier_capacity(TIER, {KIND: 4})
     return queue

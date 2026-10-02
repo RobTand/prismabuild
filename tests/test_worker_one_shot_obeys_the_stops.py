@@ -29,7 +29,7 @@ def exercise(tmp_path, *, draining, loaded, live):
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.publish(action_key=KEY, cas_root=str(tmp_path / "cas"),
                   checkout_root=str(tmp_path), worker_script="worker.py",
-                  max_attempts=1)
+                  resources={"cpu": 1}, max_attempts=1)
     gate = tmp_path / "maintenance.json"
     if draining is not None:
         gate.write_text(json.dumps({
@@ -52,10 +52,18 @@ worker.RUNTIME_VERSION = Path({str(tmp_path / "live.json")!r})
 seen = {{}}
 def serve_once(self, **kwargs):
     seen["containment"] = kwargs.get("containment")
-    item = self.claim(tags=kwargs["tags"], has_gpu=kwargs["has_gpu"])
+    item = self.claim(tags=kwargs["tags"], has_gpu=kwargs["has_gpu"],
+                      capacity=kwargs["capacity"])
     seen["claimed"] = item is not None
     return None
-worker.pool.PoolQueue.serve_once = serve_once
+wl.pool.PoolQueue.serve_once = serve_once
+def once(stop_requested, **options):
+    q = wl.pool.PoolQueue(Path({str(tmp_path / 'pb-queue')!r}))
+    result = q.serve_once(tags=["gb10"], has_gpu=True,
+                          capacity={{"cpu": 1}}, containment=True)
+    options["on_outcome"](result)
+    return 0
+wl._run_loop = once
 code = worker.main()
 Path({str(tmp_path / "seen.json")!r}).write_text(json.dumps(seen))
 raise SystemExit(code)
@@ -114,7 +122,7 @@ worker.GENERATION_VERSION = Path({str(tmp_path / "loaded.json")!r})
 worker.RUNTIME_VERSION = Path({str(tmp_path / "live.json")!r})
 def serve_once(self, **kwargs):
     raise AssertionError("served with an unreadable maintenance gate")
-worker.pool.PoolQueue.serve_once = serve_once
+wl.pool.PoolQueue.serve_once = serve_once
 raise SystemExit(worker.main())
 ''')
     result = subprocess.run([sys.executable, str(script)], capture_output=True,

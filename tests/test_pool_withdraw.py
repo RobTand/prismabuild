@@ -34,6 +34,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from prismabuild import pool  # noqa: E402
 
+from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
+
 # Unique per process, never a fixed string.  ``find_launcher_pids`` scans
 # every process on the box for a key, and agents run this suite concurrently on
 # boxes they share: with a constant key, one run's withdrawal finds another
@@ -53,7 +55,9 @@ ELSEWHERE = f"not-{socket.gethostname()}-{uuid.uuid4().hex[:8]}"
 
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
-    q = pool.PoolQueue(tmp_path / "pb-queue")
+    q = AdmittedQueueFixture(
+        pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
+        default_demand={"cpu": 1, "mem_gb": 1})
     q.ensure_layout()
     return q
 
@@ -104,7 +108,9 @@ def _old_bytes(q: pool.PoolQueue, monkeypatch) -> pool.PoolQueue:
     rather than a fake of the thing under test.
     """
 
-    old = pool.PoolQueue(q.root)
+    old = AdmittedQueueFixture(
+        pool.PoolQueue(q.root), capacity={"cpu": 8, "mem_gb": 16},
+        default_demand={"cpu": 1, "mem_gb": 1})
     monkeypatch.setattr(old, "withdrawal_covers", lambda *args, **kwargs: None)
     return old
 

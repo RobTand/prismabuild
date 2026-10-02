@@ -17,13 +17,14 @@ process lives, not whose permission it needs.  The stops are imported from
 "drained" and not two that can drift.
 """
 import sys, socket, json
+from contextlib import redirect_stdout
 from pathlib import Path
 SH = Path("/mnt/shared/prismabuild-fleet")
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
 from runtime_paths import generation_root
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
-from prismabuild import pool
+import worker_loop
 from worker_loop import (  # noqa: E402
     GENERATION_VERSION, RUNTIME_VERSION, _generation_at, maintenance_requested,
 )
@@ -57,19 +58,25 @@ def main() -> int:
             "outcome": None,
         }, indent=1))
         return 0
-    q = pool.PoolQueue(SH / "pb-queue")
-    outcome = q.serve_once(
-        tags=["gb10"], has_gpu=True, python="/usr/bin/python3", timeout_s=120,
-        containment=True,
-        admission_open=lambda: not maintenance_requested(),
-    )
+    outcome = None
+    def observe_result(value):
+        nonlocal outcome
+        outcome = value
+    # The same truthful topology, observed capacity, image/generation fences,
+    # bounded discovery and admission as the loop. GPU capability and the
+    # 120-second ceiling preserve this entrypoint's original declarations.
+    # Diagnostics go to stderr; stdout remains one machine-readable object.
+    # The result is delivered directly, never parsed from diagnostic text.
+    with redirect_stdout(sys.stderr):
+        code = worker_loop.main(["--once", "--gpu", "--timeout-s", "120"],
+                                on_outcome=observe_result)
     print(json.dumps({
         "worker_host": socket.gethostname(),
         "outcome": None if outcome is None else {
             k: outcome[k] for k in ("status", "returncode", "stdout", "elapsed_s")
         },
     }, indent=1))
-    return 0
+    return code
 
 
 if __name__ == "__main__":

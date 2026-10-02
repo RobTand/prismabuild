@@ -9829,8 +9829,14 @@ def cycle(
     now: float | None = None,
     discover=storage_tiers.discover_tiers,
     liveness: Liveness | None = None,
+    supply_reader_for=None,
 ) -> list[dict[str, object]]:
     """Discover, mint, announce; returns the records it announced.
+
+    ``supply_reader_for`` pairs an explicitly supplied discovery model with
+    its fresh writable-room reader. The returned reader still runs under the
+    existing tier mint lock. Without it, production reads its ordinary dataset
+    or mount; discovery and admission policy are unchanged.
 
     Every step reads through ``receipts``, the loop's reads kept from one
     cycle to the next (#992): the ``ready/`` and ``claimed/`` records every
@@ -9877,11 +9883,15 @@ def cycle(
                 with stage_release.queue_records_from(records):
                     announced = _cycle(queue, host=host, source_pool=source_pool,
                                        receipts=receipts, now=now,
-                                       discover=discover, phases=phases)
+                                       discover=discover, phases=phases,
+                                       **({"supply_reader_for": supply_reader_for}
+                                          if supply_reader_for is not None else {}))
             else:
                 announced = _cycle(queue, host=host, source_pool=source_pool,
                                    receipts=receipts, now=now, discover=discover,
-                                   phases=phases)
+                                   phases=phases,
+                                   **({"supply_reader_for": supply_reader_for}
+                                      if supply_reader_for is not None else {}))
         completed = True
         return announced
     finally:
@@ -9918,6 +9928,7 @@ def _cycle(
     now: float | None,
     discover,
     phases: _Phases,
+    supply_reader_for=None,
 ) -> list[dict[str, object]]:
     """The body of :func:`cycle`; ``phases`` is lapped after every step."""
 
@@ -10243,8 +10254,10 @@ def _cycle(
             # discovery sampled (same source, same units); discovery's
             # number stays as the fallback and still drives the record and
             # admission assembly above.
-            reader = _supply_reader_for(record, tier_id,
-                                        fallback_tokens=supply_writable)
+            reader_factory = (_supply_reader_for if supply_reader_for is None
+                              else supply_reader_for)
+            reader = reader_factory(record, tier_id,
+                                    fallback_tokens=supply_writable)
             minted = mint_stage_supply(
                 queue, tier_id=tier_id, kind=kind,
                 writable_tokens=supply_writable, writable_reader=reader,

@@ -35,6 +35,8 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from prismabuild import adaptive_cpu, pool  # noqa: E402
 
+from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
+
 READY_ITEMS = 40
 
 
@@ -95,7 +97,9 @@ def _denials(queue: pool.PoolQueue) -> dict[str, str]:
 
 def test_a_pass_over_40_foreign_items_lists_claimed_once(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    queue = pool.PoolQueue(tmp_path / "pb-queue")
+    queue = AdmittedQueueFixture(
+        pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
+        default_demand={"cpu": 1, "mem_gb": 1})
     for index in range(READY_ITEMS):
         _publish(queue, index, ["elsewhere"])
     listings = _count_listings(monkeypatch, queue.dir(pool.CLAIMED))
@@ -112,7 +116,9 @@ def test_a_pass_over_40_foreign_items_lists_claimed_once(
 
 def test_a_pass_reads_passes_only_for_items_it_could_place(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    queue = pool.PoolQueue(tmp_path / "pb-queue")
+    queue = AdmittedQueueFixture(
+        pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
+        default_demand={"cpu": 1, "mem_gb": 1})
     foreign = [_publish(queue, index, ["elsewhere"])
                for index in range(READY_ITEMS)]
     mine = _publish(queue, READY_ITEMS, ["here"])
@@ -127,7 +133,9 @@ def test_aging_still_orders_the_items_this_box_can_place(
         tmp_path: Path) -> None:
     """Reading ``passes/`` lazily does not change the order it decides."""
 
-    queue = pool.PoolQueue(tmp_path / "pb-queue")
+    queue = AdmittedQueueFixture(
+        pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
+        default_demand={"cpu": 1, "mem_gb": 1})
     older = _publish(queue, 0, ["here"])
     aged = _publish(queue, 1, ["here"])
     queue.passes_path(aged).parent.mkdir(parents=True, exist_ok=True)
@@ -142,7 +150,9 @@ def test_a_pass_that_claims_lists_claimed_once_more_for_its_claim(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """39 denials and one claim: the pass listing, and the claim's own."""
 
-    queue = pool.PoolQueue(tmp_path / "pb-queue")
+    queue = AdmittedQueueFixture(
+        pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
+        default_demand={"cpu": 1, "mem_gb": 1})
     for index in range(READY_ITEMS - 1):
         _publish(queue, index, ["elsewhere"])
     mine = _publish(queue, READY_ITEMS - 1, ["here"])
@@ -163,12 +173,15 @@ def test_a_claim_record_filed_after_the_listing_is_never_renamed_over(
     must refuse the key, exactly as a fresh listing under its lock did.
     """
 
-    queue = pool.PoolQueue(tmp_path / "pb-queue")
+    queue = AdmittedQueueFixture(
+        pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
+        default_demand={"cpu": 1, "mem_gb": 1})
     _publish(queue, 0, ["elsewhere"])       # the first lock: the listing
     late = _publish(queue, 1, ["here"])     # reached after the listing
     claimed_dir = queue.dir(pool.CLAIMED)
-    residue = {"action_key": late, "claimed_by": "another-box",
-               "claimed_unix": 1.0}
+    residue = json.loads(queue.item_path(pool.READY, late).read_text())
+    residue.update(claimed_by="another-box", claimed_host="another-box",
+                   claimed_unix=1.0)
     real_listdir = os.listdir
 
     def listdir(path=".", *args, **kwargs):  # type: ignore[no-untyped-def]
@@ -215,15 +228,20 @@ def test_a_finish_mark_filed_after_the_listing_refuses_the_key(
     fresh listing under its lock did.
     """
 
-    queue = pool.PoolQueue(tmp_path / "pb-queue")
+    queue = AdmittedQueueFixture(
+        pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
+        default_demand={"cpu": 1, "mem_gb": 1})
     _publish(queue, 0, ["elsewhere"])       # the first lock: the listing
     late = _publish(queue, 1, ["here"])     # reached after the listing
     claimed_dir = queue.dir(pool.CLAIMED)
     name = (f"{late}.1790000000000000.another-box.4242.0123abcd"
             f"{pool.TOMBSTONE_SUFFIX}" if mark == "tombstone" else
             f"{late}.{'e' * 64}{pool.LATE_FINISH_SUFFIX}")
+    residue = json.loads(queue.item_path(pool.READY, late).read_text())
+    residue.update(claimed_by="another-box", claimed_host="another-box",
+                   claimed_unix=1.0)
     _file_after_the_pass_listing(monkeypatch, claimed_dir, name,
-                                 json.dumps({"action_key": late}))
+                                 json.dumps(residue))
     assert queue.claim(tags=["here"], owner="worker") is None
     assert (claimed_dir / name).exists()
     assert not (claimed_dir / f"{late}.json").exists()
@@ -242,7 +260,9 @@ def test_a_snapshot_read_under_another_placement_still_ages(
     lose its place to an older record that has none either.
     """
 
-    queue = pool.PoolQueue(tmp_path / "pb-queue")
+    queue = AdmittedQueueFixture(
+        pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
+        default_demand={"cpu": 1, "mem_gb": 1})
     older = _publish(queue, 0, ["here"])
     aged = _publish(queue, 1, ["here"])
     queue.passes_path(aged).parent.mkdir(parents=True, exist_ok=True)

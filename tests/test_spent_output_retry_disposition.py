@@ -14,6 +14,8 @@ from test_produced_output_restage import (
 )
 from prismabuild import pool
 
+from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
+
 
 def _funded_claim(tmp_path):
     w = _World(tmp_path, window_gib=2)
@@ -129,7 +131,9 @@ def test_unproved_or_unspent_funding_never_claims_a_terminal_override(tmp_path, 
 
 
 def test_ordinary_failure_still_retries_and_can_succeed(tmp_path):
-    q = pool.PoolQueue(tmp_path / "queue")
+    q = AdmittedQueueFixture(
+        pool.PoolQueue(tmp_path / "queue"), capacity={"cpu": 8, "mem_gb": 16},
+        default_demand={"cpu": 1, "mem_gb": 1})
     q.ensure_layout()
     key = "a" * 64
     q.publish(action_key=key, cas_root=tmp_path / "cas", checkout_root=tmp_path,

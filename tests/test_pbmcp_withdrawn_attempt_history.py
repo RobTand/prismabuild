@@ -28,6 +28,8 @@ sys.path.insert(0, str(REPOSITORY / "tools" / "fleet"))
 from prismabuild import pool  # noqa: E402
 import pbmcp  # noqa: E402
 
+from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
+
 KEY = "9" * 64
 DONE_KEY = "7" * 64
 STDOUT = "preflight refused\n"
@@ -60,7 +62,9 @@ def withdrawn(tmp_path: Path) -> tuple[pool.PoolQueue, pbmcp.Session]:
     holder stops, so a withdrawal from ``claimed`` still reads as claimed.
     """
 
-    queue = pool.PoolQueue(tmp_path / "queue")
+    queue = AdmittedQueueFixture(
+        pool.PoolQueue(tmp_path / "queue"), capacity={"cpu": 8, "mem_gb": 16},
+        default_demand={"cpu": 1, "mem_gb": 1})
     queue.ensure_layout()
     _publish(queue, tmp_path, KEY)
     assert queue.claim() is not None
@@ -78,7 +82,9 @@ def withdrawn(tmp_path: Path) -> tuple[pool.PoolQueue, pbmcp.Session]:
 def done(tmp_path: Path) -> tuple[pool.PoolQueue, pbmcp.Session]:
     """One action that finished, so the ordinary adoption path stays covered."""
 
-    queue = pool.PoolQueue(tmp_path / "queue")
+    queue = AdmittedQueueFixture(
+        pool.PoolQueue(tmp_path / "queue"), capacity={"cpu": 8, "mem_gb": 16},
+        default_demand={"cpu": 1, "mem_gb": 1})
     queue.ensure_layout()
     _publish(queue, tmp_path, DONE_KEY)
     assert queue.claim() is not None

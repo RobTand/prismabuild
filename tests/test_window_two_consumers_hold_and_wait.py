@@ -69,6 +69,8 @@ from prismabuild import pool, residency_map, residency_plan, storage_tiers  # no
 import stage_release  # noqa: E402
 import tier_loop  # noqa: E402
 
+from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
+
 TIER = "prismabuild-stage:dl380g10"
 STAGE_KIND = f"stage_gib@{TIER}"
 MANIFEST = "7" * 64
@@ -152,7 +154,9 @@ def test_two_consumers_make_progress_through_the_gate(tmp_path: Path) -> None:
     and the gated window is admitted and completes, all through the same
     production transitions the hazard proof used.
     """
-    queue = pool.PoolQueue(tmp_path / "pb-queue")
+    queue = AdmittedQueueFixture(
+        pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
+        default_demand={"cpu": 1, "mem_gb": 1})
     queue.ensure_layout()
     queue.ledger().ensure_capacity({"cpu": 4, "mem_gb": 8})
     queue.mint_tier_capacity(TIER, {"stage_gib": CAPACITY_GIB})

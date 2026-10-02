@@ -85,7 +85,7 @@ def test_patient_wait_returns_the_verdict_of_a_record_that_becomes_readable(
     readable = tmp_path / "readable.json"
     readable.write_text(json.dumps(_ending(status, returncode)), encoding="utf-8")
     stops: list[str] = []
-    original_stop = pbrun.pbstatus._stop_reader
+    original_stop = pbrun.pbstatus._reader._stop_reader
 
     def stop_then_land(pid, section, started, abandoned):
         # Kill and reap the blocked reader first, exactly as production does,
@@ -101,7 +101,7 @@ def test_patient_wait_returns_the_verdict_of_a_record_that_becomes_readable(
                                 PRODUCTION_READ_TIMEOUT_S)
 
     _fast_reads(monkeypatch)
-    monkeypatch.setattr(pbrun.pbstatus, "_stop_reader", stop_then_land)
+    monkeypatch.setattr(pbrun.pbstatus._reader, "_stop_reader", stop_then_land)
     started = time.monotonic()
     assert pbrun.await_outcome(queue, KEY, wait_s=5) == expected
     assert stops == ["pool outcome observation"]
@@ -194,7 +194,7 @@ def test_patient_wait_spends_no_terminal_reread_beside_a_retained_reader(
 
     _fast_reads(monkeypatch)
     monkeypatch.setattr(pbrun.pbstatus.os, "fork", tracked_fork)
-    monkeypatch.setattr(pbrun.pbstatus, "_stop_reader", retain)
+    monkeypatch.setattr(pbrun.pbstatus._reader, "_stop_reader", retain)
     started = time.monotonic()
     try:
         assert pbrun.await_outcome(queue, KEY, wait_s=0.5) == \

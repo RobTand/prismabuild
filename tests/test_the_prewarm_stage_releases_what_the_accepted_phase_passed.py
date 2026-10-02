@@ -16,6 +16,8 @@ restart.
 from __future__ import annotations
 
 from pathlib import Path
+import json
+from prismabuild import pool
 import sys
 
 import pytest
@@ -229,8 +231,11 @@ def test_a_resubmitted_key_starts_a_new_stage_ledger(
     assert stage.objects() == ["a.pt.pbstage@0+4096"]
     assert fleet.queue.prewarm(key)["status"] == "partial"
 
-    # It is claimed, runs, finishes: the sweep releases the band it staged.
-    fleet.claim(key).unlink()
+    # Settle its real unstarted grant, then model the row leaving the queue:
+    # the sweep releases the band it staged without retaining host tokens.
+    ending = fleet.claim(key)
+    fleet.queue._defer_unstarted_claim(json.loads(ending.read_text()))
+    fleet.queue.item_path(pool.READY, key).unlink()
     swept = fleet.cycle(one_phase)
     assert [row["action_key"] for row in swept["stage"]["orphans"]] == [key]
     assert stage.objects() == []
@@ -249,7 +254,9 @@ def test_a_resubmitted_key_starts_a_new_stage_ledger(
     # And when the second life leaves the queue, its band is swept like any
     # other -- rather than sitting on the tier with a receipt that says the
     # last life's sweep already dealt with it.
-    fleet.claim(key).unlink()
+    ending = fleet.claim(key)
+    fleet.queue._defer_unstarted_claim(json.loads(ending.read_text()))
+    fleet.queue.item_path(pool.READY, key).unlink()
     event = fleet.cycle(args(fleet))
     assert [row["action_key"] for row in event["stage"]["orphans"]] == [key]
     assert event["stage"]["orphans"][0]["status"] == "swept"

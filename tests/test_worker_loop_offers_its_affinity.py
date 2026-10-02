@@ -21,6 +21,7 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 import sys
+import tempfile
 from unittest import mock
 
 import pytest
@@ -64,7 +65,7 @@ def _offer(module, argv: list[str], *, affinity, cpu_count: int = 80,
 
     class _Queue:
         def __init__(self, _root) -> None:
-            pass
+            self.root = Path(_root)
 
         def ledger(self) -> _Ledger:
             return _Ledger(seen)
@@ -88,7 +89,9 @@ def _offer(module, argv: list[str], *, affinity, cpu_count: int = 80,
             raise affinity
         return set(affinity)
 
-    with mock.patch.object(module.pool, "PoolQueue", _Queue), \
+    with tempfile.TemporaryDirectory(prefix="pb-affinity-", dir="/home/rob/tmp") as scratch, \
+         mock.patch.object(module, "SH", Path(scratch)), \
+         mock.patch.object(module.pool, "PoolQueue", _Queue), \
          mock.patch.object(module, "published_commit", return_value="audit"), \
          mock.patch.object(module, "loaded_runtime_commit", return_value="audit"), \
          mock.patch.object(module.cpu_topology, "pin_to_preferred",

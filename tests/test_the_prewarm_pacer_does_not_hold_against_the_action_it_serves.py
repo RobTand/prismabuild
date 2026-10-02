@@ -18,6 +18,7 @@ the reader, at exactly the numbers it held at before.
 from __future__ import annotations
 
 from pathlib import Path
+import json
 import sys
 import threading
 
@@ -490,7 +491,10 @@ def test_a_missing_link_is_named_and_protects_every_client(tmp_path: Path) -> No
     assert pacing["served_attribution"] == "offer for sparky announces no addresses"
 
     fleet, key, stats = running_fleet(tmp_path / "unhosted")
-    fleet.claim(key)                          # a claim that names no box
+    unhosted = fleet.claim(key)
+    broken = json.loads(unhosted.read_text())
+    broken.pop("claimed_host")              # explicit negative metadata input
+    unhosted.write_text(json.dumps(broken))
     fleet.report_progress(key, "layer-1", units=1)
     disk = FakeDisk(accumulate([LOADED] * 6 + [QUIET] * 200), advance_on_read=True)
     record = advance(fleet, key, stats, Exports(disk, {SPARKY: 260.0}), disk)

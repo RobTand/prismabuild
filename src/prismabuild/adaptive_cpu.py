@@ -568,6 +568,45 @@ def box_identity(base):
     return hashlib.sha256(identity.encode()).hexdigest()
 
 
+class AdmissionUnavailable(RuntimeError):
+    """Host exclusion identity could not be established; no capacity claim."""
+
+
+class AdmissionGate:
+    """Lock-only exclusion for capacity claimants, independent of CPU policy.
+
+    Shares the existing permanent inode and nonblocking flock with Controller.
+    Construction performs no sampling, adaptive-state writes or publication.
+    """
+
+    def __init__(self, ledger):
+        self.ledger = ledger
+
+    @contextmanager
+    def locked(self):
+        descriptor = None
+        try:
+            try:
+                directory, digest = box_state(self.ledger.base)
+                descriptor = os.open(directory / (digest + '.lock'),
+                                     os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+                info = os.fstat(descriptor)
+                if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1:
+                    raise RuntimeError('unsafe PrismaBuild admission lock file')
+                try:
+                    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    raise AdmissionBusy(holder=_holder_of(descriptor)) from None
+            except AdmissionBusy:
+                raise
+            except (OSError, RuntimeError) as exc:
+                raise AdmissionUnavailable(str(exc)) from exc
+            yield
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+
+
 def local_state_base(base):
     """CPU learning is local authority, never restored from diagnostic copies."""
     directory, digest = box_state(base)
@@ -1094,29 +1133,14 @@ class Controller:
         outside it.
         """
 
-        # Never unlink: two generations must not lock different inodes. The
-        # private directory and O_NOFOLLOW prevent another uid redirecting it.
-        directory, digest = box_state(self.ledger.base)
-        name = digest + '.lock'
-        descriptor = os.open(directory / name, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
         acquired = False
         try:
-            info = os.fstat(descriptor)
-            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1:
-                raise RuntimeError('unsafe PrismaBuild admission lock file')
-            try:
-                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                # Read the holder before releasing anything, so the pid named
-                # is the one that was actually in the way.
-                raise AdmissionBusy(holder=_holder_of(descriptor)) from None
-            acquired = True
-            yield
+            with AdmissionGate(self.ledger).locked():
+                acquired = True
+                yield
         finally:
-            os.close(descriptor)
-            # No shared operation or inherited admission descriptor in the
-            # publisher. A blocked diagnostic copy occupies only its own
-            # host-local publication lock, never this admission lock.
+            # Diagnostic publication belongs to adaptive policy, not exclusion.
+            # The shared gate is released before this advisory operation.
             if acquired:
                 adaptive_snapshot.publish(self.base, self.ledger.base / 'adaptive')
 

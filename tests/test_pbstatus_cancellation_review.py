@@ -35,7 +35,7 @@ def test_interrupted_wait_reaps_its_child_and_closes_pipe(monkeypatch):
 
     monkeypatch.setattr(pbstatus.os, 'fork', track_fork)
     monkeypatch.setattr(pbstatus.os, 'pipe', track_pipe)
-    monkeypatch.setattr(pbstatus.select, 'select', interrupt)
+    monkeypatch.setattr(pbstatus._reader.select, 'select', interrupt)
     try:
         with pytest.raises(KeyboardInterrupt):
             pbstatus.bounded('pool', lambda: time.sleep(30),
