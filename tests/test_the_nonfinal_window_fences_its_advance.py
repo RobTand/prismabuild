@@ -73,7 +73,7 @@ def _row(key: str, resources: dict[str, int],
 
 def _queue(tmp_path: Path, *, stage_gib: int, ram_gib: int = 0) -> pool.PoolQueue:
     queue = AdmittedQueueFixture(
-        pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
+        pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 4, "mem_gb": 8},
         default_demand={"cpu": 1, "mem_gb": 1})
     queue.ensure_layout()
     queue.ledger().ensure_capacity({"cpu": 4, "mem_gb": 8})

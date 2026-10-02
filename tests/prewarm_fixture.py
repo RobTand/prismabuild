@@ -66,7 +66,7 @@ class Fleet:
         self.mount.mkdir(parents=True, exist_ok=True)
         self.queue = AdmittedQueueFixture(
             pool.PoolQueue(root / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
-            default_demand={"cpu": 1, "mem_gb": 1})
+            default_demand={"cpu": 1})
         self.queue.ensure_layout()
         self.cas_root = root / "cas"
         self.cas = pb.PrismaBuildCAS(self.cas_root)
@@ -87,7 +87,8 @@ class Fleet:
                with_manifest: bool = True,
                annotations: dict | None = None,
                progress_phases: list[str] | None = None,
-               read_plan: dict | None = None) -> str:
+               read_plan: dict | None = None,
+               content_encoding: str = "identity") -> str:
         """Seal a request carrying a manifest input and publish it ready.
 
         Sealed rather than hand-written: since R4 the pool binds admission to
@@ -125,6 +126,13 @@ class Fleet:
             manifest = pb.validate_data_manifest(manifest)
             blob = self.root / f"{key_seed}.manifest.json"
             blob.write_text(json.dumps(manifest))
+            if content_encoding == "gzip":
+                import gzip
+                packed = self.root / f"{key_seed}.manifest.gz"
+                packed.write_bytes(gzip.compress(blob.read_bytes(), mtime=0))
+                blob = packed
+            else:
+                assert content_encoding == "identity"
             entry, _ = self.cas.ingest_input(
                 blob, input_id=pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID)
             inputs.append(entry)
@@ -133,6 +141,8 @@ class Fleet:
                 "entry_count": manifest["entry_count"],
                 "total_bytes": manifest["total_bytes"],
             }
+            if content_encoding == "gzip":
+                params["data_manifest"]["content_encoding"] = "gzip"
             if read_plan is not None:
                 params["data_manifest"].update({
                     "schema": pb.DATA_MANIFEST_SCHEMA_V2,
@@ -178,6 +188,10 @@ class Fleet:
         if age_s:
             item["claimed_unix"] = float(item["claimed_unix"]) - age_s
             pool._write_json_atomic(target, item)
+            lease_path = self.queue.lease_path(action_key)
+            lease = json.loads(lease_path.read_text())
+            lease["claimed_unix"] = item["claimed_unix"]
+            pool._write_json_atomic(lease_path, lease)
         return target
 
     def report_progress(self, action_key: str, phase: str, *,

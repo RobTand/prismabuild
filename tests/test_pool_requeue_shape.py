@@ -42,7 +42,7 @@ PER_ACTION = (
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
     q = AdmittedQueueFixture(
-        pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
+        pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 1},
         default_demand={"cpu": 1, "mem_gb": 1})
     q.ensure_layout()
     return q
@@ -142,3 +142,4 @@ def test_a_consumer_handles_both(queue: pool.PoolQueue) -> None:
         assert claimed["worker_script"] == "/w.py"
         assert claimed["cas_root"] == "/cas"
         assert claimed["checkout_root"] == "/co"
+        queue.finish(claimed["action_key"], status="executed")

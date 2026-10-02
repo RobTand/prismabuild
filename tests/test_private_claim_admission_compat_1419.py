@@ -83,4 +83,6 @@ def test_private_write_only_owner_claims_and_holds_real_host_tokens(tmp_path, mo
     assert queue.item_path(pool.CLAIMED, key).exists()
     assert queue.ledger().holder_tokens(key) == {"cpu": 1, "mem_gb": 1}
     queue.finish(key, status="executed")
-    assert queue.ledger().held_keys() == []
+    assert queue.ledger().held_keys() == [key]
+    assert queue.item_path(pool.CLAIMED, key).exists()
+    assert queue.ledger().holder_tokens(key) == {"cpu": 1, "mem_gb": 1}

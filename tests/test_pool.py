@@ -137,6 +137,7 @@ def test_priority_then_age_orders_the_queue(
     """
 
     published = [300.0]
+    real_now = pool._now
     monkeypatch.setattr(pool, "_now", lambda: published[0])
     key_oldest = "c" * 64
     _publish(queue, key_oldest, priority=0)
@@ -144,7 +145,7 @@ def test_priority_then_age_orders_the_queue(
     _publish(queue, KEY_B, priority=5)
     published[0] = 500.0
     _publish(queue, KEY_A, priority=0)
-    monkeypatch.undo()
+    monkeypatch.setattr(pool, "_now", real_now)
 
     assert queue.claim()["action_key"] == KEY_B         # the band outranks age
     assert queue.claim()["action_key"] == key_oldest    # then oldest first
@@ -1559,8 +1560,12 @@ def test_a_keyless_ready_record_is_filed_rather_than_left_to_starve(
     stub = queue.item_path(pool.READY, KEY_B)
     stub.write_text(json.dumps({"claimed_host": "sparky", "attempts": 1}))
 
-    assert queue.claim() is not None                      # KEY_A still runnable
+    assert queue.claim() is None                         # incomplete census
+    assert queue.item_path(pool.READY, KEY_A).exists()
+    assert not queue.ledger().held_keys()
     assert queue.quarantine_orphans() == [KEY_B]
+    assert queue.claim() is not None                      # KEY_A still runnable
+    assert queue.quarantine_orphans() == []
     assert not stub.exists()
 
     filed = json.loads(queue.item_path(pool.FAILED, KEY_B).read_text())

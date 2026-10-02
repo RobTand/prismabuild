@@ -22,6 +22,7 @@ REASON = "G2 re-plan gate, coordinator-approved"
 def test_campaign_and_pbrun_reasons_do_not_change_action_identity(tmp_path, monkeypatch, capsys):
     work, queue = _checkout(tmp_path), _queue(tmp_path)
     monkeypatch.setattr(pbrun, "SH", tmp_path)
+    monkeypatch.setattr(pbrun.socket, "gethostname", lambda: "sparky")
     manifest = tmp_path / "campaign.json"
     manifest.write_text(json.dumps([{
         "argv": ["/bin/bash", "-lc", "printf ok"], "cwd": str(work),

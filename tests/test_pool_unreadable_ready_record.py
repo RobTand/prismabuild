@@ -70,6 +70,10 @@ def test_ready_items_serves_the_healthy_items(queue: pool.PoolQueue) -> None:
 def test_claim_serves_the_healthy_items(queue: pool.PoolQueue) -> None:
     _publish(queue, KEY_GOOD)
     _foreign_writes_a_broken_record(queue)
+    assert queue.claim() is None
+    assert queue.item_path(pool.READY, KEY_GOOD).exists()
+    assert not queue.ledger().held_keys()
+    assert queue.quarantine_orphans() == [KEY_TRUNCATED, KEY_INVALID]
     claimed = queue.claim()
     assert claimed is not None and claimed["action_key"] == KEY_GOOD
 

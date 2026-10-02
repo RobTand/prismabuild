@@ -164,18 +164,10 @@ def test_storage_loop_warms_gzip_input_inside_its_first_phase(tmp_path):
     entries = [fleet.file(f"head-{i}", 3000) for i in range(3)]
     key = fleet.action("gzip-head", entries,
                        annotations={"phases": phase_table([("head", 9000)])},
-                       progress_phases=["head"])
-    source = fleet.root / "gzip-head.manifest.json"
-    packed = fleet.root / "gzip-head.manifest.gz"
-    packed.write_bytes(gzip.compress(source.read_bytes(), mtime=0))
-    descriptor, _ = fleet.cas.ingest_input(
-        packed, input_id=pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID)
+                       progress_phases=["head"], content_encoding="gzip")
     request_path = fleet.cas_root / "requests" / key[:2] / f"{key}.json"
     request = json.loads(request_path.read_text())
-    request["inputs"] = [descriptor]
-    request["params"]["data_manifest"].update(
-        input=descriptor, content_encoding="gzip")
-    request_path.write_text(json.dumps(request))
+    descriptor = request["params"]["data_manifest"]["input"]
     args = fleet.args(arcstats=fleet.arcstats(size=0, c=5000, c_max=5000))
 
     event = fleet.cycle(args)

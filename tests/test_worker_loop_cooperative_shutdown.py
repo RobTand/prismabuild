@@ -19,7 +19,8 @@ def test_sigterm_during_execution_files_the_claim_before_exiting(tmp_path, fails
     keys = ["a" * 64, "b" * 64]
     for key in keys:
         queue.publish(action_key=key, cas_root=str(tmp_path / "cas"),
-                      checkout_root=str(tmp_path), worker_script="worker.py", max_attempts=1)
+                      checkout_root=str(tmp_path), worker_script="worker.py", max_attempts=1,
+                      resources={"cpu": 1, "mem_gb": 1})
     # Run in a child: the regression is real SIGTERM, which must not kill the
     # pytest worker when testing the original implementation.
     script = tmp_path / "exercise.py"

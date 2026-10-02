@@ -650,6 +650,9 @@ def _watched(tmp_path) -> tuple[pool.ProgressWatch, pool.ProgressPolicy]:
 def _claim_with(queue, key, observation, *, tmp_path, overrides=()):
     """Publish, claim, and put ``observation`` on the lease of that attempt."""
 
+    queue = AdmittedQueueFixture(
+        queue, capacity={"cpu": 2, "mem_gb": 4},
+        default_demand={"cpu": 1, "mem_gb": 1})
     queue.publish(action_key=key, cas_root=tmp_path / "cas",
                   checkout_root=tmp_path, worker_script="/worker.py")
     item = queue.claim(owner="worker")

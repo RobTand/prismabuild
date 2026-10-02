@@ -179,8 +179,9 @@ def test_a_claim_record_filed_after_the_listing_is_never_renamed_over(
     _publish(queue, 0, ["elsewhere"])       # the first lock: the listing
     late = _publish(queue, 1, ["here"])     # reached after the listing
     claimed_dir = queue.dir(pool.CLAIMED)
-    residue = {"action_key": late, "claimed_by": "another-box",
-               "claimed_unix": 1.0}
+    residue = json.loads(queue.item_path(pool.READY, late).read_text())
+    residue.update(claimed_by="another-box", claimed_host="another-box",
+                   claimed_unix=1.0)
     real_listdir = os.listdir
 
     def listdir(path=".", *args, **kwargs):  # type: ignore[no-untyped-def]
@@ -236,8 +237,11 @@ def test_a_finish_mark_filed_after_the_listing_refuses_the_key(
     name = (f"{late}.1790000000000000.another-box.4242.0123abcd"
             f"{pool.TOMBSTONE_SUFFIX}" if mark == "tombstone" else
             f"{late}.{'e' * 64}{pool.LATE_FINISH_SUFFIX}")
+    residue = json.loads(queue.item_path(pool.READY, late).read_text())
+    residue.update(claimed_by="another-box", claimed_host="another-box",
+                   claimed_unix=1.0)
     _file_after_the_pass_listing(monkeypatch, claimed_dir, name,
-                                 json.dumps({"action_key": late}))
+                                 json.dumps(residue))
     assert queue.claim(tags=["here"], owner="worker") is None
     assert (claimed_dir / name).exists()
     assert not (claimed_dir / f"{late}.json").exists()

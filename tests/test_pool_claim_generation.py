@@ -29,7 +29,7 @@ KEY_A = "a" * 64
 def queue(tmp_path: Path) -> pool.PoolQueue:
     q = AdmittedQueueFixture(
         pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
-        default_demand={"cpu": 1, "mem_gb": 1})
+        default_demand={"cpu": 1})
     q.ensure_layout()
     return q
 

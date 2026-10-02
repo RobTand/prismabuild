@@ -118,7 +118,7 @@ def _fixture_worker(monkeypatch, tmp_path, *, assume_idle, metadata_capacity=1):
         args.disk_metadata_capacity = metadata_capacity
     # Only the parsed-input seam is substituted. In particular do NOT patch
     # declared_host_capacity to insert the resource the old code is missing.
-    monkeypatch.setattr(parser, "parse_args", lambda: args)
+    monkeypatch.setattr(parser, "parse_args", lambda argv=None: args)
     monkeypatch.setattr(worker, "build_parser", lambda: parser)
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
