@@ -875,6 +875,12 @@ def _decode_strict_json(raw: bytes, *, where: str) -> object:
         )
     except ActionContractError:
         raise
+    except RecursionError as exc:
+        # A document nested deeper than the interpreter's stack is hostile
+        # durable input too: normalize it into the same fail-closed
+        # PrismaBuild vocabulary instead of letting an implementation-specific
+        # parser exception escape the refusal API (#1446).
+        raise ActionContractError(f"{where} nests too deeply for strict JSON") from exc
     except (UnicodeDecodeError, ValueError) as exc:
         # ``json.loads`` can raise a plain ValueError when an integer exceeds
         # Python's configured digit limit.  Durable hostile input must stay in

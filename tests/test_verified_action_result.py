@@ -422,6 +422,40 @@ def test_a_huge_terminal_generation_is_unorderable_not_an_overflow(tmp_path: Pat
     assert pool._finite_generation(3.5) == 3.5
 
 
+def _a_nesting_depth_that_refuses() -> bytes | None:
+    """A bounded document this interpreter cannot parse, or ``None``."""
+
+    for depth in (1000, 4000, 16000, 64000, 256000):
+        document = b'{"a":' * depth + b"0" + b"}" * depth
+        try:
+            pb._decode_strict_json(document, where="control")
+        except pb.PrismaBuildError:
+            return document
+        except RecursionError:
+            pytest.fail("the strict decoder let RecursionError escape")
+    return None
+
+
+def test_a_deeply_nested_record_refuses_in_the_action_result_vocabulary(
+    tmp_path: Path,
+):
+    # A bounded, deeply nested document: the strict decoder owner must
+    # normalize the recursion refusal, and the public reader must still refuse
+    # with ActionResultError, never a bare RecursionError.
+    nested = _a_nesting_depth_that_refuses()
+    if nested is None:
+        pytest.skip("this interpreter parses every nesting depth tried")
+    action, queue, record, _receipt, _payload = _fixture(tmp_path)
+    key = str(action["action_key"])
+    row = (b'{"schema": "control", "action_key": "' + key.encode()
+           + b'", "detail": ' + nested + b"}")
+    queue.item_path(pool.DONE, key).write_bytes(row)
+    with pytest.raises(client.ActionResultError):
+        client.read_verified_action_result(
+            queue, key, published_unix=float(record["published_unix"]),
+            attempt=1, max_result_bytes=64, max_evidence_bytes=1 << 20)
+
+
 def test_an_empty_terminal_leaf_never_reads_as_absent(tmp_path: Path):
     action, queue, record, _receipt, _payload = _fixture(tmp_path)
     key = str(action["action_key"])
