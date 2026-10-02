@@ -729,6 +729,7 @@
     ]
   },
   "source_changes": "Claim/admission source remains frozen PR1434 plus reviewed main. Separate bounded source corrections carry pbmergeq_runtime in publication and pair shape discovery with locked simulated supply refresh.",
-  "qualification": "Pending final combined exact-head PB gate; diagnostic gates are component evidence, not deployment or live acceptance.",
-  "release_bound": "#1429 remains UNKNOWN/HOLD; no timed backfill or timeout extension"
+  "qualification": "Source/fixture qualified at e5abdd29291064f1efc228c3054ffed9b8a682b3: 2069 passed across 137 files, 104 module compile checks, 17 immutable/CAS/source/release records verified. Independent review, runtime deployment and live1419 acceptance remain separate; #1429 UNKNOWN unchanged.",
+  "release_bound": "#1429 remains UNKNOWN/HOLD; no timed backfill or timeout extension",
+  "qualified_gate": "docs/evidence/compatibility_1419_qualification_2026-10-02.json"
 }
