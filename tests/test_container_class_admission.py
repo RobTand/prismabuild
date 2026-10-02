@@ -261,3 +261,15 @@ def test_configuration_identity_uses_the_existing_canonical_unicode_contract():
     declaration['classes']['gb10']['store_root'] = '/var/lib/δοκιμή'
     selected = ci.ClassImagePolicy(declaration, klass='gb10')
     assert selected.requirements_sha256 == pb.canonical_sha256(declaration)
+
+
+@pytest.mark.parametrize('field', ['observed_unix', 'evaluated_unix'])
+@pytest.mark.parametrize('container', [True, False])
+def test_oversized_offer_timestamp_is_unknown_and_does_not_break_native_placement(tmp_path, monkeypatch, field, container):
+    monkeypatch.setattr(pool, '_now', lambda: 1000.)
+    q = pool.PoolQueue(tmp_path / 'queue'); publish(q, container=container)
+    evidence = policy().evaluate(snapshot(), now=1000.)
+    evidence[field] = 10 ** 400
+    q.announce(host='malformed-time', tags=[pb.CONTAINER_IMAGE_TAG], has_gpu=False,
+               observed_images=[CONTENT], container_class_verdict=evidence)
+    assert q.placeable(q.ready_items()[0]) is (not container)

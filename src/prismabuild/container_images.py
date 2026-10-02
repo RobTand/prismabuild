@@ -752,8 +752,13 @@ def offer_class_image_eligible(verdict: object, *, now: float) -> bool:
         return False
     for field in ("observed_unix", "evaluated_unix"):
         value = verdict.get(field)
-        if (type(value) not in (int, float) or not math.isfinite(value)
-                or not 0 <= now - value <= INVENTORY_TTL_S):
+        if type(value) not in (int, float):
+            return False
+        try:
+            timestamp = float(value)
+        except OverflowError:
+            return False
+        if not math.isfinite(timestamp) or not 0 <= now - timestamp <= INVENTORY_TTL_S:
             return False
     return True
 
