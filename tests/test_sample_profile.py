@@ -870,7 +870,7 @@ def test_a_dead_relay_reaps_its_owned_action(tmp_path: Path):
 def test_an_uncreatable_scratch_directory_refuses_with_a_reason(
     tmp_path: Path, fake_backend: _FakeBackend
 ):
-    """A read-only checkout must fail the action, not the worker.
+    """An unusable private scratch parent must fail the action, not the worker.
 
     ``core.main`` catches ``LocalActionError`` and writes the action's status
     before re-raising.  An unwrapped ``OSError`` from the scratch ``mkdir``
@@ -881,14 +881,14 @@ def test_an_uncreatable_scratch_directory_refuses_with_a_reason(
     checkout = tmp_path / "checkout"
     checkout.mkdir()
     action = _action(checkout, profile="fake")
-    checkout.chmod(0o500)
-    try:
-        with pytest.raises(pb.LocalActionError) as raised:
-            pb.run_local_action(
-                action, cas_root=tmp_path / "cas", checkout_root=checkout
-            )
-    finally:
-        checkout.chmod(0o700)
+    session = pb._profile_session(action, working_directory=checkout,
+                                  checkout_root=checkout)
+    # A file parent gives deterministic ENOTDIR, including a root test user.
+    unusable = tmp_path / "not-a-directory"
+    unusable.write_text("private parent is unavailable")
+    session.directory = unusable / pb.PROFILE_SCRATCH_DIRNAME
+    with pytest.raises(pb.LocalActionError) as raised:
+        session._open()
     message = str(raised.value)
     assert pb.PROFILE_SCRATCH_DIRNAME in message
     assert "before the action started" in message

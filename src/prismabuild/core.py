@@ -39,6 +39,7 @@ import sys
 import tempfile
 import time
 from typing import NoReturn
+import uuid
 import zlib
 
 ACTION_SCHEMA_V1 = "prismaquant.prismabuild.action.v1"
@@ -6637,10 +6638,13 @@ class _ProfileSession:
     the obvious shapes do not work.
     """
 
-    def __init__(self, *, mode: str, backend: object, directory: Path):
+    def __init__(self, *, mode: str, backend: object, directory: Path,
+                 exclusive_directory: bool = False):
         self.mode = mode
         self.backend = backend
         self.directory = directory
+        self.exclusive_directory = exclusive_directory
+        self._owns_directory = False
         suffix = getattr(backend, "profile_suffix", "profile")
         self.profile_path = directory / f"profile.{suffix}"
         self.exit_status_path = directory / "exit_status"
@@ -6655,11 +6659,10 @@ class _ProfileSession:
     def _open(self) -> None:
         """Create the scratch directory, and not one moment earlier.
 
-        ``preflight_action`` proves the materialized checkout is the sealed
-        commit with a *clean* working tree, and ``git_checkout_identity``
-        counts an untracked directory as dirt.  A scratch directory created
-        before that proof refuses every profiled action; created after it,
-        nothing looks at the tree's cleanliness again.
+        The factory plans a private directory outside the complete source
+        checkout. Create it only after preflight, so a refused action leaves
+        no diagnostics and source checks inside the child still see a clean
+        tree. A collision refuses instead of adopting somebody else's files.
 
         A directory that cannot be created is a refusal with a reason, in the
         one exception class ``core.main`` catches.  Raw, it left the worker to
@@ -6669,12 +6672,20 @@ class _ProfileSession:
         """
 
         try:
-            self.directory.mkdir(parents=True, exist_ok=True)
+            self.directory.mkdir(mode=0o700, parents=not self.exclusive_directory,
+                                 exist_ok=False)
+            self._owns_directory = True
+        except FileExistsError:
+            if self.exclusive_directory or not self.directory.is_dir():
+                raise LocalActionError(
+                    f"the private profile scratch directory already exists at "
+                    f"{self.directory}; this run failed before the action started."
+                )
         except OSError as exc:
             raise LocalActionError(
                 f"the profile scratch directory could not be created at "
                 f"{self.directory}: {exc}.  A profiled action needs somewhere "
-                "inside its own working directory to write the profile, so "
+                "outside its source checkout to write the profile, so "
                 "this run failed before the action started."
             ) from exc
         if getattr(self.backend, "container_routes_unsupported", False):
@@ -6735,8 +6746,10 @@ class _ProfileSession:
             ) from exc
 
     def close(self) -> None:
-        with suppress(OSError):
-            shutil.rmtree(self.directory)
+        if self._owns_directory:
+            with suppress(OSError):
+                shutil.rmtree(self.directory)
+            self._owns_directory = False
 
     def environment(self, sealed: Mapping[str, str]) -> dict[str, str]:
         """Variables this mode adds to the action's own environment.
@@ -7248,7 +7261,8 @@ def _partial_profile_note(record: Mapping[str, object] | None) -> str:
 
 
 def _profile_session(
-    action: Mapping[str, object], *, working_directory: Path
+    action: Mapping[str, object], *, working_directory: Path,
+    checkout_root: Path | None = None,
 ) -> _ProfileSession | None:
     """The session this action's sealed params ask for, or ``None``.
 
@@ -7281,10 +7295,18 @@ def _profile_session(
             f"profile backend {getattr(backend, 'name', mode)!r} is not "
             f"installed on {socket.gethostname()}: {exc}"
         ) from exc
+    source_root = (checkout_root or working_directory).resolve()
+    marker = find_git_worktree_marker(source_root)
+    if marker is not None:
+        source_root = marker.parent
+    directory = source_root.parent / (
+        f"{PROFILE_SCRATCH_DIRNAME}-{action['action_key'][:12]}-{uuid.uuid4().hex}"
+    )
     return _ProfileSession(
         mode=name,
         backend=backend,
-        directory=working_directory / PROFILE_SCRATCH_DIRNAME,
+        directory=directory,
+        exclusive_directory=True,
     )
 
 
@@ -7293,9 +7315,9 @@ def _profile_scratch(session: "_ProfileSession | None"):
     """Own the profile's scratch directory for exactly the run's lifetime.
 
     On the same ``with`` as the output lock so every exit -- a timeout, an
-    unwind, a refused closure -- removes it.  A ``--here`` run writes into the
-    caller's live checkout, where a leftover directory is litter somebody else
-    has to explain.
+    unwind, a refused closure -- removes only the directory this session
+    created. A ``--here`` run uses the same private sibling placement as a
+    materialized checkout and never writes diagnostics into the source tree.
     """
 
     if session is None:
@@ -7947,7 +7969,7 @@ def run_local_action(
     # Before the output lock and before any checkout is touched: a box that
     # cannot honour the profile the action asked for refuses here, having done
     # nothing.
-    profile = _profile_session(normalized, working_directory=cwd)
+    profile = _profile_session(normalized, working_directory=cwd, checkout_root=root)
     variables = environment["variables"]
     assert isinstance(variables, Mapping)
     recovered_declared_result = False

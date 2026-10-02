@@ -2123,6 +2123,17 @@ matters). Rules:
   PyTorch, `--profile torch` with `PRISMABUILD_PROFILE_TORCH_OUT` forwarded
   and mounted). Callers retain the shim and its resource scope/CPU affinity
   contract (#562).
+- **Diagnostic files stay outside the source checkout** — each profile
+  session plans a unique `.prismabuild-profile-<key>-<nonce>` sibling of the
+  complete Git checkout, or the declared checkout when there is no Git marker
+  (#1459). Allocation is exclusive, mode `0700`, and lazy after preflight;
+  a nested task cwd or a `TMPDIR` inside the source cannot move PB's profile,
+  exit relay or container-route marker into that tree. An unusable parent or
+  collision refuses before launch. Settlement retains the existing CAS
+  ingestion and removes only the directory this session created. Genuine
+  dirty inputs remain visible to source checks, and a caller-owned
+  `.prismabuild-profile` is neither adopted nor removed. This is diagnostic
+  placement, not a new cache or public scratch lifecycle.
 - **An in-process profiler is a contract, not a monkeypatch** — `torch.profiler`
   cannot be started from outside the process it profiles, so `--profile torch`
   names a path in an environment variable and validates what the action wrote
