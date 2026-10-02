@@ -12754,12 +12754,17 @@ same-key retry is a relaunch blocker even after the bounded orphan
 recovery retires the unowned copies.
 
 `stage_move._resume_own_coverage` is the narrow resume, and it changes no
-lifecycle the loop owns. Inside the same stage ownership lock the
-publication gate holds — document reads, header checks and the per-entry
-file stats together, so the qualification cannot act on a snapshot that a
-retirement or rewrite has already superseded — the mover reads back its
-**own** prior fragment and sidecar, and only when the fragment is this
-invocation's own does it preserve anything. Unknown or contradictory
+lifecycle the loop owns. The mover parses its **own** prior fragment and
+sidecar before locking, then reopens them under the same stage ownership
+lock the publication gate holds. An unchanged parse is reused only when
+its #1045 coarse-clock/local-filesystem version was qualified before the
+hint and remains qualified at the locked recheck. Same-tick timestamps,
+NFS or unknown evidence, and filesystem trust loss require a fresh parse;
+matching five-field metadata alone is insufficient. The authoritative
+document versions, header checks and per-entry file stats are qualified
+together under the lock, so retirement or rewrite cannot supersede the
+snapshot acted on. Only when the fragment is this invocation's own does
+the mover preserve anything. Unknown or contradictory
 ownership refuses the whole invocation before any copy or publication:
 a fragment that exists but cannot be read or validated, one whose headers
 disagree with the invocation (consumer, mover, tier, stage root, manifest,

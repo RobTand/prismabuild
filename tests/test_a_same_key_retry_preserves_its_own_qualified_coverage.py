@@ -14,7 +14,7 @@ at seconds per file.
 ``_resume_own_coverage`` is the narrow resume: the mover's own prior
 fragment and sidecar are read back under the stage ownership lock, every
 prior entry this window derives keeps its vouch, and an entry keeps its
-*dation* only where the existing proof standard still holds -- declared
+*date* only where the existing proof standard still holds -- declared
 digest agreement and a sidecar ``file_id`` that matches the live file.  No
 payload is rehashed; nothing unprovable is dated; a changed entry meets its
 own preserved vouch at the publication gate and is refused, never replaced.
@@ -268,8 +268,9 @@ def _resume_kwargs(args) -> tuple[pool.PoolQueue, dict[str, object]]:
         named_once=frozenset(stage_move.paths_named_once(entries)))
 
 
+@pytest.mark.parametrize("filesystem", ["zfs", "nfs4"])
 def test_the_resume_parse_does_not_hold_the_stage_ownership_lock(
-        fleet, monkeypatch) -> None:
+        fleet, monkeypatch, filesystem) -> None:
     """The pre-lock parse of a same-key retry's own fragment never holds
     the stage ownership lock (#1008 item 1).
 
@@ -285,6 +286,13 @@ def test_the_resume_parse_does_not_hold_the_stage_ownership_lock(
     _tmp, args, _mount, _entries, keys, _names = fleet
     _interrupted_first_attempt(fleet)
     queue, kwargs = _resume_kwargs(args)
+    # Make the trust preconditions explicit rather than relying on the
+    # worker's scratch filesystem (Btrfs subvolume devices can be unknown).
+    fragment = residency_map.fragment_path(Path(args.residency_root), CONSUMER, MOVER)
+    material = reader_lease.material_path(Path(args.residency_root), CONSUMER, MOVER)
+    fence = max(fragment.stat().st_ctime_ns, material.stat().st_ctime_ns) + 1
+    monkeypatch.setattr(stage_move, "_filesystem_type", lambda _device: filesystem)
+    monkeypatch.setattr(stage_move, "_version_fence", lambda: fence)
 
     parsing = threading.Event()
     release = threading.Event()
@@ -318,9 +326,9 @@ def test_the_resume_parse_does_not_hold_the_stage_ownership_lock(
         release.set()
         worker.join(10.0)
     assert not worker.is_alive()
-    # The fragment did not change, so the version fence let the pass under
-    # the lock reuse this parse rather than paying for a second one.
-    assert calls == [1]
+    # Unchanged mature local evidence reuses the parse; remote evidence is
+    # deliberately parsed fresh under the lock even at identical metadata.
+    assert calls == ([1] if filesystem == "zfs" else [1, 1])
     staged, _sidecar, _generation = outcome["result"]
     assert set(staged) == set(keys[:2])
 
@@ -383,6 +391,74 @@ def test_a_fragment_changed_between_the_pre_lock_parse_and_the_lock_is_reread(
 
 
 # --- fail closed -------------------------------------------------------------
+
+@pytest.mark.parametrize("trust", ["same-tick", "no-clock", "nfs4", "unknown", "trust-lost"])
+@pytest.mark.parametrize("corrupt", [False, True])
+def test_resume_rechecks_untrusted_matching_metadata(fleet, monkeypatch, trust, corrupt):
+    """A repeated stat version alone must not hide changed own coverage.
+
+    Inject the OS observation a same-tick inode reuse or remote timestamp can
+    produce. The documents and resume gate remain real; no verdict is stubbed.
+    """
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    _tmp, args, _mount, _entries, keys, _names = fleet
+    _interrupted_first_attempt(fleet)
+    queue, kwargs = _resume_kwargs(args)
+    fragment = residency_map.fragment_path(
+        Path(args.residency_root), CONSUMER, MOVER)
+    original_info = fragment.stat()
+    original_fstat = stage_move.os.fstat
+    changed = False
+    repeated = SimpleNamespace(**{name: getattr(original_info, name) for name in (
+        "st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns", "st_mode")})
+
+    def observed_fstat(descriptor):
+        observed = original_fstat(descriptor)
+        if stage_move.os.readlink(f"/proc/self/fd/{descriptor}") == str(fragment):
+            return repeated
+        return observed
+
+    def filesystem(_device):
+        if trust in ("same-tick", "no-clock"):
+            return "zfs"
+        if trust == "trust-lost":
+            return "nfs4" if changed else "zfs"
+        return None if trust == "unknown" else trust
+
+    monkeypatch.setattr(stage_move.os, "fstat", observed_fstat)
+    monkeypatch.setattr(stage_move, "_filesystem_type", filesystem)
+    monkeypatch.setattr(stage_move, "_version_fence", lambda: (
+        None if trust == "no-clock" else
+        repeated.st_ctime_ns if trust == "same-tick" else repeated.st_ctime_ns + 1))
+    real_ownership = queue.recorded_stage_ownership
+    new_digest = "5" * 64
+
+    @contextmanager
+    def replace_before_grant(*positional, **keywords):
+        nonlocal changed
+        original = fragment.read_bytes()
+        old_digest = json.loads(original)["entries"][keys[1]]["sha256"]
+        replacement = (b"[" * repeated.st_size if corrupt else
+                       original.replace(old_digest.encode(), new_digest.encode(), 1))
+        assert len(original) == len(replacement) == repeated.st_size
+        fragment.write_bytes(replacement)
+        assert fragment.stat().st_size == repeated.st_size
+        changed = True
+        with real_ownership(*positional, **keywords) as granted:
+            yield granted
+
+    monkeypatch.setattr(queue, "recorded_stage_ownership", replace_before_grant)
+    if corrupt:
+        with pytest.raises(SystemExit, match="residency_prior_fragment_unreadable"):
+            stage_move._resume_own_coverage(queue, **kwargs)
+        assert fragment.read_text() == "[" * repeated.st_size
+        return
+    staged, _sidecar, _generation = stage_move._resume_own_coverage(queue, **kwargs)
+    assert staged[keys[1]]["sha256"] == new_digest, (
+        f"{trust} metadata equality reused a stale pre-lock fragment")
+
 
 def test_changed_prior_bytes_fail_closed_and_are_never_replaced(
         fleet, monkeypatch) -> None:
