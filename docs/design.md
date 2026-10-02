@@ -1700,6 +1700,11 @@ A test file that reads fleet data declares it with `@pytest.mark.fleet_data`
 to every shard only when given, so a run without them keeps its action keys.
 `--residency stage` without a manifest is refused with exit 2.
 
+This declaration scan parses source without importing target modules (#1460).
+Marker text inside strings or comments does not declare a fleet read. If the
+coordinator cannot parse the target's syntax, the conservative text scan remains
+the fallback; parsing never masks genuine pytest collection errors.
+
 A `--gpu` run must declare its per-test bound (#975): `--test-timeout-s`, or
 `--timeout-s`, from which the bound is derived one heartbeat inside the sealed
 deadline. With neither, `pbtest` refuses with exit 2 before any shard is

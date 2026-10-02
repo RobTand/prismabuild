@@ -41,6 +41,7 @@ trust.  The imbalance is reported so it can be seen rather than assumed.
 from __future__ import annotations
 
 import argparse
+import ast
 import importlib.util
 import json
 import os
@@ -618,7 +619,9 @@ def fleet_data_files(checkout: Path, files: list[str]) -> list[str]:
 
     A file declares it with ``@pytest.mark.fleet_data`` on a test, or
     ``pytestmark = pytest.mark.fleet_data`` for the module.  The scan is
-    textual, so it never imports the target's plugins.
+    static, so it never imports the target's plugins. Strings and comments
+    are not declarations; unparseable target syntax keeps the conservative
+    text fallback and remains pytest's collection responsibility (#1460).
     """
 
     marked = []
@@ -627,7 +630,17 @@ def fleet_data_files(checkout: Path, files: list[str]) -> list[str]:
             text = (checkout / name).read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        if _FLEET_DATA_USE.search(text):
+        try:
+            tree = ast.parse(text)
+        except (SyntaxError, ValueError):
+            declared = bool(_FLEET_DATA_USE.search(text))
+        else:
+            declared = any(
+                isinstance(node, ast.Attribute) and node.attr == FLEET_DATA_MARKER
+                and isinstance(node.value, ast.Attribute) and node.value.attr == "mark"
+                for node in ast.walk(tree)
+            )
+        if declared:
             marked.append(name)
     return marked
 
