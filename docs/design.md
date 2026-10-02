@@ -6644,7 +6644,7 @@ copy the map already vouched for, which is what makes a stale ram entry a
 cache miss rather than an ENOENT. The map's header names the ram tier, root
 and epoch, which is what the verdict compares.
 
-### What the tier loop reads per cycle (#992, #1004)
+### What the tier loop reads per cycle (#992, #1004, #1027)
 
 The tier loop runs one cycle every 5 s on the tier host: the fleet role
 passes `--interval-s 5` (`tools/fleet/fleet_boxes.json`), and
@@ -6668,6 +6668,31 @@ The loop now keeps what it read from one cycle to the next, on its
 - `stage_release.CensusIndex` holds the residency census: each namespace's
   fragments and each level's classified children. The dead-owner sweep, the
   orphan sweep's `reconcile` and the held-mover census read through it.
+- `ReceiptCache.ledger_records` reuses the existing `DirectoryRecords` reader
+  for tier token names: `free/`, `held/`, each holder, `minted/` and
+  `minted/dead/`. A cycle scopes the reader through
+  `pool.tier_ledger_names_from`; only explicitly guarded tier ledgers use it.
+  Host ledgers and calls outside the cycle retain fresh reads. The reader is
+  reset even when a cycle raises, and names for directories not reached in
+  that cycle are dropped. `LAST_CYCLE["reads"]` reports `ledger_listed` and
+  `ledger_kept` separately from queue records.
+
+Tier token reuse changes enumeration, not mutation authority. Acquisition,
+release, growth, retirement and holder replacement change the directory
+stamps and invalidate the affected names. Holder type checks remain fresh;
+required mint censuses propagate missing or unreadable directories rather
+than treating them as cached empty. The optional `minted/dead/` namespace is
+absent only when a fresh-or-trusted census of its `minted/` parent excludes
+it; a present but unreadable or non-directory child remains unknown. Creating
+or removing that child changes the parent's stamp. An unreadable holder remains unknown and
+retains the existing conservative shrink accounting. Names on NFS, on an
+untrusted filesystem, or changed in the coarse clock's current tick are read
+again. No token payload or admission decision is cached.
+
+The #1027 campaign-shaped regression measures physical ledger listings, not
+elapsed-time speedup. Live deployment and the issue's requested before/after
+py-spy and Netdata profile remain separate acceptance evidence; source reuse
+and a passing fixture do not establish them.
 
 **A directory is listed again only when it moved.** Each listing is kept
 under a stamp, `(device, inode, mtime_ns, ctime_ns)`, taken by

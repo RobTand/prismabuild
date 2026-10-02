@@ -75,7 +75,7 @@ STEADY_CPU_BOUND_S = 4 * MEASURED_STEADY_CPU_S
 #: The steps of a cycle, as ``LAST_CYCLE["phases"]`` names them.
 PHASES = {
     "reclaim_idle_rates", "receipts", "sync_ram_host_mirror", "discover",
-    "mint_announce",
+    "mint_announce", "manifest_promotion",
     "drop_prior_ram_epochs", "release_incomplete_ram_promotions",
     "planned_consumers", "withdrawn_keys", "withdraw_dead_consumer_movers",
     "adopt_resident_ranges", "window_pressure",
@@ -178,11 +178,11 @@ def _clock_root(tmp_path: Path) -> Path:
     The stamps the index keeps are trusted only where the mount table names
     zfs/ext4/xfs/btrfs/tmpfs; on a box whose own ``tmp_path`` is not one of
     those (dl380g10's /home/rob/tmp is not), the test would measure the
-    fallback.  ``/dev/shm`` and ``/tmp`` are tried first so the suite runs on
-    any Linux worker.
+    fallback. ``/dev/shm`` is tried first, then the worker's admitted
+    temporary directory; the fixture never writes to ``/tmp``.
     """
 
-    for candidate in (Path("/dev/shm"), Path("/tmp"), tmp_path):
+    for candidate in (Path("/dev/shm"), tmp_path):
         try:
             if not candidate.is_dir() or not os.access(candidate, os.W_OK):
                 continue
@@ -240,6 +240,23 @@ def test_a_steady_cycle_reads_only_what_changed(
     assert reads["census_parses"] == 0, reads
     assert reads["census_listed"] == 0, reads
     assert reads["records_kept"] > 0 and reads["census_kept"] >= 400, reads
+
+
+def test_a_steady_cycle_does_not_list_ledger_directories(
+        loop: _Loop, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The campaign-shaped census also reuses unchanged token names (#1027)."""
+
+    loop.cycle()
+    loop.cycle()
+    ledger = loop.queue.tier_ledger(bench.TIER)
+    directories = [ledger.free_dir, ledger.held_dir, ledger.minted_dir,
+                   ledger.minted_dir / "dead", *pool._scan(ledger.held_dir)]
+    listings = _listings(monkeypatch, directories)
+    loop.cycle()
+    reads = tier_loop.LAST_CYCLE["reads"]
+    assert listings == [], listings
+    assert reads.get("ledger_listed") == 0, reads
+    assert reads.get("ledger_kept", 0) > 0, reads
 
 
 def test_a_change_between_cycles_is_read_by_the_next(loop: _Loop) -> None:
