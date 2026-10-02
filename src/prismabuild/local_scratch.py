@@ -387,13 +387,13 @@ def _sealed_scratch_variables(claim: Mapping[str, object], *,
     return cast(Mapping[str, str], variables)
 
 
-def _scratch_selections(variables: Mapping[str, str]) -> list[dict[str, str]]:
-    """Read only an explicit, bounded sealed naming selection; off is empty."""
+def _scratch_selection_input(variables: Mapping[str, str]) -> object:
+    """Decode the one bounded, explicit sealed selection input."""
     from . import core
 
     raw = variables.get(DECLARATIONS_ENV)
     if raw is None or raw == "":
-        return []
+        return None
     if not isinstance(raw, str):
         raise LocalScratchError("scratch declaration selection must be JSON text")
     try:
@@ -403,6 +403,16 @@ def _scratch_selections(variables: Mapping[str, str]) -> list[dict[str, str]]:
         selected = core._decode_strict_json(data, where="sealed scratch declaration selection")
     except (ValueError, UnicodeError, RecursionError) as exc:
         raise LocalScratchError(f"invalid scratch declaration selection: {exc}") from exc
+    if selected is None:
+        raise LocalScratchError("scratch declaration selection must not be JSON null")
+    return selected
+
+
+def _scratch_selections(variables: Mapping[str, str]) -> list[dict[str, str]]:
+    """Read only legacy naming selections; lifetime requests need their owner."""
+    selected = _scratch_selection_input(variables)
+    if selected is None:
+        return []
     if not isinstance(selected, list) or len(selected) > _MAX_DECLARATIONS:
         raise LocalScratchError("scratch declaration selection must be a list of at most 64 entries")
     if not selected:
@@ -422,6 +432,50 @@ def _scratch_selections(variables: Mapping[str, str]) -> list[dict[str, str]]:
             raise LocalScratchError("duplicate scratch declaration selection")
         seen.add((root, name))
         result.append({"root_env": root, "name": name})
+    return result
+
+
+SCRATCH_LIFETIME_SELECTION_SCHEMA_V1 = "prismabuild.scratch_lifetime_selection.v1"
+SCRATCH_LIFETIME_TAG = "scratch-lifetime-v1"
+
+
+def _scratch_lifetime_selections(variables: Mapping[str, str]) -> list[dict[str, object]]:
+    """Validate versioned lifetime intent without granting filesystem authority.
+
+    Legacy arrays retain naming-only semantics. Ephemeral and persistent root
+    pairs cannot overlap; intent never creates, traverses, or removes a path.
+    """
+    selected = _scratch_selection_input(variables)
+    if selected is None:
+        return []
+    if isinstance(selected, list):
+        _scratch_selections(variables)
+        return []
+    if (not isinstance(selected, dict) or set(selected) != {"schema", "entries"}
+            or selected["schema"] != SCRATCH_LIFETIME_SELECTION_SCHEMA_V1):
+        raise LocalScratchError("scratch lifetime selection has an unknown schema or fields")
+    entries = selected["entries"]
+    if not isinstance(entries, list) or len(entries) > _MAX_DECLARATIONS:
+        raise LocalScratchError("scratch lifetime selection needs at most 64 entries")
+    if not entries:
+        return []
+    for entry in entries:
+        if (not isinstance(entry, dict) or set(entry) != {"root_env", "name", "lifetime"}
+                or entry["lifetime"] not in ("ephemeral", "persistent")):
+            raise LocalScratchError("scratch lifetime entries need root_env, name and a known lifetime")
+    names = [{"root_env": entry["root_env"], "name": entry["name"]} for entry in entries]
+    # Naming validation and pair accounting keep their existing authoritative home.
+    import json
+    _scratch_selections({**variables, DECLARATIONS_ENV: json.dumps(names)})
+    pairs = {pair["root_env"]: pair for pair in scratch_pairs(variables)}
+    result = [{**entry, **pairs[entry["root_env"]]} for entry in entries]
+    temporary = [PurePosixPath(str(entry["root"])) for entry in result
+                 if entry["lifetime"] == "ephemeral"]
+    persistent = [PurePosixPath(str(entry["root"])) for entry in result
+                  if entry["lifetime"] == "persistent"]
+    if any(first == second or first in second.parents or second in first.parents
+           for first in temporary for second in persistent):
+        raise LocalScratchError("ephemeral and persistent scratch root pairs overlap")
     return result
 
 
