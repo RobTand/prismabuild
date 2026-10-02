@@ -518,3 +518,132 @@ def test_pin_runtime_refusal_is_named_and_does_not_charge_or_blame_pr(tmp_path, 
     assert batch["runs"]["candidate"]["runtime_refusal"] == PIN_REFUSAL
     assert batch["runs"]["candidate"]["runtime"]["python"] == queue.cfg.test_python
     assert github.calls == []  # neither success nor code-failure status
+
+
+def known_red_descendant(tmp_path):
+    queue, origin, github, runner = make_queue(tmp_path)
+    origin.pr(1, {"one.txt": "1\n"})
+    bad = origin.pr(2, {"fail-2": "tests/test_b.py::broken\n"})
+    git("checkout", "-q", "-b", "pr3", bad, cwd=origin.work)
+    (origin.work / "three.txt").write_text("3\n")
+    git("add", "-A", cwd=origin.work)
+    git("commit", "-q", "-m", "descendant", cwd=origin.work)
+    descendant = git("rev-parse", "HEAD", cwd=origin.work)
+    git("update-ref", "refs/pull/3/head", descendant, cwd=origin.work)
+    git("checkout", "-q", "main", cwd=origin.work)
+
+    original = queue.run_batch(entries(1, 2, 3))
+    assert original["verdict"] == "red"
+    assert original["culprit"]["sha"] == bad
+    return queue, origin, github, runner, original, bad
+
+
+def test_a_descendant_carrying_the_known_red_tree_is_held_without_retesting(tmp_path):
+    queue, origin, github, runner, original, bad = known_red_descendant(tmp_path)
+    completed = list(runner.runs)
+    repeat = queue.tick()
+    assert repeat["candidate_tree"] == original["candidate_tree"]
+    assert repeat["verdict"] == "known-failure-blocked"
+    assert runner.runs == completed
+    assert repeat["known_failure"]["batch"] == original["id"]
+    assert repeat["known_failure"]["new"] == original["new"]
+    assert statuses(github) == [(bad, "failure")]
+    assert queue.tick() is None
+
+    # A corrected descendant still contains the historical culprit commit.
+    # Its changed source must be admitted for fresh qualification.
+    git("checkout", "-q", "pr3", cwd=origin.work)
+    (origin.work / "fail-2").write_text("")
+    git("add", "-A", cwd=origin.work)
+    git("commit", "-q", "-m", "fix failure", cwd=origin.work)
+    fixed = git("rev-parse", "HEAD", cwd=origin.work)
+    git("update-ref", "refs/pull/3/head", fixed, cwd=origin.work)
+    git("checkout", "-q", "main", cwd=origin.work)
+    queue.store.add(3, fixed, front=False)
+    queue.store.save()
+    repaired = queue.tick()
+    assert repaired["verdict"] == "green"
+    assert repaired["candidate_tree"] != original["candidate_tree"]
+    assert runner.runs != completed
+    assert (fixed, "success") in statuses(github)
+
+
+@pytest.mark.parametrize("changed", ["runtime", "config", "base", "files"])
+def test_a_held_head_is_reconsidered_when_its_qualification_domain_changes(
+        tmp_path, monkeypatch, changed):
+    queue, origin, _github, runner, original, _bad = known_red_descendant(tmp_path)
+    held = queue.tick()
+    assert held["verdict"] == "known-failure-blocked"
+    completed = list(runner.runs)
+    if changed == "runtime":
+        runtime = mq.checkout_runtime
+        monkeypatch.setattr(mq, "checkout_runtime",
+                            lambda cfg, path: {**runtime(cfg, path), "python": "/repaired-py"})
+    elif changed == "config":
+        queue.cfg = mq.dataclasses.replace(queue.cfg,
+                                          pbtest_args=["--priority", "-9", "--timeout-s", "60"])
+    elif changed == "base":
+        origin.advance_main()
+    else:
+        discover = runner.discover
+        monkeypatch.setattr(runner, "discover",
+                            lambda path: (discover(path)[0][1:], discover(path)[1]))
+    fresh = queue.tick()
+    assert fresh is not None, "the same pinned head needs fresh qualification in a new domain"
+    assert fresh["verdict"] != "known-failure-blocked"
+    assert runner.runs != completed
+    assert held["id"] not in queue.store.state.get("known_failure_blocked", {})
+
+@pytest.mark.parametrize("damage", ["missing", "dirty", "untracked", "retargeted"])
+def test_an_untrusted_retained_view_is_rebuilt_before_suppressing_work(tmp_path, damage):
+    queue, _origin, _github, runner, _original, _bad = known_red_descendant(tmp_path)
+    held = queue.tick()
+    view = queue.mirror.worktrees / f"{held['id']}-candidate"
+    assert view.is_dir()
+    completed = list(runner.runs)
+    if damage == "missing":
+        queue.mirror.drop(view)
+    elif damage == "dirty":
+        (view / "tests/test_a.py").write_text("changed\n")
+    elif damage == "untracked":
+        (view / "tests/test_added.py").write_text("")
+    else:
+        git("checkout", "-q", "--detach", held["base"], cwd=view)
+    rebuilt = queue.tick()
+    assert rebuilt is not None and rebuilt["id"] != held["id"]
+    assert not view.exists()
+    assert held["id"] not in queue.store.state["known_failure_blocked"]
+    # A fresh immutable reconstruction may still match the original real
+    # negative identity. It does not need another full suite merely because
+    # the optional retained view was damaged.
+    assert rebuilt["verdict"] == "known-failure-blocked"
+    assert rebuilt["candidate_tree"] == held["candidate_tree"]
+    assert runner.runs == completed
+
+
+@pytest.mark.parametrize("leaves", ["empty", "closed"])
+def test_a_hold_retires_its_view_when_entries_leave_the_queue(tmp_path, leaves):
+    queue, _origin, github, _runner, _original, _bad = known_red_descendant(tmp_path)
+    held = queue.tick()
+    view = queue.mirror.worktrees / f"{held['id']}-candidate"
+    if leaves == "empty":
+        queue.store.state["queue"] = []
+    else:
+        github.merged.append(3)
+    queue.store.save()
+    queue.tick()
+    assert not view.exists()
+    assert held["id"] not in queue.store.state["known_failure_blocked"]
+
+
+def test_known_failure_once_retains_no_queue_hold_or_worktree(tmp_path):
+    queue, _origin, _github, runner, _original, _bad = known_red_descendant(tmp_path)
+    queued = list(queue.store.state["queue"])
+    completed = list(runner.runs)
+    queue.once = True
+    held = queue.run_batch(entries(1, 3))
+    assert held["verdict"] == "known-failure-blocked"
+    assert queue.store.state["queue"] == queued
+    assert runner.runs == completed
+    assert not queue.store.state.get("known_failure_blocked")
+    assert not list(queue.mirror.worktrees.iterdir())

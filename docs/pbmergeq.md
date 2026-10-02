@@ -194,3 +194,29 @@ original rows, stdout and receipts; it grants no pass/fail/result/skip reuse and
 does not alter the source report, test population, or sealed action. Missing
 source objects or unusable history simply omit the optional advice. These are
 historical estimates, not a speed measurement.
+
+### Repeated failed candidate domains (#1450)
+
+Removing only the culprit PR number does not remove its code from descendant
+branches. After causal attribution confirms new failures, the queue retains a
+negative record for the complete candidate tree, base tree, selected runtime,
+full configuration and exact discovered test-file domain. Reconstructing that
+same domain returns known-failure-blocked before any suite submission. The
+original report, culprit and new node IDs remain attributable; the record
+grants no passing result, skip reuse or success status.
+
+A daemon hold retains only its existing Mirror-owned candidate worktree.
+Before excluding any queued head, tick rechecks current GitHub eligibility and
+full head, the clean owned checkout HEAD/tree, current fetched base tree,
+runtime/configuration and discovery domain. Changed or unobserved meaning
+releases the hold and uses ordinary fresh selection. Missing, dirty or
+retargeted views cannot authorize suppression: they are retired through
+Mirror, then rebuilt normally. Views also retire when held entries leave or
+are superseded. A corrected explicit head is eligible even when its ancestry
+contains the original culprit commit. Immutable negative reports survive view
+cleanup.
+
+A supported once does not retain a queued hold or worktree. Its explicit
+known-failure-blocked verdict exits 2, submits no repeated suite and creates no
+success status. This is a source contract, not permission to activate a
+daemon or change the fleet.
