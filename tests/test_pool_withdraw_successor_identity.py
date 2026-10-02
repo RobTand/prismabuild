@@ -3,6 +3,8 @@ import pytest
 from prismabuild import pool, resource_scope
 from test_pool_resource_scope import scoped, _process
 
+from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
+
 KEY = "c" * 64
 
 
@@ -39,7 +41,9 @@ def test_withdraw_preserves_successor_that_claims_after_marker(tmp_path, monkeyp
 
 
 def test_resubmission_does_not_erase_original_stop_request(tmp_path):
-    queue = pool.PoolQueue(tmp_path / "queue")
+    queue = AdmittedQueueFixture(
+        pool.PoolQueue(tmp_path / "queue"), capacity={"cpu": 8, "mem_gb": 16},
+        default_demand={"cpu": 1, "mem_gb": 1})
     def publish():
         queue.publish(action_key=KEY, cas_root=tmp_path / "cas",
                       checkout_root=tmp_path / "checkout", worker_script=tmp_path / "worker.py")
@@ -134,7 +138,9 @@ def test_retiring_marker_does_not_remove_another_concurrent_decision(tmp_path, m
 
 @pytest.mark.parametrize("operation", ["finish", "reap_stale"])
 def test_cancelled_cleanup_does_not_conclude_a_successor(tmp_path, monkeypatch, operation):
-    queue = pool.PoolQueue(tmp_path / "queue")
+    queue = AdmittedQueueFixture(
+        pool.PoolQueue(tmp_path / "queue"), capacity={"cpu": 8, "mem_gb": 16},
+        default_demand={"cpu": 1, "mem_gb": 1})
     def publish():
         queue.publish(action_key=KEY, cas_root=tmp_path / "cas",
                       checkout_root=tmp_path / "checkout", worker_script=tmp_path / "worker.py",
@@ -180,7 +186,9 @@ def test_durable_decision_is_an_ending_before_visible_marker(tmp_path, monkeypat
     import pbrun
     import pbstatus
     import pbwait
-    queue = pool.PoolQueue(tmp_path / "queue")
+    queue = AdmittedQueueFixture(
+        pool.PoolQueue(tmp_path / "queue"), capacity={"cpu": 8, "mem_gb": 16},
+        default_demand={"cpu": 1, "mem_gb": 1})
     queue.publish(action_key=KEY, cas_root=tmp_path / "cas",
                   checkout_root=tmp_path / "checkout", worker_script=tmp_path / "worker.py")
     original = pool._read_json(queue.item_path(pool.READY, KEY))

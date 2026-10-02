@@ -12,10 +12,14 @@ sys.path.insert(0, str(ROOT / "tools/fleet"))
 from prismabuild import pool
 import pbstatus
 
+from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
+
 
 @pytest.fixture
 def ready_denial(tmp_path):
-    queue = pool.PoolQueue(tmp_path / "queue")
+    queue = AdmittedQueueFixture(
+        pool.PoolQueue(tmp_path / "queue"), capacity={"cpu": 8, "mem_gb": 16},
+        default_demand={"cpu": 1, "mem_gb": 1})
     key = "d" * 64
     queue.publish(action_key=key, cas_root=tmp_path / "cas",
                   checkout_root="/mnt/shared/status-fixture",

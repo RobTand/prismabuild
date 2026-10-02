@@ -21,6 +21,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import pbrun  # noqa: E402
 import pbstatus  # noqa: E402
 
+from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
+
 
 #: The action side of the contract, written without importing PrismaBuild on
 #: purpose: what the worker enforces is the record on disk, so the fixture
@@ -106,7 +108,9 @@ def _claimed(tmp_path, *, mode, seconds, policy, timeout_s=None, source=REPORTER
     })
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
     cas.publish_action_request(action)
-    queue = pool.PoolQueue(tmp_path / "queue")
+    queue = AdmittedQueueFixture(
+        pool.PoolQueue(tmp_path / "queue"), capacity={"cpu": 8, "mem_gb": 16},
+        default_demand={"cpu": 1, "mem_gb": 1})
     queue.publish(action_key=action["action_key"], cas_root=cas.root,
                   checkout_root=checkout,
                   worker_script=Path(__file__).resolve().parents[1]
@@ -520,7 +524,9 @@ def test_a_box_that_cannot_keep_the_policy_cannot_claim_the_work(tmp_path):
     })
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
     cas.publish_action_request(action)
-    queue = pool.PoolQueue(tmp_path / "queue")
+    queue = AdmittedQueueFixture(
+        pool.PoolQueue(tmp_path / "queue"), capacity={"cpu": 8, "mem_gb": 16},
+        default_demand={"cpu": 1, "mem_gb": 1})
     queue.publish(action_key=action["action_key"], cas_root=cas.root,
                   checkout_root=checkout,
                   tags=["x86", pb.PROGRESS_TAG],

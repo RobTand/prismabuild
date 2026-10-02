@@ -34,6 +34,8 @@ import stage_move  # noqa: E402
 import stage_release  # noqa: E402
 import ram_promote  # noqa: E402
 
+from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
+
 try:
     from prismabuild import reader_lease as rlc  # coherent package only
     HAS_PIN = True
@@ -83,7 +85,9 @@ def _template(output_prefix: str, **overrides) -> dict:
 
 
 def _queue(tmp_path: Path) -> pool.PoolQueue:
-    queue = pool.PoolQueue(tmp_path / "pb-queue")
+    queue = AdmittedQueueFixture(
+        pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
+        default_demand={"cpu": 1, "mem_gb": 1})
     queue.ensure_layout()
     queue.mint_tier_capacity(STAGE_TIER, {"stage_gib": 8})
     return queue

@@ -13,6 +13,8 @@ import pytest
 from prismabuild import client, pool, resource_scope
 from test_scratch_declaration_record import FIELD, context, live_record, process, record, runtime
 
+from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
+
 
 def other_actor_takes_key(queue, key, on_acquired=None):
     result = []
@@ -67,7 +69,9 @@ def test_preintent_boundary_cannot_overwrite_a_successor(runtime, monkeypatch):
 
 
 def test_request_absent_custom_uncontained_launcher_remains_supported(tmp_path, monkeypatch):
-    queue = pool.PoolQueue(tmp_path / "queue")
+    queue = AdmittedQueueFixture(
+        pool.PoolQueue(tmp_path / "queue"), capacity={"cpu": 8, "mem_gb": 16},
+        default_demand={"cpu": 1, "mem_gb": 1})
     key = "a" * 64
     queue.publish(action_key=key, cas_root=tmp_path / "absent-cas", checkout_root=tmp_path,
                   worker_script="/custom-worker.py")

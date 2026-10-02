@@ -19,12 +19,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from prismabuild import pool  # noqa: E402
 
+from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
+
 KEY_A = "a" * 64
 
 
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
-    q = pool.PoolQueue(tmp_path / "pb-queue")
+    q = AdmittedQueueFixture(
+        pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
+        default_demand={"cpu": 1, "mem_gb": 1})
     q.ensure_layout()
     return q
 

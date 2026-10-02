@@ -26,6 +26,7 @@ Issue #272.
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 import socket
 import sys
@@ -235,7 +236,7 @@ def test_two_ledgers_holding_one_action_is_refused_not_guessed(queue) -> None:
         queue.resolve_claim_holder(KEY, _record(queue))
 
 
-def test_a_zero_token_claim_still_falls_back_to_the_marker(queue, tmp_path) -> None:
+def test_a_legacy_zero_token_claim_still_falls_back_to_the_marker(queue, tmp_path) -> None:
     """The ledger is silent when there is nothing to hold; the proxy is not.
 
     That is the one case the marker still decides, and it is also the case
@@ -248,19 +249,18 @@ def test_a_zero_token_claim_still_falls_back_to_the_marker(queue, tmp_path) -> N
         worker_script=q.root / "worker.py", resources={},
         max_attempts=1, retry_safe=True,
     )
-    claimed_path = q.item_path(pool.CLAIMED, KEY)
-    real = pool._write_json_atomic
-
-    def dies(path, payload):
-        if Path(path) == claimed_path and "claimed_host" in payload:
-            raise _ClaimantDied(path)
-        return real(path, payload)
-
+    assert q.claim(owner=f"{WON_BY}:1:aaaa0001", capacity={}) is None
+    assert q.item_path(pool.READY, KEY).exists()
+    assert not q.item_path(pool.CLAIMED, KEY).exists()
+    assert not q.ledger().held_keys()
+    # Explicit historical recovery input: an older runtime could strand an
+    # empty-demand rename before its claimed-host rewrite. No current claim
+    # or execution is permitted by this construction.
     with mock.patch.object(pool.socket, "gethostname", lambda: WON_BY):
-        with mock.patch.object(pool, "_write_json_atomic", dies):
-            with pytest.raises(_ClaimantDied):
-                q.claim(owner=f"{WON_BY}:1:aaaa0001", capacity={})
-
-    record = json.loads(claimed_path.read_text())
+        q._write_claim_intent(KEY, owner=f"{WON_BY}:1:aaaa0001")
+    record = json.loads(q.item_path(pool.READY, KEY).read_text())
+    record.update(claimed_by=f"{WON_BY}:1:aaaa0001", claimed_unix=time.time())
+    q.item_path(pool.READY, KEY).rename(q.item_path(pool.CLAIMED, KEY))
+    q.item_path(pool.CLAIMED, KEY).write_text(json.dumps(record))
     assert q.claim_reservation_hosts(KEY) == []
     assert q.resolve_claim_holder(KEY, record) == WON_BY

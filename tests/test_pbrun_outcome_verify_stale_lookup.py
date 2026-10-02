@@ -35,6 +35,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import pbrun  # noqa: E402
 import pbtest  # noqa: E402
 
+from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
+
 KEY = "1100" + "a" * 60
 SUMMARY = "=========== 61 passed, 1 skipped in 70.40s ==========="
 
@@ -42,7 +44,9 @@ SUMMARY = "=========== 61 passed, 1 skipped in 70.40s ==========="
 @pytest.fixture()
 def queue(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> pool.PoolQueue:
     monkeypatch.setattr(pbrun, "POLL_S", 0.01)
-    made = pool.PoolQueue(tmp_path / "pb-queue")
+    made = AdmittedQueueFixture(
+        pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
+        default_demand={"cpu": 1, "mem_gb": 1})
     made.ensure_layout()
     return made
 

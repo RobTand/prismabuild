@@ -99,3 +99,24 @@ def test_production_one_shot_supplies_admission_not_just_containment(tmp_path, m
     assert len(seen) == 1
     assert seen[0].get("capacity") == {"cpu": 2, "mem_gb": 4}, "one-shot bypassed shared preparation"
     assert seen[0]["adaptive_cpu"] is True and seen[0]["containment"] is True
+
+
+def test_tier_funding_without_host_demand_never_grants_execution(tmp_path, monkeypatch):
+    queue = pool.PoolQueue(tmp_path / "queue")
+    tier = "prismabuild-stage:fixture"
+    queue.mint_tier_capacity(tier, {"stage_gib": 1})
+    resources = {f"stage_gib@{tier}": 1}
+    queue.publish(action_key=KEY, cas_root=queue.root / "cas",
+                  checkout_root=queue.root / "co", worker_script=queue.root / "worker.py",
+                  resources=resources, residency={"schema": pool.RESIDENCY_SCHEMA_V1,
+                      "tier_id": tier, "manifest_sha256": "b" * 64,
+                      "manifest_bytes": 1, "range_start_bytes": 0,
+                      "range_end_bytes": 1})
+    refused = []
+    monkeypatch.setattr(queue, "record_denial", lambda item, reason, evidence=None: refused.append(reason))
+    assert queue.claim(capacity={"cpu": 2, "mem_gb": 4}) is None
+    assert refused[-1] == "admission_demand_required"
+    assert queue.item_path(pool.READY, KEY).exists()
+    assert not queue.item_path(pool.CLAIMED, KEY).exists()
+    assert not queue.ledger().held_keys()
+    assert not queue.tier_ledger(tier).held_keys()

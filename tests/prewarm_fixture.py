@@ -21,6 +21,8 @@ from prismabuild import progress as progress_v1  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import prewarm_loop  # noqa: E402
 
+from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
+
 
 def data_manifest(paths_and_sizes, *, prefix: str,
                   annotations: dict | None = None) -> dict:
@@ -62,7 +64,9 @@ class Fleet:
         self.root = root
         self.mount = root / "shared"
         self.mount.mkdir(parents=True, exist_ok=True)
-        self.queue = pool.PoolQueue(root / "pb-queue")
+        self.queue = AdmittedQueueFixture(
+            pool.PoolQueue(root / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
+            default_demand={"cpu": 1, "mem_gb": 1})
         self.queue.ensure_layout()
         self.cas_root = root / "cas"
         self.cas = pb.PrismaBuildCAS(self.cas_root)
@@ -161,23 +165,19 @@ class Fleet:
 
     def claim(self, action_key: str, *, age_s: float = 0.0,
               host: str | None = None) -> Path:
-        """Move a ready item into ``claimed/`` the way a claim moves it.
+        """Claim the selected action through real simulated host admission."""
+        from unittest import mock
 
-        ``host`` is written as ``claimed_host``, the field the pool's own
-        claim writes: it is the first link of the identity chain the pacer
-        follows to the served action's reads (#580).
-        """
-
-        source = self.queue.root / "ready" / f"{action_key}.json"
-        item = json.loads(source.read_text())
-        source.unlink()
-        item.update({"action_key": action_key,
-                     "claimed_unix": time.time() - age_s,
-                     "claimed_by": "prewarm-fixture"})
-        if host is not None:
-            item["claimed_host"] = host
-        target = self.queue.root / "claimed" / f"{action_key}.json"
-        target.write_text(json.dumps(item))
+        source = self.queue.item_path(pool.READY, action_key)
+        candidate = json.loads(source.read_text())
+        simulated_host = host if host is not None else pool.socket.gethostname()
+        with mock.patch.object(pool.socket, "gethostname", lambda: simulated_host):
+            item = self.queue.claim(owner="prewarm-fixture", ready=[candidate])
+        assert item is not None and item["action_key"] == action_key
+        target = self.queue.item_path(pool.CLAIMED, action_key)
+        if age_s:
+            item["claimed_unix"] = float(item["claimed_unix"]) - age_s
+            pool._write_json_atomic(target, item)
         return target
 
     def report_progress(self, action_key: str, phase: str, *,

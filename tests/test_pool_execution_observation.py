@@ -8,6 +8,8 @@ import pytest
 from prismabuild import pool
 from test_pbstatus import pbstatus
 
+from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
+
 
 @pytest.mark.parametrize('prints', [True, False])
 @pytest.mark.parametrize('exit_before_observation', [True, False])
@@ -23,7 +25,9 @@ def test_execution_ticks_report_output_without_inventing_quiet_progress(
         + 'while not release.exists():\n'
         + '    if time.monotonic() >= deadline: sys.exit(2)\n'
         + '    time.sleep(0.005)\n')
-    queue = pool.PoolQueue(tmp_path / 'queue')
+    queue = AdmittedQueueFixture(
+        pool.PoolQueue(tmp_path / 'queue'), capacity={"cpu": 8, "mem_gb": 16},
+        default_demand={"cpu": 1, "mem_gb": 1})
     key = uuid.uuid4().hex * 2
     queue.publish(action_key=key, cas_root='/cas', checkout_root=tmp_path, worker_script=script)
     item = queue.claim()
@@ -81,7 +85,9 @@ def test_exited_launcher_does_not_report_its_pipe_holding_descendant_as_alive(tm
     script = tmp_path / 'worker.py'
     script.write_text('import subprocess, sys\n'
                       'subprocess.Popen([sys.executable, "-c", "import time; time.sleep(0.4)"])\n')
-    queue = pool.PoolQueue(tmp_path / 'queue')
+    queue = AdmittedQueueFixture(
+        pool.PoolQueue(tmp_path / 'queue'), capacity={"cpu": 8, "mem_gb": 16},
+        default_demand={"cpu": 1, "mem_gb": 1})
     key = uuid.uuid4().hex * 2
     queue.publish(action_key=key, cas_root='/cas', checkout_root=tmp_path, worker_script=script)
     item = queue.claim()
@@ -101,7 +107,9 @@ def test_exited_launcher_does_not_report_its_pipe_holding_descendant_as_alive(tm
 
 
 def _observed_claim(tmp_path, monkeypatch):
-    queue = pool.PoolQueue(tmp_path / 'queue')
+    queue = AdmittedQueueFixture(
+        pool.PoolQueue(tmp_path / 'queue'), capacity={"cpu": 8, "mem_gb": 16},
+        default_demand={"cpu": 1, "mem_gb": 1})
     key = 'b' * 64
     queue.publish(action_key=key, cas_root='/cas', checkout_root=tmp_path, worker_script='/worker.py')
     item = queue.claim(owner='worker')

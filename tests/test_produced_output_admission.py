@@ -22,6 +22,8 @@ from prismabuild import pool, produced_output as po  # noqa: E402
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import storage_tiers  # noqa: E402
 
+from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
+
 STAGE_TIER = "prismabuild-stage:dl380g10"
 STAGE_BARE = "stage_gib"
 OWNER = "c" * 64
@@ -52,7 +54,9 @@ def _template(output_prefix: str, template_id: str = "admit-v1") -> dict:
 
 
 def _queue(tmp_path: Path, stage_gib: int = 8) -> pool.PoolQueue:
-    queue = pool.PoolQueue(tmp_path / "pb-queue")
+    queue = AdmittedQueueFixture(
+        pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
+        default_demand={"cpu": 1, "mem_gb": 1})
     queue.ensure_layout()
     queue.mint_tier_capacity(STAGE_TIER, {STAGE_BARE: stage_gib})
     return queue
@@ -129,7 +133,9 @@ def test_publish_admits_with_capacity_and_denies_without(tmp_path: Path) -> None
     # Insufficient tier capacity denies even with ample host capacity.
     small = tmp_path / "small"
     small.mkdir()
-    q2 = pool.PoolQueue(small / "pb-queue")
+    q2 = AdmittedQueueFixture(
+        pool.PoolQueue(small / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
+        default_demand={"cpu": 1, "mem_gb": 1})
     q2.ensure_layout()
     q2.mint_tier_capacity(STAGE_TIER, {STAGE_BARE: 1})
     key2 = "9" * 64

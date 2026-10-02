@@ -43,6 +43,8 @@ import pbrun  # noqa: E402
 from test_a_resident_range_is_adopted_rather_than_recopied import (  # noqa: E402
     STAGE_KIND, TIER, _hexkey, _row)
 
+from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
+
 KEY = "b" * 64
 CONSUMER_KEY = "c" * 64
 MANIFEST = "d" * 64
@@ -64,6 +66,9 @@ def queue(tmp_path: Path) -> pool.PoolQueue:
 
 
 def _end(queue: pool.PoolQueue, status: str):
+    queue = AdmittedQueueFixture(
+        queue, capacity={"cpu": 2, "mem_gb": 4},
+        default_demand={"cpu": 1, "mem_gb": 1})
     queue.publish(action_key=KEY, cas_root="/cas", checkout_root="/checkout",
                   worker_script="/worker.py", max_attempts=1)
     claimed = queue.claim()

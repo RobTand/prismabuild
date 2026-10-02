@@ -15,13 +15,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import pool  # noqa: E402
 import pbrun  # noqa: E402
 
+from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
+
 
 KEY = "e" * 64
 
 
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
-    value = pool.PoolQueue(tmp_path / "queue")
+    value = AdmittedQueueFixture(
+        pool.PoolQueue(tmp_path / "queue"), capacity={"cpu": 8, "mem_gb": 16},
+        default_demand={"cpu": 1, "mem_gb": 1})
     value.ensure_layout()
     value.publish(
         action_key=KEY,
@@ -223,7 +227,9 @@ def test_reaper_adopts_finisher_attempt_and_await_returncode(
 ) -> None:
     """The immutable finisher decides terminal state, detail, and caller rc."""
 
-    queue = pool.PoolQueue(tmp_path / "queue")
+    queue = AdmittedQueueFixture(
+        pool.PoolQueue(tmp_path / "queue"), capacity={"cpu": 8, "mem_gb": 16},
+        default_demand={"cpu": 1, "mem_gb": 1})
     queue.ensure_layout()
     queue.publish(
         action_key=KEY,

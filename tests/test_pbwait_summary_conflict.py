@@ -15,12 +15,16 @@ from prismabuild import core as pb, pool  # noqa: E402
 import pbrun  # noqa: E402
 import pbwait  # noqa: E402
 
+from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
+
 KEY = "e" * 64
 OTHER = "f" * 64
 
 
 def _ending(tmp_path: Path, key: str = KEY, *, status: str = "failed"):
-    queue = pool.PoolQueue(tmp_path / "queue")
+    queue = AdmittedQueueFixture(
+        pool.PoolQueue(tmp_path / "queue"), capacity={"cpu": 8, "mem_gb": 16},
+        default_demand={"cpu": 1, "mem_gb": 1})
     queue.ensure_layout()
     queue.publish(action_key=key, cas_root="/cas", checkout_root="/checkout",
                   worker_script="/worker.py", max_attempts=1)
@@ -93,7 +97,9 @@ def test_conflict_does_not_abort_other_keys_and_json_is_supported(tmp_path, monk
 def test_legacy_stream_summary_remains_a_refusal_with_verified_references(tmp_path, stdout):
     # The old writer stored whole streams without the metadata introduced
     # by #1203. Construct that shape from a real immutable ending.
-    queue = pool.PoolQueue(tmp_path / "legacy")
+    queue = AdmittedQueueFixture(
+        pool.PoolQueue(tmp_path / "legacy"), capacity={"cpu": 8, "mem_gb": 16},
+        default_demand={"cpu": 1, "mem_gb": 1})
     queue.ensure_layout()
     queue.publish(action_key=KEY, cas_root="/cas", checkout_root="/checkout",
                   worker_script="/worker.py", max_attempts=1)

@@ -12,11 +12,15 @@ sys.path.insert(0, str(ROOT / "tools/fleet"))
 from prismabuild import pool
 import pbstatus
 
+from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
+
 
 @pytest.fixture
 def live_pool(tmp_path, monkeypatch):
     monkeypatch.setenv("PRISMABUILD_TRANSPORT", "pool")
-    queue = pool.PoolQueue(tmp_path / "queue")
+    queue = AdmittedQueueFixture(
+        pool.PoolQueue(tmp_path / "queue"), capacity={"cpu": 8, "mem_gb": 32, "gpu": 2},
+        default_demand={"cpu": 1, "mem_gb": 1})
     queue.ensure_layout()
     for host, key, demand in [
         ("cpu-box", "a" * 64, {"cpu": 4, "mem_gb": 8}),

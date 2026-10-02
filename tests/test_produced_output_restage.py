@@ -43,6 +43,8 @@ import prismabuild.produced_output as po  # noqa: E402
 from prismabuild import residency_map as map_mod  # noqa: E402
 import stage_release  # noqa: E402
 
+from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
+
 try:
     from prismabuild import reader_lease as rlc
     HAS_SDK = True
@@ -94,7 +96,9 @@ def _template(prefix: str, window_gib: int = 1,
 
 
 def _queue(tmp_path: Path, gib: int = 4) -> pool.PoolQueue:
-    q = pool.PoolQueue(tmp_path / "pb-queue")
+    q = AdmittedQueueFixture(
+        pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
+        default_demand={"cpu": 1, "mem_gb": 1})
     q.ensure_layout()
     q.mint_tier_capacity(TIER, {KIND: gib})
     return q

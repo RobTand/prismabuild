@@ -27,6 +27,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
 import pbrun  # noqa: E402
 
+from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
+
 # Unique per process; see the note in ``test_pool_withdraw``.
 KEY_A = uuid.uuid4().hex + uuid.uuid4().hex
 
@@ -61,7 +63,9 @@ def _wait(monkeypatch, queue, key: str, wait_s: float = 5.0):
 
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
-    q = pool.PoolQueue(tmp_path / "pb-queue")
+    q = AdmittedQueueFixture(
+        pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
+        default_demand={"cpu": 1, "mem_gb": 1})
     q.ensure_layout()
     return q
 
@@ -228,7 +232,9 @@ def test_the_wait_loop_does_not_answer_a_new_run_with_an_old_withdrawal(
     ``publish`` retiring the marker is what makes the loop tell the truth.
     """
 
-    q = pool.PoolQueue(tmp_path / "pb-queue")
+    q = AdmittedQueueFixture(
+        pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
+        default_demand={"cpu": 1, "mem_gb": 1})
     q.ensure_layout()
     _publish(q, KEY_A)
     q.withdraw(KEY_A, reason="four suites, one box", by="rob@sparky")
