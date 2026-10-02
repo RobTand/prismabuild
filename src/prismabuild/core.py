@@ -702,10 +702,20 @@ def _canonical_file_bytes(value: object) -> bytes:
     return _canonical_bytes(value) + b"\n"
 
 
-def _sorted_lf_bytes(value: object) -> bytes:
-    """The hand-rolled writers' spelling, owned here (#1331)."""
+def _sorted_json_bytes(value: object) -> bytes:
+    """Sorted default JSON without a terminator, including list values (#1386).
 
-    return (json.dumps(dict(value), sort_keys=True) + "\n").encode("utf-8")
+    Preserve the diagnostics' spacing, ASCII escaping and nonfinite-number
+    behavior. This byte profile is distinct from finite canonical JSON.
+    """
+
+    return json.dumps(value, sort_keys=True).encode("utf-8")
+
+
+def _sorted_lf_bytes(value: object) -> bytes:
+    """The hand-rolled mapping writers' spelling, owned here (#1331)."""
+
+    return _sorted_json_bytes(dict(value)) + b"\n"
 
 
 def _indented_lf_bytes(value: object) -> bytes:
