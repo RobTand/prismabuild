@@ -473,7 +473,7 @@ refuse until the measurement can actually claim. Denials report
 and stop withholding. Portable backfill remains eligible on other hosts, and
 priority ordering is unchanged.
 
-**Canonical UNKNOWN-first reservation slice (#1419, source accepted; deployment HOLD).** Bounded
+**Canonical UNKNOWN-first reservation slice (#1419, source accepted; worker generation adopted).** Bounded
 legacy attention above is distinct from a host election. On affirmative fresh
 CPU/GPU attribution and a readable finite sealed incumbent deadline, exactly one
 host is selected for this measurement publication under its transition key and
@@ -558,9 +558,18 @@ optional paired reader preserves its ordinary physical dataset/mount default;
 it runs inside the existing mint lock and does not bypass qualification or
 alter token/funding accounting. A scaled gate must never resample the live host
 filesystem under its simulated GiB unit.
-This source-accepted partial slice is Refs #1419. Deployment and end-to-end live
-acceptance remain HOLD; finite safe-fit/release proof (#1429) remains UNKNOWN/HOLD.
-No prospective timed backfill or physical resource-reclaim bound is certified.
+This source-accepted partial slice is Refs #1419. The 2026-10-02 readback shows
+all three live workers on generation `d028dfee920b-1790960385-1d815cff72d1`, whose source parent
+`9dd0af2d52050469c01901a7b4c5110ecc8f7dd6` contains the accepted reservation
+slice and its tmpfs state-root correction. The published reservation and CPU
+controller bytes match main at `dc4803daaf09b6426083d2d36bd2a2da3d6832fe`;
+that main head also contains newer SDK-v4 pool changes which this generation
+does not carry. This worker-generation readback does not qualify an organic
+continuous-backfill wait bound. That live acceptance remains open, and finite
+safe-fit/release proof (#1429) remains UNKNOWN/HOLD. No prospective timed backfill
+or physical resource-reclaim bound is certified. The retained source, receipt
+and live-readback distinctions are recorded in
+[the P1 runtime checkpoint](evidence/p1_runtime_checkpoint_2026-10-02.json).
 
 CPU sampler silence is not a drain-resolvable measurement refusal (#1317).
 Missing, stale, future-dated or incomplete host samples produce
@@ -1713,6 +1722,31 @@ are refused rather than overriding PB's reservations or file partitioning.
 Surface report names expand `{shard}` or receive `.shard-N` before the final
 suffix. Expanded arguments and GPU budgets enter the ordinary sealed action
 identity through `pbrun`; no second dispatcher or placement policy is added.
+
+`--pytest-args '["--pbtest-trace"]'` opts into interrupted-shard diagnostics
+(#1455, Refs #1421). The existing outcome controller flushes one
+`pbtest-trace: ` JSON line per test start and completed setup/call/teardown
+report, using schema `prismabuild.pbtest_trace.v1`. Each phase report carries
+before/after samples from its actual test process, including an xdist worker,
+through pytest's existing report channel. The sealer includes the standalone
+`resource_scope.py` owner in the child program; its exact-process I/O reader
+supplies the counters and identity. RSS is an instantaneous `/proc/self/status`
+sample; `max_rss_watermark_bytes` is the process-lifetime high-water mark,
+not a per-test peak. I/O deltas cover that process and children it has reaped;
+live children, daemon-created containers, delayed writeback and later reaping
+prevent complete causal per-test attribution. Unavailable/regressing counters
+remain null with diagnostics. These observations complement the existing
+aggregate attempt resource profile and never replace its scope accounting.
+Diagnostic node IDs are capped at 4096 UTF-8 bytes; a truncated ID retains
+its full digest and an explicit truncation flag. Final outcome IDs stay intact.
+
+Trace lines identify the last observed test/phase if the controller exits
+before its summary. They are diagnostic events, not counted outcomes,
+committed work, a success receipt or proof of a write/OOM cause. Final outcome
+reconciliation is unchanged. This option adds bounded per-event sampling and
+log traffic, with no polling loop, disk quota or memory-budget change; it is
+off by default. An abrupt process death can still lose reports not delivered
+to the controller, so missing observations are unknown rather than zero.
 
 A checkout containing `tools/resolve_<module>_dev_pin.py` opts into reviewed
 Python dependency verification for every `pbtest` shard. The resolver runs

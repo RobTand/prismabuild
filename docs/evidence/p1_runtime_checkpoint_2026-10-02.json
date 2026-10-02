@@ -1,0 +1,142 @@
+{
+  "schema": "prismabuild.p1_runtime_checkpoint.v1",
+  "source_head": "dc4803daaf09b6426083d2d36bd2a2da3d6832fe",
+  "observed_utc": "2026-10-02T19:29:19.263918+00:00",
+  "runtime": {
+    "generation": "d028dfee920b-1790960385-1d815cff72d1",
+    "complete": true,
+    "timed_out": [],
+    "unavailable": [],
+    "published_commit": "d028dfee920bc243aae25be2e0901bbb5ea8e350",
+    "source_parent": "9dd0af2d52050469c01901a7b4c5110ecc8f7dd6",
+    "live_loops": [
+      {
+        "age_s": 0.03072810173034668,
+        "loops": 16,
+        "node": "dl380g10",
+        "runtime_commit": "d028dfee920bc243aae25be2e0901bbb5ea8e350",
+        "state": "live"
+      },
+      {
+        "age_s": 15.961149454116821,
+        "loops": 3,
+        "node": "sparklina",
+        "runtime_commit": "d028dfee920bc243aae25be2e0901bbb5ea8e350",
+        "state": "live"
+      },
+      {
+        "age_s": 0.26648402214050293,
+        "loops": 6,
+        "node": "sparky",
+        "runtime_commit": "d028dfee920bc243aae25be2e0901bbb5ea8e350",
+        "state": "live"
+      }
+    ]
+  },
+  "source_byte_audit": [
+    {
+      "source": "src/prismabuild/pool.py",
+      "published": "/mnt/shared/prismabuild-fleet/runtime-generations/d028dfee920b-1790960385-1d815cff72d1/src/prismabuild/pool.py",
+      "source_sha256": "ebf0835beddab49ac892af2748d6d287c933994a2f3e947e15d2117109249730",
+      "published_sha256": "3376a9de9975f83320822fb4088dae1ed4ab72495b4a3c794571c22e760ae388",
+      "equal": false
+    },
+    {
+      "source": "src/prismabuild/adaptive_cpu.py",
+      "published": "/mnt/shared/prismabuild-fleet/runtime-generations/d028dfee920b-1790960385-1d815cff72d1/src/prismabuild/adaptive_cpu.py",
+      "source_sha256": "e6782bff313d39bd481cba8f8aef577c1e0a6e40e733c2a5711c653b3f5d6bad",
+      "published_sha256": "e6782bff313d39bd481cba8f8aef577c1e0a6e40e733c2a5711c653b3f5d6bad",
+      "equal": true
+    },
+    {
+      "source": "src/prismabuild/_measurement_reservation.py",
+      "published": "/mnt/shared/prismabuild-fleet/runtime-generations/d028dfee920b-1790960385-1d815cff72d1/src/prismabuild/_measurement_reservation.py",
+      "source_sha256": "0422dc8e4e2dfa4d224edf38f1d012756d66e453a5084a30ad9f6bf96e5dee9f",
+      "published_sha256": "0422dc8e4e2dfa4d224edf38f1d012756d66e453a5084a30ad9f6bf96e5dee9f",
+      "equal": true
+    },
+    {
+      "source": "src/prismabuild/resource_scope.py",
+      "published": "/mnt/shared/prismabuild-fleet/runtime-generations/d028dfee920b-1790960385-1d815cff72d1/src/prismabuild/resource_scope.py",
+      "source_sha256": "1dd143bec66f28ffb6cce9c019c37205f6fb765d847598c6176822dd8c19246c",
+      "published_sha256": "1dd143bec66f28ffb6cce9c019c37205f6fb765d847598c6176822dd8c19246c",
+      "equal": true
+    },
+    {
+      "source": "tools/fleet/worker_loop.py",
+      "published": "/mnt/shared/prismabuild-fleet/runtime-generations/d028dfee920b-1790960385-1d815cff72d1/tools/fleet/worker_loop.py",
+      "source_sha256": "b1a48849d1ae0b71cbdf229567a20805ce5612a94fb0459677d497db13d612e2",
+      "published_sha256": "b1a48849d1ae0b71cbdf229567a20805ce5612a94fb0459677d497db13d612e2",
+      "equal": true
+    },
+    {
+      "source": "tools/fleet/resource_broker.py",
+      "published": "/mnt/shared/prismabuild-fleet/runtime-generations/d028dfee920b-1790960385-1d815cff72d1/tools/fleet/resource_broker.py",
+      "source_sha256": "ad5fa9e579fe44f2eb3c336b66401280faeaebf0ed00c10e4768b1dfdd1b7293",
+      "published_sha256": "ad5fa9e579fe44f2eb3c336b66401280faeaebf0ed00c10e4768b1dfdd1b7293",
+      "equal": true
+    }
+  ],
+  "1399": {
+    "original_starved_key": "2d5b871f8b70da6dc621f000b145a3bcec2798bbba25690dbe864dd88853b3fe",
+    "publication_unix": 1790782672.5769632,
+    "attempt": 1,
+    "status": "executed",
+    "returncode": 0,
+    "claimed_host": "sparklina",
+    "claimed_unix": 1790898334.6929178,
+    "finished_unix": 1790898474.721003,
+    "task_class": "measurement",
+    "gpu_measurement": true,
+    "cpu_allocation": {
+      "fallback": [],
+      "preferred": [
+        5,
+        6,
+        7,
+        8,
+        9,
+        15,
+        16,
+        17
+      ]
+    },
+    "receipt_sha256": "a43db2f1475cd9fa8a4b957ad6ebebc3bbc702e43230d3c327bfac023766594c",
+    "payload": {
+      "sha256": "e50fca51dac80c7536f6597fe7236b4a259fbf71cf61ab0ad49523e7e36e29da",
+      "bytes": 774
+    },
+    "resource_scope_cleanup_complete": true,
+    "resource_scope_empty": true,
+    "resource_scope_released": true,
+    "retained_action_launcher_generation": "3aff9642ab39-1790654284-1eed70850170",
+    "verification": "Existing SDK-v4 read_verified_action_result checked the selected immutable attempt/stdout, request, full worker-attestation/receipt binding and payload. Source SDK-v4 used only as a read-only inspection owner, not claimed deployed.",
+    "live_receipt_disposition": "Successful post-fix admission of the original starved measurement; no claim about cause-specific CPU-0 clearance or one-drain-cycle timing.",
+    "cycle_bound_qualified": false,
+    "missing_evidence": [
+      "Original passes and denial-transition records are absent. No original host-election/drain-start timeline remains.",
+      "The execution receipt names the retained action launcher, not the admission-loop generation.",
+      "The two payload reports do not certify the complete benchmark case grid or any performance improvement."
+    ]
+  },
+  "1403": {
+    "source_fix_merged_pr": 1405,
+    "source_fix_in_published_parent": true,
+    "natural_pending_claims_in_point_capture": [],
+    "point_capture_complete": true,
+    "closed_gate_recovery_qualified": false,
+    "disposition": "Source and published worker branch present; no natural owner-host pending finish under a closed gate was observed."
+  },
+  "1419": {
+    "source_fix_merged_pr": 1435,
+    "source_fix_in_published_parent": true,
+    "reservation_module_bytes_match": true,
+    "continuous_backfill_live_bound_qualified": false,
+    "finite_release_proof_1429": "UNKNOWN/HOLD",
+    "disposition": "Deployed conservative guard, with organic live wait-bound acceptance outstanding. Correctness-only priority -10 exclusive #855 rows cannot supply this proof."
+  },
+  "evidence_root": "/home/rob/tmp/astra-resume-20261002/pb_p1",
+  "no_new_gpu_work": true,
+  "no_runtime_or_queue_mutation": true,
+  "no_test_results_repeated": true
+}

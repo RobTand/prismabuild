@@ -41,6 +41,7 @@ trust.  The imbalance is reported so it can be seen rather than assumed.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import posixpath
 import re
@@ -372,8 +373,13 @@ from fleet_submit import TRANSPORTS, default_transport  # noqa: E402
 #: from a number this file copied would drift the moment either moved.
 from prismabuild import pytest_test_bound  # noqa: E402
 from worker_loop import DEFAULT_EXECUTION_CEILING_S  # noqa: E402
-#: The recorder every shard's pytest runs under, and the reader of its record.
-import pbtest_outcomes  # noqa: E402
+#: Read the recorder from this tool's own generation. A pbtest test can itself
+#: run under an older sealed recorder; its sys.modules entry is that outer
+#: shard's recorder, not the sibling this source must seal and understand.
+_outcomes_spec = importlib.util.spec_from_file_location(
+    __name__ + "_outcomes", Path(__file__).with_name("pbtest_outcomes.py"))
+pbtest_outcomes = importlib.util.module_from_spec(_outcomes_spec)
+_outcomes_spec.loader.exec_module(pbtest_outcomes)
 
 #: The largest end a non-GPU shard may seal from an announcement it never
 #: asked for, derived from admission's own rule rather than picked.
@@ -814,11 +820,13 @@ def load(name):
 
 pins = load("pbtest_pins") if "pbtest_pins" in SOURCES else None
 raise SystemExit(load("pbtest_outcomes").main(
-    preflight=None if pins is None else pins.preflight))
+    preflight=None if pins is None else pins.preflight,
+    resource_source=SOURCES.get("pbtest_resource_scope")))
 """
 
 
-def shard_entry(python: str, checkout: Path, *, tmpdir: str | None = None) -> list[str]:
+def shard_entry(python: str, checkout: Path, *, tmpdir: str | None = None,
+                trace: bool = False) -> list[str]:
     """The argv that runs a shard's pytest under the outcome recorder.
 
     Every shard reports each counted outcome by node ID (#942), so every
@@ -831,6 +839,11 @@ def shard_entry(python: str, checkout: Path, *, tmpdir: str | None = None) -> li
 
     here = Path(__file__)
     sources = {"pbtest_outcomes": here.with_name("pbtest_outcomes.py").read_text()}
+    if trace:
+        # The diagnostic plugin reuses the existing exact-process I/O reader.
+        # Carry its standalone source into any target project/interpreter.
+        sources["pbtest_resource_scope"] = (
+            RUNTIME_ROOT / "src" / "prismabuild" / "resource_scope.py").read_text()
     if any((checkout / "tools").glob("resolve_*_dev_pin.py")):
         sources["pbtest_pins"] = here.with_name("pbtest_pins.py").read_text()
     program = SHARD_PROGRAM.replace("@SOURCES@", repr(sources))
@@ -1022,7 +1035,8 @@ def displayed(output: str) -> list[str]:
 # extra file populations from hiding in forwarded arguments. Extend this list
 # deliberately for new plugins, after checking their execution semantics.
 PYTEST_SWITCHES = {"--strict-cuda", "--strict-markers", "--strict-config",
-                   "--collect-only", "--co", "--disable-warnings", "-x"}
+                   "--collect-only", "--co", "--disable-warnings", "-x",
+                   pbtest_outcomes.TRACE_OPTION}
 PYTEST_VALUES = {"-k", "-m", "--dist", "--surface-json", "--durations",
                  "--durations-min", "--maxfail", "--tb"}
 
@@ -1336,7 +1350,8 @@ def main() -> int:
     # an older receipt can silently omit the check. Unpinned projects retain
     # their existing commands and identities.
     try:
-        python_entry = shard_entry(args.python, checkout, tmpdir=args.tmpdir)
+        python_entry = shard_entry(args.python, checkout, tmpdir=args.tmpdir,
+                                   trace=pbtest_outcomes.TRACE_OPTION in pytest_args)
     except OSError as exc:
         sys.stderr.write(f"pbtest: cannot load the shard program: {exc}\n")
         return 2
