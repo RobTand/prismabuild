@@ -15166,7 +15166,9 @@ Duration-hint selection is separate from baseline verdict reuse (#1438).
 Current-tree baseline identity remains unchanged. A prior report's own source
 tree validates its recorded v3 runtime/config identity, while Git mode/blob
 agreement limits scheduling hints to untouched complete original shard rows.
-Changed/missing-file rows fall back to the existing estimates. Full pins,
+Changed/missing-file rows fall back to the existing estimates. Changes to
+collection plugins, pytest configuration or test-package initializers invalidate
+all optional hints. Full pins,
 pin-source bytes, interpreter, test domain/config and frozen published tool
 must still agree. Existing typed terminal metadata can identify prior source;
 legacy unbound reports remain ignored. No source receipt/output is edited,

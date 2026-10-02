@@ -699,6 +699,16 @@ class Runner:
         new_files = checkout_file_identities(Path(runtime["checkout"]), source[1])
         if old_files is None or new_files is None:
             return []
+        # Collection plugins and pytest configuration govern every module's
+        # meaning, so their changes invalidate the whole optional hint set.
+        def domain_file(name):
+            leaf = name.rsplit("/", 1)[-1]
+            return (leaf in {"conftest.py", "pytest.ini", "pyproject.toml", "setup.cfg", "tox.ini"}
+                    or (leaf == "__init__.py" and "tests" in name.split("/")[:-1]))
+
+        common = {name for name in old_files.keys() | new_files.keys() if domain_file(name)}
+        if any(old_files.get(name) != new_files.get(name) for name in common):
+            return []
         try:
             report = json.loads(Path(latest).read_text())
             if not isinstance(report, list):

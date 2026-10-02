@@ -188,7 +188,8 @@ unidentified legacy reports remain ignored.
 
 Git file modes/blobs must agree for every file/duration key in a reused shard.
 Changed or missing files, including their mixed shard rows, use ordinary default
-estimates. The derived duration-hints report retains only complete untouched
+estimates. Changed collection plugins, pytest configuration or test-package
+initializers invalidate the entire optional hint set. The derived duration-hints report retains only complete untouched
 original rows, stdout and receipts; it grants no pass/fail/result/skip reuse and
 does not alter the source report, test population, or sealed action. Missing
 source objects or unusable history simply omit the optional advice. These are
