@@ -277,6 +277,135 @@ def test_input_limits_return_owned_bytes_for_selected_inputs_only(tmp_path: Path
             input_limits={"pq.absent": 16})
 
 
+# -- every byte is bounded, and loosely-typed evidence is refused ------------
+
+def _rewrite_readonly(path: Path, payload: bytes) -> None:
+    """Rewrite one immutable evidence file, restoring its read-only mode."""
+
+    path.chmod(0o644)
+    path.write_bytes(payload)
+    path.chmod(0o444)
+
+
+def test_an_oversized_execution_receipt_refuses_under_the_evidence_cap(
+    tmp_path: Path, monkeypatch
+):
+    action, queue, record, receipt, _payload = _fixture(tmp_path)
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    receipt_path = cas._execution_receipt_path(str(receipt["receipt_sha256"]))
+    # A sparse file: nominally enormous, no blocks allocated.  A reader without
+    # a cap would allocate and hash the whole declared size before refusing.
+    receipt_path.chmod(0o644)
+    with receipt_path.open("r+b") as handle:
+        handle.truncate(1 << 34)
+    receipt_path.chmod(0o444)
+    seen: list[tuple[Path, object]] = []
+    original = pb._read_regular_file_nofollow
+
+    def spy(path, **kwargs):
+        seen.append((Path(path), kwargs.get("max_bytes")))
+        return original(path, **kwargs)
+
+    monkeypatch.setattr(pb, "_read_regular_file_nofollow", spy)
+    with pytest.raises(client.ActionResultError):
+        client.read_verified_action_result(
+            queue, str(action["action_key"]),
+            published_unix=float(record["published_unix"]), attempt=1,
+            max_result_bytes=64, max_evidence_bytes=1 << 20)
+    assert (receipt_path, 1 << 20) in seen, (
+        "the execution receipt must be read under the caller's cap")
+    assert all(cap is not None for _path, cap in seen), (
+        "every read in the verified-result path must carry a byte cap")
+
+
+def test_a_boolean_attempt_number_refuses(tmp_path: Path):
+    action, queue, record, _receipt, _payload = _fixture(tmp_path)
+    attempt_path = queue.attempt_path(record, 1)
+    value = json.loads(attempt_path.read_text(encoding="utf-8"))
+    value["attempt"] = True  # JSON true, equal to 1 under ``==``
+    _rewrite_readonly(attempt_path, pb._canonical_file_bytes(value))
+    with pytest.raises(client.ActionResultError, match="history link"):
+        client.read_verified_action_result(
+            queue, str(action["action_key"]),
+            published_unix=float(record["published_unix"]), attempt=1,
+            max_result_bytes=64, max_evidence_bytes=1 << 20)
+
+
+def test_a_huge_attempt_generation_refuses(tmp_path: Path):
+    action, queue, record, _receipt, _payload = _fixture(tmp_path)
+    attempt_path = queue.attempt_path(record, 1)
+    value = json.loads(attempt_path.read_text(encoding="utf-8"))
+    value["published_unix"] = 10 ** 400  # finite to no binary64 reader
+    _rewrite_readonly(attempt_path, pb._canonical_file_bytes(value))
+    with pytest.raises(client.ActionResultError, match="history link"):
+        client.read_verified_action_result(
+            queue, str(action["action_key"]),
+            published_unix=float(record["published_unix"]), attempt=1,
+            max_result_bytes=64, max_evidence_bytes=1 << 20)
+
+
+def test_a_huge_publication_integer_refuses(tmp_path: Path):
+    action, queue, _record, _receipt, _payload = _fixture(tmp_path)
+    # A caller-supplied integer past the binary64 range is a refusal, never an
+    # escaped OverflowError.
+    with pytest.raises(client.ActionResultError):
+        client.read_verified_action_result(
+            queue, str(action["action_key"]), published_unix=10 ** 400,
+            attempt=1, max_result_bytes=64, max_evidence_bytes=1 << 20)
+
+
+def test_an_empty_terminal_leaf_never_reads_as_absent(tmp_path: Path):
+    action, queue, record, _receipt, _payload = _fixture(tmp_path)
+    key = str(action["action_key"])
+    # A newer generation's failed row, present but unreadable (empty).  The
+    # bounded census must not skip it and answer the older success.
+    failed = queue.item_path(pool.FAILED, key)
+    failed.parent.mkdir(parents=True, exist_ok=True)
+    failed.write_bytes(b"")
+    with pytest.raises(client.ActionResultError):
+        client.read_verified_action_result(
+            queue, key, published_unix=float(record["published_unix"]),
+            attempt=1, max_result_bytes=64, max_evidence_bytes=1 << 20)
+
+
+def test_the_bounded_row_reader_is_strict_and_refuses_empty(tmp_path: Path):
+    absent = tmp_path / "absent.json"
+    assert pool._read_json_bounded(absent, max_bytes=1 << 20) is None
+    empty = tmp_path / "empty.json"
+    empty.write_bytes(b"")
+    with pytest.raises(pool.PoolContractError):
+        pool._read_json_bounded(empty, max_bytes=1 << 20)
+    duplicate = tmp_path / "duplicate.json"
+    duplicate.write_text('{"a": 1, "a": 2}\n', encoding="utf-8")
+    with pytest.raises(pool.PoolContractError):
+        pool._read_json_bounded(duplicate, max_bytes=1 << 20)
+    nonfinite = tmp_path / "nonfinite.json"
+    nonfinite.write_text('{"a": NaN}\n', encoding="utf-8")
+    with pytest.raises(pool.PoolContractError):
+        pool._read_json_bounded(nonfinite, max_bytes=1 << 20)
+
+
+def test_a_duplicate_key_announcement_does_not_bind(tmp_path: Path):
+    action, queue, record, receipt, _payload = _fixture(tmp_path)
+    attempt_path = queue.attempt_path(record, 1)
+    value = json.loads(attempt_path.read_text(encoding="utf-8"))
+    log_path = queue.root / str(value["logs"]["stdout"]["path"])
+    # Two identical ``receipt`` keys in one line: permissive ``json.loads``
+    # keeps the last and would bind the authentic receipt; strict decoding
+    # refuses the line, so no announcement remains.
+    line = ('{"receipt": ' + json.dumps(receipt) + ', '
+            '"receipt": ' + json.dumps(receipt) + "}\n").encode("utf-8")
+    _rewrite_readonly(log_path, line)
+    value["logs"]["stdout"]["sha256"] = pb.raw_sha256(line)
+    value["logs"]["stdout"]["bytes"] = len(line)
+    _rewrite_readonly(attempt_path, pb._canonical_file_bytes(value))
+    with pytest.raises(client.ActionResultError, match="announcement"):
+        client.read_verified_action_result(
+            queue, str(action["action_key"]),
+            published_unix=float(record["published_unix"]), attempt=1,
+            max_result_bytes=64, max_evidence_bytes=1 << 20)
+
+
 # -- the standard-capture command binding ------------------------------------
 
 def test_the_capture_wrapper_is_one_golden_byte_for_byte():

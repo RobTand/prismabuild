@@ -26,7 +26,6 @@ carry no hard NFS deadline.
 
 from __future__ import annotations
 
-import json
 import math
 import re
 from collections.abc import Mapping
@@ -67,9 +66,20 @@ def _checked_action_key(value: object) -> str:
 
 
 def _checked_publication_unix(value: object) -> float:
+    """A caller's publication as a finite float, or a refusal.
+
+    A JSON number reaching this reader may be a Python integer of any size,
+    and ``float`` on one past the binary64 range raises ``OverflowError``.
+    That is hostile input, so it leaves as :class:`ActionResultError`, never
+    as an implementation-specific arithmetic exception (#1446).
+    """
+
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ActionResultError("published_unix must be a finite number")
-    number = float(value)
+    try:
+        number = float(value)
+    except OverflowError as exc:
+        raise ActionResultError("published_unix must be a finite number") from exc
     if not math.isfinite(number):
         raise ActionResultError("published_unix must be a finite number")
     return number
@@ -207,35 +217,27 @@ def _read_selected_attempt(queue, path, evidence_cap):
 
 
 def _bind_attempt(
+    queue,
     record: Mapping[str, object],
     attempt_record: Mapping[str, object],
     *,
     key: str,
-    published: float,
     number: int,
 ) -> None:
-    """Bind the immutable attempt to the terminal summary, exactly."""
+    """Bind the immutable attempt to the terminal summary, exactly.
 
-    if attempt_record.get("schema") != _pool.POOL_ATTEMPT_SCHEMA_V1:
-        raise ActionResultError("pool attempt outcome has the wrong schema")
-    if attempt_record.get("action_key") != key:
-        raise ActionResultError("pool attempt outcome names another action key")
-    attempt_published = attempt_record.get("published_unix")
-    if (
-        isinstance(attempt_published, bool)
-        or not isinstance(attempt_published, (int, float))
-        or not math.isfinite(float(attempt_published))
-        or float(attempt_published) != published
-    ):
-        raise ActionResultError("pool attempt outcome names another generation")
-    if attempt_record.get("attempt") != number:
-        raise ActionResultError("pool attempt outcome numbers another attempt")
-    if attempt_record.get("max_attempts") != record.get(
-        "max_attempts", _pool.DEFAULT_MAX_ATTEMPTS
-    ):
-        raise ActionResultError("pool attempt retry bound differs from the terminal")
-    if attempt_record.get("retry_safe") != record.get("retry_safe"):
-        raise ActionResultError("pool attempt retry safety differs from the terminal")
+    The identity check is the queue's own one owner
+    (:meth:`PoolQueue._bind_linked_attempt`), which the queue also applies to
+    every linked attempt it reads; this reader adds only the success-specific
+    conditions, so the two cannot drift on which fields must agree -- the
+    preemption context included (#1446).
+    """
+
+    try:
+        queue._bind_linked_attempt(
+            record, attempt_record, attempt=number, where=f"{key[:12]} attempt {number}")
+    except (_pool.PoolError, pb.PrismaBuildError) as exc:
+        raise ActionResultError(f"pool attempt outcome refused: {exc}") from exc
     if attempt_record.get("status") != record.get("status"):
         raise ActionResultError("pool attempt status differs from the terminal")
     if attempt_record.get("disposition") != _pool.DONE:
@@ -260,6 +262,11 @@ def _result_announcement(stdout: bytes) -> Mapping[str, object]:
     ``receipt_sha256``.  Exactly one candidate must exist: zero means the run
     did not announce a result, and two -- even identical -- mean the log is not
     the one unambiguous account the reader can bind.
+
+    Each candidate line is decoded by Core's strict reader, not permissive
+    ``json.loads``: a duplicate key or a non-finite number is not an
+    announcement, so a poisoned line cannot name a receipt the run did not
+    file.
     """
 
     text = stdout.decode("utf-8", errors="replace")
@@ -269,8 +276,9 @@ def _result_announcement(stdout: bytes) -> Mapping[str, object]:
         if not stripped.startswith("{") or not stripped.endswith("}"):
             continue
         try:
-            value = json.loads(stripped)
-        except ValueError:
+            value = pb._decode_strict_json(
+                stripped.encode("utf-8"), where="pool attempt stdout line")
+        except pb.PrismaBuildError:
             continue
         if not isinstance(value, dict):
             continue
@@ -346,8 +354,7 @@ def read_verified_action_result(
     record, generation, attempt_path = _select_terminal(
         queue, key, published, number, evidence_cap)
     attempt_record = _read_selected_attempt(queue, attempt_path, evidence_cap)
-    _bind_attempt(record, attempt_record, key=key, published=published,
-                  number=number)
+    _bind_attempt(queue, record, attempt_record, key=key, number=number)
 
     cas_root = record.get("cas_root")
     if not isinstance(cas_root, str) or not cas_root:
@@ -409,7 +416,8 @@ def read_verified_action_result(
 
     try:
         receipt, payload = cas.read_execution_result(
-            action, receipt_sha256, max_result_bytes=result_cap)
+            action, receipt_sha256, max_result_bytes=result_cap,
+            max_receipt_bytes=evidence_cap)
     except (pb.PrismaBuildError, OSError) as exc:
         raise ActionResultError(f"execution receipt refused: {exc}") from exc
     if dict(announced_receipt) != receipt:

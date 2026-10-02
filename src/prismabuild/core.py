@@ -4798,6 +4798,7 @@ class PrismaBuildCAS:
         receipt_sha256: str,
         *,
         max_result_bytes: int,
+        max_receipt_bytes: int | None = None,
     ) -> tuple[dict[str, object], bytes]:
         """The execution receipt and its payload, under one result-size cap.
 
@@ -4806,6 +4807,11 @@ class PrismaBuildCAS:
         impose a bound.  A caller that must not read an oversized or racing
         payload needs the cap applied *before* the blob is opened and the exact
         verified bytes returned from that one held read (#1446).
+
+        ``max_receipt_bytes`` bounds the receipt read too, so the same caller
+        holds one cap over every byte it consumes: a sparse or oversized
+        receipt refuses before any of its content is decoded.  ``None`` keeps
+        the uncapped read this method began with.
 
         The declared payload size is checked first, so a payload over the cap
         refuses without opening it.  The bytes are then read once through
@@ -4817,8 +4823,14 @@ class PrismaBuildCAS:
 
         if type(max_result_bytes) is not int or max_result_bytes < 0:
             raise ActionContractError("max_result_bytes must be a non-negative integer")
+        if max_receipt_bytes is not None and (
+                type(max_receipt_bytes) is not int or max_receipt_bytes < 0):
+            raise ActionContractError(
+                "max_receipt_bytes must be a non-negative integer")
         normalized = validate_action(action)
-        raw = self._load_receipt_bytes(self._execution_receipt_path(receipt_sha256))
+        raw = self._load_receipt_bytes(
+            self._execution_receipt_path(receipt_sha256),
+            max_bytes=max_receipt_bytes)
         receipt = self._validate_receipt(
             _decode_strict_json(raw, where="execution receipt"), action=normalized
         )
