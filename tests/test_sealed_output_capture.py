@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-import shlex
 import shutil
 import subprocess
 import sys
@@ -14,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from prismabuild import movement_actions
 
 
-def _capture(tmp_path, command, *, capture_status=0, producer_status=None, prefer_gnu=False):
+def _capture(tmp_path, command, *, capture_status=0, prefer_gnu=False):
     tools = tmp_path / "capture-tools"
     tools.mkdir()
     names = ("tee", "gnutee") if prefer_gnu else ("tee",)
@@ -50,9 +49,15 @@ def test_capture_failure_cannot_publish_success_and_preserves_producer_error(
     assert log.read_bytes() == b"com"
     assert done.returncode == expected
     assert done.stdout == b"com"
+
+
+def test_capture_error_records_both_statuses_and_executable(tmp_path):
+    producer = [sys.executable, "-c", "import sys;sys.stdout.write('data');sys.exit(7)"]
+    done, log, tools = _capture(tmp_path, producer, capture_status=42)
+    assert done.returncode == 7
     assert str(tools / "tee").encode() in done.stderr
     assert b"capture status=42" in done.stderr
-    assert f"producer status={producer_status}".encode() in done.stderr
+    assert b"producer status=7" in done.stderr
 
 
 def test_gnu_capture_is_preferred_without_changing_the_action_path(tmp_path):
