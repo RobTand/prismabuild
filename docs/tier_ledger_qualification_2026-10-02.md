@@ -156,3 +156,15 @@ Checks and attribution:
 `/home/rob/tmp/astra-resume-20261002/pb_tiers/1027-filter-measurement-verified.json`,
 `1027-filter-artifacts-verified.json`, and `1027-filter-profile-attribution.json`.
 The root coordinator owns acceptance, merge and any later deployment.
+
+### Estimator clarification from independent review
+
+The existing benchmark's `steady_median_wall_s` uses the upper middle observation
+for an even number of steady samples. The tables above preserve that historical
+estimator; the 28.0172% calculation uses it rather than the ordinary median.
+Ordinary medians of the twenty steady observations are 0.36205/0.42445 seconds
+for the two before arms and 0.24910/0.31790 for after. Their aggregates are
+0.39325 and 0.28350 seconds, a 27.9085% reduction. **Approximately 28% less
+fixture wall time** is the appropriately precise claim. No new run or arm
+selection was used. Independent calculation:
+`/home/rob/tmp/astra-resume-20261002/pb_tiers/1027-estimator-check.json`.
