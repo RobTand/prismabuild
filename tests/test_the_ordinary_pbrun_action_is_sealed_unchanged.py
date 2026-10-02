@@ -3,10 +3,11 @@
 #517 moves ``main()``'s action construction into a reusable builder so the
 pre-execution decomposer can seal children through the same sealer rather than
 clone its hashing rules.  Every ``pbrun`` action key is a content hash of the
-body below, and every receipt in the CAS is addressed by that key, so a body
-that shifts by one field orphans the fleet's entire measurement history and
-turns every cache hit into a re-run.  The refactor is therefore correct exactly
-when this file still passes, and nothing else about it is interesting.
+body below, and every receipt in the CAS is addressed by that key. A body
+change moves newly sealed action keys; retained requests still recover their
+original receipts as sealed. This catches unintended changes during extraction.
+The approved #1439 capture behavior advances only task.argv[-1] after the
+shared-owner refactor first passes the original goldens.
 
 Two rows, because most of the body is conditional.  The plain row seals none
 of the optional ``params``; the rich row seals a data manifest, the two GPU
@@ -218,10 +219,9 @@ def test_the_sealed_body_matches_the_recorded_golden(
         golden.write_text(observed, encoding="utf-8")
         pytest.fail(f"recorded a new golden at {golden.name}; re-run to check it")
     assert observed == golden.read_text(encoding="utf-8"), (
-        "the ordinary pbrun action body moved: every CAS receipt addressed by "
-        "the old key is orphaned. Restore the body, or -- if the change is "
-        "intended -- delete the golden, re-record it, and say in the commit "
-        "message which receipts it retires."
+        "the ordinary pbrun action body moved. Restore an unintended change, "
+        "or record and document an approved identity change. Retained sealed "
+        "requests and their receipts remain immutable and recoverable."
     )
 
 
