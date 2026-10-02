@@ -23,6 +23,12 @@ from . import pool
 #: so the log the wrapper tees IS the declared result.
 SEALED_ARGV0 = "/bin/bash"
 
+
+def captured_command(command: Sequence[str], log_name: str) -> str:
+    """The existing ordinary/movement shell capture boundary."""
+    return (f"{shlex.join(command)} 2>&1 | tee {shlex.quote(log_name)}; "
+            f"exit ${{PIPESTATUS[0]}}")
+
 #: Parameters a movement action may restate off its submission template.
 #: ``retry_policy`` is not one of them (#950): a mover's is its own.
 _MOVEMENT_PARAM_KEYS = ("cwd", "checkout_snapshot", "data_manifest")
@@ -579,8 +585,7 @@ def seal_movement_action(
             # (``core.run_local_action`` builds the child's environment from
             # the sealed variables alone), so the wrapper exports nothing.
             "argv": [SEALED_ARGV0, "--noprofile", "--norc", "-c",
-                     f"{shlex.join(params['command'])} 2>&1 | tee {shlex.quote(log_name)}; "
-                     f"exit ${{PIPESTATUS[0]}}"],
+                     captured_command(params["command"], log_name)],
             "result_path": log_name,
         },
         "inputs": template["inputs"],                     # type: ignore[index]
