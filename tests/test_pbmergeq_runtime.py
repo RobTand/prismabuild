@@ -401,3 +401,28 @@ def test_mixed_changed_file_shards_remain_untouched_and_use_fallback_estimates(t
     original = report.read_bytes()
     assert mq.Runner(cfg, store).history(current) == []
     assert report.read_bytes() == original
+
+
+@pytest.mark.parametrize("name", ["conftest.py", "pytest.ini"])
+def test_changed_collection_configuration_invalidates_all_duration_hints(tmp_path, name):
+    cfg, store, _, _, _, _ = _duration_history_two_trees(tmp_path)
+    (tmp_path / name).write_text("# new collection policy\n")
+    git("add", name, cwd=tmp_path)
+    git("commit", "-q", "-m", "changed collection domain", cwd=tmp_path)
+    current = mq.checkout_runtime(cfg, tmp_path)
+    assert mq.Runner(cfg, store).history(current) == []
+
+
+@pytest.mark.parametrize("source", ["invalid", [], [None, None], ["--help", "--help"]])
+def test_malformed_prior_source_has_no_duration_hints(tmp_path, source):
+    cfg, store, _, current, _, _ = _duration_history_two_trees(tmp_path)
+    store.state["history_source"] = source
+    assert mq.Runner(cfg, store).history(current) == []
+
+
+def test_missing_prior_git_objects_has_no_duration_hints(tmp_path):
+    cfg, store, _, current, _, _ = _duration_history_two_trees(tmp_path)
+    missing = ["0" * 40, "f" * 40]
+    store.state["history_source"] = missing
+    store.state["history_runtime"] = mq.baseline_key(cfg, missing[1], current)
+    assert mq.Runner(cfg, store).history(current) == []
