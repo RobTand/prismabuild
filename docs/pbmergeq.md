@@ -11,8 +11,11 @@ sharding and placement.
    eligibility filter: open, not a draft, a head branch in the repository
    itself (never a fork), opened by `author`, based on `base_branch`. An entry
    enqueued with a SHA is refused if the head has moved.
-2. Fetch the base branch and each `refs/pull/N/head` into a bare mirror the
-   queue owns, check that each fetched head equals what GitHub reports, and
+2. Fetch the base branch and each full immutable commit selected from GitHub
+   into a bare mirror the queue owns. Require exact destination-ref equality
+   and a commit object; refuse failed fetches explicitly. Synthetic
+   `refs/pull/N/head` may lag the real branch and are not the selected source.
+   Preserve the independent enqueued-pin and subsequent GitHub head checks, and
    merge them in queue order onto a fresh worktree of the base. A pull request
    that conflicts with the base gets a comment and drops out; one that only
    conflicts with an earlier batch member is re-queued.
