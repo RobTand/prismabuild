@@ -15226,3 +15226,14 @@ and a successful producer with failed capture fails rather than publishing a
 partial log. This changes newly sealed capture argv identities; retained sealed
 requests and receipts remain immutable and can be recovered as sealed. No system
 tool, fleet runtime, active queue, placement or result-population policy changes.
+
+Core also owns the default sorted JSON byte profile used by retained-reader
+diagnostics and merge-queue duration hints (#1386). `_sorted_json_bytes` accepts
+the original JSON values, including list reports, with default spacing, ASCII
+escaping and nonfinite-number behavior and no trailing LF. `_sorted_lf_bytes`
+keeps its mapping conversion and appends one LF. The hint filename hashes those
+exact prior bytes through `raw_sha256`; canonical finite JSON is a different
+profile. Reader ownership, retained-child messages and scheduling hints keep
+their existing contracts. Exact reader facade/name distinctions are registered
+without growing the shrink-only maps; no runtime adoption or staged-read
+acceptance axis advances from this source repair.

@@ -219,7 +219,6 @@
   "sorted-json:tools/fleet/pbrun.py::submit_deferred",
   "sorted-json:tools/fleet/pbrun.py::wait_out_retained_readers.waiting",
   "sorted-json:tools/fleet/pbsnapshot.py::main",
-  "sorted-json:tools/fleet/pbstatus.py::_stop_reader",
   "sorted-json:tools/fleet/pbstatus.py::blocked_origin_remedies",
   "sorted-json:tools/fleet/pbstatus.py::main",
   "sorted-json:tools/fleet/pbsweep.py::main",
@@ -250,6 +249,29 @@
   "sorted-json:tools/fleet/upgrade_client.py::canonical_json"
  ],
  "same_name_distinct": [
+  {
+   "modules": [
+    "src/prismabuild/_measurement_reservation.py"
+   ],
+   "name": "_read",
+   "reason": "The measurement census requires bounded no-follow replaced-leaf reads and strict JSON object decoding, with CensusUnavailable for disappearing mandatory records and explicit optional absence. Existing readers tolerate cache or reconciliation failures, validate spool receipts, or return raw bytes; their absence and refusal contracts cannot replace this census boundary."
+  },
+  {
+   "modules": [
+    "src/prismabuild/_bounded_reader.py",
+    "tools/fleet/pbstatus.py"
+   ],
+   "name": "bounded",
+   "reason": "The private reader owns the fork, deadline and optional persistent ownership handshake. The diagnostic compatibility facade exposes the historical argument surface without ownership callbacks and delegates every effect to that owner; it is not a second reader implementation."
+  },
+  {
+   "modules": [
+    "src/prismabuild/_bounded_reader.py",
+    "tools/fleet/pbstatus.py"
+   ],
+   "name": "_reap_within",
+   "reason": "The private reader owns actual waitpid reaping. The diagnostic compatibility facade deliberately resolves that owner on each call so existing retained-reader callers and core fault injection share the current boundary, as test_bounded_reader_core_boundary verifies; it contains no independent reaping policy."
+  },
   {
    "modules": [
     "tools/fleet/qualify_needrestart_broker_deferral.py"
