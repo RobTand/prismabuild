@@ -5669,8 +5669,7 @@ def seal_action_from_template(
     else:
         argv = [SEALED_ARGV0, "--noprofile", "--norc", "-c",
                 f"export PATH={shlex.quote(variables['PATH'].split(':', 1)[0])}:$PATH; "
-                f"{shlex.join(command)} 2>&1 | tee {shlex.quote(log_name)}; "
-                f"exit ${{PIPESTATUS[0]}}"]
+                + movement_actions.captured_command(command, log_name)]
         effective_result = log_name if result_path is None else result_path
     body = {
         "schema": pb.ACTION_SCHEMA_V2,

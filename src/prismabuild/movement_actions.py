@@ -23,6 +23,27 @@ from . import pool
 #: so the log the wrapper tees IS the declared result.
 SEALED_ARGV0 = "/bin/bash"
 
+
+def captured_command(command: Sequence[str], log_name: str) -> str:
+    """Capture bytes with scoped GNU preference and retain both pipeline codes.
+
+    Selection uses the action's existing PATH. The resolved executable and
+    capture failures are retained in the ordinary action stderr evidence.
+    """
+    return (
+        'if _pb_capture=$(command -v gnutee); then :; '
+        'elif _pb_capture=$(command -v tee); then :; '
+        'else printf "pbrun: log capture executable unavailable\\n" >&2; exit 127; fi; '
+        'printf "pbrun: log capture executable=%s\\n" "$_pb_capture" >&2; '
+        f'{shlex.join(command)} 2>&1 | "$_pb_capture" {shlex.quote(log_name)}; '
+        '_pb_status=("${PIPESTATUS[@]}"); '
+        'if (( _pb_status[1] != 0 )); then '
+        'printf "pbrun: capture status=%s; producer status=%s\\n" '
+        '"${_pb_status[1]}" "${_pb_status[0]}" >&2; fi; '
+        'if (( _pb_status[0] != 0 )); then exit "${_pb_status[0]}"; fi; '
+        'exit "${_pb_status[1]}"'
+    )
+
 #: Parameters a movement action may restate off its submission template.
 #: ``retry_policy`` is not one of them (#950): a mover's is its own.
 _MOVEMENT_PARAM_KEYS = ("cwd", "checkout_snapshot", "data_manifest")
@@ -579,8 +600,7 @@ def seal_movement_action(
             # (``core.run_local_action`` builds the child's environment from
             # the sealed variables alone), so the wrapper exports nothing.
             "argv": [SEALED_ARGV0, "--noprofile", "--norc", "-c",
-                     f"{shlex.join(params['command'])} 2>&1 | tee {shlex.quote(log_name)}; "
-                     f"exit ${{PIPESTATUS[0]}}"],
+                     captured_command(params["command"], log_name)],
             "result_path": log_name,
         },
         "inputs": template["inputs"],                     # type: ignore[index]

@@ -15173,3 +15173,13 @@ pin-source bytes, interpreter, test domain/config and frozen published tool
 must still agree. Existing typed terminal metadata can identify prior source;
 legacy unbound reports remain ignored. No source receipt/output is edited,
 no result or skipped test is adopted, and no new cache or dispatcher is added.
+
+
+The ordinary and movement action log capture share one sealed shell generator
+(#1439). Its existing action PATH chooses gnutee when available, otherwise tee;
+the resolved executable is recorded in ordinary stderr evidence. Both pipeline
+statuses are copied immediately. A failed producer retains its original code,
+and a successful producer with failed capture fails rather than publishing a
+partial log. This changes newly sealed capture argv identities; retained sealed
+requests and receipts remain immutable and can be recovered as sealed. No system
+tool, fleet runtime, active queue, placement or result-population policy changes.

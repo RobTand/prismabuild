@@ -5663,8 +5663,9 @@ def _run_initial_miss_rendezvous(
 # trace only its own descendants.  A profiler started beside the action -- the
 # ``--pid`` shape -- is the action's *sibling*, and attaching was refused with
 # ``Permission Denied``.  ``prctl(PR_SET_PTRACER)`` on the child does not rescue
-# it either: the sealed argv is ``bash -c '... | tee log; exit ${PIPESTATUS[0]}'``
-# and bash *forks* a pipeline member rather than exec'ing it, so the Python
+# it either: the sealed capture argv runs a bash pipeline (the historical
+# shape used tee; the shared #1439 boundary retains both pipeline statuses).
+# Bash *forks* a pipeline member rather than exec'ing it, so the Python
 # process that does the work is a grandchild with no relation of its own, and
 # py-spy answered ``No python processes found``.  Launching the profiler as the
 # argv's parent satisfies the other clause Yama accepts, and it is the only

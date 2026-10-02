@@ -72,7 +72,7 @@
    "--noprofile",
    "--norc",
    "-c",
-   "export PATH=/PB517/wrapper:$PATH; /bin/bash -lc 'printf ok' 2>&1 | tee pbrun_result.<stamp-fingerprint>.txt; exit ${PIPESTATUS[0]}"
+   "export PATH=/PB517/wrapper:$PATH; if _pb_capture=$(command -v gnutee); then :; elif _pb_capture=$(command -v tee); then :; else printf \"pbrun: log capture executable unavailable\\n\" >&2; exit 127; fi; printf \"pbrun: log capture executable=%s\\n\" \"$_pb_capture\" >&2; /bin/bash -lc 'printf ok' 2>&1 | \"$_pb_capture\" pbrun_result.<stamp-fingerprint>.txt; _pb_status=(\"${PIPESTATUS[@]}\"); if (( _pb_status[1] != 0 )); then printf \"pbrun: capture status=%s; producer status=%s\\n\" \"${_pb_status[1]}\" \"${_pb_status[0]}\" >&2; fi; if (( _pb_status[0] != 0 )); then exit \"${_pb_status[0]}\"; fi; exit \"${_pb_status[1]}\""
   ],
   "artifact_family": "generic",
   "artifact_kind": "generic",
