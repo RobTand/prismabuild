@@ -539,12 +539,22 @@ class Mirror:
             self.git("config", "user.email", "pbmergeq@localhost")
         self.worktrees.mkdir(parents=True, exist_ok=True)
 
-    def fetch(self, prs: Iterable[int]) -> str:
-        """Fetch the base branch and each PR head; return the base SHA."""
+    def fetch(self, heads: dict[int, str]) -> str:
+        """Fetch the base and GitHub-selected immutable commits, not pull refs."""
 
         refs = [f"+refs/heads/{self.cfg.base_branch}:refs/mq/base"]
-        refs += [f"+refs/pull/{n}/head:refs/mq/pr/{n}" for n in prs]
+        for number, sha in heads.items():
+            if (not isinstance(sha, str) or len(sha) != 40
+                    or any(c not in "0123456789abcdef" for c in sha)):
+                raise ValueError(f"selected head for #{number} is not a full Git commit")
+            refs.append(f"+{sha}:refs/mq/pr/{number}")
         self.git("fetch", "-q", "--no-tags", self.cfg.fetch_url, *refs)
+        for number, sha in heads.items():
+            fetched = self.rev(f"refs/mq/pr/{number}")
+            if fetched != sha:
+                raise ValueError(f"fetched head for #{number} differs from selected {sha}")
+            if self.git("cat-file", "-t", fetched).stdout.strip() != "commit":
+                raise ValueError(f"selected head for #{number} is not a commit")
         return self.rev("refs/mq/base")
 
     def remote_base(self) -> str:
@@ -879,7 +889,7 @@ class Queue:
         return chosen, skipped
 
     def build(self, batch: dict, prs: list[dict]) -> Path:
-        base = self.mirror.fetch([p["pr"] for p in prs])
+        base = self.mirror.fetch({p["pr"]: p["sha"] for p in prs})
         batch["base"], batch["base_tree"] = base, self.mirror.tree(base)
         checkout = self.mirror.worktree(f"{batch['id']}-candidate", base)
         included, dropped = [], []

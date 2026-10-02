@@ -15149,3 +15149,14 @@ This source change modifies no staged-read requirement's implementation,
 deployment or workload-proof axis: SC-01/SC-02 placement/movement remain
 PB-owned; ID-08/ID-09 and SAFE-03 distinctions remain binding. No staged-read,
 live queue/runtime activation, numerical, wire or default ship-gate claim is made.
+
+
+The merge queue fetches the exact full immutable head selected by its GitHub
+eligibility check from the configured same-repository origin. It requires
+commit object type and exact mirror-ref equality before composing any candidate;
+an unavailable commit or invalid object produces an explicit error and no test
+or success status. GitHub's synthetic pull refs may lag an updated real branch
+and do not choose the source. Enqueued pins and later GitHub head/source checks
+remain independent guards. This uses the existing Git mirror and fetch-by-SHA
+mechanism, not a second source registry or dispatcher (#1436). Deployment of
+this queue-only source requires separate coordinator acceptance.
