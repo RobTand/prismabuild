@@ -347,11 +347,12 @@ def test_an_oversized_execution_receipt_refuses_under_the_evidence_cap(
     action, queue, record, receipt, _payload = _fixture(tmp_path)
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
     receipt_path = cas._execution_receipt_path(str(receipt["receipt_sha256"]))
-    # A sparse file: nominally enormous, no blocks allocated.  A reader without
-    # a cap would allocate and hash the whole declared size before refusing.
+    # A sparse file just over the 1 MiB evidence cap: nominally oversized, no
+    # blocks allocated.  A reader without a cap would allocate and hash the
+    # whole declared size before refusing.
     receipt_path.chmod(0o644)
     with receipt_path.open("r+b") as handle:
-        handle.truncate(1 << 34)
+        handle.truncate(2 << 20)
     receipt_path.chmod(0o444)
     seen: list[tuple[Path, object]] = []
     original = pb._read_regular_file_nofollow
@@ -370,6 +371,32 @@ def test_an_oversized_execution_receipt_refuses_under_the_evidence_cap(
         "the execution receipt must be read under the caller's cap")
     assert all(cap is not None for _path, cap in seen), (
         "every read in the verified-result path must carry a byte cap")
+
+
+def test_an_attempt_changed_during_the_read_refuses(tmp_path: Path, monkeypatch):
+    action, queue, record, _receipt, _payload = _fixture(tmp_path)
+    key = str(action["action_key"])
+    attempt_path = queue.attempt_path(record, 1)
+    original = pb._read_regular_file_nofollow
+    tampered = []
+
+    def spy(path, **kwargs):
+        payload = original(path, **kwargs)
+        if not tampered and Path(path) == attempt_path:
+            # Weaken the held attempt's binding in place, after the first read:
+            # the completion recheck must refuse rather than return the result
+            # the first read justified.
+            tampered.append(True)
+            value = json.loads(payload)
+            value["preemption_context"] = {"forged": 1}
+            _rewrite_readonly(attempt_path, pb._canonical_file_bytes(value))
+        return payload
+
+    monkeypatch.setattr(pb, "_read_regular_file_nofollow", spy)
+    with pytest.raises(client.ActionResultError):
+        client.read_verified_action_result(
+            queue, key, published_unix=float(record["published_unix"]),
+            attempt=1, max_result_bytes=64, max_evidence_bytes=1 << 20)
 
 
 def test_a_boolean_attempt_number_refuses(tmp_path: Path):

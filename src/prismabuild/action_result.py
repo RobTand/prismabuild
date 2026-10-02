@@ -445,15 +445,20 @@ def read_verified_action_result(
                 cas, entry, cap=limits[identity])
 
     # Completion recheck: the same generation, attempt, outcome and selected
-    # identity must still stand.  A newer failure, withdrawal or replacement
-    # refuses.
+    # identity must still stand, and the held attempt must still bind to the
+    # terminal it was read from.  A newer failure, withdrawal or replacement
+    # refuses; so does an attempt whose identity or preemption context changed
+    # in place (#1446).
     rechecked, rechecked_generation, rechecked_path = _select_terminal(
         queue, key, published, number, evidence_cap)
+    rechecked_attempt = _read_selected_attempt(queue, rechecked_path, evidence_cap)
+    _bind_attempt(queue, rechecked, rechecked_attempt, key=key, number=number)
     if (
         rechecked_generation != generation
         or rechecked.get("status") != record.get("status")
         or rechecked_path != attempt_path
         or rechecked.get("attempts") != record.get("attempts")
+        or rechecked_attempt != attempt_record
     ):
         raise ActionResultError(
             "the selected ending changed while the result was read")
