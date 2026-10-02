@@ -601,6 +601,20 @@ def checkout_source(checkout: Path) -> dict:
             "source": source.stdout.splitlines() if source.returncode == 0 else []}
 
 
+def checkout_file_identities(checkout: Path, tree: str) -> dict[str, str] | None:
+    """Read immutable Git file modes/blobs without evaluating source code."""
+    result = call_tool(["git", "ls-tree", "-r", "--full-tree", "-z", tree],
+                       cwd=checkout, check=False)
+    if result.returncode:
+        return None
+    identities = {}
+    for entry in result.stdout.split("\0"):
+        if entry:
+            identity, name = entry.split("\t", 1)
+            identities[name] = identity
+    return identities
+
+
 def checkout_runtime(cfg: Config, checkout: Path) -> dict:
     return {**select_runtime(checkout, cfg.test_python, cfg.runtime_pins),
             **checkout_source(checkout), "pbtest": str(cfg.pbtest)}
@@ -640,6 +654,24 @@ class Runner:
             left_out = self._pbtest.fleet_data_files(checkout, files)
             files = [f for f in files if f not in left_out]
         return files, left_out
+
+    def _history_source(self, latest: Path) -> list[str]:
+        """Read the prior report's source, including existing typed v3 records."""
+        source = self.store.state.get("history_source")
+        if isinstance(source, list) and len(source) == 2:
+            return source
+        # Pre-1438 typed records already bind their full runtime/source in the
+        # terminal batch. Unidentified legacy reports gain no identity here.
+        try:
+            batch = json.loads(latest.with_name("batch.json").read_text())
+            run = batch["runs"]["candidate"]
+            source = run["runtime"]["source"]
+            if (run["report"] == str(latest) and len(source) == 2
+                    and source[1] == batch["candidate_tree"]):
+                return source
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+        return []
 
     def history(self, runtime: dict) -> list[str]:
         latest = self.store.state.get("history_report")
