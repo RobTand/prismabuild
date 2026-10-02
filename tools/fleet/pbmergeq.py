@@ -1346,11 +1346,25 @@ class Queue:
                 raise ValueError(f"invalid held batch id: {bid!r}")
             checkout = self.mirror.worktrees / f"{bid}-candidate"
             reason = ""
+            owned = False
             held = {(entry["pr"], entry["sha"]) for entry in block["entries"]}
             try:
-                if not held or not held <= queued:
-                    reason = "held entries left or were superseded in the queue"
+                if not checkout.exists() and not checkout.is_symlink():
+                    owned = True  # No data remains; retire its Mirror registration.
+                    reason = "retained candidate is missing"
+                elif checkout.is_symlink():
+                    reason = "retained candidate is an unowned symlink"
                 else:
+                    common = Path(self.mirror.git(
+                        "rev-parse", "--git-common-dir", cwd=checkout).stdout.strip())
+                    if not common.is_absolute():
+                        common = checkout / common
+                    owned = common.resolve() == self.mirror.git_dir.resolve()
+                    if not owned:
+                        reason = "retained candidate belongs to another repository"
+                if not reason and (not held or not held <= queued):
+                    reason = "held entries left or were superseded in the queue"
+                elif not reason:
                     for entry in block["entries"]:
                         pr = self.github.pr(entry["pr"])
                         if (eligibility(pr, self.cfg) is not None
@@ -1358,11 +1372,7 @@ class Queue:
                             reason = "held head changed or left eligibility"
                             break
                 if not reason:
-                    common = self.mirror.git("rev-parse", "--git-common-dir",
-                                             cwd=checkout).stdout.strip()
-                    if (not checkout.is_dir() or checkout.is_symlink()
-                            or Path(common).resolve() != self.mirror.git_dir.resolve()
-                            or self.mirror.head(checkout) != block.get("candidate")
+                    if (self.mirror.head(checkout) != block.get("candidate")
                             or self.mirror.tree(block["candidate"]) != block.get("candidate_tree")
                             or self.mirror.git("status", "--porcelain", "--untracked-files=all",
                                                cwd=checkout).stdout.strip()):
@@ -1382,7 +1392,10 @@ class Queue:
                     RuntimeSelectionError) as exc:
                 reason = f"qualification domain unobserved: {type(exc).__name__}"
             if reason:
-                self.mirror.drop(checkout)
+                if owned:
+                    self.mirror.drop(checkout)
+                else:
+                    self.store.event(bid, f"unowned view retained for recovery: {checkout}")
                 del blocks[bid]
                 changed = True
                 self.store.event(bid, f"known-failure hold released: {reason}; fresh selection")

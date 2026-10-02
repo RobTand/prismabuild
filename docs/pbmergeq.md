@@ -211,7 +211,7 @@ full head, the clean owned checkout HEAD/tree, current fetched base tree,
 runtime/configuration and discovery domain. Changed or unobserved meaning
 releases the hold and uses ordinary fresh selection. Missing, dirty or
 retargeted views cannot authorize suppression: they are retired through
-Mirror, then rebuilt normally. Views also retire when held entries leave or
+Mirror, then rebuilt normally. An unowned or unobservable replacement is retained\nfor explicit recovery; only its suppression record is released. Views also retire when held entries leave or
 are superseded. A corrected explicit head is eligible even when its ancestry
 contains the original culprit commit. Immutable negative reports survive view
 cleanup.

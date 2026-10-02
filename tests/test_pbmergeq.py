@@ -647,3 +647,30 @@ def test_known_failure_once_retains_no_queue_hold_or_worktree(tmp_path):
     assert runner.runs == completed
     assert not queue.store.state.get("known_failure_blocked")
     assert not list(queue.mirror.worktrees.iterdir())
+
+
+@pytest.mark.parametrize("replacement", ["foreign", "symlink"])
+def test_an_unowned_retained_view_is_preserved_when_its_hold_releases(
+        tmp_path, replacement):
+    queue, _origin, _github, runner, _original, _bad = known_red_descendant(tmp_path)
+    held = queue.tick()
+    view = queue.mirror.worktrees / f"{held['id']}-candidate"
+    if replacement == "foreign":
+        (view / ".git").unlink()
+        git("init", "-q", cwd=view)
+        foreign = view
+    else:
+        queue.mirror.drop(view)
+        foreign = tmp_path / "foreign"
+        foreign.mkdir()
+        git("init", "-q", cwd=foreign)
+        view.symlink_to(foreign, target_is_directory=True)
+    sentinel = foreign / "intervening-user-work"
+    sentinel.write_text("must survive\n")
+    completed = list(runner.runs)
+    rebuilt = queue.tick()
+    assert rebuilt is not None and rebuilt["verdict"] == "known-failure-blocked"
+    assert held["id"] not in queue.store.state["known_failure_blocked"]
+    assert foreign.is_dir() and sentinel.read_text() == "must survive\n"
+    assert view.exists(), "unowned data is retained for explicit recovery"
+    assert runner.runs == completed

@@ -15301,5 +15301,5 @@ The existing Mirror retains only a held daemon candidate view, revalidates its
 clean owned source and current eligibility/domain before every tick exclusion,
 and retires it when meaning or ownership changes or entries leave. Fresh
 selection reconstructs missing/corrupt views; corrected descendant heads remain
-eligible. Supported once retains no hold/view. Original failed evidence survives
+eligible. Unowned replacements are retained for explicit recovery rather than\nremoved. Supported once retains no hold/view. Original failed evidence survives
 cleanup, and deployment still requires separate coordinator acceptance.
