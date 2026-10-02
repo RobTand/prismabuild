@@ -2564,6 +2564,39 @@ def _read_json_fresh(path: Path) -> dict[str, object] | None:
     return _read_json(path)
 
 
+def _read_json_bounded(
+    path: Path, *, max_bytes: int | None
+) -> dict[str, object] | None:
+    """``_read_json`` through Core's bounded, no-follow replaced-leaf reader.
+
+    ``max_bytes is None`` is exactly :func:`_read_json`, so every uncapped
+    caller keeps its behaviour.  With a cap the record is read as a stable,
+    non-symlink regular file no larger than the bound (the writer replaces
+    the name with ``os.replace``, so the replaced-leaf retry is the correct
+    one).  The mutable queue rows are writable by design, so no
+    read-only requirement is imposed here; the immutable attempt logs and
+    CAS objects keep their own stricter checks (#1446).
+    """
+
+    if max_bytes is None:
+        return _read_json(path)
+    try:
+        raw = pb._read_regular_file_nofollow(
+            path, where="queue record", max_bytes=max_bytes,
+            replaced_leaf=True)
+    except FileNotFoundError:
+        return None
+    if not raw:
+        return None
+    try:
+        value = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise PoolContractError(f"queue record is not valid JSON: {path}") from exc
+    if not isinstance(value, dict):
+        raise PoolContractError(f"queue record is not an object: {path}")
+    return value
+
+
 def _is_hex64(value: object) -> bool:
     return (isinstance(value, str) and len(value) == 64
             and all(character in "0123456789abcdef" for character in value))
@@ -22979,17 +23012,24 @@ class PoolQueue:
         )
         return history
 
-    def attempt_outcomes(
+    def _attempt_history_links(
         self, record: Mapping[str, object]
-    ) -> list[dict[str, object]]:
-        """Read and verify the immutable attempts linked by a queue outcome."""
+    ) -> tuple[int, list[dict[str, object]]]:
+        """Validate a terminal's history-link structure, reading no attempt.
+
+        The one owner of the immutable-history *shape*: the missing prefix, a
+        count that agrees with the links, contiguous 1-based numbering and each
+        link's canonical outcome path.  :meth:`attempt_outcomes` reads every
+        linked attempt after this; a reader that needs only the selected
+        attempt validates the same structure here and opens exactly one file
+        (#1446).  Returns ``(missing, links)`` with links as detached copies.
+        """
 
         raw_history = (
             record["attempt_history"] if "attempt_history" in record else []
         )
         if not isinstance(raw_history, list):
             raise PoolContractError("attempt_history must be a list")
-        outcomes: list[dict[str, object]] = []
         missing = record.get("attempt_history_missing_before", 0)
         if type(missing) is not int or missing < 0:
             raise PoolContractError(
@@ -23005,6 +23045,7 @@ class PoolQueue:
                 "pool attempt count does not match its missing prefix and "
                 "history links"
             )
+        links: list[dict[str, object]] = []
         for expected_attempt, raw_link in enumerate(
             raw_history, start=missing + 1
         ):
@@ -23020,6 +23061,19 @@ class PoolQueue:
                 raise PoolContractError(
                     f"attempt {attempt} outcome link is not its canonical path"
                 )
+            links.append(dict(raw_link))
+        return missing, links
+
+    def attempt_outcomes(
+        self, record: Mapping[str, object]
+    ) -> list[dict[str, object]]:
+        """Read and verify the immutable attempts linked by a queue outcome."""
+
+        _missing, links = self._attempt_history_links(record)
+        outcomes: list[dict[str, object]] = []
+        for raw_link in links:
+            attempt = raw_link["attempt"]
+            expected = self.attempt_path(record, attempt)
             raw = self._read_attempt_file(expected, where="pool attempt outcome")
             try:
                 value = json.loads(raw)
@@ -24208,7 +24262,7 @@ class PoolQueue:
         return None
 
     def read_terminal_candidates(
-        self, action_key: str,
+        self, action_key: str, *, max_bytes: int | None = None,
     ) -> tuple[dict[str, tuple[Path, dict[str, object]]],
                list[dict[str, object]]]:
         """One capture of the three mutable terminal slots for this key.
@@ -24220,6 +24274,12 @@ class PoolQueue:
         a census and a resolution built from two different reads can order
         one record and report another when the key is replaced between them,
         so a caller that needs both derives them from one capture.
+
+        ``max_bytes`` is opt-in and belongs to a caller that must bound the
+        mutable record it reads before consuming it (#1446): each candidate is
+        read through Core's bounded, no-follow replaced-leaf reader, and a
+        record over the bound lands in ``unreadable`` rather than being read.
+        ``None`` keeps every existing caller's uncapped read exactly.
         """
 
         key = str(action_key)
@@ -24228,8 +24288,8 @@ class PoolQueue:
         for state in (DONE, FAILED, WITHDRAWN):
             path = self.item_path(state, key)
             try:
-                record = _read_json(path)
-            except (OSError, PoolContractError) as exc:
+                record = _read_json_bounded(path, max_bytes=max_bytes)
+            except (OSError, pb.PrismaBuildError) as exc:
                 unreadable.append({
                     "state": state, "path": path,
                     "reason": str(exc) or type(exc).__name__})
@@ -24349,7 +24409,9 @@ class PoolQueue:
         return result(failure() or (present[0] if present else None),
                       ambiguous=len(coexisting) > 1)
 
-    def current_ending(self, action_key: str) -> dict[str, object]:
+    def current_ending(
+        self, action_key: str, *, max_bytes: int | None = None,
+    ) -> dict[str, object]:
         """One capture and its generation-resolved answer (#1178).
 
         The convenience the key-level readers call; see
@@ -24357,7 +24419,8 @@ class PoolQueue:
         capture and the pure rule a status census must not split.
         """
 
-        readable, unreadable = self.read_terminal_candidates(action_key)
+        readable, unreadable = self.read_terminal_candidates(
+            action_key, max_bytes=max_bytes)
         return self.resolve_ending(readable, unreadable)
 
     def withdrawn_keys(self) -> frozenset[str]:

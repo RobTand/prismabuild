@@ -4641,10 +4641,13 @@ class PrismaBuildCAS:
             return None
         return value if value["action_key"] == key else None
 
-    def _load_receipt_bytes(self, path: Path) -> bytes:
+    def _load_receipt_bytes(
+        self, path: Path, *, max_bytes: int | None = None
+    ) -> bytes:
         try:
             return _read_regular_file_nofollow(
-                path, where="CAS receipt", require_readonly=True
+                path, where="CAS receipt", require_readonly=True,
+                max_bytes=max_bytes,
             )
         except FileNotFoundError as exc:
             raise FileNotFoundError(path) from exc
@@ -4788,6 +4791,59 @@ class PrismaBuildCAS:
             raise CASTamperError("execution receipt differs from the requested digest")
         self._verify_blob(receipt["result"])
         return receipt
+
+    def read_execution_result(
+        self,
+        action: object,
+        receipt_sha256: str,
+        *,
+        max_result_bytes: int,
+    ) -> tuple[dict[str, object], bytes]:
+        """The execution receipt and its payload, under one result-size cap.
+
+        :meth:`lookup_execution` proves the receipt but consumes its blob with
+        :meth:`_verify_blob`, which hashes the whole file before a caller can
+        impose a bound.  A caller that must not read an oversized or racing
+        payload needs the cap applied *before* the blob is opened and the exact
+        verified bytes returned from that one held read (#1446).
+
+        The declared payload size is checked first, so a payload over the cap
+        refuses without opening it.  The bytes are then read once through
+        Core's stable, no-follow, read-only regular-file reader, bounded both
+        by the opening size and by the streamed byte count, and are verified
+        against the receipt's digest and size.  No path is returned to reopen
+        and no second hash pass is made.
+        """
+
+        if type(max_result_bytes) is not int or max_result_bytes < 0:
+            raise ActionContractError("max_result_bytes must be a non-negative integer")
+        normalized = validate_action(action)
+        raw = self._load_receipt_bytes(self._execution_receipt_path(receipt_sha256))
+        receipt = self._validate_receipt(
+            _decode_strict_json(raw, where="execution receipt"), action=normalized
+        )
+        if (receipt["receipt_sha256"] != receipt_sha256
+                or raw != _canonical_file_bytes(receipt)):
+            raise CASTamperError("execution receipt differs from the requested digest")
+        result = receipt["result"]
+        assert isinstance(result, Mapping)
+        digest = str(result["sha256"])
+        size = int(result["bytes"])
+        path = self._blob_path(digest)
+        if size > max_result_bytes:
+            raise CASTamperError(
+                f"CAS payload exceeds the byte bound: {path}")
+        try:
+            payload = _read_regular_file_nofollow(
+                path, where="CAS payload", require_readonly=True,
+                max_bytes=max_result_bytes,
+            )
+        except FileNotFoundError as exc:
+            raise CASTamperError(f"CAS payload is missing: {path}") from exc
+        if len(payload) != size or raw_sha256(payload) != digest:
+            raise CASTamperError(
+                f"CAS payload content differs from receipt: {path}")
+        return receipt, payload
 
     def _verified_receipt_result_path(self, receipt: Mapping[str, object]) -> Path:
         """Return the blob path after ``lookup`` has already verified it."""

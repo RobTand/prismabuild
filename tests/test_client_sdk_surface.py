@@ -31,6 +31,7 @@ import pytest
 
 import prismabuild.client as client
 from prismabuild import (
+    action_result,
     local_scratch,
     pool,
     produced_output,
@@ -51,7 +52,7 @@ def _no_outer_launch_identity(monkeypatch):
                  "PRISMABUILD_READER_HELPER_ROOT"):
         monkeypatch.delenv(name, raising=False)
 
-SDK_VERSION = 3
+SDK_VERSION = 4
 
 #: Each callable's parameters as ``[kind]name[=default]``: ``*`` keyword-only,
 #: no prefix positional-or-keyword.
@@ -102,6 +103,8 @@ SIGNATURES = {
     "compose_residency_map": "fragments",
     "write_residency_map": "path, mapping",
     "cas_receipt_self_check": "receipt",
+    "read_verified_action_result": "queue, action_key, *published_unix, *attempt, *max_result_bytes, *max_evidence_bytes=4194304, *input_limits=None",
+    "bind_standard_capture_command": "request",
     "canonical_sha256": "value",
     "bind_ephemeral_scratch": "queue, *root_env, *name, *claim_snapshot, *env=None",
     "ephemeral_scratch_path": "declaration",
@@ -109,7 +112,7 @@ SIGNATURES = {
 }
 
 CONSTANTS = {
-    "SDK_VERSION": 3,
+    "SDK_VERSION": 4,
     "EPHEMERAL_SCRATCH_SCHEMA_V1": "prismabuild.ephemeral_scratch.v1",
     "SCRATCH_DECLARATION_RECORD_SCHEMA_V1": "prismabuild.scratch_declaration_record.v1",
     "READER_LEASE_TAG": "reader-lease-v1",
@@ -129,10 +132,13 @@ CONSTANTS = {
     "WORKER_ATTESTATION_SCHEMA_V2": "prismaquant.prismabuild.worker_attestation.v2",
     "RECEIPT_REFUSALS": ("cas-receipt-shape", "cas-receipt-digest",
                          "worker-attestation-digest"),
+    "ACTION_RESULT_SCHEMA_V1": "prismabuild.verified_action_result.v1",
+    "VERIFIED_ACTION_RESULT_TAG": "verified-action-result-v1",
     "TIER_LOOP_LIVENESS_S": 120.0,
     "TIER_RECORD_SCHEMA": "prismabuild.storage_tier.v1",
     "DECOMPOSITION_TAG": "decomposition-v1",
-    "CAPABILITIES": frozenset({"reader-lease-v1", "progress-v1", "decomposition-v1"}),
+    "CAPABILITIES": frozenset({"reader-lease-v1", "progress-v1", "decomposition-v1",
+                               "verified-action-result-v1"}),
 }
 
 PATTERNS = {
@@ -141,7 +147,8 @@ PATTERNS = {
 }
 
 TYPES = {"PoolQueue": pool.PoolQueue, "ResidencyMapError": residency_map.ResidencyMapError,
-         "LocalScratchError": local_scratch.LocalScratchError}
+         "LocalScratchError": local_scratch.LocalScratchError,
+         "ActionResultError": action_result.ActionResultError}
 
 #: Names the SDK re-exports unchanged, with the internal object each must be.
 REEXPORTS = {
@@ -176,6 +183,11 @@ REEXPORTS = {
     "ID_PATTERN": pb._ID_RE,
     "ENV_NAME_PATTERN": pb._ENV_RE,
     "canonical_sha256": pb.canonical_sha256,
+    "ACTION_RESULT_SCHEMA_V1": action_result.ACTION_RESULT_SCHEMA_V1,
+    "VERIFIED_ACTION_RESULT_TAG": action_result.VERIFIED_ACTION_RESULT_TAG,
+    "ActionResultError": action_result.ActionResultError,
+    "read_verified_action_result": action_result.read_verified_action_result,
+    "bind_standard_capture_command": action_result.bind_standard_capture_command,
     **{name: getattr(produced_output, name) for name in (
         "TEMPLATE_SCHEMA_V1", "DESCRIPTOR_SCHEMA_V2", "declared_template",
         "validate_template", "bind_declared_instance", "declare_instance",
@@ -265,6 +277,10 @@ def test_each_advertised_capability_is_backed_by_this_tree():
     assert client.READER_LEASE_TAG in client.CAPABILITIES
     assert pb.PROGRESS_TAG in client.CAPABILITIES
     assert client.DECOMPOSITION_TAG in client.CAPABILITIES
+    assert client.VERIFIED_ACTION_RESULT_TAG in client.CAPABILITIES
+    assert callable(client.read_verified_action_result)
+    assert callable(client.bind_standard_capture_command)
+    assert client.ACTION_RESULT_SCHEMA_V1.startswith("prismabuild.")
     tool = ast.parse((ROOT / "tools" / "fleet" / "pbcampaign.py").read_text())
     assert any(isinstance(node, ast.FunctionDef) and node.name == "decompose"
                for node in tool.body), "decomposition-v1 without pbcampaign.decompose"

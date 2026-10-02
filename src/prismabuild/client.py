@@ -46,6 +46,9 @@ The surface, by area:
   :func:`record_ephemeral_scratch_declarations`,
   :data:`SCRATCH_DECLARATION_RECORD_SCHEMA_V1`.
 * **Receipts**: :func:`cas_receipt_self_check`.
+* **Verified action results** (``verified-action-result-v1``, SDK v4):
+  :func:`read_verified_action_result`, :class:`ActionResultError`,
+  :data:`ACTION_RESULT_SCHEMA_V1`, and :func:`bind_standard_capture_command`.
 * **Identifiers and digests**: :data:`ID_PATTERN`, :data:`ENV_NAME_PATTERN`,
   :func:`canonical_sha256`.
 * **Liveness**: :data:`TIER_LOOP_LIVENESS_S`, :data:`TIER_RECORD_SCHEMA`.
@@ -61,6 +64,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
+from . import action_result as _action_result
 from . import core as _core
 from . import local_scratch as _local_scratch
 from . import pool as _pool
@@ -71,7 +75,7 @@ from . import storage_tiers as _storage_tiers
 
 #: The contract version.  Bumped on any change to the names below, their
 #: signatures, or the values of the constants.
-SDK_VERSION = 3
+SDK_VERSION = 4
 
 # -- reader leases (capability ``reader-lease-v1``) --------------------------
 
@@ -265,6 +269,21 @@ def cas_receipt_self_check(receipt: Mapping[str, object]) -> str | None:
     return None
 
 
+# -- verified action results (capability ``verified-action-result-v1``) -------
+
+#: The schema of the mapping :func:`read_verified_action_result` returns.
+ACTION_RESULT_SCHEMA_V1 = _action_result.ACTION_RESULT_SCHEMA_V1
+#: The capability tag the bounded verified-result read advertises.
+VERIFIED_ACTION_RESULT_TAG = _action_result.VERIFIED_ACTION_RESULT_TAG
+#: The explicit refusal of every bounded verified-result read and of the
+#: standard-capture command binding.
+ActionResultError = _action_result.ActionResultError
+#: Read one action generation's verified result bytes, bounded at every read.
+read_verified_action_result = _action_result.read_verified_action_result
+#: Prove a sealed request is pbrun's standard captured-log recipe, byte for byte.
+bind_standard_capture_command = _action_result.bind_standard_capture_command
+
+
 # -- identifiers and digests -------------------------------------------------
 
 #: The grammar of every identifier that reaches an action key (task ids,
@@ -297,6 +316,7 @@ CAPABILITIES = frozenset({
     READER_LEASE_TAG,
     _core.PROGRESS_TAG,
     DECOMPOSITION_TAG,
+    VERIFIED_ACTION_RESULT_TAG,
 })
 
 __all__ = [
@@ -336,6 +356,10 @@ __all__ = [
     # receipts
     "CAS_RECEIPT_SCHEMA_V3", "WORKER_ATTESTATION_SCHEMA_V2",
     "RECEIPT_REFUSALS", "cas_receipt_self_check",
+    # verified action results (capability ``verified-action-result-v1``)
+    "ACTION_RESULT_SCHEMA_V1", "VERIFIED_ACTION_RESULT_TAG",
+    "ActionResultError", "read_verified_action_result",
+    "bind_standard_capture_command",
     # identifiers and digests
     "ID_PATTERN", "ENV_NAME_PATTERN", "canonical_sha256",
     # liveness
