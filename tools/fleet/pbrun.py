@@ -255,9 +255,14 @@ def git_repository_root(cwd: Path) -> Path | None:
     return root
 
 
-def _snapshot_fail(message: str) -> NoReturn:
-    """Map a checked snapshot failure to the caller's refusal contract."""
-    raise SystemExit(f"pbrun: cannot snapshot checkout: {message}")
+def _snapshot_fail(
+    message: str, *, cause: BaseException | None = None,
+) -> NoReturn:
+    """Map a checked snapshot failure, retaining an explicit transport cause."""
+    refusal = SystemExit(f"pbrun: cannot snapshot checkout: {message}")
+    if cause is not None:
+        raise refusal from cause
+    raise refusal
 
 
 def _snapshot_git(
@@ -269,6 +274,18 @@ def _snapshot_git(
     accepted_returncodes: tuple[int, ...] = (0,),
     strip: bool = True,
 ) -> str:
+    caller_exception = sys.exception()
+
+    def fail_snapshot_git(message: str) -> NoReturn:
+        # The canonical runner calls fail inside its transport handler. Do not
+        # promote an exception already active in our caller on a nonzero exit.
+        cause = sys.exception()
+        if cause is caller_exception or not isinstance(
+            cause, (OSError, subprocess.TimeoutExpired),
+        ):
+            cause = None
+        _snapshot_fail(message, cause=cause)
+
     output = pb._git(
         cwd, *argv,
         env=environment,
@@ -276,7 +293,7 @@ def _snapshot_git(
         errors="surrogateescape",
         timeout=120,
         accepted_returncodes=accepted_returncodes,
-        fail=_snapshot_fail,
+        fail=fail_snapshot_git,
     )
     return output.strip() if strip else output
 
@@ -864,7 +881,7 @@ def write_deterministic_bundle(
                 timeout=BUNDLE_PACK_TIMEOUT_S,
             )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        _snapshot_fail(f"Git {' '.join(argv[1:])} failed: {exc}")
+        _snapshot_fail(f"Git {' '.join(argv[1:])} failed: {exc}", cause=exc)
     if completed.returncode != 0:
         detail = (completed.stderr or b"").decode("utf-8", "replace").strip()
         _snapshot_fail(

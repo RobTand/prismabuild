@@ -2169,9 +2169,15 @@ miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
   `pbrun: cannot snapshot checkout:` while naming the full Git operation
   (#1430). Identity reads keep their 30-second bound; snapshot text reads
   keep 120 seconds, accepted codes, surrogate decoding and optional stripping.
+  Their caller adapter preserves explicit OSError/TimeoutExpired causes;
+  a nonzero exit does not turn an unrelated active caller exception into a
+  direct cause. Delegation retains the canonical runner's broader
+  SubprocessError catch, a compatibility qualification with no demonstrated
+  ordinary-production trigger; the canonical runner is unchanged.
   Deterministic bundle packing remains a separate binary-streaming subprocess
   (`stdout=file`, UTF-8 tip bytes on stdin, 1800-second pack bound); its
-  refusals name the pinned pack operation without text-capturing pack bytes.
+  refusals name the pinned pack operation without text-capturing pack bytes
+  and preserve explicit OSError/TimeoutExpired causes.
   This is diagnostic consolidation, not storage-stall recovery or a speed claim.
 
 The supported preparation boundary is `PrismaBuildCAS.ingest_input()` or the
