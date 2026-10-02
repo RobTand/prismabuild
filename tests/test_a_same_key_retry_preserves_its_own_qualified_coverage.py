@@ -438,10 +438,13 @@ def test_resume_rechecks_untrusted_matching_metadata(fleet, monkeypatch, trust, 
     @contextmanager
     def replace_before_grant(*positional, **keywords):
         nonlocal changed
-        document = json.loads(fragment.read_bytes())
-        document["entries"][keys[1]]["sha256"] = new_digest
-        fragment.write_text("[" * repeated.st_size if corrupt else
-                            json.dumps(document, sort_keys=True))
+        original = fragment.read_bytes()
+        old_digest = json.loads(original)["entries"][keys[1]]["sha256"]
+        replacement = (b"[" * repeated.st_size if corrupt else
+                       original.replace(old_digest.encode(), new_digest.encode(), 1))
+        assert len(original) == len(replacement) == repeated.st_size
+        fragment.write_bytes(replacement)
+        assert fragment.stat().st_size == repeated.st_size
         changed = True
         with real_ownership(*positional, **keywords) as granted:
             yield granted
