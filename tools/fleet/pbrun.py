@@ -67,6 +67,7 @@ import math
 import uuid
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import NoReturn
 
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
 from runtime_paths import generation_root
@@ -254,6 +255,16 @@ def git_repository_root(cwd: Path) -> Path | None:
     return root
 
 
+def _snapshot_fail(
+    message: str, *, cause: BaseException | None = None,
+) -> NoReturn:
+    """Map a checked snapshot failure, retaining an explicit transport cause."""
+    refusal = SystemExit(f"pbrun: cannot snapshot checkout: {message}")
+    if cause is not None:
+        raise refusal from cause
+    raise refusal
+
+
 def _snapshot_git(
     cwd: Path,
     argv: list[str],
@@ -263,22 +274,28 @@ def _snapshot_git(
     accepted_returncodes: tuple[int, ...] = (0,),
     strip: bool = True,
 ) -> str:
-    try:
-        completed = pb._git_run(
-            cwd, *argv,
-            env=environment,
-            input_text=input_text,
-            errors="surrogateescape",
-            timeout=120,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise SystemExit(f"pbrun: cannot snapshot checkout: {exc}") from exc
-    if completed.returncode not in accepted_returncodes:
-        detail = (completed.stderr or completed.stdout).strip()
-        raise SystemExit(
-            f"pbrun: cannot snapshot checkout: {detail or completed.returncode}"
-        )
-    return completed.stdout.strip() if strip else completed.stdout
+    caller_exception = sys.exception()
+
+    def fail_snapshot_git(message: str) -> NoReturn:
+        # The canonical runner calls fail inside its transport handler. Do not
+        # promote an exception already active in our caller on a nonzero exit.
+        cause = sys.exception()
+        if cause is caller_exception or not isinstance(
+            cause, (OSError, subprocess.TimeoutExpired),
+        ):
+            cause = None
+        _snapshot_fail(message, cause=cause)
+
+    output = pb._git(
+        cwd, *argv,
+        env=environment,
+        input_text=input_text,
+        errors="surrogateescape",
+        timeout=120,
+        accepted_returncodes=accepted_returncodes,
+        fail=fail_snapshot_git,
+    )
+    return output.strip() if strip else output
 
 
 #: Git reads three exclude sources under ``--exclude-standard``: the
@@ -864,11 +881,11 @@ def write_deterministic_bundle(
                 timeout=BUNDLE_PACK_TIMEOUT_S,
             )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        raise SystemExit(f"pbrun: cannot snapshot checkout: {exc}") from exc
+        _snapshot_fail(f"Git {' '.join(argv[1:])} failed: {exc}", cause=exc)
     if completed.returncode != 0:
         detail = (completed.stderr or b"").decode("utf-8", "replace").strip()
-        raise SystemExit(
-            f"pbrun: cannot snapshot checkout: {detail or completed.returncode}"
+        _snapshot_fail(
+            f"Git {' '.join(argv[1:])} failed: {detail or completed.returncode}"
         )
 
 
