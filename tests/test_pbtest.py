@@ -179,3 +179,136 @@ def test_a_shard_states_its_placement_once(tmp_path: Path, monkeypatch) -> None:
 
     assert command[command.index("--tag") + 1] == "x86"
     assert "--anywhere" not in command
+
+
+def test_worker_visible_tmpdir_reaches_the_shard_as_one_argument(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    # This need not exist on the coordinator, and its shell characters are data.
+    worker_path = "/worker scratch/$(literal);[directory]"
+    command = _dispatch(tmp_path, monkeypatch, ["--tmpdir", worker_path])
+    payload = command[command.index("--") + 1:]
+    assert payload[:2] == ["env", f"TMPDIR={worker_path}"]
+    assert sum(part.startswith("TMPDIR=") for part in payload) == 1
+
+
+def test_default_tmpdir_keeps_the_existing_shard_environment(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    command = _dispatch(tmp_path, monkeypatch, [])
+    assert command[command.index("--") + 1:][:2] == [
+        "env", "TMPDIR=/home/rob/tmp",
+    ]
+
+
+def test_relative_tmpdir_refuses_before_submission(
+    tmp_path: Path, monkeypatch, capsys,
+) -> None:
+    for invalid in ("", "scratch", "../scratch"):
+        calls = []
+        monkeypatch.setattr(
+            pbtest.subprocess, "Popen",
+            lambda *args, **kwargs: calls.append(args),
+        )
+        monkeypatch.setattr(sys, "argv", [
+            "pbtest.py", "--checkout", str(tmp_path),
+            "--python", "/target/python", "--tmpdir", invalid,
+        ])
+        assert pbtest.main() == 2
+        assert not calls
+        assert "--tmpdir must be an absolute worker-visible path" in capsys.readouterr().err
+
+
+def test_two_shards_have_distinct_tmpdir_children_and_output(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    import json
+
+    checkout = tmp_path / "checkout"
+    tests = checkout / "tests"
+    tests.mkdir(parents=True)
+    worker_path = tmp_path / "worker scratch;[literal]"
+    worker_path.mkdir()
+    for name in ("a", "b"):
+        (tests / f"test_{name}.py").write_text(
+            "import json, os\n"
+            "from pathlib import Path\n"
+            "def test_one(tmp_path):\n"
+            "    root = Path(os.environ['TMPDIR'])\n"
+            "    assert tmp_path.is_relative_to(root)\n"
+            "    (tmp_path / 'owned.txt').write_text('owned')\n"
+            f"    (root / 'shard-{name}.json').write_text(json.dumps({{\n"
+            "        'tmp_path': str(tmp_path), 'pid': os.getpid(),\n"
+            "    }))\n"
+        )
+    subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+    actual_popen = subprocess.Popen
+    calls = []
+
+    def execute_admitted_child(command, **kwargs):
+        # The test itself is already admitted. Run exactly the prepared child,
+        # rather than recursively submitting its mocked pbrun transport.
+        calls.append(command)
+        return actual_popen(
+            command[command.index("--") + 1:], cwd=checkout, **kwargs,
+        )
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(pbtest.subprocess, "Popen", execute_admitted_child)
+        scoped.setattr(pbtest, "RUNTIME_ROOT", PUBLISHED_RUNTIME)
+        scoped.setattr(sys, "argv", [
+            "pbtest.py", "--checkout", str(checkout), "--python", sys.executable,
+            "--shards", "2", "--workers-per-shard", "1",
+            "--threads-per-shard", "1", "--test-timeout-s", "0",
+            "--tmpdir", str(worker_path), "tests",
+        ])
+        assert pbtest.main() == 0
+    assert len(calls) == 2
+    records = [json.loads((worker_path / f"shard-{name}.json").read_text())
+               for name in ("a", "b")]
+    assert records[0]["pid"] != records[1]["pid"]
+    assert records[0]["tmp_path"] != records[1]["tmp_path"]
+    assert all((Path(record["tmp_path"]) / "owned.txt").read_text() == "owned"
+               for record in records)
+    submitted_files = [
+        [part for part in command[command.index("--") + 1:]
+         if part.startswith("tests/") and part.endswith(".py")]
+        for command in calls
+    ]
+    assert sorted(submitted_files) == [["tests/test_a.py"], ["tests/test_b.py"]]
+
+
+def test_explicit_tmpdir_refuses_on_the_worker_before_pytest(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    for kind in ("missing", "file"):
+        case = tmp_path / kind
+        case.mkdir()
+        requested = case / "worker scratch"
+        if kind == "file":
+            requested.write_text("not a directory")
+        with monkeypatch.context() as scoped:
+            command = _dispatch(case, scoped, ["--tmpdir", str(requested)])
+        checkout = case / "checkout"
+        marker = checkout / "pytest-started"
+        (checkout / "tests" / "test_one.py").write_text(
+            "from pathlib import Path\n"
+            "def test_one():\n"
+            "    Path('pytest-started').touch()\n"
+        )
+        payload = command[command.index("--") + 1:]
+        payload[payload.index("/target/python")] = sys.executable
+        result = subprocess.run(payload, cwd=checkout, capture_output=True, text=True)
+        assert result.returncode != 0
+        assert "pbtest: cannot use requested --tmpdir:" in result.stderr
+        assert not marker.exists()
+        assert "pbtest-outcomes" not in result.stdout
+        # Causal control: the same worker path under the unchanged legacy
+        # entry falls back to another parent and reaches pytest. The explicit
+        # preflight, rather than a pytest collection error, causes refusal.
+        payload[payload.index("-c") + 1] = pbtest.shard_entry(
+            sys.executable, checkout,
+        )[2]
+        legacy = subprocess.run(payload, cwd=checkout, capture_output=True, text=True)
+        assert legacy.returncode == 0, legacy.stdout + legacy.stderr
+        assert marker.exists()
