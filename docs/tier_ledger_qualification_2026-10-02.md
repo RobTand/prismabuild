@@ -168,3 +168,31 @@ for the two before arms and 0.24910/0.31790 for after. Their aggregates are
 fixture wall time** is the appropriately precise claim. No new run or arm
 selection was used. Independent calculation:
 `/home/rob/tmp/astra-resume-20261002/pb_tiers/1027-estimator-check.json`.
+
+### Current-main integration qualification
+
+The branch integrated main `b63f03b3cf361dc67f2bc9e400329bf1970b115b`
+without conflicts at `d00183471f6054e762013b596f311fad7959c7ac`.
+Published PB action
+`a4e74cee7ae5893fb4f3aba9028735346b6e3b697d5b0121420c70dd58b9eee0`
+ran the three targeted ledger, cross-box reservation and steady-cycle files:
+**37 passed, zero skipped or missing outcomes**, using two pytest workers,
+two preferred CPUs, 4 GiB reserved memory and native threads one. The 18
+warnings were Python's existing multithreaded-fork deprecation in the bounded
+reader; no test failed. Admitted action
+`66df8b688d945a6de0bbfee91feb5830edf8eb9df3c8a7249d7f2d7505396f69`
+compiled five files successfully with one preferred CPU and 1 GiB.
+Both executed/0 on dl380g10, and canonical CAS/result, full log hashes,
+exact source parent/closure and released/empty/stopped cleanup were verified.
+
+The coordinator then requested integration of its separately qualified tmpfs
+repair on main `98319f2ebb58d23342fd00d292693b44056347e6`; merge
+`241ff82519a6643f5ec4cc8064fa500e5e68a9bc` was conflict-free. The related
+ledger implementation, benchmark and regression bytes are preserved. The
+measured `ResourceLedger`, its names-reader scope and helper definitions are
+unchanged; unrelated current-main claim/offer and scratch-reservation changes
+are not re-certified as performance results by this qualification. The root
+accepted reuse of the unchanged suite rather than another run. No benchmark
+was repeated. Verification packets: `1027-current-integration-source.json`,
+`1027-integration-tests-verified.json` and
+`1027-integration-compile-verified.json` in the lane scratch directory above.
