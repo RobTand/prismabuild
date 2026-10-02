@@ -378,7 +378,12 @@ def test_duration_hint_compatibility_keeps_runtime_config_and_domain_guards(tmp_
     elif changed == "config":
         cfg = dataclasses.replace(cfg, pbtest_args=(*cfg.pbtest_args, '--pytest-args=["-k","one"]'))
     elif changed == "published":
-        cfg = dataclasses.replace(cfg, pbtest=tmp_path / "other-published/pbtest.py")
+        alternate = tmp_path / "other-published"
+        alternate.mkdir()
+        (alternate / "pbtest_outcomes.py").write_bytes(
+            cfg.pbtest.with_name("pbtest_outcomes.py").read_bytes())
+        (alternate / "pbtest.py").write_bytes(cfg.pbtest.read_bytes())
+        cfg = dataclasses.replace(cfg, pbtest=alternate / "pbtest.py")
         other["pbtest"] = str(cfg.pbtest)
     else:
         cfg = dataclasses.replace(cfg, test_paths=("tests/test_stable.py",))
