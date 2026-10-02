@@ -1,5 +1,6 @@
 """Shard parallelism reserves every pytest worker's native thread ceiling."""
 import pytest
+from pbtest_shard_output import shard_environment
 
 from test_pbtest_reserves_its_threads import _dispatch, _demand
 
@@ -13,8 +14,8 @@ def test_workers_reach_pytest_and_multiply_the_reservation(tmp_path, monkeypatch
     payload = command[command.index("--") + 1:]
     assert payload[payload.index("-n") + 1] == str(workers)
     assert _demand(command)["cpu"] == cpus
-    assert f"OMP_NUM_THREADS={threads}" in payload
-    assert f"OPENBLAS_NUM_THREADS={threads}" in payload
+    assert shard_environment(command)["OMP_NUM_THREADS"] == str(threads)
+    assert shard_environment(command)["OPENBLAS_NUM_THREADS"] == str(threads)
 
 
 def test_default_does_not_require_xdist(tmp_path, monkeypatch):

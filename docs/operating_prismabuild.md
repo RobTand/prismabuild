@@ -1491,12 +1491,22 @@ wait, so it never returns 75.
 
 `pbtest` shards a test suite across the fleet instead of running it on one box:
 
-    tools/fleet/pbtest.py --checkout /home/rob/prismabuild \
+    python3 /mnt/shared/prismabuild-fleet/repo/tools/pbtest.py --checkout /home/rob/prismabuild \
         --python /home/rob/venvs/pb-cpu/bin/python --shards 20 tests
 
 Each shard is one `pbrun` action, so the checkout travels through the CAS and
-the interpreter is the target box's, not this one's. `--tag` defaults to `x86`,
-which is also the claim that owns the named interpreter.
+the interpreter is an absolute `python*` executable on eligible target workers.
+Portable CPU fanout has no default class tag (#1263, #1462): pbrun seals the
+exact path and claim-time admission checks it. Explicit `--tag` constraints
+still narrow eligibility. The published/shared runtime uses the existing
+`--anywhere` for untagged work; local source runtimes retain their host pin.
+
+Environment settings use the existing `pbrun --env` contract: TMPDIR, native
+thread limits, per-test/shard alarms, PYTHONPATH and an explicit empty
+PYTEST_ADDOPTS are sealed as values. The command starts with Python, so the
+interpreter requirement reaches the queue row. Bare, relative and non-Python
+entries refuse before fanout rather than claiming an unproved path fence.
+These commands get new action keys; existing sealed rows keep their identities.
 
 `--tmpdir /absolute/worker/scratch` selects the shards' temporary parent instead
 of the unchanged `/home/rob/tmp` default. Supply an existing writable directory
@@ -1596,8 +1606,8 @@ one is there, and `null` otherwise. The path is located, not verified (#1012).
 The key names the shard's `done/`, `failed/` or `withdrawn/` record.
 
 `--gpu` requests a GPU for **every shard**. A placement tag alone never grants
-CUDA visibility. With the published runtime, the default tag changes from
-`x86` to `gb10`; override `--tag` for another class with the named interpreter.
+CUDA visibility. With the published runtime, GPU's default tag is `gb10`;
+override `--tag` for another real hardware dependency with the named interpreter.
 `--mem-gb` still reserves the aggregate host memory for one shard (default
 3 GiB), including all pytest workers. Pool `--gpu-memory-gb N` sets its GPU
 subset/VRAM budget, defaulting to the host budget when omitted. It requires
@@ -1672,19 +1682,19 @@ PrismaQuant environment:
 ```bash
 python3 /mnt/shared/prismabuild-fleet/repo/tools/pbtest.py \
   --checkout /path/to/prismaquant \
-  --python /path/to/project-venv/bin/python --tag x86 \
+  --python /path/to/project-venv/bin/python \
   --workers-per-shard 2 --threads-per-shard 1 --mem-gb 6 \
   tests/test_shipcard_git_provenance.py tests/test_format_registry.py
 ```
 
-The same interpreter and `--tag x86` work with `pbrun`. This class constraint
-declares the external environment dependency and allows every eligible x86
-worker; it does not consume a GB10 just to obtain Python packages. Provision
-and qualify this environment before adding another worker to that population.
-Do not replace the tag with `--anywhere`: this interpreter is not installed on
-the current GB10 workers, and `--anywhere` asserts that external dependencies
-are available throughout the eligible population. PB does not infer a project's
-Python imports from the checkout or install its packages at submission.
+For direct `pbrun`, name the same absolute interpreter first after `--` and
+use `--anywhere` when the command's inputs are portable. The interpreter path
+narrows eligibility to workers that positively report it; an architecture
+constraint is an additional `--tag`, used for an actual hardware dependency.
+Provision and qualify the complete environment before adding a worker to that
+population. Path presence does not qualify Python imports: PB neither infers
+the project's packages nor installs them at submission. These producer
+contracts need runtime publication before they establish live behavior.
 
 `pbtest` checks reviewed development pins when the checkout contains
 `tools/resolve_<module>_dev_pin.py` (for example,

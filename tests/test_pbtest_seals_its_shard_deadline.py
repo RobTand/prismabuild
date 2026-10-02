@@ -23,6 +23,7 @@ import importlib.util
 from pathlib import Path
 import subprocess
 import sys
+from pbtest_shard_output import shard_environment
 
 import pytest
 
@@ -103,17 +104,9 @@ def _sealed(command) -> float | None:
 
 
 def _exported_bound(command) -> float | None:
-    """The per-test bound in the ``env`` prefix the shard's pytest runs under."""
-
-    payload = command[command.index("--") + 1:]
-    assert payload[0] == "env"
-    for word in payload[1:]:
-        if "=" not in word:
-            break
-        name, value = word.split("=", 1)
-        if name == pytest_test_bound.TIMEOUT_ENV:
-            return float(value)
-    return None
+    """The per-test bound in pbrun's sealed --env values."""
+    value = shard_environment(command).get(pytest_test_bound.TIMEOUT_ENV)
+    return None if value is None else float(value)
 
 
 def test_the_ceilings_are_read_from_the_queue_pbrun_submits_to() -> None:

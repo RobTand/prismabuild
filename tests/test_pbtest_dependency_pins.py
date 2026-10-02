@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+from pbtest_shard_output import admitted_child
 
 import pytest
 
@@ -67,7 +68,8 @@ def dispatch(checkout, monkeypatch):
 
     def admitted_payload(command, **kwargs):
         calls.append(command)
-        return original(command[command.index("--") + 1:], cwd=checkout, **kwargs)
+        argv, environment = admitted_child(command)
+        return original(argv, cwd=checkout, env=environment, **kwargs)
 
     monkeypatch.setattr(pbtest.subprocess, "Popen", admitted_payload)
     monkeypatch.setattr(sys, "argv", [

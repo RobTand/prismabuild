@@ -7,7 +7,7 @@ from pathlib import Path
 import subprocess
 import sys
 
-from pbtest_shard_output import ShardProcess, ONE_PASS  # noqa: E402
+from pbtest_shard_output import ShardProcess, ONE_PASS, admitted_child, shard_environment  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -165,20 +165,11 @@ def test_the_environment_can_carry_the_whole_suite_onto_the_lane(
 
 
 def test_a_shard_states_its_placement_once(tmp_path: Path, monkeypatch) -> None:
-    """Every shard carried ``--anywhere`` beside its class tag.
-
-    ``pbrun`` refuses that pair: ``--anywhere`` asserts every eligible worker
-    can run the action and ``--tag x86`` admits only the boxes offering the
-    tag, so a suite fanned out this way would refuse at submission, shard by
-    shard.  The tag is the claim that survives -- it owns the dependency the
-    named interpreter is -- and dropping ``--anywhere`` moves neither the
-    placement nor the action key.
-    """
+    """Portable CPU tests carry the interpreter requirement without a class."""
 
     command = _dispatch(tmp_path, monkeypatch, [])
 
-    assert command[command.index("--tag") + 1] == "x86"
-    assert "--anywhere" not in command
+    assert "--tag" not in command and "--anywhere" in command
 
 
 def test_worker_visible_tmpdir_reaches_the_shard_as_one_argument(
@@ -187,18 +178,15 @@ def test_worker_visible_tmpdir_reaches_the_shard_as_one_argument(
     # This need not exist on the coordinator, and its shell characters are data.
     worker_path = "/worker scratch/$(literal);[directory]"
     command = _dispatch(tmp_path, monkeypatch, ["--tmpdir", worker_path])
-    payload = command[command.index("--") + 1:]
-    assert payload[:2] == ["env", f"TMPDIR={worker_path}"]
-    assert sum(part.startswith("TMPDIR=") for part in payload) == 1
+    assert shard_environment(command)["TMPDIR"] == worker_path
+    assert sum(part.startswith("TMPDIR=") for part in command) == 1
 
 
 def test_default_tmpdir_keeps_the_existing_shard_environment(
     tmp_path: Path, monkeypatch,
 ) -> None:
     command = _dispatch(tmp_path, monkeypatch, [])
-    assert command[command.index("--") + 1:][:2] == [
-        "env", "TMPDIR=/home/rob/tmp",
-    ]
+    assert shard_environment(command)["TMPDIR"] == "/home/rob/tmp"
 
 
 def test_relative_tmpdir_refuses_before_submission(
@@ -249,9 +237,8 @@ def test_two_shards_have_distinct_tmpdir_children_and_output(
         # The test itself is already admitted. Run exactly the prepared child,
         # rather than recursively submitting its mocked pbrun transport.
         calls.append(command)
-        return actual_popen(
-            command[command.index("--") + 1:], cwd=checkout, **kwargs,
-        )
+        argv, environment = admitted_child(command)
+        return actual_popen(argv, cwd=checkout, env=environment, **kwargs)
 
     with monkeypatch.context() as scoped:
         scoped.setattr(pbtest.subprocess, "Popen", execute_admitted_child)
@@ -296,9 +283,10 @@ def test_explicit_tmpdir_refuses_on_the_worker_before_pytest(
             "def test_one():\n"
             "    Path('pytest-started').touch()\n"
         )
-        payload = command[command.index("--") + 1:]
+        payload, environment = admitted_child(command)
         payload[payload.index("/target/python")] = sys.executable
-        result = subprocess.run(payload, cwd=checkout, capture_output=True, text=True)
+        result = subprocess.run(payload, cwd=checkout, env=environment,
+                                capture_output=True, text=True)
         assert result.returncode != 0
         assert "pbtest: cannot use requested --tmpdir:" in result.stderr
         assert not marker.exists()
@@ -309,6 +297,7 @@ def test_explicit_tmpdir_refuses_on_the_worker_before_pytest(
         payload[payload.index("-c") + 1] = pbtest.shard_entry(
             sys.executable, checkout, collection=True,
         )[2]
-        legacy = subprocess.run(payload, cwd=checkout, capture_output=True, text=True)
+        legacy = subprocess.run(payload, cwd=checkout, env=environment,
+                                capture_output=True, text=True)
         assert legacy.returncode == 0, legacy.stdout + legacy.stderr
         assert marker.exists()

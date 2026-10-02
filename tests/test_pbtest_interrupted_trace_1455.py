@@ -7,6 +7,7 @@ import inspect
 from pathlib import Path
 import subprocess
 import sys
+from pbtest_shard_output import admitted_child
 
 import pytest
 
@@ -173,7 +174,8 @@ def test_submission_seals_trace_and_the_existing_accounting_owner(tmp_path, monk
         if str(pbtest.PBRUN) not in [str(part) for part in command]:
             return real_popen(command, **kwargs)
         sealed.append(command)
-        return real_popen(command[command.index("--") + 1:], cwd=tmp_path, **kwargs)
+        argv, environment = admitted_child(command)
+        return real_popen(argv, cwd=tmp_path, env=environment, **kwargs)
 
     monkeypatch.setattr(pbtest.subprocess, "Popen", admitted_payload)
     monkeypatch.setattr(sys, "argv", [

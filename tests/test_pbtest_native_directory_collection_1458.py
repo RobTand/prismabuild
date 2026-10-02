@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+from pbtest_shard_output import admitted_child
 
 import pytest
 
@@ -82,7 +83,8 @@ def _dispatch(root, monkeypatch, *, workers, shards=1, paths=("tests",)):
         if str(pbtest.PBRUN) not in [str(part) for part in command]:
             return REAL_POPEN(command, **kwargs)
         calls.append(command)
-        return REAL_POPEN(command[command.index("--") + 1:], cwd=root, **kwargs)
+        argv, environment = admitted_child(command)
+        return REAL_POPEN(argv, cwd=root, env=environment, **kwargs)
 
     monkeypatch.setattr(pbtest.subprocess, "Popen", admitted_payload)
     report = root.parent / "shards.json"
