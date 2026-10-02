@@ -541,6 +541,9 @@ legacy states and never authorize execution. Funding movers declare host demand
 separately from their unchanged tier entitlements. Both source and compatibility
 deliveries HOLD merge/deployment until the single combined exact integrated-head
 gate and independent review.
+The integrated source also carries `pbmergeq_runtime.py` beside its importing
+client in the publication manifest; this bundle closure correction does not
+publish or activate a runtime.
 This partial slice is Refs #1419; finite safe-fit/release proof (#1429), final
 exact-head independent review and live acceptance remain owed.
 
