@@ -33,10 +33,9 @@ Four constraints shape this:
   own gives each worker its share of those cores: each xdist worker would
   otherwise inherit the whole row's thread count (#1192).
 
-Shards are round-robin by file, which balances only if files cost roughly the
-same.  They do not -- but the alternative is a duration model nobody has
-measured, and an unbalanced shard costs wall-clock while a wrong one costs
-trust.  The imbalance is reported so it can be seen rather than assumed.
+Shards use receipt-backed duration history when available and round-robin by
+file otherwise. The report records predicted and actual durations so a bad
+estimate or an unbalanced shard remains visible.
 """
 from __future__ import annotations
 
