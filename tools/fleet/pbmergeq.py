@@ -36,7 +36,7 @@ import argparse
 import contextlib
 import dataclasses
 import fcntl
-import importlib
+import importlib.util
 import json
 import os
 import shutil
@@ -90,6 +90,11 @@ class Config:
     merge_enabled_file: str = ""
     tmpdir: str = ""
     runtime_pins: dict = dataclasses.field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        # Freeze the operator's published link once, before any discovery/import
+        # or submission. A new queue/config may bind a newer generation.
+        object.__setattr__(self, "pbtest", self.pbtest.resolve())
 
     @property
     def fetch_url(self) -> str:
@@ -153,7 +158,20 @@ def load_published_module(path: Path):
     where = str(path.parent)
     if where not in sys.path:
         sys.path.insert(0, where)
-    return importlib.import_module(path.stem)
+    # Normal import caching can return another generation (or the admitted
+    # shard's embedded outcome recorder). Load exactly this owner's file.
+    name = f"pbmergeq_published_{path.stem}:{path.parent}"
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load published module {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        sys.modules.pop(name, None)
+        raise
+    return module
 
 
 def load_outcomes(pbtest: Path):
@@ -575,14 +593,13 @@ def checkout_source(checkout: Path) -> dict:
 
 def checkout_runtime(cfg: Config, checkout: Path) -> dict:
     return {**select_runtime(checkout, cfg.test_python, cfg.runtime_pins),
-            **checkout_source(checkout)}
+            **checkout_source(checkout), "pbtest": str(cfg.pbtest)}
 
 
 def baseline_key(cfg: Config, tree: str, runtime: dict) -> str:
-    # The published path binds a runtime generation; the complete config is
-    # conservative (even operational changes can invalidate, never falsely reuse).
-    return baseline_identity(tree, runtime, {
-        **dataclasses.asdict(cfg), "pbtest_resolved": str(cfg.pbtest.resolve())})
+    # Runtime evidence names the actually launched entrypoint; the config's
+    # publisher link was frozen before discovery and is never resolved here.
+    return baseline_identity(tree, runtime, dataclasses.asdict(cfg))
 
 
 def test_command(cfg: Config, checkout: Path, files: list[str], report: Path,
@@ -676,6 +693,7 @@ class Runner:
                 results[name] = RunResult(set(), list(files), list(files), [],
                                          report=str(report), log=str(log),
                                          runtime={"python": self.cfg.test_python,
+                                                  "pbtest": str(self.cfg.pbtest),
                                                   **checkout_source(checkout),
                                                   "policy": self.cfg.runtime_pins},
                                          runtime_refusal=reason)
@@ -715,12 +733,13 @@ class Runner:
     def read_result(self, report: Path, files: list[str], *, log: Path,
                     returncode: int) -> RunResult:
         if report.exists():
-            result = reduce_report(json.loads(report.read_text(encoding="utf-8")),
-                                   self.outcomes)
-        else:
-            result = RunResult(failed=set(), inconclusive=list(files), files=list(files),
-                               receipts=[])
-        if returncode and not result.runtime_refusal:
+            # The report owns classification: only its unobserved shards can
+            # name a refusal. Failed-client echoes of observed pytest cannot.
+            return reduce_report(json.loads(report.read_text(encoding="utf-8")),
+                                 self.outcomes)
+        result = RunResult(failed=set(), inconclusive=list(files), files=list(files),
+                           receipts=[])
+        if returncode:
             result.runtime_refusal = runtime_refusal(log.read_text(encoding="utf-8", errors="replace"))
         return result
 
@@ -798,7 +817,7 @@ class Queue:
                 except RuntimeSelectionError as exc:
                     got.runtime_refusal = f"pbmergeq: runtime selection refused: {exc}"
                     got.runtime = {"python": self.cfg.test_python, **checkout_source(checkout),
-                                   "policy": self.cfg.runtime_pins}
+                                   "pbtest": str(self.cfg.pbtest), "policy": self.cfg.runtime_pins}
             results[name] = dataclasses.replace(got, files=[*got.files, *absent[name]])
             self.record_run(batch, name, results[name])
         return results
@@ -816,13 +835,17 @@ class Queue:
         """Record and classify the results owned by one concurrent invocation."""
         for name, result in results.items():
             self.record_run(batch, name, result)
+        # Classification belongs to the complete concurrent result set, not
+        # caller iteration order. Repairable runtime blocks take precedence.
+        for name, result in results.items():
             if result.runtime_refusal:
                 raise RuntimeBlocked(f"{name}: {result.runtime_refusal}")
+        for name, result in results.items():
             if result.inconclusive:
                 raise Inconclusive(f"{name}: {len(result.inconclusive)} file(s) never observed")
 
     def checked(self, batch: dict, name: str, results: dict[str, RunResult]) -> RunResult:
-        self.check_results(batch, {name: results[name]})
+        self.check_results(batch, results)
         return results[name]
 
     # -- selection and build -----------------------------------------------
@@ -1003,7 +1026,7 @@ class Queue:
             reason = f"pbmergeq: runtime selection refused: {exc}"
             self.record_run(batch, "base", RunResult(set(), failing_files, failing_files, [],
                 runtime={"python": self.cfg.test_python, **checkout_source(base_checkout),
-                         "policy": self.cfg.runtime_pins}, runtime_refusal=reason))
+                         "pbtest": str(self.cfg.pbtest), "policy": self.cfg.runtime_pins}, runtime_refusal=reason))
             raise RuntimeBlocked(f"base: {reason}") from exc
         identity = baseline_key(self.cfg, batch["base_tree"], base_runtime)
         known = self.store.baseline(identity)

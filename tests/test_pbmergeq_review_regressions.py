@@ -21,6 +21,8 @@ from test_pbmergeq import (
 )
 from test_pbmergeq_runtime import NEW, OLD, pin, policy
 
+from prismabuild import core
+
 
 @pytest.mark.parametrize("category", ["failed", "error"])
 def test_observed_nonzero_report_echoing_refusal_never_becomes_runtime_blocker(tmp_path, monkeypatch, category):
@@ -165,3 +167,16 @@ def test_generation_replacement_mid_run_cannot_relabel_baselines_or_any_batch_ph
     b_cfg = dataclasses.replace(cfg, pbtest=link / "pbtest.py")
     b_runtime = {**candidate, "pbtest": str(b / "pbtest.py")}
     assert not queue.store.baseline(mq.baseline_key(b_cfg, batch["candidate_tree"], b_runtime))
+
+
+def test_version_two_post_run_generation_evidence_is_not_reused(tmp_path):
+    cfg = config(tmp_path)
+    runtime = mq.checkout_runtime(cfg, tmp_path)
+    legacy = {"schema": "pbmergeq.baseline.v2", "tree": "tree",
+              "runtime": {key: runtime[key] for key in ("python", "pins", "pin_sources")},
+              "config": {**dataclasses.asdict(cfg), "pbtest_resolved": str(cfg.pbtest)}}
+    legacy_key = core.canonical_sha256(json.loads(json.dumps(legacy, default=str)))
+    store = mq.Store(cfg.state_dir)
+    store.remember_baseline(legacy_key, ["tests/test_a.py"], ["tests/test_a.py::old"])
+    assert store.baseline(legacy_key)
+    assert not store.baseline(mq.baseline_key(cfg, "tree", runtime))

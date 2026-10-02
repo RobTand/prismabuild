@@ -42,6 +42,12 @@ logs survive restart in state and the batch record. A pre-submission refusal
 has no fabricated action key. An interpreter whose presence is unknown may
 still wait under PB's existing placement contract; unknown is not absence.
 
+A report owns refusal classification: only its unobserved shards may identify
+runtime refusal. Echoed refusal text from observed failing pytest outcomes is
+ordinary test evidence, never a runtime blocker. Client-log fallback applies
+only when no report exists. All concurrent results are recorded and inspected
+for runtime refusals before any ordinary inconclusive result charges attempts.
+
 A shard with no pytest summary or outcome record and no explicit runtime refusal is inconclusive. Its files
 are re-run up to `inconclusive_retries` times; if they stay unobserved the
 batch posts nothing, re-queues its entries and backs off.
@@ -66,12 +72,21 @@ receipt path) and `baselines/<compatibility-digest>.json`. Old tree-only
 baselines and history reports without matching compatibility identity are not
 reused. Changing even an operational config field conservatively invalidates
 evidence; the digest never aliases two full pins sharing a path abbreviation.
+Version3 compatibility includes the actually launched pbtest path and rejects
+older version2 evidence whose generation may have been resolved after execution.
 
 A restart re-queues the interrupted batch's entries at the front and runs it
 again. The ledger keeps a status from being posted twice for the same batch,
 and a merge is skipped when the ledger or GitHub says it already happened.
 
 ## Configuration
+
+The configured `pbtest` entrypoint is resolved once when configuration is
+constructed, before discovery, module loading or submission. Its retained,
+immutable generation path supplies discovery, outcome parsing, execution and
+run/cache evidence for every candidate/base/rerun/retry/bisect phase. Replacing
+the publisher symlink mid-run cannot change that binding. Restart/reconstruct
+the queue configuration to deliberately adopt a newly published generation.
 
 One JSON file per repository. `pbtest_args` must carry `--priority` and an
 explicit `--timeout-s`, and may not set `--checkout`, `--python`, `--json` or

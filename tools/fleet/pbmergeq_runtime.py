@@ -91,8 +91,8 @@ def select_runtime(checkout: Path, python: str, sources: dict) -> dict:
 
 def baseline_identity(tree: str, runtime: dict, config: dict) -> str:
     """Only the same source tree, runtime policy and test invocation may reuse results."""
-    identity = {"schema": "pbmergeq.baseline.v2", "tree": tree,
-                "runtime": {key: runtime[key] for key in ("python", "pins", "pin_sources")},
+    identity = {"schema": "pbmergeq.baseline.v3", "tree": tree,
+                "runtime": {key: runtime[key] for key in ("python", "pins", "pin_sources", "pbtest")},
                 "config": config}
     return core.canonical_sha256(json.loads(json.dumps(identity, default=str)))
 
