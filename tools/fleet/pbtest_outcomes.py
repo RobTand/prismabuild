@@ -30,16 +30,24 @@ delivers every worker's reports.
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import posixpath
+from contextlib import nullcontext
 from pathlib import Path
 import sys
 import tempfile
+import time
 
 #: The version of the record's shape.  A reader refuses any other.
 SCHEMA = "prismabuild.pbtest_outcomes.v1"
 #: The one line a shard prints its record on.
 PREFIX = "pbtest-outcomes: "
+#: Diagnostic events survive an interrupted session; they are never outcomes.
+TRACE_OPTION = "--pbtest-trace"
+TRACE_PREFIX = "pbtest-trace: "
+TRACE_SCHEMA = "prismabuild.pbtest_trace.v1"
+TRACE_NODEID_MAX_BYTES = 4096
 
 # xdist forwards selected IDs but neither successful collection reports nor
 # pytest_deselected to its controller. This tiny worker plugin returns only
@@ -63,6 +71,78 @@ def pytest_sessionfinish(session, exitstatus):
     if output is not None:
         output["pbtest_deselected"] = _deselected
         output["pbtest_collect_seen"] = _collect_seen
+'''
+
+# This plugin runs in the test process, including each xdist worker. Reports
+# travel over pytest/xdist's existing channel to the controller's trace writer.
+RESOURCE_TRACE_PLUGIN = '''\
+import os
+from pathlib import Path
+import resource
+import time
+import pytest
+from pbtest_resource_scope import read_process_io
+
+def pytest_addoption(parser):
+    parser.addoption("--pbtest-trace", action="store_true", default=False,
+                     help="flush diagnostic test/process resource samples")
+
+def sample():
+    result = {"pid": os.getpid(), "sampled_unix": time.time(),
+              "scope": "test-process-and-reaped-children",
+              "process_io": None, "rss_bytes": None,
+              "max_rss_watermark_bytes": None, "errors": []}
+    try:
+        row = read_process_io(os.getpid())
+        if row is None or row[2] is None:
+            raise ValueError("process I/O unavailable")
+        result["identity"], _, result["process_io"] = row
+    except (OSError, ValueError) as exc:
+        result["errors"].append(str(exc))
+    try:
+        status = Path("/proc/self/status").read_text()
+        rss = next(line.split()[1:] for line in status.splitlines()
+                   if line.startswith("VmRSS:"))
+        if len(rss) != 2 or rss[1] != "kB":
+            raise ValueError("unknown VmRSS units")
+        result["rss_bytes"] = int(rss[0]) * 1024
+    except (OSError, ValueError, StopIteration) as exc:
+        result["errors"].append("RSS unavailable: " + str(exc))
+    result["max_rss_watermark_bytes"] = (
+        resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024)
+    return result
+
+@pytest.hookimpl(hookwrapper=True, tryfirst=True)
+def pytest_runtest_setup(item):
+    item._pbtest_resource_before = sample()
+    yield
+
+@pytest.hookimpl(hookwrapper=True, tryfirst=True)
+def pytest_runtest_call(item):
+    item._pbtest_resource_before = sample()
+    yield
+
+@pytest.hookimpl(hookwrapper=True, tryfirst=True)
+def pytest_runtest_teardown(item):
+    item._pbtest_resource_before = sample()
+    yield
+
+@pytest.hookimpl(hookwrapper=True, trylast=True)
+def pytest_runtest_makereport(item, call):
+    outcome = yield
+    after = sample()
+    before = getattr(item, "_pbtest_resource_before", None)
+    delta = None
+    if (before is not None and before.get("identity") == after.get("identity")
+            and before["process_io"] is not None and after["process_io"] is not None):
+        candidate = {k: v - before["process_io"][k]
+                     for k, v in after["process_io"].items()}
+        if all(v >= 0 for v in candidate.values()):
+            delta = candidate
+        else:
+            after["errors"].append("process I/O counter regressed")
+    outcome.get_result().pbtest_resources = {
+        "before": before, "after": after, "process_io_delta": delta}
 '''
 
 
@@ -243,7 +323,8 @@ def ignored_named_paths(config) -> set[str]:
     return ignored
 
 
-def main(argv: list[str] | None = None, *, preflight=None) -> int:
+def main(argv: list[str] | None = None, *, preflight=None,
+         resource_source: str | None = None) -> int:
     """Run pytest on ``argv`` with the recorder, then return its exit code.
 
     ``preflight`` runs first and ends the shard, before pytest, on a
@@ -279,6 +360,37 @@ def main(argv: list[str] | None = None, *, preflight=None) -> int:
 
         def pytest_configure(self, config) -> None:
             self.config = config
+
+        def trace(self, event: str, nodeid: str, **fields) -> None:
+            if not trace_enabled:
+                return
+            encoded = nodeid.encode("utf-8", errors="replace")
+            if len(encoded) > TRACE_NODEID_MAX_BYTES:
+                fields.update(nodeid_truncated=True,
+                              nodeid_sha256=hashlib.sha256(encoded).hexdigest())
+                nodeid = encoded[:TRACE_NODEID_MAX_BYTES].decode("utf-8", errors="ignore")
+            line = TRACE_PREFIX + json.dumps({
+                "schema": TRACE_SCHEMA, "event": event, "nodeid": nodeid,
+                "reported_unix": time.time(),
+                **fields,
+            }, separators=(",", ":"))
+            # The terminal writer owns the stream outside pytest's capture.
+            # Direct stdout writes can be captured with the dying test and
+            # never reach the pool log. Flush each bounded event explicitly.
+            terminal = self.config.pluginmanager.getplugin("terminalreporter")
+            if terminal is not None:
+                # Another hook may just have printed a progress dot. Start
+                # our own line rather than depending on its cursor state.
+                terminal.write("\n" + line + "\n", flush=True)
+            else:
+                capture = self.config.pluginmanager.getplugin("capturemanager")
+                with (capture.global_and_fixture_disabled()
+                      if capture is not None else nullcontext()):
+                    sys.stdout.write(line + "\n")
+                    sys.stdout.flush()
+
+        def pytest_runtest_logstart(self, nodeid, location) -> None:
+            self.trace("start", nodeid)
 
         @pytest.hookimpl(tryfirst=True)
         def pytest_collection(self, session):
@@ -332,6 +444,10 @@ def main(argv: list[str] | None = None, *, preflight=None) -> int:
                                      skip_reason(report), self.location(report)])
 
         def pytest_runtest_logreport(self, report) -> None:
+            self.trace("phase", report.nodeid, when=report.when,
+                       outcome=report.outcome,
+                       worker=getattr(report, "worker_id", None),
+                       resources=getattr(report, "pbtest_resources", None))
             # Every phase consumes wall time, counted or not: a passing
             # setup or teardown never reaches the summary line, but the
             # file still paid its seconds, and the packing model (#1246)
@@ -405,18 +521,28 @@ def main(argv: list[str] | None = None, *, preflight=None) -> int:
                 self.written = True
 
     arguments = list(sys.argv[1:] if argv is None else argv)
-    if "-n" in arguments or any(arg.startswith("-n") and arg != "-n"
-                                for arg in arguments):
+    trace_enabled = TRACE_OPTION in arguments
+    xdist = "-n" in arguments or any(arg.startswith("-n") and arg != "-n"
+                                     for arg in arguments)
+    if trace_enabled and resource_source is None:
+        raise ValueError("--pbtest-trace needs the sealed resource accounting source")
+    if xdist or trace_enabled:
         # The shard is already inside one admitted PB action. The worker
         # plugin lives only for this pytest invocation and changes no checkout
         # or sealed input. xdist's workeroutput is the transport it owns.
         with tempfile.TemporaryDirectory(prefix="pbtest-xdist-roster-") as folder:
             Path(folder, "pbtest_xdist_roster.py").write_text(XDIST_ROSTER_PLUGIN)
+            if trace_enabled:
+                Path(folder, "pbtest_resource_scope.py").write_text(resource_source)
+                Path(folder, "pbtest_resource_trace.py").write_text(RESOURCE_TRACE_PLUGIN)
             sys.path.insert(0, folder)
             old_path = os.environ.get("PYTHONPATH")
             os.environ["PYTHONPATH"] = folder + os.pathsep + (old_path or "")
             try:
-                code = pytest.main(["-p", "pbtest_xdist_roster", *arguments],
+                plugins = ["-p", "pbtest_xdist_roster"]
+                if trace_enabled:
+                    plugins += ["-p", "pbtest_resource_trace"]
+                code = pytest.main([*plugins, *arguments],
                                    plugins=[OutcomeRecorder()])
             finally:
                 sys.path.remove(folder)

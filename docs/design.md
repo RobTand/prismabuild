@@ -1714,6 +1714,31 @@ Surface report names expand `{shard}` or receive `.shard-N` before the final
 suffix. Expanded arguments and GPU budgets enter the ordinary sealed action
 identity through `pbrun`; no second dispatcher or placement policy is added.
 
+`--pytest-args '["--pbtest-trace"]'` opts into interrupted-shard diagnostics
+(#1455, Refs #1421). The existing outcome controller flushes one
+`pbtest-trace: ` JSON line per test start and completed setup/call/teardown
+report, using schema `prismabuild.pbtest_trace.v1`. Each phase report carries
+before/after samples from its actual test process, including an xdist worker,
+through pytest's existing report channel. The sealer includes the standalone
+`resource_scope.py` owner in the child program; its exact-process I/O reader
+supplies the counters and identity. RSS is an instantaneous `/proc/self/status`
+sample; `max_rss_watermark_bytes` is the process-lifetime high-water mark,
+not a per-test peak. I/O deltas cover that process and children it has reaped;
+live children, daemon-created containers, delayed writeback and later reaping
+prevent complete causal per-test attribution. Unavailable/regressing counters
+remain null with diagnostics. These observations complement the existing
+aggregate attempt resource profile and never replace its scope accounting.
+Diagnostic node IDs are capped at 4096 UTF-8 bytes; a truncated ID retains
+its full digest and an explicit truncation flag. Final outcome IDs stay intact.
+
+Trace lines identify the last observed test/phase if the controller exits
+before its summary. They are diagnostic events, not counted outcomes,
+committed work, a success receipt or proof of a write/OOM cause. Final outcome
+reconciliation is unchanged. This option adds bounded per-event sampling and
+log traffic, with no polling loop, disk quota or memory-budget change; it is
+off by default. An abrupt process death can still lose reports not delivered
+to the controller, so missing observations are unknown rather than zero.
+
 A checkout containing `tools/resolve_<module>_dev_pin.py` opts into reviewed
 Python dependency verification for every `pbtest` shard. The resolver runs
 under the target interpreter inside the admitted, sealed checkout and must
