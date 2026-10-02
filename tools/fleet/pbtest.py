@@ -819,6 +819,7 @@ def load(name):
 
 
 pins = load("pbtest_pins") if "pbtest_pins" in SOURCES else None
+load("pbtest_collection")
 raise SystemExit(load("pbtest_outcomes").main(
     preflight=None if pins is None else pins.preflight,
     resource_source=SOURCES.get("pbtest_resource_scope")))
@@ -838,7 +839,8 @@ def shard_entry(python: str, checkout: Path, *, tmpdir: str | None = None,
     """
 
     here = Path(__file__)
-    sources = {"pbtest_outcomes": here.with_name("pbtest_outcomes.py").read_text()}
+    sources = {"pbtest_outcomes": here.with_name("pbtest_outcomes.py").read_text(),
+               "pbtest_collection": here.with_name("pbtest_collection.py").read_text()}
     if trace:
         # The diagnostic plugin reuses the existing exact-process I/O reader.
         # Carry its standalone source into any target project/interpreter.
