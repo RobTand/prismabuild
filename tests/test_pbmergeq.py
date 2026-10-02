@@ -14,10 +14,11 @@ ROOT = Path(__file__).resolve().parents[1]
 FLEET = ROOT / "tools" / "fleet"
 sys.path.insert(0, str(FLEET))
 SPEC = importlib.util.spec_from_file_location("pbmergeq", FLEET / "pbmergeq.py")
+assert SPEC is not None and SPEC.loader is not None
 mq = importlib.util.module_from_spec(SPEC)
 sys.modules["pbmergeq"] = mq
 SPEC.loader.exec_module(mq)  # type: ignore[union-attr]
-import pbtest_outcomes  # noqa: E402
+pbtest_outcomes = mq.load_outcomes(FLEET / "pbtest.py")
 
 SHA = "0123456789abcdef0123456789abcdef01234567"
 
@@ -378,8 +379,8 @@ def test_a_merge_github_keeps_refusing_leaves_the_queue_after_max_attempts(tmp_p
     assert verdicts == ["partial"] * 3 + ["merged"], verdicts
     comments = [c for c in github.calls if c[:4] == ["gh", "pr", "comment", "1"]]
     assert len(comments) == 1
-    assert ["gh", "pr", "merge", "2"] == [c for c in github.calls
-                                          if c[:4] == ["gh", "pr", "merge", "2"]][0][:4]
+    assert [c for c in github.calls
+            if c[:4] == ["gh", "pr", "merge", "2"]][0][:4] == ["gh", "pr", "merge", "2"]
 
 
 PIN_REFUSAL = ("pbtest: dependency pin refused before pytest: "
@@ -387,18 +388,27 @@ PIN_REFUSAL = ("pbtest: dependency pin refused before pytest: "
                + "; distribution=prismabuild installed commit=" + "b" * 40)
 
 
-def refused_process(monkeypatch, launches):
+def refused_process(monkeypatch, launches, message=PIN_REFUSAL, report=None):
+    original = mq.subprocess.Popen
+
     class Refused:
         def __init__(self, command, *, stdout, **kwargs):
             launches.append(command)
-            stdout.write(PIN_REFUSAL + "\n")
+            stdout.write(message + "\n")
             stdout.flush()
+            if report is not None:
+                Path(command[command.index("--json") + 1]).write_text(json.dumps(report))
             self.pid, self.returncode = 4242, 1
 
         def poll(self):
             return self.returncode
 
-    monkeypatch.setattr(mq.subprocess, "Popen", Refused)
+    def launch(command, **kwargs):
+        if command[0] == "git":
+            return original(command, **kwargs)
+        return Refused(command, **kwargs)
+
+    monkeypatch.setattr(mq.subprocess, "Popen", launch)
 
 
 def test_pin_runtime_refusal_is_not_retried_as_an_unobserved_test(tmp_path, monkeypatch):
