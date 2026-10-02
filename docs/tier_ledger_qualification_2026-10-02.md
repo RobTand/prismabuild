@@ -103,3 +103,56 @@ Their source head is exactly `b30c1ded419d67d2745c2e104f6daf9bb08c717e`.
 A new paired profile against the same main baseline is prepared but has not run.
 The source change is not a speedup claim. Full #1027 acceptance, merge and
 deployment remain with the coordinator.
+
+## Continuation: corrected adapter, measured 2026-10-02
+
+The prepared correction above subsequently ran under a new explicit root GO.
+This continuation preserves the earlier negative result and pending-state history.
+One new admitted action used the same main baseline, fixture, source-bound
+benchmark bytes, ABBA order, CPU/memory/native-thread limits and 600-second bound.
+The changed source was exactly
+`b30c1ded419d67d2745c2e104f6daf9bb08c717e`; it did not adopt any completed arm
+from a previous action. The qualified fleet runtime was the restored `5b6`.
+
+| Arm | Steady median, seconds |
+| --- | ---: |
+| Before 1 | 0.3642 |
+| After 1 | 0.2495 |
+| After 2 | 0.3183 |
+| Before 2 | 0.4246 |
+
+The median of arm medians was 0.3944 seconds before and 0.2839 after:
+**28.0% less steady-cycle wall time** on this fixture. The corresponding
+in-process CPU medians were 0.3710 and 0.26665 seconds. Both after arms recorded
+zero ledger listings and positive reuse. Each before/after pairing has the same
+direction, but the changing host load means this is a scoped observation rather
+than a constant-load or whole-application performance claim.
+
+The profiling change matches the source correction: inclusive `Path.__lt__`
+samples across twenty steady cycles were 1.86/2.06 seconds before and
+0.032/0.040 after. Inclusive `_parts_normcase` samples fell from 0.880/0.928
+seconds to 0.024/0.036. These overlapping sampled totals cannot be added.
+The dominant path-sorting work has disappeared; directory freshness checks remain.
+
+The original complete raw Netdata responses now use `jsonwrap,unaligned`, retain
+the agents' native intervals, and cover all four requested wall windows on
+dl380g10 and both Sparks. A bounded read-only wait let the last collector bucket
+arrive; it never restarted a benchmark arm. dl380g10's mean sum of non-idle
+dimensions (including I/O wait) over each arm's in-window API points was
+5.47%, 4.59%, 9.71% and 12.12%. This records the load drift; it is not a raw peak
+or an energy measurement.
+
+Action:
+`ad2b1a4e1b7ea7b3ea99df5cf2db66d4db83755bc69ffc27d79334ba6369df7d`.
+It executed/0 on dl380g10 in one attempt. Canonical CAS lookup, immutable full
+log hashes, source bundle/parent/closure, result-to-artifact digest, all 68 arm
+files, all 84 cycles, 48 raw chart windows, and complete released/empty/stopped
+scope cleanup were independently checked. No live queue or runtime was changed
+by this experiment, and no GPU, work-per-joule or served-throughput claim follows.
+
+Artifacts:
+`/mnt/shared/prismabuild-fleet/measurements/astra-pb-tiers-20261002/1027-filter-pair/`.
+Checks and attribution:
+`/home/rob/tmp/astra-resume-20261002/pb_tiers/1027-filter-measurement-verified.json`,
+`1027-filter-artifacts-verified.json`, and `1027-filter-profile-attribution.json`.
+The root coordinator owns acceptance, merge and any later deployment.
