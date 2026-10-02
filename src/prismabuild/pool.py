@@ -24396,11 +24396,10 @@ class PoolQueue:
         """
 
         def generation(state: str) -> float | None:
-            value = readable[state][1].get("published_unix")
-            if (isinstance(value, (int, float)) and not isinstance(value, bool)
-                    and math.isfinite(float(value))):
-                return float(value)
-            return None
+            # The one finite-generation owner: an integer past the binary64
+            # range is an unorderable generation (``None``), never an escaped
+            # ``OverflowError`` out of a status census (#1446).
+            return _finite_generation(readable[state][1].get("published_unix"))
 
         present = [state for state in (DONE, FAILED, WITHDRAWN)
                    if state in readable]

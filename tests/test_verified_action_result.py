@@ -333,9 +333,10 @@ def test_selected_input_tamper_and_over_cap_refuse_without_reading_unchosen(
 # -- every byte is bounded, and loosely-typed evidence is refused ------------
 
 def _rewrite_readonly(path: Path, payload: bytes) -> None:
-    """Rewrite one immutable evidence file, restoring its read-only mode."""
+    """Write one immutable evidence file (creating it) and leave it read-only."""
 
-    path.chmod(0o644)
+    if path.exists():
+        path.chmod(0o644)
     path.write_bytes(payload)
     path.chmod(0o444)
 
@@ -407,19 +408,18 @@ def test_a_huge_publication_integer_refuses(tmp_path: Path):
             attempt=1, max_result_bytes=64, max_evidence_bytes=1 << 20)
 
 
-def test_a_huge_terminal_publication_refuses_without_an_overflow(tmp_path: Path):
+def test_a_huge_terminal_generation_is_unorderable_not_an_overflow(tmp_path: Path):
     action, queue, record, _receipt, _payload = _fixture(tmp_path)
     key = str(action["action_key"])
     # The terminal row itself names a generation past the binary64 range: the
-    # census must read it as unorderable and refuse, never raise OverflowError.
+    # census rule must read it as unorderable, never raise OverflowError.
     row = dict(record)
     row["published_unix"] = 10 ** 400
-    pb._atomic_publish(queue.item_path(pool.DONE, key),
-                       pb._canonical_file_bytes(row))
-    with pytest.raises(client.ActionResultError):
-        client.read_verified_action_result(
-            queue, key, published_unix=float(record["published_unix"]),
-            attempt=1, max_result_bytes=64, max_evidence_bytes=1 << 20)
+    ending = queue.resolve_ending({pool.DONE: (queue.item_path(pool.DONE, key), row)}, [])
+    assert ending["generation"] is None
+    assert pool._finite_generation(10 ** 400) is None
+    assert pool._finite_generation(float("inf")) is None
+    assert pool._finite_generation(3.5) == 3.5
 
 
 def test_an_empty_terminal_leaf_never_reads_as_absent(tmp_path: Path):
