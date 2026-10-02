@@ -41,7 +41,7 @@ def test_setup_failure_retains_cause(monkeypatch):
     def fail(_fd):
         raise OSError(errno.EMFILE, "fixture descriptor limit")
 
-    monkeypatch.setattr(pbstatus, "_isolate_child_fds", fail)
+    monkeypatch.setattr(pbstatus._reader, "_isolate_child_fds", fail)
     result = observe(lambda: "must not run")
     assert result["status"] == "error"
     assert result["type"] == "OSError"

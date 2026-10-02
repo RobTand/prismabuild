@@ -59,7 +59,8 @@ def test_failed_callback_is_not_a_success(worker):
 
 
 def test_retained_real_writer_fences_siblings_and_recovers(worker, tmp_path, monkeypatch):
-    bounded_module = sys.modules[worker.bounded.__module__]
+    # Fault injection follows the extracted implementation, not the CLI adapter.
+    bounded_module = sys.modules[worker.bounded.__module__]._reader
     original_stop = bounded_module._stop_reader
     fifo = tmp_path / 'hold-writer'
     os.mkfifo(fifo)

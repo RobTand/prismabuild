@@ -192,8 +192,8 @@ def test_eof_payload_with_retained_reader_uses_the_delivered_snapshot(
         abandoned.append({"pid": pid, "section": "pool outcome observation",
                           "starttime_ticks": pbrun.pbstatus._starttime_ticks(pid)})
 
-    monkeypatch.setattr(pbrun.pbstatus, "_reap_within", lambda *_args: False)
-    monkeypatch.setattr(pbrun.pbstatus, "_stop_reader", retain)
+    monkeypatch.setattr(pbrun.pbstatus._reader, "_reap_within", lambda *_args: False)
+    monkeypatch.setattr(pbrun.pbstatus._reader, "_stop_reader", retain)
     try:
         assert pbrun.await_outcome(queue, KEY, wait_s=0) == 0
         assert len(retained) == 2  # observation and verification both delivered
@@ -221,7 +221,7 @@ def test_retained_outcome_reader_names_exact_identity_and_releases_parent_fds(
                           "starttime_ticks": pbrun.pbstatus._starttime_ticks(pid)})
 
     monkeypatch.setattr(pbrun, "OUTCOME_READ_TIMEOUT_S", 0.05)
-    monkeypatch.setattr(pbrun.pbstatus, "_stop_reader", retain)
+    monkeypatch.setattr(pbrun.pbstatus._reader, "_stop_reader", retain)
     held = (tmp_path / "parent.lock").open("w")
     fcntl.flock(held, fcntl.LOCK_EX)
     try:
@@ -268,7 +268,7 @@ def test_interrupt_reaps_the_owned_outcome_reader(
         raise KeyboardInterrupt
 
     monkeypatch.setattr(pbrun.pbstatus.os, "fork", tracked_fork)
-    monkeypatch.setattr(pbrun.pbstatus.select, "select", interrupt)
+    monkeypatch.setattr(pbrun.pbstatus._reader.select, "select", interrupt)
     with pytest.raises(KeyboardInterrupt):
         pbrun.await_outcome(queue, KEY, wait_s=0)
     assert len(children) == 1

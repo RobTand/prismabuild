@@ -1565,6 +1565,7 @@ def progress_policy(
 def _sealed_action_request(
     cas_root: str | Path,
     action_key: str,
+    *, max_bytes: int | None = None,
 ) -> Mapping[str, object] | None:
     """Read one validated sealed request for all publication policies.
 
@@ -1576,7 +1577,7 @@ def _sealed_action_request(
     key = str(action_key)
     request = Path(str(cas_root)) / "requests" / key[:2] / f"{key}.json"
     try:
-        raw = pb._read_regular_file_nofollow(request, where="pool action request")
+        raw = pb._read_regular_file_nofollow(request, where="pool action request", max_bytes=max_bytes)
     except FileNotFoundError:
         return None
     try:
@@ -2385,7 +2386,7 @@ def _requested_execution_timeout(item: Mapping[str, object]) -> float | None:
     return _execution_timeout(item, None)
 
 
-def _declared_run_bound(item: Mapping[str, object]) -> tuple[str, float | None]:
+def _declared_run_bound(item: Mapping[str, object], *, max_bytes: int | None = None) -> tuple[str, float | None]:
     """What a claimed action declared about how long it may run.
 
     Returns ``(governed_by, requested_timeout_s)``, read once from the same
@@ -2401,7 +2402,7 @@ def _declared_run_bound(item: Mapping[str, object]) -> tuple[str, float | None]:
     key = str(item["action_key"])
     request = Path(str(item["cas_root"])) / "requests" / key[:2] / f"{key}.json"
     try:
-        raw = pb._read_regular_file_nofollow(request, where="pool action request")
+        raw = pb._read_regular_file_nofollow(request, where="pool action request", max_bytes=max_bytes)
     except FileNotFoundError:
         return "deadline", None
     action = pb.validate_action(pb._decode_strict_json(raw, where="pool action request"))
@@ -8697,14 +8698,16 @@ class PoolQueue:
                 return {pb.RESIDENCY_MAP_ENV: str(path)}
         return {}
 
+    @_serialized_key
     def record_pass(self, action_key: str) -> int:
-        """Count one admission denial.
+        """Count one admission denial under the key's transition ownership.
 
         Kept in a sidecar rather than in the item, because rewriting a ready
         item races the claim that may already have moved it: the writer would
         resurrect a claimed action into ``ready`` and hand it to a second
-        worker.  A lost increment under contention costs a little ordering
-        fairness; a resurrected item costs correctness.
+        worker. Canonical selection shares this carrier, so even a direct
+        caller must serialize its read/merge/write under the same key; a stale
+        counter write must never erase an election.
         """
 
         now = _now()
@@ -8759,6 +8762,8 @@ class PoolQueue:
             episodes[host] = episode
         if episodes:
             record["measurement_drains"] = episodes
+        if "measurement_reservation" in prior:
+            record["measurement_reservation"] = prior["measurement_reservation"]
         _write_json_atomic(self.passes_path(action_key), record)
         return count
 
@@ -11243,6 +11248,33 @@ class PoolQueue:
                         host, measurement_generation, notes)
                 else:
                     self.__dict__.setdefault("_drain_notes", {})[key] = notes
+
+    def _canonical_measurement_verdict(self, item, verdict, *, ledger, controller,
+                                       cpu_decision, gpu_sample):
+        """Separate bounded attention from the persisted host election (#1419)."""
+        from . import _measurement_reservation as reservation
+        sample = cpu_decision.get("sample") if isinstance(cpu_decision, Mapping) else None
+        sampled = sample.get("sampled_unix") if isinstance(sample, Mapping) else None
+        try:
+            chosen = reservation.elect(
+                self, ledger, controller, item,
+                verdict if _measurement_foreign_clear(cpu_decision) else dict(verdict, withhold=False),
+                sampled_unix=sampled, gpu_sample=gpu_sample)
+        except reservation.CensusUnavailable as exc:
+            return dict(verdict, withhold=True, why="measurement_census_unavailable",
+                        census_error=str(exc))
+        if chosen is None:
+            return verdict
+        if chosen["host"] != ledger.base.name:
+            return dict(verdict, withhold=False, drain_resolves=False,
+                        why="measurement_reserved_on_other_host", selection=chosen)
+        # Bounded legacy attention may lapse or become unknown/foreign, but
+        # that never retires the canonical no-refill guard. Physical tokens
+        # and isolation remain owned by the real controllers/holders.
+        if verdict.get("why") == "measurement_drain_expired":
+            return dict(verdict, withhold=True, why="measurement_reservation_waiting",
+                        selection=chosen)
+        return dict(verdict, selection=chosen)
 
     def _write_claim_intent(self, action_key: str, *, owner: str) -> None:
         _write_json_atomic(
@@ -18684,19 +18716,27 @@ class PoolQueue:
                 # letting its offer expire.
                 self._report_admission_busy(exc, evaluating=evaluating)
                 return None
-        return self._claim(tags=tags, has_gpu=has_gpu, owner=owner,
-                           capacity=capacity, cpu_tiers=cpu_tiers,
-                           ready=ready, observed_images=observed_images,
-                           admission_open=admission_open)
+        try:
+            return self._claim(tags=tags, has_gpu=has_gpu, owner=owner,
+                               capacity=capacity, cpu_tiers=cpu_tiers,
+                               ready=ready, observed_images=observed_images,
+                               admission_open=admission_open)
+        except cpu_admission.AdmissionBusy as exc:
+            self._report_admission_busy(exc, evaluating=True)
+            return None
+        except cpu_admission.AdmissionUnavailable as exc:
+            for item in ready if ready is not None else self.ready_items():
+                self.record_denial(item, "host_admission_unavailable", {"error": str(exc)})
+            return None
 
     @staticmethod
-    def _admission_lock(controller: cpu_admission.Controller | None):
+    def _admission_lock(controller: cpu_admission.Controller | cpu_admission.AdmissionGate | None):
         """Hold host admission for the block, when there is one to hold.
 
-        ``_claim`` runs both with and without adaptive admission -- the legacy
-        path passes no controller and has no host-wide lock at all -- and the
-        two must not be two spellings of the decision.  ``nullcontext`` keeps
-        one body for both.
+        Capacity-backed claims use exclusion independently of CPU policy.
+        Legacy unmanaged claims have no capacity handle and remain a separate
+        unresolved canonical-protection boundary (#1419); not an isolation
+        exemption or a claim of safe unmanaged execution.
         """
 
         return controller.locked() if controller is not None else nullcontext()
@@ -19391,9 +19431,12 @@ class PoolQueue:
         cpu_host_views: dict[str, dict[str, object] | None] = {}
 
         ledger = None
+        host_gate = controller
         total: dict[str, int] = {}
         if capacity is not None:
             ledger = self.ledger()
+            if host_gate is None:
+                host_gate = cpu_admission.AdmissionGate(ledger)
             # The CPU map is immutable while workers run. Validate an existing
             # map before admission so a shared read cannot block sibling work.
             # A missing map still needs serialized initialization below; no
@@ -19404,7 +19447,7 @@ class PoolQueue:
             # own capacity, so it stays exclusive -- two loops retiring against
             # different clamped offers must not interleave.  It is bounded and
             # it is not the claim: no rename, lease or token move happens here.
-            with self._admission_lock(controller):
+            with self._admission_lock(host_gate):
                 if cpu_tiers is None:
                     cpu_tiers = _read_json(ledger.base / "cpu-map.json")
                 if cpu_tiers is not None:
@@ -20080,7 +20123,20 @@ class PoolQueue:
                             except (ValueError, OSError, KeyError, TypeError) as exc:
                                 self.record_denial(item, "local_scratch_io_profile_invalid", {"error": str(exc)})
                                 continue
-                        with self._admission_lock(controller):
+                        from . import _measurement_reservation as measurement_reservation
+                        census_blocked = None
+                        census_guard = measurement_reservation.admission_census(self, ledger, host_gate)
+                        with census_guard as census:
+                            if "unavailable" in census:
+                                self.record_denial(item, "measurement_census_unavailable", census)
+                                continue
+                            census_blocked = measurement_reservation.blocking_selection(
+                                census, item, host=ledger.base.name, funded_by=None)
+                            if census_blocked is not None and dependent_owner != census_blocked["action_key"]:
+                                self.record_denial(item, "deferred_for_measurement_reservation", {
+                                    "withheld_for": census_blocked["action_key"],
+                                    "selection": census_blocked, "candidate_release_bound": "UNKNOWN"})
+                                continue
                             if scratch_boundary is not None:
                                 original, announced, generation, attempt = scratch_boundary
                                 scratch_changed = (
@@ -20102,6 +20158,12 @@ class PoolQueue:
                                 if refused:
                                     refusal_source = "adaptive_cpu_refused"
                             funded_claim = adaptive is not None and bool(adaptive.get("funded_by"))
+                            if census_blocked is not None and not (
+                                    funded_claim and adaptive.get("funded_by") == census_blocked["action_key"]):
+                                self.record_denial(item, "deferred_for_measurement_reservation", {
+                                    "withheld_for": census_blocked["action_key"],
+                                    "selection": census_blocked, "candidate_release_bound": "UNKNOWN"})
+                                continue
                             if funded_claim:
                                 # The funded kinds come from the producer's
                                 # allowance, not ``free/`` (#985): only the
@@ -20234,6 +20296,11 @@ class PoolQueue:
                                 measurement_unmeasured=_measurement_unmeasured_refusal(
                                     refusal_source, decision))
                                 if mode is not None or foreign else None)
+                            if verdict is not None and identity and identity[1]:
+                                verdict = self._canonical_measurement_verdict(
+                                    item, verdict, ledger=ledger, controller=controller,
+                                    cpu_decision=cpu_decision,
+                                    gpu_sample=_gpu_sample_for(gpu_controller, demand))
                             if (verdict is not None and verdict["withhold"]
                                     and isinstance(decision, Mapping)
                                     and decision.get("reason") == "measurement_holder"
@@ -20310,6 +20377,11 @@ class PoolQueue:
                                 measurement_generation=(self.attempt_generation(item)
                                     if identity and identity[1] else None),
                                 measurement_foreign_clear=_measurement_foreign_clear(cpu_decision))
+                            if identity and identity[1]:
+                                verdict = self._canonical_measurement_verdict(
+                                    item, verdict, ledger=ledger, controller=controller,
+                                    cpu_decision=cpu_decision,
+                                    gpu_sample=_gpu_sample_for(gpu_controller, demand))
                             denials = self.record_pass(key)
                             if not preempted:
                                 # Selection reacquires admission, while the separate
@@ -21060,7 +21132,12 @@ class PoolQueue:
                             "adaptive_gpu": adaptive_gpu is not None,
                         }, post_persist=True)
                         continue
-                self.passes_path(key).unlink(missing_ok=True)
+                # Keep a canonical election through unstarted deferral/retry.
+                # Neither READY absence nor a successful rename retires it.
+                from . import _measurement_reservation as measurement_reservation
+                pass_record = _read_json(self.passes_path(key)) or {}
+                if measurement_reservation.selection(pass_record) is None:
+                    self.passes_path(key).unlink(missing_ok=True)
                 return claimed
         return None
 

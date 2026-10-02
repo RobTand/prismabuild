@@ -164,7 +164,7 @@ def test_a_retained_offer_reader_is_not_retryable(tmp_path, monkeypatch):
         time.sleep(30)
 
     monkeypatch.setattr(queue, "_offer_records", blocked_read)
-    monkeypatch.setattr(pbrun.pbstatus, "_stop_reader", retain)
+    monkeypatch.setattr(pbrun.pbstatus._reader, "_stop_reader", retain)
     monkeypatch.setattr(pbrun, "SUBMISSION_OFFER_READ_TIMEOUT_S", 0.2)
     try:
         with pytest.raises(SystemExit, match="retained reader") as caught:

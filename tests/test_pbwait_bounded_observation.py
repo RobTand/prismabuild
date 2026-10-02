@@ -324,8 +324,8 @@ def test_retained_observation_reader_stops_before_render_or_another_poll(
     def forbidden(*_args, **_kwargs):
         pytest.fail("an unreaped observation must not reach terminal verification")
 
-    monkeypatch.setattr(pbrun.pbstatus, "_reap_within", lambda *_args: False)
-    monkeypatch.setattr(pbrun.pbstatus, "_stop_reader", retain)
+    monkeypatch.setattr(pbrun.pbstatus._reader, "_reap_within", lambda *_args: False)
+    monkeypatch.setattr(pbrun.pbstatus._reader, "_stop_reader", retain)
     monkeypatch.setattr(pbrun, "bounded_outcome_render", forbidden)
     try:
         row = pbwait.wait_one(queue, KEY, cas=cas, deadline=time.monotonic() + 30)

@@ -31,7 +31,7 @@ def retained(monkeypatch):
                           "starttime_ticks": pbmcp.pbstatus._starttime_ticks(pid),
                           "since_unix": time.time()})
 
-    monkeypatch.setattr(pbmcp.pbstatus, "_stop_reader", retain)
+    monkeypatch.setattr(pbmcp.pbstatus._reader, "_stop_reader", retain)
     yield children
     for pid in children:
         # A nonblocking wait proves this is still our child before signalling.
