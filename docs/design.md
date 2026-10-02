@@ -15290,3 +15290,17 @@ profile. Reader ownership, retained-child messages and scheduling hints keep
 their existing contracts. Exact reader facade/name distinctions are registered
 without growing the shrink-only maps; no runtime adoption or staged-read
 acceptance axis advances from this source repair.
+
+
+Repeated failed merge candidates bind a separate negative identity (#1450):
+the complete candidate tree, current base tree, selected full runtime/config
+identity and exact discovered file domain. Removing a culprit PR number does
+not remove its code from descendant heads. A previously attributed identical
+domain therefore submits no duplicate suite and never grants a success status.
+The existing Mirror retains only a held daemon candidate view, revalidates its
+clean owned source and current eligibility/domain before every tick exclusion,
+and retires it when meaning or ownership changes or entries leave. Fresh
+selection reconstructs missing/corrupt views; corrected descendant heads remain
+eligible. Unowned replacements are retained for explicit recovery rather than
+removed. Supported once retains no hold/view. Original failed evidence survives
+cleanup, and deployment still requires separate coordinator acceptance.

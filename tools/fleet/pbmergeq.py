@@ -376,6 +376,24 @@ class Store:
         known.update({name: sorted(nodes) for name, nodes in by_file.items()})
         write_atomic(self.baseline_path(tree), json.dumps(known, indent=1))
 
+    def known_failure(self, identity: str) -> dict | None:
+        path = self.baselines / f"known-failure-{identity}.json"
+        if not path.exists():
+            return None
+        record = json.loads(path.read_text(encoding="utf-8"))
+        if (not isinstance(record, dict)
+                or record.get("schema") != "pbmergeq.known_failure.v1"
+                or record.get("identity") != identity
+                or not isinstance(record.get("new"), list)
+                or not record["new"]):
+            raise ValueError(f"invalid known-failure record: {path}")
+        return record
+
+    def remember_known_failure(self, identity: str, record: dict) -> None:
+        write_atomic(self.baselines / f"known-failure-{identity}.json",
+                     json.dumps({"schema": "pbmergeq.known_failure.v1",
+                                 "identity": identity, **record}, indent=1))
+
     def status_text(self) -> str:
         state = self.state
         lines = [f"pbmergeq {self.root}  updated {now()}  mode {state.get('mode')}"]
@@ -385,6 +403,10 @@ class Store:
             lines.append(f"runtime-blocked {bid}: {blocked['reason']}")
             lines.append(f"  repair/provision the named runtime, then resume-runtime {bid}; "
                          "fresh checkout selection and worker guards still apply")
+        for bid, blocked in state.get("known_failure_blocked", {}).items():
+            lines.append(f"known-failure-blocked {bid}: {blocked['reason']}")
+            lines.append("  enqueue a corrected full head for fresh qualification; "
+                         "no passing result was reused")
         batch = state.get("batch")
         if batch:
             prs = ", ".join(f"#{p['pr']}@{p['sha'][:8]}" for p in batch.get("included", []))
@@ -625,6 +647,16 @@ def baseline_key(cfg: Config, tree: str, runtime: dict) -> str:
     # Runtime evidence names the actually launched entrypoint; the config's
     # publisher link was frozen before discovery and is never resolved here.
     return baseline_identity(tree, runtime, dataclasses.asdict(cfg))
+
+
+def candidate_failure_identity(cfg: Config, tree: str, base_tree: str,
+                               runtime: dict, files: list[str]) -> str:
+    """Hold only an identical red tree under its complete qualification domain."""
+    return core.canonical_sha256({
+        "schema": "pbmergeq.failed_candidate_identity.v1",
+        "baseline": baseline_key(cfg, tree, runtime),
+        "base_tree": base_tree, "files": files,
+    })
 
 
 def test_command(cfg: Config, checkout: Path, files: list[str], report: Path,
@@ -1035,8 +1067,14 @@ class Queue:
             self.requeue(entries, front=True, charge=True)
             state["not_before"] = time.time() + self.cfg.stuck_backoff_s
         finally:
+            # A queue hold keeps only its existing clean candidate view, so
+            # tick can re-observe the complete runtime/discovery domain.
+            # Once has no queued hold and keeps no checkout.
+            retained = self.store.state.get("known_failure_blocked", {}).get(batch["id"])
+            keep = self.mirror.worktrees / f"{batch['id']}-candidate" if retained else None
             for path in list(self.mirror.worktrees.glob(f"{batch['id']}-*")):
-                self.mirror.drop(path)
+                if path != keep:
+                    self.mirror.drop(path)
         batch.update(verdict)
         batch["wall_s"] = round(time.time() - batch["timeline"][0][1], 1)
         write_atomic(outdir / "batch.json", json.dumps(batch, indent=1))
@@ -1091,6 +1129,29 @@ class Queue:
             return {"verdict": "empty", "summary": "every PR dropped"}
         files, left_out = self.runner.discover(checkout)
         batch["fleet_data_left_out"] = left_out
+        # A PR-number exclusion cannot remove code carried by an ordinary
+        # descendant. Hold the exact already-red tree before another full run,
+        # retaining its original attribution rather than blaming the descendant.
+        # Runtime-selection errors still follow the existing runner refusal path.
+        try:
+            runtime = checkout_runtime(self.cfg, checkout)
+        except RuntimeSelectionError:
+            runtime = None
+        identity = (candidate_failure_identity(
+            self.cfg, batch["candidate_tree"], batch["base_tree"], runtime, files)
+            if runtime is not None else None)
+        known = self.store.known_failure(identity) if identity is not None else None
+        if known is not None:
+            batch["known_failure"] = known
+            reason = f"same failed candidate domain as {known['batch']}; no test submitted"
+            affected = [{**p, "pin": p["sha"]} for p in included]
+            if not self.once:
+                self.store.state.setdefault("known_failure_blocked", {})[batch["id"]] = {
+                    "reason": reason, "entries": affected, "identity": identity,
+                    "candidate": batch["candidate"], "candidate_tree": batch["candidate_tree"],
+                }
+                self.requeue(affected, front=True, charge=False)
+            return {"verdict": "known-failure-blocked", "summary": reason}
         self.phase(batch, "testing", f"candidate {batch['candidate'][:8]} = base "
                    f"{batch['base'][:8]} + " + ", ".join(f"#{p['pr']}" for p in included)
                    + f"; {len(files)} files" + (f", {len(left_out)} fleet-data file(s) "
@@ -1112,7 +1173,16 @@ class Queue:
         for nodeid in flakes:
             self.flake(batch, nodeid)
         if new:
-            return self.culprit(batch, outdir, new)
+            verdict = self.culprit(batch, outdir, new)
+            identity = candidate_failure_identity(
+                self.cfg, batch["candidate_tree"], batch["base_tree"], full.runtime, files)
+            self.store.remember_known_failure(identity, {
+                "batch": batch["id"], "candidate": batch["candidate"],
+                "candidate_tree": batch["candidate_tree"], "base": batch["base"],
+                "base_tree": batch["base_tree"], "new": new,
+                "culprit": batch["culprit"], "report": full.report,
+            })
+            return verdict
         return self.green(batch, shared)
 
     def judge(self, batch, outdir, checkout, full) -> tuple[list[str], list[str], list[str]]:
@@ -1259,15 +1329,94 @@ class Queue:
             self.store.state["batch"] = None
             self.store.save()
 
+    def refresh_known_failure_blocks(self) -> set[tuple[int, str]]:
+        """Suppress a held head only while its full current domain is observed.
+
+        These views belong to Mirror's existing worktree lifecycle, not a
+        second source cache. Any unobserved or changed domain removes the
+        negative hint and returns the queued entries to normal selection.
+        """
+        blocks = self.store.state.get("known_failure_blocked", {})
+        queued = {(entry["pr"], entry.get("sha")) for entry in self.store.state["queue"]}
+        failed_heads = set()
+        base_tree = None
+        changed = False
+        for bid, block in list(blocks.items()):
+            if not (bid.startswith("b") and bid[1:].isdigit()):
+                raise ValueError(f"invalid held batch id: {bid!r}")
+            checkout = self.mirror.worktrees / f"{bid}-candidate"
+            reason = ""
+            owned = False
+            held = {(entry["pr"], entry["sha"]) for entry in block["entries"]}
+            try:
+                if not checkout.exists() and not checkout.is_symlink():
+                    owned = True  # No data remains; retire its Mirror registration.
+                    reason = "retained candidate is missing"
+                elif checkout.is_symlink():
+                    reason = "retained candidate is an unowned symlink"
+                else:
+                    common = Path(self.mirror.git(
+                        "rev-parse", "--git-common-dir", cwd=checkout).stdout.strip())
+                    if not common.is_absolute():
+                        common = checkout / common
+                    owned = common.resolve() == self.mirror.git_dir.resolve()
+                    if not owned:
+                        reason = "retained candidate belongs to another repository"
+                if not reason and (not held or not held <= queued):
+                    reason = "held entries left or were superseded in the queue"
+                elif not reason:
+                    for entry in block["entries"]:
+                        pr = self.github.pr(entry["pr"])
+                        if (eligibility(pr, self.cfg) is not None
+                                or pr.get("headRefOid") != entry["sha"]):
+                            reason = "held head changed or left eligibility"
+                            break
+                if not reason:
+                    if (self.mirror.head(checkout) != block.get("candidate")
+                            or self.mirror.tree(block["candidate"]) != block.get("candidate_tree")
+                            or self.mirror.git("status", "--porcelain", "--untracked-files=all",
+                                               cwd=checkout).stdout.strip()):
+                        reason = "retained candidate is missing, changed or not owned"
+                if not reason:
+                    if base_tree is None:
+                        base_tree = self.mirror.tree(self.mirror.fetch({}))
+                    runtime = checkout_runtime(self.cfg, checkout)
+                    files, _left_out = self.runner.discover(checkout)
+                    identity = candidate_failure_identity(
+                        self.cfg, block["candidate_tree"], base_tree, runtime, files)
+                    known = self.store.known_failure(identity)
+                    if (identity != block["identity"] or known is None
+                            or known.get("candidate_tree") != block["candidate_tree"]):
+                        reason = "qualification domain changed"
+            except (OSError, KeyError, ValueError, subprocess.CalledProcessError,
+                    RuntimeSelectionError) as exc:
+                reason = f"qualification domain unobserved: {type(exc).__name__}"
+            if reason:
+                if owned:
+                    self.mirror.drop(checkout)
+                else:
+                    self.store.event(bid, f"unowned view retained for recovery: {checkout}")
+                del blocks[bid]
+                changed = True
+                self.store.event(bid, f"known-failure hold released: {reason}; fresh selection")
+            else:
+                failed_heads.update(held)
+        if changed:
+            self.store.save()
+            self.store.write_status()
+        return failed_heads
+
     def tick(self) -> dict | None:
         if self.store.ingest():
             self.store.event(None, f"queue: {[e['pr'] for e in self.store.state['queue']]}")
+        failed_heads = self.refresh_known_failure_blocks()
         if not self.store.state["queue"] or self.store.state["not_before"] > time.time():
             return None
         blocked_prs = {entry["pr"] for block in self.store.state.get("runtime_blocked", {}).values()
                        for entry in block["entries"]}
         entries = [entry for entry in self.store.state["queue"]
-                   if entry["pr"] not in blocked_prs][:self.cfg.batch_cap]
+                   if entry["pr"] not in blocked_prs
+                   and (entry["pr"], entry.get("sha")) not in failed_heads][:self.cfg.batch_cap]
         if not entries:
             return None
         selected = {entry["pr"] for entry in entries}
@@ -1350,7 +1499,7 @@ def main(argv: list[str] | None = None) -> int:
                 "new", "shared", "flakes", "description", "wall_s")}, indent=1))
             if queue.github.would:
                 print("would:\n  " + "\n  ".join(queue.github.would))
-            return 2 if batch["verdict"] == "runtime-blocked" else 0
+            return 2 if batch["verdict"] in {"runtime-blocked", "known-failure-blocked"} else 0
         queue.store.event(None, f"daemon started in {args.mode} mode, pid {os.getpid()}")
         while True:
             queue.tick()
