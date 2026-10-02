@@ -3857,6 +3857,11 @@ class ResourceLedger:
 
         return self._mutation_guard is not None
 
+    def _names_reader(self) -> Callable[[Path], frozenset[str]] | None:
+        """The existing cycle reader only for explicitly guarded tier ledgers."""
+
+        return _TIER_LEDGER_NAMES.get() if self._strict_census() else None
+
     def _scan_names(self, directory: Path, *, strict: bool = False,
                     optional: bool = False):
         """Fresh or trusted names, preserving the caller's absence semantics.
@@ -3865,7 +3870,7 @@ class ResourceLedger:
         says so. A failed child listing is never remembered as empty.
         """
 
-        reader = _TIER_LEDGER_NAMES.get() if self._strict_census() else None
+        reader = self._names_reader()
         if reader is None:
             return _scan_visible(directory) if strict else _scan(directory)
         try:
@@ -3880,8 +3885,8 @@ class ResourceLedger:
     def _glob_names(self, directory: Path, pattern: str, *, strict: bool = False):
         """Flat token-name matches without changing legacy tolerant errors."""
 
-        if (not self._strict_census() or _TIER_LEDGER_NAMES.get() is None
-                or "/" in pattern or "**" in pattern):
+        reader = self._names_reader()
+        if reader is None or "/" in pattern or "**" in pattern:
             return (_glob_visible(directory, pattern) if strict
                     else _glob(directory, pattern))
         try:
