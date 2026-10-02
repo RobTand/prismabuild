@@ -334,6 +334,30 @@ JSON keys are unreadable evidence. Freshness defaults to the 30 s offer TTL;
 this command to qualify a live worker or alter its offer; #807's runtime wiring
 and live qualification remain outstanding.
 
+### Configure a worker's optional class image gate (Refs #807)
+
+`worker_loop.py --class-image-config fleet/class-images.json --class gb10`
+loads an explicit versioned class declaration relative to that worker's
+immutable runtime generation. Configuration must be contained, regular,
+bounded JSON with no duplicate keys. The selected class requires its named
+images' comparable `content:sha256:` identities and lexical DockerRootDir;
+extra images are allowed. A missing class, missing/unreadable/stale inventory
+or absent supplemental store/name evidence refuses declared container work
+only. The source ships no declaration and enables no fleet policy by default.
+
+Worker offers and the JSON/MCP `pbstatus` census expose
+`container_class_verdict` with its reason and requirements digest. The claim
+checks current shared-cache evidence again at five-second freshness, including
+a recheck after reservation I/O and rename. Offers are advisory. Class refusal
+leaves attempts unspent and reservations uncommitted; native and archive-backed
+rows retain their existing eligibility. A successful claim records the class
+proof in its ordinary history.
+
+This source gate covers actions that declare `--container-image` (or equivalent
+sealed campaign references). Undeclared Docker launches still need the separate
+shim integration, and deployment/live class qualification remains open in #807.
+Class evidence is not a daemon lock or a guarantee against later image deletion.
+
 ### `--profile`: an opt-in profile, sealed into the key
 
 `--profile sample` runs py-spy at 100 Hz over the action's whole process tree
@@ -1472,6 +1496,18 @@ wait, so it never returns 75.
 Each shard is one `pbrun` action, so the checkout travels through the CAS and
 the interpreter is the target box's, not this one's. `--tag` defaults to `x86`,
 which is also the claim that owns the named interpreter.
+
+`--tmpdir /absolute/worker/scratch` selects the shards' temporary parent instead
+of the unchanged `/home/rob/tmp` default. Supply an existing writable directory
+on every eligible target worker; the coordinator validates only that the path
+is absolute, since a remote directory need not exist on the submitting box.
+The path is sealed as one literal `TMPDIR` environment argument. Each pytest
+shard keeps its own temporary children and outcome record. This is configurable
+scratch placement, not proof of direct-I/O support or of an earlier disk-write
+failure's cause. With an explicit option, the child checks the directory by
+creating and closing an anonymous temporary file before pytest and refuses an
+unavailable or unusable parent. The default keeps its existing fallback behavior.
+This startup check does not guarantee free space or later availability.
 
 Every requested path must be a file or directory. A missing or invalid path
 refuses the whole submission with exit code 2 and a diagnostic before any

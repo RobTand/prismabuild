@@ -19,7 +19,7 @@ exempt name fails, and the shrink-only map never absorbs an exempt path.
 The baseline also ratchets primitive digest sites (PB #1328): a new raw
 ``hashlib`` constructor or literal ``sort_keys=True`` JSON encoding outside
 ``src/prismabuild/core.py`` -- the home of ``_canonical_bytes``,
-``_canonical_file_bytes``, ``_sorted_lf_bytes``, ``_indented_lf_bytes``,
+``_canonical_file_bytes``, ``_sorted_json_bytes``, ``_sorted_lf_bytes``, ``_indented_lf_bytes``,
 ``canonical_sha256``, ``raw_sha256``, ``stream_sha256`` and
 ``_decode_strict_json`` -- fails, and consolidating a site onto one of those
 named profiles lowers the baseline the same way.

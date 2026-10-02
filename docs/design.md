@@ -1617,6 +1617,18 @@ default placement class is `x86` for CPU and `gb10` for GPU, overridable by
 explicit tags. CPU demand remains pytest workers times their native thread
 ceiling, or a larger explicit reservation; host memory covers the entire shard.
 
+Each shard retains its own pytest temporary-directory and outcome ownership.
+`--tmpdir PATH` supplies an absolute worker-visible parent through the existing
+sealed child `TMPDIR` assignment; its default remains `/home/rob/tmp`. The path
+is passed as one argv element, with no shell evaluation or coordinator-side
+existence check. The caller supplies a directory usable on every eligible worker;
+this flag adds no direct-I/O qualification or placement capability. An explicitly
+selected parent is preflighted on the worker by creating and closing an anonymous
+temporary file before pytest; an absent or unusable directory refuses instead of
+silently falling back. The default retains its legacy behavior. This startup
+check does not reserve capacity or guarantee availability throughout the test.
+Changing the selected parent changes the child command and its action identity.
+
 A shard's native-thread ceiling and its CPU reservation stay paired.
 `--threads-per-shard` keeps its 2-per-worker default, and one unset
 `--cpus-per-shard` reserves `--workers-per-shard` times that ceiling. With
@@ -3280,6 +3292,49 @@ exceed the existing 8 MiB record bound, discard the supplemental fields rather
 than make a valid legacy record unreadable. `get()` still returns only the
 legacy reference set. Injected-probe tests establish producer wiring, not a
 live daemon/store observation or runtime membership authority.
+
+### Opt-in worker class admission (Refs #807)
+
+A worker may name `--class-image-config RELATIVE_PATH`, a bounded strict JSON
+`container_class_requirements.v1` declaration contained in its loaded runtime
+generation. Its explicit `--class` selects the class; a missing class remains
+unknown. The normalized full declaration is bound by the existing
+`core.canonical_sha256` contract (UTF-8 JSON, Unicode retained, sorted keys,
+no nonfinite values). Without this
+option, worker offers and action admission retain the existing image-reference
+contract. No fleet declaration or live activation is supplied by this source
+slice.
+
+`InventoryCache.snapshot()` exposes a detached complete record from the same
+host-local cache, refresh lock, probe budget and freshness validation used by
+`get()`. The worker reads once for both references and the class evaluator.
+Absent supplemental store/name evidence refuses the class without discarding
+valid legacy references. Open and parked offers report `container_class_verdict`;
+`pbstatus` and its MCP census retain it. Derived offer evidence is advisory and
+expires against both observation and evaluation time within the existing 30 s
+inventory bound, even if the worker has republished the offer more recently.
+
+Only rows declaring `container_images` consume this first gate. A configured
+claim re-evaluates the existing `class_image_verdict` against its actual supplied
+inventory at the five-second claim bound, before reservation, after reservation
+I/O and after the claim rename. It never uses the offer verdict to authorize a
+claim. Failure before rename leaves the row ready; expiry after rename restores
+the moved generation through the existing lost-admission path before committing
+tokens. Rollback returns only that claimant's reservation handles and preserves
+a competing successor. A named `container_class_<reason>` denial includes the
+configuration digest and observed/refused class evidence. A successful claim
+retains that evidence in its existing claim/terminal history. Incompatible GPU
+rows whose transition is busy retain no synthetic room for this gate.
+
+Native rows stay eligible, including archive-backed actions whose own admitted
+loader supplies an image. Extra undeclared image names remain allowed. This
+slice does **not** cover a native row's undeclared Docker launch, freeze daemon
+state or prevent a later image removal. The existing Docker shim needs a fresh
+launch-time class check for that remaining part of #807. Explicit fleet class
+sets, runtime rollout and live qualification also remain owed. No admission,
+lease, cleanup, quota or physical reclamation authority is inferred from an
+offline fixture or a derived offer. No staged-read requirement's deployment or
+workload-proof axis changes.
 
 ### A kill names what it waited on
 
@@ -12724,12 +12779,17 @@ same-key retry is a relaunch blocker even after the bounded orphan
 recovery retires the unowned copies.
 
 `stage_move._resume_own_coverage` is the narrow resume, and it changes no
-lifecycle the loop owns. Inside the same stage ownership lock the
-publication gate holds — document reads, header checks and the per-entry
-file stats together, so the qualification cannot act on a snapshot that a
-retirement or rewrite has already superseded — the mover reads back its
-**own** prior fragment and sidecar, and only when the fragment is this
-invocation's own does it preserve anything. Unknown or contradictory
+lifecycle the loop owns. The mover parses its **own** prior fragment and
+sidecar before locking, then reopens them under the same stage ownership
+lock the publication gate holds. An unchanged parse is reused only when
+its #1045 coarse-clock/local-filesystem version was qualified before the
+hint and remains qualified at the locked recheck. Same-tick timestamps,
+NFS or unknown evidence, and filesystem trust loss require a fresh parse;
+matching five-field metadata alone is insufficient. The authoritative
+document versions, header checks and per-entry file stats are qualified
+together under the lock, so retirement or rewrite cannot supersede the
+snapshot acted on. Only when the fragment is this invocation's own does
+the mover preserve anything. Unknown or contradictory
 ownership refuses the whole invocation before any copy or publication:
 a fragment that exists but cannot be read or validated, one whose headers
 disagree with the invocation (consumer, mover, tier, stage root, manifest,
@@ -15208,3 +15268,14 @@ and a successful producer with failed capture fails rather than publishing a
 partial log. This changes newly sealed capture argv identities; retained sealed
 requests and receipts remain immutable and can be recovered as sealed. No system
 tool, fleet runtime, active queue, placement or result-population policy changes.
+
+Core also owns the default sorted JSON byte profile used by retained-reader
+diagnostics and merge-queue duration hints (#1386). `_sorted_json_bytes` accepts
+the original JSON values, including list reports, with default spacing, ASCII
+escaping and nonfinite-number behavior and no trailing LF. `_sorted_lf_bytes`
+keeps its mapping conversion and appends one LF. The hint filename hashes those
+exact prior bytes through `raw_sha256`; canonical finite JSON is a different
+profile. Reader ownership, retained-child messages and scheduling hints keep
+their existing contracts. Exact reader facade/name distinctions are registered
+without growing the shrink-only maps; no runtime adoption or staged-read
+acceptance axis advances from this source repair.

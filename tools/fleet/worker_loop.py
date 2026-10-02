@@ -1195,6 +1195,9 @@ def build_parser() -> argparse.ArgumentParser:
                          "0 disables (default), 1 serializes actions declaring "
                          "disk_metadata=1 on this host's shared ledger, not "
                          "ordinary work, tier egress or external I/O (#1008)")
+    ap.add_argument("--class-image-config", default=None,
+                    help="explicit generation-relative v1 class image declaration; "
+                         "refuses declared container work only on drift or unknown evidence")
     ap.add_argument("--local-scratch-profile-config", default=None,
                     help="explicit v1 configured executed CAS scratch-profile references; "
                          "absent reads no profile input; never benchmarks during polling")
@@ -1205,6 +1208,21 @@ def build_parser() -> argparse.ArgumentParser:
                          "the supervisor's first measurement; each poll "
                          "declares its live one in its place (#1190)")
     return ap
+
+
+
+def image_observation(inventory, policy, *, max_age_s=None):
+    """Read one shared cache view for the references and optional class proof."""
+    if policy is None:
+        references = inventory.get() if max_age_s is None else inventory.get(max_age_s=max_age_s)
+        return references, None, None
+    snapshot = inventory.snapshot(max_age_s=max_age_s)
+    references = (frozenset(snapshot["entries"])
+                  if snapshot is not None and snapshot["entries"] is not None else None)
+    verdict = policy.evaluate(snapshot, now=time.time(),
+                              max_age_s=container_images.INVENTORY_TTL_S
+                              if max_age_s is None else max_age_s)
+    return references, snapshot, verdict
 
 
 def validate_args(ap: argparse.ArgumentParser, args: argparse.Namespace) -> None:
@@ -1495,6 +1513,9 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
     #: first image-pinned submission can be placed, and a failure leaves
     #: ``None`` (unknown), never an empty set (#714).
     inventory = container_images.InventoryCache()
+    class_policy = (container_images.ClassImagePolicy.from_file(
+        args.class_image_config, source_root=RUNTIME_ROOT, klass=args.klass)
+        if args.class_image_config is not None else None)
     # Immutable loaded generation, never the moving repo symlink. Old loops
     # cannot claim a successor publisher's privileged action.
     loaded_generation = _generation_at(GENERATION_VERSION)
@@ -1737,10 +1758,13 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
                 addresses = box_capacity.ipv4_addresses()
             except Exception:                                    # noqa: BLE001
                 addresses = None
+            class_verdict = None
             try:
-                observed_images = inventory.get()
+                observed_images, image_snapshot, class_verdict = image_observation(inventory, class_policy)
             except Exception:                                    # noqa: BLE001
                 observed_images = None
+                if class_policy is not None:
+                    class_verdict = class_policy.evaluate(None, now=time.time())
             drain_fields = drain_offer_fields(gate)
             # What the last open poll declared, not a fresh ledger read: the
             # spool figure ``stable_host_capacity`` holds up survives the gate
@@ -1758,7 +1782,7 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
                                runtime_commit=loaded_commit, cpu_tiers=cpu_tiers,
                                timeout_s=args.timeout_s, loops=loops,
                                addresses=addresses, observed_images=observed_images,
-                               fields=drain_fields):
+                               class_verdict=class_verdict, fields=drain_fields):
                 """The exact parked record this poll offers the queue.
 
                 A closure, not a kwargs dict, so the publisher's child runs
@@ -1775,6 +1799,7 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
                     loops=loops, timeout_ceiling_s=timeout_s,
                     progress_contracts=[pb.PROGRESS_RECORD_SCHEMA_V1],
                     addresses=addresses, observed_images=observed_images,
+                    **({"container_class_verdict": class_verdict} if class_verdict is not None else {}),
                     **fields)
 
             publication = publish_offer(
@@ -1888,7 +1913,7 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
         # TTL for the box.  It says what this box can positively show right
         # now, and an item that declares images is not placeable here without
         # it.
-        observed_images = inventory.get()
+        observed_images, _image_snapshot, class_verdict = image_observation(inventory, class_policy)
         # The interpreter answers (#1263): exactly the paths this poll's ready
         # snapshot asks about, statted on this box.  One bounded set per poll;
         # a snapshot that could not be read publishes nothing, which is the
@@ -1906,7 +1931,7 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
                            capacity=capacity, observer=observer, loops=loops,
                            runtime_commit=loaded_commit, cpu_tiers=cpu_tiers,
                            timeout_s=args.timeout_s, addresses=addresses,
-                           observed_images=observed_images,
+                           observed_images=observed_images, class_verdict=class_verdict,
                            interpreters=offered_interpreters,
                            interpreters_absent=absent_interpreters,
                            observed_detail=observed_detail):
@@ -1946,6 +1971,7 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
                 # it could not look.  An image-pinned item reads both as
                 # not-here at claim and as not-placeable here at dispatch.
                 observed_images=observed_images,
+                **({"container_class_verdict": class_verdict} if class_verdict is not None else {}),
                 # Which named interpreters this box can positively run
                 # (#1263): the paths this poll's ready items ask about, statted
                 # here.  Absent says it could not answer, and an item naming
@@ -2056,16 +2082,18 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
         # still race an image removal between this observation and the
         # container start; the probe bounds how stale the box's evidence is,
         # never how immutable the image is.
-        claim_images = (
-            inventory.get(max_age_s=container_images.CLAIM_FRESHNESS_S)
-            if container_images.required_from_items(discovery.snapshot)
-            else None)
+        claim_images = claim_snapshot = None
+        if container_images.required_from_items(discovery.snapshot):
+            claim_images, claim_snapshot, _class_verdict = image_observation(
+                inventory, class_policy, max_age_s=container_images.CLAIM_FRESHNESS_S)
         try:
             outcome = queue.serve_once(
                 tags=offered, has_gpu=gpu_capable, python=args.python,
                 timeout_s=args.timeout_s, capacity=capacity, cpu_tiers=cpu_tiers,
                 adaptive_cpu=not args.assume_idle, containment=True,
                 ready=discovery.snapshot, observed_images=claim_images,
+                **({"container_class_policy": class_policy,
+                    "container_inventory": claim_snapshot} if class_policy is not None else {}),
                 # Re-checked under the per-key transition lock just before
                 # the claim rename, so a resign drain that began after this
                 # poll's gate check still refuses the claim deterministically.

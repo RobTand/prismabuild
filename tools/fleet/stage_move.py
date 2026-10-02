@@ -4362,9 +4362,9 @@ def _parse_own_document(path: Path, validate: Callable[[object], object],
                         ) -> tuple[tuple[int, int, int, int, int], object] | None:
     """One resume document, parsed before the stage ownership lock (#1008).
 
-    Read under the #761 fence (:func:`_metadata_version`), exactly as
-    :class:`stage_release._CensusMemo` reads its own hint pass, so the
-    version this parse saw can be compared again once the lock is held
+    Read under the existing #1045 coarse-clock and local-filesystem fence
+    (:func:`_keepable_version`), as :class:`stage_release._CensusMemo` reads
+    its hint pass, so a qualified version can be compared once the lock is held
     (:func:`_reread_own_document`).  A same-key retry's own fragment can be
     large, and this is the mover's *first* wait for the stage lock
     (``resume_lock_wait_s``): parsing it while holding that lock pays, under
@@ -4377,13 +4377,14 @@ def _parse_own_document(path: Path, validate: Callable[[object], object],
     document this one returns ``None`` for.
     """
 
+    fence = _version_fence()
     try:
         with open(path, "rb") as stream:
-            version = _metadata_version(os.fstat(stream.fileno()))
+            version = _keepable_version(os.fstat(stream.fileno()), fence)
             document = validate(json.load(stream))
     except (OSError, ValueError):
         return None
-    return version, document
+    return (version, document) if version is not None else None
 
 
 def _reread_own_document(path: Path,
@@ -4398,14 +4399,17 @@ def _reread_own_document(path: Path,
     added, removed, replaced or rewritten since the pre-lock parse must be
     seen here, the same promise :class:`stage_release._CensusMemo` keeps for
     the egress's own census -- and the earlier parse is returned without a
-    second parse only when the version taken now equals the one ``prior``
-    was read at. Raises exactly what a direct open-and-parse would:
+    second parse only when the current version is still qualified by the
+    local-filesystem/coarse-clock fence and equals the one ``prior`` was read
+    at. Lost trust or a same-tick observation requires a fresh parse. Raises
+    exactly what a direct open-and-parse would:
     ``FileNotFoundError`` for an absent document, or ``OSError``/
     ``ValueError`` for one that exists but cannot be read or validated.
     """
 
+    fence = _version_fence()
     with open(path, "rb") as stream:
-        version = _metadata_version(os.fstat(stream.fileno()))
+        version = _keepable_version(os.fstat(stream.fileno()), fence)
         if prior is not None and prior[0] == version:
             return prior[1]
         return validate(json.load(stream))
@@ -4430,8 +4434,9 @@ def _resume_own_coverage(queue, *, consumer_action_key: str,
     previous attempt published loses proof, is recopied, and pays the
     publication grace per entry.  This is the narrow resume for exactly
     that: the prior **own** records are read and qualified -- document
-    reads, header checks and the per-entry file stats together -- inside
-    the stage ownership lock, and the retry's publications are never
+    reads, header checks and the per-entry file stats together -- with a
+    qualified pre-lock parse rechecked inside the stage ownership lock, and
+    the retry's publications are never
     smaller than the coverage it inherited.
 
     Unknown or contradictory ownership refuses the whole invocation
@@ -4475,13 +4480,14 @@ def _resume_own_coverage(queue, *, consumer_action_key: str,
     today's behavior, not an error.
 
     The fragment and the sidecar are parsed once before the stage ownership
-    lock is taken and once more under it (:func:`_parse_own_document`,
+    lock is taken, then reopened and version-checked under it
+    (:func:`_parse_own_document`,
     :func:`_reread_own_document`, #1008 item 1) -- the same #761 fence
     :class:`stage_release._CensusMemo` reads its own hint pass under, so
     this mover's first wait for the lock (``resume_lock_wait_s``) no longer
     pays for opening and parsing its own fragment, and a document that
-    changed in the gap between the two parses is still read fresh under the
-    lock, never trusted from before it.
+    changed in the gap, or whose version cannot be trusted, is parsed fresh
+    under the lock. Unchanged qualified documents need no second parse.
     """
 
     staged: dict[str, dict[str, object]] = {}
