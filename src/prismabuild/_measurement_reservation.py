@@ -204,9 +204,11 @@ class CensusReader:
             if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
                     or info.st_mode & 0o077):
                 raise CensusUnavailable("unsafe local census directory")
-            # Reuse the exact open-descriptor local mount predicate; a path
-            # named BOX_STATE_ROOT is not itself evidence of local storage.
-            local_scratch._descriptor_identity(directory)
+            # Reuse the exact open-descriptor local mount observer under the
+            # host-local state policy: a path named BOX_STATE_ROOT is not
+            # itself evidence of local storage, and this small-file rendezvous
+            # supports tmpfs while shared storage still refuses (#1451).
+            local_scratch._descriptor_state_identity(directory)
             lock = os.open(self.name + ".guard", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC,
                            0o600, dir_fd=directory)
             info = os.fstat(lock)

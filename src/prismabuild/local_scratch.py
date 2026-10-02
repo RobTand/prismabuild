@@ -588,6 +588,11 @@ PROFILE_OWNER_ENV = "PRISMABUILD_CONTAINER_OWNER"
 PROFILE_MARKER_ENV = "PRISMABUILD_CONTAINER_MARKER"
 PRODUCER_FILES = (RECORDER, "src/prismabuild/local_scratch.py", "src/prismabuild/core.py")
 LOCAL_FILESYSTEM_TYPES = frozenset({"ext4", "xfs", "btrfs", "zfs"})
+#: Host-local *state* -- admission fences and the measurement census -- is a
+#: small-file rendezvous, not an I/O-qualified scratch profile, so its closed
+#: policy adds tmpfs and nothing else (#1451).  Shared storage and unknown
+#: mounts still refuse; the disk-scratch policy above is unchanged.
+LOCAL_STATE_FILESYSTEM_TYPES = frozenset({"ext4", "xfs", "btrfs", "zfs", "tmpfs"})
 
 
 def _is_positive_finite(value: object) -> bool:
@@ -629,11 +634,14 @@ def io_intent(variables, *, transport="pool"):
     return {"declaration": value, "root": pairs[0]["root"]}
 
 
-def _descriptor_identity(fd):
+def _descriptor_mount(fd):
     """Exact open-object device/FSID, with mount type from its Linux mount ID.
 
     FSID is an identity, not the filesystem type. No pathname-prefix mount
-    inference, ancestor fallback or operator type override is accepted.
+    inference, ancestor fallback or operator type override is accepted.  This
+    observer applies no purpose policy: each caller compares
+    ``filesystem_type`` against its own closed allowlist, so the disk-scratch
+    profile qualification and the host-local state check cannot drift (#1451).
     """
     info = os.fstat(fd)
     import stat
@@ -655,11 +663,39 @@ def _descriptor_identity(fd):
     fields = matches[0][1].split()
     if len(fields) < 3:
         raise LocalScratchError("scratch descriptor mount type malformed")
-    filesystem_type = fields[0]
+    return {"device": str(info.st_dev), "filesystem": str(fsid),
+            "filesystem_type": fields[0], "root_inode": str(info.st_ino)}
+
+
+def _descriptor_identity(fd):
+    """One disk-scratch I/O profile root, under its closed filesystem policy.
+
+    ``LOCAL_FILESYSTEM_TYPES`` is the qualified local disk set.  tmpfs is an
+    I/O profile refusal here and stays one: the profile measurement does not
+    transfer across filesystems, and this predicate is unchanged (#1451).
+    """
+    identity = _descriptor_mount(fd)
+    filesystem_type = identity["filesystem_type"]
     if filesystem_type not in LOCAL_FILESYSTEM_TYPES:
         raise LocalScratchError(f"scratch filesystem type not supported: {filesystem_type}")
-    return {"device": str(info.st_dev), "filesystem": str(fsid),
-            "filesystem_type": filesystem_type, "root_inode": str(info.st_ino)}
+    return identity
+
+
+def _descriptor_state_identity(fd):
+    """One host-local state directory, under its closed filesystem policy.
+
+    Admission fences and the measurement census write small regular files into
+    a private rendezvous; that is not an I/O-qualified scratch profile, so this
+    purpose policy accepts the local disk set and tmpfs -- the ``/tmp`` mount
+    the affected worker's ``BOX_STATE_ROOT`` lives on -- and nothing else.
+    Shared storage (NFS and friends) and unknown types still refuse (#1451).
+    """
+    identity = _descriptor_mount(fd)
+    filesystem_type = identity["filesystem_type"]
+    if filesystem_type not in LOCAL_STATE_FILESYSTEM_TYPES:
+        raise LocalScratchError(
+            f"state filesystem type not supported: {filesystem_type}")
+    return identity
 
 
 def root_identity(root):
