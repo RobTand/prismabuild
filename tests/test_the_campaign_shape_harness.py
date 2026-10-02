@@ -106,9 +106,12 @@ def _run(tmp_path: Path, table: dict) -> dict:
 
 
 def test_a_campaign_shaped_window_stages_and_reads_back_strictly(
-        tmp_path: Path, small_units, capsys: pytest.CaptureFixture[str]) -> None:
+        tmp_path: Path, small_units, capsys: pytest.CaptureFixture[str], monkeypatch) -> None:
     """Every entry lands once per tier and is read back from RAM, pool untouched."""
 
+    def physical_reader(*args, **kwargs):
+        raise AssertionError("simulated gate used the physical writable-room reader")
+    monkeypatch.setattr(tier_loop, "_supply_reader_for", physical_reader)
     result = _run(tmp_path, _campaign_like())
     with capsys.disabled():
         print(json.dumps({"shape_gate": "campaign-like", "result": result},

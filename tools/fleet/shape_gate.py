@@ -630,6 +630,24 @@ class ShapeGate:
             self.host_dir / "worker", policy=self.ram_policy,
             profile=self.profile)
 
+    def _stage_writable_bytes(self) -> int:
+        """Fresh room on the declared simulated stage, not the host's ZFS."""
+        ceiling = int(self.profile["stage_empty_gib"]) * storage_tiers.GIB
+        return max(0, ceiling - _tree_bytes(self.stage_dir))
+
+    def _supply_reader_for(self, record, tier_id, *, fallback_tokens):
+        """Use discovery's same private roots/profile inside the mint lock."""
+        del fallback_tokens
+        if tier_id == self.stage_tier_id and Path(record["mountpoint"]) == self.stage_dir:
+            return lambda: self._stage_writable_bytes() // storage_tiers.GIB
+        if tier_id == self.ram_tier_id and Path(record["mountpoint"]) == self.ram_dir:
+            observed = _Statvfs(self.ram_dir, self.ram_ceiling)
+            def read_ram():
+                sample = observed(str(self.ram_dir))
+                return max(0, sample.f_bavail * sample.f_frsize) // storage_tiers.GIB
+            return read_ram
+        raise ShapeGateFailure("unexpected_tier", f"no simulated writable source for {tier_id}")
+
     def discover(self, *, host, source_pool, fill_records, now, ram_policy,
                  rows_held_gib):
         """The storage host's two tiers, as ``discover_tiers`` would find them.
@@ -644,14 +662,13 @@ class ShapeGate:
         """
 
         del source_pool, fill_records
-        stage_total = int(self.profile["stage_empty_gib"]) * storage_tiers.GIB  # type: ignore[arg-type]
         stage = {
             "schema": storage_tiers.TIER_RECORD_SCHEMA_V1,
             "tier": "stage", "tier_id": self.stage_tier_id, "host": host,
             "pool": str(self.profile["stage_pool"]),
             "dataset": f"{self.profile['stage_pool']}/prewarm",
             "mountpoint": str(self.stage_dir),
-            "capacity_bytes": max(0, stage_total - _tree_bytes(self.stage_dir)),
+            "capacity_bytes": self._stage_writable_bytes(),
             "capacity_source": storage_tiers.WRITABLE_CAPACITY_SOURCE,
             "source_pool": str(self.profile["source_pool"]),
             "primarycache": "all",
@@ -673,7 +690,8 @@ class ShapeGate:
     def cycle(self) -> list[dict[str, object]]:
         announced, log = _silenced(lambda: self.tier_loop.cycle(
             self.queue, host=self.host, source_pool=str(self.profile["source_pool"]),
-            receipts=self.receipts, discover=self.discover))
+            receipts=self.receipts, discover=self.discover,
+            supply_reader_for=self._supply_reader_for))
         self.cycles += 1
         for line in log.splitlines():
             try:

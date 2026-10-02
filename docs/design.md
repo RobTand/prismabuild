@@ -544,6 +544,12 @@ gate and independent review.
 The integrated source also carries `pbmergeq_runtime.py` beside its importing
 client in the publication manifest; this bundle closure correction does not
 publish or activate a runtime.
+The shape simulator supplies both discovery and the locked writable-room reader
+from its declared stage/RAM profile and private directory bytes. The tier loop's
+optional paired reader preserves its ordinary physical dataset/mount default;
+it runs inside the existing mint lock and does not bypass qualification or
+alter token/funding accounting. A scaled gate must never resample the live host
+filesystem under its simulated GiB unit.
 This partial slice is Refs #1419; finite safe-fit/release proof (#1429), final
 exact-head independent review and live acceptance remain owed.
 
