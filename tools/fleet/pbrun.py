@@ -269,20 +269,16 @@ def _snapshot_git(
     accepted_returncodes: tuple[int, ...] = (0,),
     strip: bool = True,
 ) -> str:
-    try:
-        completed = pb._git_run(
-            cwd, *argv,
-            env=environment,
-            input_text=input_text,
-            errors="surrogateescape",
-            timeout=120,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        _snapshot_fail(str(exc))
-    if completed.returncode not in accepted_returncodes:
-        detail = (completed.stderr or completed.stdout).strip()
-        _snapshot_fail(str(detail or completed.returncode))
-    return completed.stdout.strip() if strip else completed.stdout
+    output = pb._git(
+        cwd, *argv,
+        env=environment,
+        input_text=input_text,
+        errors="surrogateescape",
+        timeout=120,
+        accepted_returncodes=accepted_returncodes,
+        fail=_snapshot_fail,
+    )
+    return output.strip() if strip else output
 
 
 #: Git reads three exclude sources under ``--exclude-standard``: the
@@ -868,10 +864,12 @@ def write_deterministic_bundle(
                 timeout=BUNDLE_PACK_TIMEOUT_S,
             )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        _snapshot_fail(str(exc))
+        _snapshot_fail(f"Git {' '.join(argv[1:])} failed: {exc}")
     if completed.returncode != 0:
         detail = (completed.stderr or b"").decode("utf-8", "replace").strip()
-        _snapshot_fail(str(detail or completed.returncode))
+        _snapshot_fail(
+            f"Git {' '.join(argv[1:])} failed: {detail or completed.returncode}"
+        )
 
 
 def build_stamp_closure(stamp_name: str, payload: str) -> dict[str, object]:
