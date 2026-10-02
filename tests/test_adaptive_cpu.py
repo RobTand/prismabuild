@@ -522,14 +522,29 @@ def test_incoming_legacy_cpu_zero_cannot_overlap_claimed_cpu_work(tmp_path, monk
     assert queue.item_path(pool.CLAIMED, first['action_key']).exists()
 
 
-def test_adaptive_empty_demand_is_refused_while_static_legacy_remains_supported(tmp_path):
+def test_empty_demand_is_refused_and_real_static_demand_reserves_tokens(tmp_path):
     queue = pool.PoolQueue(tmp_path / 'queue')
-    queue.publish(action_key='a' * 64, cas_root=str(tmp_path / 'cas'),
+    empty_key, positive_key = 'a' * 64, 'b' * 64
+    queue.publish(action_key=empty_key, cas_root=str(tmp_path / 'cas'),
                   checkout_root=str(tmp_path), worker_script='worker.py')
     tiers = {'preferred': [0], 'fallback': []}
-    assert queue.claim(capacity={'cpu': 1}, cpu_tiers=tiers, adaptive_cpu=True) is None
+    # Canonical admission requires positive host demand in both modes (#1442).
+    for adaptive in (True, False):
+        assert queue.claim(capacity={'cpu': 1}, cpu_tiers=tiers,
+                           adaptive_cpu=adaptive) is None
+        assert not queue.ledger().held_keys()
+        assert queue.item_path(pool.READY, empty_key).exists()
+    queue.publish(action_key=positive_key, cas_root=str(tmp_path / 'cas'),
+                  checkout_root=str(tmp_path), worker_script='worker.py',
+                  resources={'cpu': 1})
+    claimed = queue.claim(capacity={'cpu': 1}, cpu_tiers=tiers)
+    assert claimed and claimed['action_key'] == positive_key
+    assert queue.ledger().held_keys() == [positive_key]
+    assert queue.ledger().held() == {'cpu': 1}
+    queue.finish(positive_key, status='executed', detail={})
     assert not queue.ledger().held_keys()
-    assert queue.claim(capacity={'cpu': 1}, cpu_tiers=tiers)
+    assert queue.ledger().available() == {'cpu': 1}
+    assert queue.item_path(pool.READY, empty_key).exists()
 
 
 @pytest.mark.parametrize('measurement', [False, True])
