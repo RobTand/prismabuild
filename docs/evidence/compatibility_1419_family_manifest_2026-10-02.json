@@ -1,7 +1,7 @@
 {
   "schema": "pb.compatibility_fixture_classification.v1",
   "source_head": "508a91796d3ee54009a99badb9edc8bb433953f8",
-  "reviewed_main_base": "a77f822f9f54",
+  "reviewed_main_base": "a77f822f9f5429b1e51e6faba8cd0c7badd09022",
   "old_absent_capacity_leads": 397,
   "families": [
     {
@@ -168,8 +168,8 @@
     {
       "path": "tests/test_compressed_data_manifests.py",
       "old_absent_capacity_leads": 1,
-      "classification": "Prewarm Fleet provider now uses composed fixed inputs and actual claims.",
-      "direct_file_changed": false,
+      "classification": "Prewarm Fleet provider now uses composed fixed inputs and actual claims. Gzip selected before seal, preserving canonical request/action identity.",
+      "direct_file_changed": true,
       "composed_constructor_count": 0
     },
     {
@@ -294,7 +294,7 @@
     {
       "path": "tests/test_pool.py",
       "old_absent_capacity_leads": 50,
-      "classification": "Lifecycle setup opts in; schema/default/placement controls use plain_queue. Obsolete unmanaged-positive assertion changes to refusal plus READY/no-grant controls.",
+      "classification": "Lifecycle setup opts in; schema/default/placement controls use plain_queue. Obsolete unmanaged-positive assertion changes to refusal plus READY/no-grant controls. Corrupt census refuses before grant; real quarantine restores healthy-row claim. Clock restoration preserves test-owned roots.",
       "direct_file_changed": true,
       "composed_constructor_count": 3
     },
@@ -371,7 +371,7 @@
     {
       "path": "tests/test_pool_requeue_shape.py",
       "old_absent_capacity_leads": 1,
-      "classification": "Family-owned executable lifecycle factory declares fixed simulated host inputs through existing composition; original behavior/fault/ownership assertions retained.",
+      "classification": "Family-owned executable lifecycle factory declares fixed simulated host inputs through existing composition; original behavior/fault/ownership assertions retained. Existing one-CPU map preserved; each genuine grant is finished before the next actor.",
       "direct_file_changed": true,
       "composed_constructor_count": 1
     },
@@ -645,14 +645,14 @@
       "path": "tests/test_the_prewarm_pacer_does_not_hold_against_the_action_it_serves.py",
       "old_absent_capacity_leads": 5,
       "classification": "Prewarm Fleet provider now uses composed fixed inputs and actual claims.",
-      "direct_file_changed": false,
+      "direct_file_changed": true,
       "composed_constructor_count": 0
     },
     {
       "path": "tests/test_the_prewarm_stage_releases_what_the_accepted_phase_passed.py",
       "old_absent_capacity_leads": 13,
-      "classification": "Prewarm Fleet provider now uses composed fixed inputs and actual claims; delete-behind/progress/co-owner/repeat/dry-run assertions retained.",
-      "direct_file_changed": false,
+      "classification": "Prewarm Fleet provider now uses composed fixed inputs and actual claims; delete-behind/progress/co-owner/repeat/dry-run assertions retained. Age updates retain equal claim/lease tuples; disappearing-row negative settles its real unstarted grant first.",
+      "direct_file_changed": true,
       "composed_constructor_count": 0
     },
     {
@@ -693,8 +693,8 @@
     {
       "path": "tests/test_worker_disk_metadata_admission.py",
       "old_absent_capacity_leads": 2,
-      "classification": "Real worker loop and sibling **claim_args already carry observed capacity; unchanged.",
-      "direct_file_changed": false,
+      "classification": "Real worker loop and sibling **claim_args already carry observed capacity; unchanged. Parser stub accepts the structured argv seam; qualification reserves the explicitly required two physical CPUs.",
+      "direct_file_changed": true,
       "composed_constructor_count": 0
     },
     {
@@ -706,7 +706,7 @@
     }
   ],
   "assertion_audit": {
-    "method": "AST assertion comparison; plain_queue variable rename normalized",
+    "method": "AST assertion review with plain_queue variable rename normalized; added explicit capacity changes call inputs, not expectations. Original funding/bytes/cancel assertions retained.",
     "removed": [
       {
         "path": "tests/test_cyclic_progress.py",
@@ -721,9 +721,14 @@
         ]
       }
     ],
-    "authorized_expectation_change": "test_pool unmanaged-positive success becomes fail-closed refusal; historical zero-token recovery retains its original holder assertions."
+    "authorized_expectation_change": "test_pool unmanaged-positive success becomes fail-closed refusal; historical zero-token recovery retains its original holder assertions.",
+    "changed_expectations": [
+      "Unmanaged-positive claim becomes refusal/READY/no-grant control.",
+      "Malformed census now refuses first; actual quarantine restores original healthy-claim assertions.",
+      "Synthetic benchmark scope has no cleanup proof; its real host tokens stay held on finish."
+    ]
   },
-  "source_changes": "none; only tests/fixtures and classification documentation",
-  "qualification": "pending combined exact-head PB gate; no live/deployed acceptance",
+  "source_changes": "Claim/admission source remains frozen PR1434 plus reviewed main. Separate bounded source corrections carry pbmergeq_runtime in publication and pair shape discovery with locked simulated supply refresh.",
+  "qualification": "Pending final combined exact-head PB gate; diagnostic gates are component evidence, not deployment or live acceptance.",
   "release_bound": "#1429 remains UNKNOWN/HOLD; no timed backfill or timeout extension"
 }
