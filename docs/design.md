@@ -14967,3 +14967,50 @@ from observation effects. The selected program supplies the existing version
 query, capture command and binary digest; report fields and Core byte recipes
 remain unchanged. This dependency choice is not holder eligibility, a live
 profile receipt, runtime deployment, cache authorization or a speedup claim.
+
+### Merge-queue reviewed interpreter family (#1427)
+
+`tools/fleet/pbmergeq_runtime.py` owns declarative runtime selection and
+compatibility identity; `pbmergeq.py` owns Git/queue lifecycle and pbtest
+submission. Configuration freezes the resolved published pbtest entrypoint once,
+before discovery/module loading/submission. File-owned discovery/outcome modules
+and all batch phases use that exact retained path, also preserved in run evidence.
+Later publisher replacement cannot relabel history or baseline generation.
+Optional `runtime_pins` maps template fields to contained relative
+Python sources and literal assignment names. AST-only selection requires full
+lowercase Git commits and never imports or runs candidate resolvers on the
+coordinator. Static `test_python` configurations remain static. Every candidate,
+base, rerun, retry and bisected prefix uses its own frozen checkout policy.
+Full pins/source digests and checkout commits/trees accompany run evidence;
+path abbreviations never establish compatibility. The installed provenance,
+RECORD and import-owner guard remains the published worker's authority, and
+PB's existing interpreter-path capability owns eligibility/placement.
+
+An explicit pre-pytest pin or interpreter-placement refusal becomes a named
+`runtime-blocked` result, not a code failure, flake or missing-summary retry.
+Reports classify only unobserved shards as refusals; an observed failing outcome
+with echoed refusal text remains code-failure evidence. Client-log fallback is
+limited to no-report invocations. The shared result-set checker records every
+concurrent result and prioritizes runtime refusal over ordinary inconclusiveness,
+so an unobserved rerun cannot hide a refused base or charge PR attempts.
+The affected batch's entries are requeued uncharged and skipped until explicit
+`resume-runtime <batch>` (under the existing single-writer lock) requests fresh
+source/runtime validation. Other entries can run. A runtime-blocked `once`
+exits 2 with its machine-readable verdict; other once exit semantics are unchanged.
+Resume does not attest repair
+or bypass any gate; a still-invalid dependency blocks again. State preserves
+reason, config, source/runtime evidence and all observed actions/logs across
+restart. Unknown interpreter presence retains PB's waiting semantics rather
+than being asserted absent. Generic client failures remain non-green.
+
+The existing baseline store is keyed by source tree, selected interpreter,
+full pins/pin-source digests, complete config and published pbtest generation;
+version3 also binds the actually launched pbtest path. Legacy tree-only and
+version2 post-run-resolved generation results are ignored. History reports require matching
+identity. This is one compatibility definition and the existing evidence store,
+not a runtime registry, installer, cache or dispatcher. See
+[the merge-queue guide](pbmergeq.md) for configuration and operator recovery.
+This source change modifies no staged-read requirement's implementation,
+deployment or workload-proof axis: SC-01/SC-02 placement/movement remain
+PB-owned; ID-08/ID-09 and SAFE-03 distinctions remain binding. No staged-read,
+live queue/runtime activation, numerical, wire or default ship-gate claim is made.
