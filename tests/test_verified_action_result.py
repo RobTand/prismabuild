@@ -37,6 +37,7 @@ def _standard_action(
     checkout: Path,
     *,
     command: list[str],
+    declared_command: list[str] | None = None,
     log_name: str = "pbrun_result.txt",
     result_path: str | None = None,
     path_prefix: str = PATH_PREFIX,
@@ -66,7 +67,8 @@ def _standard_action(
         },
         "inputs": inputs or [],
         "code_closure": pb.build_code_closure(checkout, ["task_code.py"]),
-        "params": {"command": list(command)},
+        "params": {"command": list(
+            command if declared_command is None else declared_command)},
         "environment": {
             "variables": {"PATH": declared_path or f"{path_prefix}:/usr/bin:/bin"},
             "toolchain": {},
@@ -191,6 +193,93 @@ def test_a_newer_failed_generation_refuses(tmp_path: Path):
         client.read_verified_action_result(
             queue, key, published_unix=float(record["published_unix"]),
             attempt=1, max_result_bytes=64)
+
+
+def test_a_newer_withdrawn_or_contested_ending_refuses(tmp_path: Path):
+    action, queue, record, _receipt, _payload = _fixture(tmp_path)
+    key = str(action["action_key"])
+    generation = float(record["published_unix"])
+    withdrawn = {"schema": pool.POOL_OUTCOME_SCHEMA_V1, "action_key": key,
+                 "status": "withdrawn", "published_unix": generation,
+                 "withdrawn_unix": generation + 5, "finished_host": "box",
+                 "detail": {}}
+    pb._atomic_publish(queue.item_path(pool.WITHDRAWN, key),
+                       pb._canonical_file_bytes(withdrawn))
+    with pytest.raises(client.ActionResultError):
+        client.read_verified_action_result(
+            queue, key, published_unix=generation, attempt=1,
+            max_result_bytes=64, max_evidence_bytes=1 << 20)
+    # A tie at the newest generation is contested: a failed row beside the
+    # success cannot be ordered, so the reader must refuse rather than pick.
+    queue.item_path(pool.WITHDRAWN, key).unlink()
+    contested = {"schema": pool.POOL_OUTCOME_SCHEMA_V1, "action_key": key,
+                 "status": "failed", "published_unix": generation,
+                 "finished_unix": generation + 1, "finished_host": "box",
+                 "detail": {}}
+    pb._atomic_publish(queue.item_path(pool.FAILED, key),
+                       pb._canonical_file_bytes(contested))
+    with pytest.raises(client.ActionResultError):
+        client.read_verified_action_result(
+            queue, key, published_unix=generation, attempt=1,
+            max_result_bytes=64, max_evidence_bytes=1 << 20)
+
+
+def test_a_poisoned_historical_attempt_is_never_read_for_a_later_success(
+    tmp_path: Path, monkeypatch
+):
+    base = tmp_path / "two"
+    base.mkdir()
+    (base / "checkout").mkdir()
+    action = _standard_action(base / "checkout", command=["/bin/echo", "hello"])
+    cas = pb.PrismaBuildCAS(base / "cas")
+    cas.publish_action_request(action)
+    attestation = pb.preflight_action(
+        action, cas_root=base / "cas", checkout_root=base / "checkout")
+    output = base / "output.bin"
+    output.write_bytes(b"the later payload\n")
+    receipt, _won = cas.publish_result(
+        action, output, attestation=attestation, return_execution_receipt=True)
+    key = str(action["action_key"])
+    queue = pool.PoolQueue(base / "queue")
+    queue.ensure_layout()
+    queue.publish(action_key=key, cas_root=base / "cas",
+                  checkout_root=base / "checkout",
+                  worker_script=base / "worker.py", tags=["x86"],
+                  resources={"cpu": 1, "mem_gb": 1},
+                  max_attempts=2, retry_safe=True)
+    queue.claim(tags=["x86"], capacity={"cpu": 8, "mem_gb": 16})
+    queue.finish(key, status="failed", detail={
+        "returncode": 1, "status": "failed",
+        "stdout": '{"receipt": {"receipt_sha256": "' + "0" * 64 + '"}}\n',
+        "stderr": "poisoned historical attempt\n"})
+    fx.settle_publishers()
+    queue.claim(tags=["x86"], capacity={"cpu": 8, "mem_gb": 16})
+    announcement = json.dumps({
+        "status": "published", "receipt": receipt,
+        "payload_path": str(cas.blob_path(str(receipt["result"]["sha256"]))),
+    }) + "\n"
+    queue.finish(key, status="executed", detail={
+        "returncode": 0, "status": "executed", "stdout": announcement,
+        "stderr": ""})
+    fx.settle_publishers()
+    record = json.loads(queue.item_path(pool.DONE, key).read_text(encoding="utf-8"))
+    assert record["attempts"] == 2
+    first = json.loads(queue.attempt_path(record, 1).read_text(encoding="utf-8"))
+    first_log = queue.root / str(first["logs"]["stdout"]["path"])
+    seen: list[Path] = []
+    original = pb._read_regular_file_nofollow
+
+    def spy(path, **kwargs):
+        seen.append(Path(path))
+        return original(path, **kwargs)
+
+    monkeypatch.setattr(pb, "_read_regular_file_nofollow", spy)
+    result = client.read_verified_action_result(
+        queue, key, published_unix=float(record["published_unix"]), attempt=2,
+        max_result_bytes=64, max_evidence_bytes=1 << 20)
+    assert result["attempt"] == 2
+    assert result["payload"] == b"the later payload\n"
+    assert first_log not in seen, "a failed historical attempt's log is not read"
 
 
 def test_a_payload_over_its_cap_refuses_before_the_blob_is_opened(
@@ -609,4 +698,19 @@ def test_the_binding_refuses_a_non_recipe_and_tampered_inputs(tmp_path: Path):
     action = _standard_action(checkout, command=["/bin/echo", "hi"],
                               declared_path="/elsewhere:/bin")
     with pytest.raises(client.ActionResultError):
+        client.bind_standard_capture_command(action)
+
+
+def test_a_validly_resealed_command_mismatch_reaches_the_binder_and_refuses(
+    tmp_path: Path,
+):
+    checkout = tmp_path / "resealed"
+    checkout.mkdir()
+    # The sealed action passes validate_action: task.argv is the standard
+    # capture wrapper for /bin/echo hi, while params.command names another
+    # command.  Only the binder can catch that, and it must.
+    action = _standard_action(checkout, command=["/bin/echo", "hi"],
+                              declared_command=["/bin/echo", "bye"])
+    assert pb.validate_action(action) == action
+    with pytest.raises(client.ActionResultError, match="standard captured-log"):
         client.bind_standard_capture_command(action)
