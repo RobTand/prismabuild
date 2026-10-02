@@ -18019,6 +18019,10 @@ class PoolQueue:
         if not result["complete"]:
             return result
         try:
+            if not record.get("action_key") and local_scratch.SCRATCH_LIFETIME_FIELD not in record:
+                # The legacy lost-claim finisher passes an empty record. It
+                # cannot carry registered scratch and keeps its old outcome.
+                return result
             scratch = self._finalize_scratch_lifetimes(
                 str(record["action_key"]), record, scope_only=scope_only,
                 export=(result.get("resource_scope") or {}).get("export"))
