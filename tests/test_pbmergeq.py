@@ -384,6 +384,36 @@ def test_unfetchable_or_noncommit_selected_head_is_an_explicit_error(
     assert github.calls == []
 
 
+def test_changed_fetched_ref_is_rejected_before_composition(tmp_path, monkeypatch):
+    queue, origin, github, runner = make_queue(tmp_path)
+    selected = origin.pr(1, {"one.txt": "new\n"})
+    base = git("rev-parse", "main", cwd=origin.work)
+    original_git = queue.mirror.git
+
+    def fetch_then_change_ref(*args, **kwargs):
+        result = original_git(*args, **kwargs)
+        if args[0] == "fetch":
+            original_git("update-ref", "refs/mq/pr/1", base)
+        return result
+
+    monkeypatch.setattr(queue.mirror, "git", fetch_then_change_ref)
+    batch = queue.run_batch([{"pr": 1, "sha": selected, "at": "now"}])
+
+    assert batch["verdict"] == "error", batch
+    assert "differs from selected" in batch["summary"]
+    assert runner.runs == [] and github.calls == []
+
+
+@pytest.mark.parametrize("selected", ["short", SHA.upper(), SHA + ":refs/mq/base"])
+def test_selected_head_requires_a_full_lowercase_commit(tmp_path, selected):
+    queue, origin, github, runner = make_queue(tmp_path)
+
+    with pytest.raises(ValueError, match="not a full Git commit"):
+        queue.mirror.fetch({1: selected})
+
+    assert runner.runs == [] and github.calls == []
+
+
 def test_an_enqueued_pin_refuses_a_later_push(tmp_path):
     queue, origin, github, runner = make_queue(tmp_path)
     origin.pr(1, {"one.txt": "1\n"})
