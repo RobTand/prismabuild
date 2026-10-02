@@ -1120,7 +1120,7 @@ def describe_census(
         return f"fleet width unavailable ({type(exc).__name__}: {exc})"
 
 
-def main():
+def main(argv=None, *, on_outcome=None):
     """Drain an in-flight action on SIGTERM, then exit before the next poll.
 
     The supervisor's idle snapshot can race with claim acquisition. A signal
@@ -1136,7 +1136,9 @@ def main():
 
     previous = signal.signal(signal.SIGTERM, request_stop)
     try:
-        return _run_loop(lambda: stopping)
+        if argv is None and on_outcome is None:
+            return _run_loop(lambda: stopping)
+        return _run_loop(lambda: stopping, argv=argv, on_outcome=on_outcome)
     finally:
         signal.signal(signal.SIGTERM, previous)
 
@@ -1300,6 +1302,48 @@ def live_host_capacity(declared: dict[str, int], ledger) -> dict[str, int]:
     return {**declared, kind: live}
 
 
+def observed_claim_capacity(queue, *, args, base_declared, observer,
+                            gpu_sample, known_physical_gpus):
+    """One producer for fresh claim capacity, including bracketed held reads."""
+    if args.gpu:
+        detected = box_capacity.physical_gpu_count(gpu_sample)
+        if detected > 0:
+            known_physical_gpus = detected
+    declared = {"gpu": known_physical_gpus,
+                **live_host_capacity(base_declared, queue.ledger())}
+    overrides = {
+        "gpu_sample": gpu_sample,
+        "gpu_state": gpu_admission.host_local_power_state(
+            getattr(queue.ledger(), "base", None)),
+    }
+    if args.assume_idle:
+        overrides.update(mem_gb=None, load1=None)
+    held = queue.ledger().held
+    capacity = (dict(declared) if observer is None else
+                observer.offer(declared, held, **overrides))
+    return declared, capacity, known_physical_gpus
+
+
+def private_claim_parameters(queue):
+    """Executable private tool callers use observed host admission, not grants.
+
+    A separate queue root does not prove an outer reservation. No submissions
+    or synthetic scope adoption occur here; resource requests still come from
+    the caller and may be refused on the actual host.
+    """
+    args = build_parser().parse_args([])
+    tiers = cpu_topology.inherited_tiers()
+    if tiers is None:
+        raise pool.PoolContractError("private claim requires known inherited CPU topology")
+    base = declared_host_capacity(args, cores=sum(map(len, tiers.values())))
+    observer = box_capacity.CapacityObserver(
+        samples=args.observe_samples, ledger_total=queue.ledger().capacity())
+    _declared, capacity, _gpus = observed_claim_capacity(
+        queue, args=args, base_declared=base, observer=observer,
+        gpu_sample=None, known_physical_gpus=0)
+    return {"capacity": capacity, "cpu_tiers": tiers, "adaptive_cpu": True}
+
+
 def stable_host_capacity(live: dict[str, int],
                          started: dict[str, int]) -> dict[str, int]:
     """What the offer record declares for ``placeable``: ``live``, held up.
@@ -1386,9 +1430,9 @@ def scratch_observed_detail(observer, profile_inputs):
     return detail
 
 
-def _run_loop(stop_requested):
+def _run_loop(stop_requested, *, argv=None, on_outcome=None):
     ap = build_parser()
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
     validate_args(ap, args)
     pinned = None if args.all_cores else cpu_topology.pin_to_preferred()
     # Cores are a resource, and until now they were the only one the ledger
@@ -1759,12 +1803,9 @@ def _run_loop(stop_requested):
                         ))
             observer_initialized = True
         gpu_sample = box_capacity.trusted_gpu_sample() if gpu_capable else None
-        if args.gpu:
-            detected = box_capacity.physical_gpu_count(gpu_sample)
-            if detected > 0:
-                known_physical_gpus = detected
-        declared = {"gpu": known_physical_gpus,
-                    **live_host_capacity(base_declared, queue.ledger())}
+        declared, capacity, known_physical_gpus = observed_claim_capacity(
+            queue, args=args, base_declared=base_declared, observer=observer,
+            gpu_sample=gpu_sample, known_physical_gpus=known_physical_gpus)
         placeable_capacity = stable_host_capacity(declared, base_declared)
         # The declaration a drain will carry forward if the gate closes
         # before the next poll (#1204).
@@ -1780,23 +1821,8 @@ def _run_loop(stop_requested):
         # reading over a GPU-only reference (#806).  Admission's host-local
         # record is where the measured half of that reference lives, so the
         # offer reads the same one rather than keeping a second.
-        observe_overrides = {
-            "gpu_sample": gpu_sample,
-            "gpu_state": gpu_admission.host_local_power_state(
-                getattr(queue.ledger(), "base", None)),
-        }
-        if args.assume_idle:
-            # This diagnostic may bypass noisy CPU and host-memory readings,
-            # but it is not an escape hatch from the trusted GPU boundary.
-            observe_overrides.update(mem_gb=None, load1=None)
-        # The bound method, not its result: ``observe`` reads /proc between the
-        # ledger and the clamp that adds the two together, and reads this on
-        # both sides of that instrument so a sibling loop's release cannot be
-        # counted as both a token this box still holds and memory it has back.
-        # There are 3-16 of these loops per box against one ledger.
-        held = queue.ledger().held
-        capacity = dict(declared) if observer is None else observer.offer(
-            declared, held, **observe_overrides)
+        # The shared producer passes the bound held method so observation
+        # brackets a sibling release; a snapshot cannot be counted twice.
         queue.ledger().retire_free_capacity(capacity)
         if capacity != announced:
             seen = observer.last if observer is not None else None
@@ -2067,6 +2093,10 @@ def _run_loop(stop_requested):
             time.sleep(args.poll_s)
             continue
         errors = 0
+        if on_outcome is not None:
+            # Structured result seam for the one-shot adapter; never recover
+            # admission/outcome evidence by parsing the diagnostic stream.
+            on_outcome(outcome)
         if outcome is not None and observer is not None:
             # Back from an action, having taken no reading of the box for as
             # long as it ran.  The window's samples are from before it and the

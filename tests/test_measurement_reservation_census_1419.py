@@ -339,15 +339,16 @@ def test_corrupt_selector_never_disappears_into_legacy_attention(fleet, field):
     assert queue.ledger().held_keys() == [holder]
 
 
-def test_unmanaged_claim_is_an_explicit_remaining_bypass_not_acceptance(fleet):
-    # Witness only: this API supplies NO capacity and can return a real row
-    # despite the election. Operator decision is required before changing its
-    # legacy default; this passing assertion is evidence of the remaining gap.
+def test_unmanaged_claim_is_refused_without_changing_elected_ownership(fleet):
+    # Owner decision C: even stale candidate discovery cannot make a missing
+    # admission grant executable. The measurement/holder remain untouched.
     queue, clock, readings, sample, publish, tick, claim, denial = fleet
     holder, measurement, opportunity, snapshot = _bounded_measurement_wait(fleet)
     lower = publish("unmanaged-bypass-witness")
     row = pool._read_json(queue.item_path(pool.READY, lower))
     result = queue.claim(has_gpu=True, tags=["gb10", "sparklina"], ready=[row])
-    assert result is not None and result["action_key"] == lower
+    assert result is None
+    assert denial(lower)["reason"] == "admission_capacity_required"
+    assert queue.item_path(pool.READY, lower).exists()
     assert queue.ledger().held_keys() == [holder]
     assert _chosen(queue, measurement)["host"] == "sparklina"

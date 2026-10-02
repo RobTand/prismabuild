@@ -18062,6 +18062,19 @@ class PoolQueue:
             raise PoolContractError("pool item resources must be an object")
         return {str(k): int(v) for k, v in raw.items() if int(v) > 0}
 
+    @staticmethod
+    def _admission_refusal(host_demand: Mapping[str, int], *, capacity: Mapping[str, int] | None) -> str | None:
+        """Executable claims need real host admission, never implicit demand.
+
+        A private root or an already-admitted parent is not an outer grant.
+        No metadata-only/cannot-execute claim policy is supplied by this API.
+        """
+        if capacity is None:
+            return "admission_capacity_required"
+        if not host_demand:
+            return "admission_demand_required"
+        return None
+
     def _defer_fallback(self, item: Mapping, demand: Mapping) -> dict[str, object] | None:
         """Give a compatible host with free preferred CPUs up to 20s to claim.
 
@@ -18734,9 +18747,9 @@ class PoolQueue:
         """Hold host admission for the block, when there is one to hold.
 
         Capacity-backed claims use exclusion independently of CPU policy.
-        Legacy unmanaged claims have no capacity handle and remain a separate
-        unresolved canonical-protection boundary (#1419); not an isolation
-        exemption or a claim of safe unmanaged execution.
+        Executable claims without capacity or positive host demand are refused
+        before the token/rename path. A null lock is retained only for callers
+        doing no admitted host decision; it is not an unmanaged claim exemption.
         """
 
         return controller.locked() if controller is not None else nullcontext()
@@ -19961,6 +19974,14 @@ class PoolQueue:
                 except ValueError as exc:
                     self.record_denial(item, "malformed_tier_demand", {
                         "demand": sealed_demand, "error": str(exc)})
+                    continue
+                admission_refusal = self._admission_refusal(demand, capacity=capacity)
+                if admission_refusal is not None:
+                    self.record_denial(item, admission_refusal, {
+                        "declared_demand": sealed_demand,
+                        "host_demand": demand,
+                        "required": "positive declared host demand and observed capacity",
+                    })
                     continue
                 # Historical slot counts expressed sharing, not device count.
                 # Preserve the sealed demand but reserve this worker's single
