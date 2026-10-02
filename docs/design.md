@@ -14954,6 +14954,17 @@ SIGTERM unwinds cleanup; SIGKILL/OOM may leave a bounded scratch file and never
 qualifies a successful profile. Inode reuse/ABA and compromised host/kernel
 observations are not solved by this identity tuple.
 
+Host-local *state* -- the admission lock directory
+(`adaptive_cpu.BOX_STATE_ROOT`) and the measurement census fence written under
+it -- is observed by that same exact fdinfo/mountinfo descriptor identity but
+under its own closed purpose policy: the four local disk types above plus
+tmpfs, and nothing else; network, unknown and malformed identities still fail
+closed (#1451). It is a small-file rendezvous, not an I/O profile, so the
+profile qualification above is unchanged. The state root must never be cleared
+or repointed while census readers or admission claimants can survive: a
+cleared `/tmp` only lapses that mutual exclusion, and the permanent guard
+files are left in place for exactly that reason.
+
 **Configured worker inputs, actual offer path.** A worker optionally receives
 `--local-scratch-profile-config /absolute/config.json`; absent configuration
 loads no profile artifacts. Config schema is
