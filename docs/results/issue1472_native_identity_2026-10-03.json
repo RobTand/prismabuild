@@ -1,0 +1,111 @@
+{
+  "issue": 1472,
+  "pull_request": 1473,
+  "scope": "Source-only authoritative map_files identity repair and fail-closed qualification; positive privileged native attribution remains unqualified",
+  "tested_source_commit": "afb73ae2679de514233ded7f34d86a31a1895635",
+  "dependency": {
+    "pull_request": 1471,
+    "handed_off_head": "2d0f4c1f192c613b1ff7117a1fcefc8edbdadc52",
+    "merged_commit": "277e74fba817dea3497802f2698ee16f5b1dcbc7"
+  },
+  "source_sha256": {
+    "src/prismabuild/checkout_recovery.py": "939cc00ec711c28703bc0c006278e5e73824502321659545d6add1bb8c27d706",
+    "tests/test_checkout_recovery_1465.py": "a68bb44297fb1125ada9aa1484d07907d1780f7431880269658f6c59de4d9e86",
+    "tests/test_checkout_recovery_1472.py": "7a3cc92d104bf8c50b01fe9252a299f2c6f0f4ef0697a7da5a18ccfb35d59138"
+  },
+  "bounded_correspondence_capture": {
+    "action_key": "d1d9f13109da97c4214e479b2a2b0df6c5891fab4c1af8c50cc6f9956da89aae",
+    "published_unix": 1791051837.2908607,
+    "generation": "28dc38e13b15dd7dcae4219890db3118127e12b9ec7862f9dceca72135b3f182",
+    "attempt": 1,
+    "host": "dl380g10",
+    "returncode": 0,
+    "filesystem": "btrfs",
+    "mount_source": "/dev/nvme1n1p4",
+    "mount_device": "0:30",
+    "stat_device": "0:31",
+    "maps_device": "0:30",
+    "stat_and_maps_inode": 236359088,
+    "vma_range": "7e0777422000-7e0777423000",
+    "states": ["closed-FD external hardlink", "same mapping after external alias unlink"],
+    "map_files_stat_errno_in_both_states": 1,
+    "effective_capabilities": 0,
+    "receipt_sha256": "ec24e7bdafcee822e9cc334fc6aa825cacbbb0f2d9c6562baae30536b8e5ae5a",
+    "result_sha256": "3676b9ac07228da38a742bdac85884e981fb3e18e1e28780926732ec7d21c7f2",
+    "result_bytes": 1617,
+    "stdout_sha256": "6d9f95d8d26421ffbc8ec1ba191eddd75acd004b8ab644e31d5689d2cf9369ce",
+    "stdout_bytes": 4099
+  },
+  "integrated_qualification": {
+    "action_key": "5fcfd2f6a63e41d5540a595d4d3b5e2e9aec7a5200d1faf531f530fe0aba8a56",
+    "published_unix": 1791052437.8004007,
+    "generation": "213db635422176655b457360a29a4285b9ad81ec6e92200e6d1b4118c9d9c382",
+    "attempt": 1,
+    "host": "dl380g10",
+    "runtime_generation": "c43700f9d1d0-1791018557-b6c96bc4bbbb",
+    "interpreter": "/home/rob/venvs/pb-cpu/bin/python",
+    "cpu": 1,
+    "mem_gib": 3,
+    "native_threads": 1,
+    "timeout_seconds": 900,
+    "snapshot_commit": "6eef159398dd0f558ffa2114a654fcd580ba1961",
+    "snapshot_input_sha256": "6a37f53174f6c48fc1c8ab8f1c412b4e24c60801b4a31664bdf07d8ae813fcc4",
+    "snapshot_input_bytes": 12257281,
+    "snapshot_diff_from_tested_source": ["A .pbrun-closure.693ca294124ccbd8.json"],
+    "test_files": ["tests/test_checkout_recovery_1465.py", "tests/test_checkout_recovery_1472.py"],
+    "contexts": [
+      {
+        "label": "btrfs",
+        "mount_source": "/dev/nvme1n1p4",
+        "mount_type": "btrfs",
+        "scratch_parent": "/home/rob/tmp",
+        "passed": 295,
+        "skipped": 18,
+        "failed": 0,
+        "pytest_seconds": 149.73,
+        "returncode": 0
+      },
+      {
+        "label": "historical NAS context",
+        "mount_source": "storage_pool/shared",
+        "mount_type": "zfs",
+        "scratch_parent": "/mnt/shared/astra-resume-20261002",
+        "passed": 295,
+        "skipped": 18,
+        "failed": 0,
+        "pytest_seconds": 126.29,
+        "returncode": 0
+      }
+    ],
+    "compile": true,
+    "returncode": 0,
+    "receipt_sha256": "2902a36a44a046e809e4728dad2d881f0c3b729e4e891307a0cef1ccaf144f62",
+    "result_sha256": "61786cc1fc5efc67526740947a82e3206e58791a734c60f64cacfc337278623b",
+    "result_bytes": 93479,
+    "stdout_sha256": "8260b4f9f05fc31027d3535272bbeee7b7ce0b7dc21cdac60313cd252410db06",
+    "stdout_bytes": 95962,
+    "verified_with": ["client.read_verified_action_result", "client.bind_standard_capture_command", "core.PrismaBuildCAS.lookup", "authenticated snapshot bundle diff against tested source"]
+  },
+  "witnesses_per_filesystem_context": {
+    "new_unit_identity_and_refusal_cases": 8,
+    "real_closed_fd_mmap_dlopen_missing_authority_refusals": 12,
+    "real_refusal_locations": ["external hardlink", "deleted external hardlink", "unrelated mapping"],
+    "real_refusal_phases": ["prepare", "apply"],
+    "real_selected_path_mmap_dlopen_cases": 12,
+    "actual_throwaway_banked_ending_apply_cases": 8,
+    "actual_throwaway_source_cli_plan_digest_apply_cases": 1,
+    "throwaway_authority_boundary": "Private fixture maintenance/euid/proc authority; genuine Git/CAS/queue/archive/materializer/cleanup owner. Not an operational recovery or privileged complete-host census proof."
+  },
+  "skipped_positive_proofs_per_filesystem_context": {
+    "reason": "Actual map_files stat EPERM; CAP_CHECKPOINT_RESTORE or CAP_SYS_ADMIN in initial user namespace plus process-access permission unavailable",
+    "external_or_deleted_external_mmap_dlopen_attribution": 8,
+    "unrelated_mapping_positive_control": 1,
+    "real_mapping_metadata_fault_controls_requiring_positive_baseline": 8,
+    "io_uring_complete_identity_positive_control": 1,
+    "positive_native_attribution_accepted": false
+  },
+  "remaining_acceptance": "Run unchanged positive native identity tests on Btrfs and the historical supported filesystem context under existing authorized magic-link stat authority. No authority change is authorized by this source repair. Issue1472 remains open.",
+  "operational_changes": false,
+  "original_29_failure_batch_rerun": false,
+  "exploit_or_operational_deletion_demonstrated": false
+}

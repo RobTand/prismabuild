@@ -1382,8 +1382,21 @@ for name in os.listdir("/proc/self/fd"):
     except FileNotFoundError:
         continue
     assert (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino)
-print(json.dumps({"dev": info.st_dev, "ino": info.st_ino,
-                  "fd_closed": True}), flush=True)
+# Establish VMA provenance from the address returned by mmap/dlopen, not from
+# equality between filesystem stat and proc maps device numbers (PB1472).
+if config["kind"] != "mmap":
+    address = ctypes.cast(library.pb1465_value, ctypes.c_void_p).value
+with open("/proc/self/maps") as stream:
+    rows = [line.split(maxsplit=5) for line in stream]
+matching = [row for row in rows
+            if int(row[0].split("-")[0], 16) <= address < int(row[0].split("-")[1], 16)]
+assert len(matching) == 1
+vma = matching[0]
+assert vma[5].rstrip("\n") == config["path"]
+major, minor = (int(part, 16) for part in vma[3].split(":"))
+print(json.dumps({"dev": info.st_dev, "ino": info.st_ino, "fd_closed": True,
+                  "map_dev": os.makedev(major, minor), "map_ino": int(vma[4]),
+                  "address": address}), flush=True)
 sys.stdin.readline()
 if config["kind"] == "mmap":
     assert libc.munmap(address, length) == 0
@@ -1485,14 +1498,30 @@ def _assert_real_mapping(case, holder, report, mapped, *, deleted=False):
         fields = line.split(maxsplit=5)
         major, minor = fields[3].split(b":")
         identity = (os.makedev(int(major, 16), int(minor, 16)), int(fields[4]))
-        if identity == (report["dev"], report["ino"]):
+        if identity == (report["map_dev"], report["map_ino"]):
             matching.append(fields)
     assert matching, "the OS did not retain the requested file-backed mapping"
     expected = str(mapped) + (" (deleted)" if deleted else "")
     assert all(os.fsdecode(fields[5]) == expected for fields in matching)
     for fields in matching:
         assert os.readlink(process / "map_files" / fields[0].decode()) == expected
+    assert any(int(fields[0].split(b"-")[0], 16) <= report["address"]
+               < int(fields[0].split(b"-")[1], 16) for fields in matching)
     assert holder.poll() is None
+    return matching
+
+
+def _require_real_map_identity(process, ranges, *, expected=None):
+    """Positive native qualification needs the actual magic-link stat authority."""
+    for address_range in ranges:
+        try:
+            info = (process / "map_files" / address_range).stat()
+        except PermissionError as error:
+            pytest.skip("PB1472 positive native identity proof unavailable: "
+                        "map_files stat needs CAP_CHECKPOINT_RESTORE or CAP_SYS_ADMIN "
+                        f"in the initial user namespace: {error}")
+        if expected is not None:
+            assert (info.st_dev, info.st_ino) == expected
 
 
 def _check_real_selected_mapping(case, monkeypatch, *, kind, location, phase):
@@ -1517,7 +1546,11 @@ def _check_real_selected_mapping(case, monkeypatch, *, kind, location, phase):
         # This positive control proves archive/tree/queue validity after alias
         # creation or unlink/replacement. It does not stand in for OS map proof.
         plan = _planned(case)
-        _assert_real_mapping(case, holder, report, mapped, deleted=deleted)
+        matching = _assert_real_mapping(case, holder, report, mapped, deleted=deleted)
+        if "external" in location:
+            _require_real_map_identity(Path("/proc") / str(holder.pid),
+                                       [fields[0].decode() for fields in matching],
+                                       expected=(report["dev"], report["ino"]))
         identity = (report["dev"], report["ino"])
         if "external" in location:
             assert not mapped.is_relative_to(case.directory)
@@ -1559,7 +1592,10 @@ def test_real_unrelated_closed_fd_mapping_does_not_block_the_exact_orphan(case, 
     protected = {str(path): _snapshot(path) for path in (
         case.bank_root, case.cas.root, case.gate, case.protected_root)}
     with _native_holder(case, monkeypatch, kind="mmap", mapped=mapped) as (holder, report):
-        _assert_real_mapping(case, holder, report, mapped)
+        matching = _assert_real_mapping(case, holder, report, mapped)
+        _require_real_map_identity(Path("/proc") / str(holder.pid),
+                                   [fields[0].decode() for fields in matching],
+                                   expected=(report["dev"], report["ino"]))
         assert (report["dev"], report["ino"]) not in _selected_inodes(case)
         plan = _planned(case, proc_root=Path("/proc"))
         result = case.apply(plan, proc_root=Path("/proc"))
@@ -1664,7 +1700,10 @@ def test_mapping_metadata_bounds_are_not_masked_by_tree_or_json_authority_limits
 def test_real_process_mapping_metadata_failure_is_not_proof_of_death(case, monkeypatch, fault):
     mapped = case.protected_root / "user-primary" / "keep.bin"
     with _native_holder(case, monkeypatch, kind="mmap", mapped=mapped) as (holder, report):
-        _assert_real_mapping(case, holder, report, mapped)
+        matching = _assert_real_mapping(case, holder, report, mapped)
+        _require_real_map_identity(Path("/proc") / str(holder.pid),
+                                   [fields[0].decode() for fields in matching],
+                                   expected=(report["dev"], report["ino"]))
         _planned(case, proc_root=Path("/proc"))
         process = Path("/proc") / str(holder.pid)
         actual_read = pb._read_regular_file_nofollow
@@ -1694,7 +1733,7 @@ def test_real_process_mapping_metadata_failure_is_not_proof_of_death(case, monke
                         fields = row.split(maxsplit=5)
                         major, minor = fields[3].split(b":")
                         identity = (os.makedev(int(major, 16), int(minor, 16)), int(fields[4]))
-                        if not omitted and identity == (report["dev"], report["ino"]):
+                        if not omitted and identity == (report["map_dev"], report["map_ino"]):
                             omitted = True
                         else:
                             kept.append(row)
@@ -1836,18 +1875,31 @@ def test_malformed_pid_lifetime_cannot_authorize_mapping_absence(case, fault):
 # PB1470: this canonical row was observed in a live Netdata process, not a
 # filesystem pathname. Private process fixtures retain every ordinary census
 # guard while exercising the captured kernel name and map_files correspondence.
-def _anonymous_inode_process(case, *, target="anon_inode:[io_uring]", device=(0, 0x11), inode=42088):
+def _anonymous_inode_process(case, monkeypatch, *, target="anon_inode:[io_uring]", device=(0, 0x11), inode=42088):
     process = _process(case)
     (process / "maps").write_text(
         f"1000-2000 rw-s 10000000 {device[0]:02x}:{device[1]:02x} {inode} {target}\n")
     link = process / "map_files" / "1000-2000"
     link.unlink()
     link.symlink_to(target)
+    # Private proc fixtures cannot create kernel magic links. Inject only their
+    # stat metadata, while native tests below require the real syscall authority.
+    directory = link.parent.stat()
+    actual_stat = os.stat
+
+    def mapping_stat(path, *, dir_fd=None, **options):
+        if dir_fd is not None and path == "1000-2000":
+            held = os.fstat(dir_fd)
+            if (held.st_dev, held.st_ino) == (directory.st_dev, directory.st_ino):
+                return os.stat_result((stat.S_IFREG, inode, os.makedev(*device), 1, 0, 0, 0, 0, 0, 0))
+        return actual_stat(path, dir_fd=dir_fd, **options)
+
+    monkeypatch.setattr(os, "stat", mapping_stat)
     return process
 
 
-def test_kernel_anonymous_inode_name_is_not_an_unreadable_filesystem_path(case):
-    _anonymous_inode_process(case)
+def test_kernel_anonymous_inode_name_is_not_an_unreadable_filesystem_path(case, monkeypatch):
+    _anonymous_inode_process(case, monkeypatch)
     plan = _planned(case)
     result = case.apply(plan)
     assert result["complete"] is True and result["removed"] == [str(case.directory)], result
@@ -1858,16 +1910,16 @@ def test_kernel_anonymous_inode_name_is_not_an_unreadable_filesystem_path(case):
     "anon_inode:[nested/path]", "anon_inode:[missing", "anon_inode:[nested[name]]",
     "anon_inode:[io_uring] trailing",
 ])
-def test_anonymous_inode_grammar_does_not_allow_arbitrary_relative_maps(case, target):
-    _anonymous_inode_process(case, target=target)
+def test_anonymous_inode_grammar_does_not_allow_arbitrary_relative_maps(case, monkeypatch, target):
+    _anonymous_inode_process(case, monkeypatch, target=target)
     result = _refused(case, case.prepare)
     assert any("malformed process map" in error for error in result["errors"]), result
 
 
 @pytest.mark.parametrize("control", [*range(0x20), 0x7f], ids=lambda code: f"ascii-{code:02x}")
-def test_anonymous_inode_label_rejects_every_ascii_control(case, control):
+def test_anonymous_inode_label_rejects_every_ascii_control(case, monkeypatch, control):
     target = f"anon_inode:[io{chr(control)}uring]"
-    process = _anonymous_inode_process(case)
+    process = _anonymous_inode_process(case, monkeypatch)
     (process / "maps").write_text(f"1000-2000 rw-s 10000000 00:11 42088 {target}\n")
     if control != 0:
         # Match both inventories: refusal must be the label, not a mismatched
@@ -1881,14 +1933,14 @@ def test_anonymous_inode_label_rejects_every_ascii_control(case, control):
 
 
 @pytest.mark.parametrize("device,inode", [((0, 0), 42088), ((0, 0x11), 0)])
-def test_anonymous_inode_name_needs_kernel_device_and_inode(case, device, inode):
-    _anonymous_inode_process(case, device=device, inode=inode)
+def test_anonymous_inode_name_needs_kernel_device_and_inode(case, monkeypatch, device, inode):
+    _anonymous_inode_process(case, monkeypatch, device=device, inode=inode)
     _refused(case, case.prepare)
 
 
 @pytest.mark.parametrize("fault", ["missing", "mismatch", "selected-path"])
-def test_anonymous_inode_map_files_inventory_is_not_exempted(case, fault):
-    process = _anonymous_inode_process(case)
+def test_anonymous_inode_map_files_inventory_is_not_exempted(case, monkeypatch, fault):
+    process = _anonymous_inode_process(case, monkeypatch)
     link = process / "map_files" / "1000-2000"
     link.unlink()
     if fault == "mismatch":
@@ -1898,17 +1950,17 @@ def test_anonymous_inode_map_files_inventory_is_not_exempted(case, fault):
     _refused(case, case.prepare)
 
 
-def test_anonymous_inode_label_cannot_hide_a_selected_file_identity(case):
+def test_anonymous_inode_label_cannot_hide_a_selected_file_identity(case, monkeypatch):
     native = case.checkout / "native" / "libkernel.so"
     info = native.stat()
-    _anonymous_inode_process(case, device=(os.major(info.st_dev), os.minor(info.st_dev)), inode=info.st_ino)
+    _anonymous_inode_process(case, monkeypatch, device=(os.major(info.st_dev), os.minor(info.st_dev)), inode=info.st_ino)
     result = _refused(case, case.prepare)
     assert any("selected checkout inode" in error for error in result["errors"]), result
 
 
 def test_real_kernel_io_uring_mapping_retains_complete_map_files_proof():
-    # This runs only inside the admitted CPU qualification. It must not silently
-    # skip a denied/missing kernel prerequisite or replace it with fabricated IO.
+    # Actual io_uring setup may not be replaced by fabricated IO. The separate
+    # map_files-stat capability prerequisite is explicitly reported when absent.
     import ctypes
     import mmap
     import platform
@@ -1924,9 +1976,14 @@ def test_real_kernel_io_uring_mapping_retains_complete_map_files_proof():
         assert length > 0
         with mmap.mmap(descriptor, length, flags=mmap.MAP_SHARED,
                        prot=mmap.PROT_READ | mmap.PROT_WRITE, offset=0):
-            raw, targets = recovery._process_maps(Path("/proc") / str(os.getpid()), [], set())
+            process = Path("/proc") / str(os.getpid())
+            rows = (process / "maps").read_text().splitlines()
+            ranges = [row.split()[0] for row in rows if "anon_inode:[io_uring]" in row]
+            assert ranges
+            _require_real_map_identity(process, ranges)
+            raw, targets = recovery._process_maps(process, [], set())
             assert b"anon_inode:[io_uring]" in raw
-            assert "anon_inode:[io_uring]" in targets.values()
+            assert any(value[0] == "anon_inode:[io_uring]" for value in targets.values())
             info = os.fstat(descriptor)
             with pytest.raises(recovery.CheckoutRecoveryRefusal, match="selected checkout inode"):
                 recovery._process_maps(Path("/proc") / str(os.getpid()), [], {(info.st_dev, info.st_ino)})

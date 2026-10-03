@@ -3327,13 +3327,15 @@ rows, live/malformed leases, missing/malformed request or snapshot, different
 incomplete copies, any live PID/FD/cwd/exe/cmdline or memory-mapping reference,
 and unreadable census/gates refuse. Every live userspace PID, including the
 operator and recovery process, needs a complete bounded no-follow `maps` read
-and a readable no-follow `map_files` directory. Mapping paths and the kernel's
-major/minor-device plus inode are compared independently with the selected
-original tree, so closing the FD, loading a native library, using an external
-hardlink/bind alias or unlinking a mapped name cannot authorize deletion.
+and a readable no-follow `map_files` directory. Mapping paths are checked
+independently. Every file-backed map_files magic link must also yield its
+filesystem `st_dev`/`st_ino` through `stat` relative to the held proc directory;
+these identities, not the superblock device/inode printed in maps, are compared
+with the selected original tree. This retains closed-FD native libraries,
+external hardlinks/bind aliases and deleted files without reopening a pathname.
 File-backed address ranges and link targets must agree across both inventories;
-two complete mapping snapshots must be identical inside the same PID lifetime
-and held process-directory identity.
+two complete snapshots, including authoritative stat identities, must agree
+inside the same PID lifetime and held process-directory identity.
 Kernel `anon_inode:[name]` mappings, including io_uring, retain nonzero
 device/inode attribution and exact map_files range/name agreement. They are
 not filesystem paths, ignored processes, or exemptions from selected-file
@@ -3346,14 +3348,21 @@ not proof of abandonment; empty mappings are accepted only for a same-lifetime
 `PF_KTHREAD` process with no cmdline, executable or FDs and an empty readable
 `map_files` inventory. Each maps read and cumulative map_files names/targets are
 bounded to 2 MiB, with at most 100,000 mapping records or map_files entries per
-PID. Recovery reads map_files symlink targets without dereferencing them:
-identity comes from kernel maps metadata, not an alias pathname still existing.
-Permission restrictions or mapping churn can therefore conservatively prevent
-recovery even when the selected tree is unused; do not suppress these refusals.
-Native closed-FD Btrfs mapping qualification remains open in #1472 after the
-file-stat/VMA identity prerequisite failed on DL. A passing NAS qualification
-of anonymous-inode labels does not certify Btrfs alias attribution or permit
-operational recovery on that basis.
+PID. Recovery reads the map_files link target for range/name consistency and
+stats the kernel magic link for identity. It never stats the readlink pathname,
+normalizes devices using mount names, or treats an unavailable identity as an
+unrelated file. Stat can need CAP_CHECKPOINT_RESTORE or CAP_SYS_ADMIN in the
+initial user namespace as well as process-access permission. Missing authority
+or mapping churn fails closed even for an unused tree; do not bypass refusals.
+Positive native qualification remains open in #1472. Admitted Btrfs capture
+`d1d9f13109da97c4214e479b2a2b0df6c5891fab4c1af8c50cc6f9956da89aae`
+observed stat device 0:31 versus VMA/mount 0:30 and unchanged inode 236359088,
+before and after unlink of a closed-FD external alias. Actual magic-link stat
+returned EPERM with zero effective capabilities. The source repair and native
+missing-authority refusal witnesses do not certify privileged positive
+attribution on Btrfs or the historical NAS context. Those positive tests report
+an explicit unavailable-authority skip, not a synthetic pass. No privilege
+change, helper rebinding, deployment or operational recovery is authorized.
 The kernel mount census also rejects selected-root or descendant mounts
 (including same-device bind mounts) and hidden `/proc` censuses, so cleanup cannot
 cross into a native bank/CAS/image namespace. Dead stale leases are retained,
