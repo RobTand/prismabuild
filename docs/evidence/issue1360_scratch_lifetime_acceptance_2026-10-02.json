@@ -1,0 +1,274 @@
+{
+  "schema": "pb.staged_read_acceptance.v1",
+  "step": "merge",
+  "contract_commit": "37b72cc431b876b6dc4889fa1f5889dd1656b97d",
+  "ledger_commit": "e353e3778a354facbccb930c2f35e734302d4f71",
+  "scope": [
+    "SC-01",
+    "ID-02",
+    "SM-01",
+    "INV-01",
+    "DUR-01",
+    "VER-01"
+  ],
+  "prelaunch": {
+    "status": "not-this-step"
+  },
+  "merge": {
+    "branch": "sol/pb1360-scratch-lifetime-20261002",
+    "issue": "https://github.com/RobTand/prismabuild/issues/1360",
+    "validated_repairs": [
+      {
+        "id": "SC-01",
+        "actions": [
+          "db637cc4148aecb6383023959de64f7bf38f3bc52cde87c253e0fb599b89264f"
+        ],
+        "outcome": "CPU tempdir fixtures exercise existing PoolQueue registration/finalization and reaper, not a separate sweeper. Normal/failure cleanup, mirror interruptions, ambiguous creation, unproven containment and successor late finish were observed with fake broker/process endpoints."
+      },
+      {
+        "id": "ID-02",
+        "actions": [
+          "db637cc4148aecb6383023959de64f7bf38f3bc52cde87c253e0fb599b89264f",
+          "246b66ff24b3b7d18370fd4d4f6943252f76247c3ba9194a032ec968c48df44a"
+        ],
+        "outcome": "Exact host/key/publication/nonce/scope and descriptor dev/ino/uid/mount/birth-time identities refuse foreign ownership, symlink ancestry, ancestor/leaf replacements and simulated inode reuse. Persistent cache sentinel retained. No real malicious same-UID sandbox or worker reboot was tested."
+      },
+      {
+        "id": "SM-01",
+        "actions": [
+          "db637cc4148aecb6383023959de64f7bf38f3bc52cde87c253e0fb599b89264f",
+          "e09018c73e798652f65556c8ffaa29c69c7155c1637a9306831db3d95e139250"
+        ],
+        "outcome": "Cleanup interruption or commit/mirror failure retains finish_pending and host reservation; recovery settles the same owner. Crash before capacity release uses existing tombstone recovery. Legacy empty lost-claim regression fixed separately and its PB-owned 97-test shard rerun GREEN."
+      },
+      {
+        "id": "INV-01",
+        "actions": [
+          "db637cc4148aecb6383023959de64f7bf38f3bc52cde87c253e0fb599b89264f"
+        ],
+        "outcome": "Fixture host ledger remains charged until cleanup is durably committed and mirrored; persistent root is excluded from deletion and a predecessor cannot debit/alter its successor's claim, lease or reservation. This qualifies the host scratch barrier only, not all storage-tier ledgers."
+      }
+    ],
+    "remaining_gaps": [
+      "Astra security review and final acceptance are pending; this is a prepared source-merge record, not permission to merge.",
+      "Deployment is pending. Tests use the new source inside admitted CPU actions on runtime d028dfee920b-1790960385-1d815cff72d1; that outer runtime does not demonstrate deployed scratch-lifetime-v1 support.",
+      "Real worker/launcher SIGKILL, reboot/mount-ID change, cross-host recovery and production scratch paths were not exercised. Creation after mkdir but before identity commit deliberately fails closed with retained capacity, requiring explicit repair.",
+      "Admitted producer and owning UID must not mutate PB private state/namespace control. Nofollow descriptor anchoring is not an adversarial same-UID filesystem sandbox.",
+      "PQ #1091 Stage A/B sizing, persistent compile-cache bounds, GPU behavior and performance remain unmeasured.",
+      "DUR-01: process-crash record semantics only. No physical/server power-loss qualification or dataset sync-policy change; shared backing policy remains sync=disabled as the contract records.",
+      "PB #1462: pbtest env wrapper omits its interpreter requirement and retains default x86 placement. Filed P1 needs-decision, not repaired in this scratch-owner branch."
+    ],
+    "note": "696 distinct outcomes reconciled across 34 files: seven retained GREEN shards at e85fc9f875ea (599 passed) plus the failed shard's 97/97 GREEN rerun at 1fcdf1f44df7. Original run was 695 passed/1 failed, not GREEN. The only production-source change between those commits is a four-line empty-legacy-record guard; unaffected shards are reused rather than rerun. Every successful sealed snapshot was fetched from its CAS bundle and differs from its source parent only by the per-shard .pbrun-closure JSON. SDK4 public surface and CAPABILITIES unchanged; client SDK surface tests passed. pb_verify_claim checks claim address/digest, receipt self-consistency/binding and payload bytes/hash; full worker attestation is not claimed. No deployed state, live cleanup, model/artifact restoration or GPU work was changed."
+  },
+  "deploy": {
+    "status": "not-this-step"
+  },
+  "complete": {
+    "status": "not-this-step"
+  },
+  "exceptions": [],
+  "test_evidence": {
+    "mode": "CPU fixtures; native threads 1; pytest-xdist 4; 4 CPU/4 GiB per broad shard; eight initial independently admitted quanta",
+    "sources": [
+      "e85fc9f875ead790aac2375dc9878dcff620cb51",
+      "1fcdf1f44df78aa8b9fd3a3ba0c595e8b4139104"
+    ],
+    "distinct_outcomes": 696,
+    "skipped": 0,
+    "missing_collection": 0,
+    "extra_phases": 0,
+    "targeted_green": {
+      "key": "9ef4e5568c6c5d60f2e4eaa8de759d1c7570d36b15b694ee3cef0981149ba32a",
+      "passed": 185,
+      "host": "sparky",
+      "claim_checks_passed": true
+    },
+    "compile": {
+      "key": "e8a8bbb96756e7cfbef6f26a37e7efad1e822323b014eb96faf1a4d7e4232aa8",
+      "returncode": 0,
+      "source": "e85fc9f875ea",
+      "note": "py_compile of local_scratch.py/pool.py/worker_loop.py. Later four-line pool guard was compiled/imported by the 97-test rerun."
+    },
+    "broad": [
+      {
+        "key": "b371a3621bfcd3ee6c74add3bbdaad633c5f3138f95328672ba85b67d7b3bacf",
+        "passed": 89,
+        "host": "dl380g10",
+        "attempts": 1,
+        "returncode": 0,
+        "snapshot": "054bb7f1ca94fe7fbbb6bc14fb1b407bb4a1214a",
+        "parent": "e85fc9f875ead790aac2375dc9878dcff620cb51",
+        "closure_only_diff": [
+          ".pbrun-closure.b92eeffc0c70b598.json"
+        ],
+        "claim": "e8bc265872f86c23daad9bf411046ccab9882cf25eee4b4011b2cc588e0eedd9",
+        "claim_checks_passed": true,
+        "full_attestation_verified": null,
+        "receipt_sha256": "451e65d382345dba651a7a150a953782fbf9f7e66ab73941499e0ab30da654fe",
+        "cleanup_complete": true
+      },
+      {
+        "key": "33677a4b3dec8d5e008c1bbd573c4b1e71ac2c431da6e83b449694412bc2f391",
+        "passed": 91,
+        "host": "dl380g10",
+        "attempts": 1,
+        "returncode": 0,
+        "snapshot": "120299f2bd2bb7eb94d03547ea3ec2172937b74c",
+        "parent": "e85fc9f875ead790aac2375dc9878dcff620cb51",
+        "closure_only_diff": [
+          ".pbrun-closure.08fb00ef2bd9cfca.json"
+        ],
+        "claim": "68d1c7b16accc1eb754e6891dcaf61c8c00c5b20c6e78a763c92506b6754ac88",
+        "claim_checks_passed": true,
+        "full_attestation_verified": null,
+        "receipt_sha256": "6a2e56a526b7abb364d38b9365b989702e605f308baa73aec40706d3f016bddd",
+        "cleanup_complete": true
+      },
+      {
+        "key": "d7224e84ee9a76a16319473577dbd97b268524f84580d763d4d645147f98ae1a",
+        "passed": 31,
+        "host": "dl380g10",
+        "attempts": 1,
+        "returncode": 0,
+        "snapshot": "b3d2f12cdf8a0ebfaef84a48f6dc4bd15a110937",
+        "parent": "e85fc9f875ead790aac2375dc9878dcff620cb51",
+        "closure_only_diff": [
+          ".pbrun-closure.32bfbade8aea9fd9.json"
+        ],
+        "claim": "baadbe9c349ad931397c8546433900ee849c76e756147b827c577880ba5abde4",
+        "claim_checks_passed": true,
+        "full_attestation_verified": null,
+        "receipt_sha256": "18ebf6e8643c9deca0717cc361f3078abb350e6949f08aad60ae3fc885a52d65",
+        "cleanup_complete": true
+      },
+      {
+        "key": "ea39b647fe8484080dc406ab46f6c67cdf5d4c4efda84faad5e63d33ac6e7e04",
+        "passed": 167,
+        "host": "dl380g10",
+        "attempts": 1,
+        "returncode": 0,
+        "snapshot": "01a140ea538cbce56f64e14a713dcceb82c29830",
+        "parent": "e85fc9f875ead790aac2375dc9878dcff620cb51",
+        "closure_only_diff": [
+          ".pbrun-closure.08757601bd4029d5.json"
+        ],
+        "claim": "d3e69c22df402aedf748a54fcc2234f971a4afd377ef4a6fa0a7584883ace4a4",
+        "claim_checks_passed": true,
+        "full_attestation_verified": null,
+        "receipt_sha256": "3abba0ed3a5b31c256c7c513d6132f46ca51c5eae8494416c097ce51b078e036",
+        "cleanup_complete": true
+      },
+      {
+        "key": "db637cc4148aecb6383023959de64f7bf38f3bc52cde87c253e0fb599b89264f",
+        "passed": 32,
+        "host": "dl380g10",
+        "attempts": 1,
+        "returncode": 0,
+        "snapshot": "57c0e2c56c1f353b0ce0a647cb3270c3252bf581",
+        "parent": "e85fc9f875ead790aac2375dc9878dcff620cb51",
+        "closure_only_diff": [
+          ".pbrun-closure.2ff0ae9bc4137147.json"
+        ],
+        "claim": "e09d4db99992fbf74df57fb64213eff18dc8d0454bd3245d47cf32c7f2672352",
+        "claim_checks_passed": true,
+        "full_attestation_verified": null,
+        "receipt_sha256": "43b173dbfcdc2600b2f82c0d9fd702f0c5c210faf43ef10b3bc8fb7375898bef",
+        "cleanup_complete": true
+      },
+      {
+        "key": "246b66ff24b3b7d18370fd4d4f6943252f76247c3ba9194a032ec968c48df44a",
+        "passed": 70,
+        "host": "dl380g10",
+        "attempts": 1,
+        "returncode": 0,
+        "snapshot": "233f2b96df28c6cb1679f324f0a82cad3b64a6c6",
+        "parent": "e85fc9f875ead790aac2375dc9878dcff620cb51",
+        "closure_only_diff": [
+          ".pbrun-closure.de43ab75b478d589.json"
+        ],
+        "claim": "7b200b9a61fda3500cdbec3815fea10635c5f54c8109db00945010d25bc604d1",
+        "claim_checks_passed": true,
+        "full_attestation_verified": null,
+        "receipt_sha256": "fcde0856ac48f05ecdd247798e0c11303b5ebd0b3a62a72409123b8f285664d9",
+        "cleanup_complete": true
+      },
+      {
+        "key": "be605b0502b20c363e1e81700d3b86c974f35b7ef0244bc8cbace0c9e565cac7",
+        "passed": 119,
+        "host": "dl380g10",
+        "attempts": 1,
+        "returncode": 0,
+        "snapshot": "f127921f116cc8cd7b4c8675455ff04c9da6524e",
+        "parent": "e85fc9f875ead790aac2375dc9878dcff620cb51",
+        "closure_only_diff": [
+          ".pbrun-closure.0744995423b5c328.json"
+        ],
+        "claim": "88ca2f254abbc8fcb5cccf817139a4e40dcaaa1b87c484e2bdb8c0a2cede91ad",
+        "claim_checks_passed": true,
+        "full_attestation_verified": null,
+        "receipt_sha256": "414b3201baa3a3f14b3ac97afe3ff075fd8897711cfcb95d56ccf38ca9d21a88",
+        "cleanup_complete": true
+      },
+      {
+        "key": "e09018c73e798652f65556c8ffaa29c69c7155c1637a9306831db3d95e139250",
+        "passed": 97,
+        "host": "dl380g10",
+        "attempts": 1,
+        "returncode": 0,
+        "snapshot": "0ab65411d9e3878555fcc89b867e42de05f08a22",
+        "parent": "1fcdf1f44df78aa8b9fd3a3ba0c595e8b4139104",
+        "closure_only_diff": [
+          ".pbrun-closure.b696f71236f204ef.json"
+        ],
+        "claim": "b3a879a30b3d86abe204bd973c98e87a8ccc07af6786ff593a7d3036d18978e6",
+        "claim_checks_passed": true,
+        "full_attestation_verified": null,
+        "receipt_sha256": "801dd74e4bee0c77b49a4a4d080c02272a2faa43f6f48404053d091986f8e122",
+        "cleanup_complete": true
+      }
+    ],
+    "negative_results": [
+      {
+        "key": "8593a63790cefe46c02e10b4feffb90a8a31d44467cbe6766cce2b883bd49dfe",
+        "outcome": "RED parser absent: 28 failed/1 passed; rc1; no successful CAS receipt"
+      },
+      {
+        "key": "19c78a097021643708915f02eedb6714dc3d64ae50721e75f05eccc793e623a2",
+        "outcome": "Null/absent regression: 2 failed/141 passed; fixed in parser commit"
+      },
+      {
+        "key": "349f3014801a9e7da7c6a8e67eab9ae8fad6920a44dceda757c837d74fead5fb",
+        "outcome": "RED directory owner absent:17 failed; subsequent primitive GREEN3ebcfc2e 17 passed"
+      },
+      {
+        "key": "5ae1cdfc742fa029cfe0d794d595aebc7a5a64682ddd4c27657bc18db3c6338a",
+        "outcome": "RED pool owner absent:11 failed"
+      },
+      {
+        "key": "8e7aa0143ad3dccbc52c5842f3ea78991d79fc83e1952a70008dc445eea4b485",
+        "outcome": "Integration candidate 19 failed/152 passed: overly early legacy refusal, missing fake retired boolean, and fixture reaper mismatch. Corrected; fail-closed capacity retained."
+      },
+      {
+        "key": "c369fabcab86df1bbdd53df652bd9e5fefee2f71cf60766adc52194164b89510",
+        "outcome": "Candidate 2 failed/169 passed: exact-export requery and tombstone recovery fixture. Corrected; next65feb99a 171 passed."
+      },
+      {
+        "key": "e621a329e0ff1c6ce96629e998799b16c570474c6120bf12a711e80fc9ef7e53",
+        "outcome": "Broad RED: legacy empty-record regression 1 failed/96 passed; corrected guard then e09018c7 97/97 GREEN"
+      },
+      {
+        "path": "/home/rob/tmp/astra-resume-20261002/pb1360-scratch-lifetime/broad.json",
+        "outcome": "All eight refused before publication because source docs were edited during snapshot capture; zero actions/tests. Freeze source before fanout."
+      },
+      {
+        "path": "/home/rob/tmp/astra-resume-20261002/pb1360-scratch-lifetime/broad-green.json",
+        "outcome": "All eight refused before publication: interpreter-path-v1 tag without declared item interpreter. Zero tests; PB1462 records the consumer gap."
+      }
+    ],
+    "reports": [
+      "/home/rob/tmp/astra-resume-20261002/pb1360-scratch-lifetime/broad-final.json",
+      "/home/rob/tmp/astra-resume-20261002/pb1360-scratch-lifetime/broad-retry.json"
+    ],
+    "snapshot_git": "/home/rob/tmp/astra-resume-20261002/pb1360-scratch-lifetime/verified-snapshots.git"
+  }
+}

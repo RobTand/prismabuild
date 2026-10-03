@@ -1,0 +1,78 @@
+{
+  "schema": "pb.staged_read_acceptance.v1",
+  "step": "merge",
+  "contract_commit": "37b72cc431b876b6dc4889fa1f5889dd1656b97d",
+  "ledger_commit": "e353e3778a354facbccb930c2f35e734302d4f71",
+  "scope": ["ID-02", "SM-01", "INV-01", "DUR-01", "VER-01"],
+  "prelaunch": {"status": "not-this-step"},
+  "merge": {
+    "branch": "sol/pb1360-scratch-lifetime-20261002",
+    "issue": "https://github.com/RobTand/prismabuild/issues/1360",
+    "validated_repairs": [
+      {
+        "id": "ID-02",
+        "actions": ["1d75564b0fda6c80c7c71c4ad43eb212188334ef3e9348a6807b16ff39c6b9bf"],
+        "outcome": "46 CPU directory/owner fixtures passed on dl380g10, including four new permission witnesses. Changed namespace/parent/leaf mode refuses before deletion; registration replay refuses before launch. Inode/creation identity alone cannot bypass private owner-only permissions. All prior directory/owner cases in these two files reran on the final permission-guard source. No skips were reported."
+      },
+      {
+        "id": "SM-01",
+        "actions": ["1d75564b0fda6c80c7c71c4ad43eb212188334ef3e9348a6807b16ff39c6b9bf"],
+        "outcome": "Existing partial cleanup, pending commit/mirror, launcher/reaper, successor late-finish and tombstone fixtures remain GREEN. The same existing finalization owner holds reservations when private control cannot be proved."
+      },
+      {
+        "id": "INV-01",
+        "actions": ["1d75564b0fda6c80c7c71c4ad43eb212188334ef3e9348a6807b16ff39c6b9bf"],
+        "outcome": "Permission-refused registration preserves fixture charge and payload sentinel. The 46-test run has a successful CAS receipt and complete actual outer resource-scope cleanup; persistent cache exclusion tests reran. This is the host scratch barrier, not a qualification of every storage ledger."
+      }
+    ],
+    "remaining_gaps": [
+      "All deployment, physical/server power-loss, real SIGKILL/reboot/cross-host and PQ workload gaps in issue1360_scratch_lifetime_acceptance_2026-10-02.json remain unchanged.",
+      "Owning UID and private namespace control remain the existing PB trust boundary; this is not an adversarial same-UID filesystem sandbox.",
+      "An existing leaf lacking committed identity remains fail-closed pending explicit repair. Empty private namespace ancestors may remain.",
+      "Astra security review and final acceptance remain pending. PR #1463 is a draft; no merge/deploy was performed."
+    ],
+    "note": "Append-only final-audit follow-up to the initial source acceptance record. Initial broad coverage is 696 reconciled distinct outcomes across 34 files. The final permission repair reruns its 42 existing directory/owner cases plus four new witnesses: 46 passed, so total distinct covered tests are 700, not 742 and not a claim that all 700 ran in one reconciled batch. Other source paths are unchanged by this narrow guard. The four permission witnesses were also checked against unchanged pre-fix source a7f5486ad6f1 during final audit: cd4f9fef3793 failed all four as expected. That baseline comparison was submitted after the GREEN candidate, not falsely described as a chronological RED-first run. The unchanged baseline worktree is retained as bounded evidence, not integrated or retired."
+  },
+  "deploy": {"status": "not-this-step"},
+  "complete": {"status": "not-this-step"},
+  "exceptions": [],
+  "verification": {
+    "red": {
+      "key": "cd4f9fef37932f35d334834a1c2793bc3c322c6b82a72db023d0705237567751",
+      "source_parent": "a7f5486ad6f1f681b0a33c71fd879c0a20cf8b95",
+      "failed": 4,
+      "returncode": 1,
+      "successful_receipt_present": false,
+      "worktree_disposition": "retained bounded evidence",
+      "worktree": "/home/rob/tmp/astra-resume-20261002/wt-pb1360-permission-red"
+    },
+    "green": {
+      "key": "1d75564b0fda6c80c7c71c4ad43eb212188334ef3e9348a6807b16ff39c6b9bf",
+      "snapshot_commit": "45641abbea145665ed3f12e49dfbe8d2d018384a",
+      "snapshot_input_sha256": "f36b2b00b4b4367318e6fe29adf3c80ecd6ca86c2d910d8f251f74da0e9adc59",
+      "source_commit": "f3523c095a01",
+      "passed": 46,
+      "skipped": 0,
+      "host": "dl380g10",
+      "cpu": 4,
+      "memory_gib": 4,
+      "native_threads": 1,
+      "returncode": 0,
+      "claim_sha256": "59835a6ae8542b1e7b4c46d16120ba8dea0ad9124724835c5b94b41e7468afbf",
+      "claim_checks_passed": true,
+      "full_attestation_verified": null,
+      "receipt_sha256": "d92bad871a61fafd39a2757a53743e8bba3f9d9e7c7c6d6f6dd524751e85a32c",
+      "outer_cleanup_complete": true,
+      "tested_source_equality": "Fetched the sealed CAS bundle into verified-snapshots.git. Compared permission-green against source f3523c095a01: only .pbrun-closure.f145d037d74191d0.json and three normative docs/design.md lines differ. Production source and both test files are byte-identical.",
+      "resource_profile": {
+        "cpu_seconds": 12.239435,
+        "wall_seconds": 7.286703586578369,
+        "memory_peak_bytes": 376586240,
+        "netdata_cpu_mean_percent": 13.334956733333334,
+        "netdata_cpu_peak_percent": 27.477138800000002,
+        "netdata_psi_some_avg10_max": 0.565,
+        "limitation": "No pqteld CSV covered this CPU-only window. These are execution resource observations, not a performance delta or saturation claim. No GPU work was requested."
+      }
+    }
+  }
+}

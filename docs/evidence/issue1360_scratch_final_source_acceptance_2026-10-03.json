@@ -1,0 +1,331 @@
+{
+  "schema": "pb.staged_read_acceptance.v1",
+  "step": "merge",
+  "scope": [
+    "SC-01",
+    "ID-02",
+    "SM-01",
+    "INV-01",
+    "DUR-01",
+    "VER-01"
+  ],
+  "prelaunch": {
+    "status": "not-this-step"
+  },
+  "merge": {
+    "status": "source-qualified",
+    "issue": "https://github.com/RobTand/prismabuild/issues/1360",
+    "pull_request": 1463,
+    "source_commit": "0c2822cffe8392b0830b5affd079ba8cc537466b",
+    "review": "Independent source security review found missing durable tombstone/widowed-lease ownership recovery. Commits e1a81fd86b9f7f1f0145e65be80abe3f128dbee6 and 0c2822cffe8392b0830b5affd079ba8cc537466b fix both through the existing transition-locked owner; main agent reviewed the exact repair before qualification.",
+    "validated_repairs": [
+      {
+        "id": "SM-01",
+        "outcome": "Existing finish/reaper/late-finish/tombstone/widowed-lease source fixtures preserve stopped-scope proof and durable consumed ownership before capacity release. Interrupted withdrawals, terminal/READY publication and orphan lease cleanup now retry the exact durable owner without resurrecting a covered claim."
+      },
+      {
+        "id": "ID-02",
+        "outcome": "Eleven new parameterized cases cover invalid or contradictory tombstone/lease envelopes, nonce/publication drift, live claims, and actual successor fixture scratch/lease/reservation preservation. Owning host, action publication, worker and exact broker scope remain mandatory."
+      },
+      {
+        "id": "INV-01",
+        "outcome": "Full integrated 34-file source campaign: 711 collected/ran/passed, 0 skipped/missing/duplicate/uncollected/extra-phase outcomes. All20 PB-planned shards independently authenticated against one changed-source parent; none reused from the old700-case evidence."
+      }
+    ],
+    "remaining_gaps": [
+      "Source-only merge uses Refs #1360; full issue closure is not granted.",
+      "No deployed scratch-lifetime-v1 capability, runtime publication, real worker/launcher SIGKILL, reboot/mount-ID change or cross-host recovery qualification.",
+      "No PQ1091 Stage A/B sizing, persistent compilation-cache bounds, GPU behavior or production throughput qualification. ROOT/MAX remains reservation, not filesystem quota enforcement.",
+      "No adversarial same-UID sandbox; existing private-namespace/owning-UID trust boundary is unchanged. Missing immutable creation identity and mkdir-before-identity interruption fail closed with retained capacity.",
+      "No physical/server power-loss durability qualification or shared storage sync-policy change.",
+      "No operational cleanup, source-bank deletion, maintenance hold, helper deployment or protected SDK4 runtime modification."
+    ],
+    "supersedes_source_review_pending_only": [
+      "issue1360_scratch_lifetime_acceptance_2026-10-02.json",
+      "issue1360_scratch_permission_recheck_acceptance_2026-10-02.json"
+    ],
+    "note": "The prior records remain historical evidence; this record completes their source-security/final-validation gate only. The final commit after the tested parent adds this acceptance record and a design reference, with production/tests unchanged."
+  },
+  "deploy": {
+    "status": "not-this-step"
+  },
+  "complete": {
+    "status": "not-this-step"
+  },
+  "exceptions": [],
+  "verification": {
+    "schema": "pb1463.final_source_verification.v1",
+    "source_parent": "0c2822cffe8392b0830b5affd079ba8cc537466b",
+    "files": 34,
+    "collected": 711,
+    "passed": 711,
+    "skipped": 0,
+    "shards": 20,
+    "public_sdk": 4,
+    "full_public_result_and_core_verified": true,
+    "all_source_deltas_closure_only": true,
+    "rows": [
+      {
+        "key": "50cb722258a44a4b99382a45bf899e8ba3df59e38aec0f5acd053cf93a14daba",
+        "passed": 159,
+        "host": "sparky",
+        "receipt": "48bc702e7b151ed1b1ac53ad42be158518995cbbbb23e07313e11f3b064c4b7f",
+        "payload": {
+          "sha256": "a0e5739015fd8b490605d4bc0ba89ae813f8edd8a14a5497753f190b1ceb4918",
+          "bytes": 38215
+        },
+        "snapshot": "7280401268999fe2941cb10adec38fe7a50d530e",
+        "input_sha256": "379da98b7e2c6d0615ec52a7fe84296031f841a783918f257d6f14a30de3149c"
+      },
+      {
+        "key": "344b4417f65645cdd9a397592b7db1f62a53f5496ed29e7000b0b532a253073f",
+        "passed": 83,
+        "host": "dl380g10",
+        "receipt": "2d3349eb6ce10d37026922ce11004bc513129f8c1e9cd8535bc3f2ca850fbf80",
+        "payload": {
+          "sha256": "95a089dd85c56c65849167f629a5ce3c7b8c44517c514016d0e3698f29ae0ab4",
+          "bytes": 21183
+        },
+        "snapshot": "08b537460cc931c408e62f7eb7914f2e1d4c87d0",
+        "input_sha256": "6be80db56e4bdf01561f3be387284f7b21d8728070215e3133711d5bed05779a"
+      },
+      {
+        "key": "5ab8033c8035360fdc21d81d839e2f4a3f2e96db940bd0ca06be5ba5902404b0",
+        "passed": 75,
+        "host": "dl380g10",
+        "receipt": "bf40d9fa043c768061b269818254bbe2e71fc148a7eda0d73610af58eb0e3f10",
+        "payload": {
+          "sha256": "3bfd1bb6e002359f34988f4ff356f52f78887e0291e6d2ed0ef075c64849c9ce",
+          "bytes": 19899
+        },
+        "snapshot": "66d0066d98e29747ab1bdf1f881c4b39d05ef04c",
+        "input_sha256": "05109ec03d9188fc2151118de804bb81fb4043633a02c27cf05216f136a671b3"
+      },
+      {
+        "key": "7cda62910619b083f2226cf1db7fbd87f281bece70162c2298eec86f8b082f7b",
+        "passed": 3,
+        "host": "dl380g10",
+        "receipt": "9d42926527ef2fc39cb5054973936c252fb234b049da3901dbe95c71fb1fe3e8",
+        "payload": {
+          "sha256": "9d1a2f04989cb2e5a906b4761dcc763ff067f770c8748585427e501a8b3de9ea",
+          "bytes": 2676
+        },
+        "snapshot": "b894e4668f7237d4bc064ec32b32727c615cdf2e",
+        "input_sha256": "f3e4403391cf073e173e5c00b9fd3832f18e4ffcdb9fa0b9fce0931de651ce61"
+      },
+      {
+        "key": "bf0a5b898e586afe8acc5e845df92103e8b86861f32c5eae0d01a466675b5332",
+        "passed": 35,
+        "host": "dl380g10",
+        "receipt": "71334e4f99f7cd14b5379c72da33e93957ff0e63749055e4434af2707ec41d77",
+        "payload": {
+          "sha256": "883eb2ca32f4ef22c2b269eca0b8a77a8201db55bb2e418d5920bec6dd112a72",
+          "bytes": 10991
+        },
+        "snapshot": "5460335ad7b912d065a5c4469a3f81b36071d20b",
+        "input_sha256": "76f0a8c5138246fc8c097f425152fb5baea3340641e43063bb580086d9657d13"
+      },
+      {
+        "key": "1b30b29023c88ea806e06fc53b93edf76fcfae64b60df7c8f941657dff9987db",
+        "passed": 90,
+        "host": "dl380g10",
+        "receipt": "5adba097cc3f833e9882378169d46e1a47dbc36b0ec4c39f17a48f2752cbbea9",
+        "payload": {
+          "sha256": "d0132fe2b93f54c491f80480c363e054eb8028971716c0791893ea87a8b4d9c3",
+          "bytes": 26532
+        },
+        "snapshot": "fc00ed758a6824a8a291b04c975b604d926a3864",
+        "input_sha256": "73f5359bacb9db265657cddd8b34f5f502072e2d35fcb8ed4bbc0ebdf42a6fa2"
+      },
+      {
+        "key": "84e70611e3acb60adec4c5d62b14a5f4289ba8f0275122c5b91bc372ceb7bacb",
+        "passed": 23,
+        "host": "dl380g10",
+        "receipt": "6148b0eec41b88a141be23f7ad2cb03b6ceeefe364a6240400c55355cb7e6d38",
+        "payload": {
+          "sha256": "646ae41961b6c74cc3b45658d00a1662928ecdff81d5e67a317df79379f63e30",
+          "bytes": 7494
+        },
+        "snapshot": "c6805a90d8ef68dd6ade5ddaaada0260e9ec322d",
+        "input_sha256": "b8a32f680204a951b1285e1fe89f6ec317f6c95eb99bee34ed8fe9d32561e13c"
+      },
+      {
+        "key": "42652068726e7b3548c53c0c98d383581cc2b2c0afe39aade69c8373b3c147e5",
+        "passed": 7,
+        "host": "dl380g10",
+        "receipt": "6238952818468be30fb38d9c8ea8eb0d3a4a4d5cb868315c6c74e7807a09e3b2",
+        "payload": {
+          "sha256": "2b5827c26f31a4bcf98c289e55fc66f2b03c209ce369a366af6b159312a2fbbf",
+          "bytes": 3929
+        },
+        "snapshot": "d91ee4aa46e8e505fb51ac30c876674990e6878b",
+        "input_sha256": "9ae98495e38b39056c8d71ed387fc965e1adc3cbc308ba189099155920ebaf26"
+      },
+      {
+        "key": "e1585f869e864d0cd853550df7d67bdc08f849557b2b44fff5dc3e833896935a",
+        "passed": 29,
+        "host": "sparky",
+        "receipt": "995441f02b93162dbdece780041409112778549603deb71836d696f2b63e63ec",
+        "payload": {
+          "sha256": "40c9df72461ca56b36db7ef6bbb55bc328c8c31be3243a329f85dde90a616feb",
+          "bytes": 140421
+        },
+        "snapshot": "27a0dc212c88f3faeadb7dea3cdf21d978425e87",
+        "input_sha256": "591ab974ae9c13e91fadeea102f1c1cb7164c4963e2718fed461a942ba7acf8b"
+      },
+      {
+        "key": "3e0df068a6cf2ca449931230076bc321a218f22e16be84c87d781f0160386d29",
+        "passed": 30,
+        "host": "dl380g10",
+        "receipt": "90df9d43a069551faa441f0b828dca74f6dca53307149a1b247737ad919b1d47",
+        "payload": {
+          "sha256": "5800f92b0c0fa9b7ccbd5fe94df7f322bef5ef8322411b38e91e8b701c692847",
+          "bytes": 9071
+        },
+        "snapshot": "33e2db78cb4912417b54f131c8968618d25bd213",
+        "input_sha256": "46563e8f039f272763cd7b6df6b18eee6a6c4f37795c1b3175276726fcae7e64"
+      },
+      {
+        "key": "f7fa7d61371f445553483948d2d3f37cba5654fa03969782f27cbe6e2fd742bd",
+        "passed": 29,
+        "host": "dl380g10",
+        "receipt": "30de67b005db400b1ff84fbed099db0229f19bcebc0ad81060eacb7b3f037465",
+        "payload": {
+          "sha256": "27f9fef606a1667796ad0c4ed3257c40755cbebb401c940d21913e1057e18b59",
+          "bytes": 8466
+        },
+        "snapshot": "df0dd29a8829fa7c6b0ae14126512f0fe1de8ca6",
+        "input_sha256": "cc0623401ea0d0f54b1b057efc43d8f0b72a222d6c0a7ca91df71160faa70135"
+      },
+      {
+        "key": "5df17e0a1709a15c1738f18070d98f7f0a49ac30f865e6f92604c1f6753ce79a",
+        "passed": 35,
+        "host": "dl380g10",
+        "receipt": "45acc20f670062f491d576defea866148f122ed126883b6571c6c043d34830bb",
+        "payload": {
+          "sha256": "d9c844750214a43a7c6d8dde377ef544314e437f83735765968d2c62bb2589bc",
+          "bytes": 9912
+        },
+        "snapshot": "aa33510d6959c18038c94215f8c377a3163d4ef9",
+        "input_sha256": "127f9bbfb1a6057d267c59ba8ef741b2f1ab55e2dae787ee1ba2fb854276fc4a"
+      },
+      {
+        "key": "55abcf416b1cb1d4e6d2b5a41c384c4c9edd61fb3416f21ddeedd03bcfe12ae4",
+        "passed": 33,
+        "host": "dl380g10",
+        "receipt": "512eabb717e7a69251254a29c38c3f20ffa9dc71a2521b42fd2cffb8959a076b",
+        "payload": {
+          "sha256": "aac43e2bf252ebca7eb9f664cca619a363a39db1cddba40aab231f4c4577818f",
+          "bytes": 9439
+        },
+        "snapshot": "25bba99af5676134c3ecfde96034d216376da925",
+        "input_sha256": "64787fc8a392ce9677decf6fdfc46e916a6cb916622d1105bd437e4db94fb2ed"
+      },
+      {
+        "key": "cd5cb829683e203b10feb33d7e6830b3b3f6eb7a2c9ee7b52d79b50a00b06c2a",
+        "passed": 31,
+        "host": "dl380g10",
+        "receipt": "a22c5a0239c9ab3bb4c663db9dcdbe456fe89c15e4e8569cb3796924f0f48451",
+        "payload": {
+          "sha256": "cc41e93f1d3240e4317bd9bc536845c9deedd20774759fb4b7a62596b0a351e7",
+          "bytes": 9233
+        },
+        "snapshot": "bb3993ddc8c9a8539c9ea9ba1375bc6656ff4168",
+        "input_sha256": "7dc9113eb4f991696b932c941cd838b3ec4fb319cfbbfc0b1b910bda69d53040"
+      },
+      {
+        "key": "e08721c4a6ede5659e7f62292cb43a160ff2953f671c6659ea7b255bc1fa4206",
+        "passed": 5,
+        "host": "dl380g10",
+        "receipt": "777dff217d35da31cb5afbfea5c2b9db9742eda7b3126a02cc44816feda59e7e",
+        "payload": {
+          "sha256": "1c1697ad874b3507d1d7486f9a960847e500ae4ce78ef4ecd0606383f2bb9a34",
+          "bytes": 2471
+        },
+        "snapshot": "aaaa21432ed84e7c5a95797f6d2ad678ca1c4ac1",
+        "input_sha256": "dac8afa0d4988bee2387cfe5b70d96696a2601b3813a546ed1b99e34b94e2f24"
+      },
+      {
+        "key": "0adc8d070155f970de28ab2e49543371b97b6466c11d0588449512dc6a391461",
+        "passed": 3,
+        "host": "dl380g10",
+        "receipt": "7a54553f33bf249929b3fb38a507f7c90f0f3672dfe7d6435b6643a29da7356d",
+        "payload": {
+          "sha256": "8164fbaa382576a278ec07302a305dab6373cc9b01d4651f9ea0006998bccad9",
+          "bytes": 2615
+        },
+        "snapshot": "38aac08cd25ee18a807e65ad9ab1e41fc01e0238",
+        "input_sha256": "de5fd45d16276ba58dc4447454239685b19c2abe6fb427bb2508a313447b51ee"
+      },
+      {
+        "key": "2168061db08920294e17f48857ef88b610ff0ecf775f3b9f5ade7f1fd6a8a9ee",
+        "passed": 4,
+        "host": "dl380g10",
+        "receipt": "b635525ce6aafdc48a5847336d6d933423f927424f4817e9520ae6ff5007a6f2",
+        "payload": {
+          "sha256": "7a5803d8e374f8ef5a7a6d13f99fd573a08746e7a8c8033c7ede1a0f14e398d1",
+          "bytes": 2321
+        },
+        "snapshot": "3ddb78657eec0ae0789642929e668ac349425838",
+        "input_sha256": "8dc89f59930aae2559af0914596f02343bda2c87d66cbfac11bac7dbdc06354c"
+      },
+      {
+        "key": "d58ebe6b1bd70b8ac2a28875e7415218a1b4242d37d39cdb86f848164f01fa1d",
+        "passed": 3,
+        "host": "dl380g10",
+        "receipt": "085edaf15b32c0a2800b82fad37b248bb93e9a4f790c47ffbdeebff1c86f4066",
+        "payload": {
+          "sha256": "ad8775858f9f3093fc3f5b3d14470d3a77c7f90b224ef537f3102686f6292ab7",
+          "bytes": 2513
+        },
+        "snapshot": "8983d31900f195560ae1ac7d0a6e5a595fb5c5aa",
+        "input_sha256": "49a60a3fb6eb071b0f5b1d2c061eb7fb0897db19744d06a90072cee0c2569a8c"
+      },
+      {
+        "key": "15d28f7d85a96ce8383e390cfa59967cee6e766dc64ffc23b10e78de2e382dcb",
+        "passed": 29,
+        "host": "dl380g10",
+        "receipt": "f377c5998aab8c3b609ab5a2cbb269657ea4a68dac2321e7800a70d9b08066fd",
+        "payload": {
+          "sha256": "9bc1ea2d4c34b805f71e251fbca9bfdbe14e93bb638bf19a0024ce87986e7f3e",
+          "bytes": 7935
+        },
+        "snapshot": "a283bf1292390387d19497c910a0f6cdd91e3e04",
+        "input_sha256": "327edc8f1155f0077be56fb6c55c7f02d3bc839881112f24af1953f7f17ca767"
+      },
+      {
+        "key": "4f1eb1a02524541f053ba5712314bfea806716f49908045c114a8aab8e53b827",
+        "passed": 5,
+        "host": "dl380g10",
+        "receipt": "1b0b842057299451ab81d3f3f16e2b8aefa61aa2ca952202bfb13df5c9e193c5",
+        "payload": {
+          "sha256": "c2199968ffee1af4dd034cf1af97e74cb4f8002ced8c949ffe81ccf35aadd1c2",
+          "bytes": 3756
+        },
+        "snapshot": "acfa32d7e9451757532d9115f17b419a7256d5f2",
+        "input_sha256": "134640c6d3988fc8da4d76974242eade239a1dfd5a7aea0e68fee05c2bb415f0"
+      }
+    ],
+    "compile": {
+      "key": "8560b5d42a822c5dd42380cb25bc2b593ab59eb80258842cdbc16c4a174a8055",
+      "receipt": "8ccad7c18927b8baad3090949d275f33ea57e08a30d67a365e525c6cac9b4161",
+      "payload": {
+        "sha256": "0c41063592d2f7af13a340d1e608e097579542cf905b3fba57072c96bc5b8ed9",
+        "bytes": 26
+      },
+      "actual": "SCRATCH_COMPILE_OK True 4"
+    },
+    "resource_contract": {
+      "cpu_per_shard": 2,
+      "memory_gib_per_shard": 3,
+      "pytest_workers": 2,
+      "native_threads": 1,
+      "max_clients": 2,
+      "gpu": false,
+      "execution_timeout_s": 600,
+      "test_timeout_s": 180
+    },
+    "actual_proof": "Current public SDK4 read_verified_action_result + bind_standard_capture_command + Core.lookup verified every exact request/attempt/worker receipt/payload/raw input; published pbtest_outcomes reconciled raw captured records by node ID. All20 raw Git snapshots differ from the one tested parent only by generated closure. Four-file compile snapshot also differs only by closure.",
+    "report": "/home/rob/tmp/pb1463-qualified-20261003.json"
+  }
+}
