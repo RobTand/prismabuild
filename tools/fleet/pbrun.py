@@ -958,6 +958,10 @@ def build_git_checkout_snapshot(
             raise SystemExit("pbrun: overlay stamp name must be a plain basename")
         stamp_relative = (Path(subdirectory) / stamp_name).as_posix()
 
+    # Source identity itself may traverse historic blobs. Refuse incomplete
+    # sources before that walk, not merely before the eventual pack command.
+    require_materialized_checkout(root)
+    require_complete_history(root)
     paths = snapshot_path_roster(root)
     working_bytes = require_working_tree_size(root, paths, max_bytes=max_bytes)
     if stamp_payload is not None:
@@ -971,8 +975,6 @@ def build_git_checkout_snapshot(
     if _git_identity(cwd) != identity:
         raise SystemExit("pbrun: checkout changed before it could be snapshotted")
     parent = identity["head"]
-    require_materialized_checkout(root)
-    require_complete_history(root)
     resolved_refs = resolve_snapshot_refs(root, snapshot_refs)
 
     with tempfile.TemporaryDirectory(prefix="pbrun-snapshot.") as temporary_raw:
