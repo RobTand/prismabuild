@@ -6623,7 +6623,14 @@ nothing between them, so this same prune can remove it in the gap. Since
 #1008 item 2, `stage_move._Copier._copy_one` retries the `mkdir` once, on the
 specific `FileNotFoundError` that race leaves, before opening the temporary
 again -- the same single retry `residency_map._write_atomic` already takes
-against the identical race for its own fragment directory.
+against the identical race for its own fragment directory. The existing repair
+landed in PR #1142; its previously owed admitted CPU qualification is recorded
+by [#1475 evidence](results/issue1475_publisher_prune_2026-10-03.json): 31 passed,
+zero skips, including the deterministic real two-thread mkdir/rmdir/temp-open
+interleaving and byte-verified landing, concurrent creators, shared-owner,
+proof-outside-lock and publication-refusal cases. This is source behavior
+qualification, not deployment, exclusive-host or filesystem-throughput proof;
+the other #1008 acceptance items remain unchanged.
 
 The unlinks stay under the lock because moving them out is not safe without
 new state. Unlinking outside the lock means dropping the ownership in one
