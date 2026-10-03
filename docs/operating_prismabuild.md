@@ -3332,12 +3332,13 @@ major/minor-device plus inode are compared independently with the selected
 original tree, so closing the FD, loading a native library, using an external
 hardlink/bind alias or unlinking a mapped name cannot authorize deletion.
 File-backed address ranges and link targets must agree across both inventories;
-two complete mapping snapshots must be identical inside the same PID lifetime.
+two complete mapping snapshots must be identical inside the same PID lifetime
+and held process-directory identity.
 Kernel `anon_inode:[name]` mappings, including io_uring, retain nonzero
 device/inode attribution and exact map_files range/name agreement. They are
 not filesystem paths, ignored processes, or exemptions from selected-file
 identity checks; arbitrary relative mapping names still refuse.
-and held process-directory identity. Missing/denied metadata, malformed or
+Missing/denied metadata, malformed or
 overlapping ranges, a missing final newline, mismatched or changing inventories,
 new/reused PIDs and exceeded bounds all refuse. A userspace PID's empty maps are
 not proof of abandonment; empty mappings are accepted only for a same-lifetime
