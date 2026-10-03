@@ -427,7 +427,7 @@ def test_a_refused_directory_stamp_lists_again(stage_fleet, monkeypatch):
     monkeypatch.setattr(stage_release, "_trusted_directory_stamp",
                         lambda path: None)
     monkeypatch.setattr(stage_release, "_keepable_version",
-                        lambda info, fence: None)
+                        lambda info, fence, **context: None)
     index = stage_release.CensusIndex()
     calls = StageCalls(stage, monkeypatch)
     stage_release.reconcile(queue, tier_id=TIER, stage_root=str(stage),

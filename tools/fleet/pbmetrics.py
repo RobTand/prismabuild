@@ -572,7 +572,6 @@ class KeptReads:
         # not strictly before it is listed with no version, so the next
         # listing derives it afresh, and this listing is not kept.
         fence = stage_move._version_fence()
-        local: dict[int, bool] = {}
         keepable = stage_move._keepable_version
         complete = True
         entries: dict[str, _KeptEntry] = {}
@@ -583,7 +582,7 @@ class KeptReads:
                     if not select(entry):
                         continue
                     info = stat(entry.path)
-                    version = keepable(info, fence, local=local)
+                    version = keepable(info, fence, path=entry.path)
                     kept = previous.get(entry.name)
                     if (version is None or kept is None
                             or kept.version != version):

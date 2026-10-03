@@ -262,6 +262,16 @@ prismabuild_worker_offer_age_seconds{host="retired-0005"} 86405
 prismabuild_worker_offer_age_seconds{host="retired-0006"} 86406
 prismabuild_worker_offer_age_seconds{host="retired-0007"} 86407
 prismabuild_worker_offer_age_seconds{host="sparky"} 2
+# HELP prismabuild_worker_retired Whether a valid worker offer has gone unrefreshed long enough that its box is treated as retired; the offer file is kept (#1040).
+# TYPE prismabuild_worker_retired gauge
+prismabuild_worker_retired{host="dl380g10"} 0
+prismabuild_worker_retired{host="gx10-6b77"} 0
+prismabuild_worker_retired{host="retired-0003"} 1
+prismabuild_worker_retired{host="retired-0004"} 1
+prismabuild_worker_retired{host="retired-0005"} 1
+prismabuild_worker_retired{host="retired-0006"} 1
+prismabuild_worker_retired{host="retired-0007"} 1
+prismabuild_worker_retired{host="sparky"} 0
 # HELP prismabuild_worker_up Whether a syntactically valid worker offer is fresh enough for pool placement.
 # TYPE prismabuild_worker_up gauge
 prismabuild_worker_up{host="dl380g10"} 1
