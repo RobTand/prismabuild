@@ -392,3 +392,60 @@ def test_recovery_owner_cannot_override_a_live_claim(lifetime, monkeypatch):
     assert queue.item_path(pool.CLAIMED, key).read_bytes() == before
     assert queue.ledger().held() == held and (leaf(item) / "temp").read_bytes() == b"temporary"
 
+
+@pytest.mark.parametrize("contradiction", ["nonce", "publication", "schema"])
+def test_tombstone_refuses_invalid_or_mismatched_owner_without_touching_ready_successor(
+        lifetime, monkeypatch, contradiction):
+    queue, item, variables, outcome = launch(lifetime, monkeypatch)
+    key = item["action_key"]
+    saved = live_record(queue, item)
+    tombstone, mine = queue._entomb_claim(key, expect=saved)
+    assert mine and tombstone is not None
+    successor = copy.deepcopy(item)
+    successor["published_unix"] += 1
+    ready = queue._shape_as_ready_item(successor, action_key=key)
+    pool._write_json_atomic(ready, successor)
+    ready_bytes = ready.read_bytes()
+    broken = pool._read_json(tombstone)
+    if contradiction == "nonce":
+        broken["resource_scope"]["nonce"] = "e" * 32
+    elif contradiction == "publication":
+        broken["published_unix"] += 2
+    else:
+        broken[FIELD]["schema"] = "unknown"
+    pool._write_json_atomic(tombstone, broken)
+    before = tombstone.read_bytes()
+    lease = queue.lease_path(key).read_bytes()
+    held = queue.ledger().held()
+    monkeypatch.setattr(resource_scope.ResourceScope, "terminate_owned", lambda *a, **k:
+                        pytest.fail("invalid tombstone must not stop a scope"))
+    assert queue.sweep_finish_tombstones(grace_s=-1) == []
+    assert tombstone.read_bytes() == before and ready.read_bytes() == ready_bytes
+    assert queue.lease_path(key).read_bytes() == lease and queue.ledger().held() == held
+    assert not queue.item_path(pool.CLAIMED, key).exists()
+    assert (leaf(item) / "temp").read_bytes() == b"temporary"
+
+
+def test_old_tombstone_never_mutates_a_claimed_successors_scratch_or_capacity(lifetime, monkeypatch):
+    queue, old, variables, outcome = launch(lifetime, monkeypatch, returncode=1)
+    key = old["action_key"]
+    saved = live_record(queue, old)
+    queue.finish(key, status="failed", detail=outcome, claim_snapshot=old)
+    successor = queue.claim(capacity=old["resources"], tags=[scratch.SCRATCH_LIFETIME_TAG])
+    process(monkeypatch)
+    queue.execute(successor, containment=True)
+    sentinel = leaf(successor) / "successor"
+    sentinel.write_bytes(b"successor owns this")
+    tombstone = queue.dir(pool.CLAIMED) / f"{key}.old-fixture{pool.TOMBSTONE_SUFFIX}"
+    pool._write_json_atomic(tombstone, saved)
+    before = queue.item_path(pool.CLAIMED, key).read_bytes()
+    lease = queue.lease_path(key).read_bytes()
+    held = queue.ledger().held()
+    monkeypatch.setattr(resource_scope.ResourceScope, "terminate_owned", lambda *a, **k:
+                        pytest.fail("old tombstone must not stop the successor"))
+    assert queue.cleanup_action_containers(saved, scratch_owner_path=tombstone)["complete"] is False
+    assert queue.sweep_finish_tombstones(grace_s=-1) == [key]
+    assert queue.item_path(pool.CLAIMED, key).read_bytes() == before
+    assert queue.lease_path(key).read_bytes() == lease and queue.ledger().held() == held
+    assert sentinel.read_bytes() == b"successor owns this" and not tombstone.exists()
+
