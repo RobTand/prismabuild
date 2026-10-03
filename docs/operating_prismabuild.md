@@ -3313,12 +3313,31 @@ and closed gate owner/epoch. Complete unambiguous `DONE`, `FAILED` or
 this does **not** claim a passing receipt/profile where absent. Ready/claimed
 rows, live/malformed leases, missing/malformed request or snapshot, different
 `HEAD`, replaced/symlink/out-of-namespace roots, untrusted/changing banks,
-incomplete copies, any live PID/FD/cwd/exe/cmdline reference, and unreadable
-census/gates refuse. The kernel mount census also rejects selected-root or
-descendant mounts (including same-device bind mounts) and hidden `/proc`
-censuses, so cleanup cannot cross into a native bank/CAS/image namespace.
-Dead stale leases are retained, not removed. Age, terminal
-status, an unlocked lock or a bare archive digest alone never authorize deletion.
+incomplete copies, any live PID/FD/cwd/exe/cmdline or memory-mapping reference,
+and unreadable census/gates refuse. Every live userspace PID, including the
+operator and recovery process, needs a complete bounded no-follow `maps` read
+and a readable no-follow `map_files` directory. Mapping paths and the kernel's
+major/minor-device plus inode are compared independently with the selected
+original tree, so closing the FD, loading a native library, using an external
+hardlink/bind alias or unlinking a mapped name cannot authorize deletion.
+File-backed address ranges and link targets must agree across both inventories;
+two complete mapping snapshots must be identical inside the same PID lifetime
+and held process-directory identity. Missing/denied metadata, malformed or
+overlapping ranges, a missing final newline, mismatched or changing inventories,
+new/reused PIDs and exceeded bounds all refuse. A userspace PID's empty maps are
+not proof of abandonment; empty mappings are accepted only for a same-lifetime
+`PF_KTHREAD` process with no cmdline, executable or FDs and an empty readable
+`map_files` inventory. Each maps read and cumulative map_files names/targets are
+bounded to 2 MiB, with at most 100,000 mapping records or map_files entries per
+PID. Recovery reads map_files symlink targets without dereferencing them:
+identity comes from kernel maps metadata, not an alias pathname still existing.
+Permission restrictions or mapping churn can therefore conservatively prevent
+recovery even when the selected tree is unused; do not suppress these refusals.
+The kernel mount census also rejects selected-root or descendant mounts
+(including same-device bind mounts) and hidden `/proc` censuses, so cleanup cannot
+cross into a native bank/CAS/image namespace. Dead stale leases are retained,
+not removed. Age, terminal status, an unlocked lock or a bare archive digest
+alone never authorize deletion.
 
 Apply holds all selected keys' existing nonblocking transition locks and
 re-proves **every** entry before invoking cleanup for the first tree. Drift

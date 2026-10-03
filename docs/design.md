@@ -2402,8 +2402,23 @@ miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
   stream, metadata/count/expansion are bounded, and zstd failure refuses.
   Live ownership/references, an incomplete process census, missing authority,
   writable/untrusted/symlink banks, replacements and any plan drift all refuse.
+  The census includes every live userspace PID's memory mappings, including
+  the operator/recovery PID and native dlopen libraries after their FD closes.
+  Bounded no-follow maps reads supply original paths and kernel device/inode
+  identities, catching external hardlink/bind aliases and deleted mapped names.
+  Strict ordered/nonoverlapping mapping records and a readable no-follow
+  map_files range/target inventory must agree; repeated complete snapshots must
+  be identical inside a held PID directory and unchanged start-time lifetime.
+  Malformed, truncated, empty userspace, denied, incomplete or changing mapping
+  evidence refuses, as do reused/new PIDs. Each mapping text inventory is at
+  most 2 MiB and each range/entry census at most 100,000 items. Empty maps only
+  pass for a positively identified same-lifetime PF_KTHREAD with no cmdline,
+  executable or FDs and an empty readable map_files directory. map_files links
+  are read, not dereferenced: mappings retain their kernel identity even when
+  the mapped pathname no longer exists. Permissions/churn can refuse unused
+  trees; neither self/operator exemptions nor a fallback empty census exists.
   A kernel mount census refuses selected-root/descendant mounts, including
-  same-device bind mounts, and hidden `/proc` censuses; recursive removal must
+  same-device bind mounts, and hidden /proc censuses; recursive removal must
   not cross into external native-bank, CAS or image namespaces.
   Recovery does not bank files, edit queues/tokens, change services/admission,
   release the existing hold or install privileged source. It requires external

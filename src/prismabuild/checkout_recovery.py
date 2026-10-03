@@ -29,9 +29,15 @@ MAX_ENTRIES = 32
 # Keep evidence bounded while permitting that actual retained protocol.
 MAX_JSON_BYTES = 2 * 1024 * 1024
 MAX_MEMBERS = 100_000
+MAX_PROCESS_MAPS = 100_000
 MAX_MANIFEST_BYTES = 32 * 1024 * 1024
 CHUNK_BYTES = 1024 * 1024
 _HEX = re.compile(r"[0-9a-f]{64}\Z")
+_MAP_RECORD = re.compile(
+    r'([0-9a-f]{1,16})-([0-9a-f]{1,16}) +([r-][w-][x-][ps]) +'
+    r'([0-9a-f]{1,16}) +([0-9a-f]{1,8}):([0-9a-f]{1,8}) +'
+    r'([0-9]{1,20})(?: +(.*))?\Z')
+_MAP_RANGE = re.compile(r'[0-9a-f]{1,16}-[0-9a-f]{1,16}\Z')
 
 
 class CheckoutRecoveryRefusal(ValueError):
@@ -461,13 +467,116 @@ def _archive(path: Path, bank: Path, bank_uid: int, root: Path,
         os.close(parentfd)
 
 
-def _process_stat(path: Path) -> tuple[str, str]:
+def _process_fields(path: Path) -> list[str]:
     raw = pb._read_regular_file_nofollow(path, where='process stat', max_bytes=65536)
     text = raw.decode('utf-8', errors='strict')
-    fields = text[text.rfind(')') + 2:].split()
-    if len(fields) < 20 or not fields[19].isdigit():
+    closing = text.rfind(')')
+    prefix = path.parent.name + ' ('
+    if (not text.startswith(prefix) or closing < len(prefix)
+            or text[closing:closing + 2] != ') '):
         _refuse('malformed process lifetime census')
+    fields = text[closing + 2:].split()
+    if (len(fields) < 20 or fields[0] not in ('R', 'S', 'D', 'Z', 'T', 't', 'X', 'x', 'K', 'W', 'P', 'I')
+            or not re.fullmatch(r'[0-9]{1,20}', fields[6])
+            or not re.fullmatch(r'[0-9]{1,20}', fields[19])
+            or int(fields[6]) >= 1 << 64 or int(fields[19]) >= 1 << 64):
+        _refuse('malformed process lifetime census')
+    return fields
+
+
+def _process_stat(path: Path) -> tuple[str, str]:
+    fields = _process_fields(path)
     return fields[0], fields[19]
+
+
+def _mapped_path_reference(target: str, roots: list[str]) -> bool:
+    # maps escapes newlines, not arbitrary backslashes; either spelling can
+    # name a selected path. A deleted suffix never hides the original name.
+    for spelling in (target, target.replace('\\012', '\n')):
+        clean = spelling.removesuffix(' (deleted)')
+        if any(clean == root or clean.startswith(root + '/') for root in roots):
+            return True
+    return False
+
+
+def _process_maps(pidroot: Path, roots: list[str], inodes: set[tuple[int, int]],
+                  *, kernel_thread: bool = False) -> tuple[bytes, dict[str, str]]:
+    """Prove complete mapping metadata, never stat a possibly deleted target.
+
+    maps supplies the kernel device/inode, including external hardlink and
+    bind aliases. map_files independently accounts for file-backed VMA ranges
+    and names; following its symlinks would need additional Linux capabilities
+    and would wrongly depend on a pathname still existing.
+    """
+    raw = pb._read_regular_file_nofollow(pidroot / 'maps', where='process maps',
+                                        max_bytes=MAX_JSON_BYTES)
+    if not raw and not kernel_thread:
+        _refuse(f'process maps empty/incomplete for live PID {pidroot.name}')
+    if (raw and kernel_thread) or (raw and not raw.endswith(b'\n')):
+        _refuse(f'process maps truncated/inconsistent for PID {pidroot.name}')
+    file_maps = {}
+    previous_end = 0
+    if raw.count(b'\n') > MAX_PROCESS_MAPS:
+        _refuse('process maps count exceeds bound')
+    lines = raw.decode('utf-8', errors='strict').split('\n')[:-1]
+    for line in lines:
+        match = _MAP_RECORD.fullmatch(line)
+        if match is None or '\x00' in line or '\r' in line:
+            _refuse(f'malformed process maps for PID {pidroot.name}')
+        start, end = int(match[1], 16), int(match[2], 16)
+        major, minor, inode = int(match[5], 16), int(match[6], 16), int(match[7])
+        if start < previous_end or start >= end or inode >= 1 << 64:
+            _refuse(f'malformed process map identity/range for PID {pidroot.name}')
+        previous_end = end
+        device = os.makedev(major, minor)
+        if os.major(device) != major or os.minor(device) != minor:
+            _refuse(f'malformed process map device for PID {pidroot.name}')
+        target = match[8] or ''
+        if _mapped_path_reference(target, roots):
+            _refuse(f'live PID {pidroot.name} maps a selected checkout path')
+        if inode and (device, inode) in inodes:
+            _refuse(f'live PID {pidroot.name} maps a selected checkout inode')
+        pseudo = target.startswith('[') and target.endswith(']')
+        if (target and not target.startswith('/') and not pseudo
+                or inode and not target
+                or not inode and (device or target.startswith('/'))):
+            _refuse(f'malformed process map identity/path for PID {pidroot.name}')
+        if inode:
+            # map_files uses unpadded lowercase %lx ranges even when maps pads
+            # a low address. Duplicate/overlapping ranges were refused above.
+            file_maps[f'{start:x}-{end:x}'] = target
+    mapdir = pidroot / 'map_files'
+    fd = pb._open_directory_nofollow(mapdir, where='process map_files')
+    targets = {}
+    text_bytes = 0
+    try:
+        with os.scandir(fd) as listing:
+            for member in listing:
+                name = member.name
+                if len(targets) >= MAX_PROCESS_MAPS:
+                    _refuse('process map_files count exceeds bound')
+                if (not _MAP_RANGE.fullmatch(name) or name not in file_maps
+                        or name in targets or not member.is_symlink()):
+                    _refuse(f'malformed/incomplete process map_files for PID {pidroot.name}')
+                target = os.readlink(name, dir_fd=fd)
+                text_bytes += len(os.fsencode(name)) + len(os.fsencode(target))
+                if text_bytes > MAX_JSON_BYTES:
+                    _refuse('process map_files metadata exceeds byte bound')
+                if not target or '\x00' in target:
+                    _refuse(f'empty/malformed process map_files target for PID {pidroot.name}')
+                if _mapped_path_reference(target, roots):
+                    _refuse(f'live PID {pidroot.name} maps a selected checkout via map_files')
+                mapped = file_maps[name]
+                if (mapped.startswith('/')
+                        and target not in (mapped, mapped.replace('\\012', '\n'))):
+                    _refuse(f'process maps/map_files identity changed for PID {pidroot.name}')
+                targets[name] = target
+        if targets.keys() != file_maps.keys():
+            _refuse(f'process maps/map_files incomplete for PID {pidroot.name}')
+        pb._assert_directory_identity(fd, mapdir, where='process map_files')
+    finally:
+        os.close(fd)
+    return raw, targets
 
 
 def _census(proc: Path, entries: list[dict], identities: list[dict]) -> None:
@@ -477,11 +586,20 @@ def _census(proc: Path, entries: list[dict], identities: list[dict]) -> None:
     inodes = {(entry['dev'], entry['ino'])
               for tree in identities for entry in tree.values()}
     listing = {name for name in os.listdir(proc) if name.isdigit()}
+    lifetimes = {}
     for name in sorted(listing, key=int):
         pidroot = proc / name
+        pidfd = None
         try:
+            pidfd = pb._open_directory_nofollow(pidroot, where='process lifetime directory')
             state, started = _process_stat(pidroot / 'stat')
-            if state in ('Z', 'X'):
+            pidinfo = os.fstat(pidfd)
+            lifetimes[name] = (started, pidinfo.st_dev, pidinfo.st_ino)
+            if state in ('Z', 'X', 'x'):
+                after_state, after_started = _process_stat(pidroot / 'stat')
+                if after_started != started or after_state not in ('Z', 'X', 'x'):
+                    _refuse('process lifetime changed during census; replan')
+                pb._assert_directory_identity(pidfd, pidroot, where='process lifetime directory')
                 continue
             raw = pb._read_regular_file_nofollow(pidroot / 'cmdline',
                     where='process cmdline', max_bytes=MAX_JSON_BYTES)
@@ -490,12 +608,17 @@ def _census(proc: Path, entries: list[dict], identities: list[dict]) -> None:
             descriptors = os.listdir(pidroot / 'fd')
             links = [pidroot / 'cwd', pidroot / 'exe']
             links += [pidroot / 'fd' / fd for fd in descriptors]
+            kernel_thread = False
             for link in links:
                 try:
                     target = os.readlink(link)
                 except FileNotFoundError:
                     if link.name == 'exe' and not raw and not descriptors:
-                        continue  # kernel thread: no executable or open files
+                        fields = _process_fields(pidroot / 'stat')
+                        if fields[19] != started or not int(fields[6]) & 0x00200000:
+                            _refuse(f'process executable census incomplete for live PID {name}')
+                        kernel_thread = True  # PF_KTHREAD proves no userspace mm.
+                        continue
                     if link.parent.name == 'fd':
                         continue  # an FD closed during the census
                     raise
@@ -510,16 +633,33 @@ def _census(proc: Path, entries: list[dict], identities: list[dict]) -> None:
                     raise
                 if (info.st_dev, info.st_ino) in inodes:
                     _refuse(f'live PID {name} holds a selected checkout inode')
+            maps = _process_maps(pidroot, roots, inodes, kernel_thread=kernel_thread)
+            if _process_maps(pidroot, roots, inodes, kernel_thread=kernel_thread) != maps:
+                _refuse(f'process maps/map_files changed during census for PID {name}; replan')
             after_state, after_started = _process_stat(pidroot / 'stat')
-            if after_started != started or after_state in ('Z', 'X'):
+            if after_started != started or after_state in ('Z', 'X', 'x'):
                 _refuse('process lifetime changed during census; replan')
+            pb._assert_directory_identity(pidfd, pidroot, where='process lifetime directory')
         except (FileNotFoundError, ProcessLookupError):
             if pidroot.exists():
                 _refuse(f'process census incomplete for live PID {name}')
         except (OSError, UnicodeError, pb.PrismaBuildError) as exc:
             _refuse(f'process census unreadable for PID {name}: {exc}')
-    if {name for name in os.listdir(proc) if name.isdigit()} - listing:
+        finally:
+            if pidfd is not None:
+                os.close(pidfd)
+    remaining = {name for name in os.listdir(proc) if name.isdigit()}
+    if remaining - listing:
         _refuse('process census changed during scan; retry while quiescent')
+    for name in sorted(remaining, key=int):
+        pidroot = proc / name
+        try:
+            _, started = _process_stat(pidroot / 'stat')
+            info = _directory(pidroot, 'process lifetime directory')
+            if lifetimes.get(name) != (started, info['dev'], info['ino']):
+                _refuse('process lifetime changed during census; replan')
+        except (OSError, UnicodeError, pb.PrismaBuildError) as exc:
+            _refuse(f'process census incomplete during lifetime recheck for PID {name}: {exc}')
 
 
 def _assert_no_mounts(entries: list[dict]) -> None:

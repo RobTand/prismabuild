@@ -1,8 +1,9 @@
 """PB #1465: an exact banked orphan is the only checkout recovery may delete.
 
 These are private filesystem fixtures, not a maintenance operation. Git bundles,
-CAS requests, queue transitions and the materializer/cleanup owner are real. Only
-host admission, root identity and an injected initial cleanup failure are seams.
+CAS requests, queue transitions and the materializer/cleanup owner are real.
+Native-reference proofs use real closed-FD mmap/dlopen and kernel proc metadata;
+private process fixtures and injected read/cleanup faults qualify refusals.
 """
 from __future__ import annotations
 
@@ -15,6 +16,7 @@ import io
 import json
 import os
 from pathlib import Path
+import selectors
 import shutil
 import stat
 import subprocess
@@ -399,7 +401,7 @@ def test_authentic_banked_ending_is_planned_then_removed_only_by_cleanup_owner(
     "not-list", "null", "empty", "not-object", "extra-field", "missing-key", "missing-path",
     "missing-archive", "missing-digest", "short-key", "uppercase-key",
     "short-digest", "uppercase-digest", "relative-path", "relative-archive",
-    "duplicate", "oversized",
+    "duplicate",
 ])
 def test_candidate_input_is_explicit_exact_and_bounded(case, fault):
     entry = dict(case.entry)
@@ -428,9 +430,31 @@ def test_candidate_input_is_explicit_exact_and_bounded(case, fault):
         entry["archive_path"] = case.archive.name
     elif fault == "duplicate":
         entries = [entry, dict(entry)]
-    else:
-        entries = [dict(entry) for _ in range(33)]
     _refused(case, lambda: case.prepare(entries=entries))
+
+
+def test_32_distinct_banked_checkouts_are_supported_but_33_are_not(make_case):
+    cases = [make_case() for _ in range(33)]
+    entries = [case.entry for case in cases]
+    assert len({case.key for case in cases}) == 33
+    assert len({str(case.directory) for case in cases}) == 33
+    plan = _planned(cases[0], entries=entries[:32])
+    assert {entry["path"] for entry in plan["entries"]} == {
+        str(case.directory) for case in cases[:32]}
+    # No duplicate or invalid candidate can mask the selection-count boundary.
+    _planned(cases[-1])
+    result = _refused(cases[0], lambda: cases[0].prepare(entries=entries))
+    assert any("32" in error for error in result["errors"]), result
+    protected = {str(path): _snapshot(path) for path in (
+        cases[-1].directory, cases[0].bank_root, cases[0].gate, cases[0].protected_root,
+        *(case.cas.root for case in cases))}
+    result = cases[0].apply(plan)
+    assert result["complete"] is True and result["status"] == "applied", result
+    assert result["removed"] == [str(case.directory) for case in cases[:32]]
+    assert cases[0].cleanup_calls == [case.directory for case in cases[:32]]
+    assert all(not case.directory.exists() for case in cases[:32])
+    assert {path: _snapshot(Path(path)) for path in protected} == protected
+
 
 
 @pytest.mark.parametrize("fault", [
@@ -677,6 +701,13 @@ def _process(case: RecoveryCase, *, argv: bytes = b"unrelated\0", start: int = 9
     (process / "cwd").symlink_to(case.protected_root, target_is_directory=True)
     (process / "exe").symlink_to(sys.executable)
     (process / "fd").mkdir()
+    unrelated = case.protected_root / "user-primary" / "keep.bin"
+    info = unrelated.stat()
+    (process / "maps").write_text(
+        f"1000-2000 r--p 00000000 {os.major(info.st_dev):x}:{os.minor(info.st_dev):x} "
+        f"{info.st_ino} {unrelated}\n")
+    (process / "map_files").mkdir()
+    (process / "map_files" / "1000-2000").symlink_to(unrelated)
     return process
 
 
@@ -697,11 +728,11 @@ def test_live_process_reference_prevents_recovery(case, reference):
     _refused(case, case.prepare)
 
 
-@pytest.mark.parametrize("missing", ["stat", "cmdline", "cwd", "exe", "fd"])
+@pytest.mark.parametrize("missing", ["stat", "cmdline", "cwd", "exe", "fd", "maps", "map_files"])
 def test_incomplete_process_census_is_not_proof_of_death(case, missing):
     process = _process(case)
     path = process / missing
-    path.rmdir() if missing == "fd" else path.unlink()
+    shutil.rmtree(path) if missing in ("fd", "map_files") else path.unlink()
     _refused(case, case.prepare)
 
 
@@ -812,23 +843,33 @@ def test_all_entries_are_verified_before_any_cleanup_owner_is_called(make_case):
     assert first.directory.exists() and second.directory.exists()
 
 
-def test_cleanup_failure_is_incomplete_and_never_a_fabricated_removal(case, monkeypatch):
+@pytest.mark.parametrize("partially_deleted", [False, True])
+def test_cleanup_failure_is_incomplete_and_never_a_fabricated_removal(case, monkeypatch, partially_deleted):
     plan = _planned(case)
     original = _snapshot(case.directory)
+    protected = {str(path): _snapshot(path) for path in (
+        case.bank_root, case.cas.root, case.gate, case.protected_root)}
+    member = case.checkout / "payload.txt"
+    if partially_deleted:
+        original.pop("checkout/payload.txt")
     actual_rmtree = materialize.shutil.rmtree
 
     def fail_selected(path, *args, **kwargs):
         if Path(path) == case.directory:
+            if partially_deleted:
+                member.unlink()  # a genuine partial rmtree, not a pre-delete failure
             raise PermissionError("still held by native root owner")
         return actual_rmtree(path, *args, **kwargs)
 
     monkeypatch.setattr(materialize.shutil, "rmtree", fail_selected)
     result = case.apply(plan)
     assert result["schema"] == RESULT_SCHEMA and result["complete"] is False, result
-    assert result["status"] != "applied" and result["removed"] == []
+    assert result["status"] == "incomplete" and result["removed"] == []
     assert result["errors"]
     assert case.cleanup_calls == [case.directory]
     assert _snapshot(case.directory) == original
+    assert case.directory.exists() and member.exists() is not partially_deleted
+    assert {path: _snapshot(Path(path)) for path in protected} == protected
     failures = list((case.local_root / "cleanup-failures").glob(f"{case.key}.*.json"))
     assert len(failures) == 1
     assert "still held by native root owner" in json.loads(failures[0].read_text())["error"]
@@ -997,16 +1038,24 @@ def test_apply_holds_every_selected_transition_lock_through_the_cleanup_owner(ma
     assert active == set()
 
 
-def test_batch_helper_failure_reports_actual_partial_progress_and_keeps_the_hold(make_case, monkeypatch):
+@pytest.mark.parametrize("partially_deleted", [False, True])
+def test_batch_helper_failure_reports_actual_partial_progress_and_keeps_the_hold(
+        make_case, monkeypatch, partially_deleted):
     first, second = make_case(), make_case()
     plan = first.prepare(entries=[first.entry, second.entry])
     assert plan["complete"] is True, plan
     second_original = _snapshot(second.directory)
-    gate_original = _snapshot(first.gate)
+    protected = {str(path): _snapshot(path) for path in (
+        first.bank_root, first.cas.root, second.cas.root, first.gate, first.protected_root)}
+    member = second.checkout / "payload.txt"
+    if partially_deleted:
+        second_original.pop("checkout/payload.txt")
     actual = materialize.shutil.rmtree
 
     def fail_second(path, *args, **kwargs):
         if Path(path) == second.directory:
+            if partially_deleted:
+                member.unlink()  # the failed root loses bytes but is not removed
             raise PermissionError("second checkout still owned")
         return actual(path, *args, **kwargs)
 
@@ -1016,7 +1065,9 @@ def test_batch_helper_failure_reports_actual_partial_progress_and_keeps_the_hold
     assert result["removed"] == [str(first.directory)]
     assert first.cleanup_calls == [first.directory, second.directory]
     assert not first.directory.exists() and _snapshot(second.directory) == second_original
-    assert _snapshot(first.gate) == gate_original
+    assert second.directory.exists() and member.exists() is not partially_deleted
+    assert str(second.directory) not in result["removed"]
+    assert {path: _snapshot(Path(path)) for path in protected} == protected
 
 
 @pytest.fixture
@@ -1098,14 +1149,34 @@ def test_cli_json_is_nofollow_bounded_and_existing_queue_is_not_created(
         candidates.rename(original)
         candidates.symlink_to(original)
     elif fault == "oversized":
-        monkeypatch.setattr(recovery, "MAX_MANIFEST_BYTES", 64)
+        # Keep the input otherwise valid and exceed the actual CLI read cap.
+        candidates.write_bytes(b" " * (recovery.MAX_JSON_BYTES + 1) + candidates.read_bytes())
+        assert candidates.stat().st_size > recovery.MAX_JSON_BYTES
     else:
         missing = case.workspace / "queue-must-not-be-created"
         flags += ["--queue-root", str(missing)]
+    dispatches = []
+    actual_prepare = recovery.prepare_checkout_recovery
+    actual_apply = recovery.apply_checkout_recovery
+
+    def observed_prepare(*args, **options):
+        dispatches.append("prepare")
+        return actual_prepare(*args, **options)
+
+    def observed_apply(*args, **options):
+        dispatches.append("apply")
+        return actual_apply(*args, **options)
+
+    monkeypatch.setattr(recovery, "prepare_checkout_recovery", observed_prepare)
+    monkeypatch.setattr(recovery, "apply_checkout_recovery", observed_apply)
     before = case.preserved()
     status, report = _cli(cli, case, monkeypatch, capsys, *flags)
     assert status != 0 and report["complete"] is False and report["removed"] == [], report
     assert case.cleanup_calls == [] and case.preserved() == before
+    assert dispatches == [], "CLI metadata refusal must precede prepare/apply dispatch"
+    if fault == "oversized":
+        assert any("CLI JSON" in error and ("byte" in error or "bound" in error)
+                   for error in report["errors"]), report
     if fault == "missing-queue":
         assert not missing.exists()
 
@@ -1265,4 +1336,501 @@ def test_recovery_authority_itself_must_never_be_inside_a_selected_deletion_root
 
 
 
+
+
+
+_NATIVE_HOLDER_CODE = r"""
+import ctypes
+import errno
+import json
+import os
+import sys
+
+config = json.loads(sys.stdin.readline())
+info = os.stat(config["path"])
+libc = ctypes.CDLL(None, use_errno=True)
+if config["kind"] == "mmap":
+    libc.mmap.restype = ctypes.c_void_p
+    libc.mmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int,
+                         ctypes.c_int, ctypes.c_int, ctypes.c_long]
+    libc.munmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+    descriptor = os.open(config["path"], os.O_RDONLY)
+    length = min(info.st_size, 4096)
+    try:
+        address = libc.mmap(None, length, 1, 2, descriptor, 0)
+        if address == ctypes.c_void_p(-1).value:
+            raise OSError(ctypes.get_errno(), "mmap failed")
+        assert ctypes.string_at(address, 1)
+    finally:
+        os.close(descriptor)
+    try:
+        os.fstat(descriptor)
+    except OSError as error:
+        assert error.errno == errno.EBADF
+    else:
+        raise AssertionError("mmap fixture retained its descriptor")
+else:
+    library = ctypes.CDLL(config["path"])
+    library.pb1465_value.restype = ctypes.c_int
+    assert library.pb1465_value() == 1465
+
+# A loader must not retain a library FD either. This is an actual proc census,
+# not an assumption about ctypes or Python mmap's descriptor duplication.
+for name in os.listdir("/proc/self/fd"):
+    try:
+        opened = os.stat("/proc/self/fd/" + name)
+    except FileNotFoundError:
+        continue
+    assert (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino)
+print(json.dumps({"dev": info.st_dev, "ino": info.st_ino,
+                  "fd_closed": True}), flush=True)
+sys.stdin.readline()
+if config["kind"] == "mmap":
+    assert libc.munmap(address, length) == 0
+"""
+
+
+@pytest.fixture(scope="module")
+def cpu_shared_library(tmp_path_factory):
+    """Compile only when the admitted pytest job requests genuine dlopen proof."""
+    compiler = next((binary for name in ("cc", "gcc", "clang")
+                     if (binary := shutil.which(name)) is not None), None)
+    if compiler is None:
+        pytest.fail("PB #1466 native qualification prerequisite missing: a CPU C compiler "
+                    "(cc, gcc or clang) is required; dlopen was not qualified", pytrace=False)
+    library = tmp_path_factory.mktemp("pb1466-cpu-library") / "libnative.so"
+    result = subprocess.run(
+        [compiler, "-shared", "-fPIC", "-x", "c", "-", "-o", str(library)],
+        input="int pb1465_value(void) { return 1465; }\n", text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30,
+    )
+    assert result.returncode == 0, f"CPU native qualification compilation failed: {result.stderr}"
+    return library
+
+
+@contextmanager
+def _native_holder(case, monkeypatch, *, kind, mapped):
+    # No checkout pathname/action key is placed in argv, cwd, exe or an inherited
+    # FD. The generic child receives its pathname through its stdin pipe only.
+    holder = subprocess.Popen(
+        [sys.executable, "-c", _NATIVE_HOLDER_CODE], cwd=case.protected_root,
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, close_fds=True,
+    )
+    actual_listdir = recovery.os.listdir
+
+    def controlled_pid_listing(path="."):
+        if isinstance(path, (str, bytes, os.PathLike)) and os.fsdecode(path) == "/proc":
+            return [str(holder.pid)] if holder.poll() is None else []
+        return actual_listdir(path)
+
+    monkeypatch.setattr(recovery.os, "listdir", controlled_pid_listing)
+    ready = False
+    try:
+        holder.stdin.write(json.dumps({"kind": kind, "path": str(mapped)}) + "\n")
+        holder.stdin.flush()
+        with selectors.DefaultSelector() as events:
+            events.register(holder.stdout, selectors.EVENT_READ)
+            assert events.select(timeout=15), "real native-reference child did not become ready"
+        line = holder.stdout.readline()
+        if not line:
+            _, error = holder.communicate(timeout=10)
+            pytest.fail(f"real native-reference child failed: {error}", pytrace=False)
+        report = json.loads(line)
+        assert report["fd_closed"] is True
+        ready = True
+        yield holder, report
+    finally:
+        try:
+            _, error = holder.communicate(input="release\n" if holder.poll() is None else None,
+                                          timeout=10)
+        except subprocess.TimeoutExpired:
+            holder.kill()
+            _, error = holder.communicate()
+        if ready:
+            assert holder.returncode == 0, f"real native-reference child failed: {error}"
+
+
+def _selected_inodes(case):
+    return {(value[1][0], value[1][1]) for value in _snapshot(case.directory).values()
+            if value[0] != "absent"}
+
+
+def _assert_no_nonmapping_reference(case, holder):
+    process = Path("/proc") / str(holder.pid)
+    command = (process / "cmdline").read_bytes()
+    assert case.key.encode() not in command
+    assert os.fsencode(case.directory) not in command
+    inodes = _selected_inodes(case)
+    links = [process / "cwd", process / "exe"]
+    links.extend(process / "fd" / name for name in os.listdir(process / "fd"))
+    for link in links:
+        target = os.readlink(link).removesuffix(" (deleted)")
+        assert case.key not in target
+        assert target != str(case.directory) and not target.startswith(str(case.directory) + "/")
+        info = link.stat()
+        assert (info.st_dev, info.st_ino) not in inodes, f"nonmapping guard could mask proof: {link}"
+    terminal = json.loads(case.terminal_path.read_text())
+    assert holder.pid not in (terminal.get("pid"), terminal.get("child_pid"))
+
+
+def _assert_real_mapping(case, holder, report, mapped, *, deleted=False):
+    _assert_no_nonmapping_reference(case, holder)
+    process = Path("/proc") / str(holder.pid)
+    # Read the actual kernel bytes unchanged. Only the proc-root PID listing is
+    # bounded; neither maps, map_files links nor a capability check is faked.
+    raw = (process / "maps").read_bytes()
+    matching = []
+    for line in raw.splitlines():
+        fields = line.split(maxsplit=5)
+        major, minor = fields[3].split(b":")
+        identity = (os.makedev(int(major, 16), int(minor, 16)), int(fields[4]))
+        if identity == (report["dev"], report["ino"]):
+            matching.append(fields)
+    assert matching, "the OS did not retain the requested file-backed mapping"
+    expected = str(mapped) + (" (deleted)" if deleted else "")
+    assert all(os.fsdecode(fields[5]) == expected for fields in matching)
+    for fields in matching:
+        assert os.readlink(process / "map_files" / fields[0].decode()) == expected
+    assert holder.poll() is None
+
+
+def _check_real_selected_mapping(case, monkeypatch, *, kind, location, phase):
+    selected = case.checkout / "native" / "libkernel.so"
+    if location == "selected-space":
+        mapped = selected.with_name("closed fd native.so")
+        shutil.copyfile(selected, mapped)
+    elif "external" in location:
+        mapped = case.protected_root / "external native alias.so"
+        os.link(selected, mapped)
+    else:
+        mapped = selected
+    original_bytes = mapped.read_bytes() if location == "deleted-selected" else None
+    with _native_holder(case, monkeypatch, kind=kind, mapped=mapped) as (holder, report):
+        deleted = location.startswith("deleted-")
+        if deleted:
+            mapped.unlink()
+            if location == "deleted-selected":
+                mapped.write_bytes(original_bytes)
+                assert mapped.stat().st_ino != report["ino"]
+        case.bank()
+        # This positive control proves archive/tree/queue validity after alias
+        # creation or unlink/replacement. It does not stand in for OS map proof.
+        plan = _planned(case)
+        _assert_real_mapping(case, holder, report, mapped, deleted=deleted)
+        identity = (report["dev"], report["ino"])
+        if "external" in location:
+            assert not mapped.is_relative_to(case.directory)
+            assert identity in _selected_inodes(case)  # inode guard, not pathname
+        elif location == "deleted-selected":
+            assert identity not in _selected_inodes(case)  # deleted pathname guard
+        operation = (lambda: case.prepare(proc_root=Path("/proc"))) if phase == "prepare" else (
+            lambda: case.apply(plan, proc_root=Path("/proc")))
+        result = _refused(case, operation)
+        assert any("map" in error and "selected checkout" in error
+                   and str(holder.pid) in error for error in result["errors"]), result
+    # Once the real owner exits and releases its mapping, the exact same banked
+    # orphan is recoverable. Refusal cannot be an unrelated permanent guard.
+    if phase == "prepare":
+        _planned(case, proc_root=Path("/proc"))
+    else:
+        result = case.apply(plan, proc_root=Path("/proc"))
+        assert result["complete"] is True and result["removed"] == [str(case.directory)], result
+
+
+@pytest.mark.parametrize("location", ["selected", "selected-space", "external-hardlink",
+                                      "deleted-external", "deleted-selected"])
+@pytest.mark.parametrize("phase", ["prepare", "apply"])
+def test_real_closed_fd_mmap_is_a_live_checkout_reference(case, monkeypatch, location, phase):
+    _check_real_selected_mapping(case, monkeypatch, kind="mmap", location=location, phase=phase)
+
+
+@pytest.mark.parametrize("location", ["selected", "selected-space", "external-hardlink",
+                                      "deleted-external", "deleted-selected"])
+@pytest.mark.parametrize("phase", ["prepare", "apply"])
+def test_real_closed_fd_dlopen_is_a_live_checkout_reference(
+        case, monkeypatch, cpu_shared_library, location, phase):
+    shutil.copyfile(cpu_shared_library, case.checkout / "native" / "libkernel.so")
+    _check_real_selected_mapping(case, monkeypatch, kind="dlopen", location=location, phase=phase)
+
+
+def test_real_unrelated_closed_fd_mapping_does_not_block_the_exact_orphan(case, monkeypatch):
+    mapped = case.protected_root / "user-primary" / "keep.bin"
+    protected = {str(path): _snapshot(path) for path in (
+        case.bank_root, case.cas.root, case.gate, case.protected_root)}
+    with _native_holder(case, monkeypatch, kind="mmap", mapped=mapped) as (holder, report):
+        _assert_real_mapping(case, holder, report, mapped)
+        assert (report["dev"], report["ino"]) not in _selected_inodes(case)
+        plan = _planned(case, proc_root=Path("/proc"))
+        result = case.apply(plan, proc_root=Path("/proc"))
+        assert result["complete"] is True and result["removed"] == [str(case.directory)], result
+        assert holder.poll() is None
+    assert {path: _snapshot(Path(path)) for path in protected} == protected
+
+
+
+@pytest.mark.parametrize("fault", [
+    "empty", "truncated-line", "truncated-complete-record", "malformed", "overlap",
+    "bad-device", "bad-inode", "missing-path", "zero-inode-file", "bad-permissions",
+    "map-files-missing-entry", "map-files-extra-entry", "map-files-wrong-target",
+    "map-files-not-link", "maps-symlink", "map-files-symlink",
+])
+def test_mapping_metadata_must_be_complete_consistent_and_nofollow(case, fault):
+    process = _process(case)
+    _planned(case)
+    maps = process / "maps"
+    row = maps.read_text()
+    fields = row.split(maxsplit=5)
+    if fault == "empty":
+        maps.write_bytes(b"")
+    elif fault == "truncated-line":
+        maps.write_text(row.rstrip("\n"))
+    elif fault == "truncated-complete-record":
+        maps.write_text(row + row.replace("1000-2000", "3000-4000"))
+        (process / "map_files" / "3000-4000").symlink_to(
+            case.protected_root / "user-primary" / "keep.bin")
+        _planned(case)
+        maps.write_text(row)  # one complete record disappears, with LF intact
+    elif fault == "malformed":
+        maps.write_bytes(b"incomplete mapping identity\n")
+    elif fault == "overlap":
+        maps.write_text(row + row.replace("1000-2000", "1800-2800"))
+    elif fault in ("bad-device", "bad-inode", "missing-path", "zero-inode-file", "bad-permissions"):
+        if fault == "bad-device":
+            fields[3] = "not:a-device"
+        elif fault == "bad-inode":
+            fields[4] = str(1 << 64)
+        elif fault == "missing-path":
+            fields = fields[:5]
+        elif fault == "zero-inode-file":
+            fields[4] = "0"
+        else:
+            fields[1] = "rwxq"
+        maps.write_text(" ".join(field.rstrip("\n") for field in fields) + "\n")
+    elif fault.startswith("map-files-") and fault != "map-files-symlink":
+        link = process / "map_files" / "1000-2000"
+        if fault == "map-files-extra-entry":
+            (link.parent / "3000-4000").symlink_to(case.protected_root / "native-banks" / "keep.bin")
+        else:
+            link.unlink()
+            if fault == "map-files-wrong-target":
+                link.symlink_to(case.protected_root / "native-banks" / "keep.bin")
+            elif fault == "map-files-not-link":
+                link.write_text("not a kernel mapping link")
+    else:
+        path = maps if fault == "maps-symlink" else process / "map_files"
+        original = path.with_name(path.name + ".original")
+        path.rename(original)
+        path.symlink_to(original, target_is_directory=fault == "map-files-symlink")
+    result = _refused(case, case.prepare)
+    assert any("process" in error and ("map" in error or "census" in error)
+               for error in result["errors"]), result
+
+
+@pytest.mark.parametrize("bound", ["maps-bytes", "maps-count", "map-files-count"])
+def test_mapping_metadata_bounds_are_not_masked_by_tree_or_json_authority_limits(case, monkeypatch, bound):
+    process = _process(case)
+    maps = process / "maps"
+    row = maps.read_text()
+    maps.write_text(row + row.replace("1000-2000", "3000-4000"))
+    (process / "map_files" / "3000-4000").symlink_to(
+        case.protected_root / "user-primary" / "keep.bin")
+    _planned(case)
+    if bound == "maps-bytes":
+        maps.write_bytes(b"x" * (recovery.MAX_JSON_BYTES + 1))
+    elif bound == "maps-count":
+        monkeypatch.setattr(recovery, "MAX_PROCESS_MAPS", 1)
+    else:
+        # Leave the two valid maps records within the limit. Change only the
+        # mapping-directory budget after the real maps parser has run.
+        actual_open = pb._open_directory_nofollow
+
+        def smaller_map_directory_budget(path, **options):
+            result = actual_open(path, **options)
+            if Path(path) == process / "map_files":
+                monkeypatch.setattr(recovery, "MAX_PROCESS_MAPS", 1)
+            return result
+
+        monkeypatch.setattr(pb, "_open_directory_nofollow", smaller_map_directory_budget)
+    result = _refused(case, case.prepare)
+    expected = "map_files" if bound == "map-files-count" else "maps"
+    assert any(expected in error and ("bound" in error or "byte" in error)
+               for error in result["errors"]), result
+
+
+@pytest.mark.parametrize("fault", ["maps-unreadable", "maps-missing", "maps-truncated",
+                                  "maps-malformed", "maps-record-omitted",
+                                  "map-files-unreadable", "map-file-unreadable", "map-file-missing"])
+def test_real_process_mapping_metadata_failure_is_not_proof_of_death(case, monkeypatch, fault):
+    mapped = case.protected_root / "user-primary" / "keep.bin"
+    with _native_holder(case, monkeypatch, kind="mmap", mapped=mapped) as (holder, report):
+        _assert_real_mapping(case, holder, report, mapped)
+        _planned(case, proc_root=Path("/proc"))
+        process = Path("/proc") / str(holder.pid)
+        actual_read = pb._read_regular_file_nofollow
+        actual_open = pb._open_directory_nofollow
+        actual_readlink = recovery.os.readlink
+        map_directory = (process / "map_files").stat()
+        map_reads = 0
+        denied_links = 0
+
+        def failed_mapping_read(path, **options):
+            nonlocal map_reads
+            if Path(path) == process / "maps":
+                map_reads += 1
+                if fault == "maps-unreadable":
+                    raise PermissionError("real process maps qualification denial")
+                if fault == "maps-missing":
+                    raise FileNotFoundError("real process maps qualification disappearance")
+                raw = actual_read(path, **options)
+                if fault == "maps-truncated":
+                    return raw[:-1]
+                if fault == "maps-malformed":
+                    return b"malformed mapping metadata\n" + raw
+                if fault == "maps-record-omitted":
+                    kept = []
+                    omitted = False
+                    for row in raw.splitlines(keepends=True):
+                        fields = row.split(maxsplit=5)
+                        major, minor = fields[3].split(b":")
+                        identity = (os.makedev(int(major, 16), int(minor, 16)), int(fields[4]))
+                        if not omitted and identity == (report["dev"], report["ino"]):
+                            omitted = True
+                        else:
+                            kept.append(row)
+                    assert omitted
+                    return b"".join(kept)
+                return raw
+            return actual_read(path, **options)
+
+        def failed_mapping_directory(path, **options):
+            if Path(path) == process / "map_files" and fault == "map-files-unreadable":
+                raise PermissionError("real process map_files qualification denial")
+            return actual_open(path, **options)
+
+        def failed_mapping_link(path, *, dir_fd=None):
+            nonlocal denied_links
+            if dir_fd is not None and fault in ("map-file-unreadable", "map-file-missing"):
+                info = os.fstat(dir_fd)
+                if (info.st_dev, info.st_ino) == (map_directory.st_dev, map_directory.st_ino):
+                    denied_links += 1
+                    if fault == "map-file-unreadable":
+                        raise PermissionError("real process map_files link qualification denial")
+                    raise FileNotFoundError("real process map_files link qualification disappearance")
+            return actual_readlink(path, dir_fd=dir_fd)
+
+        monkeypatch.setattr(pb, "_read_regular_file_nofollow", failed_mapping_read)
+        monkeypatch.setattr(pb, "_open_directory_nofollow", failed_mapping_directory)
+        monkeypatch.setattr(recovery.os, "readlink", failed_mapping_link)
+        result = _refused(case, lambda: case.prepare(proc_root=Path("/proc")))
+        assert map_reads > 0
+        if fault in ("map-file-unreadable", "map-file-missing"):
+            assert denied_links > 0
+        assert holder.poll() is None
+        assert any("process" in error and ("map" in error or "census" in error)
+                   for error in result["errors"]), result
+
+
+@pytest.mark.parametrize("drift", ["start-time", "pid-directory", "zombie", "new-pid", "map-bytes"])
+def test_pid_or_mapping_lifetime_change_after_mapping_read_refuses_without_cleanup(case, monkeypatch, drift):
+    process = _process(case)
+    _planned(case)
+    before = case.preserved()
+    before.pop(str(case.proc_root))
+    actual_maps = recovery._process_maps
+    reads = 0
+
+    def changed_after_mapping_read(pidroot, *args, **options):
+        nonlocal reads
+        result = actual_maps(pidroot, *args, **options)
+        if pidroot == process:
+            reads += 1
+            if reads == 1:
+                if drift == "start-time":
+                    (process / "stat").write_text("101 (reused) S " + "0 " * 18 + "901 0")
+                elif drift == "zombie":
+                    (process / "stat").write_text("101 (exiting) Z " + "0 " * 18 + "900 0")
+                elif drift == "pid-directory":
+                    original = process.with_name("preserved-old-pid-directory")
+                    process.rename(original)
+                    shutil.copytree(original, process, symlinks=True)
+                elif drift == "new-pid":
+                    _process(case, pid=102)
+                else:
+                    maps = process / "maps"
+                    maps.write_text(maps.read_text().replace("r--p", "rw-p"))
+        return result
+
+    monkeypatch.setattr(recovery, "_process_maps", changed_after_mapping_read)
+    result = case.prepare()
+    assert reads >= 2 and result["complete"] is False and result["status"] == "refused", result
+    assert result["removed"] == [] and case.cleanup_calls == []
+    assert any("changed" in error for error in result["errors"]), result
+    after = case.preserved()
+    after.pop(str(case.proc_root))
+    assert after == before
+
+
+def test_an_empty_userspace_process_cannot_claim_the_kernel_thread_mapping_exception(case):
+    process = _process(case, argv=b"")
+    (process / "exe").unlink()
+    (process / "maps").write_bytes(b"")
+    (process / "map_files" / "1000-2000").unlink()
+    result = _refused(case, case.prepare)
+    assert any("executable census incomplete" in error for error in result["errors"]), result
+
+
+
+@pytest.mark.parametrize("drift", ["start-time", "pid-directory"])
+def test_pid_lifetime_is_rechecked_after_the_final_process_listing(case, monkeypatch, drift):
+    process = _process(case)
+    _planned(case)
+    before = case.preserved()
+    before.pop(str(case.proc_root))
+    actual_listdir = recovery.os.listdir
+    listings = 0
+
+    def changed_at_final_listing(path="."):
+        nonlocal listings
+        result = actual_listdir(path)
+        if isinstance(path, (str, bytes, os.PathLike)) and Path(os.fsdecode(path)) == case.proc_root:
+            listings += 1
+            if listings == 2:
+                if drift == "start-time":
+                    (process / "stat").write_text("101 (late-reuse) S " + "0 " * 18 + "901 0")
+                else:
+                    original = process.with_name("preserved-late-pid-directory")
+                    process.rename(original)
+                    shutil.copytree(original, process, symlinks=True)
+        return result
+
+    monkeypatch.setattr(recovery.os, "listdir", changed_at_final_listing)
+    result = case.prepare()
+    assert listings == 2 and result["complete"] is False and result["status"] == "refused", result
+    assert result["removed"] == [] and case.cleanup_calls == []
+    assert any("lifetime changed" in error for error in result["errors"]), result
+    after = case.preserved()
+    after.pop(str(case.proc_root))
+    assert after == before
+
+
+@pytest.mark.parametrize("fault", ["wrong-pid", "bad-state", "bad-flags", "negative-start", "overflow-start"])
+def test_malformed_pid_lifetime_cannot_authorize_mapping_absence(case, fault):
+    process = _process(case)
+    _planned(case)
+    fields = ["S", *(["0"] * 18), "900", "0"]
+    pid = "101"
+    if fault == "wrong-pid":
+        pid = "102"
+    elif fault == "bad-state":
+        fields[0] = "?"
+    elif fault == "bad-flags":
+        fields[6] = "not-flags"
+    elif fault == "negative-start":
+        fields[19] = "-900"
+    else:
+        fields[19] = str(1 << 64)
+    (process / "stat").write_text(f"{pid} (worker (recovery)) " + " ".join(fields))
+    result = _refused(case, case.prepare)
+    assert any("malformed process lifetime" in error for error in result["errors"]), result
 
