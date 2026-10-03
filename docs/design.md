@@ -2431,6 +2431,9 @@ miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
   including a deleted external alias, but actual map_files stat returned EPERM
   with no effective capabilities. Source/refusal qualification is not privileged
   positive native proof on Btrfs or NAS, deployment or operational authorization.
+  The [source/refusal evidence](results/issue1472_native_identity_2026-10-03.json)
+  records 295 passed / 18 explicitly blocked positive-proof skips on each of
+  Btrfs and the historical NAS (ZFS) context, including actual throwaway exercises.
   A kernel mount census refuses selected-root/descendant mounts, including
   same-device bind mounts, and hidden /proc censuses; recursive removal must
   not cross into external native-bank, CAS or image namespaces.
