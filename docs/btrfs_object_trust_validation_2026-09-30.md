@@ -1,11 +1,11 @@
 # Btrfs object-trust validation
 
 Status: the fresh-main uninstrumented final-candidate gate and ten-file
-compilation passed at `26fa215e9def17a33b045ffc0d4c9f779fba313a`. The
-historical uninstrumented arbitration failure remains unexplained. The
-matched affected-filesystem profile remains a mandatory merge gate, not
-waived by these correctness results or by source-only review. This record
-establishes no speedup, deployment, or full closure of #1358 or #1027.
+compilation passed at `26fa215e9def17a33b045ffc0d4c9f779fba313a`. The matched
+affected-Btrfs profile gate also passed on 2026-10-03, with the cold-start
+cost and host-load differences retained below. The historical uninstrumented
+arbitration failure remains unexplained. This is source-merge qualification,
+not deployment, a universal speedup, or full closure of #1358 or #1027.
 
 ## Contract
 
@@ -135,18 +135,69 @@ current directory proof and cause a locked relist, but no observed event
 attributes this failure to that possibility.
 
 The tiny affected-host proof and its terminal, immutable attempt, log hashes,
-CAS result, and cleanup are verified. #1358 still requires an in-process
-before/after profile with py-spy and Netdata on dl380g10; #1027 has its own
-matched ledger-cache qualification. The PR acceptance audit on 2026-10-03
-explicitly requires this pair before merge, or an explicit coordinator ruling
-accepting an alternative. Both arms must record live filesystem/device/mount
-evidence proving the missing-device Btrfs condition. The prepared campaign
-path now resolves to ZFS device 0:92, so the unchanged prepared script cannot
-meet this gate. A read-only 2026-10-03 inventory found `/home/rob/tmp` and
-`/home/rob/tmp/prismabuild-checkouts` on Btrfs with stat device 0:31; that is a
-candidate location, not an executed matched profile. Neither profile nor
-runtime publication is established here. Keep the PR draft and #1358 open
-until their respective gates are satisfied.
+CAS result, and cleanup are verified. The mandatory affected-host profile was
+then executed, rather than waived, in the following bounded qualification.
+#1027 retains its separate ledger-cache acceptance and no runtime was published.
+
+### Matched affected-Btrfs profile, 2026-10-03
+
+Published PB measurement action
+`26de864bbc4dda22019d643421dec1a214289155facabb1c90ba6b8c34e4436d`
+executed successfully on dl380g10 in 292.71 seconds. Submission originated on
+dl380g10 with `--measurement --host-class dl380g10 --tag dl380g10`, CPU2,
+8 GiB, native threads2, and one attempt. A single admitted action ran
+before/after/after/before, each with one cold and 20 steady cycles. Each arm
+used the unchanged `bench_tier_cycle.py`: rate250, cycles21, done30000,
+receipts6000, empty-dirs370, small-dirs30; all other workload defaults were
+identical. This is the existing hermetic campaign-shaped workload, not a live
+queue or an application throughput benchmark. No manual isolation hold was used.
+
+Before is `be674a35f30da209075e237a9d380afb857c05c2`; after production and
+tests are exactly `26fa215e9def17a33b045ffc0d4c9f779fba313a`. Their tree
+differences are precisely this PR's 13 files; the benchmark itself is unchanged.
+Snapshot `5bd716af14b8cd4e0e62f498653e376bf40fa79f` differs from its
+documentation-only parent `1e55071d3cfd9fbdc24831fde46104228ef5adbb` only by
+the generated closure. The raw input is 11,580,930 bytes, SHA256
+`6025eb4b552229222c92c778d32d2cd17ffd42259b832378fd3aacb5211544fc`.
+
+Fresh worker-checkout-local work roots replaced the old prepared ZFS path.
+Both pre/post observations of every arm bind an open FD, raw fdinfo and the
+complete mountinfo: stat device0:31 is absent from the device index; mount ID35
+names Btrfs device0:30 on `/dev/nvme1n1p4`. No device number was inferred or
+rewritten, and no filesystem or dataset was created outside the private fixture.
+
+| Arm | Cold wall s | Reported steady median s | Netdata host busy mean % | CPU PSI some10 maximum % |
+| --- | ---: | ---: | ---: | ---: |
+| Before0 | 2.9600 | 4.8058 | 18.67 | 1.23 |
+| After1 | 4.4150 | 0.8554 | 11.88 | 1.12 |
+| After2 | 4.4608 | 0.8282 | 13.70 | 0.86 |
+| Before3 | 3.0560 | 5.2736 | 41.99 | 11.64 |
+
+The table retains the benchmark's upper-middle median convention. Cold setup
+is slower with the repair; it is not hidden in a steady-only speedup claim.
+Host load is not identical, especially in the last baseline arm, so this is
+bounded source qualification rather than a universal effect-size estimate.
+All84 cycles completed. Both baseline final cycles kept0/parsed7859 records
+and kept0/parsed302 census entries; both repaired final cycles kept438/parsed0
+records and kept4738/parsed0 census entries. The raw py-spy steady stacks
+contain13,540/15,800 `_read_fragment` samples in the baseline arms and0 in
+each repaired arm, consistent with retained parsing rather than a timer-only
+claim. Existing trust-refusal tests remain unchanged.
+
+Artifacts are under
+`/mnt/shared/astra-resume-20261002/pb1397-abba-profile-20261003/`: four
+raw py-spy profiles, full cycle rows/logs, summaries, per-arm filesystem
+witnesses, and matching CPU/RAM/IO/load/CPU-pressure Netdata series. All24
+per-arm artifacts were byte-count/SHA256 checked against the authenticated
+CAS result. Netdata covers every arm at one-second query resolution; the
+raw matched-series file SHA256 is
+`4ea88f981e4b6e520d54ddb10e1bc3d0ef21785ec293c5f9c6bd3752b33be5e8`.
+Public SDK4 `read_verified_action_result`, `bind_standard_capture_command`
+and `Core.lookup` verified the exact request/attempt, receipt and raw input.
+Receipt SHA256: `df7f69df8b662287dbcac876d228f9295ade6b5a80282a6281317ce14f65867d`;
+result SHA256: `6a2aabdbaa4f0bbb86747b3fcd963ed6c8c7b27092cbf06247fd97c6bccad99c`
+(148,561 bytes). Source-only merge acceptance does not close #1358/#1027 or
+authorize runtime deployment, physical workload claims, or operational cleanup.
 
 The existing allowed-local full-stat/mount ABA and non-atomic observation limits
 remain. This change does not solve wall-clock backsteps or make file snapshots

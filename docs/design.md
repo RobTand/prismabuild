@@ -6301,7 +6301,7 @@ earlier time; to reproduce a kept stamp it would have to land on the same
 nanosecond in both fields.
 
 **An unlisted subvolume needs exact-object evidence (#1358; source repair,
-qualification pending).** Btrfs subvolumes may report a `stat.st_dev` absent
+matched Btrfs qualification passed).** Btrfs subvolumes may report a `stat.st_dev` absent
 from mountinfo even though an open descriptor's `mnt_id` names a btrfs row.
 `stage_move._object_filesystem_type` resolves only that missing-device case:
 it binds the observed mode and five-field file version to the caller's
@@ -6365,9 +6365,13 @@ run. The final source subsequently passed uninstrumented action
 compilation action
 `13f0b31f724fc298775ac8ac4f156c6683936c237c6ae84dfdf4eabae720a70e`.
 Both snapshots match `26fa215e9def17a33b045ffc0d4c9f779fba313a` except their
-generated closure files. No performance, deployment or full-closure claim
-follows; the evidence readback and remaining merge gate are recorded in
-`btrfs_object_trust_validation_2026-09-30.md`.
+generated closure files. Matched affected-Btrfs measurement
+`26de864bbc4dda22019d643421dec1a214289155facabb1c90ba6b8c34e4436d`
+subsequently completed84 cycles in before/after/after/before order, with raw
+py-spy, exact FD/mount evidence and both arms' Netdata. Steady record/census
+retention is exercised; cold-start cost and changing host load are explicitly
+retained in `btrfs_object_trust_validation_2026-09-30.md`. This is source
+qualification, not deployment, a universal speedup or full issue closure.
 
 Missing/duplicate/malformed descriptor mount IDs,
 changed descriptor/path evidence, unknown or nonlocal types, an unreadable
