@@ -3350,6 +3350,10 @@ PID. Recovery reads map_files symlink targets without dereferencing them:
 identity comes from kernel maps metadata, not an alias pathname still existing.
 Permission restrictions or mapping churn can therefore conservatively prevent
 recovery even when the selected tree is unused; do not suppress these refusals.
+Native closed-FD Btrfs mapping qualification remains open in #1472 after the
+file-stat/VMA identity prerequisite failed on DL. A passing NAS qualification
+of anonymous-inode labels does not certify Btrfs alias attribution or permit
+operational recovery on that basis.
 The kernel mount census also rejects selected-root or descendant mounts
 (including same-device bind mounts) and hidden `/proc` censuses, so cleanup cannot
 cross into a native bank/CAS/image namespace. Dead stale leases are retained,

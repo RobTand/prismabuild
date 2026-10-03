@@ -2421,6 +2421,10 @@ miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
   are read, not dereferenced: mappings retain their kernel identity even when
   the mapped pathname no longer exists. Permissions/churn can refuse unused
   trees; neither self/operator exemptions nor a fallback empty census exists.
+  Native closed-FD mapping qualification on DL Btrfs is unresolved (#1472):
+  its file stat device/inode failed to match the observed VMA identity in the
+  native fixture. NAS qualification of the anonymous-inode grammar is not
+  Btrfs alias-attribution acceptance or authorization for operational recovery.
   A kernel mount census refuses selected-root/descendant mounts, including
   same-device bind mounts, and hidden /proc censuses; recursive removal must
   not cross into external native-bank, CAS or image namespaces.
