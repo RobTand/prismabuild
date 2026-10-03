@@ -1195,6 +1195,72 @@ def test_git_snapshot_refuses_a_shallow_source_by_name(tmp_path: Path) -> None:
         )
 
 
+@pytest.mark.parametrize("configuration", [
+    {"extensions.partialclone": "origin"},
+    {"remote.origin.promisor": "true"},
+    {"remote.origin.promisor": "yes"},
+    {"remote.nested.name.promisor": "on"},
+    {"remote.origin.partialclonefilter": "blob:none"},
+    {"remote.backup.partialclonefilter": "tree:0"},
+    {"remote.origin.promisor": "true", "remote.origin.partialclonefilter": "blob:none"},
+    {"remote.origin.promisor": "false", "remote.origin.partialclonefilter": "blob:none"},
+])
+def test_snapshot_names_legacy_and_modern_partial_source_before_pack(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, configuration: dict[str, str],
+) -> None:
+    checkout = _git_checkout(tmp_path)
+    for key, value in configuration.items():
+        assert _git(checkout, "config", key, value).returncode == 0
+    original = (checkout / ".git" / "config").read_bytes()
+    def cannot_pack(*args, **kwargs):
+        raise AssertionError("partial source must refuse before bundle packing")
+    monkeypatch.setattr(pbrun, "write_deterministic_bundle", cannot_pack)
+    with pytest.raises(SystemExit, match="partial clone") as refused:
+        pbrun.build_git_checkout_snapshot(
+            checkout, cas=core_module.PrismaBuildCAS(tmp_path / "cas"),
+            max_bytes=16 * 1024 * 1024)
+    message = str(refused.value)
+    assert "git clone --no-filter" in message and "no --depth" in message
+    assert "repack does not fetch" in message and "do not remove" in message
+    assert (checkout / ".git" / "config").read_bytes() == original
+
+
+@pytest.mark.parametrize("value", ["false", "no", "off", "0"])
+def test_false_promisor_without_a_filter_keeps_a_complete_source_eligible(
+    tmp_path: Path, value: str,
+) -> None:
+    checkout = _git_checkout(tmp_path)
+    assert _git(checkout, "config", "remote.origin.promisor", value).returncode == 0
+    pbrun.require_complete_history(checkout)
+    snapshot = pbrun.build_git_checkout_snapshot(
+        checkout, cas=core_module.PrismaBuildCAS(tmp_path / "cas"),
+        max_bytes=16 * 1024 * 1024)
+    assert snapshot["parent"] == _git(checkout, "rev-parse", "HEAD").stdout.strip()
+
+
+def test_real_modern_filtered_clone_without_legacy_extension_refuses_early(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    origin = _git_checkout(tmp_path)
+    assert _git(origin, "config", "uploadpack.allowFilter", "true").returncode == 0
+    partial = tmp_path / "modern-filtered"
+    result = subprocess.run(
+        ["git", "clone", "--quiet", "--no-checkout", "--filter=blob:none",
+         f"file://{origin}", str(partial)], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert _git(partial, "config", "--get", "extensions.partialclone").returncode == 1
+    assert _git(partial, "config", "--bool", "--get", "remote.origin.promisor").stdout.strip() == "true"
+    assert _git(partial, "config", "--get", "remote.origin.partialclonefilter").stdout.strip() == "blob:none"
+    assert tuple((partial / ".git" / "objects" / "pack").glob("*.promisor"))
+    def cannot_pack(*args, **kwargs):
+        raise AssertionError("modern partial source must not reach pack-objects")
+    monkeypatch.setattr(pbrun, "write_deterministic_bundle", cannot_pack)
+    with pytest.raises(SystemExit, match="partial clone"):
+        pbrun.build_git_checkout_snapshot(
+            partial, cas=core_module.PrismaBuildCAS(tmp_path / "cas"),
+            max_bytes=16 * 1024 * 1024)
+
+
 def test_git_snapshot_refuses_a_repository_with_no_commits(
     tmp_path: Path,
 ) -> None:

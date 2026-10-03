@@ -681,11 +681,26 @@ def require_complete_history(root: Path) -> None:
         ["config", "--get", "extensions.partialclone"],
         accepted_returncodes=(0, 1),
     )
-    if partial:
+    # Modern filtered clones mark their promisor remote, without the legacy
+    # extensions.partialclone key. Read Git-normalized booleans so an explicit
+    # false marker does not turn an ordinary complete source into a refusal.
+    promisors = _snapshot_git(
+        root, ["config", "--bool", "--get-regexp", r"^remote\..*\.promisor$"],
+        accepted_returncodes=(0, 1),
+    )
+    filters = _snapshot_git(
+        root, ["config", "--get-regexp", r"^remote\..*\.partialclonefilter$"],
+        accepted_returncodes=(0, 1),
+    )
+    if partial or filters or any(line.rsplit(" ", 1)[-1] == "true"
+                                for line in promisors.splitlines()):
         raise SystemExit(
             "pbrun: this checkout is a partial clone, so its snapshot cannot "
-            "carry the ancestry a worker needs; fetch the missing objects "
-            "(git repack -a -d) before submitting"
+            "prove all ancestry and objects a worker needs. Use a fresh full "
+            "unfiltered clone (git clone --no-filter URL NEW; no --depth), or "
+            "hydrate a separate complete checkout from its trusted remote. "
+            "git repack does not fetch missing objects; do not remove "
+            "promisor/filter markers to hide an incomplete source before submitting"
         )
 
 
@@ -943,6 +958,10 @@ def build_git_checkout_snapshot(
             raise SystemExit("pbrun: overlay stamp name must be a plain basename")
         stamp_relative = (Path(subdirectory) / stamp_name).as_posix()
 
+    # Source identity itself may traverse historic blobs. Refuse incomplete
+    # sources before that walk, not merely before the eventual pack command.
+    require_materialized_checkout(root)
+    require_complete_history(root)
     paths = snapshot_path_roster(root)
     working_bytes = require_working_tree_size(root, paths, max_bytes=max_bytes)
     if stamp_payload is not None:
@@ -956,8 +975,6 @@ def build_git_checkout_snapshot(
     if _git_identity(cwd) != identity:
         raise SystemExit("pbrun: checkout changed before it could be snapshotted")
     parent = identity["head"]
-    require_materialized_checkout(root)
-    require_complete_history(root)
     resolved_refs = resolve_snapshot_refs(root, snapshot_refs)
 
     with tempfile.TemporaryDirectory(prefix="pbrun-snapshot.") as temporary_raw:

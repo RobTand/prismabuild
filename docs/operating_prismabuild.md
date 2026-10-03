@@ -2863,6 +2863,17 @@ look; it never means nothing is running.
 
 These are refusals at submission, before anything reaches the fleet.
 
+*   **`this checkout is a shallow/partial clone`** — snapshot bundles preserve
+    ancestry; they cannot seal history or objects the source does not contain.
+    A shallow source needs `git fetch --unshallow`. Partial-source detection
+    includes legacy `extensions.partialclone` and modern `remote.*.promisor`
+    or `remote.*.partialclonefilter` metadata (an explicit false promisor with
+    no filter is not partial). Prefer a fresh full, unfiltered clone with no
+    depth limit: `git clone --no-filter URL NEW`. Alternatively hydrate a
+    separate complete checkout from its trusted remote and verify its object
+    coverage. `git repack` only rearranges available objects: it does not fetch
+    missing ones. Do not erase promisor/filter markers, flatten history or waive
+    the source preflight to hide missing objects; no action was published.
 *   **`a non-Git checkout cannot be materialized`** — `--cwd` must be inside a
     Git checkout, so its exact bytes can be sealed and materialized through the
     CAS. Mutable path-addressed submission is not supported.
