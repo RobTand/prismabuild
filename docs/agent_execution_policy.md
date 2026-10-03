@@ -56,7 +56,7 @@ Do not tag CPU-only work to a GPU host to get it placed.
 Every worker loop applies its own payload execution safety ceiling, **7200 s
 by default**, as a ``min`` against ``--timeout-s``. Each box announces its
 ceiling (``pbstatus`` shows it as ``KILL AT``); ``pbrun`` names eligible
-workers that grant a smaller payload budget and the lowest possible budget.
+workers that grant a smaller payload budget and the lowest announced budget.
 This is not a shared wall-clock stop or admission-to-resource-release fence:
 checkout precedes payload execution, credited waits can extend its deadline,
 and uncertain settlement retains resources (#1429). The receipt records

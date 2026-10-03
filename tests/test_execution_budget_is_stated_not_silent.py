@@ -171,7 +171,7 @@ def test_nobody_announcing_is_an_empty_answer_not_a_zero(tmp_path):
 def test_every_eligible_box_below_the_request_states_its_payload_budget(tmp_path):
     queue = _fleet(tmp_path, {"dl380g10": 7200.0, "sparky": 7200.0})
     said = pbrun.timeout_ceiling_notice(queue, _intent([]), requested=13000)
-    assert "lowest possible payload execution budget is 7200s" in said
+    assert "lowest announced payload execution budget is 7200s" in said
     assert "every eligible worker" in said
     assert "dl380g10 7200s" in said and "sparky 7200s" in said
 
@@ -179,7 +179,7 @@ def test_every_eligible_box_below_the_request_states_its_payload_budget(tmp_path
 def test_a_mixed_fleet_is_stated_as_a_risk_not_a_certainty(tmp_path):
     queue = _fleet(tmp_path, {"dl380g10": 7200.0, "sparky": 20000.0})
     said = pbrun.timeout_ceiling_notice(queue, _intent([]), requested=13000)
-    assert "lowest possible payload execution budget is 7200s" in said
+    assert "lowest announced payload execution budget is 7200s" in said
     assert "some eligible worker" in said
     assert "sparky" not in said.split("\n")[0]
 
@@ -191,8 +191,8 @@ def test_the_budget_named_is_the_smallest_a_claiming_box_could_impose(tmp_path):
     queue = _fleet(tmp_path, {"dl380g10": 3600.0, "sparklina": 7200.0,
                               "sparky": 20000.0})
     said = pbrun.timeout_ceiling_notice(queue, _intent([]), requested=13000)
-    assert "lowest possible payload execution budget is 3600s" in said
-    assert "7200s" not in said.split("; the lowest possible")[1]
+    assert "lowest announced payload execution budget is 3600s" in said
+    assert "7200s" not in said.split("; the lowest announced")[1]
 
 
 def test_a_request_every_box_can_grant_is_not_worth_a_word(tmp_path):
@@ -229,13 +229,16 @@ def test_notice_states_payload_budget_not_wall_stop_or_release(
     queue = _fleet(tmp_path, ceilings)
     said = pbrun.timeout_ceiling_notice(queue, _intent([]), requested=13000)
     assert f"{workers} eligible worker" in said
-    assert f"lowest possible payload execution budget is {lowest}s" in said
+    assert f"lowest announced payload execution budget is {lowest}s" in said
     assert "not a wall-clock stop or resource-release guarantee" in said
     assert "be killed at" not in said
     for host, ceiling in ceilings.items():
         if ceiling is not None and ceiling < 13000:
             assert f"{host} {ceiling:g}s" in said
     assert queue.placement_timeout_ceilings(_intent([])) == ceilings
+    if any(ceiling is None for ceiling in ceilings.values()):
+        assert "unknown rather than unlimited" in said
+        assert "lowest possible" not in said
 
 
 

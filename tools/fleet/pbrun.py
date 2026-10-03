@@ -2428,8 +2428,8 @@ def timeout_ceiling_notice(
     Warned rather than refused, deliberately.  An action that asks for more
     than it needs and finishes inside the ceiling is not wrong, and refusing
     it would break every long submission on a fleet whose loops all default to
-    7200. What was wrong was being told nothing. The smallest eligible budget
-    is a possible payload allowance, not one exact stop shared by every box.
+    7200. What was wrong was being told nothing. The smallest announced budget
+    need not be the budget an unannounced eligible worker would enforce.
     Checkout, credited waits and settlement are not bounded by this notice.
 
     A box that announces no ceiling is named as unknown rather than assumed
@@ -2455,7 +2455,7 @@ def timeout_ceiling_notice(
         lines.append(
             f"pbrun: --timeout-s {requested:g} exceeds the payload execution ceiling "
             f"{'every' if certain else 'some'} eligible worker announces "
-            f"({named}); the lowest possible payload execution budget is {lowest:g}s, "
+            f"({named}); the lowest announced payload execution budget is {lowest:g}s, "
             "not a wall-clock stop or resource-release guarantee."
         )
     if silent:

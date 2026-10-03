@@ -11021,15 +11021,15 @@ class PoolQueue:
         answer is read from the holder's declaration, never observed settlement:
 
         * ``unbounded`` -- its sealed request is progress-governed and asks for
-          no total timeout, so nothing bounds its run (the GLM campaign
-          holders).  Withholding a box for it is waiting on a day.
-        * ``transient`` -- it declares a payload budget and either is still
-          inside ``WITHHOLD_CEILING_S`` of its claim, or its advisory
-          ``claimed_unix + requested_timeout_s`` lies inside that ceiling
-          from now. This is the pool's line between short and multi-hour
-          scheduling opportunities, not a guaranteed resource return.
-        * ``long`` -- finite declared budget, but already older than that
-          line with no advisory opportunity inside it.
+          no total payload timeout. Semantic stall allowances still apply,
+          but this supplies no declared finite incumbent opportunity.
+        * ``transient`` -- it is still inside ``WITHHOLD_CEILING_S`` of its
+          claim, or a finite declared ``claimed_unix + requested_timeout_s``
+          lies inside that ceiling from now. Age alone also classifies a
+          deadline-governed holder whose requested timeout is absent; this
+          is not proof of an explicit budget or guaranteed resource return.
+        * ``long`` -- its age exceeds that line and no finite declared
+          advisory opportunity lies inside it.
         * ``overdue`` -- the advisory opportunity has already passed. This
           does not prove the payload deadline fired or resources settled.
           It outranks age: before #939 a point in the past counted as inside
