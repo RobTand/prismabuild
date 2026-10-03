@@ -760,11 +760,20 @@ def _native_fixture(base: Path, monkeypatch):
               "settled": True}
     native = {"claim": {"resource_scope": {"action_key": key, "nonce": nonce,
                 "scope_id": scope_id, "memory_max_bytes": 1024 ** 3,
-                "token": "private-test-secret", "socket_path": "/private/socket"},
+                "token": "b" * 64, "socket_path": "/run/prismabuild/resources.sock",
+                "cgroup_path": "/sys/fs/cgroup/prismabuild.slice/" + scope_id},
                 "cpu_allocation": allocation,
                 "resource_scope_cleanup": {"complete": True, "nonce": nonce,
                     "telemetry": telemetry, "export": export}},
               "detail": {"resource_telemetry": telemetry, "cpu_allocation": allocation}}
+    from prismabuild import resource_scope
+    native["detail"]["argv"] = resource_scope._wrapped_scope_argv(
+        pool._with_cpu_affinity([sys.executable] + pool.worker_argv(
+            worker_script=launcher_file, action_key=key, cas_root=base / "cas",
+            checkout_root=base / "checkout"), allocation["preferred"]),
+        python=sys.executable, helper=generation / "tools/resource_exec.py",
+        socket_path=resource_scope.BROKER_SOCKET, action_key=key, nonce=nonce,
+        token=native["claim"]["resource_scope"]["token"])
     queue, record = _finish(base, action, receipt, native=native, worker_script=launcher_file)
     # finish already files this proof through the existing pool writer.
     # Reuse that carrier rather than minting a second fixture representation.
@@ -798,8 +807,8 @@ def test_selected_native_context_is_owned_and_truthfully_bound(tmp_path, monkeyp
     assert ctx["helper_root"] == str(tmp_path / "generation")
     assert ctx["receipt_sha256"] == receipt["receipt_sha256"]
     assert ctx["scope_attestation_sha256"] == pb.raw_sha256(proof_path.read_bytes())
-    assert "private-test-secret" not in json.dumps(ctx)
-    assert "/private/socket" not in json.dumps(ctx)
+    assert "b" * 64 not in json.dumps(ctx)
+    assert "/run/prismabuild/resources.sock" not in json.dumps(ctx)
     ctx["resources"]["cpu"] = 99
     assert _native_read(action, queue, record)["producer_context"]["resources"]["cpu"] == 1
 
@@ -959,4 +968,73 @@ def test_selected_native_ending_extra_fields_are_rechecked(tmp_path, monkeypatch
         return raw
     monkeypatch.setattr(action_result, "_read_bounded", read_and_replace)
     with pytest.raises(client.ActionResultError, match="selected native ending changed"):
+        _native_read(action, queue, record)
+
+
+@pytest.mark.parametrize("change", ["withdrawn", "replacement"])
+def test_native_last_proof_read_cannot_return_before_terminal_recheck(
+    tmp_path, monkeypatch, change
+):
+    from prismabuild import action_result
+
+    action, queue, record, _receipt, _proof = _native_fixture(tmp_path, monkeypatch)
+    original = action_result._read_bounded
+    proof_reads = 0
+    def read_and_change_terminal(path, **kwargs):
+        nonlocal proof_reads
+        raw = original(path, **kwargs)
+        if kwargs["where"] == "native producer scope attestation":
+            proof_reads += 1
+            if proof_reads == 2:
+                key = action["action_key"]
+                if change == "withdrawn":
+                    withdrawn = {"schema": pool.POOL_OUTCOME_SCHEMA_V1,
+                        "action_key": key, "status": "withdrawn",
+                        "published_unix": record["published_unix"],
+                        "withdrawn_unix": record["published_unix"] + 5,
+                        "finished_host": "box", "detail": {}}
+                    pb._atomic_publish(queue.item_path(pool.WITHDRAWN, key),
+                                       pb._canonical_file_bytes(withdrawn))
+                else:
+                    replacement = {**record, "published_unix": record["published_unix"] + 5}
+                    queue.item_path(pool.DONE, key).write_bytes(pb._canonical_file_bytes(replacement))
+        return raw
+    monkeypatch.setattr(action_result, "_read_bounded", read_and_change_terminal)
+    with pytest.raises(client.ActionResultError):
+        _native_read(action, queue, record)
+    assert proof_reads == 2
+
+
+@pytest.mark.parametrize("field,value", [
+    ("cgroup_path", None), ("cgroup_path", "/sys/fs/cgroup/foreign"),
+    ("socket_path", None), ("socket_path", "/foreign/socket"),
+    ("token", None), ("token", "not-a-broker-token"), ("token", "c" * 64),
+])
+def test_native_full_broker_control_must_join_immutable_launch(
+    tmp_path, monkeypatch, field, value
+):
+    action, queue, record, _receipt, _proof = _native_fixture(tmp_path, monkeypatch)
+    row = json.loads(queue.item_path(pool.DONE, action["action_key"]).read_text())
+    if value is None:
+        row["resource_scope"].pop(field)
+    else:
+        row["resource_scope"][field] = value
+    queue.item_path(pool.DONE, action["action_key"]).write_bytes(pb._canonical_file_bytes(row))
+    with pytest.raises(client.ActionResultError):
+        _native_read(action, queue, record)
+
+
+@pytest.mark.parametrize("position", [None, 1, 3, 5, 7, 9, 10, 11, 13, 15, 17, 18, 19, 20, 21, 22])
+def test_native_immutable_argv_binds_proxy_scope_secret_affinity_launcher_request_cas(
+    tmp_path, monkeypatch, position
+):
+    action, queue, record, _receipt, _proof = _native_fixture(tmp_path, monkeypatch)
+    path = queue.attempt_path(record, 1)
+    attempt = json.loads(path.read_text())
+    if position is None:
+        attempt["detail"].pop("argv")
+    else:
+        attempt["detail"]["argv"][position] = "foreign-value"
+    _rewrite_readonly(path, pb._canonical_file_bytes(attempt))
+    with pytest.raises(client.ActionResultError):
         _native_read(action, queue, record)

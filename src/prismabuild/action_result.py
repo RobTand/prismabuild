@@ -36,6 +36,7 @@ from . import movement_actions
 from . import pool as _pool
 from . import produced_output as _produced_output
 from . import reader_lease as _reader_lease
+from . import resource_scope as _resource_scope
 
 #: The schema of the mapping :func:`read_verified_action_result` returns.
 ACTION_RESULT_SCHEMA_V1 = "prismabuild.verified_action_result.v1"
@@ -350,6 +351,10 @@ def _native_producer_context(queue, record, attempt_record, action, receipt, *,
     if (not isinstance(scope, Mapping) or scope.get("action_key") != key
             or scope.get("nonce") != nonce or scope.get("scope_id") != scope_id):
         raise ActionResultError("native producer scope differs from selected claim")
+    try:
+        _resource_scope._checked_control_identity(key, scope)
+    except ValueError as exc:
+        raise ActionResultError("native producer broker control is incomplete or invalid") from exc
     resources = record.get("resources")
     demand = action["params"].get("demand")
     if (not isinstance(resources, Mapping) or not resources
@@ -425,6 +430,29 @@ def _native_producer_context(queue, record, attempt_record, action, receipt, *,
             or launcher_path != root / "tools/prismabuild_worker.py"
             or record.get("worker_script") != str(launcher_path)):
         raise ActionResultError("native producer helper root differs from attested launcher")
+    native_argv = detail.get("argv")
+    if (not isinstance(native_argv, list) or len(native_argv) not in (23, 24)
+            or any(not isinstance(part, str) or not part for part in native_argv)):
+        raise ActionResultError("selected immutable attempt has no complete native launch argv")
+    proxy = Path(native_argv[1])
+    if proxy not in {root / rel for rel in _resource_scope._PROXY_CANDIDATES}:
+        raise ActionResultError("native broker proxy differs from attested helper root")
+    # The two interpreter spellings and historical materialized checkout are
+    # observations of the immutable launch, not the current reader's process.
+    inner = native_argv[14:]
+    proxy_python, worker_python, checkout = native_argv[0], inner[0], inner[8]
+    if any(not Path(path).is_absolute() or ".." in Path(path).parts
+           for path in (proxy_python, worker_python, checkout)):
+        raise ActionResultError("native launch interpreter or checkout is not absolute")
+    worker_args = [worker_python] + _pool.worker_argv(
+        worker_script=launcher_path, action_key=key, cas_root=record["cas_root"],
+        checkout_root=checkout, recompute=record.get("recompute") is True)
+    expected = _resource_scope._wrapped_scope_argv(
+        _pool._with_cpu_affinity(worker_args, assigned), python=proxy_python,
+        helper=proxy, socket_path=scope["socket_path"], action_key=key,
+        nonce=nonce, token=scope["token"])
+    if native_argv != expected:
+        raise ActionResultError("immutable native launch argv differs from selected broker control or request")
     for source in (core, launcher):
         path = Path(source["path"])
         try:
@@ -594,6 +622,13 @@ def read_verified_action_result(
             input_payloads[identity] = _read_declared_input(
                 cas, entry, cap=limits[identity])
 
+    # Finish all native proof/runtime I/O before the LAST selected ending read.
+    if require_native_producer_context:
+        if _native_producer_context(
+                queue, record, attempt_record, action, receipt,
+                evidence_cap=evidence_cap) != native_context:
+            raise ActionResultError("the selected native proof changed while the result was read")
+
     # Completion recheck: the same generation, attempt, outcome and selected
     # identity must still stand, and the held attempt must still bind to the
     # terminal it was read from.  A newer failure, withdrawal or replacement
@@ -615,13 +650,10 @@ def read_verified_action_result(
 
     if require_native_producer_context:
         native_fields = ("claimed_by", "claimed_host", "resources", "resource_scope",
-                         "resource_scope_cleanup", "cpu_allocation", "worker_script")
+                         "resource_scope_cleanup", "cpu_allocation", "worker_script",
+                         "cas_root", "recompute")
         if any(rechecked.get(k) != record.get(k) for k in native_fields):
             raise ActionResultError("the selected native ending changed while the result was read")
-        if _native_producer_context(
-                queue, rechecked, rechecked_attempt, action, receipt,
-                evidence_cap=evidence_cap) != native_context:
-            raise ActionResultError("the selected native proof changed while the result was read")
 
     worker = attempt_record.get("claimed_by")
     host = attempt_record.get("claimed_host")

@@ -2801,6 +2801,11 @@ def worker_argv(
     ] + (["--recompute"] if recompute else [])
 
 
+def _with_cpu_affinity(argv: list[str], cpus: list[int]) -> list[str]:
+    """The pure launch prefix shared by execution and selected provenance."""
+    return ["/usr/bin/taskset", "--cpu-list", cpu_topology.as_range(cpus), *argv]
+
+
 def _drain(
     process: subprocess.Popen[str], *, timeout_s: float
 ) -> tuple[str, str, bool]:
@@ -17428,16 +17433,10 @@ class PoolQueue:
         key = str(record.get("action_key") or "")
         if (record.get("claimed_host") or record.get("host")) != socket.gethostname():
             raise PoolContractError("resource scope cleanup must run on its claiming host")
-        nonce = control.get("nonce")
-        unit = "prismabuild-job" + hashlib.sha256(
-            (key + str(nonce)).encode()).hexdigest()[:32] + ".slice"
-        if (control.get("action_key") != key or control.get("scope_id") != unit
-                or control.get("cgroup_path") != "/sys/fs/cgroup/prismabuild.slice/" + unit
-                or control.get("socket_path") != str(resource_scope.BROKER_SOCKET)
-                or not isinstance(control.get("token"), str)
-                or len(control["token"]) != 64
-                or any(c not in "0123456789abcdef" for c in control["token"])):
-            raise PoolContractError("invalid resource scope recovery identity")
+        try:
+            nonce, unit = resource_scope._checked_control_identity(key, control)
+        except ValueError as exc:
+            raise PoolContractError(str(exc)) from exc
         scope = resource_scope.ResourceScope(
             key, nonce, control.get("memory_max_bytes"),
             self.ledger().base / "telemetry" / f"{key}.json",
@@ -25930,8 +25929,7 @@ class PoolQueue:
                     raise PoolContractError("CPU allocation exceeds current affinity")
                 # taskset applies affinity before exec, without preexec_fn in
                 # this multithread-capable parent. Descendants inherit it.
-                argv = ["/usr/bin/taskset", "--cpu-list", cpu_topology.as_range(cpus),
-                        *argv]
+                argv = _with_cpu_affinity(argv, cpus)
         owner = str(item.get("claimed_by") or "")
         started = _now()
         # Withdrawal checkpoint one of three: before the launch.  A cancellation

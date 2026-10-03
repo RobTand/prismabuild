@@ -1585,12 +1585,20 @@ public name:
   demand and is corroborated by immutable CPU allocation and native memory
   limit; it does not assert ledger-token or export-allowance allocation.
   The same held immutable telemetry, selected claim/scope/settlement, typed
-  broker proof and exact receipt producer/runtime must agree. Helper root
+  broker proof and exact receipt producer/runtime must agree. The immutable
+  launch argv must be the existing owned broker proxy, CPU-affinity and worker
+  recipe for that selected control (cgroup/socket/token), action/request/CAS
+  and attested launcher/helper root; missing or contradictory argv refuses.
+  Recovery and result reads share the pure control-identity owner; wrapping
+  and verification share the pure launch-vector owners, without broker RPC.
+  Helper root
   comes from the attested canonical core and launcher paths, whose readonly
   bytes are bounded and verified against that receipt, never the consumer's
   current SDK or an installed alias. The broker proof is mutable by its
   existing atomic writer, so it is read bounded/stable/no-follow and its exact
-  digest rechecked; native ending fields are rechecked too. Missing, partial,
+  digest rechecked. ALL native proof/runtime I/O precedes the final selected
+  ending and held immutable-attempt recheck; native ending fields are compared
+  there with no following native read. Missing, partial,
   legacy, cache-hit, foreign or changed native evidence refuses without a
   live-row lookup or canonical-winner fallback. Broker tokens/socket paths
   are never exported. This is provenance, not permission to acquire a lease,

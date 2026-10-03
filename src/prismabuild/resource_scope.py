@@ -354,6 +354,34 @@ _PROXY_PACKAGE_DEPENDENCIES = (
 )
 
 
+def _checked_control_identity(action_key: str, control: object) -> tuple[str, str]:
+    """Pure identity half of pool scope recovery; no host check or broker RPC."""
+    from .produced_output import _broker_scope_id
+
+    if not isinstance(control, dict):
+        raise ValueError("resource scope control must be an object")
+    nonce = control.get("nonce")
+    if (not isinstance(action_key, str) or re.fullmatch(r"[a-f0-9]{64}", action_key) is None
+            or not isinstance(nonce, str) or re.fullmatch(r"[a-f0-9]{32}", nonce) is None):
+        raise ValueError("invalid resource scope recovery identity")
+    unit = _broker_scope_id(action_key, nonce)
+    if (control.get("action_key") != action_key or control.get("scope_id") != unit
+            or control.get("cgroup_path") != "/sys/fs/cgroup/prismabuild.slice/" + unit
+            or control.get("socket_path") != str(BROKER_SOCKET)
+            or not isinstance(control.get("token"), str)
+            or re.fullmatch(r"[a-f0-9]{64}", control["token"]) is None):
+        raise ValueError("invalid resource scope recovery identity")
+    return nonce, unit
+
+
+def _wrapped_scope_argv(argv: list[str], *, python: str, helper: str | Path,
+                        socket_path: str | Path, action_key: str,
+                        nonce: str, token: str) -> list[str]:
+    """One pure broker proxy launch recipe, shared by launch and provenance."""
+    return [python, str(helper), "--socket", str(socket_path), "--action-key",
+            action_key, "--nonce", nonce, "--token", token, "--", *argv]
+
+
 class ResourceScope:
     """One exact key+nonce kernel slice; sampling never signals work.
 
@@ -618,9 +646,9 @@ class ResourceScope:
             helper = root / 'tools/resource_exec.py'
             if not helper.is_file():
                 helper = root / 'tools/fleet/resource_exec.py'
-        return [sys.executable, str(helper), '--socket', str(self.socket_path),
-                '--action-key', self.action_key, '--nonce', self.nonce,
-                '--token', self.token, '--', *argv]
+        return _wrapped_scope_argv(
+            argv, python=sys.executable, helper=helper, socket_path=self.socket_path,
+            action_key=self.action_key, nonce=self.nonce, token=self.token)
 
     def _prior_process_io(self) -> dict[str, Any]:
         """What an earlier sampler already accounted for *this* attempt.
