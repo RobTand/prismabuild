@@ -420,6 +420,17 @@ def test_a_box_announces_the_contracts_it_can_honour(tmp_path):
     assert queue.offers()[0]["progress_contracts"] == [pb.PROGRESS_RECORD_SCHEMA_V1]
 
 
+def test_requested_progress_notice_states_payload_budget_not_release(tmp_path):
+    queue = _fleet(tmp_path, {"dl380g10": [pb.PROGRESS_RECORD_SCHEMA_V1]})
+    said = pbrun.progress_contract_notice(
+        queue, _intent([]), policy=_policy(1800, 900), requested_timeout_s=13000)
+    assert "explicit payload execution budget of 13000s" in said
+    assert "not a wall-clock stop or resource-release guarantee" in said
+    assert "hard execution deadline" not in said
+    assert "startup 1800s" in said and "run 900s" in said
+
+
+
 def test_an_offer_predating_the_field_carries_none(tmp_path):
     """Silence is "did not say", never "supports it"."""
 

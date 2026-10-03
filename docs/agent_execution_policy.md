@@ -53,15 +53,17 @@ rule rather than a preference: a GPU host leaves a CPU-only row to a matching
 host without a GPU that fits it now, until that host claims it or passes on it.
 Do not tag CPU-only work to a GPU host to get it placed.
 
-Every worker loop kills an action at its own safety ceiling, **7200 s by
-default**, and that ceiling is applied as a silent `min` against `--timeout-s`.
-Each box now announces its ceiling (`pbstatus` shows it as `KILL AT`), `pbrun`
-says at submit when `--timeout-s` asks for more than an eligible box will
-grant, and the receipt records what actually governed
-(`execution_timeout_s`, `execution_timeout_requested_s`,
-`execution_timeout_ceiling_s`, `execution_timeout_clamped`). A job that needs
-longer than the ceiling needs a loop started with a larger `--timeout-s`, not
-a larger `--timeout-s` on the submission (RobTand/prismabuild#293).
+Every worker loop applies its own payload execution safety ceiling, **7200 s
+by default**, as a ``min`` against ``--timeout-s``. Each box announces its
+ceiling (``pbstatus`` shows it as ``KILL AT``); ``pbrun`` names eligible
+workers that grant a smaller payload budget and the lowest announced budget.
+This is not a shared wall-clock stop or admission-to-resource-release fence:
+checkout precedes payload execution, credited waits can extend its deadline,
+and uncertain settlement retains resources (#1429). The receipt records
+``execution_timeout_s``, ``execution_timeout_requested_s``,
+``execution_timeout_ceiling_s`` and ``execution_timeout_clamped``. A job that
+needs a larger payload allowance needs an eligible loop with a larger ceiling,
+not just a larger submission ``--timeout-s`` (RobTand/prismabuild#293).
 
 An action that can say when it commits work need not be bounded by elapsed
 time at all. Declare the phases it walks and the quiet each one is allowed --

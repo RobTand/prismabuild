@@ -541,16 +541,17 @@ def per_test_bound(*, timeout_s: float | None, override_s: float | None,
 
 def shard_ceiling(*, timeout_s: float | None, gpu: bool = False,
                   ceilings: dict[str, float | None] | None = None) -> float | None:
-    """The deadline every shard seals as ``execution_timeout_s``; ``None`` seals none.
+    """The payload budget each shard seals as ``execution_timeout_s``; ``None`` seals none.
 
     The smaller of what the submitter asked for and the smallest ceiling a box
     that could claim the shard announces -- the ``min``
-    ``pool._execution_timeout`` applies at claim.  So the sealed number is the
-    deadline the shard runs under wherever it lands, and admission, which
-    reads a holder's sealed request to judge whether it drains soon
-    (``PoolQueue.holder_bound``), reads when the shard will actually end
-    (#939).  Before #939 a shard sealed only an explicit ``--timeout-s``, and
-    admission could read an unsealed shard by its age alone.
+    ``pool._execution_timeout`` applies at claim. The sealed number is a
+    payload execution budget, not a wall-clock stop or resource-release fence.
+    Admission uses a holder's sealed request only as advisory incumbent
+    opportunity metadata (``PoolQueue.holder_bound``), not proof that checkout,
+    credited waits or settlement finish by then (#1429). Before #939 a shard
+    sealed only an explicit ``--timeout-s``, and admission could read an
+    unsealed shard by its age alone.
 
     It is the ceiling itself, not the per-test bound one heartbeat inside it.
     Sealing the bound would move the lease's deadline onto the instant the

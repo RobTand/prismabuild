@@ -2306,7 +2306,8 @@ def progress_contract_notice(
         + f"; at most {total:g}s of quiet in total if it never commits work, "
         + ("and no total-duration limit while it does."
            if requested_timeout_s is None else
-           f"with an explicit hard execution deadline of {requested_timeout_s:g}s."),
+           f"with an explicit payload execution budget of {requested_timeout_s:g}s, "
+           "not a wall-clock stop or resource-release guarantee."),
         # The half of the contract the submitter still owes, said at the moment
         # they are declaring it.  An action that declares phases and reports
         # nothing is not bounded by its work; it just ends at the sum above.
@@ -2403,8 +2404,8 @@ def progress_contract_notice(
             if ceiling < requested_grace:
                 lines.append(
                     f"pbrun: {host} limits {phase['name']} grace to {ceiling:g}s "
-                    f"(requested {requested_grace:g}s); an explicit hard "
-                    "execution deadline is unchanged.")
+                    f"(requested {requested_grace:g}s); an explicit payload "
+                    "execution budget is unchanged.")
     return "\n".join(lines)
 
 
@@ -2414,7 +2415,7 @@ def timeout_ceiling_notice(
     *,
     requested: float | None,
 ) -> str:
-    """Say when the boxes that could run this will cut ``--timeout-s`` short.
+    """Report eligible workers whose payload budgets cut ``--timeout-s`` short.
 
     Every worker loop enforces a safety ceiling of its own (7200 s by
     default) and ``pool._execution_timeout`` applies it as a silent ``min``.
@@ -2427,9 +2428,9 @@ def timeout_ceiling_notice(
     Warned rather than refused, deliberately.  An action that asks for more
     than it needs and finishes inside the ceiling is not wrong, and refusing
     it would break every long submission on a fleet whose loops all default to
-    7200.  What was wrong was being told nothing.  The number to act on is
-    the *smallest* eligible ceiling, because the submitter does not choose
-    which box claims: any box in this set may.
+    7200. What was wrong was being told nothing. The smallest announced budget
+    need not be the budget an unannounced eligible worker would enforce.
+    Checkout, credited waits and settlement are not bounded by this notice.
 
     A box that announces no ceiling is named as unknown rather than assumed
     unbounded -- the loops that starved #275 announced nothing, and reading
@@ -2452,11 +2453,10 @@ def timeout_ceiling_notice(
         named = ", ".join(f"{host} {value:g}s" for host, value in sorted(cutting.items()))
         certain = len(cutting) == len(ceilings)
         lines.append(
-            f"pbrun: --timeout-s {requested:g} exceeds the execution ceiling "
+            f"pbrun: --timeout-s {requested:g} exceeds the payload execution ceiling "
             f"{'every' if certain else 'some'} eligible worker announces "
-            f"({named}), so this action "
-            f"{'will' if certain else 'may'} be killed at {lowest:g}s, not "
-            f"{requested:g}s."
+            f"({named}); the lowest announced payload execution budget is {lowest:g}s, "
+            "not a wall-clock stop or resource-release guarantee."
         )
     if silent:
         lines.append(
