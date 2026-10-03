@@ -1499,12 +1499,14 @@ through its public interfaces. Those are the fleet tools (`pbrun`, `pbtest`,
 internal. It can change in any release, and a client that imports it takes on
 that risk alone.
 
-**Versioning.** `client.SDK_VERSION` names the contract; it is `4`.
+**Versioning.** `client.SDK_VERSION` names the contract; it is `5`.
 Version 2 adds nondestructive ephemeral scratch naming; version 3 adds durable
 sealed declaration evidence before pool payload launch (Refs #1360); version 4
 adds the bounded verified action-result read and the standard-capture command
-binding (#1446). All version-1/2/3 exports, signatures and capability tags
-remain unchanged.
+binding (#1446). Version 5 adds the opt-in native producer context from the
+selected immutable attempt and exact execution receipt (#1481). The generic
+result mapping remains unchanged when the new requirement is false. Earlier
+exports and capability tags remain available.
 `tests/test_client_sdk_surface.py` pins everything the SDK exports: the set of
 names, each callable's parameters (name, kind, default), each constant's value,
 and, for each re-exported name, that it is the internal object itself. An
@@ -1518,7 +1520,7 @@ generation. A client imports `prismabuild.client` from `<root>/src`, so the
 SDK and the runtime that launched the action are one generation. The variable
 names the generation root, never `src`; the client appends `src` itself.
 
-**The surface (version 4).**
+**The surface (version 5).**
 
 | Area | Names |
 |---|---|
@@ -1529,7 +1531,7 @@ names the generation root, never `src`; the client appends `src` itself.
 | Residency maps | `validate_residency_map`, `read_residency_map`, `read_residency_fragments`, `compose_residency_map`, `write_residency_map`, `residency_map_key`, `ResidencyMapError`, `RESIDENCY_MAP_ENV`, `RESIDENCY_MAP_SCHEMA_V1`, `RESIDENCY_MAP_FRAGMENT_SCHEMA_V1`, `RESIDENCY_LANDING_SCHEMA_V1`, `LANDING_STATES` |
 | Ephemeral scratch naming (no lifetime capability) | `bind_ephemeral_scratch`, `ephemeral_scratch_path`, `EPHEMERAL_SCRATCH_SCHEMA_V1`, `LocalScratchError` |
 | Receipts | `cas_receipt_self_check`, `RECEIPT_REFUSALS`, `CAS_RECEIPT_SCHEMA_V3`, `WORKER_ATTESTATION_SCHEMA_V2` |
-| Verified action results (`verified-action-result-v1`) | `read_verified_action_result`, `bind_standard_capture_command`, `ActionResultError`, `ACTION_RESULT_SCHEMA_V1`, `VERIFIED_ACTION_RESULT_TAG` |
+| Verified action results (`verified-action-result-v1`; native context `native-producer-context-v1`) | `read_verified_action_result`, `bind_standard_capture_command`, `ActionResultError`, `ACTION_RESULT_SCHEMA_V1`, `VERIFIED_ACTION_RESULT_TAG`, `NATIVE_PRODUCER_CONTEXT_SCHEMA_V1`, `NATIVE_PRODUCER_CONTEXT_TAG` |
 | Identifiers and digests | `ID_PATTERN`, `ENV_NAME_PATTERN`, `canonical_sha256` |
 | Liveness | `TIER_LOOP_LIVENESS_S`, `TIER_RECORD_SCHEMA` |
 | Capabilities | `CAPABILITIES`, `DECOMPOSITION_TAG` |
@@ -1556,7 +1558,8 @@ public name:
   action, as a CAS lookup does, so the reader still binds the action key,
   inputs and result it expects.
 - `read_verified_action_result(queue, action_key, *, published_unix, attempt,
-  max_result_bytes, max_evidence_bytes=4*1024*1024, input_limits=None)` reads
+  max_result_bytes, max_evidence_bytes=4*1024*1024, input_limits=None,
+  require_native_producer_context=False)` reads
   one exact generation and attempt of an action and returns a freshly owned
   mapping with the `prismabuild.verified_action_result.v1` schema, the exact
   identity (action key, publication, attempt, generation digest, selected
@@ -1571,7 +1574,35 @@ public name:
   historical attempt expansion or canonical action-winner fallback runs. The
   read rechecks the selected ending before returning; it is a point-in-time
   read, not a lease, and the caps bound each read, not a hard NFS syscall
-  deadline. Every refusal is `ActionResultError`.
+  deadline. Every refusal is `ActionResultError`. With the exact boolean
+  `require_native_producer_context=True`, it additionally returns
+  `producer_context` (`prismabuild.native_producer_context.v1`): selected queue
+  root, action/publication/attempt/generation, native nonce and scope, full
+  claimed worker/incarnation and host, producer helper root, resources and
+  provenance digests. `attempt_source` is `selected-immutable-attempt`, not the
+  payload's distinct live `launch-env` observation. `resources_semantics` is
+  `selected-claim-sealed-demand`: the selected claim dictionary equals sealed
+  demand and is corroborated by immutable CPU allocation and native memory
+  limit; it does not assert ledger-token or export-allowance allocation.
+  The same held immutable telemetry, selected claim/scope/settlement, typed
+  broker proof and exact receipt producer/runtime must agree. The immutable
+  launch argv must be the existing owned broker proxy, CPU-affinity and worker
+  recipe for that selected control (cgroup/socket/token), action/request/CAS
+  and attested launcher/helper root; missing or contradictory argv refuses.
+  Recovery and result reads share the pure control-identity owner; wrapping
+  and verification share the pure launch-vector owners, without broker RPC.
+  Helper root
+  comes from the attested canonical core and launcher paths, whose readonly
+  bytes are bounded and verified against that receipt, never the consumer's
+  current SDK or an installed alias. The broker proof is mutable by its
+  existing atomic writer, so it is read bounded/stable/no-follow and its exact
+  digest rechecked. ALL native proof/runtime I/O precedes the final selected
+  ending and held immutable-attempt recheck; native ending fields are compared
+  there with no following native read. Missing, partial,
+  legacy, cache-hit, foreign or changed native evidence refuses without a
+  live-row lookup or canonical-winner fallback. Broker tokens/socket paths
+  are never exported. This is provenance, not permission to acquire a lease,
+  deploy a runtime, change fixture pins or claim application acceptance.
 - `bind_standard_capture_command(request)` proves that a validated request is
   pbrun's standard captured-log recipe, byte for byte: it reconstructs the one
   wrapper pbrun seals from the request's `environment.variables.PATH`,
@@ -1596,7 +1627,8 @@ that are not internal: `produced_output.batch_record` and `batch_records`
 `CAPABILITIES` names what this tree supports: `reader-lease-v1`,
 `progress-v1`, `decomposition-v1` (`pbcampaign` can decompose a logical
 request, #517/#518), and `verified-action-result-v1` (the bounded
-verified-result read, #1446). A client asks for a capability by tag, never by
+verified-result read, #1446), plus `native-producer-context-v1` (strict selected
+producer provenance, #1481). A client asks for a capability by tag, never by
 probing files or function names. The surface test fails if a tag is advertised
 without the code behind it. The SDK's scratch additions are naming only:
 `CAPABILITIES` does **not** advertise `scratch-lifetime-v1` or any scratch

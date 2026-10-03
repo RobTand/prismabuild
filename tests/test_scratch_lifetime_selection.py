@@ -54,7 +54,7 @@ def test_selection_is_nondestructive_and_advertises_no_capability(variables, tmp
     assert sentinel.read_bytes() == b"persistent compilation cache"
     assert not (tmp_path / "temporary").exists()
     assert "scratch-lifetime-v1" not in client.CAPABILITIES
-    assert client.SDK_VERSION == 4
+    assert client.SDK_VERSION == 5
 
 
 @pytest.mark.parametrize("entry", [
