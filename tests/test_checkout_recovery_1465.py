@@ -1878,6 +1878,8 @@ def test_anonymous_inode_label_rejects_every_ascii_control(case, control):
     assert recovery._ANON_INODE_NAME.fullmatch(target) is None
     result = _refused(case, case.prepare)
     assert any("malformed process map" in error for error in result["errors"]), result
+
+
 @pytest.mark.parametrize("device,inode", [((0, 0), 42088), ((0, 0x11), 0)])
 def test_anonymous_inode_name_needs_kernel_device_and_inode(case, device, inode):
     _anonymous_inode_process(case, device=device, inode=inode)
