@@ -134,12 +134,15 @@ class FsProbe:
     it from its attribute cache, so their sum is the lookup count #1020
     measures.  The exporter's read of its own ``/proc/self/status`` (its
     resident-memory gauges) is not a queue lookup and is not counted.
+    Mount-namespace identity stats are also local kernel observations, not
+    record lookups; they are counted separately rather than hidden.
     """
 
     def __init__(self) -> None:
         self.listings: list[str] = []
         self.stats: list[str] = []
         self.opens: list[str] = []
+        self.namespace_stats: list[str] = []
 
     @property
     def lookups(self) -> int:
@@ -147,7 +150,8 @@ class FsProbe:
 
     def summary(self) -> dict[str, int]:
         return {"listings": len(self.listings), "stats": len(self.stats),
-                "opens": len(self.opens), "lookups": self.lookups}
+                "opens": len(self.opens), "lookups": self.lookups,
+                "namespace_stats": len(self.namespace_stats)}
 
     @contextmanager
     def active(self):
@@ -163,11 +167,17 @@ class FsProbe:
             return real["listdir"](path)
 
         def stat(path, *args, **kwargs):
-            self.stats.append(os.fspath(path) if not isinstance(path, int) else "<fd>")
+            observed = os.fspath(path) if not isinstance(path, int) else "<fd>"
+            target = (self.namespace_stats if observed == "/proc/self/ns/mnt"
+                      else self.stats)
+            target.append(observed)
             return real["stat"](path, *args, **kwargs)
 
         def lstat(path, *args, **kwargs):
-            self.stats.append(os.fspath(path))
+            observed = os.fspath(path)
+            target = (self.namespace_stats if observed == "/proc/self/ns/mnt"
+                      else self.stats)
+            target.append(observed)
             return real["lstat"](path, *args, **kwargs)
 
         def os_open(path, *args, **kwargs):
@@ -521,6 +531,7 @@ def test_idle_scrape_reads_no_record_and_lists_no_directory(live_shaped):
         f"{len(not_directories)} stats of records on an unchanged queue, e.g. "
         f"{Counter(Path(p).parent.name for p in not_directories).most_common(5)}")
     assert len(probe.stats) <= directories_under(live_shaped)
+    assert probe.namespace_stats, "retention must still check its current namespace"
 
 
 def test_one_new_ending_is_the_only_record_read(live_shaped):
@@ -598,10 +609,11 @@ def golden_text(root: Path) -> str:
 def test_output_is_mains(tmp_path):
     """Every family, label and value main reported for this fixture, unchanged.
 
-    ``tests/data/pbmetrics_kept_reads_main.prom`` was written by main's
-    exporter (``72b98a871bbb``) from this fixture, with
-    ``python tests/test_pbmetrics_kept_reads.py --golden``.  The families
-    the exporter adds about itself are the only difference, and are present.
+    ``tests/data/pbmetrics_kept_reads_main.prom`` was regenerated from clean
+    main ``443f96d352f5`` through PrismaBuild action
+    ``2569f0cd869a7e0b4a4bdc2b1b60b10246525e4cb0fded33ff2390c474623089``.
+    The verified result adds only main's existing worker-retired family.
+    The exporter families about itself are the only comparison exclusions.
     """
 
     text = golden_text(tmp_path / "pb-queue")

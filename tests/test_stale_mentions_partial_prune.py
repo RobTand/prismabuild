@@ -25,6 +25,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import time
 
 import pytest
 
@@ -902,9 +903,17 @@ def test_the_skip_checkpoint_cache_is_bounded(tmp_path, monkeypatch):
     fragment.write_text("{}")
     material = tmp_path / "material.json"
     material.write_text("{}")
-    fragment_version = stage_release._path_version(fragment)
-    material_version = stage_release._path_version(material)
-    stamps = {str(tmp_path): stage_release._directory_version(tmp_path)}
+    # The capacity test installs checkpoints directly, but their evidence
+    # must be acquired by the same settled, trusted rule as a real sweep.
+    # Bare versions captured in the write's coarse tick are not checkpoints.
+    time.sleep(0.05)
+    fence = stage_release._version_fence()
+    fragment_version = stage_release._fenced_path_version(fragment, fence)[1]
+    material_version = stage_release._fenced_path_version(material, fence)[1]
+    directory_stamp = stage_release._trusted_directory_stamp(tmp_path)
+    assert fragment_version is not None and material_version is not None
+    assert directory_stamp is not None, "checkpoint fixture needs trusted local storage"
+    stamps = {str(tmp_path): directory_stamp}
     one, two = ("tier", "consumer", "mover-1"), ("tier", "consumer", "mover-2")
 
     def install(key, **kwargs):
