@@ -15,23 +15,37 @@ workflow verifies that the reference names an actual issue in this repository
 rather than another pull request, and it does not execute PR code.
 
 Rob also requires one visible canonical priority on newly filed, reopened or materially
-triaged issues (2026-10-03): exactly one leading `[P0]`, `[P1]`, `[P2+]`, `[P2]` or `[P3]`
-title prefix. Where the matching priority label exists, apply exactly that one and remove
-all other priority labels; nonpriority labels such as `documentation` or `in-flight`
-coexist independently. If the matching label is absent, the title prefix remains the
-canonical priority until an authorized maintainer adds it: do not substitute `P2` for
-`P2+` and do not create labels without authority. `P2+` is reserved for an important `P2`
-with a documented objective urgency trigger — a named near-term acceptance or handoff
-cannot obtain trustworthy evidence, evidence is at a concrete retention or deletion
-deadline, or measured recurring waste threatens an admitted resource window; a generic
-blocker or assertion of importance is not a trigger. Severity is separate from dependency
-or decision status: `in-flight`, `blocked-external` and `needs-decision` describe state,
-not severity. A reprioritization leaves an audit comment with the old → new priority, the
-changed evidence, why, and the responsible reviewer, and updates the title and matching
-label together. A missing or conflicting prefix, multiple priority labels, or a
-title/label mismatch blocks handoff and closure until one evidence-backed classification
-is established; pending that resolution, route and contain risk at the highest displayed
-tier. Do not mass relabel historical issues.
+triaged owned issues (2026-10-03): exactly one leading `[P0]`, `[P1]`, `[P2+]`, `[P2]` or
+`[P3]` title prefix. Where the matching priority label exists, apply exactly that one and
+remove all other priority labels; nonpriority labels such as `documentation` or
+`in-flight` coexist independently. If the matching label is absent, the title prefix
+remains the canonical priority until an authorized maintainer adds it: do not substitute
+`P2` for `P2+` and do not create labels without authority.
+
+Severity meanings: `[P0]` — a credible path can ship or serve wrong user-visible bytes,
+corrupt an artifact, or execute or publish under the wrong runtime or identity; repair
+takes precedence over routine work, and a demonstrated `P0` stays `P0`. `[P1]` — a gate
+cannot catch its own relevant defect, or a wrong or underived number is consumed by a
+decision; stop reliance on that gate or number and attack the causal repair. `[P2]` — a
+provenance or observability defect, or a claim beyond available evidence, with no
+established `P0`/`P1` consequence; repair the evidence or claim boundary without
+inventing qualification. `[P3]` — cleanup, documentation currency or ergonomics with no
+decision riding on it; fix bounded prose on sight.
+
+`[P2+]` is an important `P2` with no `P0`/`P1` consequence and a documented objective
+urgency trigger — name the milestone, deadline or measurement and its causal effect: a
+named near-term acceptance or handoff cannot obtain trustworthy evidence, evidence is at
+a concrete retention or deletion deadline, or measured recurring waste threatens an
+admitted resource window. It is prioritized ahead of ordinary `P2`, never by downgrading
+a `P0` or `P1`; a generic blocker or assertion of importance is not a trigger. Severity
+is separate from dependency and decision status; `in-flight`, `blocked-external` and
+`needs-decision` are used only where their repository label definitions match, and
+otherwise stated as explicit body fields. A reprioritization leaves an audit comment
+with the old → new priority, the changed evidence, why, and the responsible reviewer,
+and updates the title and matching label together. A missing or conflicting prefix,
+multiple priority labels, or a title/label mismatch blocks handoff and closure until one
+evidence-backed classification is established; pending that resolution, route and
+contain risk at the highest displayed tier. Do not mass relabel historical issues.
 
 Install the local direct-push guard with:
 
