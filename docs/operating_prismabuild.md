@@ -3271,7 +3271,8 @@ members, missing bytes, unsafe member paths or arbitrary extraction are allowed.
 `.tar.zst` requires installed `zstd`: verification uses `zstd -q -d -c` reading
 a held no-follow archive descriptor, streams tar, and requires successful
 decompressor exit. Missing/failed zstd refuses, never falls back. File/archive
-hashes stream; small JSON is capped at 1 MiB, manifests at 100,000 members and
+hashes stream; small JSON is capped at 2 MiB (including retained legacy terminal
+log records), manifests at 100,000 members and
 32 MiB, and extended tar metadata/expansion are bounded. Larger trees require a
 separately reviewed change, not a bypass flag.
 

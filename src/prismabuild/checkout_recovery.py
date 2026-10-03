@@ -25,7 +25,9 @@ from . import core as pb, materialize, pool
 PLAN_SCHEMA = "prismabuild.checkout_recovery_plan.v1"
 RESULT_SCHEMA = "prismabuild.checkout_recovery_result.v1"
 MAX_ENTRIES = 32
-MAX_JSON_BYTES = 1024 * 1024
+# Legacy terminal records can retain captured logs (observed 1,721,943 bytes).
+# Keep evidence bounded while permitting that actual retained protocol.
+MAX_JSON_BYTES = 2 * 1024 * 1024
 MAX_MEMBERS = 100_000
 MAX_MANIFEST_BYTES = 32 * 1024 * 1024
 CHUNK_BYTES = 1024 * 1024
@@ -155,7 +157,10 @@ def _terminal(queue: pool.PoolQueue, key: str, proc: Path) -> tuple[dict, dict]:
             _refuse(f'{key} is present in {state}')
     readable, unreadable = queue.read_terminal_candidates(key, max_bytes=MAX_JSON_BYTES)
     ending = queue.resolve_ending(readable, unreadable)
-    if (ending['ambiguous'] or unreadable or ending['state'] not in
+    if unreadable:
+        reasons = "; ".join(str(entry["reason"]) for entry in unreadable)
+        _refuse(f"{key} terminal evidence is unreadable: {reasons}")
+    if (ending['ambiguous'] or ending['state'] not in
             (pool.DONE, pool.FAILED, pool.WITHDRAWN) or ending['generation'] is None):
         _refuse(f'{key} has no complete unambiguous terminal generation')
     record = ending['record']

@@ -953,6 +953,7 @@ def test_real_zstd_bank_is_verified_to_completion_not_just_tar_end(case, truncat
     archive = case.archive.with_suffix(".tar.zst")
     subprocess.run([zstd, "-q", "-f", "-o", str(archive), str(case.archive)], check=True)
     if truncated:
+        archive.chmod(0o644)
         with archive.open("r+b") as output:
             output.truncate(max(0, archive.stat().st_size - 5))
     archive.chmod(0o444)
