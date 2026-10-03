@@ -8,6 +8,7 @@ sparklina at load 136 on 20 CPUs. With several workers and no ceiling named,
 each worker now gets ``max(1, cpus // workers)``.
 """
 import pytest
+from pbtest_shard_output import shard_environment
 
 from test_pbtest_reserves_its_threads import _dispatch, _demand
 
@@ -32,7 +33,7 @@ def test_each_worker_gets_its_share_of_the_shard_s_cores(
     payload = _payload(command)
     assert payload[payload.index("-n") + 1] == str(workers)
     for knob in _KNOBS:
-        assert f"{knob}={share}" in payload
+        assert shard_environment(command)[knob] == str(share)
     # The reservation stays the one named: the share divides it, never grows it.
     assert _demand(command)["cpu"] == cpus
 
@@ -41,7 +42,7 @@ def test_a_named_ceiling_is_kept(tmp_path, monkeypatch):
     code, calls = _dispatch(tmp_path, monkeypatch, [
         "--workers-per-shard", "4", "--threads-per-shard", "2", "--cpus-per-shard", "16"])
     assert code == 0
-    assert "OMP_NUM_THREADS=2" in _payload(calls[0])
+    assert shard_environment(calls[0])["OMP_NUM_THREADS"] == "2"
     assert _demand(calls[0])["cpu"] == 16
 
 
@@ -68,7 +69,7 @@ def test_without_a_reservation_or_with_one_worker_the_default_stays_two(
         tmp_path, monkeypatch, extra, threads, cpus):
     code, calls = _dispatch(tmp_path, monkeypatch, extra)
     assert code == 0
-    assert f"OMP_NUM_THREADS={threads}" in _payload(calls[0])
+    assert shard_environment(calls[0])["OMP_NUM_THREADS"] == str(threads)
     assert _demand(calls[0])["cpu"] == cpus
 
 

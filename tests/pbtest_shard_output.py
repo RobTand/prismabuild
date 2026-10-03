@@ -12,8 +12,21 @@ from __future__ import annotations
 
 import io
 import json
+import os
 
 import pbtest_outcomes
+
+
+def shard_environment(command):
+    """Read only the pbrun --env values before the command separator."""
+    flags = list(command[:command.index("--")])
+    return dict(flags[index + 1].split("=", 1)
+                for index, flag in enumerate(flags) if flag == "--env")
+
+
+def admitted_child(command):
+    """Execute a generated child inside a test's admitted action, with env."""
+    return command[command.index("--") + 1:], {**os.environ, **shard_environment(command)}
 
 
 def shard_output(passed: int = 1, skipped: int = 0, *, file: str = "tests/test_one.py",

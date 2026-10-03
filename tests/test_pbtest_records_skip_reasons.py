@@ -21,7 +21,7 @@ import sys
 
 import pytest
 
-from pbtest_shard_output import ShardProcess  # noqa: E402
+from pbtest_shard_output import ShardProcess, admitted_child  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -121,7 +121,8 @@ def _dispatch(checkout: Path, monkeypatch, extra: list[str]):
         if str(pbtest.PBRUN) not in [str(part) for part in command]:
             return REAL_POPEN(command, **kwargs)
         calls.append(command)
-        return REAL_POPEN(command[command.index("--") + 1:], cwd=checkout, **kwargs)
+        argv, environment = admitted_child(command)
+        return REAL_POPEN(argv, cwd=checkout, env=environment, **kwargs)
 
     monkeypatch.setattr(pbtest.subprocess, "Popen", admitted_payload)
     report = checkout.parent / "shards.json"

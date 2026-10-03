@@ -1,8 +1,9 @@
 """Fan a test suite out across the pool instead of running it on one box.
 
 The coordinator discovers files and submits independent shards; PB chooses
-their placement and concurrency. CPU suites default to the x86 class, while
-explicit GPU suites default to GB10. Each shard reserves its aggregate demand.
+their placement and concurrency. CPU suites are portable across workers that
+have their named interpreter; explicit GPU suites default to GB10. Each shard
+reserves its aggregate demand.
 
 Four constraints shape this:
 
@@ -10,19 +11,14 @@ Four constraints shape this:
   the CAS and each worker materializes it on local disk. The payload therefore
   uses only repository-relative paths; embedding the submitter's checkout path
   would escape that snapshot and is refused before publication.
-* **The interpreter is named, not inherited.**  An action runs in a closed
-  environment, so its interpreter is sealed into its command and hence its
-  action key.  A shard therefore names an interpreter that exists on its target
-  and carries the matching class tag; the two must agree.  The tag is also what
-  owns that dependency claim, so a shard states it with ``--tag`` alone and
-  never with ``--anywhere``, which would assert the opposite.
-* **A pass/fail here is not a measurement.**  x86 against aarch64 is a
-  different BLAS and a different FMA order, so this runs *tests*, never a
-  timing or numeric arm.  ``--tag`` defaults to ``x86`` to make that explicit
-  at the call site rather than in a comment -- but only when this runtime is
-  the published one.  Out of a worktree ``pbrun`` seals that worktree's worker
-  launcher into the action and only this box can open it, so the default is
-  no tag at all and ``pbrun``'s own host pin stands.
+* **The interpreter is named, not inherited.** The absolute Python entry is
+  first in the sealed command. Its exact path also enters the queue row and
+  capability fence through pbrun's existing producer contract. A class tag is
+  an additional explicit constraint, never the interpreter's dependency proof.
+* **A pass/fail here is not a measurement.** x86 against aarch64 can use
+  different BLAS and FMA orders. A suite requiring an architecture names it
+  with ``--tag``; portable CPU suites allow every capable worker. Performance
+  or numeric measurement arms still need their explicit workload contract.
 * **A shard reserves what it is allowed to use.**  ``--threads-per-shard``
   sets each pytest worker's BLAS and OMP ceiling. Multiplying that by
   ``--workers-per-shard`` gives ``pbrun --cpus``, which the lane emits as ``--cpus-per-task``.  A ceiling
@@ -1128,17 +1124,23 @@ def shard_pytest_args(arguments: list[str], index: int) -> list[str]:
     return result
 
 
+def shard_command(flags, *, environment, python_entry, arguments):
+    """Bind a shard's child environment and entry at the pbrun boundary."""
+    env_flags = [word for entry in environment for word in ("--env", entry)]
+    return [*flags, *env_flags, "--", *python_entry, *arguments]
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--checkout", required=True,
                     help="Git tree to snapshot and test on the pool")
     ap.add_argument("--python", required=True,
-                    help="interpreter on the TARGET box, not this one")
+                    help="absolute python* executable on eligible TARGET workers")
     ap.add_argument("--tmpdir", default=None,
                     help="absolute scratch directory on eligible TARGET workers; "
                          "default /home/rob/tmp (not checked on the coordinator)")
     ap.add_argument("--tag", action="append", default=[],
-                    help="placement tag; published default is x86, or gb10 with --gpu")
+                    help="additional placement constraint; CPU default is portable, GPU is gb10")
     ap.add_argument("--shards", type=int, default=20,
                     help="how many actions the suite is split into, "
                          "round-robin over the discovered files; more than "
@@ -1255,6 +1257,9 @@ def main() -> int:
     args = ap.parse_args()
 
     try:
+        if pbrun.interpreter_of([args.python]) != args.python:
+            raise ValueError("--python must name an absolute python* executable "
+                             "so its path can be sealed into claim-time eligibility")
         if args.tmpdir is not None and not Path(args.tmpdir).is_absolute():
             raise ValueError("--tmpdir must be an absolute worker-visible path")
         if args.mem_gb < 1:
@@ -1399,15 +1404,20 @@ def main() -> int:
     # only correct placement", and the four shards died on dl380g10 with
     # ``can't open file '<worktree>/tools/prismabuild_worker.py'`` (#292).
     # Say nothing instead and let ``pbrun`` answer; it pins to this box.
-    tags = args.tag or ([] if pool.is_box_local_path(RUNTIME_ROOT) else
-                        ["gb10" if args.gpu else "x86"])
+    tags = args.tag or (["gb10"] if args.gpu and
+                        not pool.is_box_local_path(RUNTIME_ROOT) else [])
+    shard_resources = {"cpu": cpus_per_shard, "mem_gb": args.mem_gb}
+    if args.disk_metadata:
+        shard_resources["disk_metadata"] = 1
+    if args.gpu:
+        shard_resources["gpu"] = 1
     # One placement question before any shard is sealed (#1263): the
     # interpreter every shard names is a requirement, and if no recorded
     # worker reports the path, every shard's pbrun would refuse identically.
     # Answering it once here fails the whole submission fast, naming the path.
     kind, message = interpreter_refusal(
         fleet_queue(), args.python,
-        tags=tags, resources={"cpu": 1, "mem_gb": args.mem_gb},
+        tags=tags, resources=shard_resources,
         needs_gpu=bool(args.gpu))
     if message is not None:
         sys.stderr.write(message + "\n")
@@ -1509,19 +1519,19 @@ def main() -> int:
             "--cwd", str(checkout),
             "--transport", args.transport,
         ]
-        # The class tag is the whole placement claim, and ``--anywhere``
-        # beside it is the contradiction ``pbrun`` refuses: portable, but
-        # only on x86.  It also bought nothing.  ``placement_tags`` returns
-        # the explicit tags before it reads ``--anywhere``, and
-        # ``partition_for`` answers the default partition for tagged work
-        # either way, so the shards keep their placement and their keys.
+        # The known child sources/paths are sealed. In the shared runtime,
+        # an untagged CPU shard asserts that portability through pbrun's
+        # existing flag; otherwise its box-local venv path would retain a
+        # source-host pin. Explicit constraints and local runtimes keep
+        # their existing placement rules; never combine --anywhere and tags.
         for tag in tags:
             flags += ["--tag", tag]
+        if not tags and not pool.is_box_local_path(RUNTIME_ROOT):
+            flags += ["--anywhere"]
         # One --demand token per reserved kind, comma-joined: pbrun parses
         # it as k=v pairs (#1008 item 4 adds disk_metadata beside mem_gb).
-        demand_terms = [f"mem_gb={args.mem_gb}"]
-        if args.disk_metadata:
-            demand_terms.append("disk_metadata=1")
+        demand_terms = [f"{kind}={value}" for kind, value in shard_resources.items()
+                        if kind not in {"cpu", "gpu"}]
         flags += [
             "--demand", ",".join(demand_terms),
             # pbrun fills the cpu demand from --cpus, and its default is 1.
@@ -1529,7 +1539,7 @@ def main() -> int:
             # ceiling above; it is sealed into the action's params, so a suite
             # re-run at a different width is a different action rather than a
             # cache hit.
-            "--cpus", str(cpus_per_shard),
+            "--cpus", str(shard_resources["cpu"]),
         ]
         if args.gpu:
             flags += ["--gpu"]
@@ -1558,19 +1568,20 @@ def main() -> int:
         if args.residency != "none":
             flags += ["--residency", args.residency]
         # Explicit forwarding replaces addopts from both environment and
-        # project config: either can hide -n auto or --dist each. The original
-        # no-forwarding command remains byte-identical for existing receipts.
+        # project config: either can hide -n auto or --dist each. Only an
+        # explicit forwarding request seals the empty addopts override.
         explicit_env = ["PYTEST_ADDOPTS="] if args.pytest_args is not None else []
         explicit_options = ["-o", "addopts="] if args.pytest_args is not None else []
-        command = flags + [
-            "--", "env", f"TMPDIR={args.tmpdir if args.tmpdir is not None else '/home/rob/tmp'}",
-            *threads, *test_bound, *explicit_env,
-            "PYTHONPATH=src:experiments",
-            *python_entry, json.dumps({"files": bucket, "roots": requested_roots}),
+        environment = [f"TMPDIR={args.tmpdir if args.tmpdir is not None else '/home/rob/tmp'}",
+                       *threads, *test_bound, *explicit_env, "PYTHONPATH=src:experiments"]
+        arguments = [
+            json.dumps({"files": bucket, "roots": requested_roots}),
             "-q", "--no-header",
             "-p", "no:cacheprovider", *explicit_options,
             *shard_pytest_args(pytest_args, index), *pytest_workers, *bucket,
         ]
+        command = shard_command(flags, environment=environment,
+                                python_entry=python_entry, arguments=arguments)
         # Hold at most ``--max-clients`` pbrun clients (#1348): the next shard
         # starts when one exits.  Its wait budget starts here, at its own
         # submission, not while it queued behind the others.

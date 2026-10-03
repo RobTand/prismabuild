@@ -1663,10 +1663,24 @@ refuses items from outside the assigned files before they can execute.
 
 `pbtest` file fanout is a public submission contract. CPU-only remains the
 default; `--gpu` adds GPU demand to every shard, with an optional pool-only
-`--gpu-memory-gb` budget validated by the same helpers as `pbrun`. The published
-default placement class is `x86` for CPU and `gb10` for GPU, overridable by
-explicit tags. CPU demand remains pytest workers times their native thread
-ceiling, or a larger explicit reservation; host memory covers the entire shard.
+`--gpu-memory-gb` budget validated by the same helpers as `pbrun`. The
+default CPU placement has no class tag; its exact absolute `python*` entry
+is the interpreter requirement (#1263, #1462). Shared-runtime untagged shards
+use pbrun's existing `--anywhere`; explicit tags and a local runtime's source
+pin remain constraints. GPU's default class remains `gb10`. CPU demand remains
+pytest workers times their native thread ceiling, or a larger explicit
+reservation; host memory covers the entire shard.
+
+The producer passes TMPDIR, native-thread ceilings, per-test/shard alarms,
+PYTHONPATH and explicit empty PYTEST_ADDOPTS through pbrun's existing `--env`
+arguments, so the child starts with the absolute Python entry rather than an
+`env` wrapper. The interpreter path is therefore sealed into `params`, copied
+into the queue row and fenced by `interpreter-path-v1` through the existing
+pbrun/PoolQueue owners. Preflight reads the same aggregate demand as the row.
+Unsupported relative, bare or non-`python*` entries refuse before fanout;
+there is no wrapper parser or guessed interpreter. The environment moves into
+the sealed action and newly generated keys change; retained sealed requests
+are untouched. This source contract requires runtime publication for live use.
 
 Each shard retains its own pytest temporary-directory and outcome ownership.
 `--tmpdir PATH` supplies an absolute worker-visible parent through the existing

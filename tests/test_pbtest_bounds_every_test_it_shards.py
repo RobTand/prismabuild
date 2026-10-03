@@ -22,6 +22,7 @@ import importlib.util
 from pathlib import Path
 import subprocess
 import sys
+from pbtest_shard_output import shard_environment
 
 import pytest
 
@@ -77,26 +78,9 @@ def _dispatch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, extra):
 
 
 def _exported_bound(command) -> str | None:
-    """The bound the shard exports, read from the ``env`` prefix it runs under.
-
-    After ``--`` the argv is ``env NAME=VALUE ... python -m pytest ...``, so a
-    setting placed after the interpreter would be an argument to pytest rather
-    than an environment variable.  Read only the prefix, so a misplaced export
-    reads as absent instead of as present.
-    """
-
-    payload = command[command.index("--") + 1:]
-    assert payload[0] == "env"
-    prefix = []
-    for word in payload[1:]:
-        if "=" not in word:
-            break
-        prefix.append(word)
-    for word in prefix:
-        name, value = word.split("=", 1)
-        if name == pytest_test_bound.TIMEOUT_ENV:
-            return value
-    return None
+    """The per-test bound in pbrun's sealed --env values."""
+    value = shard_environment(command).get(pytest_test_bound.TIMEOUT_ENV)
+    return value
 
 
 def test_a_shard_with_its_own_deadline_bounds_its_tests_inside_it(
@@ -250,7 +234,7 @@ def test_a_late_test_is_bound_by_the_time_left_in_the_shard() -> None:
 def test_the_shard_exports_its_remaining_budget(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """main: only the per-test bound rides in the shard's ``env`` prefix.
+    """main: the per-test bound travels through pbrun's sealed environment.
 
     branch: the sealed deadline is exported beside it, so the plugin can
     tighten a late test's alarm (#1309).
@@ -259,11 +243,4 @@ def test_the_shard_exports_its_remaining_budget(
     code, calls = _dispatch(tmp_path, monkeypatch, ["--timeout-s", "600"])
 
     assert code == 0
-    payload = calls[0][calls[0].index("--") + 1:]
-    assert payload[0] == "env"
-    prefix = []
-    for word in payload[1:]:
-        if "=" not in word:
-            break
-        prefix.append(word)
-    assert (f"{pytest_test_bound.SHARD_BUDGET_ENV}=600") in prefix
+    assert shard_environment(calls[0])[pytest_test_bound.SHARD_BUDGET_ENV] == "600"

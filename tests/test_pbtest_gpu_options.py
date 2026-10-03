@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
+from pbtest_shard_output import admitted_child
 
 from test_pbtest_reserves_its_threads import _dispatch, pbtest
 
@@ -94,9 +95,10 @@ def pytest_sessionfinish(session):
     monkeypatch.setenv("PYTEST_ADDOPTS", "-n 88")
     assert len(calls) == 2
     def execute(command):
-        payload = command[command.index("--") + 1:]
+        payload, environment = admitted_child(command)
         payload[payload.index("/target/python")] = sys.executable
-        return real_run(payload, cwd=checkout, capture_output=True, text=True)
+        return real_run(payload, cwd=checkout, env=environment,
+                        capture_output=True, text=True)
     with ThreadPoolExecutor(max_workers=2) as executor:
         results = list(executor.map(execute, calls))
     for index, result in enumerate(results):
