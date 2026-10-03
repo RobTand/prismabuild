@@ -33,19 +33,22 @@ inventing qualification. `[P3]` — cleanup, documentation currency or ergonomic
 decision riding on it; fix bounded prose on sight.
 
 `[P2+]` is an important `P2` with no `P0`/`P1` consequence and a documented objective
-urgency trigger — name the milestone, deadline or measurement and its causal effect: a
-named near-term acceptance or handoff cannot obtain trustworthy evidence, evidence is at
-a concrete retention or deletion deadline, or measured recurring waste threatens an
-admitted resource window. It is prioritized ahead of ordinary `P2`, never by downgrading
-a `P0` or `P1`; a generic blocker or assertion of importance is not a trigger. Severity
-is separate from dependency and decision status; `in-flight`, `blocked-external` and
-`needs-decision` are used only where their repository label definitions match, and
+urgency trigger — name the milestone, deadline or measurement and its causal effect: an
+already required, named near-term acceptance or handoff cannot obtain trustworthy
+evidence, evidence is at a concrete retention or deletion deadline, or measured
+recurring waste threatens an admitted resource window. It is prioritized ahead of
+ordinary `P2`, never by downgrading a `P0` or `P1`; a generic blocker or assertion of
+importance is not a trigger. Severity is separate from dependency and decision status;
+`in-flight`, `blocked-external` and `needs-decision` are used only where their
+repository label definitions match, and
 otherwise stated as explicit body fields. A reprioritization leaves an audit comment
 with the old → new priority, the changed evidence, why, and the responsible reviewer,
 and updates the title and matching label together. A missing or conflicting prefix,
 multiple priority labels, or a title/label mismatch blocks handoff and closure until one
 evidence-backed classification is established; pending that resolution, route and
-contain risk at the highest displayed tier. Do not mass relabel historical issues.
+contain risk at the highest displayed tier. Do not retrospectively reprioritize
+historical issues, including solely to adopt this taxonomy, and do not mass relabel
+them.
 
 Install the local direct-push guard with:
 
