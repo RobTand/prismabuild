@@ -168,10 +168,10 @@ def test_nobody_announcing_is_an_empty_answer_not_a_zero(tmp_path):
 # What pbrun says
 # --------------------------------------------------------------------------
 
-def test_every_eligible_box_below_the_request_is_stated_as_a_certainty(tmp_path):
+def test_every_eligible_box_below_the_request_states_its_payload_budget(tmp_path):
     queue = _fleet(tmp_path, {"dl380g10": 7200.0, "sparky": 7200.0})
     said = pbrun.timeout_ceiling_notice(queue, _intent([]), requested=13000)
-    assert "will be killed at 7200s, not 13000s" in said
+    assert "lowest possible payload execution budget is 7200s" in said
     assert "every eligible worker" in said
     assert "dl380g10 7200s" in said and "sparky 7200s" in said
 
@@ -179,21 +179,20 @@ def test_every_eligible_box_below_the_request_is_stated_as_a_certainty(tmp_path)
 def test_a_mixed_fleet_is_stated_as_a_risk_not_a_certainty(tmp_path):
     queue = _fleet(tmp_path, {"dl380g10": 7200.0, "sparky": 20000.0})
     said = pbrun.timeout_ceiling_notice(queue, _intent([]), requested=13000)
-    assert "may be killed at 7200s" in said
+    assert "lowest possible payload execution budget is 7200s" in said
     assert "some eligible worker" in said
     assert "sparky" not in said.split("\n")[0]
 
 
-def test_the_deadline_named_is_the_smallest_a_claiming_box_could_impose(tmp_path):
-    # The submitter does not choose which box claims, so the number to act on
-    # is the smallest ceiling any eligible box would impose, not the largest
-    # -- two boxes BOTH below the request, at different ceilings, because a
-    # fixture where only one cuts cannot tell ``min`` from ``max``.
+def test_the_budget_named_is_the_smallest_a_claiming_box_could_impose(tmp_path):
+    # The submitter does not choose which box claims. The smallest budget is
+    # possible, not one guaranteed wall-clock stop shared by all workers.
+    # Two cutting boxes distinguish min from max; the third does not clamp.
     queue = _fleet(tmp_path, {"dl380g10": 3600.0, "sparklina": 7200.0,
                               "sparky": 20000.0})
     said = pbrun.timeout_ceiling_notice(queue, _intent([]), requested=13000)
-    assert "may be killed at 3600s" in said
-    assert "7200s" not in said.split(" so this action ")[1]
+    assert "lowest possible payload execution budget is 3600s" in said
+    assert "7200s" not in said.split("; the lowest possible")[1]
 
 
 def test_a_request_every_box_can_grant_is_not_worth_a_word(tmp_path):
@@ -211,7 +210,7 @@ def test_a_silent_box_is_named_as_unknown_rather_than_unlimited(tmp_path):
     said = pbrun.timeout_ceiling_notice(queue, _intent([]), requested=13000)
     assert "sparklina" in said
     assert "unknown rather than unlimited" in said
-    assert "will be killed" not in said
+    assert "be killed at" not in said
 
 
 def test_an_unannounced_fleet_says_nothing_rather_than_guessing(tmp_path):

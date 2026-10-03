@@ -11015,25 +11015,25 @@ class PoolQueue:
         return max(0.0, _now() - float(first))
 
     def holder_bound(self, action_key: str, *, now: float | None = None) -> dict[str, object]:
-        """Whether draining this box would release ``action_key`` soon.
+        """Classify the holder's advisory incumbent scheduling opportunity.
 
-        The answer is read from what the holder declared, never guessed:
+        This is not an admission-to-resource-release fence (#1429). The
+        answer is read from the holder's declaration, never observed settlement:
 
         * ``unbounded`` -- its sealed request is progress-governed and asks for
           no total timeout, so nothing bounds its run (the GLM campaign
           holders).  Withholding a box for it is waiting on a day.
-        * ``transient`` -- it runs under a deadline and either is still inside
-          ``WITHHOLD_CEILING_S`` of its claim, or its requested timeout ends
-          inside that ceiling from now.  ``WITHHOLD_CEILING_S`` is the pool's
-          own line between a transient hold and a multi-hour one.
-        * ``long`` -- bounded, but already older than that line with no
-          declared end inside it: the 2026-09-04 multi-hour holder.
-        * ``overdue`` -- its requested timeout has already ended.  Its worker
-          is killing it, or is gone and its lease is expiring; either way it
-          has outlived what it declared, and that is no evidence it drains
-          soon.  This outranks age.  Before #939 an end in the past counted
-          as "inside the ceiling from now", so such a holder read
-          ``transient`` for as long as its claim stood.
+        * ``transient`` -- it declares a payload budget and either is still
+          inside ``WITHHOLD_CEILING_S`` of its claim, or its advisory
+          ``claimed_unix + requested_timeout_s`` lies inside that ceiling
+          from now. This is the pool's line between short and multi-hour
+          scheduling opportunities, not a guaranteed resource return.
+        * ``long`` -- finite declared budget, but already older than that
+          line with no advisory opportunity inside it.
+        * ``overdue`` -- the advisory opportunity has already passed. This
+          does not prove the payload deadline fired or resources settled.
+          It outranks age: before #939 a point in the past counted as inside
+          the ceiling, so the holder stayed ``transient`` while its claim stood.
         * ``unknown`` -- no readable claim names it (a raw ledger holder, or a
           record this read could not use).  The caller falls back to the
           item's own withhold clock for these, which is the behavior every
@@ -11041,9 +11041,9 @@ class PoolQueue:
 
         Age only grows, so a ``transient`` holder becomes ``long`` by itself
         and a veto that rests on it expires with no clock of the item's own.
-        The one way back is real: a holder whose requested timeout now ends
-        inside the ceiling is going to release soon, whatever its age -- until
-        that end passes, when it is ``overdue``.
+        The one way back is a declared advisory opportunity inside the ceiling,
+        whatever the holder's age, until that point passes and is ``overdue``.
+        Preparation, credited waits and settlement remain independently governed.
         """
 
         moment = _now() if now is None else float(now)

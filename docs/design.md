@@ -483,6 +483,12 @@ action key, publication generation, host, priority, election epoch and original
 is ONLY selector-opportunity metadata, never proof that preparation, checkpoint
 credits, cleanup or physical resources finish by then. All prospective timed
 backfill candidates remain UNKNOWN, including five-second payloads (#1429).
+Submit notices and ``pbtest.shard_ceiling`` describe a **payload execution
+budget**, not a wall-clock stop or admission-to-resource-release guarantee.
+When eligible worker ceilings differ, the lowest advertised budget is only
+one possible payload allowance; the notice retains each cutting worker
+and its own ceiling. Progress notices preserve an explicitly requested
+payload budget without promising when preparation or settlement finishes.
 
 Discover potential measurement generations and elected sidecars outside H;
 acquire sorted measurement transition keys M **nonblocking before H**, using the
