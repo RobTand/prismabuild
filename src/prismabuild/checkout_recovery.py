@@ -501,13 +501,14 @@ def _mapped_path_reference(target: str, roots: list[str]) -> bool:
 
 
 def _process_maps(pidroot: Path, roots: list[str], inodes: set[tuple[int, int]],
-                  *, kernel_thread: bool = False) -> tuple[bytes, dict[str, str]]:
-    """Prove complete mapping metadata, never stat a possibly deleted target.
+                  *, kernel_thread: bool = False) -> tuple[bytes, dict[str, tuple[str, int, int]]]:
+    """Prove complete mapping metadata and filesystem-level inode identity.
 
-    maps supplies the kernel device/inode, including external hardlink and
-    bind aliases. map_files independently accounts for file-backed VMA ranges
-    and names; following its symlinks would need additional Linux capabilities
-    and would wrongly depend on a pathname still existing.
+    maps exposes the superblock device, not necessarily the st_dev returned
+    by the filesystem (notably Btrfs subvolumes). Stat each map_files magic
+    link through its held proc directory instead: the kernel retains the
+    mapped file even after unlink. Never reopen the readlink pathname or infer
+    a device translation. Missing authority to follow a magic link refuses.
     """
     raw = pb._read_regular_file_nofollow(pidroot / 'maps', where='process maps',
                                         max_bytes=MAX_JSON_BYTES)
@@ -535,8 +536,6 @@ def _process_maps(pidroot: Path, roots: list[str], inodes: set[tuple[int, int]],
         target = match[8] or ''
         if _mapped_path_reference(target, roots):
             _refuse(f'live PID {pidroot.name} maps a selected checkout path')
-        if inode and (device, inode) in inodes:
-            _refuse(f'live PID {pidroot.name} maps a selected checkout inode')
         pseudo = target.startswith('[') and target.endswith(']')
         anonymous_inode = _ANON_INODE_NAME.fullmatch(target) is not None
         if (target and not target.startswith('/') and not pseudo and not anonymous_inode
@@ -573,7 +572,15 @@ def _process_maps(pidroot: Path, roots: list[str], inodes: set[tuple[int, int]],
                 if ((mapped.startswith('/') or _ANON_INODE_NAME.fullmatch(mapped))
                         and target not in (mapped, mapped.replace('\\012', '\n'))):
                     _refuse(f'process maps/map_files identity changed for PID {pidroot.name}')
-                targets[name] = target
+                try:
+                    info = os.stat(name, dir_fd=fd)
+                except OSError as exc:
+                    _refuse(f'process map_files identity unavailable for PID {pidroot.name} '
+                            f'range {name}: {exc}')
+                identity = (info.st_dev, info.st_ino)
+                if identity in inodes:
+                    _refuse(f'live PID {pidroot.name} maps a selected checkout inode')
+                targets[name] = (target, *identity)
         if targets.keys() != file_maps.keys():
             _refuse(f'process maps/map_files incomplete for PID {pidroot.name}')
         pb._assert_directory_identity(fd, mapdir, where='process map_files')

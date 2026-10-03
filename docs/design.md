@@ -2404,11 +2404,14 @@ miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
   writable/untrusted/symlink banks, replacements and any plan drift all refuse.
   The census includes every live userspace PID's memory mappings, including
   the operator/recovery PID and native dlopen libraries after their FD closes.
-  Bounded no-follow maps reads supply original paths and kernel device/inode
-  identities, catching external hardlink/bind aliases and deleted mapped names.
-  Strict ordered/nonoverlapping mapping records and a readable no-follow
-  map_files range/target inventory must agree; repeated complete snapshots must
-  be identical inside a held PID directory and unchanged start-time lifetime.
+  Bounded no-follow maps reads supply original paths and VMA ranges. Their
+  superblock device/inode is not interchangeable with filesystem stat identity
+  (Btrfs subvolumes can report a different stat device). Each map_files magic
+  link is stat-ed through the held proc directory to obtain the mapped file
+  identity, including external hardlinks, bind aliases and deleted mapped names.
+  Strict ordered/nonoverlapping maps and the complete map_files range/target
+  inventory must agree. Repeated complete snapshots include these authoritative
+  stat identities and must agree inside the held PID/start-time lifetime.
   Canonical kernel `anon_inode:[name]` VMAs require a nonzero device/inode and
   the same complete map_files range/name proof; they never exempt selected
   inode/path attribution or admit arbitrary relative filesystem names. Labels
@@ -2417,14 +2420,17 @@ miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
   evidence refuses, as do reused/new PIDs. Each mapping text inventory is at
   most 2 MiB and each range/entry census at most 100,000 items. Empty maps only
   pass for a positively identified same-lifetime PF_KTHREAD with no cmdline,
-  executable or FDs and an empty readable map_files directory. map_files links
-  are read, not dereferenced: mappings retain their kernel identity even when
-  the mapped pathname no longer exists. Permissions/churn can refuse unused
-  trees; neither self/operator exemptions nor a fallback empty census exists.
-  Native closed-FD mapping qualification on DL Btrfs is unresolved (#1472):
-  its file stat device/inode failed to match the observed VMA identity in the
-  native fixture. NAS qualification of the anonymous-inode grammar is not
-  Btrfs alias-attribution acceptance or authorization for operational recovery.
+  executable or FDs and an empty readable map_files directory. Following the
+  kernel magic link retains the mapped file even after unlink; recovery never
+  reopens its readlink pathname or guesses a filesystem/device translation.
+  Missing permission to stat any mapping fails closed. Linux may require
+  CAP_CHECKPOINT_RESTORE or CAP_SYS_ADMIN in the initial user namespace in
+  addition to process-access permission. No self/operator exemption exists.
+  Positive native attribution qualification remains open (#1472): the admitted
+  DL Btrfs capture observed stat device 0:31 versus VMA/mount device 0:30,
+  including a deleted external alias, but actual map_files stat returned EPERM
+  with no effective capabilities. Source/refusal qualification is not privileged
+  positive native proof on Btrfs or NAS, deployment or operational authorization.
   A kernel mount census refuses selected-root/descendant mounts, including
   same-device bind mounts, and hidden /proc censuses; recursive removal must
   not cross into external native-bank, CAS or image namespaces.
