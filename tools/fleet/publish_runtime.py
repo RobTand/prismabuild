@@ -159,6 +159,8 @@ FLEET_SCRIPTS = (
     # holding the mount, and it reads /proc on the box it runs on to find out
     # what is still live there.
     "pb_gc.py",
+    # Explicit plan-first banked-checkout recovery runs on the owning host.
+    "pbrecover_checkout.py",
     # The reconcile, for the same reason: the endings it files are the ones
     # no waiter asked for, and the operator who notices they are missing is
     # on whichever box has the shared mount rather than the checkout.
