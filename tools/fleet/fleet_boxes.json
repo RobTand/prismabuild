@@ -86,7 +86,8 @@
      "--source-pool",
      "storage_pool",
      "--interval-s",
-     "5"
+     "5",
+     "--output-windows"
     ],
     "storage": [
      "--mount-map",
