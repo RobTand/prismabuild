@@ -3231,6 +3231,126 @@ never snapshots. This applies to the smoke action, whose result is
 `fleet_result.txt`, and to every export shard, whose result is
 `results/glm53-tessera/shard-NNNNN.json`.
 
+## Recover explicitly banked orphan execution checkouts (#1465)
+
+`pbrecover_checkout.py` is bounded operator recovery, not an automatic reaper
+or another deletion owner. Normal removal still belongs exclusively to
+`materialize._cleanup_execution_checkout`; recovery calls that same helper
+only after an exact plan has been reviewed and root has authorized its canonical
+SHA256 (RootGO). It does not stop services, change admission, release a broker
+hold, rewrite a queue/token, bank files, or install privileged source.
+
+Before planning, separately establish host quiescence under the **existing**
+root-owned closed `/run/prismabuild/maintenance.json` gate and retain its exact
+owner/epoch. A stopped supervisor alone is insufficient. Separately make and
+verify a full original-tree bank outside all selected deletion roots, retaining
+native outputs, ignored/untracked files, dirty bytes, `.git`, directories,
+regular-file modes/owners, and symlink targets. A snapshot-only or tracked-only
+archive is refused. Bank root/archive parents must not be symlinks or
+group/world writable; archives must be trusted, single-link, read-only regular
+`.tar` or `.tar.zst` files. Do not move or chmod a live tree as part of this
+command. Native banks, CAS, images, primary worktrees and active claims are not
+recovery targets.
+
+Provide a JSON **list** of 1–32 explicit candidates, each with exactly:
+
+```json
+{
+  "action_key": "full 64-character lowercase action key",
+  "path": "/home/rob/tmp/prismabuild-checkouts/<key12>.<mkdtemp8token>",
+  "archive_path": "/absolute/trusted-bank/original-tree.tar.zst",
+  "archive_sha256": "full 64-character lowercase compressed archive SHA256"
+}
+```
+
+The path must be the exact immediate generated root under the deployed
+materializer local root, not its `checkout/` subdirectory or an arbitrary source
+tree. Tar members must use one consistent layout: the generated root basename
+as outer directory, or `.` with paths relative to that root. No unrelated/extra
+members, missing bytes, unsafe member paths or arbitrary extraction are allowed.
+`.tar.zst` requires installed `zstd`: verification uses `zstd -q -d -c` reading
+a held no-follow archive descriptor, streams tar, and requires successful
+decompressor exit. Missing/failed zstd refuses, never falls back. File/archive
+hashes stream; small JSON is capped at 2 MiB (including retained legacy terminal
+log records), manifests at 100,000 members and
+32 MiB, and extended tar metadata/expansion are bounded. Larger trees require a
+separately reviewed change, not a bypass flag.
+
+Use the published generation's command on the host owning the orphan:
+
+```sh
+/mnt/shared/prismabuild-fleet/repo/tools/pbrecover_checkout.py \
+  --queue-root /mnt/shared/prismabuild-fleet/pb-queue \
+  --bank-root /absolute/trusted-bank \
+  --maintenance-owner EXACT_EXISTING_OWNER \
+  --candidates /absolute/candidates.json > /absolute/recovery-plan-output.json
+```
+
+Successful JSON contains `plan` and `plan_sha256`. Save the exact `plan` object
+in a separate JSON file; the SHA is `core.canonical_sha256(plan)` (Core's
+sorted, compact UTF-8 canonical JSON, without a newline). Saved JSON formatting
+does not change this digest. Review the whole plan and obtain RootGO for
+**that exact SHA**, not a path prefix, free-space target, previous plan or broad
+root-wide removal. Only then, as root/euid 0, use the same roots/owner:
+
+```sh
+/mnt/shared/prismabuild-fleet/repo/tools/pbrecover_checkout.py \
+  --queue-root /mnt/shared/prismabuild-fleet/pb-queue \
+  --bank-root /absolute/trusted-bank \
+  --maintenance-owner EXACT_EXISTING_OWNER \
+  --apply --plan /absolute/exact-plan.json --plan-sha256 ROOTGO_SHA256
+```
+
+There are no CLI local-root, gate or `/proc` override flags. The Python API's
+private filesystem seams exist for real isolated fixtures, not a live bypass.
+Planning need not run as root, but an unreadable process census must refuse.
+
+Plans bind selected terminal generation/attempt/snapshot, validated immutable
+action request and CAS snapshot input, directory device/inode/uid and all
+member identities, archive identity/full-tree manifest, host/root identities,
+and closed gate owner/epoch. Complete unambiguous `DONE`, `FAILED` or
+`WITHDRAWN` endings, including failed/lease-lost work, can authorize recovery;
+this does **not** claim a passing receipt/profile where absent. Ready/claimed
+rows, live/malformed leases, missing/malformed request or snapshot, different
+`HEAD`, replaced/symlink/out-of-namespace roots, untrusted/changing banks,
+incomplete copies, any live PID/FD/cwd/exe/cmdline or memory-mapping reference,
+and unreadable census/gates refuse. Every live userspace PID, including the
+operator and recovery process, needs a complete bounded no-follow `maps` read
+and a readable no-follow `map_files` directory. Mapping paths and the kernel's
+major/minor-device plus inode are compared independently with the selected
+original tree, so closing the FD, loading a native library, using an external
+hardlink/bind alias or unlinking a mapped name cannot authorize deletion.
+File-backed address ranges and link targets must agree across both inventories;
+two complete mapping snapshots must be identical inside the same PID lifetime
+and held process-directory identity. Missing/denied metadata, malformed or
+overlapping ranges, a missing final newline, mismatched or changing inventories,
+new/reused PIDs and exceeded bounds all refuse. A userspace PID's empty maps are
+not proof of abandonment; empty mappings are accepted only for a same-lifetime
+`PF_KTHREAD` process with no cmdline, executable or FDs and an empty readable
+`map_files` inventory. Each maps read and cumulative map_files names/targets are
+bounded to 2 MiB, with at most 100,000 mapping records or map_files entries per
+PID. Recovery reads map_files symlink targets without dereferencing them:
+identity comes from kernel maps metadata, not an alias pathname still existing.
+Permission restrictions or mapping churn can therefore conservatively prevent
+recovery even when the selected tree is unused; do not suppress these refusals.
+The kernel mount census also rejects selected-root or descendant mounts
+(including same-device bind mounts) and hidden `/proc` censuses, so cleanup cannot
+cross into a native bank/CAS/image namespace. Dead stale leases are retained,
+not removed. Age, terminal status, an unlocked lock or a bare archive digest
+alone never authorize deletion.
+
+Apply holds all selected keys' existing nonblocking transition locks and
+re-proves **every** entry before invoking cleanup for the first tree. Drift
+means replan and new RootGO; no queue/hold is automatically repaired. Complete
+JSON is printed; refusal/incomplete removal exits nonzero. Multiple removals
+are not atomic: later cleanup failure can leave earlier selected trees removed
+and the failing tree partially present. `removed` reports only roots actually
+absent; the materializer's existing cleanup-failure record/stderr remains the
+diagnostic evidence. Keep the maintenance hold, inspect banks/remaining paths,
+and separately review further recovery; this command never releases the hold.
+Its local census is not distributed quiescence or protection against an
+external root writer ignoring maintenance.
+
 ## Sweep the store's per-execution litter
 
 `pb_gc` inventories per-execution claims under `local-results/v1/`, worker lock

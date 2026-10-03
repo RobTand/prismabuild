@@ -2382,7 +2382,51 @@ miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
   worker-local checkout, runs from the original relative subdirectory, and
   removes the private tree afterward. A failed removal is warned and recorded
   under the worker's local materialization root; it never changes completed
-  task work into a retry. The worker preflight requires the private tree to be
+  task work into a retry. Bounded operator recovery (#1465) is a separate,
+  plan-first source command, `pbrecover_checkout.py`, backed by
+  `checkout_recovery.prepare_checkout_recovery` and `apply_checkout_recovery`.
+  Its 1–32 explicitly selected generated roots remain owned for deletion by
+  `materialize._cleanup_execution_checkout`; no second recursive remover,
+  chmod/chown path, automatic reaper or deployment-default change is added.
+  The `prismabuild.checkout_recovery_plan.v1` plan binds original selection,
+  directory/member identities, terminal generation/attempt/snapshot, validated
+  sealed Core request and verified CAS snapshot input, original full-tree bank
+  archive, host/root identities and the exact closed root maintenance epoch.
+  RootGO names Core's exact canonical plan SHA256; apply requires euid 0 and
+  holds all selected keys' existing nonblocking Pool transition locks while
+  re-proving every candidate before any deletion. Terminal failure/lease-lost
+  or withdrawal is recoverable evidence, not a fabricated receipt/profile pass.
+  Full original regular-file bytes/modes/owners, directories and symlink targets
+  must match a no-follow held `.tar`/`.tar.zst` archive, including dirty,
+  native, ignored and untracked outputs. Tar parsing never extracts; hashes
+  stream, metadata/count/expansion are bounded, and zstd failure refuses.
+  Live ownership/references, an incomplete process census, missing authority,
+  writable/untrusted/symlink banks, replacements and any plan drift all refuse.
+  The census includes every live userspace PID's memory mappings, including
+  the operator/recovery PID and native dlopen libraries after their FD closes.
+  Bounded no-follow maps reads supply original paths and kernel device/inode
+  identities, catching external hardlink/bind aliases and deleted mapped names.
+  Strict ordered/nonoverlapping mapping records and a readable no-follow
+  map_files range/target inventory must agree; repeated complete snapshots must
+  be identical inside a held PID directory and unchanged start-time lifetime.
+  Malformed, truncated, empty userspace, denied, incomplete or changing mapping
+  evidence refuses, as do reused/new PIDs. Each mapping text inventory is at
+  most 2 MiB and each range/entry census at most 100,000 items. Empty maps only
+  pass for a positively identified same-lifetime PF_KTHREAD with no cmdline,
+  executable or FDs and an empty readable map_files directory. map_files links
+  are read, not dereferenced: mappings retain their kernel identity even when
+  the mapped pathname no longer exists. Permissions/churn can refuse unused
+  trees; neither self/operator exemptions nor a fallback empty census exists.
+  A kernel mount census refuses selected-root/descendant mounts, including
+  same-device bind mounts, and hidden /proc censuses; recursive removal must
+  not cross into external native-bank, CAS or image namespaces.
+  Recovery does not bank files, edit queues/tokens, change services/admission,
+  release the existing hold or install privileged source. It requires external
+  host quiescence; the local census is not a distributed fence against arbitrary
+  writers. Removal is not atomic across roots, and helper failure reports
+  incomplete actual removal rather than success. See the operating guide's
+  explicit banking, plan/RootGO/apply procedure and refusal/size limitations.
+  The worker preflight requires the private tree to be
   clean at the sealed commit, to carry the recorded parent, and to resolve
   every recorded branch to its recorded id. This snapshot proof applies to
   every definition carrying `params.checkout_snapshot`, including producers
