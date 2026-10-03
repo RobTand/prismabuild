@@ -3870,18 +3870,18 @@ class ResourceLedger:
     """Per-host capacity, held as tokens that are acquired by ``rename``.
 
     Capacity is expressed as *countable* tokens rather than as a number in a
-    file that everyone read-modify-writes, because this queue has exactly one
-    concurrency primitive it trusts on NFS -- ``rename`` -- and a ledger that
-    needed a second one would be a ledger with a second failure mode.  One
+    file that everyone read-modify-writes. Token movement uses ``rename``;
+    the existing owner mutation exclusion makes multi-step census and
+    transition decisions atomic among cooperating writers. One
     token is one indivisible unit of a resource (``gpu`` is a device, ``mem_gb``
     is a gigabyte), so acquiring is renaming N of them out of ``free/`` and
     releasing is renaming them back.  A worker that dies holding tokens is
     recovered by the same reaper that recovers its claim, since the tokens are
     filed under the action key.
 
-    Capacity is grown but never shrunk here: removing a token that another
-    process holds is not expressible as a rename, and a box whose capacity
-    dropped mid-flight is a configuration change, not a queue operation.
+    Mint rights are permanent, while free capacity can be retired without
+    revoking a live holder. Explicit held-token retirement remains an owner
+    operation; a lower declared capacity alone never releases live work.
     """
 
     def __init__(self, root: str | Path, host: str | None = None, *,
