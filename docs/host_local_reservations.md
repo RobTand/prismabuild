@@ -133,6 +133,31 @@ contracts, which this issue forbids. Per-holder metadata (`.adaptive.json`,
 foreign release, so it stays with the tokens. What admission does about it is
 read it once per holder instead of twice.
 
+### Host token mutation exclusion (#1484, source-only contract)
+
+The shared token owner now supplies a permanent POSIX mutation lock at
+`reservations/<host>/.mutation.lock`, through the existing
+`ResourceLedger._mutation_locked` hook and token-mutator decorators. Direct
+ledger construction and `PoolQueue.ledger` share that identity, including
+foreign finish/reap and private acquisition commit/abandon. Admission begin
+is nonblocking; release, transfer, grow/shrink and completion wait rather
+than report a transition they did not perform. The lock is never removed
+as a stale-owner remedy.
+
+A capacity check-and-reserve owner retains this same reentrant exclusion
+over its complete fresh census, decision and begin/commit or rollback.
+CPU `AdmissionGate`, where applicable, is acquired first; no mutation
+section requests it or another parent/owner lock. Nested operations through
+separate ledger instances preserve the outer descriptor and process
+exclusion. No payload I/O is held under the mutation lock. Tier locks and
+tier-only census/name caching remain distinct; adding host exclusion does
+not turn a legacy host census into complete filesystem-capacity evidence.
+
+This is a bounded prerequisite for #1483, not a live adoption, filesystem
+identity mapping, safe DL diagnostic route or five-percent-floor positive.
+Actual parent/security review and admitted PB controls remain required;
+mixed-version writers outside the exclusion remain unqualified.
+
 CPU action identity and the GPU action contract (`adaptive_gpu.action_contract`)
 still read the sealed request from the CAS on the mount. The pool now resolves
 these immutable facts before candidate admission, retaining per-key exclusion,
