@@ -15312,6 +15312,14 @@ fixtures qualify only the source behavior. Deployment, real worker-crash/cross-
 host recovery, real PQ Stage A/B sizing and persistent-cache bounds remain owed;
 no live scratch, model bytes, serving gate or GPU workload is changed here.
 
+Final source-only security review repaired exact tombstone and widowed-lease
+ownership recovery. The changed-source integrated campaign passed711 distinct
+tests across34 files with0 skips; all20 PB-planned shards and the four-file
+compile have authenticated SDK4/Core receipts and raw snapshot bindings.
+See `evidence/issue1360_scratch_final_source_acceptance_2026-10-03.json`.
+This completes the source review gate only; #1360 and the deployment/crash/PQ
+workload obligations above remain open.
+
 **Still open.**
 
 * The export's pool-side cost is unmeasured. The receipt records file-side
