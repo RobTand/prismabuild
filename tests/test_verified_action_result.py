@@ -766,14 +766,10 @@ def _native_fixture(base: Path, monkeypatch):
                     "telemetry": telemetry, "export": export}},
               "detail": {"resource_telemetry": telemetry, "cpu_allocation": allocation}}
     queue, record = _finish(base, action, receipt, native=native, worker_script=launcher_file)
-    worker = record["claimed_by"]
-    proof = {"schema": reader_lease.ATTESTATION_SCHEMA_V1,
-             "action_key": key, "nonce": nonce, "scope_id": scope_id,
-             "host": host, "worker": worker, "incarnation": worker,
-             "scope_empty": True, **export}
+    # finish already files this proof through the existing pool writer.
+    # Reuse that carrier rather than minting a second fixture representation.
     proof_path = reader_lease.attestation_path(queue, key, nonce)
-    proof_path.parent.mkdir(parents=True)
-    proof_path.write_bytes(pb._canonical_file_bytes(proof))
+    assert proof_path.is_file()
     return action, queue, record, receipt, proof_path
 
 
