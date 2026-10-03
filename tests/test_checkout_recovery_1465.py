@@ -171,7 +171,7 @@ def make_case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     proc_root = tmp_path / "proc"
     protected_root = tmp_path / "not-recovery-owned"
     for path in (local_root, bank_root, proc_root, protected_root):
-        path.mkdir()
+        path.mkdir(mode=0o700)
     for name in ("user-primary", "native-banks", "images", "historical-checkout"):
         path = protected_root / name
         path.mkdir()
@@ -288,7 +288,8 @@ def case(make_case) -> RecoveryCase:
 def _planned(case: RecoveryCase, **kwargs: object) -> dict[str, object]:
     before = case.preserved()
     plan = case.prepare(**kwargs)
-    assert plan["schema"] == PLAN_SCHEMA, plan
+    assert plan.get("complete") is True, json.dumps(plan, sort_keys=True)
+    assert plan["schema"] == PLAN_SCHEMA, json.dumps(plan, sort_keys=True)
     assert plan["complete"] is True and plan["status"] == "planned", plan
     assert case.cleanup_calls == []
     assert case.preserved() == before
