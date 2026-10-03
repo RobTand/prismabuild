@@ -3915,7 +3915,11 @@ the pairs the action writes. Do not list the produced spool's own pair:
 declare the spool's byte bound with `PRISMABUILD_PRODUCED_SPOOL_MAX_BYTES`,
 which pbrun charges by default (#905), and the window and the scratch then add
 up in one reservation. `PRISMABUILD_PRODUCED_SPOOL_HOST_WINDOW=1` is the same
-switch explicitly; `=0` beside a declared bound is refused at submission. The action is claimed only on a box
+switch explicitly; `=0` beside a declared bound is refused at submission.
+The same bound also seals `PRISMABUILD_PRODUCED_SPOOL_PACED_EXPORT=1`, so the
+producer's exports are paced to the fill its tier reserved (#905); `=0` beside
+a bound is refused the same way, and `submit_group(..., paced=False)` still
+opts one group out. The action is claimed only on a box
 whose `--spool-gb` covers it; see "A box's local disk budget". When every
 matching box offers less, `pbrun` refuses the action at submission. When some box's offer does
 not name the kind, `pbrun` queues it, and every claim records

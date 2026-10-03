@@ -1166,6 +1166,11 @@ _FLEET_DEMAND_KINDS = frozenset({"cpu", "gpu", "mem_gb", "disk_metadata"})
 _SPOOL_WINDOW_KIND = "spool_gb"
 _SPOOL_WINDOW_ENV = "PRISMABUILD_PRODUCED_SPOOL_HOST_WINDOW"
 _SPOOL_MAX_ENV = "PRISMABUILD_PRODUCED_SPOOL_MAX_BYTES"
+#: The producer's paced-export switch (``produced_spool.PACED_EXPORT_ENV``).
+#: A declared bound seals it to ``"1"`` at new submission (#905): a producer
+#: that declared a spool paces its exports to the fill its tier reserved
+#: instead of writing at line rate over the movers that share the tier.
+_SPOOL_PACED_ENV = "PRISMABUILD_PRODUCED_SPOOL_PACED_EXPORT"
 
 
 def normalize_spool_declaration(variables: dict[str, str]) -> None:
@@ -1182,10 +1187,19 @@ def normalize_spool_declaration(variables: dict[str, str]) -> None:
     ledger.  No bound declares nothing, so an unchanged request without a
     spool bound is byte-for-byte what it was.
 
-    ``produced_spool.host_window_terms`` itself stays switch-gated: an
-    already-sealed request keeps its meaning, explicit ``0`` included.  This
-    normalization is only ever applied while a new submission is being
-    sealed.
+    The producer's paced-export switch
+    (``PRISMABUILD_PRODUCED_SPOOL_PACED_EXPORT``) is normalized the same way
+    (#905 Phase 1): beside a declared bound it is sealed to ``"1"``, an
+    explicit ``1`` is the same contract, an explicit ``0`` is refused with the
+    same "drop the bound" guidance (an unpaced declared spool would starve the
+    movers sharing its tier), and any other value is refused as the producer
+    itself would.  Per-group ``submit_group(..., paced=)`` still overrides it.
+
+    ``produced_spool.host_window_terms`` itself stays switch-gated, and
+    ``ProducedSpool`` still reads whatever the sealed environment says: an
+    already-sealed request keeps its meaning, explicit ``0`` and absent
+    included.  This normalization is only ever applied while a new submission
+    is being sealed.
     """
 
     if _SPOOL_MAX_ENV not in variables:
@@ -1200,6 +1214,19 @@ def normalize_spool_declaration(variables: dict[str, str]) -> None:
             f"drop {_SPOOL_WINDOW_ENV}=0.")
     if switch in ("", "1"):
         variables[_SPOOL_WINDOW_ENV] = "1"
+    paced = variables.get(_SPOOL_PACED_ENV, "")
+    if paced == "0":
+        raise SystemExit(
+            f"pbrun: {_SPOOL_MAX_ENV} declares a spool bound, but "
+            f"{_SPOOL_PACED_ENV}=0 would export it at line rate over the "
+            f"movers sharing its tier; a declared spool is paced by default "
+            f"(#905). Drop the bound to declare no spool, or drop "
+            f"{_SPOOL_PACED_ENV}=0 (a single group can still opt out with "
+            f"submit_group(..., paced=False)).")
+    if paced not in ("", "1"):
+        raise SystemExit(
+            f"pbrun: {_SPOOL_PACED_ENV} must be 0 or 1, not {paced!r}")
+    variables[_SPOOL_PACED_ENV] = "1"
 
 
 def spool_window_terms(variables: dict[str, str], *, transport: str) -> dict[str, int]:
