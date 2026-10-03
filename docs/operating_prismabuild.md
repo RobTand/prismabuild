@@ -3337,7 +3337,8 @@ and held process-directory identity.
 Kernel `anon_inode:[name]` mappings, including io_uring, retain nonzero
 device/inode attribution and exact map_files range/name agreement. They are
 not filesystem paths, ignored processes, or exemptions from selected-file
-identity checks; arbitrary relative mapping names still refuse.
+identity checks; arbitrary relative mapping names still refuse. Anonymous-inode
+labels exclude every ASCII control (0x00–0x1f and DEL), brackets and slashes.
 Missing/denied metadata, malformed or
 overlapping ranges, a missing final newline, mismatched or changing inventories,
 new/reused PIDs and exceeded bounds all refuse. A userspace PID's empty maps are

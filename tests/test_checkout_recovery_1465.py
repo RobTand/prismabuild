@@ -1864,6 +1864,20 @@ def test_anonymous_inode_grammar_does_not_allow_arbitrary_relative_maps(case, ta
     assert any("malformed process map" in error for error in result["errors"]), result
 
 
+@pytest.mark.parametrize("control", [*range(0x20), 0x7f], ids=lambda code: f"ascii-{code:02x}")
+def test_anonymous_inode_label_rejects_every_ascii_control(case, control):
+    target = f"anon_inode:[io{chr(control)}uring]"
+    process = _anonymous_inode_process(case)
+    (process / "maps").write_text(f"1000-2000 rw-s 10000000 00:11 42088 {target}\n")
+    if control != 0:
+        # Match both inventories: refusal must be the label, not a mismatched
+        # link. NUL cannot be represented in a filesystem symlink target.
+        link = process / "map_files" / "1000-2000"
+        link.unlink()
+        link.symlink_to(target)
+    assert recovery._ANON_INODE_NAME.fullmatch(target) is None
+    result = _refused(case, case.prepare)
+    assert any("malformed process map" in error for error in result["errors"]), result
 @pytest.mark.parametrize("device,inode", [((0, 0), 42088), ((0, 0x11), 0)])
 def test_anonymous_inode_name_needs_kernel_device_and_inode(case, device, inode):
     _anonymous_inode_process(case, device=device, inode=inode)

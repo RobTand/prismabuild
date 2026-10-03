@@ -38,7 +38,7 @@ _MAP_RECORD = re.compile(
     r'([0-9a-f]{1,16}) +([0-9a-f]{1,8}):([0-9a-f]{1,8}) +'
     r'([0-9]{1,20})(?: +(.*))?\Z')
 _MAP_RANGE = re.compile(r'[0-9a-f]{1,16}-[0-9a-f]{1,16}\Z')
-_ANON_INODE_NAME = re.compile(r'anon_inode:\[[^\[\]/\x00\r\n]+\]\Z')
+_ANON_INODE_NAME = re.compile(r'anon_inode:\[[^\[\]/\x00-\x1f\x7f]+\]\Z')
 
 
 class CheckoutRecoveryRefusal(ValueError):

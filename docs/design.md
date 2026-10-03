@@ -2411,7 +2411,8 @@ miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
   be identical inside a held PID directory and unchanged start-time lifetime.
   Canonical kernel `anon_inode:[name]` VMAs require a nonzero device/inode and
   the same complete map_files range/name proof; they never exempt selected
-  inode/path attribution or admit arbitrary relative filesystem names.
+  inode/path attribution or admit arbitrary relative filesystem names. Labels
+  exclude every ASCII control (0x00–0x1f and DEL), brackets and slashes.
   Malformed, truncated, empty userspace, denied, incomplete or changing mapping
   evidence refuses, as do reused/new PIDs. Each mapping text inventory is at
   most 2 MiB and each range/entry census at most 100,000 items. Empty maps only
