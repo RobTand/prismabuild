@@ -290,3 +290,105 @@ def test_replay_rechecks_private_namespace_permissions_before_launch(lifetime, m
     with pytest.raises(scratch.LocalScratchError, match="permissions"):
         queue._record_scratch_lifetimes(item["action_key"], claim_snapshot=item, env={})
     assert (leaf(item) / "temp").read_bytes() == b"temporary" and queue.ledger().held()
+
+
+def test_withdrawn_tombstone_releases_only_its_durably_cleaned_owner(lifetime, monkeypatch):
+    queue, item, variables, outcome = launch(lifetime, monkeypatch)
+    key = item["action_key"]
+    queue.withdraw(key, signal_child=False)
+    withdrawn = queue.item_path(pool.WITHDRAWN, key).read_bytes()
+    with monkeypatch.context() as fault:
+        fault.setattr(queue, "_release_reservation", lambda *a, **k:
+                      (_ for _ in ()).throw(OSError("fixture withdrawal before release")))
+        with pytest.raises(OSError, match="fixture withdrawal before release"):
+            queue.finish(key, status="withdrawn", detail=outcome, claim_snapshot=item)
+    tombstones = list(queue.dir(pool.CLAIMED).glob(f"{key}.*{pool.TOMBSTONE_SUFFIX}"))
+    assert len(tombstones) == 1 and queue.ledger().held()
+    assert not leaf(item).exists() and not queue.item_path(pool.CLAIMED, key).exists()
+    monkeypatch.setattr(scratch, "_clean_scratch_directory", lambda *a:
+                        pytest.fail("durably consumed scratch must not be revisited"))
+    assert queue.sweep_finish_tombstones(grace_s=-1) == [key]
+    assert not tombstones[0].exists() and queue.ledger().held() == {}
+    assert queue.item_path(pool.WITHDRAWN, key).read_bytes() == withdrawn
+    assert not queue.item_path(pool.CLAIMED, key).exists()
+    assert (Path(variables["CACHE_ROOT"]) / "compiled").read_bytes() == b"persistent"
+
+
+@pytest.mark.parametrize("returncode,state", [(0, pool.DONE), (1, pool.READY)])
+def test_published_ending_tombstone_recovers_without_rewriting_ending(
+        lifetime, monkeypatch, returncode, state):
+    queue, item, variables, outcome = launch(lifetime, monkeypatch, returncode=returncode)
+    key = item["action_key"]
+    ending = queue.item_path(state, key)
+    write = pool._write_json_atomic
+
+    def interrupt(path, value):
+        write(path, value)
+        if path == ending:
+            raise OSError("fixture after ending publication")
+
+    with monkeypatch.context() as fault:
+        fault.setattr(pool, "_write_json_atomic", interrupt)
+        with pytest.raises(OSError, match="fixture after ending publication"):
+            queue.finish(key, status=outcome["status"], detail=outcome, claim_snapshot=item)
+    before = ending.read_bytes()
+    assert list(queue.dir(pool.CLAIMED).glob(f"{key}.*{pool.TOMBSTONE_SUFFIX}"))
+    assert queue.sweep_finish_tombstones(grace_s=-1) == [key]
+    assert ending.read_bytes() == before and queue.ledger().held() == {}
+    assert not list(queue.dir(pool.CLAIMED).glob(f"{key}.*{pool.TOMBSTONE_SUFFIX}"))
+    assert not queue.item_path(pool.CLAIMED, key).exists()
+
+
+def test_widowed_scratch_lease_retains_charge_until_exact_cleanup_recovers(lifetime, monkeypatch):
+    queue, item, variables, outcome = launch(lifetime, monkeypatch)
+    key = item["action_key"]
+    queue.item_path(pool.CLAIMED, key).unlink()
+    held = queue.ledger().held()
+    with monkeypatch.context() as fault:
+        fault.setattr(scratch, "_clean_scratch_directory", lambda *a:
+                      (_ for _ in ()).throw(OSError("fixture orphan cleanup interruption")))
+        assert queue.sweep_widowed_leases(timeout_s=-1) == []
+    assert queue.ledger().held() == held and queue.lease_path(key).exists()
+    assert (leaf(item) / "temp").read_bytes() == b"temporary"
+    assert queue.sweep_widowed_leases(timeout_s=-1) == [key]
+    assert queue.ledger().held() == {} and not queue.lease_path(key).exists()
+    assert not leaf(item).exists() and not queue.item_path(pool.CLAIMED, key).exists()
+    assert (Path(variables["CACHE_ROOT"]) / "compiled").read_bytes() == b"persistent"
+
+
+@pytest.mark.parametrize("contradiction", ["owner", "nonce"])
+def test_widowed_scratch_lease_refuses_contradictory_owner_before_scope_stop(
+        lifetime, monkeypatch, contradiction):
+    queue, item, variables, outcome = launch(lifetime, monkeypatch)
+    key = item["action_key"]
+    queue.item_path(pool.CLAIMED, key).unlink()
+    lease = pool._read_json(queue.lease_path(key))
+    if contradiction == "owner":
+        lease["owner"] = "foreign-worker"
+    else:
+        lease["resource_scope"]["nonce"] = "e" * 32
+    pool._write_json_atomic(queue.lease_path(key), lease)
+    before = queue.lease_path(key).read_bytes()
+    held = queue.ledger().held()
+    monkeypatch.setattr(resource_scope.ResourceScope, "terminate_owned", lambda *a, **k:
+                        pytest.fail("contradictory lease must not stop a scope"))
+    assert queue.sweep_widowed_leases(timeout_s=-1) == []
+    assert queue.lease_path(key).read_bytes() == before and queue.ledger().held() == held
+    assert (leaf(item) / "temp").read_bytes() == b"temporary"
+
+
+def test_recovery_owner_cannot_override_a_live_claim(lifetime, monkeypatch):
+    queue, item, variables, outcome = launch(lifetime, monkeypatch)
+    key = item["action_key"]
+    tombstone = queue.dir(pool.CLAIMED) / f"{key}.fixture{pool.TOMBSTONE_SUFFIX}"
+    saved = live_record(queue, item)
+    pool._write_json_atomic(tombstone, saved)
+    before = queue.item_path(pool.CLAIMED, key).read_bytes()
+    held = queue.ledger().held()
+    monkeypatch.setattr(resource_scope.ResourceScope, "terminate_owned", lambda *a, **k:
+                        pytest.fail("recovery path must not control a live claim"))
+    cleanup = queue.cleanup_action_containers(saved, scratch_owner_path=tombstone)
+    assert cleanup["complete"] is False
+    assert queue.item_path(pool.CLAIMED, key).read_bytes() == before
+    assert queue.ledger().held() == held and (leaf(item) / "temp").read_bytes() == b"temporary"
+

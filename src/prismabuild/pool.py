@@ -17675,19 +17675,52 @@ class PoolQueue:
         self._persist_scratch_lifetime(claim_snapshot, evidence)
         return local_scratch._scratch_lifetime_record(evidence)
 
+    def _scratch_lifetime_owner(self, record: Mapping[str, object], *, scope_only=False,
+                                owner_path: Path | None = None) -> tuple[Path, dict[str, object] | None]:
+        """Read the exact existing recovery owner, never a caller-only snapshot."""
+        key = str(record["action_key"])
+        path = self._late_finish_path(record) if scope_only else self.item_path(CLAIMED, key)
+        if owner_path is not None:
+            if (scope_only or owner_path.parent != self.dir(CLAIMED)
+                    or not (owner_path == self.lease_path(key)
+                            or (owner_path.name.startswith(key + ".")
+                                and owner_path.name.endswith(TOMBSTONE_SUFFIX)))
+                    or self.item_path(CLAIMED, key).exists()):
+                raise local_scratch.LocalScratchError("scratch recovery owner conflicts with a live claim")
+            path = owner_path
+        live = _read_json(path)
+        field = local_scratch.SCRATCH_LIFETIME_FIELD
+        if path == self.lease_path(key) and live is not None and field in live:
+            envelope = local_scratch._scratch_lifetime_record(live[field])["claim_envelope"]
+            for claim_field, lease_field in (("action_key", "action_key"),
+                                            ("claimed_by", "owner"), ("claimed_host", "host"),
+                                            ("claimed_unix", "claimed_unix"),
+                                            ("published_unix", "published_unix")):
+                if live.get(lease_field) != envelope[claim_field]:
+                    raise local_scratch.LocalScratchError("scratch lease contradicts its lifetime owner")
+            live = {**live, **{k: v for k, v in envelope.items() if k != "owner_attempt"}}
+            if local_scratch._scratch_claim_envelope(live) != envelope:
+                raise local_scratch.LocalScratchError("scratch lease scope contradicts its lifetime owner")
+        if owner_path is not None and live is not None and field in live:
+            envelope = local_scratch._scratch_lifetime_record(live[field])["claim_envelope"]
+            if (envelope["action_key"] != key
+                    or local_scratch._scratch_claim_envelope(live) != envelope):
+                raise local_scratch.LocalScratchError("scratch recovery record contradicts its lifetime owner")
+        return path, live
+
     def _persist_scratch_lifetime(self, record: Mapping[str, object], evidence: Mapping[str, object],
-                                  *, scope_only=False) -> None:
+                                  *, scope_only=False, owner_path: Path | None = None) -> None:
         """Existing key lock held; preserve live/late ownership and heartbeat."""
         field = local_scratch.SCRATCH_LIFETIME_FIELD
         checked = local_scratch._scratch_lifetime_record(evidence)
         if checked["claim_envelope"] != local_scratch._scratch_claim_envelope(record):
             raise local_scratch.LocalScratchError("scratch lifetime owner changed before persistence")
         key = str(record["action_key"])
-        path = self._late_finish_path(record) if scope_only else self.item_path(CLAIMED, key)
-        live = _read_json(path)
+        path, live = self._scratch_lifetime_owner(
+            record, scope_only=scope_only, owner_path=owner_path)
         if live is None or local_scratch._scratch_claim_envelope(live) != checked["claim_envelope"]:
             raise local_scratch.LocalScratchError("scratch lifetime durable owner unavailable")
-        lease = None if scope_only else _read_json(self.lease_path(key))
+        lease = None if scope_only or path == self.lease_path(key) else _read_json(self.lease_path(key))
         if not scope_only:
             _check_claim_lease_identity(key, live, lease)
         if lease is not None:
@@ -17723,11 +17756,12 @@ class PoolQueue:
 
     @_serialized_key
     def _finalize_scratch_lifetimes(self, action_key: str, record: Mapping[str, object],
-                                     *, export: object, scope_only=False) -> dict[str, object]:
+                                     *, export: object, scope_only=False,
+                                     owner_path: Path | None = None) -> dict[str, object]:
         """Only stopped attempt descendants permit consuming owned scratch."""
         field = local_scratch.SCRATCH_LIFETIME_FIELD
-        path = self._late_finish_path(record) if scope_only else self.item_path(CLAIMED, action_key)
-        durable = _read_json(path)
+        _, durable = self._scratch_lifetime_owner(
+            record, scope_only=scope_only, owner_path=owner_path)
         if durable is not None and _same_claim(durable, record):
             if field in durable:
                 authoritative = local_scratch._scratch_lifetime_record(durable[field])
@@ -17749,7 +17783,7 @@ class PoolQueue:
                 local_scratch._scratch_lifetime_selections(local_scratch._sealed_scratch_variables(record))):
             raise local_scratch.LocalScratchError("scratch cleanup has a foreign owner or sealed intent")
         if all(entry["cleaned"] for entry in evidence["entries"]):
-            self._persist_scratch_lifetime(record, evidence, scope_only=scope_only)
+            self._persist_scratch_lifetime(record, evidence, scope_only=scope_only, owner_path=owner_path)
             return {"complete": True, "used": True}
         from . import reader_lease
         valid, reason = reader_lease.export_verdict_proves_empty(
@@ -17764,7 +17798,7 @@ class PoolQueue:
         if not valid:
             raise local_scratch.LocalScratchError(f"scratch containment unproven: {reason}")
         # Verify durable owner/mirror BEFORE deletion, including late attempts.
-        self._persist_scratch_lifetime(record, evidence, scope_only=scope_only)
+        self._persist_scratch_lifetime(record, evidence, scope_only=scope_only, owner_path=owner_path)
         for entry in evidence["entries"]:
             if entry["cleaned"]:
                 continue
@@ -17776,7 +17810,7 @@ class PoolQueue:
             entry["cleaned"] = True
             # Crash before this commit re-proves absence through held parent
             # identities. Crash after it never revisits the consumed path.
-            self._persist_scratch_lifetime(record, evidence, scope_only=scope_only)
+            self._persist_scratch_lifetime(record, evidence, scope_only=scope_only, owner_path=owner_path)
         return {"complete": True, "used": True}
 
     @_serialized_key
@@ -18012,9 +18046,24 @@ class PoolQueue:
 
     def cleanup_action_containers(
         self, record: Mapping[str, object], *, reason: str = "completion",
-        scope_only: bool = False,
+        scope_only: bool = False, scratch_owner_path: Path | None = None,
     ) -> dict[str, object]:
         """Existing cleanup owner: containment, then durable scratch cleanup."""
+        if scratch_owner_path is not None and local_scratch.SCRATCH_LIFETIME_FIELD in record:
+            try:
+                _, owner = self._scratch_lifetime_owner(
+                    record, scope_only=scope_only, owner_path=scratch_owner_path)
+                if owner is None:
+                    raise local_scratch.LocalScratchError("scratch recovery owner disappeared")
+                # A widowed lease carries the complete envelope inside its
+                # lifetime record; check it before even stopping the scope.
+                if isinstance(record, dict):
+                    record.update(owner)
+                else:
+                    record = owner
+            except Exception as exc:                                 # noqa: BLE001
+                return {"complete": False, "used": True, "removed": [], "remaining": [],
+                        "error": f"scratch recovery owner unavailable: {type(exc).__name__}: {exc}"}
         result = self._cleanup_payload_containers(record, reason=reason, scope_only=scope_only)
         if not result["complete"]:
             return result
@@ -18025,7 +18074,8 @@ class PoolQueue:
                 return result
             scratch = self._finalize_scratch_lifetimes(
                 str(record["action_key"]), record, scope_only=scope_only,
-                export=(result.get("resource_scope") or {}).get("export"))
+                export=(result.get("resource_scope") or {}).get("export"),
+                owner_path=scratch_owner_path)
             if not scratch["used"]:
                 return result
             return {**result, "scratch_lifetime": scratch, "complete": scratch["complete"]}
@@ -22544,7 +22594,7 @@ class PoolQueue:
                                     continue
                                 record["claimed_host"] = holders[0]
                             cleanup = self.cleanup_action_containers(
-                                record, reason="interrupted finish cleanup")
+                                record, reason="interrupted finish cleanup", scratch_owner_path=tombstone)
                             if not cleanup["complete"]:
                                 continue
                         if holders:
@@ -22669,7 +22719,7 @@ class PoolQueue:
                     continue
                 if host is not None:
                     record["host"] = host
-                container_cleanup = self.cleanup_action_containers(record)
+                container_cleanup = self.cleanup_action_containers(record, scratch_owner_path=lease)
                 if not container_cleanup["complete"]:
                     continue
                 # "Any tokens still held under the key go back" is right for a

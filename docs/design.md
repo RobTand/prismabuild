@@ -15298,8 +15298,13 @@ a retry or remove a withdrawn owner. Partial deletion retries the same identity;
 an absent leaf is completion only with matching recorded ancestry. A durable
 consumed entry is never revisited. Existing `finish_pending`, late-finish and
 tombstone recovery retain the owner; a late predecessor cannot rewrite the
-successor's claim, lease or reservation. Central immutable attempt detail and
-withdrawal evidence retain the lifetime record; retry shaping strips it.
+successor's claim, lease or reservation. Tombstone and widowed-lease recovery
+use that exact durable owner under the same transition lock, without restoring
+a covered claim or rewriting a queued successor. A widowed lease must match its
+saved lifetime envelope's worker, host, publication and claim timestamps and
+exact broker scope before cleanup; contradictory evidence retains capacity.
+Central immutable attempt detail and withdrawal evidence retain the lifetime
+record; retry shaping strips it.
 
 File fsync and atomic record publication use the existing process-crash storage
 contract, not new NFS/server power-loss qualification (DUR-01). CPU tempdir fault
