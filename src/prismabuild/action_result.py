@@ -1,7 +1,7 @@
 """Bounded, verified read of one finished action's result (#1446).
 
 The public entry point is :func:`read_verified_action_result`, re-exported by
-``prismabuild.client`` as SDK v4 under the capability tag
+``prismabuild.client`` as SDK v5 under the capability tag
 ``verified-action-result-v1``.  It answers one question for a client that must
 not reimplement the queue or CAS layout: *what did this exact generation and
 attempt of this action publish, and is the evidence still the one the worker
@@ -29,15 +29,20 @@ from __future__ import annotations
 import math
 import re
 from collections.abc import Mapping
+from pathlib import Path
 
 from . import core as pb
 from . import movement_actions
 from . import pool as _pool
+from . import produced_output as _produced_output
+from . import reader_lease as _reader_lease
 
 #: The schema of the mapping :func:`read_verified_action_result` returns.
 ACTION_RESULT_SCHEMA_V1 = "prismabuild.verified_action_result.v1"
 #: The capability tag this tree advertises for the bounded verified-result read.
 VERIFIED_ACTION_RESULT_TAG = "verified-action-result-v1"
+NATIVE_PRODUCER_CONTEXT_SCHEMA_V1 = "prismabuild.native_producer_context.v1"
+NATIVE_PRODUCER_CONTEXT_TAG = "native-producer-context-v1"
 
 #: A full lowercase action key: 64 hexadecimal characters, nothing else.
 _ACTION_KEY_RE = re.compile(r"[0-9a-f]{64}\Z")
@@ -319,6 +324,136 @@ def _read_declared_input(
         raise ActionResultError(str(exc)) from exc
 
 
+def _native_producer_context(queue, record, attempt_record, action, receipt, *,
+                             evidence_cap: int) -> dict[str, object]:
+    """Bind native provenance to the held selection, never a live lookup."""
+
+    key = action["action_key"]
+    worker, host = attempt_record.get("claimed_by"), attempt_record.get("claimed_host")
+    if (not isinstance(worker, str) or not worker
+            or not isinstance(host, str) or not host
+            or record.get("claimed_by") != worker
+            or record.get("claimed_host") != host):
+        raise ActionResultError("native producer claim identity is missing or inconsistent")
+    detail = attempt_record["detail"]
+    telemetry = detail.get("resource_telemetry")
+    if not isinstance(telemetry, Mapping) or telemetry.get("complete") is not True:
+        raise ActionResultError("selected immutable attempt has no complete native telemetry")
+    nonce = telemetry.get("nonce")
+    if not isinstance(nonce, str) or re.fullmatch(r"[0-9a-f]{32}", nonce) is None:
+        raise ActionResultError("native producer nonce is invalid")
+    scope_id = _produced_output._broker_scope_id(key, nonce)
+    if (telemetry.get("action_key") != key or telemetry.get("host") != host
+            or telemetry.get("scope_unit") != scope_id):
+        raise ActionResultError("native producer telemetry identity differs from selection")
+    scope = record.get("resource_scope")
+    if (not isinstance(scope, Mapping) or scope.get("action_key") != key
+            or scope.get("nonce") != nonce or scope.get("scope_id") != scope_id):
+        raise ActionResultError("native producer scope differs from selected claim")
+    resources = record.get("resources")
+    demand = action["params"].get("demand")
+    if (not isinstance(resources, Mapping) or not resources
+            or not isinstance(demand, Mapping) or resources != demand
+            or any(not isinstance(k, str) or not k or type(v) is not int or v < 0
+                   for values in (resources, demand) for k, v in values.items())):
+        raise ActionResultError("native producer claim resources differ from sealed demand")
+    memory = resources.get("mem_gb")
+    cpus = resources.get("cpu")
+    if type(memory) is not int or memory < 1 or type(cpus) is not int or cpus < 1:
+        raise ActionResultError("native producer demand has no positive CPU/memory budget")
+    memory_bytes = memory * 1024 ** 3
+    if (type(telemetry.get("memory_max_bytes")) is not int
+            or telemetry["memory_max_bytes"] != memory_bytes
+            or type(scope.get("memory_max_bytes")) is not int
+            or scope["memory_max_bytes"] != memory_bytes):
+        raise ActionResultError("native producer memory budget differs from sealed demand")
+    allocation = detail.get("cpu_allocation")
+    if not isinstance(allocation, Mapping) or allocation != record.get("cpu_allocation"):
+        raise ActionResultError("native producer CPU allocation differs from selected claim")
+    preferred, fallback = allocation.get("preferred"), allocation.get("fallback")
+    if not isinstance(preferred, list) or not isinstance(fallback, list):
+        raise ActionResultError("native producer CPU allocation is incomplete")
+    assigned = preferred + fallback
+    if (any(type(cpu) is not int or cpu < 0 for cpu in assigned)
+            or len(assigned) != cpus or len(set(assigned)) != cpus):
+        raise ActionResultError("native producer CPU allocation differs from sealed demand")
+    cleanup = record.get("resource_scope_cleanup")
+    if (not isinstance(cleanup, Mapping) or cleanup.get("complete") is not True
+            or cleanup.get("nonce") != nonce):
+        raise ActionResultError("native producer scope settlement is incomplete")
+    clean_telemetry = cleanup.get("telemetry")
+    if (not isinstance(clean_telemetry, Mapping)
+            or clean_telemetry.get("complete") is not True
+            or any(clean_telemetry.get(k) != telemetry.get(k) for k in
+                   ("action_key", "nonce", "scope_unit", "host", "memory_max_bytes"))):
+        raise ActionResultError("native producer settlement telemetry differs from attempt")
+    if isinstance(cleanup.get("export"), Mapping):
+        _checked_publication_unix(cleanup["export"].get("stopped_unix"))
+    ok, reason = _reader_lease.export_verdict_proves_empty(
+        cleanup.get("export"), scope_id=scope_id)
+    if not ok:
+        raise ActionResultError(f"native producer settlement refused: {reason}")
+    proof_raw = _read_bounded(
+        _reader_lease.attestation_path(queue, key, nonce),
+        where="native producer scope attestation", max_bytes=evidence_cap,
+        require_readonly=False)  # This owner atomically files a mutable proof.
+    proof = _decode_json(proof_raw, where="native producer scope attestation")
+    if isinstance(proof, Mapping):
+        _checked_publication_unix(proof.get("stopped_unix"))
+    ok, reason = _reader_lease._scope_attestation_payload_proves_empty(
+        proof, action_key=key, nonce=nonce, scope_id=scope_id)
+    if not ok:
+        raise ActionResultError(f"native producer scope attestation refused: {reason}")
+    assert isinstance(proof, Mapping)
+    if (proof.get("worker") != worker or proof.get("incarnation") != worker
+            or proof.get("host") != host
+            or any(proof.get(k) != cleanup["export"].get(k) for k in
+                   ("stopped_unix", "released", "retired", "settled", "empty",
+                    "tickets_pending"))):
+        raise ActionResultError("native producer scope proof differs from selected claim")
+    producer = receipt["producer"]
+    if (producer.get("worker_id") != host
+            or producer["evidence"].get("hostname") != host):
+        raise ActionResultError("execution receipt names a foreign native producer host")
+    runtime = producer["runtime"]  # Already validated by the exact CAS read.
+    core, launcher = runtime["core"], runtime["launcher"]
+    if runtime["launch_kind"] != "script" or not isinstance(launcher, Mapping):
+        raise ActionResultError("native producer receipt has no attested launcher")
+    core_path, launcher_path = Path(core["path"]), Path(launcher["path"])
+    root = core_path.parent.parent.parent
+    if (not root.is_absolute() or core_path != root / "src/prismabuild/core.py"
+            or launcher_path != root / "tools/prismabuild_worker.py"
+            or record.get("worker_script") != str(launcher_path)):
+        raise ActionResultError("native producer helper root differs from attested launcher")
+    for source in (core, launcher):
+        path = Path(source["path"])
+        try:
+            canonical = path.resolve(strict=True)
+        except (OSError, RuntimeError) as exc:
+            raise ActionResultError("native producer runtime path cannot be resolved") from exc
+        if str(canonical) != source["path"] or source["path"] != source["resolved_path"]:
+            raise ActionResultError("native producer runtime path is not canonical")
+        raw = _read_bounded(path, where="native producer runtime source",
+                            max_bytes=evidence_cap, require_readonly=True)
+        if len(raw) != source["bytes"] or pb.raw_sha256(raw) != source["sha256"]:
+            raise ActionResultError("native producer runtime source differs from receipt")
+    return {
+        "schema": NATIVE_PRODUCER_CONTEXT_SCHEMA_V1,
+        "queue_root": str(Path(queue.root).resolve()),
+        "action_key": key, "published_unix": record["published_unix"],
+        "attempt": attempt_record["attempt"],
+        "generation": queue.attempt_generation(record),
+        "nonce": nonce, "scope_id": scope_id, "worker": worker, "host": host,
+        "incarnation": worker, "helper_root": str(root),
+        "resources": dict(resources),
+        "resources_semantics": "selected-claim-sealed-demand",
+        "attempt_source": "selected-immutable-attempt",
+        "receipt_sha256": receipt["receipt_sha256"],
+        "runtime_sha256": runtime["runtime_sha256"],
+        "scope_attestation_sha256": pb.raw_sha256(proof_raw),
+    }
+
+
 def read_verified_action_result(
     queue,
     action_key: str,
@@ -328,6 +463,7 @@ def read_verified_action_result(
     max_result_bytes: int,
     max_evidence_bytes: int = 4 * 1024 * 1024,
     input_limits: Mapping[str, int] | None = None,
+    require_native_producer_context: bool = False,
 ) -> dict[str, object]:
     """Read one action generation's verified result bytes.
 
@@ -338,6 +474,11 @@ def read_verified_action_result(
     declared inputs whose owned bytes the caller also wants, each under its own
     cap, bounded in count and in aggregate by ``max_evidence_bytes``.
 
+    ``require_native_producer_context=True`` requires actual native production
+    and adds ``producer_context`` from this held selection only. Missing, legacy
+    and cache-hit native evidence refuses. The default preserves the generic
+    result contract. Resources mean the selected claim equal to sealed demand,
+    not ledger tokens or export allowances.
     The returned mapping is freshly owned and carries the schema, the exact
     identity, the selected worker and host, the validated sealed request, the
     validated execution receipt, the verified ``payload`` bytes, the declared
@@ -347,6 +488,8 @@ def read_verified_action_result(
     bytes.
     """
 
+    if type(require_native_producer_context) is not bool:
+        raise ActionResultError("require_native_producer_context must be a boolean")
     key = _checked_action_key(action_key)
     published = _checked_publication_unix(published_unix)
     number = _checked_positive_int(attempt, "attempt")
@@ -427,6 +570,13 @@ def read_verified_action_result(
         raise ActionResultError(
             "the result announcement receipt differs from the execution receipt")
 
+    native_context = None
+    if require_native_producer_context:
+        if announcement.get("status") != "published":
+            raise ActionResultError("native producer context requires an actual publication, not a cache hit")
+        native_context = _native_producer_context(
+            queue, record, attempt_record, action, receipt, evidence_cap=evidence_cap)
+
     descriptors: list[dict[str, object]] = []
     input_payloads: dict[str, bytes] = {}
     declared = action.get("inputs")
@@ -463,10 +613,20 @@ def read_verified_action_result(
         raise ActionResultError(
             "the selected ending changed while the result was read")
 
+    if require_native_producer_context:
+        native_fields = ("claimed_by", "claimed_host", "resources", "resource_scope",
+                         "resource_scope_cleanup", "cpu_allocation", "worker_script")
+        if any(rechecked.get(k) != record.get(k) for k in native_fields):
+            raise ActionResultError("the selected native ending changed while the result was read")
+        if _native_producer_context(
+                queue, rechecked, rechecked_attempt, action, receipt,
+                evidence_cap=evidence_cap) != native_context:
+            raise ActionResultError("the selected native proof changed while the result was read")
+
     worker = attempt_record.get("claimed_by")
     host = attempt_record.get("claimed_host")
     generation_digest = queue.attempt_generation(record)
-    return {
+    result = {
         "schema": ACTION_RESULT_SCHEMA_V1,
         "action_key": key,
         "published_unix": published,
@@ -480,6 +640,9 @@ def read_verified_action_result(
         "inputs": descriptors,
         "input_payloads": input_payloads,
     }
+    if native_context is not None:
+        result["producer_context"] = native_context
+    return result
 
 
 def bind_standard_capture_command(request: object) -> list[str]:
@@ -538,6 +701,8 @@ def bind_standard_capture_command(request: object) -> list[str]:
 __all__ = [
     "ACTION_RESULT_SCHEMA_V1",
     "VERIFIED_ACTION_RESULT_TAG",
+    "NATIVE_PRODUCER_CONTEXT_SCHEMA_V1",
+    "NATIVE_PRODUCER_CONTEXT_TAG",
     "MAX_SELECTED_INPUTS",
     "ActionResultError",
     "read_verified_action_result",

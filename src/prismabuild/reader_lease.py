@@ -1009,7 +1009,17 @@ def attestation_proves_empty(queue, action_key: str, nonce: str,
         return False, "no-broker-attestation-retain"
     if isinstance(attestation, Exception):
         return False, f"broker-attestation-unreadable-retain: {attestation}"
-    if not isinstance(attestation, Mapping):
+    return _scope_attestation_payload_proves_empty(
+        attestation, action_key=action_key, nonce=nonce, scope_id=scope_id)
+
+
+def _scope_attestation_payload_proves_empty(
+    attestation: object, *, action_key: str, nonce: str, scope_id: str
+) -> tuple[bool, object]:
+    """Validate an already-read proof; bounded readers share this owner."""
+
+    if (not isinstance(attestation, Mapping)
+            or attestation.get("schema") != ATTESTATION_SCHEMA_V1):
         return False, "broker-attestation-unreadable-retain"
     if attestation.get("scope_empty") is not True:
         return False, "scope-not-empty-retain"

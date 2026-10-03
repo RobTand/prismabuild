@@ -46,7 +46,7 @@ The surface, by area:
   :func:`record_ephemeral_scratch_declarations`,
   :data:`SCRATCH_DECLARATION_RECORD_SCHEMA_V1`.
 * **Receipts**: :func:`cas_receipt_self_check`.
-* **Verified action results** (``verified-action-result-v1``, SDK v4):
+* **Verified action results** (``verified-action-result-v1``, SDK v5):
   :func:`read_verified_action_result`, :class:`ActionResultError`,
   :data:`ACTION_RESULT_SCHEMA_V1`, and :func:`bind_standard_capture_command`.
 * **Identifiers and digests**: :data:`ID_PATTERN`, :data:`ENV_NAME_PATTERN`,
@@ -75,7 +75,7 @@ from . import storage_tiers as _storage_tiers
 
 #: The contract version.  Bumped on any change to the names below, their
 #: signatures, or the values of the constants.
-SDK_VERSION = 4
+SDK_VERSION = 5
 
 # -- reader leases (capability ``reader-lease-v1``) --------------------------
 
@@ -275,6 +275,8 @@ def cas_receipt_self_check(receipt: Mapping[str, object]) -> str | None:
 ACTION_RESULT_SCHEMA_V1 = _action_result.ACTION_RESULT_SCHEMA_V1
 #: The capability tag the bounded verified-result read advertises.
 VERIFIED_ACTION_RESULT_TAG = _action_result.VERIFIED_ACTION_RESULT_TAG
+NATIVE_PRODUCER_CONTEXT_SCHEMA_V1 = _action_result.NATIVE_PRODUCER_CONTEXT_SCHEMA_V1
+NATIVE_PRODUCER_CONTEXT_TAG = _action_result.NATIVE_PRODUCER_CONTEXT_TAG
 #: The explicit refusal of every bounded verified-result read and of the
 #: standard-capture command binding.
 ActionResultError = _action_result.ActionResultError
@@ -317,6 +319,7 @@ CAPABILITIES = frozenset({
     _core.PROGRESS_TAG,
     DECOMPOSITION_TAG,
     VERIFIED_ACTION_RESULT_TAG,
+    NATIVE_PRODUCER_CONTEXT_TAG,
 })
 
 __all__ = [
@@ -358,6 +361,7 @@ __all__ = [
     "RECEIPT_REFUSALS", "cas_receipt_self_check",
     # verified action results (capability ``verified-action-result-v1``)
     "ACTION_RESULT_SCHEMA_V1", "VERIFIED_ACTION_RESULT_TAG",
+    "NATIVE_PRODUCER_CONTEXT_SCHEMA_V1", "NATIVE_PRODUCER_CONTEXT_TAG",
     "ActionResultError", "read_verified_action_result",
     "bind_standard_capture_command",
     # identifiers and digests

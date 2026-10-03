@@ -44,6 +44,7 @@ def _standard_action(
     declared_path: str | None = None,
     inputs: list[dict[str, object]] | None = None,
     determinism: str = "deterministic",
+    demand: dict[str, int] | None = None,
 ) -> dict[str, object]:
     """A sealed action in pbrun's standard captured-log recipe."""
 
@@ -68,7 +69,8 @@ def _standard_action(
         "inputs": inputs or [],
         "code_closure": pb.build_code_closure(checkout, ["task_code.py"]),
         "params": {"command": list(
-            command if declared_command is None else declared_command)},
+            command if declared_command is None else declared_command),
+                   **({"demand": demand} if demand is not None else {})},
         "environment": {
             "variables": {"PATH": declared_path or f"{path_prefix}:/usr/bin:/bin"},
             "toolchain": {},
@@ -78,11 +80,12 @@ def _standard_action(
     })
 
 
-def _publish_result(base: Path, action, payload: bytes):
+def _publish_result(base: Path, action, payload: bytes, *, launcher=None):
     cas = pb.PrismaBuildCAS(base / "cas")
     cas.publish_action_request(action)
     attestation = pb.preflight_action(
-        action, cas_root=base / "cas", checkout_root=base / "checkout")
+        action, cas_root=base / "cas", checkout_root=base / "checkout",
+        worker_launcher_identity=launcher)
     output = base / "output.bin"
     output.write_bytes(payload)
     receipt, _won = cas.publish_result(
@@ -91,7 +94,8 @@ def _publish_result(base: Path, action, payload: bytes):
 
 
 def _finish(base: Path, action, receipt, *, status: str = "executed",
-            stdout: str | None = None, returncode: int = 0):
+            stdout: str | None = None, returncode: int = 0,
+            native=None, worker_script=None):
     key = str(action["action_key"])
     cas = pb.PrismaBuildCAS(base / "cas")
     if stdout is None:
@@ -105,12 +109,18 @@ def _finish(base: Path, action, receipt, *, status: str = "executed",
     queue.ensure_layout()
     queue.publish(action_key=key, cas_root=base / "cas",
                   checkout_root=base / "checkout",
-                  worker_script=base / "worker.py",
+                  worker_script=worker_script or base / "worker.py",
                   tags=["x86"], resources={"cpu": 1, "mem_gb": 1})
     queue.claim(tags=["x86"], capacity={"cpu": 8, "mem_gb": 16})
+    if native is not None:
+        claimed_path = queue.item_path(pool.CLAIMED, key)
+        claimed = json.loads(claimed_path.read_text())
+        claimed.update(native["claim"])
+        claimed_path.write_bytes(pb._canonical_file_bytes(claimed))
     queue.finish(key, status=status,
                  detail={"returncode": returncode, "status": status,
-                         "stdout": stdout, "stderr": ""})
+                         "stdout": stdout, "stderr": "",
+                         **(native["detail"] if native is not None else {})})
     fx.settle_publishers()
     record = json.loads(queue.item_path(pool.DONE, key).read_text(encoding="utf-8"))
     return queue, record
@@ -714,3 +724,243 @@ def test_a_validly_resealed_command_mismatch_reaches_the_binder_and_refuses(
     assert pb.validate_action(action) == action
     with pytest.raises(client.ActionResultError, match="standard captured-log"):
         client.bind_standard_capture_command(action)
+
+
+# These are private synthetic native-carrier fixtures, not a fleet qualification.
+# The retained real native producer is exercised separately by the PB action.
+def _native_fixture(base: Path, monkeypatch):
+    from prismabuild import produced_output, reader_lease
+
+    base.mkdir(exist_ok=True)
+    (base / "checkout").mkdir()
+    generation = base / "generation"
+    core_file = generation / "src/prismabuild/core.py"
+    core_file.parent.mkdir(parents=True)
+    core_file.write_bytes(Path(pb.__file__).read_bytes())
+    core_file.chmod(0o444)
+    launcher_file = generation / "tools/prismabuild_worker.py"
+    launcher_file.parent.mkdir()
+    launcher_file.write_bytes((REPOSITORY / "tools/prismabuild_worker.py").read_bytes())
+    launcher_file.chmod(0o444)
+    monkeypatch.setattr(pb, "_LOADED_WORKER_CORE_IDENTITY",
+                        pb._identify_runtime_source(core_file, where="private fixture core"))
+    launcher = pb._identify_runtime_source(launcher_file, where="private fixture launcher")
+    action = _standard_action(base / "checkout", command=["/bin/echo", "native"],
+                              demand={"cpu": 1, "mem_gb": 1})
+    cas, receipt = _publish_result(base, action, b"native fixture\n", launcher=launcher)
+    key = action["action_key"]
+    host = receipt["producer"]["evidence"]["hostname"]
+    nonce = "a" * 32
+    scope_id = produced_output._broker_scope_id(key, nonce)
+    telemetry = {"complete": True, "action_key": key, "nonce": nonce,
+                 "scope_unit": scope_id, "host": host, "memory_max_bytes": 1024 ** 3}
+    allocation = {"preferred": [0], "fallback": []}
+    export = {"scope_id": scope_id, "stopped_unix": 42.0, "empty": True,
+              "tickets_pending": False, "released": True, "retired": False,
+              "settled": True}
+    native = {"claim": {"resource_scope": {"action_key": key, "nonce": nonce,
+                "scope_id": scope_id, "memory_max_bytes": 1024 ** 3,
+                "token": "private-test-secret", "socket_path": "/private/socket"},
+                "cpu_allocation": allocation,
+                "resource_scope_cleanup": {"complete": True, "nonce": nonce,
+                    "telemetry": telemetry, "export": export}},
+              "detail": {"resource_telemetry": telemetry, "cpu_allocation": allocation}}
+    queue, record = _finish(base, action, receipt, native=native, worker_script=launcher_file)
+    worker = record["claimed_by"]
+    proof = {"schema": reader_lease.ATTESTATION_SCHEMA_V1,
+             "action_key": key, "nonce": nonce, "scope_id": scope_id,
+             "host": host, "worker": worker, "incarnation": worker,
+             "scope_empty": True, **export}
+    proof_path = reader_lease.attestation_path(queue, key, nonce)
+    proof_path.parent.mkdir(parents=True)
+    proof_path.write_bytes(pb._canonical_file_bytes(proof))
+    return action, queue, record, receipt, proof_path
+
+
+def _native_read(action, queue, record, **kwargs):
+    return client.read_verified_action_result(
+        queue, action["action_key"], published_unix=record["published_unix"],
+        attempt=1, max_result_bytes=4096, require_native_producer_context=True,
+        **kwargs)
+
+
+def test_selected_native_context_is_owned_and_truthfully_bound(tmp_path, monkeypatch):
+    action, queue, record, receipt, proof_path = _native_fixture(tmp_path, monkeypatch)
+    result = _native_read(action, queue, record)
+    ctx = result["producer_context"]
+    assert ctx["schema"] == client.NATIVE_PRODUCER_CONTEXT_SCHEMA_V1
+    assert ctx["queue_root"] == str(queue.root.resolve())
+    assert ctx["action_key"] == result["action_key"]
+    assert ctx["published_unix"] == result["published_unix"]
+    assert ctx["attempt"] == result["attempt"]
+    assert ctx["generation"] == result["generation"]
+    assert ctx["worker"] == ctx["incarnation"] == result["worker_id"]
+    assert ctx["host"] == result["host"]
+    assert ctx["resources"] == {"cpu": 1, "mem_gb": 1}
+    assert ctx["resources_semantics"] == "selected-claim-sealed-demand"
+    assert ctx["attempt_source"] == "selected-immutable-attempt"
+    assert ctx["helper_root"] == str(tmp_path / "generation")
+    assert ctx["receipt_sha256"] == receipt["receipt_sha256"]
+    assert ctx["scope_attestation_sha256"] == pb.raw_sha256(proof_path.read_bytes())
+    assert "private-test-secret" not in json.dumps(ctx)
+    assert "/private/socket" not in json.dumps(ctx)
+    ctx["resources"]["cpu"] = 99
+    assert _native_read(action, queue, record)["producer_context"]["resources"]["cpu"] == 1
+
+
+@pytest.mark.parametrize("field,value", [
+    ("claimed_by", "foreign:1:incarnation"), ("claimed_host", "foreign"),
+    ("resources", {"cpu": True, "mem_gb": 1}),
+    ("resources", {"cpu": 2, "mem_gb": 1}),
+    ("resource_scope", {}), ("resource_scope_cleanup", {}),
+    ("cpu_allocation", {"preferred": [1], "fallback": []}),
+    ("worker_script", "/foreign/tools/prismabuild_worker.py"),
+])
+def test_selected_native_claim_metadata_refuses(tmp_path, monkeypatch, field, value):
+    action, queue, record, _receipt, _proof = _native_fixture(tmp_path, monkeypatch)
+    row = {**record, field: value}
+    queue.item_path(pool.DONE, action["action_key"]).write_bytes(pb._canonical_file_bytes(row))
+    with pytest.raises(client.ActionResultError):
+        _native_read(action, queue, record)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("schema", "legacy"), ("action_key", "b" * 64), ("nonce", "b" * 32),
+    ("scope_id", "foreign"), ("host", "foreign"), ("worker", "foreign"),
+    ("incarnation", "clock-tag-only"), ("scope_empty", False), ("empty", False),
+    ("tickets_pending", None), ("released", 1), ("stopped_unix", 10 ** 400),
+])
+def test_selected_native_scope_proof_refuses(tmp_path, monkeypatch, field, value):
+    action, queue, record, _receipt, path = _native_fixture(tmp_path, monkeypatch)
+    proof = json.loads(path.read_text())
+    proof[field] = value
+    path.write_bytes(pb._canonical_file_bytes(proof))
+    with pytest.raises(client.ActionResultError):
+        _native_read(action, queue, record)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("complete", 1), ("action_key", "b" * 64), ("nonce", "b" * 32),
+    ("scope_unit", "foreign"), ("host", "foreign"), ("memory_max_bytes", 1),
+])
+def test_selected_immutable_native_telemetry_refuses(tmp_path, monkeypatch, field, value):
+    action, queue, record, _receipt, _proof = _native_fixture(tmp_path, monkeypatch)
+    path = queue.attempt_path(record, 1)
+    attempt = json.loads(path.read_text())
+    attempt["detail"]["resource_telemetry"][field] = value
+    _rewrite_readonly(path, pb._canonical_file_bytes(attempt))
+    with pytest.raises(client.ActionResultError):
+        _native_read(action, queue, record)
+
+
+@pytest.mark.parametrize("mode", ["missing", "oversized", "symlink", "changed"])
+def test_native_proof_is_bounded_nofollow_and_rechecked(tmp_path, monkeypatch, mode):
+    from prismabuild import action_result
+
+    action, queue, record, _receipt, path = _native_fixture(tmp_path, monkeypatch)
+    if mode == "missing":
+        path.unlink()
+    elif mode == "oversized":
+        path.write_bytes(b" " * (4 * 1024 * 1024 + 1))
+    elif mode == "symlink":
+        other = path.with_suffix(".saved")
+        path.rename(other)
+        path.symlink_to(other)
+    else:
+        original = action_result._read_bounded
+        changed = False
+        def read_and_replace(p, **kwargs):
+            nonlocal changed
+            raw = original(p, **kwargs)
+            if kwargs["where"] == "native producer scope attestation" and not changed:
+                changed = True
+                proof = json.loads(raw)
+                proof["unix"] = 99.0
+                path.write_bytes(pb._canonical_file_bytes(proof))
+            return raw
+        monkeypatch.setattr(action_result, "_read_bounded", read_and_replace)
+    with pytest.raises(client.ActionResultError):
+        _native_read(action, queue, record)
+
+
+def test_legacy_and_cache_result_generic_reads_remain_available(tmp_path):
+    action, queue, record, receipt, payload = _fixture(tmp_path)
+    assert client.read_verified_action_result(
+        queue, action["action_key"], published_unix=record["published_unix"],
+        attempt=1, max_result_bytes=4096)["payload"] == payload
+    with pytest.raises(client.ActionResultError):
+        _native_read(action, queue, record)
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    (cache / "checkout").mkdir()
+    action = _standard_action(cache / "checkout", command=["/bin/echo", "cached"])
+    _cas, receipt = _publish_result(cache, action, payload)
+    queue, record = _finish(cache, action, receipt,
+                           stdout=json.dumps({"status": "cache-hit", "receipt": receipt}))
+    assert client.read_verified_action_result(
+        queue, action["action_key"], published_unix=record["published_unix"],
+        attempt=1, max_result_bytes=4096)["payload"] == payload
+    with pytest.raises(client.ActionResultError):
+        _native_read(action, queue, record)
+
+
+@pytest.mark.parametrize("value", [1, None, "true"])
+def test_native_requirement_is_exact_boolean(tmp_path, value):
+    action, queue, record, _receipt, _payload = _fixture(tmp_path)
+    with pytest.raises(client.ActionResultError, match="must be a boolean"):
+        client.read_verified_action_result(
+            queue, action["action_key"], published_unix=record["published_unix"],
+            attempt=1, max_result_bytes=4096, require_native_producer_context=value)
+
+
+@pytest.mark.parametrize("mode", ["tampered", "writable", "symlink", "changed"])
+def test_attested_native_runtime_sources_refuse_mutation(tmp_path, monkeypatch, mode):
+    from prismabuild import action_result
+
+    action, queue, record, receipt, _proof = _native_fixture(tmp_path, monkeypatch)
+    source = Path(receipt["producer"]["runtime"]["core"]["path"])
+    if mode == "writable":
+        source.chmod(0o644)
+    elif mode == "tampered":
+        source.chmod(0o644)
+        source.write_bytes(b"changed source\n")
+        source.chmod(0o444)
+    elif mode == "symlink":
+        other = source.with_suffix(".saved")
+        source.rename(other)
+        source.symlink_to(other)
+    else:
+        original = action_result._read_bounded
+        changed = False
+        def read_and_replace(path, **kwargs):
+            nonlocal changed
+            raw = original(path, **kwargs)
+            if Path(path) == source and not changed:
+                changed = True
+                source.chmod(0o644)
+                source.write_bytes(b"replaced after first bounded read\n")
+                source.chmod(0o444)
+            return raw
+        monkeypatch.setattr(action_result, "_read_bounded", read_and_replace)
+    with pytest.raises(client.ActionResultError):
+        _native_read(action, queue, record)
+
+
+def test_selected_native_ending_extra_fields_are_rechecked(tmp_path, monkeypatch):
+    from prismabuild import action_result
+
+    action, queue, record, _receipt, _proof = _native_fixture(tmp_path, monkeypatch)
+    original = action_result._read_bounded
+    changed = False
+    def read_and_replace(path, **kwargs):
+        nonlocal changed
+        raw = original(path, **kwargs)
+        if kwargs["where"] == "native producer scope attestation" and not changed:
+            changed = True
+            row = json.loads(queue.item_path(pool.DONE, action["action_key"]).read_text())
+            row["resources"]["cpu"] = 2
+            queue.item_path(pool.DONE, action["action_key"]).write_bytes(pb._canonical_file_bytes(row))
+        return raw
+    monkeypatch.setattr(action_result, "_read_bounded", read_and_replace)
+    with pytest.raises(client.ActionResultError, match="selected native ending changed"):
+        _native_read(action, queue, record)
