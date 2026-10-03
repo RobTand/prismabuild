@@ -1833,4 +1833,102 @@ def test_malformed_pid_lifetime_cannot_authorize_mapping_absence(case, fault):
     (process / "stat").write_text(f"{pid} (worker (recovery)) " + " ".join(fields))
     result = _refused(case, case.prepare)
     assert any("malformed process lifetime" in error for error in result["errors"]), result
+# PB1470: this canonical row was observed in a live Netdata process, not a
+# filesystem pathname. Private process fixtures retain every ordinary census
+# guard while exercising the captured kernel name and map_files correspondence.
+def _anonymous_inode_process(case, *, target="anon_inode:[io_uring]", device=(0, 0x11), inode=42088):
+    process = _process(case)
+    (process / "maps").write_text(
+        f"1000-2000 rw-s 10000000 {device[0]:02x}:{device[1]:02x} {inode} {target}\n")
+    link = process / "map_files" / "1000-2000"
+    link.unlink()
+    link.symlink_to(target)
+    return process
 
+
+def test_kernel_anonymous_inode_name_is_not_an_unreadable_filesystem_path(case):
+    _anonymous_inode_process(case)
+    plan = _planned(case)
+    result = case.apply(plan)
+    assert result["complete"] is True and result["removed"] == [str(case.directory)], result
+
+
+@pytest.mark.parametrize("target", [
+    "relative/native.so", "anon_inode:io_uring", "anon_inode:[]",
+    "anon_inode:[nested/path]", "anon_inode:[missing", "anon_inode:[nested[name]]",
+    "anon_inode:[io_uring] trailing",
+])
+def test_anonymous_inode_grammar_does_not_allow_arbitrary_relative_maps(case, target):
+    _anonymous_inode_process(case, target=target)
+    result = _refused(case, case.prepare)
+    assert any("malformed process map" in error for error in result["errors"]), result
+
+
+@pytest.mark.parametrize("control", [*range(0x20), 0x7f], ids=lambda code: f"ascii-{code:02x}")
+def test_anonymous_inode_label_rejects_every_ascii_control(case, control):
+    target = f"anon_inode:[io{chr(control)}uring]"
+    process = _anonymous_inode_process(case)
+    (process / "maps").write_text(f"1000-2000 rw-s 10000000 00:11 42088 {target}\n")
+    if control != 0:
+        # Match both inventories: refusal must be the label, not a mismatched
+        # link. NUL cannot be represented in a filesystem symlink target.
+        link = process / "map_files" / "1000-2000"
+        link.unlink()
+        link.symlink_to(target)
+    assert recovery._ANON_INODE_NAME.fullmatch(target) is None
+    result = _refused(case, case.prepare)
+    assert any("malformed process map" in error for error in result["errors"]), result
+
+
+@pytest.mark.parametrize("device,inode", [((0, 0), 42088), ((0, 0x11), 0)])
+def test_anonymous_inode_name_needs_kernel_device_and_inode(case, device, inode):
+    _anonymous_inode_process(case, device=device, inode=inode)
+    _refused(case, case.prepare)
+
+
+@pytest.mark.parametrize("fault", ["missing", "mismatch", "selected-path"])
+def test_anonymous_inode_map_files_inventory_is_not_exempted(case, fault):
+    process = _anonymous_inode_process(case)
+    link = process / "map_files" / "1000-2000"
+    link.unlink()
+    if fault == "mismatch":
+        link.symlink_to("anon_inode:[eventfd]")
+    elif fault == "selected-path":
+        link.symlink_to(case.checkout / "native" / "libkernel.so")
+    _refused(case, case.prepare)
+
+
+def test_anonymous_inode_label_cannot_hide_a_selected_file_identity(case):
+    native = case.checkout / "native" / "libkernel.so"
+    info = native.stat()
+    _anonymous_inode_process(case, device=(os.major(info.st_dev), os.minor(info.st_dev)), inode=info.st_ino)
+    result = _refused(case, case.prepare)
+    assert any("selected checkout inode" in error for error in result["errors"]), result
+
+
+def test_real_kernel_io_uring_mapping_retains_complete_map_files_proof():
+    # This runs only inside the admitted CPU qualification. It must not silently
+    # skip a denied/missing kernel prerequisite or replace it with fabricated IO.
+    import ctypes
+    import mmap
+    import platform
+
+    assert platform.machine() in ("x86_64", "aarch64"), "real io_uring qualification requires a supported fleet architecture"
+    libc = ctypes.CDLL(None, use_errno=True)
+    libc.syscall.restype = ctypes.c_long
+    parameters = (ctypes.c_uint32 * 30)()
+    descriptor = libc.syscall(425, 2, ctypes.byref(parameters))
+    assert descriptor >= 0, f"real io_uring_setup prerequisite refused: errno={ctypes.get_errno()}"
+    try:
+        length = parameters[16] + parameters[0] * ctypes.sizeof(ctypes.c_uint32)
+        assert length > 0
+        with mmap.mmap(descriptor, length, flags=mmap.MAP_SHARED,
+                       prot=mmap.PROT_READ | mmap.PROT_WRITE, offset=0):
+            raw, targets = recovery._process_maps(Path("/proc") / str(os.getpid()), [], set())
+            assert b"anon_inode:[io_uring]" in raw
+            assert "anon_inode:[io_uring]" in targets.values()
+            info = os.fstat(descriptor)
+            with pytest.raises(recovery.CheckoutRecoveryRefusal, match="selected checkout inode"):
+                recovery._process_maps(Path("/proc") / str(os.getpid()), [], {(info.st_dev, info.st_ino)})
+    finally:
+        os.close(descriptor)

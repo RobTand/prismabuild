@@ -3333,7 +3333,13 @@ original tree, so closing the FD, loading a native library, using an external
 hardlink/bind alias or unlinking a mapped name cannot authorize deletion.
 File-backed address ranges and link targets must agree across both inventories;
 two complete mapping snapshots must be identical inside the same PID lifetime
-and held process-directory identity. Missing/denied metadata, malformed or
+and held process-directory identity.
+Kernel `anon_inode:[name]` mappings, including io_uring, retain nonzero
+device/inode attribution and exact map_files range/name agreement. They are
+not filesystem paths, ignored processes, or exemptions from selected-file
+identity checks; arbitrary relative mapping names still refuse. Anonymous-inode
+labels exclude every ASCII control (0x00–0x1f and DEL), brackets and slashes.
+Missing/denied metadata, malformed or
 overlapping ranges, a missing final newline, mismatched or changing inventories,
 new/reused PIDs and exceeded bounds all refuse. A userspace PID's empty maps are
 not proof of abandonment; empty mappings are accepted only for a same-lifetime
@@ -3344,6 +3350,10 @@ PID. Recovery reads map_files symlink targets without dereferencing them:
 identity comes from kernel maps metadata, not an alias pathname still existing.
 Permission restrictions or mapping churn can therefore conservatively prevent
 recovery even when the selected tree is unused; do not suppress these refusals.
+Native closed-FD Btrfs mapping qualification remains open in #1472 after the
+file-stat/VMA identity prerequisite failed on DL. A passing NAS qualification
+of anonymous-inode labels does not certify Btrfs alias attribution or permit
+operational recovery on that basis.
 The kernel mount census also rejects selected-root or descendant mounts
 (including same-device bind mounts) and hidden `/proc` censuses, so cleanup cannot
 cross into a native bank/CAS/image namespace. Dead stale leases are retained,

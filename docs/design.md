@@ -2409,6 +2409,10 @@ miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
   Strict ordered/nonoverlapping mapping records and a readable no-follow
   map_files range/target inventory must agree; repeated complete snapshots must
   be identical inside a held PID directory and unchanged start-time lifetime.
+  Canonical kernel `anon_inode:[name]` VMAs require a nonzero device/inode and
+  the same complete map_files range/name proof; they never exempt selected
+  inode/path attribution or admit arbitrary relative filesystem names. Labels
+  exclude every ASCII control (0x00–0x1f and DEL), brackets and slashes.
   Malformed, truncated, empty userspace, denied, incomplete or changing mapping
   evidence refuses, as do reused/new PIDs. Each mapping text inventory is at
   most 2 MiB and each range/entry census at most 100,000 items. Empty maps only
@@ -2417,6 +2421,10 @@ miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
   are read, not dereferenced: mappings retain their kernel identity even when
   the mapped pathname no longer exists. Permissions/churn can refuse unused
   trees; neither self/operator exemptions nor a fallback empty census exists.
+  Native closed-FD mapping qualification on DL Btrfs is unresolved (#1472):
+  its file stat device/inode failed to match the observed VMA identity in the
+  native fixture. NAS qualification of the anonymous-inode grammar is not
+  Btrfs alias-attribution acceptance or authorization for operational recovery.
   A kernel mount census refuses selected-root/descendant mounts, including
   same-device bind mounts, and hidden /proc censuses; recursive removal must
   not cross into external native-bank, CAS or image namespaces.

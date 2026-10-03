@@ -38,6 +38,7 @@ _MAP_RECORD = re.compile(
     r'([0-9a-f]{1,16}) +([0-9a-f]{1,8}):([0-9a-f]{1,8}) +'
     r'([0-9]{1,20})(?: +(.*))?\Z')
 _MAP_RANGE = re.compile(r'[0-9a-f]{1,16}-[0-9a-f]{1,16}\Z')
+_ANON_INODE_NAME = re.compile(r'anon_inode:\[[^\[\]/\x00-\x1f\x7f]+\]\Z')
 
 
 class CheckoutRecoveryRefusal(ValueError):
@@ -537,9 +538,11 @@ def _process_maps(pidroot: Path, roots: list[str], inodes: set[tuple[int, int]],
         if inode and (device, inode) in inodes:
             _refuse(f'live PID {pidroot.name} maps a selected checkout inode')
         pseudo = target.startswith('[') and target.endswith(']')
-        if (target and not target.startswith('/') and not pseudo
+        anonymous_inode = _ANON_INODE_NAME.fullmatch(target) is not None
+        if (target and not target.startswith('/') and not pseudo and not anonymous_inode
                 or inode and not target
-                or not inode and (device or target.startswith('/'))):
+                or not inode and (device or target.startswith('/'))
+                or anonymous_inode and (not inode or not device)):
             _refuse(f'malformed process map identity/path for PID {pidroot.name}')
         if inode:
             # map_files uses unpadded lowercase %lx ranges even when maps pads
@@ -567,7 +570,7 @@ def _process_maps(pidroot: Path, roots: list[str], inodes: set[tuple[int, int]],
                 if _mapped_path_reference(target, roots):
                     _refuse(f'live PID {pidroot.name} maps a selected checkout via map_files')
                 mapped = file_maps[name]
-                if (mapped.startswith('/')
+                if ((mapped.startswith('/') or _ANON_INODE_NAME.fullmatch(mapped))
                         and target not in (mapped, mapped.replace('\\012', '\n'))):
                     _refuse(f'process maps/map_files identity changed for PID {pidroot.name}')
                 targets[name] = target
