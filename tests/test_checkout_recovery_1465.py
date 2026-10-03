@@ -225,7 +225,7 @@ def make_case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
                      "result_path": "result.bin"},
             "inputs": [snapshot["input"]],
             "code_closure": pb.build_code_closure(source, [stamp.name]),
-            "params": {"command": command, "cwd": ".",
+            "params": {"command": command, "cwd": ".", "fixture_case": counter,
                        "demand": {"cpu": 1, "mem_gb": 1},
                        "checkout_snapshot": snapshot},
             "environment": {"variables": {}, "toolchain": {}},
