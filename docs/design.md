@@ -2409,6 +2409,9 @@ miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
   Strict ordered/nonoverlapping mapping records and a readable no-follow
   map_files range/target inventory must agree; repeated complete snapshots must
   be identical inside a held PID directory and unchanged start-time lifetime.
+  Canonical kernel `anon_inode:[name]` VMAs require a nonzero device/inode and
+  the same complete map_files range/name proof; they never exempt selected
+  inode/path attribution or admit arbitrary relative filesystem names.
   Malformed, truncated, empty userspace, denied, incomplete or changing mapping
   evidence refuses, as do reused/new PIDs. Each mapping text inventory is at
   most 2 MiB and each range/entry census at most 100,000 items. Empty maps only
