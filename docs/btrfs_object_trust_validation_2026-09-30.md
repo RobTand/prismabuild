@@ -1,9 +1,11 @@
 # Btrfs object-trust validation
 
-Status: historical uninstrumented arbitration failure remains unexplained;
-new fresh-main final validation is pending. Instrumented controls passed but
-are not uninstrumented acceptance. This record establishes no speedup,
-deployment, or full closure of #1358 or #1027.
+Status: the fresh-main uninstrumented final-candidate gate and ten-file
+compilation passed at `26fa215e9def17a33b045ffc0d4c9f779fba313a`. The
+historical uninstrumented arbitration failure remains unexplained. The
+matched affected-filesystem profile remains a mandatory merge gate, not
+waived by these correctness results or by source-only review. This record
+establishes no speedup, deployment, or full closure of #1358 or #1027.
 
 ## Contract
 
@@ -41,7 +43,32 @@ CPU and memory. No tests ran on the coordinator.
 | One lower-observer control | `82fe75c26247b4ca5a074c2a0c2524e586c483263cd82aecfaf7bc7d04de5ce3` | Sparky: 220 passed, 6 subtests passed; 220 cases and 226 outcomes reconciled; no skips. Instrumented control only. Cause UNKNOWN; control ends. |
 | Tiny affected-host object proof | `aacb0fdd1ee7184abee863fbd0b6011bdc57d9fb5a507a8562fcbe7582ce8c6c` | dl380g10 device 0:31: direct lookup unknown, exact lookup Btrfs. Real owned record reuse: listed 2, parsed 1, kept 2. Not a performance or live-queue claim. |
 
-The corrected integrated result resolves the previous three fixture failures.
+The final-candidate GREEN action
+`db22dfe17f7b8ec87690f6d402a4241159ebfd7bd925449e4d22552fa2f5626d` ran on
+sparklina: **220 passed, 6 subtests passed, zero failed/skipped/deselected**;
+220 unique cases and 226 outcomes reconciled across 16 files in 37.03 seconds.
+Compilation action
+`13f0b31f724fc298775ac8ac4f156c6683936c237c6ae84dfdf4eabae720a70e` ran on
+sparky: exit 0, `COMPILE_OK 10 files`. Both checkout snapshots name parent
+`26fa215e9def` and differ from its tree only by their generated closure files.
+The earlier affected-host proof has snapshot parent `98082a7546c3`, but its
+two executed production modules are byte-identical to `26fa215e9def`:
+`stage_move.py` SHA-256
+`0928a9db0c2f19d6c1560fe44ccbb10c5fad3329b1ae9f5e046a0d945a07e7e1` and
+`stage_release.py` SHA-256
+`7599d2eacd0ea55985b20a439b52db2d5b3067632b2fc8fd5d3b7370eb874367`.
+
+The three immutable attempts ended successfully; their actual stdout/stderr
+hashes and CAS payload/claim bindings were independently checked on 2026-10-03.
+Result SHA-256 values are respectively
+`d52d454b9197aa79c45f0d390e3a909db2320bee9cd14774f08e3f5c11e44aff`
+(58,684-byte GREEN),
+`55a339bb181770ab452f2a1719af18a1b07de2be371f01b761e202382dc8ac45`
+(20-byte compile), and
+`86c796b14ba32e10036945c766c630c82e5facb7aa33d6c5f4fb645f7d3fbe71`
+(361-byte affected-host proof). This readback did not rerun any action.
+
+The earlier corrected integrated result resolves the previous three fixture failures.
 Its sole failure is the arbitration lock bound: four namespace directories
 were listed under the ownership lock. The forest had 404 directories and 177
 fragments; 414 total listings included one root listing. Two displayed entries
@@ -83,6 +110,8 @@ Verification records, exact client commands, kernel evidence, and logs are in
 - `1358-golden-generate-verification.json`
 - `1358-nsfs-kernel-evidence.md`
 - `1358-green-integrated.sh`, result JSON, and verification JSON
+- `1358-green-refreshed.sh`, result JSON, and verification JSON
+- `1358-compile.sh` and `1358-compile-verification.json`
 - `1358-arbitration-failure-selected.txt` (bounded pytest excerpt)
 
 Independent source review found no remaining issue in the current NSFS/trust
@@ -91,11 +120,12 @@ acceptance.
 
 ## Remaining gates
 
-One fresh-main rebased, uninstrumented final-candidate gate is permitted with
-unchanged assertions, delays, lock bounds, and trust policy. A pass validates
+The permitted fresh-main rebased, uninstrumented final-candidate gate passed
+with unchanged assertions, delays, lock bounds, and trust policy. It validates
 only that candidate; it does not retrospectively explain the historical four
-listings. A failure must be classified without retries until pass. Compilation
-remains a separate verified gate.
+listings. The separate compilation gate also passed. Changed production or
+test source requires its own applicable qualification, not reuse by action
+name alone.
 
 The lower-observer trace contained only the two original acquisitions, no
 refusal or mismatch, unchanged retained stamps, and actual zero lock depth at
@@ -107,8 +137,16 @@ attributes this failure to that possibility.
 The tiny affected-host proof and its terminal, immutable attempt, log hashes,
 CAS result, and cleanup are verified. #1358 still requires an in-process
 before/after profile with py-spy and Netdata on dl380g10; #1027 has its own
-matched ledger-cache qualification. Neither profile nor runtime publication is
-established here.
+matched ledger-cache qualification. The PR acceptance audit on 2026-10-03
+explicitly requires this pair before merge, or an explicit coordinator ruling
+accepting an alternative. Both arms must record live filesystem/device/mount
+evidence proving the missing-device Btrfs condition. The prepared campaign
+path now resolves to ZFS device 0:92, so the unchanged prepared script cannot
+meet this gate. A read-only 2026-10-03 inventory found `/home/rob/tmp` and
+`/home/rob/tmp/prismabuild-checkouts` on Btrfs with stat device 0:31; that is a
+candidate location, not an executed matched profile. Neither profile nor
+runtime publication is established here. Keep the PR draft and #1358 open
+until their respective gates are satisfied.
 
 The existing allowed-local full-stat/mount ABA and non-atomic observation limits
 remain. This change does not solve wall-clock backsteps or make file snapshots

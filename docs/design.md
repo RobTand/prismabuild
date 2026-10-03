@@ -6359,8 +6359,15 @@ controls, zero skips/setup errors, all 26 collected/ran/outcomes reconciled.
 Direct/inferred real DirectoryRecords returned `(2,0,2)` instead of retained
 `(1,1,1)` when the valid unrelated opaque-root row poisoned the table. This
 attributes the focused omission, not all 32 failures in the earlier integrated
-run. The source correction still owes parent GREEN/compile and retained review;
-no performance, deployment or full-closure claim follows.
+run. The final source subsequently passed uninstrumented action
+`db22dfe17f7b8ec87690f6d402a4241159ebfd7bd925449e4d22552fa2f5626d`
+(220 cases, 220 passes plus six passing subtests, zero skips) and ten-file
+compilation action
+`13f0b31f724fc298775ac8ac4f156c6683936c237c6ae84dfdf4eabae720a70e`.
+Both snapshots match `26fa215e9def17a33b045ffc0d4c9f779fba313a` except their
+generated closure files. No performance, deployment or full-closure claim
+follows; the evidence readback and remaining merge gate are recorded in
+`btrfs_object_trust_validation_2026-09-30.md`.
 
 Missing/duplicate/malformed descriptor mount IDs,
 changed descriptor/path evidence, unknown or nonlocal types, an unreadable
@@ -6382,10 +6389,15 @@ assertion failures, no setup errors/skips, all 15 collected/ran/outcomes
 reconciled. Genuine checkpoint installation/warm-up passed before six
 trust-loss hit failures and six actual coherency-rescan failures; the other
 three failures demonstrated blocked direct lookup and valid-source poisoning.
-This is admitted RED, not GREEN or a performance result. The source
-corrections described here still require parent PB GREEN/compile and fresh
-independent review; affected-host identity/profile qualification (the #1027
-profile barrier), deployment and issue closure remain separate gates.
+This is admitted RED, not a performance result. The later final-candidate
+GREEN/compile above and independent source review do not explain the earlier
+uninstrumented arbitration failure, whose cause remains UNKNOWN. Matched
+affected-host identity/profile qualification remains a mandatory source merge
+gate under the 2026-10-03 PR acceptance audit unless the coordinator explicitly
+accepts an alternative; source-only correctness claims cannot waive it. Both
+arms must exercise the missing-device Btrfs condition, not the prepared
+campaign location that now resolves to ZFS 0:92. Deployment and full issue
+closure remain unestablished.
 
 The shared rule covers directory acquisition and comparison (including the
 publisher's forest census), DirectoryRecords file versions, census document
