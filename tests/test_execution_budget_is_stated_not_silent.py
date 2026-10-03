@@ -219,6 +219,27 @@ def test_an_unannounced_fleet_says_nothing_rather_than_guessing(tmp_path):
     assert pbrun.timeout_ceiling_notice(queue, _intent([]), requested=13000) == ""
 
 
+@pytest.mark.parametrize("ceilings,workers,lowest", [
+    ({"first": 7200.0, "second": 7200.0}, "every", 7200),
+    ({"first": 7200.0, "second": 10000.0}, "every", 7200),
+    ({"first": 7200.0, "second": 20000.0}, "some", 7200),
+    ({"first": 3600.0, "second": None}, "some", 3600),
+])
+def test_notice_states_payload_budget_not_wall_stop_or_release(
+        tmp_path, ceilings, workers, lowest):
+    queue = _fleet(tmp_path, ceilings)
+    said = pbrun.timeout_ceiling_notice(queue, _intent([]), requested=13000)
+    assert f"{workers} eligible worker" in said
+    assert f"lowest possible payload execution budget is {lowest}s" in said
+    assert "not a wall-clock stop or resource-release guarantee" in said
+    assert "be killed at" not in said
+    for host, ceiling in ceilings.items():
+        if ceiling is not None and ceiling < 13000:
+            assert f"{host} {ceiling:g}s" in said
+    assert queue.placement_timeout_ceilings(_intent([])) == ceilings
+
+
+
 # --------------------------------------------------------------------------
 # What pbstatus shows
 # --------------------------------------------------------------------------
