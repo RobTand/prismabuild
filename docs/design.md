@@ -6671,28 +6671,35 @@ mover can adopt the old bytes under a name this run has not reached yet.
 Content-keyed stage paths would remove the collision by construction, but
 they are a layout migration; this settles it on the current layout.
 
-The publication gate's own censuses are the range decision's, not the
-name's (#1028): the live pin census, the live mover claim census and the
-in-flight-partial census a re-decision passes before it replaces are each
-read once per publisher run -- one mover, one window -- at the first
-decision that needs them, where before they ran per name, and
-`_inflight_partials` listed its range directory once per name (2,048
-listings for one campaign range). Each name reads its row of the answer:
-the pin census maps every pinned stage path once and the check looks the
-name up; the claim census is read once through the per-publisher claim
-memo and kept normalized against the stage root, so the check is one
-membership test; the partial check filters the remembered directory
-listing by the same prefix rule and re-stats only the names that pass it,
-so a partial reaped since the listing no longer reads as in flight, and a
-candidate that cannot be stat'ed fails the name closed exactly as the
-per-name listing's stat did. The verdicts are the per-name censuses', and
-so are the fail-closed answers. What the hoist gives up is mid-range
-freshness: a pin, a claim or a partial filed after the census is seen by
-the next range decision, not this one -- the trade #1028 prices. A copy in
-flight is still attributed first by its sealed claim, which the census
-read, and the forest census a re-decision runs under the lock keeps its
-stamp fence (#1004), so nothing there changed. `ownership_lock_held`
-accounting is untouched.
+The publication gate's own censuses are hints the range decision shares
+(#1028): the live mover claim census and the in-flight-partial census a
+re-decision passes before it replaces are read once per publisher run --
+one mover, one window -- as a hint, and every name revalidates the hint
+with one directory version of its source (`claimed/`, or the
+destination's range directory; `_current_directory_version`, the #1004
+directory fence), re-reading only a source that moved. A claim or a
+partial that appears, ends or changes mid-range moves its directory, so
+the next name of the same range sees it, exactly as the per-name reads
+saw it -- the #1089 contract is unchanged. On a filesystem whose
+directory times are not this kernel's the fence never holds and every
+name re-reads, as before. The pin census stays per name: its source is a
+tree -- the leases root plus a directory per consumer -- so no single
+directory stat can fence it, and a pin file rewritten in place moves no
+directory; what the range reuses is the parse (`live_for`'s #988 memo:
+every pin file still listed and opened, a pin parsed once per fstat
+version). The claim check is then one membership test over the derived
+paths, normalized against the stage root, and the partial check filters
+the remembered listing by the same prefix rule and re-stats only the
+names that pass it -- a partial reaped since the listing no longer reads
+as in flight, and a candidate that cannot be stat'ed fails the name
+closed exactly as the per-name listing's stat did. The publisher's own
+temporary and rename move the range directory every entry, so a range of
+replacements lists it once an entry, as before; the once-per-stamp
+listing is every decision that runs while the directory holds still --
+the polls of a waiting entry, an adoption pass over an already-correct
+range. The verdicts and the fail-closed answers are the per-name
+censuses'. The forest census a re-decision runs under the lock keeps its
+stamp fence (#1004), and `ownership_lock_held` accounting is untouched.
 
 The egress holds the lock for its act, not its census (#988). Before this
 change `stage_release.evict` took the stage root's ownership lock and then

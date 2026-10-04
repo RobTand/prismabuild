@@ -10,19 +10,21 @@ answers every name of the range -- and each re-decision holds the lock the
 movers and egresses of the stage root wait for (~1.7 ms a name at the
 campaign's range size, action 1e0a9b624335).
 
-Two things are pinned here.  The ask: a 2,048-name range decision on the
-campaign shape -- one shard's ``<offset>-<size>`` names in one
-``.pbrange`` directory, every name divergent from one dead owner -- lists
-the range directory once.  And the invariant: with a mixed range, each
-name's decision is the one the per-name censuses answered -- the free
-names replace, the live-pinned name refuses on its pin, the name a live
-claim covers refuses on the claim, and the name with a sibling copy in
-flight refuses on the partial -- every one exactly as a per-name census
-would have answered it.
+The censuses are now hints the range decision shares: the claim listing
+and each range directory's partial names are read once per stamp of their
+source directory, and every name revalidates with one directory version
+(``_current_directory_version``), re-reading only what moved -- so a
+claim or a partial that appears mid-range moves its directory and is seen
+by the next name of the same range, exactly as the per-name censuses saw
+it.  What is pinned here: an unchanged directory is listed once for a
+whole 2,048-name range decision (the adoption pass over an already-
+correct campaign range, which writes nothing); a partial and a claim that
+appear mid-range are seen by the next name; a mixed range decides each
+name exactly as the per-name censuses answered it; and the
+``ownership_lock_held`` accounting the receipt publishes is unchanged.
 
 Nothing here measures seconds: a lock-hold claim needs mover receipts and
-a py-spy under the hold.  What is counted is the listings, and with them
-the ``ownership_lock_held`` accounting the mover's receipt publishes.
+a py-spy under the hold.  What is counted is the listings.
 """
 
 from __future__ import annotations
@@ -239,37 +241,50 @@ def _replace(publisher, destination: Path, copier: str):
                              destination, temp, NEW_DIGEST)
 
 
-@pytest.fixture()
-def world(fleet):  # noqa: F811
-    queue, stage, _cas = fleet
-    destinations = _campaign_range(stage, NAMES)
-    consumer, mover = _dead_owner(fleet, destinations)
+def _adoption_world(fleet, count: int):
+    """A campaign range of already-correct names nothing vouches for.
+
+    The #1081 shape -- a promotion killed before it filed its records
+    leaves correct copies that nothing names -- so the range decision is
+    one adoption pass: ``try_adopt`` per name, which takes the gate's
+    three censuses and its lock per name and writes nothing, so the range
+    directory holds still across the whole decision unless the test moves
+    it.
+    """
+
+    queue, stage, cas = fleet
+    destinations = _campaign_range(stage, count)
+    destinations[0].parent.mkdir(parents=True, exist_ok=True)
+    for path in destinations:
+        path.write_bytes(NEW)
+    # A quiet pool's claimed/: present and empty, so the claim census
+    # reads an empty listing rather than failing one closed.
+    queue.dir(pool.CLAIMED).mkdir(parents=True, exist_ok=True)
     successor, copier = base._key(), base._key()
     publisher = base._publisher(fleet, copier, successor)
-    return publisher, destinations, consumer, mover, copier
+    return publisher, destinations
 
 
 def test_a_2048_name_range_decision_lists_the_range_directory_once(
-        world, monkeypatch: pytest.MonkeyPatch) -> None:
-    publisher, destinations, consumer, mover, copier = world
+        fleet, monkeypatch: pytest.MonkeyPatch) -> None:  # noqa: F811
+    publisher, destinations = _adoption_world(fleet, NAMES)
     counted = _count_range_listings(monkeypatch, destinations[0].parent)
     holds = _count_lock_holds(monkeypatch, publisher)
-    for destination in destinations:
-        written, digest, _identity_ = _replace(publisher, destination, copier)
-        assert (written, digest) == (SIZE, NEW_DIGEST)
+    entry = {"bytes": SIZE, "sha256": NEW_DIGEST}
+    for path in destinations:
+        adopted = publisher.try_adopt(entry, path)
+        assert adopted is not None and adopted[1] == NEW_DIGEST, path
     assert all(path.read_bytes() == NEW for path in destinations)
-    assert len(publisher.invalidated) == NAMES
-    assert {(row["consumer_action_key"], row["mover_action_key"], row["state"])
-            for entry in publisher.invalidated
-            for row in entry["owners"]} == {(consumer, mover, "ended")}
     report = publisher.clock.report()
-    assert report["outcomes"] == {"replaced_ended_owner": NAMES}, report
+    assert report["outcomes"] == {"adopted_by_content": NAMES}, report
     held = report["thread_seconds"]["ownership_lock_held"]
     print(f"ownership_lock_held {held}")
     print(f"range directory listed {counted.listings} times "
           f"across {len(holds)} holds")
     # The ask (#1028): one listing of the range directory answers every
-    # name's in-flight census.  Main lists it once per name, 2,048 times.
+    # name's in-flight census while the directory holds still.  Main lists
+    # it once per name, 2,048 times (measured on the divergent shape,
+    # action 06b849a8de6d: every name's gate reaches the same listing).
     assert counted.listings == 1, counted.listings
     # The lock accounting is what it always was: one hold per name's act,
     # every one of them counted by the receipt's clock.
@@ -277,14 +292,62 @@ def test_a_2048_name_range_decision_lists_the_range_directory_once(
     assert len(holds) == held["calls"], (len(holds), held)
 
 
+def test_a_partial_that_appears_mid_range_is_seen_by_the_next_name(
+        fleet, monkeypatch: pytest.MonkeyPatch) -> None:  # noqa: F811
+    """The hint is revalidated: the partial moves the directory, and the
+    very next name of the same range re-lists and defers to it."""
+
+    publisher, destinations = _adoption_world(fleet, 3)
+    entry = {"bytes": SIZE, "sha256": NEW_DIGEST}
+    assert publisher.try_adopt(entry, destinations[0]) is not None
+
+    sibling = base._key()
+    in_flight = destinations[1]
+    partial = in_flight.parent / f".{in_flight.name}.{sibling[:16]}.partial"
+    partial.write_bytes(b"half a copy")
+
+    assert publisher.try_adopt(entry, in_flight) is None, (
+        "a copy in flight that appeared after the census must still be "
+        "seen by the next name of the same range")
+    # The partial names another entry's destination only.
+    assert publisher.try_adopt(entry, destinations[2]) is not None
+    assert in_flight.read_bytes() == NEW, (
+        "the blocked name's bytes are never replaced")
+
+
+def test_a_claim_that_appears_mid_range_is_seen_by_the_next_name(
+        fleet, monkeypatch: pytest.MonkeyPatch) -> None:  # noqa: F811
+    """A claim sealed after the census moves ``claimed/``; the next name
+    re-reads it and defers, and the name after that is free again."""
+
+    queue, stage, cas = fleet
+    publisher, destinations = _adoption_world(fleet, 3)
+    entry = {"bytes": SIZE, "sha256": NEW_DIGEST}
+    assert publisher.try_adopt(entry, destinations[0]) is not None
+
+    claim_key = base._key()
+    _claim_range(queue, cas, claim_key,
+                 [{"path": f"{MOUNT_PREFIX}/shard.bin",
+                   "offset": index * SIZE, "bytes": SIZE,
+                   "sha256": NEW_DIGEST} for index in range(3)],
+                 start=SIZE, end=2 * SIZE)
+
+    assert publisher.try_adopt(entry, destinations[1]) is None, (
+        "a live claim that appeared after the census must still be seen "
+        "by the next name of the same range")
+    assert publisher.try_adopt(entry, destinations[2]) is not None
+    assert destinations[1].read_bytes() == NEW, (
+        "the covered name's bytes are never replaced")
+
+
 def test_a_mixed_range_decides_each_name_exactly_as_per_name_censuses_did(
         fleet, monkeypatch: pytest.MonkeyPatch) -> None:  # noqa: F811
     """Pinned, claimed, in-flight and free names keep their own answers.
 
-    The censuses are taken once for the range at the first decision; the
-    pin, the claim and the sibling partial all predate it, so every name's
-    decision must be the one the per-name censuses answered: the free
-    names replace, and the other three refuse naming what blocks them.
+    The hint is built at the first decision; the pin, the claim and the
+    sibling partial all predate it, so every name's decision must be the
+    one the per-name censuses answered: the free names replace, and the
+    other three refuse naming what blocks them.
     """
 
     queue, stage, cas = fleet
