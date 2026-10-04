@@ -142,7 +142,13 @@ ledger construction and `PoolQueue.ledger` share that identity, including
 foreign finish/reap and private acquisition commit/abandon. Admission begin
 is nonblocking; release, transfer, grow/shrink and completion wait rather
 than report a transition they did not perform. The lock is never removed
-as a stale-owner remedy.
+as a stale-owner remedy. The composed `acquire` retains the exclusion
+across both halves: host contention waits its rename-length turn, so
+capacity is decided by tokens and not by the lock race, while a tier mint
+lock keeps its non-blocking decline at the composed take. The owner lock's
+canonical path is resolved once, at ledger construction, and never while
+the lock is taken, so no stalled name lookup runs inside a host admission
+section.
 
 A capacity check-and-reserve owner retains this same reentrant exclusion
 over its complete fresh census, decision and begin/commit or rollback.

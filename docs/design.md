@@ -5721,6 +5721,14 @@ exclusion; foreign recovery therefore cannot bypass a capacity decision.
 release and transfer variant, grow/shrink, retirement and stale-private
 acquisition return wait and complete under that owner. Same-thread nesting
 through another ledger instance retains the original POSIX descriptor.
+The composed `acquire` retains the same exclusion across its begin and
+commit halves: a host contender waits its rename-length turn instead of
+losing the acquisition to the non-blocking begin, so genuine concurrent
+capacity is decided by tokens, never by the lock race, while a tier mint
+lock keeps the non-blocking decline at the composed take. The host lock
+path is canonicalized once, at ledger construction: taking the exclusion
+never resolves the shared ledger base, so a stalled lookup cannot run
+inside a host admission section.
 
 The #1483 validator holds `ledger._mutation_locked(blocking=False)`
 continuously across its fresh authoritative capacity census, decision and

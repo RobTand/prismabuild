@@ -3899,6 +3899,16 @@ class ResourceLedger:
         # never inferred from a host/tier name or guard presence.
         self._mutation_guard = mutation_guard
         self._tier_census = tier_census
+        # The host reservation-owner lock is canonicalized once, here, in
+        # the constructing caller's own context: taking the exclusion later
+        # must never resolve the shared ledger base, so a stalled lookup
+        # cannot run inside a host admission section (the AdmissionGate
+        # stays outer and short).  The canonical name is the string every
+        # resolver of the lock file reaches, so aliased paths still share
+        # one key, one inode and one descriptor.
+        self._mutation_lock = (
+            None if mutation_guard is not None
+            else posix_lock.canonical(self.base / ".mutation.lock"))
 
     def _mutation_locked(self, *, blocking: bool = True):
         """Retain the same owner exclusion every token mutator uses.
@@ -3908,11 +3918,14 @@ class ResourceLedger:
         decision and reservation/rollback, not for two matching snapshots.
         Host AdmissionGate, when used, is outer; this section never acquires
         that gate, a transition/ownership lock, or another ledger's lock.
-        No payload I/O is performed under this exclusion.
+        No payload I/O is performed under this exclusion.  The host owner
+        lock path was canonicalized at construction, so acquiring it
+        performs no name resolution and a stalled lookup cannot park a
+        sibling behind the admission gate.
         """
         if self._mutation_guard is None:
-            return posix_lock.held(self.base / ".mutation.lock",
-                                   blocking=blocking)
+            return posix_lock.held(self._mutation_lock, blocking=blocking,
+                                   canonical=True)
         return self._mutation_guard(blocking=blocking)
 
     def _strict_census(self) -> bool:
@@ -5028,23 +5041,31 @@ class ResourceLedger:
         already decided the action is its own.  ``claim`` does not use it: the
         rename that decides ownership sits between the two halves.
 
-        This is two owner lock operations --
-        a non-blocking begin, then a blocking commit -- which is the
-        accepted shape: the begin declines rather than waits, and the
-        commit completes under the lock.  The private handle between
-        them is recovered by the stale sweep and fail-closed by the
-        commit count, as before.
+        The caller retains the owner exclusion across both halves instead of
+        racing the leaves separately.  A host contender therefore waits its
+        rename-length turn rather than losing the acquisition to the
+        non-blocking begin: eight contenders for three free tokens still win
+        three, because contention is decided by tokens, never by the lock
+        race.  A tier mint lock keeps the non-blocking take at the composed
+        call -- declining as unavailable exactly like its begin -- because
+        its sections can span a reclaim census.  A declined begin still
+        leaves nothing held; a failed commit is still recovered by the
+        stale sweep and fail-closed by the commit count, as before.
         """
 
-        handle = self.begin_acquire(action_key, demand)
-        if handle is None:
-            return False
-        wanted = sum(int(v) for v in demand.values() if int(v) > 0)
-        if self.commit_acquire(action_key, handle) < wanted:
-            self.abandon_acquire(handle)
-            self.release(action_key)
-            return False
-        return True
+        with self._mutation_locked(
+                blocking=self._mutation_guard is None) as acquired:
+            if not acquired:
+                return False
+            handle = self.begin_acquire(action_key, demand)
+            if handle is None:
+                return False
+            wanted = sum(int(v) for v in demand.values() if int(v) > 0)
+            if self.commit_acquire(action_key, handle) < wanted:
+                self.abandon_acquire(handle)
+                self.release(action_key)
+                return False
+            return True
 
     @_guarded_mutation(blocking=True)
     def sweep_stale_acquisitions(
