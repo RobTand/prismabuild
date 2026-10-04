@@ -329,7 +329,7 @@ def blocking_selection(census: dict, item: dict, *, host: str, funded_by: str | 
 
 def elect(queue: PoolQueue, ledger: ResourceLedger, controller, item: dict,
           verdict: dict, *, sampled_unix: object, gpu_sample: Mapping | None) -> dict | None:
-    """Choose a host once, using a finite incumbent *opportunity*, not a bound."""
+    """Choose a host once; a finite incumbent *opportunity* is metadata, not a bound."""
     from . import pool
     generation = queue.attempt_generation(item)
     with locked_census(queue, ledger, controller) as census:
@@ -359,24 +359,29 @@ def elect(queue: PoolQueue, ledger: ResourceLedger, controller, item: dict,
             raise CensusUnavailable("measurement publication changed before election")
         # Re-read sealed incumbent opportunities while H serializes admission.
         # No optimistic timeout-derived safe-fit/backfill permission follows.
+        # An incumbent that declared no finite deadline (``pbrun`` without
+        # ``--timeout-s``, a progress-governed action) still elects: the
+        # opportunity is metadata only, and refusing to elect left the host
+        # open to refill once the bounded attention lapsed, so a continuous
+        # lower-priority stream starved the measurement (#1419).
+        holders = ledger.held_keys()
+        if not holders:
+            return None
         ends = []
-        for key in ledger.held_keys():
+        for key in holders:
             opportunity = census["opportunities"].get(key, {})
             requested, claimed = opportunity.get("requested"), opportunity.get("claimed_unix")
             if (opportunity.get("host") != ledger.base.name
                     or not isinstance(requested, (int, float)) or isinstance(requested, bool)
                     or not isinstance(claimed, (int, float)) or isinstance(claimed, bool)):
-                return None
+                continue
             end = float(claimed) + float(requested)
-            if not math.isfinite(end):
-                return None
-            ends.append(end)
-        if not ends:
-            return None
+            if math.isfinite(end):
+                ends.append(end)
         chosen = {"schema": SCHEMA, "action_key": item["action_key"], "generation": generation,
                   "host": ledger.base.name, "published_unix": float(item["published_unix"]),
                   "priority": int(item.get("priority", 0)), "epoch_unix": pool._now(),
-                  "opportunity_unix": max(pool._now(), max(ends))}
+                  "opportunity_unix": max([pool._now(), *ends])}
         prior[FIELD] = chosen
         prior["action_key"] = item["action_key"]
         pool._write_json_atomic(queue.passes_path(item["action_key"]), prior)

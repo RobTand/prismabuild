@@ -475,12 +475,13 @@ priority ordering is unchanged.
 
 **Canonical UNKNOWN-first reservation slice (#1419, source accepted; worker generation adopted).** Bounded
 legacy attention above is distinct from a host election. On affirmative fresh
-CPU/GPU attribution and a readable finite sealed incumbent deadline, exactly one
+CPU/GPU attribution and at least one incumbent on the host, exactly one
 host is selected for this measurement publication under its transition key and
 host admission. `passes/<key>.json.measurement_reservation` names the schema,
 action key, publication generation, host, priority, election epoch and original
 `opportunity_unix`. The original incumbent `claimed_unix + requested_timeout_s`
-is ONLY selector-opportunity metadata, never proof that preparation, checkpoint
+(the latest declared one, or the election epoch when no incumbent declared a
+finite deadline) is ONLY selector-opportunity metadata, never proof that preparation, checkpoint
 credits, cleanup or physical resources finish by then. All prospective timed
 backfill candidates remain UNKNOWN, including five-second payloads (#1429).
 Submit notices and ``pbtest.shard_ceiling`` describe a **payload execution
@@ -501,6 +502,15 @@ pass, never become an empty census. Parent retains M/H only through the actual
 `begin_acquire`; materialization/commit/rename/execute stay outside H. An arbitrary
 publication after the last refresh is not instantaneously fenced: the guarantee
 begins at canonical host election, with no hidden publisher participation.
+
+An incumbent with no declared finite deadline (`pbrun` without `--timeout-s`,
+or a progress-governed action) does not void the election: requiring one left
+most live hosts unelected, so once the bounded attention above lapsed a
+continuous lower-priority stream refilled the host indefinitely (#1419 residual,
+2026-10-04). With the election in place the measurement's wait is bounded by
+the actual remaining lifetime of the incumbents present at election, whatever
+they declared; it may wait behind a long incumbent on the elected host while
+other matching hosts keep their ordinary admission.
 
 On the selected host, a lower-priority capacity claim without a verified funded
 measurement dependency cannot refill. The selector survives record_pass, claim,
