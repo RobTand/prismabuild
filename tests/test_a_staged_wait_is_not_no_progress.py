@@ -809,8 +809,9 @@ class _OneHolderLedger:
     """The stage host's ledger, as ``_withhold_verdict`` reads it: every
     token held by one holder, and none free."""
 
-    def __init__(self, holder: str) -> None:
+    def __init__(self, holder: str, base: Path) -> None:
         self.holder = holder
+        self.base = base
 
     def available(self) -> dict[str, int]:
         return {"cpu": 0, "mem_gb": 0}
@@ -862,7 +863,7 @@ def _transient_holder_past_the_ceiling(tmp_path: Path, queue: pool.PoolQueue, ro
         "epoch_unix": now - 1000.0}))
     monkeypatch.setattr(pool, "_now", lambda: now)
     assert queue.holder_bound(holder, now=now)["bound"] == "transient"
-    return _OneHolderLedger(holder)
+    return _OneHolderLedger(holder, queue.ledger().base)
 
 
 def test_a_withhold_the_pool_still_holds_past_the_ceiling_is_waited_on(
