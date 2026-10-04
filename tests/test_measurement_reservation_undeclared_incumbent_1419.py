@@ -35,10 +35,6 @@ def test_undeclared_incumbent_still_elects_and_bounds_the_wait_by_its_lifetime(f
     assert evidence["decision"]["reason"] == "measurement_holder", evidence
     assert evidence["decision"]["measurement_pool_drain"]["foreign_clear"] is True
     assert evidence["withhold"]["why"] == "draining_for_measurement"
-    chosen = reservation.selection(pool._read_json(queue.passes_path(measurement)) or {})
-    assert chosen is not None, "no host election: the no-refill guard never engages"
-    assert chosen["host"] == "sparklina" and chosen["priority"] == 0
-    assert chosen["opportunity_unix"] >= chosen["epoch_unix"]
 
     # Outlive the bounded attention window, then let a continuous -10 stream
     # arrive with genuine GPU sharing permission while the incumbent runs.
@@ -56,6 +52,9 @@ def test_undeclared_incumbent_still_elects_and_bounds_the_wait_by_its_lifetime(f
         _assert_holder_unchanged(queue, incumbent, before)
     _assert_holder_unchanged(queue, incumbent, snapshot)
     assert queue.ledger().held_keys() == [incumbent]
+    chosen = reservation.selection(pool._read_json(queue.passes_path(measurement)) or {})
+    assert chosen is not None and chosen["host"] == "sparklina" and chosen["priority"] == 0
+    assert chosen["opportunity_unix"] >= chosen["epoch_unix"]
 
     # The wait ends with the incumbent's own lifetime, not a later refill's.
     queue.finish(incumbent, status="executed")
