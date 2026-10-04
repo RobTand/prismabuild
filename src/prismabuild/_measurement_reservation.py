@@ -224,51 +224,56 @@ class CensusReader:
         directory = os.open(self.directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         lock = None
         try:
-            info = os.fstat(directory)
-            if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
-                    or info.st_mode & 0o077):
-                raise CensusUnavailable("unsafe local census directory")
-            # Reuse the exact open-descriptor local mount observer under the
-            # host-local state policy: a path named BOX_STATE_ROOT is not
-            # itself evidence of local storage, and this small-file rendezvous
-            # supports tmpfs while shared storage still refuses (#1451).
-            local_scratch._descriptor_state_identity(directory)
-            lock = os.open(self.name + ".guard", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC,
-                           0o600, dir_fd=directory)
-            info = os.fstat(lock)
-            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
-                    or info.st_nlink != 1 or info.st_mode & 0o077):
-                raise CensusUnavailable("unsafe local census fence lock")
-            # Bounded wait, not an instant refusal (#1498): every loop on a
-            # box censuses each candidate, so a nonblocking fence turned one
-            # sibling's census into this candidate's denial. The waiter holds
-            # only its own candidate key, never M or H, and still refuses once
-            # FENCE_WAIT_S passes; nothing is read without the fence.
-            waited = reader.Deadline(FENCE_WAIT_S)
-            while True:
-                try:
-                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    break
-                except BlockingIOError:
-                    remaining = waited.remaining()
-                    if remaining is None or remaining <= 0:
-                        raise CensusUnavailable("measurement census reader busy") from None
-                    time.sleep(min(FENCE_POLL_S, remaining))
-            marker = self.directory / self.name
-            previous = _read(marker, optional=True, limit=MAX_FENCE_BYTES)
-            if previous is not None:
-                ownership = reader.ReaderOwnership.from_record(previous)
-                if reader.reader_liveness(ownership, pool_identity=self.pool_identity,
-                                          section=READ_SECTION) != "settled":
-                    raise CensusUnavailable("retained measurement census reader unresolved")
+            # Only acquiring the fence is a census failure. The caller's body
+            # runs outside this translation: a body exception (a GPU sample
+            # write in ``reserve_probe``, a claim error) keeps its own type
+            # instead of becoming CensusUnavailable (#1506).
+            try:
+                info = os.fstat(directory)
+                if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
+                        or info.st_mode & 0o077):
+                    raise CensusUnavailable("unsafe local census directory")
+                # Reuse the exact open-descriptor local mount observer under the
+                # host-local state policy: a path named BOX_STATE_ROOT is not
+                # itself evidence of local storage, and this small-file rendezvous
+                # supports tmpfs while shared storage still refuses (#1451).
+                local_scratch._descriptor_state_identity(directory)
+                lock = os.open(self.name + ".guard", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC,
+                               0o600, dir_fd=directory)
+                info = os.fstat(lock)
+                if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                        or info.st_nlink != 1 or info.st_mode & 0o077):
+                    raise CensusUnavailable("unsafe local census fence lock")
+                # Bounded wait, not an instant refusal (#1498): every loop on a
+                # box censuses each candidate, so a nonblocking fence turned one
+                # sibling's census into this candidate's denial. The waiter holds
+                # only its own candidate key, never M or H, and still refuses once
+                # FENCE_WAIT_S passes; nothing is read without the fence.
+                waited = reader.Deadline(FENCE_WAIT_S)
+                while True:
+                    try:
+                        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        break
+                    except BlockingIOError:
+                        remaining = waited.remaining()
+                        if remaining is None or remaining <= 0:
+                            raise CensusUnavailable("measurement census reader busy") from None
+                        time.sleep(min(FENCE_POLL_S, remaining))
+                marker = self.directory / self.name
+                previous = _read(marker, optional=True, limit=MAX_FENCE_BYTES)
+                if previous is not None:
+                    ownership = reader.ReaderOwnership.from_record(previous)
+                    if reader.reader_liveness(ownership, pool_identity=self.pool_identity,
+                                              section=READ_SECTION) != "settled":
+                        raise CensusUnavailable("retained measurement census reader unresolved")
+            except (OSError, ValueError, core.PrismaBuildError, reader.ReaderOwnershipUnavailable,
+                    local_scratch.LocalScratchError) as exc:
+                raise CensusUnavailable(str(exc)) from exc
             self._held = (directory, lock)
             try:
                 yield
             finally:
                 self._held = None
-        except (OSError, ValueError, core.PrismaBuildError, reader.ReaderOwnershipUnavailable,
-                local_scratch.LocalScratchError) as exc:
-            raise CensusUnavailable(str(exc)) from exc
         finally:
             if lock is not None:
                 os.close(lock)
