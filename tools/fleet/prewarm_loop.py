@@ -191,11 +191,13 @@ budget and the outcome stays visible.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import errno
 import json
 import os
 import queue as queuelib
 import re
+import secrets
 import shutil
 import socket
 import stat as statmod
@@ -219,6 +221,7 @@ sys.path.insert(0, str(generation_root(__file__) / "src"))
 
 import prismabuild.core as pb  # noqa: E402
 from prismabuild import pool  # noqa: E402
+from prismabuild import filesystem_capacity  # noqa: E402
 from prismabuild import produced_output  # noqa: E402
 from prismabuild import progress as progress_v1  # noqa: E402
 from prismabuild import storage_tiers  # noqa: E402
@@ -3653,7 +3656,7 @@ def manifest_row_skip_reason(room: Mapping, ram_tier_live: bool) -> str | None:
 
 
 def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
-          pacer: DiskPacer | None = None) -> dict:
+          pacer: DiskPacer | None = None, writes_off: str | None = None) -> dict:
     ready = queue.ready_items()
     # One pacer per cycle, shared by every reader thread of every row warmed in
     # it: the disks are one queue, and a per-thread pacer would let N threads
@@ -3667,10 +3670,15 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
         getattr(args, "stage_pool_prefix", STAGE_POOL_PREFIX),
         free_floor_bytes=getattr(args, "stage_free_floor_bytes", None))
         if stage_requested(args) else None)
+    if writes_off and stage is not None and stage.usable:
+        # Custody was refused: the tier keeps its state in the record, and
+        # ``usable`` going false is what stops every staged write below.
+        stage.mark_full(writes_off)
     if (stage is not None and stage.mountpoint and not args.dry_run
+            and not writes_off
             and stage.mountpoint not in _REAPED_STAGE_ROOTS):
         # A dry run does not do it: an unlink is a write, however little it
-        # looks like one.
+        # looks like one.  So is a cycle whose custody was refused.
         _REAPED_STAGE_ROOTS.add(stage.mountpoint)
         stage.reap_temporaries()
     stage_rows: list[dict[str, object]] = []
@@ -3854,7 +3862,7 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
                 # and the record must not let the two be confused.
                 "consumer": dict(STAGE_CONSUMER),
             }
-        if not args.dry_run:
+        if not args.dry_run and not writes_off:
             queue.record_prewarm(key, record)
         # A dry run reads nothing, so ``bytes_warmed`` is 0 and the budget
         # would survive the row untouched: every later row in the same
@@ -3919,7 +3927,7 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
         # A dry run plans the release and performs none of it.  Unlinking a
         # staged object is a write, however little it looks like one, and
         # ``--dry-run`` promises the box is only read.
-        apply = not args.dry_run
+        apply = not args.dry_run and not writes_off
         prior = dict((queue.prewarm(key) or {}).get("stage") or {})
         start = int(prior.get("evicted_through_bytes", 0) or 0)
         outcome = release_stage_band(
@@ -4155,7 +4163,7 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
         # that found no tier says so, which is the whole point of #585.
         orphans = (sweep_orphan_stage(
             queue, stage, live_keys, other_live_rows, cas_root,
-            apply=not args.dry_run) if stage.mountpoint else [])
+            apply=not args.dry_run and not writes_off) if stage.mountpoint else [])
         event["stage"] = {**stage.record(), "released": stage_rows,
                           "orphans": orphans}
     # The verdict, whether it held or not (#575, #585).  A cycle that paced
@@ -4170,15 +4178,20 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
     # receipt the fleet ever wrote on every 10 s poll.  A dry run reads only,
     # so it prunes nothing.
     event["pruned"] = (queue.sweep_prewarm_receipts(live_keys)
-                       if not args.dry_run else [])
+                       if not args.dry_run and not writes_off else [])
     # The claim denials' reason rings retire on the same live set (#991): a
     # terminal or withdrawn key's ring goes, a live key's stays.
     event["denial_rings_pruned"] = (queue.sweep_denial_transitions(live_keys)
-                                    if not args.dry_run else [])
+                                    if not args.dry_run and not writes_off else [])
     # The tier loop's per-consumer event directories retire the same way
     # (#990), plus a live residency plan keeps its consumer's directory.
     event["consumer_events_pruned"] = (queue.sweep_consumer_events(live_keys)
-                                       if not args.dry_run else [])
+                                       if not args.dry_run and not writes_off else [])
+    if writes_off:
+        # The record says why this cycle made no writes.  The shape gains a
+        # key only in the refused case, the same way a record gains its
+        # stage block only beside ``--stage``.
+        event["custody"] = writes_off
     event["summary"] = summarize_cycle(event)
     return event
 
@@ -4406,7 +4419,50 @@ def _parser() -> argparse.ArgumentParser:
                         help="plan without warming data or recording prewarm results; maintenance checks still apply")
     parser.add_argument("--log", default=None,
                         help="append one JSON object per cycle here")
+    parser.add_argument("--filesystem-operation", required=True,
+                        help="the sealed whole-operation envelope this role "
+                             "publishes under (PRISMABUILD_FILESYSTEM_OPERATION "
+                             "JSON).  The storage role is fail-closed: every "
+                             "finite write of a cycle -- staged objects, "
+                             "prewarm records, receipt updates -- rides one "
+                             "committed coordinator operation admitted by the "
+                             "shared filesystem guard, and a cycle whose "
+                             "custody is refused keeps its reads but makes no "
+                             "writes at all (#709).  Declare the queue root's "
+                             "classes and the stage tier's stable parent root "
+                             "with stage_gib@<tier> growth; every declared "
+                             "root must exist whenever the role serves")
     return parser
+
+
+def _cycle_custody(args, queue: pool.PoolQueue):
+    """One committed coordinator operation per storage cycle, or no writes.
+
+    The whole cycle's finite writes -- staged objects, prewarm records,
+    receipt updates, receipt prunes -- ride one fresh committed operation
+    key, admitted by the shared filesystem guard against every used
+    filesystem and the aggregate outstanding allowance before the first
+    byte.  A refused admission leaves no custody to release and yields a
+    refusal reason: the cycle below keeps its reads and makes no writes at
+    all, which is fail-closed and never an unguarded write (#709).
+    """
+    filesystem_capacity.operation(args.filesystem_operation, "coordinator")
+    paths = [Path(args.pool_root)]
+    if args.log:
+        paths.append(Path(args.log).absolute().parent)
+    key = "operation-p-" + secrets.token_hex(32)
+    writes_off = None
+    with contextlib.ExitStack() as stack:
+        try:
+            stack.enter_context(filesystem_capacity.reserve_operation(
+                queue, args.filesystem_operation, paths, role="coordinator",
+                operation_key=key))
+        except filesystem_capacity.LocalScratchError as exc:
+            # Nothing was entered, so no custody exists to release; the
+            # body's own exceptions keep the crash custody the guard gives.
+            writes_off = (f"filesystem custody unavailable, writes stayed "
+                          f"off this cycle: {exc}")
+        yield writes_off
 
 
 def _serve(args) -> int:
@@ -4466,7 +4522,13 @@ def _serve(args) -> int:
         # outlived an open gate or the runtime it was preparing to serve.
         if runtime_moved() or runtime_gate.read_maintenance_gate() is not None:
             continue
-        event = cycle(args, queue, mounts, stop, pacer=pacer)
+        if args.dry_run:
+            # A dry run writes nothing anywhere, so it takes no custody.
+            event = cycle(args, queue, mounts, stop, pacer=pacer)
+        else:
+            with _cycle_custody(args, queue) as writes_off:
+                event = cycle(args, queue, mounts, stop, pacer=pacer,
+                              writes_off=writes_off)
         line = json.dumps(event)
         print(line, flush=True)
         if args.log:
@@ -4497,6 +4559,12 @@ def main(argv: list[str] | None = None) -> int:
     """
 
     args = _parser().parse_args(argv)
+    try:
+        filesystem_capacity.operation(args.filesystem_operation, "coordinator")
+    except filesystem_capacity.LocalScratchError as exc:
+        print(f"prewarm: refusing an incomplete filesystem operation "
+              f"envelope: {exc}", file=sys.stderr, flush=True)
+        return 2
     try:
         with runtime_gate.role_singleton(Path(__file__)):
             return _serve(args)

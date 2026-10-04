@@ -23,7 +23,7 @@ import stat
 import time
 
 from . import core, movement_actions, pool, produced_output as po, reader_lease
-from . import adaptive_cpu, storage_tiers
+from . import adaptive_cpu, filesystem_capacity, storage_tiers
 
 API_VERSION = 1
 ROOT_ENV = "PRISMABUILD_PRODUCED_SPOOL_ROOT"
@@ -102,6 +102,51 @@ def _observe(path, *, directory=None):
 
 class SpoolCapacityDeferred(SpoolError):
     """Only the bounded local spool is full; completed exports may free it."""
+
+
+def _existing_operation_parent(path: Path) -> Path:
+    """The nearest existing ancestor of a used filesystem path.
+
+    A spool leaf (group namespace, payload directory) may not exist yet; the
+    used filesystem is its persistent parent.  A leaf that does exist is
+    checked as itself, and a real file's own namespace is never dropped.
+    """
+    candidate = Path(path).absolute()
+    while True:
+        try:
+            candidate.stat()
+            return candidate
+        except FileNotFoundError:
+            if candidate.parent == candidate:
+                raise SpoolError(f"used filesystem has no persistent parent: {path}") from None
+            candidate = candidate.parent
+        except OSError:
+            return candidate
+
+
+@contextmanager
+def _claimed_operation(queue, claim, key, *extra):
+    """Reserve the sealed worker operation of a CLAIMED action before writes.
+
+    The envelope comes from the action's own sealed request, so a caller can
+    never substitute a looser declaration, and an already-sealed legacy
+    request (no envelope) keeps exactly its previous owner-local and
+    ``statvfs`` checks -- no fallback intent is invented.  The claimed action
+    itself is the durable owner; this window never releases its tokens.
+    """
+    request = (pool._sealed_action_request(str(claim["cas_root"]), key)
+               if isinstance(claim, dict) and claim.get("cas_root") else None)
+    intent = None if request is None else filesystem_capacity.action_intent(request)
+    if intent is None:
+        yield None
+        return
+    filesystem_capacity.operation(intent, "worker")
+    paths = [Path(queue.root)]
+    if claim.get("cas_root"):
+        paths.append(_existing_operation_parent(Path(claim["cas_root"])))
+    paths.extend(_existing_operation_parent(Path(path)) for path in extra)
+    with filesystem_capacity.reserve_operation(queue, intent, paths, role="worker"):
+        yield
 
 
 class _RepinNeeded(Exception):
@@ -479,10 +524,32 @@ class ProducedSpool:
                     f"{HOST_WINDOW_ENV}=1 needs the claim to reserve {kind}={need} "
                     f"for a {variables[MAX_ENV]}-byte window; the claimed row "
                     f"reserves {kind}={held}")
-        self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        _local_disk(self.root)
-        self.directory = _path(self.root / po.instance_namespace(self.instance), self.root)
-        self.directory.mkdir(exist_ok=True, mode=0o700)
+        with self._operation():
+            self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
+            _local_disk(self.root)
+            self.directory = _path(self.root / po.instance_namespace(self.instance), self.root)
+            self.directory.mkdir(exist_ok=True, mode=0o700)
+
+    @contextmanager
+    def _operation(self, *extra):
+        """Reserve this producer's sealed whole-operation before its writes.
+
+        The envelope is the sealed producer request's own declaration; the
+        producer action is the durable owner.  A request sealed before the
+        caller cutover declares no envelope and keeps the existing
+        owner-local and ``statvfs`` checks unchanged.
+        """
+        intent = self.request["environment"]["variables"].get(
+            filesystem_capacity.OPERATION_ENV)
+        if intent is None:
+            yield None
+            return
+        filesystem_capacity.operation(intent, "worker")
+        paths = [_existing_operation_parent(self.root), Path(self.queue.root),
+                 _existing_operation_parent(Path(self.cas_root))]
+        paths.extend(_existing_operation_parent(Path(path)) for path in extra)
+        with filesystem_capacity.reserve_operation(self.queue, intent, paths, role="worker"):
+            yield
 
     def _live(self):
         refusal = po._require_live_owner(self.queue, self.instance)
@@ -517,35 +584,36 @@ class ProducedSpool:
             raise SpoolError("canonical prewrite must own the group before local allocation")
         if ceiling_bytes > sum(prewrite["class_bytes"].values()):
             raise SpoolError("local ceiling exceeds the canonical prewrite budget")
-        group = self._group(batch_id)
-        with _lock(self.directory / ".reservation.lock"):
-            record = self._reservation(group)
-            if record is not None:
-                if record.get("ceiling_bytes") != ceiling_bytes or record.get("released"):
-                    raise SpoolError("spool reservation replay mismatch or already released")
+        with self._operation(self.directory):
+            group = self._group(batch_id)
+            with _lock(self.directory / ".reservation.lock"):
+                record = self._reservation(group)
+                if record is not None:
+                    if record.get("ceiling_bytes") != ceiling_bytes or record.get("released"):
+                        raise SpoolError("spool reservation replay mismatch or already released")
+                    return group / "payload"
+                reserved = 0
+                for sibling in self.directory.iterdir():
+                    if sibling.is_symlink():
+                        raise SpoolError("unknown-retain: symlink in spool namespace")
+                    if not sibling.is_dir():
+                        continue
+                    other = self._reservation(sibling)
+                    if other is None:
+                        raise SpoolError("unknown-retain: unaccounted spool directory")
+                    if not other.get("released"):
+                        reserved += _positive(other.get("ceiling_bytes"), "stored ceiling")
+                if reserved + ceiling_bytes > self.max_bytes:
+                    raise SpoolCapacityDeferred("local spool byte bound reached")
+                free = os.statvfs(self.directory)
+                if ceiling_bytes > free.f_bavail * free.f_frsize:
+                    raise SpoolCapacityDeferred("local filesystem lacks physical allocation headroom")
+                group.mkdir(mode=0o700)
+                (group / "payload").mkdir(mode=0o700)
+                _write(group / "reservation.json", {
+                    "schema": SCHEMA, "owner": self.owner, "batch_id": batch_id,
+                    "ceiling_bytes": ceiling_bytes, "released": False})
                 return group / "payload"
-            reserved = 0
-            for sibling in self.directory.iterdir():
-                if sibling.is_symlink():
-                    raise SpoolError("unknown-retain: symlink in spool namespace")
-                if not sibling.is_dir():
-                    continue
-                other = self._reservation(sibling)
-                if other is None:
-                    raise SpoolError("unknown-retain: unaccounted spool directory")
-                if not other.get("released"):
-                    reserved += _positive(other.get("ceiling_bytes"), "stored ceiling")
-            if reserved + ceiling_bytes > self.max_bytes:
-                raise SpoolCapacityDeferred("local spool byte bound reached")
-            free = os.statvfs(self.directory)
-            if ceiling_bytes > free.f_bavail * free.f_frsize:
-                raise SpoolCapacityDeferred("local filesystem lacks physical allocation headroom")
-            group.mkdir(mode=0o700)
-            (group / "payload").mkdir(mode=0o700)
-            _write(group / "reservation.json", {
-                "schema": SCHEMA, "owner": self.owner, "batch_id": batch_id,
-                "ceiling_bytes": ceiling_bytes, "released": False})
-            return group / "payload"
 
     def submit_group(self, batch_id, entries, *, paced=None):
         """Seal and publish the export of one reserved group.
@@ -562,114 +630,115 @@ class ProducedSpool:
         paced = self.paced_export if paced is None else paced
         self._live()
         group = self._group(batch_id)
-        with _lock(group / ".export.lock"):
-            reservation = self._reservation(group)
-            if reservation is None or reservation.get("released"):
-                raise SpoolError("no active spool reservation")
-            old = _export_record(group, self.owner)
-            if old is not None:
-                manifest = _read(group / "manifest.json", expected_sha256=old["manifest_sha256"])
-                keys = ("source_path", "destination_path", "bytes", "sha256")
-                if (not isinstance(entries, (list, tuple)) or manifest is None
-                        or [{key: entry.get(key) for key in keys} for entry in entries]
-                        != [{key: entry.get(key) for key in keys} for entry in manifest["entries"]]):
-                    raise SpoolError("export replay changed its group entries")
-                if ([entry.get("artifact_class", "payload") for entry in entries]
-                        != [entry["artifact_class"] for entry in manifest["entries"]]):
-                    raise SpoolError("export replay changed its artifact class")
-                return self._publish(old)
-            prewrite = po._read_prewrite(po._prewrites_dir(
-                self.queue.root, self.instance) / f"{batch_id}.prewrite.json")
-            if prewrite is None:
-                raise SpoolError("canonical prewrite disappeared before export")
-            if not isinstance(entries, (list, tuple)) or not entries:
-                raise SpoolError("export needs complete group entries")
-            checked = []
-            seen = set()
-            sources = set()
-            class_bytes = {"payload": 0, "checkpoint": 0}
-            for index, entry in enumerate(entries):
-                source = _path(entry["source_path"], group / "payload")
-                destination = _path(entry["destination_path"], Path(self.template["output_prefix"]))
-                temporary = Path(str(destination) + ".tmp")
-                if str(destination) not in prewrite["paths"] or str(temporary) not in prewrite["paths"]:
-                    raise SpoolError("destination and temporary must be owned by the canonical prewrite")
-                if destination in seen:
-                    raise SpoolError("duplicate canonical destination")
-                if source in sources:
-                    raise SpoolError("duplicate local source")
-                seen.add(destination)
-                sources.add(source)
-                identity = _identity(source)
-                size = _positive(entry["bytes"], "entry bytes")
-                if identity["size"] != size:
-                    raise SpoolIdentityRefusal("local source size changed", entry_index=index,
-                                               path=source, recorded={"bytes": size},
-                                               observed=identity)
-                artifact_class = entry.get("artifact_class", "payload")
-                if artifact_class not in class_bytes:
-                    raise SpoolError("export artifact class must be payload or checkpoint")
-                class_bytes[artifact_class] += size
-                digest = entry.get("sha256")
-                po._hex64(digest, where="spool sha256")
-                checked.append({"source_path": str(source), "destination_path": str(destination),
-                                "bytes": size, "sha256": digest, "source_identity": identity,
-                                "artifact_class": artifact_class})
-            if any(class_bytes[key] > prewrite["class_bytes"][key] for key in class_bytes):
-                raise SpoolError("export exceeds its canonical artifact class budget")
-            if sum(entry["bytes"] for entry in checked) > reservation["ceiling_bytes"]:
-                raise SpoolError("local group exceeded its reserved byte ceiling")
-            actual = {path for path in (group / "payload").rglob("*") if not path.is_dir()}
-            if actual != sources:
-                raise SpoolError("local group contains unaccounted payloads or temporaries")
-            declared = {str(path) for path in prewrite["paths"] if not str(path).endswith(".tmp")}
-            if {entry["destination_path"] for entry in checked} != declared:
-                raise SpoolError("export group does not cover the canonical prewrite")
-            # Price only new opted-in work, after entry validation but before
-            # manifest/CAS publication.  The payload and prewrite remain
-            # reserved for a retry; old sealed requests replay above unchanged.
-            tier_id = str(prewrite.get("tier") or "")
-            fill = (export_fill(self.queue, tier_id, self.owner)
-                    if paced and tier_id else None)
-            if paced and fill is None:
-                raise SpoolError("paced export requires a resolvable fill price for its prewrite tier")
-            manifest = {"schema": SCHEMA, "owner": self.owner,
-                        "instance": self.instance, "template": self.template,
-                        "batch_id": batch_id, "group": str(group), "host": self.host,
-                        "entries": checked}
-            manifest_path = group / "manifest.json"
-            _write(manifest_path, manifest)
-            manifest_input, _ = self.cas.ingest_input(manifest_path, input_id="produced-spool-manifest")
-            templated = po._producer_movement_template(
-                self.queue, self.request, self.owner, extra_inputs=[manifest_input])
-            if not templated.get("ok"):
-                raise SpoolError(str(templated))
-            tool = Path(__file__).resolve().parents[2] / "tools" / "fleet" / "produced_export.py"
-            command = ["/usr/bin/python3", str(tool), "--queue", str(self.queue.root),
-                       "--manifest", str(manifest_path), "--manifest-sha256", manifest_input["sha256"]]
-            demand = dict(adaptive_cpu.EXPORT_DEMAND)
-            # Opted in, the pool write enters under a reservation on the tier
-            # its prewrite names -- the tier its batch stages through, or for
-            # a write-only template (#912) the tier a later consumer stages
-            # it through -- and is paced to it (#747).  The rate
-            # is sealed in the command, so it is part of the export's
-            # identity.  Not opted in, the export is sealed as before.
-            if fill:
-                demand[f"{storage_tiers.FILL_KIND}{storage_tiers.TIER_DEMAND_SEPARATOR}{tier_id}"] = fill
-                command += ["--pace-mb-s", str(fill), "--pace-tier", tier_id]
-            action = movement_actions.seal_movement_action(
-                templated["template"],
-                command=command,
-                demand=demand, tags=[self.host],
-                log_name=f"produced-export-{batch_id}.log",
-                retry_policy={"max_attempts": 3, "retry_safe": True},
-                extra_params={"produced_spool": {"manifest_sha256": manifest_input["sha256"],
-                                                 "owner": self.owner, "batch_id": batch_id}})
-            self.cas.publish_action_request(action)
-            record = {"export_key": action["action_key"], "manifest_sha256": manifest_input["sha256"],
-                      "batch_id": batch_id, "action": action}
-            _write(group / "export.json", record)
-            return self._publish(record)
+        with self._operation(self.directory):
+            with _lock(group / ".export.lock"):
+                reservation = self._reservation(group)
+                if reservation is None or reservation.get("released"):
+                    raise SpoolError("no active spool reservation")
+                old = _export_record(group, self.owner)
+                if old is not None:
+                    manifest = _read(group / "manifest.json", expected_sha256=old["manifest_sha256"])
+                    keys = ("source_path", "destination_path", "bytes", "sha256")
+                    if (not isinstance(entries, (list, tuple)) or manifest is None
+                            or [{key: entry.get(key) for key in keys} for entry in entries]
+                            != [{key: entry.get(key) for key in keys} for entry in manifest["entries"]]):
+                        raise SpoolError("export replay changed its group entries")
+                    if ([entry.get("artifact_class", "payload") for entry in entries]
+                            != [entry["artifact_class"] for entry in manifest["entries"]]):
+                        raise SpoolError("export replay changed its artifact class")
+                    return self._publish(old)
+                prewrite = po._read_prewrite(po._prewrites_dir(
+                    self.queue.root, self.instance) / f"{batch_id}.prewrite.json")
+                if prewrite is None:
+                    raise SpoolError("canonical prewrite disappeared before export")
+                if not isinstance(entries, (list, tuple)) or not entries:
+                    raise SpoolError("export needs complete group entries")
+                checked = []
+                seen = set()
+                sources = set()
+                class_bytes = {"payload": 0, "checkpoint": 0}
+                for index, entry in enumerate(entries):
+                    source = _path(entry["source_path"], group / "payload")
+                    destination = _path(entry["destination_path"], Path(self.template["output_prefix"]))
+                    temporary = Path(str(destination) + ".tmp")
+                    if str(destination) not in prewrite["paths"] or str(temporary) not in prewrite["paths"]:
+                        raise SpoolError("destination and temporary must be owned by the canonical prewrite")
+                    if destination in seen:
+                        raise SpoolError("duplicate canonical destination")
+                    if source in sources:
+                        raise SpoolError("duplicate local source")
+                    seen.add(destination)
+                    sources.add(source)
+                    identity = _identity(source)
+                    size = _positive(entry["bytes"], "entry bytes")
+                    if identity["size"] != size:
+                        raise SpoolIdentityRefusal("local source size changed", entry_index=index,
+                                                   path=source, recorded={"bytes": size},
+                                                   observed=identity)
+                    artifact_class = entry.get("artifact_class", "payload")
+                    if artifact_class not in class_bytes:
+                        raise SpoolError("export artifact class must be payload or checkpoint")
+                    class_bytes[artifact_class] += size
+                    digest = entry.get("sha256")
+                    po._hex64(digest, where="spool sha256")
+                    checked.append({"source_path": str(source), "destination_path": str(destination),
+                                    "bytes": size, "sha256": digest, "source_identity": identity,
+                                    "artifact_class": artifact_class})
+                if any(class_bytes[key] > prewrite["class_bytes"][key] for key in class_bytes):
+                    raise SpoolError("export exceeds its canonical artifact class budget")
+                if sum(entry["bytes"] for entry in checked) > reservation["ceiling_bytes"]:
+                    raise SpoolError("local group exceeded its reserved byte ceiling")
+                actual = {path for path in (group / "payload").rglob("*") if not path.is_dir()}
+                if actual != sources:
+                    raise SpoolError("local group contains unaccounted payloads or temporaries")
+                declared = {str(path) for path in prewrite["paths"] if not str(path).endswith(".tmp")}
+                if {entry["destination_path"] for entry in checked} != declared:
+                    raise SpoolError("export group does not cover the canonical prewrite")
+                # Price only new opted-in work, after entry validation but before
+                # manifest/CAS publication.  The payload and prewrite remain
+                # reserved for a retry; old sealed requests replay above unchanged.
+                tier_id = str(prewrite.get("tier") or "")
+                fill = (export_fill(self.queue, tier_id, self.owner)
+                        if paced and tier_id else None)
+                if paced and fill is None:
+                    raise SpoolError("paced export requires a resolvable fill price for its prewrite tier")
+                manifest = {"schema": SCHEMA, "owner": self.owner,
+                            "instance": self.instance, "template": self.template,
+                            "batch_id": batch_id, "group": str(group), "host": self.host,
+                            "entries": checked}
+                manifest_path = group / "manifest.json"
+                _write(manifest_path, manifest)
+                manifest_input, _ = self.cas.ingest_input(manifest_path, input_id="produced-spool-manifest")
+                templated = po._producer_movement_template(
+                    self.queue, self.request, self.owner, extra_inputs=[manifest_input])
+                if not templated.get("ok"):
+                    raise SpoolError(str(templated))
+                tool = Path(__file__).resolve().parents[2] / "tools" / "fleet" / "produced_export.py"
+                command = ["/usr/bin/python3", str(tool), "--queue", str(self.queue.root),
+                           "--manifest", str(manifest_path), "--manifest-sha256", manifest_input["sha256"]]
+                demand = dict(adaptive_cpu.EXPORT_DEMAND)
+                # Opted in, the pool write enters under a reservation on the tier
+                # its prewrite names -- the tier its batch stages through, or for
+                # a write-only template (#912) the tier a later consumer stages
+                # it through -- and is paced to it (#747).  The rate
+                # is sealed in the command, so it is part of the export's
+                # identity.  Not opted in, the export is sealed as before.
+                if fill:
+                    demand[f"{storage_tiers.FILL_KIND}{storage_tiers.TIER_DEMAND_SEPARATOR}{tier_id}"] = fill
+                    command += ["--pace-mb-s", str(fill), "--pace-tier", tier_id]
+                action = movement_actions.seal_movement_action(
+                    templated["template"],
+                    command=command,
+                    demand=demand, tags=[self.host],
+                    log_name=f"produced-export-{batch_id}.log",
+                    retry_policy={"max_attempts": 3, "retry_safe": True},
+                    extra_params={"produced_spool": {"manifest_sha256": manifest_input["sha256"],
+                                                     "owner": self.owner, "batch_id": batch_id}})
+                self.cas.publish_action_request(action)
+                record = {"export_key": action["action_key"], "manifest_sha256": manifest_input["sha256"],
+                          "batch_id": batch_id, "action": action}
+                _write(group / "export.json", record)
+                return self._publish(record)
 
     def _publish(self, record):
         launch = po._producer_launch_context(self.queue, self.owner)
@@ -789,9 +858,10 @@ class ProducedSpool:
                            for proof in receipt["entries"]
                            for repin in proof.get("repinned", [])
                            if repin["where"] == "poll"]
-        answer = po.commit_origin_batch(self.queue, self.instance, self.template,
-                                        sealed, batch_id=batch_id, landed=landed,
-                                        lifetime=lifetime)
+        with self._operation(self.directory):
+            answer = po.commit_origin_batch(self.queue, self.instance, self.template,
+                                            sealed, batch_id=batch_id, landed=landed,
+                                            lifetime=lifetime)
         if answer.get("ok") and not answer.get("duplicate") and poll_repins:
             # A duplicate commitment did no new work and must not count the
             # same poll again. No identity/commitment record is rewritten.
@@ -1518,8 +1588,10 @@ def export_group(queue, manifest_path, manifest_sha256, export_key, *,
         if claim.get("claimed_host") != manifest["host"]:
             raise SpoolError("export is not claimed on the source host")
         try:
-            return _export_claimed_group(queue, group, manifest, record, manifest_sha256,
-                                         export_key, pace_mb_s, pace_tier)
+            with _claimed_operation(queue, claim, export_key, group,
+                                    Path(manifest["template"]["output_prefix"])):
+                return _export_claimed_group(queue, group, manifest, record, manifest_sha256,
+                                             export_key, pace_mb_s, pace_tier)
         except SpoolIdentityRefusal as exc:
             # The group's proofs are on this host and go with the group; the
             # refusal's evidence is filed where no spool cleanup reaches (#1098).

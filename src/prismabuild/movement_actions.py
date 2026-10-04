@@ -17,7 +17,7 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
 from . import core as pb
-from . import pool
+from . import pool, filesystem_capacity
 
 #: The sealed shell that wraps a fleet tool: the tool writes no result file,
 #: so the log the wrapper tees IS the declared result.
@@ -574,6 +574,11 @@ def seal_movement_action(
     beside the movement keys -- the produced-output lane seals its
     ``produced_output_batch`` reference and its own batch data manifest
     here.
+    The filesystem operation envelope is the explicit exception to isolated
+    mover environment inheritance: its storage-role whole-write bounds remain
+    sealed unchanged, and their existing byte-owner terms join the mover's
+    demand. Missing storage intent refuses; no consumer runtime/temp setting
+    or unsealed allowance is substituted.
     """
 
     if container_owner_fn is None:
@@ -600,6 +605,12 @@ def seal_movement_action(
     if extra_params:
         params.update(dict(extra_params))
     variables = movement_environment(params["command"])  # type: ignore[arg-type]
+    operation_intent = template["environment"]["variables"].get(filesystem_capacity.OPERATION_ENV)
+    filesystem_capacity.operation(operation_intent, "storage")
+    variables[filesystem_capacity.OPERATION_ENV] = operation_intent
+    params["filesystem_role"] = "storage"
+    for kind, need in filesystem_capacity.terms(operation_intent, "storage").items():
+        params["demand"][kind] = params["demand"].get(kind, 0) + need
     marker_root = template["marker_root"]
     owner = container_owner_fn(
         params["command"], params["cwd"], params["demand"], variables,
