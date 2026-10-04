@@ -6,16 +6,11 @@ unchanged intent, exact paths and unwind without creating a live operation.
 """
 from __future__ import annotations
 
-# These are caller-cutover source controls: they exercise caller order and
-# exact paths against the shared filesystem guard, which lands in its own
-# integration lane. Without that module present there is nothing to cut over
-# to, so the controls skip rather than misreport a missing dependency.
-pytest.importorskip("prismabuild.filesystem_capacity")
-
 from contextlib import contextmanager
 import importlib.util
 import json
 import re
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -276,3 +271,54 @@ def test_produced_spool_refuses_sealed_request_without_envelope_before_writes(
                 SimpleNamespace(root=tmp_path), claim, "a" * 64, tmp_path):
             pytest.fail("an envelope-less sealed request reached the window")
     assert not events
+
+
+def test_prewarm_custody_refusal_defers_once_with_structured_event(monkeypatch, tmp_path, capsys):
+    prewarm = _tool("prewarm_loop")
+    @contextmanager
+    def refuse(*args, **kwargs):
+        raise fs.LocalScratchError("missing authoritative registration")
+        yield
+    monkeypatch.setattr(fs, "reserve_operation", refuse)
+    monkeypatch.setattr(prewarm.runtime_gate, "loaded_runtime_commit", lambda: None)
+    monkeypatch.setattr(prewarm.runtime_gate, "published_commit", lambda: None)
+    monkeypatch.setattr(prewarm.runtime_gate, "_generation_at", lambda _path: None)
+    monkeypatch.setattr(prewarm.runtime_gate, "read_maintenance_gate", lambda: None)
+    monkeypatch.setattr(prewarm, "pacer_from_args", lambda _args: SimpleNamespace(ledger=None))
+    monkeypatch.setattr(prewarm, "cycle", lambda *a, **k: pytest.fail("refused custody ran a cycle"))
+    args = SimpleNamespace(filesystem_operation=_intent(tmp_path), pool_root=str(tmp_path),
+                           cas_root=str(tmp_path), log=None, mount_map=[], dry_run=True,
+                           once=True, poll_s=0)
+    assert prewarm._serve(args) == 75
+    event = json.loads(capsys.readouterr().err)
+    assert event["event"] == "prewarm-filesystem-deferred"
+    assert "missing authoritative registration" in event["reason"]
+    assert isinstance(event["unix"], float)
+
+
+@pytest.mark.parametrize("log_fails", [False, True])
+def test_prewarm_cycle_and_log_stay_inside_custody_with_structured_failures(
+        scope, monkeypatch, tmp_path, log_fails):
+    raw, events, _owner = scope
+    prewarm = _tool("prewarm_loop")
+    log = tmp_path if log_fails else tmp_path / "cycle.jsonl"
+    args = SimpleNamespace(filesystem_operation=raw, pool_root=str(tmp_path),
+                           cas_root=str(tmp_path), log=str(log))
+    announcements = []
+    def announce(payload):
+        assert events[-1][0] == "enter"
+        announcements.append({**payload})
+    def cycle(*a, **k):
+        assert events[-1][0] == "enter"
+        return {"event": "fixture-cycle"}
+    monkeypatch.setattr(prewarm, "cycle", cycle)
+    line = prewarm._serve_cycle(args, SimpleNamespace(root=tmp_path), None,
+                               threading.Event(), None, announce)
+    assert json.loads(line) == {"event": "fixture-cycle"}
+    assert events[-1] == ("exit",)
+    if log_fails:
+        assert announcements[0]["event"] == "prewarm-log-append-failed"
+        assert announcements[0]["reason"]
+    else:
+        assert log.read_text() == line + "\n"
+        assert not announcements

@@ -249,6 +249,10 @@ explicit write ever rides outside the committed charges.  A refused custody
 runs nothing at all — no cycle, no record — and defers exactly like a
 maintenance gate; there is no unguarded mode of the storage role, and no
 read-only or diagnostic label exempts the filesystems a cycle actually uses.
+Refused custody emits the structured `prewarm-filesystem-deferred` event and
+returns 75 in one-shot mode; a cycle log append failure emits
+`prewarm-log-append-failed` while still inside the same committed window.
+Neither diagnostic may turn a filesystem refusal into an unguarded cycle.
 
 ### Windows, when the manifest is larger than the ARC
 

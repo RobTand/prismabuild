@@ -4427,6 +4427,7 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+@contextlib.contextmanager
 def _cycle_custody(args, queue: pool.PoolQueue):
     """One committed coordinator operation per storage cycle, or nothing runs.
 
@@ -4470,7 +4471,7 @@ def _serve_cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.
     """
     with _cycle_custody(args, queue) as refused:
         if refused is not None:
-            announce(refused)
+            announce({"event": "prewarm-filesystem-deferred", "reason": refused})
             return None
         event = cycle(args, queue, mounts, stop, pacer=pacer)
         line = json.dumps(event)
@@ -4481,7 +4482,7 @@ def _serve_cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.
             except OSError as exc:
                 # The append failed, so it moved no bytes; the committed
                 # operation still ends cleanly on its own records.
-                announce(f"prewarm: cycle log append failed: {exc}")
+                announce({"event": "prewarm-log-append-failed", "reason": str(exc)})
         return line
 
 
