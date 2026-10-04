@@ -510,7 +510,15 @@ continuous lower-priority stream refilled the host indefinitely (#1419 residual,
 2026-10-04). With the election in place the measurement's wait is bounded by
 the actual remaining lifetime of the incumbents present at election, whatever
 they declared; it may wait behind a long incumbent on the elected host while
-other matching hosts keep their ordinary admission.
+other matching hosts keep their ordinary admission. That bound holds only if the
+incumbents can finish without new admissions, so a row whose sealed
+`params.produced_spool.owner` (`adaptive_cpu.dependent_owner`, never the row's
+`dependent_of` hint) currently holds tokens on this host is not held back by the
+measurement's wait: neither by `blocking_selection` at either census check nor
+by the measurement's whole-box withhold. Admitting an incumbent's own dependent
+(a producer's spool export, pinned to its host at its priority) only shortens
+the incumbent's life; holding it back deadlocked an undeclared producer against
+its exports (#1504 review). Every other row and every other withhold is unchanged.
 
 On the selected host, a lower-priority capacity claim without a verified funded
 measurement dependency cannot refill. The selector survives record_pass, claim,
