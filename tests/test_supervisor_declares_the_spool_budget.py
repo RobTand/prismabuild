@@ -372,7 +372,7 @@ def test_a_holder_freezes_the_live_offer_until_it_is_released(
     queue = _holder_queue(tmp_path, monkeypatch)
     stat = _stat(monkeypatch, 1000, 250)            # 200 GiB of room
     shape = supervise.declared_shape("boxa", 0)
-    first, second = "h" * 64, "i" * 64
+    first, second = "a" * 64, "b" * 64
     _scratch_holder(queue, first, 150)
     assert queue.claim(owner="w1", capacity=_worker_offer(
         shape[1], queue.ledger()))["action_key"] == first
