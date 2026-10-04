@@ -35,6 +35,7 @@ TIERS = {"preferred": list(range(20)), "fallback": []}
 def _conclude(queue, index, *, state=pool.WITHDRAWN, sidecar=None):
     """A concluded key with the leftover pass sidecar the fleet carries."""
     key = f"{0xC0DE0000 + index:064x}"
+    queue.passes_path(key).parent.mkdir(exist_ok=True)
     queue.item_path(state, key).write_text(
         f'{{"action_key": "{key}", "status": "withdrawn"}}', encoding="utf-8")
     record = sidecar if sidecar is not None else (
@@ -103,6 +104,7 @@ def test_sweep_keeps_every_sidecar_that_could_be_authority(fleet):
     unreadable = _conclude(queue, 4, sidecar="{not json")
     locked = _conclude(queue, 5)
     unconcluded = f"{0xC0DE0006:064x}"
+    queue.passes_path(unconcluded).parent.mkdir(exist_ok=True)
     queue.passes_path(unconcluded).write_text(
         f'{{"action_key": "{unconcluded}", "passes": 1}}', encoding="utf-8")
 
