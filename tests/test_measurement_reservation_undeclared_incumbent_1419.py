@@ -187,7 +187,7 @@ def _non_action_holder_keeps_the_bounded_episode(fleet, hold):
     ledger = queue.ledger("sparklina")
     ledger.ensure_capacity({"mem_gb": 120})  # the fixture's host capacity
     assert ledger.available().get("mem_gb") == 120, ledger.available()
-    holder = hold(queue)
+    holder = hold(queue, publish, claim)
     assert queue.ledger("sparklina").held_keys() == [holder]
     assert not queue.item_path(pool.CLAIMED, holder).exists()
     measurement = publish("priority-zero-measurement", measurement=True,
@@ -208,9 +208,25 @@ def _non_action_holder_keeps_the_bounded_episode(fleet, hold):
 
 
 def test_a_ram_fill_hold_alone_does_not_elect_the_host(fleet):
-    def hold(queue):
+    def hold(queue, publish, claim):
         grant = "a" * 64
         assert queue.hold_tier_host_memory("sparklina", grant, 100) == ("taken", "")
         return pool.PoolQueue.RAM_HOST_MEMORY_PREFIX + grant
     _non_action_holder_keeps_the_bounded_episode(fleet, hold)
 
+
+def test_a_holder_no_claim_record_names_does_not_elect_the_host(fleet):
+    """A real adaptive holder whose CLAIMED record is gone (``holder_bound``
+    ``unknown``): the CPU controller still sees it through its ledger
+    metadata and refuses the measurement ``measurement_holder``, but no claim
+    names an action lifetime that bounds the wait. A bare ledger key with no
+    adaptive metadata never reaches this gate: the controller refuses it for
+    a reason no drain resolves, so no withhold verdict or election forms."""
+    def hold(queue, publish, claim):
+        orphan = publish("orphaned-holder", priority=-10, timeout_s=None,
+                         cpu=2, gpu=1, mem_gb=8)
+        assert claim() == orphan
+        queue.item_path(pool.CLAIMED, orphan).unlink()
+        assert queue.holder_bound(orphan)["bound"] == "unknown"
+        return orphan
+    _non_action_holder_keeps_the_bounded_episode(fleet, hold)
