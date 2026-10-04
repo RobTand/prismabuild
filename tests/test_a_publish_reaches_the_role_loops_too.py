@@ -181,6 +181,9 @@ def test_the_tier_loop_runs_its_cycle_while_the_runtime_stands_still(
     version.write_text(json.dumps({"commit": "6bdd75d7b738"}))
     monkeypatch.setattr(tier_loop.runtime_gate, "GENERATION_VERSION", version)
     monkeypatch.setattr(tier_loop.runtime_gate, "RUNTIME_VERSION", version)
+    gate = tmp_path / "maintenance.json"
+    gate.write_text(json.dumps({"draining": False}))
+    monkeypatch.setattr(tier_loop.runtime_gate, "MAINTENANCE_GATE", gate)
     ran: list[bool] = []
     monkeypatch.setattr(tier_loop, "cycle",
                         lambda *_a, **_k: ran.append(True) or [])
