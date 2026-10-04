@@ -9,6 +9,7 @@ import os
 import socket
 import threading
 import uuid
+from pathlib import Path
 
 import pytest
 
@@ -202,28 +203,91 @@ def test_committed_p_custody_joins_releases_and_retains(registered):
     ledger = queue.ledger(HOST)
     other = root.parent / "used-other"
     other.mkdir()
-    with fs.reserve_operation(queue, envelope("coordinator", [root, other]),
-                              [root, other], role="coordinator",
+    intent = envelope("coordinator", [root, other])
+    with fs.reserve_operation(queue, intent, [root, other], role="coordinator",
                               operation_key=OPERATION_KEY):
         assert {n for n in pool.held_names_visible(ledger, OPERATION_KEY)
                 if n.startswith("spool_gb")} == {"spool_gb-0000", "spool_gb-0001"}
-        # Nested join: admission only, no second commit, no release here.
-        with fs.reserve_operation(queue, envelope("coordinator", [other]), [other],
-                                  role="coordinator", operation_key=OPERATION_KEY):
+        # Nested join: admission only with the exact committed bound (new
+        # read paths may join), no second commit, no release here.
+        with fs.reserve_operation(queue, intent, [other], role="coordinator",
+                                  operation_key=OPERATION_KEY):
             assert len(pool.held_names_visible(ledger, OPERATION_KEY)) == 2
         assert len(pool.held_names_visible(ledger, OPERATION_KEY)) == 2
         # A duplicate top-level custody for outstanding tokens is refused.
         with pytest.raises(LocalScratchError, match="already holds tokens"):
-            with fs.reserve_operation(queue, envelope("coordinator", [root]), [root],
-                                      role="coordinator", operation_key=OPERATION_KEY):
+            with fs.reserve_operation(queue, intent, [root], role="coordinator",
+                                      operation_key=OPERATION_KEY):
                 pass
     assert pool.held_names_visible(ledger, OPERATION_KEY) == set()
     with pytest.raises(RuntimeError):
-        with fs.reserve_operation(queue, envelope("coordinator", [root]), [root],
-                                  role="coordinator", operation_key=OPERATION_KEY):
+        with fs.reserve_operation(queue, intent, [root], role="coordinator",
+                                  operation_key=OPERATION_KEY):
             raise RuntimeError("operation failed after the floor was proven")
     assert len(pool.held_names_visible(ledger, OPERATION_KEY)) == 2  # retained
     ledger.release(OPERATION_KEY)  # only the recorded owner releases
+
+
+def test_nested_join_refuses_growth_beyond_the_committed_bound(registered):
+    queue, root = registered
+    other = root.parent / "used-other"
+    other.mkdir()
+    intent = envelope("coordinator", [root])
+    ledger = queue.ledger(HOST)
+    with fs.reserve_operation(queue, intent, [root], role="coordinator",
+                              operation_key=OPERATION_KEY):
+        bigger = envelope("coordinator", [root, other], max_bytes=4 * GIB)
+        with pytest.raises(LocalScratchError, match="exceeds its committed bound"):
+            with fs.reserve_operation(queue, bigger, [other], role="coordinator",
+                                      operation_key=OPERATION_KEY):
+                pass
+        assert len(pool.held_names_visible(ledger, OPERATION_KEY)) == 2
+        # The exact bound still joins with a new read path, uncharged.
+        with fs.reserve_operation(queue, intent, [other], role="coordinator",
+                                  operation_key=OPERATION_KEY):
+            assert len(pool.held_names_visible(ledger, OPERATION_KEY)) == 2
+    assert pool.held_names_visible(ledger, OPERATION_KEY) == set()
+
+
+SECOND_PROCESS_CONTROL = """
+import json, socket, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from prismabuild import filesystem_capacity as fs, pool
+queue = pool.PoolQueue(Path(sys.argv[2]))
+root = Path(sys.argv[3])
+host = socket.gethostname()
+# The P body holds no guard lock: a second process takes the registration
+# exclusion nonblocking and reads the retained charges from the census.
+with fs._registration_lock(fs._queue_identity(queue.root)) as acquired:
+    assert acquired, "guard exclusion still held during the P body"
+census = fs._held(queue.ledger(host), {"spool_gb"})
+assert census >= 2, f"second process cannot read the retained charges: {census}"
+envelope = {"schema": fs.OPERATION_SCHEMA, "operations": {"coordinator": [
+    {"root": str(root), "max_bytes": fs.GIB,
+     "classes": sorted(fs._ROLES["coordinator"]), "resource": "spool_gb"}]}}
+with fs.admission(queue, [root], intent=envelope, role="coordinator"):
+    pass
+print(json.dumps({"lock_access": True, "held_gib": census}))
+"""
+
+
+def test_second_process_keeps_lock_access_and_reads_p_charges(registered):
+    import json
+    import subprocess
+    import sys
+    queue, root = registered
+    source_root = str(Path(__file__).resolve().parents[1] / "src")
+    intent = envelope("coordinator", [root])
+    with fs.reserve_operation(queue, intent, [root], role="coordinator",
+                              operation_key=OPERATION_KEY):
+        completed = subprocess.run(
+            [sys.executable, "-c", SECOND_PROCESS_CONTROL, source_root,
+             str(queue.root), str(root)],
+            capture_output=True, text=True, timeout=120)
+        assert completed.returncode == 0, completed.stderr
+        assert json.loads(completed.stdout) == {"lock_access": True, "held_gib": 2}
+    assert pool.held_names_visible(queue.ledger(HOST), OPERATION_KEY) == set()
 
 
 def test_coordinator_demand_may_commit_honest_extra_kinds(registered):

@@ -5753,11 +5753,17 @@ under the same existing ledgers: a unique `operation-p-<64 hex>` holder
 (never an action key, never a `claiming.` handle), admitted under the
 aggregate floor with its own allowance charged, then committed with the
 existing `ResourceLedger.acquire` -- a committed non-`claiming` holder every
-later census counts and no stale sweep recovers. Clean completion releases
-exactly the committed tokens; any other ending retains them for the recorded
-owner. A same-key entry while that custody is live in the same pid/thread
-joins admission-only (no second commit, no release); the outermost frame
-alone releases. An optional `demand` may commit honest existing CPU/memory
+later census counts and no stale sweep recovers. The exclusion ends before
+the guarded body runs: no registration, primary or ledger lock is held
+across the body, second processes keep lock access, and their floors read
+the retained charges through the ordinary held census. Clean completion
+releases exactly the committed tokens; any other ending retains them for
+the recorded owner. A same-key entry while that custody is live in the same
+pid/thread joins admission-only (no second commit, no release): new exact
+read paths may join, and the growth intent must equal the committed bound
+exactly, so a larger nested envelope is refused instead of riding the
+original P charges; the outermost frame alone releases. An optional
+`demand` may commit honest existing CPU/memory
 kinds beside the envelope's byte kinds and must cover the declared growth.
 No new ledger, validator, or bootstrap exemption exists: an unregistered
 population is UNKNOWN and HOLD, never zero.

@@ -1085,9 +1085,13 @@ def reserve_operation(queue, intent, paths, *, role="coordinator",
     non-``claiming`` holder that every later census counts and no stale sweep
     recovers. A clean completion releases exactly the committed tokens; any
     other ending retains them for the recorded owner. A same-key entry while
-    that custody is live in this pid/thread joins admission-only: no second
-    commit, no release, and the outermost frame alone releases. A duplicate
-    key with tokens outstanding is refused, never double-charged.
+    that custody is live in this pid/thread joins admission-only: new exact
+    read paths may join, the growth intent must equal the committed bound
+    exactly, no second commit, no release, and the outermost frame alone
+    releases. A duplicate key with tokens outstanding is refused, never
+    double-charged. The committed charges stay counted while the body runs
+    with no guard lock held, so second processes keep lock access and read
+    the retained charges through the ordinary held census.
 
     ``role="worker"``/``"storage"`` is the ordinary actionK lifecycle: the
     claimed record, its resource scope and the sealed request own the held
@@ -1108,7 +1112,14 @@ def reserve_operation(queue, intent, paths, *, role="coordinator",
                 and current.get("thread") == threading.get_ident()
                 and current.get("queue") == str(queue.root)):
             # Nested join: the outermost frame owns the committed custody and
-            # alone releases it; this frame only proves its own exact paths.
+            # alone releases it. New exact read paths may join; the growth
+            # intent must be exactly the committed bound, so a larger nested
+            # envelope is refused instead of riding the original P charges.
+            if (not isinstance(current.get("bound_operation"), str)
+                    or core.canonical_sha256(operation(intent, role))
+                    != current["bound_operation"]):
+                raise LocalScratchError(
+                    "nested operation growth exceeds its committed bound")
             with admission(queue, paths, intent=intent, role=role):
                 yield
             return
@@ -1146,20 +1157,28 @@ def reserve_operation(queue, intent, paths, *, role="coordinator",
                             "committed operation custody refused under the floor")
                     committed.append(base)
                 entered = True
-                token = _COORDINATOR.set({"pid": os.getpid(),
-                                          "thread": threading.get_ident(),
-                                          "queue": str(queue.root), "intent": intent,
-                                          "role": role, "operation_key": operation_key})
-                try:
-                    yield verdict
-                    completed = True
-                finally:
-                    _COORDINATOR.reset(token)
+            # P is committed under the atomic exclusion, which ends HERE.
+            # The registration lock, every physical primary and every ledger
+            # mutation lock are released before the body runs: second
+            # processes keep lock access and their floors read P's retained
+            # charges through the ordinary held census, never a held lock.
+            token = _COORDINATOR.set({"pid": os.getpid(),
+                                      "thread": threading.get_ident(),
+                                      "queue": str(queue.root), "intent": intent,
+                                      "role": role, "operation_key": operation_key,
+                                      "bound_operation":
+                                          core.canonical_sha256(operation(intent, role))})
+            try:
+                yield verdict
+                completed = True
+            finally:
+                _COORDINATOR.reset(token)
         finally:
             if committed and (completed or not entered):
                 # Exact owned rollback of a refused multi-ledger commit, or the
-                # one clean release. Anything else retains: crash/uncertainty
-                # custody is recovered by the recorded owner, never swept.
+                # one clean release after the body's writers finished. Anything
+                # else retains: crash/uncertainty custody is recovered by the
+                # recorded owner, never swept.
                 for base in committed:
                     ledgers[base].release(operation_key)
         return
