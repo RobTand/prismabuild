@@ -100,8 +100,13 @@ def test_withdrawn_finish_records_in_progress_cleanup_as_pending_then_concludes(
     queue, record, marker = claimed
     docker.present = {BUSY}
     # The daemon is already removing it; the follow-up ownership query still
-    # lists it, so cleanup is honestly incomplete -- but not a failure.
-    docker.rm_answers.append((1, "", _in_progress(BUSY)))
+    # lists it, so cleanup is honestly incomplete -- but not a failure. The
+    # real withdrawal tries cleanup first, then the payload's finish does.
+    docker.rm_answers += [(1, "", _in_progress(BUSY))] * 2
+    withdrawal = queue.withdraw(KEY, reason="drained for a U4 window", signal_child=False)
+    assert withdrawal["released"] == 0
+    assert "error" not in withdrawal["container_cleanup"], withdrawal
+    record = pool._read_json(queue.item_path(pool.CLAIMED, KEY))
     path = queue.finish(KEY, status="withdrawn",
                         detail={"returncode": -15, "termination_reason": "withdrawn"},
                         claim_snapshot=record)
