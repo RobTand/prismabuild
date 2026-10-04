@@ -539,6 +539,28 @@ def per_test_bound(*, timeout_s: float | None, override_s: float | None,
     return max(0.0, ceiling - pool.HEARTBEAT_S)
 
 
+def placement(tags: list[str], *, gpu: bool, timeout_s: float | None,
+              test_timeout_s: float | None,
+              ) -> tuple[dict[str, float | None], float | None, float]:
+    """One read of the announcements for the three numbers a shard seals.
+
+    The ceilings a claimant announces, the shard deadline derived from them
+    (:func:`shard_ceiling`), and the per-test bound one heartbeat inside it
+    (:func:`per_test_bound`).  Derived together, from one announcement read,
+    so a shard's sealed end and the bound inside it cannot come from two
+    different reads of the fleet and drift apart -- the rule
+    :func:`default_duration` states for the packing, one level up.  A cohort
+    of shards whose tags name a narrower fleet derives its numbers from
+    exactly the boxes that can claim it by calling this per cohort.
+    """
+
+    ceilings = announced_ceilings(tags)
+    sealed_s = shard_ceiling(timeout_s=timeout_s, gpu=gpu, ceilings=ceilings)
+    bound_s = per_test_bound(timeout_s=timeout_s, override_s=test_timeout_s,
+                             gpu=gpu, ceilings=ceilings)
+    return ceilings, sealed_s, bound_s
+
+
 def shard_ceiling(*, timeout_s: float | None, gpu: bool = False,
                   ceilings: dict[str, float | None] | None = None) -> float | None:
     """The payload budget each shard seals as ``execution_timeout_s``; ``None`` seals none.
@@ -1568,9 +1590,11 @@ def main() -> int:
                       if args.workers_per_shard > 1 else [])
 
     # One read of the announcements serves both numbers below, so the shard's
-    # sealed deadline and the per-test bound inside it cannot disagree.
-    ceilings = announced_ceilings(tags)
-    sealed_s = shard_ceiling(timeout_s=args.timeout_s, gpu=args.gpu, ceilings=ceilings)
+    # sealed deadline and the per-test bound inside it cannot disagree
+    # (:func:`placement`).
+    ceilings, sealed_s, test_bound_s = placement(
+        tags, gpu=args.gpu, timeout_s=args.timeout_s,
+        test_timeout_s=args.test_timeout_s)
     announced = ", ".join(f"{host} {value:g}s" for host, value in sorted(ceilings.items())
                           if value is not None) or "none"
     if sealed_s is None:
@@ -1585,9 +1609,6 @@ def main() -> int:
             print(f"pbtest: --timeout-s {args.timeout_s:g} exceeds the ceiling a "
                   f"claimant announces, which would cut the shard at {sealed_s:g}s "
                   "anyway; that is the deadline sealed", flush=True)
-    test_bound_s = per_test_bound(
-        timeout_s=args.timeout_s, override_s=args.test_timeout_s, gpu=args.gpu,
-        ceilings=ceilings)
     test_bound = ([f"{test_bound_contract.TIMEOUT_ENV}={test_bound_s:g}"]
                   if test_bound_s > 0 else [])
     if test_bound:
