@@ -52,6 +52,7 @@ import getpass
 import hashlib
 import inspect
 import json
+import functools
 import os
 import posixpath
 import re
@@ -86,8 +87,8 @@ RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from prismabuild import (  # noqa: E402
     action_edges, adaptive_gpu, container_images, core as pb,
-    decomposition as dc, materialize, movement_actions, pool, residency_plan, slurm_lane,
-    storage_tiers,
+    decomposition as dc, filesystem_floor, materialize, movement_actions, pool,
+    residency_plan, slurm_lane, storage_tiers,
 )
 import pbstatus  # noqa: E402
 
@@ -6972,6 +6973,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--wait-s", type=float, default=86400.0,
                     help="give up waiting for a worker to pick this up")
     ap.add_argument(
+        "--filesystem-growth-gib", type=int, default=1, metavar="GIB",
+        help="the GiB this submission may write to the shared store (snapshot, "
+             "CAS objects, queue record), reserved from its filesystem_gib "
+             "ledger while it is written when the used-filesystem floor is "
+             "observed or enforced (#1483); ignored while the floor is off")
+    ap.add_argument(
         "--detach", action="store_true",
         help="seal and submit exactly as usual, print one JSON line naming the "
              "action key, the transport, the job id or queue record and the "
@@ -7896,7 +7903,7 @@ def resolve_after_edges(q, cas_root: Path,
 
 
 def submit_deferred(prepared: Mapping[str, object],
-                    args: argparse.Namespace) -> int:
+                    args: argparse.Namespace):
     """File this submission for release once its producers succeed (#913).
 
     Everything ``prepare_submission`` checks has been checked: the checkout,
@@ -7968,7 +7975,9 @@ def submit_deferred(prepared: Mapping[str, object],
             "release": str(action_edges.published_path(q.root, pending_id)),
         }, sort_keys=True), flush=True)
         return 0
-    return await_release(q, pending_id, wait_s=args.wait_s)
+    # Returned, not run: ``main`` waits after the submission's used-
+    # filesystem growth allowance is released (#1483).
+    return functools.partial(await_release, q, pending_id, wait_s=args.wait_s)
 
 
 def require_deferred_read_plan(static: Mapping[str, object],
@@ -8398,6 +8407,33 @@ def main(*, publication_canary_intent=None, authorize_canary=None) -> int:
         return release_origin_consumer_cli(
             *args.release_origin_consumer, reason=args.reason,
             by=f"{who}@{socket.gethostname()}")
+    # The used-filesystem floor (#1483): check what this submission writes,
+    # and hold its growth allowance on the shared store while the snapshot,
+    # CAS objects and queue record are written.  Released, whatever ends the
+    # submission, before an attached pool or ``--after`` wait begins.  The
+    # SLURM lane submits and waits in one call, so it holds no growth (its
+    # used paths are still checked).  ``off`` (the default) reads only the
+    # mode.
+    try:
+        with filesystem_floor.operation(
+                SH / "pb-queue", label="pbrun",
+                used_paths=[getattr(args, "cwd", None) or os.getcwd(), SH / "cas",
+                            SH / "pb-queue", tempfile.gettempdir()],
+                growth_gib=({SH / "cas": args.filesystem_growth_gib}
+                            if args.transport == "pool" else {})):
+            submitted = submit_and_publish(
+                args, publication_canary_intent=publication_canary_intent,
+                authorize_canary=authorize_canary)
+    except filesystem_floor.FloorRefused as exc:
+        raise SystemExit(f"pbrun: a used filesystem is below its floor; nothing "
+                         f"submitted: {exc}") from None
+    return submitted() if callable(submitted) else submitted
+
+
+def submit_and_publish(args, *, publication_canary_intent=None,
+                       authorize_canary=None):
+    """Seal, publish and submit; an attached wait is returned, not run."""
+
     prepared = prepare_submission(args)
     if args.after:
         return submit_deferred(prepared, args)
@@ -8605,7 +8641,8 @@ def main(*, publication_canary_intent=None, authorize_canary=None) -> int:
         ), flush=True)
         return 0
 
-    return await_outcome(q, key, wait_s=args.wait_s, generation=generation)
+    return functools.partial(await_outcome, q, key, wait_s=args.wait_s,
+                             generation=generation)
 
 
 if __name__ == "__main__":

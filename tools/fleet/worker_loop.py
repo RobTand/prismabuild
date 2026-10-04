@@ -111,8 +111,8 @@ RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from prismabuild import (adaptive_cpu, adaptive_gpu as gpu_admission,  # noqa: E402
                          box_capacity, container_images,
-                         core as pb, cpu_topology, local_scratch, pool,
-                         publication_canary, storage_tiers)
+                         core as pb, cpu_topology, filesystem_floor,
+                         local_scratch, pool, publication_canary, storage_tiers)
 from pbstatus import Deadline, bounded  # noqa: E402
 
 #: The safety ceiling a worker loop enforces on one action unless told
@@ -2052,6 +2052,37 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
         except Exception as exc:                                 # noqa: BLE001
             print(f"[{host}] spool retirement skipped this poll: "
                   f"{type(exc).__name__}: {exc}", flush=True)
+        # The used-filesystem floor (#1483).  The tick refreshes the bindings
+        # this box owns and reaps dead growth holders, in every mode, so a
+        # binding is freshly sampled before anyone enforces it.  The check
+        # then covers what this box writes without an allowance of its own
+        # -- the queue, the CAS, its checkouts and logs -- and under
+        # ``enforce`` a filesystem below its floor skips this poll's
+        # admission, like an unpublished offer: nothing is claimed, nothing
+        # fails.  Under ``off`` (the default) the check reads only the mode;
+        # the tick still refreshes any binding this box owns, so ``status``
+        # is real before anyone enforces.  Before the claim-time handshake,
+        # so a refresh never widens its window, and exception-isolated like
+        # the ticks above.
+        floor_open = True
+        try:
+            floor_root = getattr(queue, "root", None)
+            if floor_root is not None:
+                filesystem_floor.loop_tick(floor_root, label=f"worker_loop {host}")
+                floor_open = filesystem_floor.host_admission(
+                    floor_root, [floor_root, SH / "cas", pool.LOCAL_CHECKOUT_ROOT],
+                    label=f"worker_loop {host}")
+        except Exception as exc:                                 # noqa: BLE001
+            print(f"[{host}] filesystem floor skipped this poll: "
+                  f"{type(exc).__name__}: {exc}", flush=True)
+        if not floor_open:
+            print(f"[{host}] used filesystem below its floor; skipping admission "
+                  f"this poll", flush=True)
+            idle += 1
+            if args.once:
+                return 1
+            time.sleep(args.poll_s)
+            continue
 
         # The claim-time handshake.  Everything above -- offer publication,
         # queue discovery -- may have taken seconds, and a publisher can

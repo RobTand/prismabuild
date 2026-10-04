@@ -191,6 +191,11 @@ FLEET_SCRIPTS = (
 #: The tuple exists so that leaving one out is a decision
 #: somebody wrote down rather than an omission nobody noticed.
 EXCLUDED: tuple[tuple[str, str], ...] = (
+    ("filesystem_floor_proof.py",
+     "the #1483 two-host floor proof, run from a checkout through pbrun "
+     "against a private registry; a record of one qualification, not an "
+     "operator command (the operator CLI is python -m "
+     "prismabuild.filesystem_floor)"),
     ("profile_finish_census.py",
      "a read-only profile of the census a finish pays, run from a checkout "
      "through pbrun against a view of a queue's funding directory; it is a "

@@ -5751,21 +5751,43 @@ path is canonicalized once, at ledger construction: taking the exclusion
 never resolves the shared ledger base, so a stalled lookup cannot run
 inside a host admission section.
 
-The #1483 validator holds `ledger._mutation_locked(blocking=False)`
-continuously across its fresh authoritative capacity census, decision and
-physical reservation begin/commit or rollback. Two equal snapshots are not
-an exclusion or an ABA proof. When CPU `AdmissionGate` applies, it is outer;
-no mutation section acquires that gate, a transition/ownership parent, or
-another ledger owner. The exclusion does not span payload I/O. Private
+A capacity check-and-reserve caller holds `ledger._mutation_locked`
+continuously across its fresh census, decision and physical reservation
+begin/commit or rollback. Two equal snapshots are not an exclusion or an
+ABA proof. When CPU `AdmissionGate` applies, it is outer; no mutation
+section acquires that gate, a transition/ownership parent, or another
+ledger owner. The exclusion does not span payload I/O. Private
 acquisitions stay charged throughout their separate begin/commit lifecycle.
+
+**The used-filesystem floor (#1483, default-off).** `begin_acquire` asks
+`filesystem_floor.ledger_gate` before taking byte-kind tokens (`spool_gb`,
+`stage_gib`, `filesystem_gib`). Inside the ledger's mutation section the
+gate takes the floor lock of each filesystem the demand is bound to --
+sorted, each with a bounded wait -- and admits only when the owner's
+published sample satisfies `free >= ceil(size/20) + census +
+grants-since-sample + demand`. Floor locks are innermost: a floor section
+acquires nothing else, and the owner's refresh holds only the floor lock,
+so the order `[AdmissionGate] -> ledger lock -> floor locks` has no cycle.
+Under the ledger lock the gate reads only the floor lock, the published
+sample and the grant counter; the mode and bindings come from a
+per-process cache the loop tick refreshes outside every lock, and no name
+resolution, `statvfs` or subprocess runs there. A refusal is the ledger's
+ordinary shortage (`None`, `last_token_shortage.resource ==
+"filesystem_floor"`), so every caller's existing shortage handling applies.
+Release, commit, abandon, transfer and sweep are unchanged and take no
+floor lock: they only lower the charge. With the mode `off` (the default)
+`begin_acquire` reads one cached mode value and is otherwise the old
+locked acquisition. Bindings, stable identity, refresh, used-path checks,
+coordinator growth and the bootstrap order are in
+[filesystem_floor.md](filesystem_floor.md).
 
 Locking is separate from census/cache purpose: only the explicit
 `tier_census=True` factory selects tier grow/reclaim refusal and the existing
 tier directory-name cache. Host legacy readers stay fresh with their prior
 error/report semantics; they are not complete filesystem-capacity proof.
-The sole validator supplies that fresh error-visible proof separately.
-This source contract is necessary, not all-used-filesystem qualification,
-a positive DL offer, a materialization credit, or deployment authority.
+The floor's own census (above) supplies that separately. This source
+contract is necessary, not all-used-filesystem qualification, a positive
+DL offer, a materialization credit, or deployment authority.
 Mixed generations not sharing the host mutation exclusion remain unqualified.
 
 **Bandwidth figures name their side.** The token, the demand key and the tier

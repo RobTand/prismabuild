@@ -2984,6 +2984,30 @@ afterwards. Run `pbwait` on the keys to derive and file the terminal records.
 Any producer that builds its own actions should do the same: seal the action,
 hand it to `fleet_submit`, print the key, and read the CAS for the verdict.
 
+## The used-filesystem floor (#1483)
+
+Every filesystem PrismaBuild writes keeps five percent free plus every byte
+allowance it has granted there and not taken back.  The mode is fleet-wide
+and **off by default**; `observe` logs `[filesystem-floor] would refuse ...`
+and `enforce` refuses (a claim or tier take sees an ordinary shortage, a
+worker poll skips its admission, `pbrun` exits before submitting).
+
+```bash
+python -m prismabuild.filesystem_floor status          # bindings, verdicts, unbound byte ledgers
+python -m prismabuild.filesystem_floor register ROOT --member reservations/<host>:spool_gb
+python -m prismabuild.filesystem_floor register /storage_pool/shared --filesystem-gib N --filesystem-ledger storage-pool
+python -m prismabuild.filesystem_floor check PATH...   # used-path verdicts, any mode
+python -m prismabuild.filesystem_floor mode observe    # or off | enforce; no restart needed
+python -m prismabuild.filesystem_floor reap            # release growth held by dead owners
+```
+
+Register on the host where `ROOT` is local, through a PB action pinned to
+it.  `PRISMABUILD_FILESYSTEM_FLOOR=off|observe|enforce` overrides the mode
+for one process.  `pbrun --filesystem-growth-gib N` (default 1) sizes what a
+submission may write to the shared store while it publishes.  The bootstrap
+order, the end-to-end proof that gates `enforce`, and the known limits are
+in [filesystem_floor.md](filesystem_floor.md).
+
 ## Publish the runtime the fleet executes
 
 A worker does not run your checkout. It runs
