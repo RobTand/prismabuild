@@ -495,6 +495,15 @@ Discover potential measurement generations and elected sidecars outside H;
 acquire sorted measurement transition keys M **nonblocking before H**, using the
 existing candidate/reentrant lock contract, then refresh strict READY, CLAIMED,
 finish-mark, sidecar and relevant exact terminal/withdrawal authority under H.
+The host-local reader fence is acquired once for the whole two-pass census and
+released after the refresh (#1498): releasing it between the phases let a
+concurrent observer take it and deny the under-H refresh -- after the caller
+had already taken M and H -- with "measurement census reader busy", the
+sustained denial that stalled EXL3 preflight admission. The single-reader
+fence contract is unchanged: one bounded census child at a time, ownership
+persisted and retained-reader liveness checked per acquisition, and every
+refusal inside the hold (fence, transition key, admission gate) stays
+nonblocking and releases what was taken.
 New unlocked M keys, unreadable/incomplete records, unsupported ownership and
 caps (4096 directory entries, 4 MiB per record, five seconds per read) defer the
 pass, never become an empty census. Parent retains M/H only through the actual

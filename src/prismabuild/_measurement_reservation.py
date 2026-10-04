@@ -195,8 +195,26 @@ class CensusReader:
         self.directory = directory
         self.name = digest + ".measurement-reader-v1"
         self.pool_identity = str(queue.root.resolve())
+        self._held: tuple[int, int] | None = None
 
-    def capture(self) -> dict:
+    @contextmanager
+    def held(self):
+        """Own the restart fence across a whole two-phase census (#1498).
+
+        ``locked_census`` reads outside H for discovery and again under H for
+        its refresh. Releasing the fence between the phases let a concurrent
+        queue observer take it in the gap and deny the refresh with
+        "measurement census reader busy" after the caller had already taken
+        the measurement transition keys and host admission: the phase-two
+        steal behind the sustained admission denials of #1498. One fence
+        acquisition per ``locked_census`` keeps the single-reader contract
+        exactly -- the ownership marker is persisted per acquisition, the
+        retained-reader liveness check runs per acquisition, and at most one
+        bounded census child runs at a time -- while the two reads of one
+        census share that acquisition. Everything acquired inside the hold
+        stays nonblocking, so a refused fence, transition key or admission
+        gate still denies the pass and releases the fence.
+        """
         directory = os.open(self.directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         lock = None
         try:
@@ -226,6 +244,28 @@ class CensusReader:
                 if reader.reader_liveness(ownership, pool_identity=self.pool_identity,
                                           section=READ_SECTION) != "settled":
                     raise CensusUnavailable("retained measurement census reader unresolved")
+            self._held = (directory, lock)
+            try:
+                yield
+            finally:
+                self._held = None
+        except (OSError, ValueError, core.PrismaBuildError, reader.ReaderOwnershipUnavailable,
+                local_scratch.LocalScratchError) as exc:
+            raise CensusUnavailable(str(exc)) from exc
+        finally:
+            if lock is not None:
+                os.close(lock)
+            os.close(directory)
+
+    def capture(self) -> dict:
+        if self._held is not None:
+            return self._census(self._held[0])
+        with self.held():
+            return self._census(self._held[0])
+
+    def _census(self, directory: int) -> dict:
+        """One strict bounded census read; the caller owns the held fence."""
+        try:
             abandoned: list[dict] = []
             def persist(ownership: reader.ReaderOwnership) -> None:
                 # Exact identity is durable BEFORE release. At most 4 KiB;
@@ -271,10 +311,6 @@ class CensusReader:
         except (OSError, ValueError, core.PrismaBuildError, reader.ReaderOwnershipUnavailable,
                 local_scratch.LocalScratchError) as exc:
             raise CensusUnavailable(str(exc)) from exc
-        finally:
-            if lock is not None:
-                os.close(lock)
-            os.close(directory)
 
 
 @contextmanager
@@ -285,25 +321,29 @@ def locked_census(queue: PoolQueue, ledger: ResourceLedger, controller):
     contract is intentional. No cross-key wait or publisher host-gate protocol
     is added. The guarantee starts at canonical election, not at arbitrary
     future publication. An unlocked newly discovered M denies this pass.
+    The reader fence is acquired once for both phases and released after the
+    refresh (#1498): a concurrent observer cannot consume it between them, and
+    a fence, transition or admission refusal releases what was taken.
     """
     census_reader = CensusReader(queue, ledger)
-    discovered = census_reader.capture()
-    with ExitStack() as held:
-        keys = set(discovered["keys"])
-        for key in sorted(keys):
-            if not held.enter_context(queue._transition_locked(key, blocking=False)):
-                raise CensusUnavailable(f"measurement transition busy: {key}")
-        held.enter_context(queue._admission_lock(controller))
-        current = census_reader.capture()
-        if not set(current["keys"]).issubset(keys):
-            raise CensusUnavailable("new unlocked measurement generation; restart census")
-        # A success/cancellation slot is not physical ownership settlement.
-        # Under H, retained tokens on this elected host still prevent refill.
-        for key in ledger.held_keys():
-            chosen = current["selections"].get(key)
-            if chosen is not None and chosen["host"] == ledger.base.name:
-                current["elections"][key] = chosen
-        yield current
+    with census_reader.held():
+        discovered = census_reader.capture()
+        with ExitStack() as held:
+            keys = set(discovered["keys"])
+            for key in sorted(keys):
+                if not held.enter_context(queue._transition_locked(key, blocking=False)):
+                    raise CensusUnavailable(f"measurement transition busy: {key}")
+            held.enter_context(queue._admission_lock(controller))
+            current = census_reader.capture()
+            if not set(current["keys"]).issubset(keys):
+                raise CensusUnavailable("new unlocked measurement generation; restart census")
+            # A success/cancellation slot is not physical ownership settlement.
+            # Under H, retained tokens on this elected host still prevent refill.
+            for key in ledger.held_keys():
+                chosen = current["selections"].get(key)
+                if chosen is not None and chosen["host"] == ledger.base.name:
+                    current["elections"][key] = chosen
+            yield current
 
 
 @contextmanager
