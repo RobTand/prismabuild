@@ -178,7 +178,8 @@ def canonical(path: Path) -> Path:
 
 @contextmanager
 def held(path: Path, *, blocking: bool = True,
-         busy: dict[str, object] | None = None, canonical: bool = False):
+         busy: dict[str, object] | None = None,
+         canonicalized: bool = False):
     """Yield acquisition status, with same-thread nesting and crash release.
 
     POSIX locks are process-scoped: serialize threads before opening the inode
@@ -201,7 +202,7 @@ def held(path: Path, *, blocking: bool = True,
     when ``F_GETLK`` names one, see :func:`_conflicting_pid`).  It stays
     empty when the lock was taken (#1115).
 
-    ``canonical``, when true, vouches that ``path`` already *is*
+    ``canonicalized``, when true, vouches that ``path`` already *is*
     :func:`canonical`, so taking the lock performs no name resolution.  A
     caller that resolves its lock path once, in its own context, keeps a
     stalled lookup out of the critical section it is about to hold; the
@@ -209,7 +210,7 @@ def held(path: Path, *, blocking: bool = True,
     nesting and retirement are unchanged.
     """
     path = Path(path)
-    if not canonical:
+    if not canonicalized:
         path = canonical(path)
     key = str(path)
     with _registry:

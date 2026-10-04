@@ -3925,7 +3925,7 @@ class ResourceLedger:
         """
         if self._mutation_guard is None:
             return posix_lock.held(self._mutation_lock, blocking=blocking,
-                                   canonical=True)
+                                   canonicalized=True)
         return self._mutation_guard(blocking=blocking)
 
     def _strict_census(self) -> bool:
