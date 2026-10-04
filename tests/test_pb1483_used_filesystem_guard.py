@@ -4,6 +4,9 @@ Source-level behavior only. The hand-built bindings here stand in for the
 operational registration: its capture/provenance/adoption path requires
 authorized PrismaBuild runs and is deliberately not exercised. Frames are real
 native captures of the test's own filesystem (tmpfs/ext4 supported paths).
+The private fixture has no NFS-export users: its export roster is explicitly
+empty. The fleet's native nfsd FSID table and operational capture are not
+qualified here; the admitted PermissionError remains an operational prerequisite.
 """
 import json
 import os
@@ -69,9 +72,16 @@ def owner_ref():
     return {"type": "host", "id": HOST}
 
 
+@pytest.fixture(autouse=True)
+def private_export_roster(monkeypatch):
+    monkeypatch.setattr(fs, "_native_export_rows", lambda: [])
+
+
 @pytest.fixture
 def queue(tmp_path):
-    return pool.PoolQueue(tmp_path / "pb-queue")
+    queue = pool.PoolQueue(tmp_path / "pb-queue")
+    queue.ensure_layout()
+    return queue
 
 
 @pytest.fixture
