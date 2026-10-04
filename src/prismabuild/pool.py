@@ -3900,20 +3900,24 @@ class ResourceLedger:
         self._mutation_guard = mutation_guard
         self._tier_census = tier_census
 
+    @contextmanager
     def _mutation_locked(self, *, blocking: bool = True):
         """Retain the same owner exclusion every token mutator uses.
 
         Same-thread nesting through another ledger instance keeps the outer
         POSIX descriptor. Capacity callers hold this continuously through the
         decision and reservation/rollback, not for two matching snapshots.
-        Host AdmissionGate, when used, is outer; this section never acquires
-        that gate, a transition/ownership lock, or another ledger's lock.
-        No payload I/O is performed under this exclusion.
+        Host AdmissionGate, when present, is outer. Canonical physical primary
+        leaves precede this owner's local lock; no CPU gate is reacquired.
+        Primary routing ends in raw leaves, never aggregate-aware recursion.
         """
-        if self._mutation_guard is None:
-            return posix_lock.held(self.base / ".mutation.lock",
-                                   blocking=blocking)
-        return self._mutation_guard(blocking=blocking)
+        from . import filesystem_capacity
+        with filesystem_capacity.mutation_primaries(self):
+            guard = (posix_lock.held(self.base / ".mutation.lock", blocking=blocking)
+                     if self._mutation_guard is None else
+                     self._mutation_guard(blocking=blocking))
+            with guard as acquired:
+                yield acquired
 
     def _strict_census(self) -> bool:
         """Whether this ledger refuses to mint from a partial view.
@@ -4152,6 +4156,8 @@ class ResourceLedger:
         and propagation.
         """
 
+        from . import filesystem_capacity
+        filesystem_capacity.require_mint(self, capacity)
         self.free_dir.mkdir(parents=True, exist_ok=True)
         self.held_dir.mkdir(parents=True, exist_ok=True)
         self.minted_dir.mkdir(parents=True, exist_ok=True)
@@ -4681,6 +4687,8 @@ class ResourceLedger:
 
         self.last_token_shortage = None
         wanted = {k: int(v) for k, v in demand.items() if int(v) > 0}
+        from . import filesystem_capacity
+        filesystem_capacity.require_reservation(self, wanted)
         handle = (
             f"{ACQUIRING_PREFIX}{int(_now() * 1_000_000)}.{action_key}"
             f".{socket.gethostname()}.{os.getpid()}.{uuid.uuid4().hex[:8]}"
@@ -11517,6 +11525,23 @@ class PoolQueue:
         """
         return ResourceLedger(self.root / RESERVATIONS, host=host)
 
+    def _filesystem_begin(self, ledger, action_key, demand, *, cas_root, **kwargs):
+        """Derive one physical acquisition from the sealed request, not a dict permit."""
+        from . import filesystem_capacity as fs
+        physical = {kind: need for kind, need in demand.items()
+                    if kind in fs.FILESYSTEM_BYTE_KINDS and need > 0}
+        if not physical:
+            return ledger.begin_acquire(action_key, demand, **kwargs)
+        action = _sealed_action_request(str(cas_root), str(action_key))
+        if action is None:
+            raise local_scratch.LocalScratchError("physical acquisition lacks its sealed operation")
+        intent = fs.action_intent(action)
+        paths = [self.root, Path(str(cas_root)), Path(__file__), *[
+            entry["root"] for entry in fs.operation(intent, "worker")]]
+        with fs.admission(self, paths, intent=intent, role="worker",
+                          additional={str(ledger.base): physical}):
+            return ledger.begin_acquire(action_key, demand, **kwargs)
+
     # -- storage tiers (#583) --------------------------------------------
 
     @staticmethod
@@ -11556,6 +11581,7 @@ class PoolQueue:
         return ResourceLedger(self.root / TIER_RESERVATIONS, host=checked,
                               mutation_guard=_tier_guard, tier_census=True)
 
+    @contextmanager
     def tier_mint_lock(self, tier_id: str, *, blocking: bool = True):
         """Serialize the minters of one tier's capacity, never other tiers.
 
@@ -11573,10 +11599,15 @@ class PoolQueue:
         caller that would rather decline than wait.
         """
 
-        name = hashlib.sha256(
-            f"tier-mint:{self._check_tier_id(tier_id)}".encode()).hexdigest()
-        return posix_lock.held(self.root / "tier-mint-locks" / f"{name}.lock",
-                               blocking=blocking)
+        from . import filesystem_capacity
+        checked = self._check_tier_id(tier_id)
+        ledger = ResourceLedger(self.root / TIER_RESERVATIONS, host=checked,
+                                tier_census=True)
+        with filesystem_capacity.mutation_primaries(ledger):
+            with posix_lock.held(filesystem_capacity._raw_lock(
+                    self.root, {"type": "tier", "id": checked}),
+                    blocking=blocking) as acquired:
+                yield acquired
 
     def stage_ownership_lock(self, stage_root, *, blocking: bool = True):
         """Serialize the owners of one stage root's files, never other roots.
@@ -16115,7 +16146,7 @@ class PoolQueue:
                     return {"tier_id": tier_id,
                             "reason": "output_funding_required_absent",
                             "demand": dict(needs)}
-            handle = ledger.begin_acquire(action_key, remainder)
+            handle = self._filesystem_begin(ledger, action_key, remainder, cas_root=cas_root)
             if handle is None:
                 shortage = {"tier_id": tier_id, "reason": "tier_reservation_unavailable",
                             "token_shortage": ledger.last_token_shortage,
@@ -20678,14 +20709,15 @@ class PoolQueue:
                                     scratch_evidence["reservation_demand"] = dict(reservation_demand)
                             if not refused:
                                 if adaptive_gpu is not None:
-                                    handle = ledger.begin_acquire(
-                                        key, reservation_demand, adaptive=adaptive,
-                                        cpu_tiers=cpu_tiers, adaptive_gpu=adaptive_gpu)
+                                    handle = self._filesystem_begin(
+                                        ledger, key, reservation_demand, cas_root=item["cas_root"],
+                                        adaptive=adaptive, cpu_tiers=cpu_tiers, adaptive_gpu=adaptive_gpu)
                                     asked = reservation_demand
                                 else:
-                                    handle = (ledger.begin_acquire(key, demand) if adaptive is None else
-                                              ledger.begin_acquire(key, demand, adaptive=adaptive,
-                                                                   cpu_tiers=cpu_tiers))
+                                    handle = self._filesystem_begin(
+                                        ledger, key, demand, cas_root=item["cas_root"],
+                                        **({"adaptive": adaptive, "cpu_tiers": cpu_tiers}
+                                           if adaptive is not None else {}))
                                     asked = demand
                                 token_shortage = ledger.last_token_shortage
                                 if handle is not None:

@@ -158,6 +158,19 @@ identity mapping, safe DL diagnostic route or five-percent-floor positive.
 Actual parent/security review and admitted PB controls remain required;
 mixed-version writers outside the exclusion remain unqualified.
 
+The #1483 guard completion keeps this shape and adds, in the same existing
+owners: the single all-used-filesystem predicate
+(`free >= ceil(size/20) + aggregate held-and-additional allowances`, no
+materialization credit); the registration lock spanning each validator
+decision; distinct committed operationP custody (`operation-p-<64 hex>`
+holders under the same ledgers, released only on clean completion, retained
+on any other ending, never swept) beside the normal claimed actionK
+lifecycle; and an unchanged provenance-owner seam (the frozen
+`materialize._execution_checkout` owner, candidate admission refused inside
+provenance materialization, registration refused inside live transactions).
+Unregistered populations stay UNKNOWN and HOLD. Source only: no live
+adoption, capture, or qualification is asserted.
+
 CPU action identity and the GPU action contract (`adaptive_gpu.action_contract`)
 still read the sealed request from the CAS on the mount. The pool now resolves
 these immutable facts before candidate admission, retaining per-key exclusion,

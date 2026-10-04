@@ -1085,7 +1085,7 @@ def io_intent(variables, *, transport="pool"):
     return {"declaration": value, "root": pairs[0]["root"]}
 
 
-def _descriptor_mount(fd):
+def _descriptor_mount(fd, *, directory=True):
     """Exact open-object device/FSID, with mount type from its Linux mount ID.
 
     FSID is an identity, not the filesystem type. No pathname-prefix mount
@@ -1096,8 +1096,10 @@ def _descriptor_mount(fd):
     """
     info = os.fstat(fd)
     import stat
-    if not stat.S_ISDIR(info.st_mode):
+    if directory and not stat.S_ISDIR(info.st_mode):
         raise LocalScratchError("scratch root is not a directory")
+    if not directory and not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)):
+        raise LocalScratchError("used filesystem object is not a regular file or directory")
     fsid = getattr(os.fstatvfs(fd), "f_fsid", None)
     if type(fsid) is not int:
         raise LocalScratchError("scratch descriptor filesystem ID unknown")

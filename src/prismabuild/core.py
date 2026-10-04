@@ -4274,6 +4274,16 @@ def preflight_action(
     root = Path(checkout_root)
     if not root.is_absolute():
         _fail("checkout_root must be absolute")
+    # Actual filesystem authority precedes code/tool/input execution facts.
+    # An absent claim/registered namespace is UNKNOWN, never a metadata or
+    # no-demand exemption from the standing physical floor.
+    from . import filesystem_capacity, pool
+    queue_root = os.environ.get(QUEUE_ROOT_ENV)
+    if not queue_root:
+        raise ActionContractError("all-used-filesystem owner context unavailable")
+    filesystem_capacity.check_action(
+        pool.PoolQueue(queue_root), normalized, checkout_root=root, cas_root=cas_root,
+        held_owner=str(normalized["action_key"]))
     verify_code_closure(normalized["code_closure"], root)
     _verify_pbrun_checkout_identity(normalized, root)
     scope = normalized["execution_scope"]
