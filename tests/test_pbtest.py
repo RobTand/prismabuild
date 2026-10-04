@@ -301,3 +301,24 @@ def test_explicit_tmpdir_refuses_on_the_worker_before_pytest(
                                 capture_output=True, text=True)
         assert legacy.returncode == 0, legacy.stdout + legacy.stderr
         assert marker.exists()
+
+
+def test_client_help_needs_no_pytest_on_the_coordinator():
+    # -S removes installed site packages; the blocker also catches accidental
+    # pytest imports through this checkout or an inherited PYTHONPATH.
+    script = """
+import importlib.abc, runpy, sys
+class NoPytest(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == "pytest" or fullname.startswith("pytest."):
+            raise ImportError("pytest is worker-only")
+sys.meta_path.insert(0, NoPytest())
+sys.argv = [sys.argv[1], "--help"]
+runpy.run_path(sys.argv[0], run_name="__main__")
+"""
+    result = subprocess.run(
+        [sys.executable, "-S", "-c", script, str(ROOT / "tools/fleet/pbtest.py")],
+        cwd=ROOT, capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "--checkout" in result.stdout
+    assert "--tag" in result.stdout

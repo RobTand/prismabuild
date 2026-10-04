@@ -368,7 +368,7 @@ from fleet_submit import TRANSPORTS, default_transport  # noqa: E402
 #: The per-test bound's name and the ceiling the worker loops enforce, read
 #: from the modules that own them rather than restated here: a bound derived
 #: from a number this file copied would drift the moment either moved.
-from prismabuild import pytest_test_bound  # noqa: E402
+from prismabuild import test_bound_contract  # noqa: E402
 from worker_loop import DEFAULT_EXECUTION_CEILING_S  # noqa: E402
 #: Read the recorder from this tool's own generation. A pbtest test can itself
 #: run under an older sealed recorder; its sys.modules entry is that outer
@@ -1464,11 +1464,11 @@ def main() -> int:
     test_bound_s = per_test_bound(
         timeout_s=args.timeout_s, override_s=args.test_timeout_s, gpu=args.gpu,
         ceilings=ceilings)
-    test_bound = ([f"{pytest_test_bound.TIMEOUT_ENV}={test_bound_s:g}"]
+    test_bound = ([f"{test_bound_contract.TIMEOUT_ENV}={test_bound_s:g}"]
                   if test_bound_s > 0 else [])
     if test_bound:
         print(f"pbtest: per-test bound {test_bound_s:g}s "
-              f"({pytest_test_bound.TIMEOUT_ENV}); a test that outlives it "
+              f"({test_bound_contract.TIMEOUT_ENV}); a test that outlives it "
               "fails as itself instead of holding the shard to its ceiling",
               flush=True)
         if sealed_s is not None:
@@ -1476,9 +1476,9 @@ def main() -> int:
             # finish inside the shard; the plugin tightens its alarm to what
             # is left so the test is failed by name (#1309).
             test_bound.append(
-                f"{pytest_test_bound.SHARD_BUDGET_ENV}={sealed_s:g}")
+                f"{test_bound_contract.SHARD_BUDGET_ENV}={sealed_s:g}")
             print(f"pbtest: each shard also seals its remaining budget "
-                  f"({pytest_test_bound.SHARD_BUDGET_ENV}={sealed_s:g}); a "
+                  f"({test_bound_contract.SHARD_BUDGET_ENV}={sealed_s:g}); a "
                   "test starting with less time left than its bound is failed "
                   "at what is left", flush=True)
     if predicted:

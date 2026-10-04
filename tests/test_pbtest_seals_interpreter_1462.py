@@ -85,7 +85,7 @@ def test_environment_values_are_sealed_as_values_not_interpreter_arguments(tmp_p
     for key in ('OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS',
                 'TORCH_NUM_THREADS'):
         assert variables[key] == '1'
-    assert float(variables[pbtest.pytest_test_bound.TIMEOUT_ENV]) == 90
+    assert float(variables[pbtest.test_bound_contract.TIMEOUT_ENV]) == 90
     assert row['resources']['cpu'] == 4
     assert not any(s.startswith(('TMPDIR=', 'OMP_NUM_THREADS=', 'PYTHONPATH='))
                    for s in action['params']['command'])
