@@ -184,7 +184,7 @@ def test_holder_busy_keeps_the_withhold_then_admits(
     """No regression on #924: a drain that is really pending still holds.
 
     The attribution shows the busy on the holder's own held CPU: the
-    measurement_host_not_idle withhold stands while the holder drains, and
+    measurement_holder withhold stands while the holder drains, and
     the measurement is admitted once the host reads idle.  The row behind
     it waits exactly as it did before #1231.
     """
@@ -221,7 +221,9 @@ def test_holder_busy_keeps_the_withhold_then_admits(
     assert claim() is None, "the holder's own busy load must still withhold"
     denial = _denial(queue, measurement)
     assert denial["reason"] == "adaptive_cpu_refused_withholding", denial
-    assert denial["evidence"]["decision"]["reason"] == "measurement_host_not_idle"
+    # Complete predicted-CPU clearance reaches real holder isolation (#1426).
+    assert denial["evidence"]["decision"]["reason"] == "measurement_holder"
+    assert denial["evidence"]["decision"]["holder"] == holder
     assert denial["evidence"]["withhold"]["why"] == "draining_for_measurement"
     # The drain completes and the host reads idle: the measurement runs.
     queue.finish(holder, status="executed")
