@@ -5231,6 +5231,7 @@ def freeze_action_template(
     container_image_refs: Sequence[str] = (),
     wrapper_dir: Path | None = None,
     gang: Mapping[str, object] | None = None,
+    requires_files: list[dict] | None = None,
 ) -> dict[str, object]:
     """Read the tree and the environment once, and freeze what they say.
 
@@ -5487,11 +5488,11 @@ def freeze_action_template(
         # the row, the matcher and the claim all read one authority: the
         # exact path this action will exec.
         params["interpreter"] = declared_interpreter
-    if requirements is not None:
+    if requires_files is not None:
         # Sealed like the interpreter (#1495): the row carries the claim-
         # relevant projection, and the requirement is part of the action's
         # own identity, so a changed digest re-keys the action.
-        params["requires_files"] = requirements
+        params["requires_files"] = requires_files
     if data_manifest_summary is not None:
         # A summary, not the list: the prewarm budget and the ARC check read
         # these two numbers every poll, and making them fetch and parse a
@@ -7524,6 +7525,7 @@ def prepare_submission(args: argparse.Namespace) -> dict[str, object]:
         container_image_refs=images,
         wrapper_dir=wrapper_dir,
         gang=gang,
+        requires_files=requirements,
     )
     return {
         "args": args,

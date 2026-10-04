@@ -44,8 +44,18 @@ def selection_plugin(spec):
     """Let pytest collect the original targets within PB's immutable file set."""
     import pytest
 
-    if not isinstance(spec, dict) or set(spec) != {"files", "roots"}:
+    if not isinstance(spec, dict) or set(spec) not in (
+            {"files", "roots"}, {"files", "roots", "capabilities"}):
         raise ValueError("pbtest collection selection fields are invalid")
+    if "capabilities" in spec:
+        # The sealed capability selection (#1495) is not collection
+        # evidence; its full validation is the digest preflight's, which
+        # runs before pytest and refuses a malformed seal by name.  Here a
+        # non-dict is refused so an unshapeable extra field can never ride
+        # into a shard that then ignores it.
+        if not isinstance(spec["capabilities"], dict):
+            raise ValueError("pbtest collection selection capabilities "
+                             "must be an object")
     if not isinstance(spec["files"], list) or not spec["files"]:
         raise ValueError("pbtest collection selection needs assigned files")
     files = [_relative_path(path) for path in spec["files"]]

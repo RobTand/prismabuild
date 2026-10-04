@@ -1822,6 +1822,41 @@ Marker text inside strings or comments does not declare a fleet read. If the
 coordinator cannot parse the target's syntax, the conservative text scan remains
 the fallback; parsing never masks genuine pytest collection errors.
 
+A test file whose secondary dependencies exceed the primary interpreter
+declares it with `@pytest.mark.pbtest_capability("name")` (or a module
+`pytestmark`), and the population names what a capability *is* in a versioned
+config — `--capabilities PATH`, default `tests/pbtest_capabilities.json`,
+schema `prismabuild.pbtest_capabilities.v1` (#1495). Each capability carries
+the placement tags a claiming worker must offer and, optionally, exact
+dependency requirements: `{path, sha256}` entries for individual pinned
+bytes, and an `installed_distribution` entry whose `module_sha256` the
+observed *imported* module must match — the probe imports through the pinned
+interpreter inside the shard, so a correct-looking module shadowed onto the
+import path refuses rather than runs. One owner module
+(`src/prismabuild/dependency_digest.py`, standard library only, embedded into
+the shard program like `resource_scope.py`) writes the validation rules, the
+digest, and the observation; the config, the queue row and the preflight all
+read it.
+
+Cohorts are exact declared-name sets over the discovered files. Files with
+the same declared set pack together with the existing duration-balanced
+packer; a portable file is never packed into a fenced shard, because a shard
+requires the union of its files' capabilities and the union would pin the
+portable file to hosts it does not need. More cohorts than `--shards` refuses
+with exit 2 naming every cohort before any submission — no file is dropped
+and no cohort is merged. A fenced shard's command carries its capability tags
+and `--requires-files` (the exact-file entries), the row requires the
+`dependency-digest-v1` capability tag (a worker loop from before the contract
+offers neither the tag nor the claim check, so it can never claim the row),
+and the claim gate stats and hashes the actual bytes — a missing, unreadable
+or drifted dependency is a named denial on the box about to spend the
+attempt. The shard's own preflight re-verifies every sealed requirement
+before pytest from the same owner module, so a refusal is a failed shard and
+a red run, never a skipped test. The sealed selection rides in the shard's
+selection JSON, which is action identity: a changed declaration re-keys every
+shard it fences. A population with no declarations dispatches byte-identically
+to before.
+
 A `--gpu` run must declare its per-test bound (#975): `--test-timeout-s`, or
 `--timeout-s`, from which the bound is derived one heartbeat inside the sealed
 deadline. With neither, `pbtest` refuses with exit 2 before any shard is

@@ -57,7 +57,12 @@ from runtime_paths import (  # noqa: E402
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from prismabuild import adaptive_gpu, core, pool  # noqa: E402
+from prismabuild import dependency_digest  # noqa: E402
 from pbrun import require_gpu_memory_scope  # noqa: E402
+#: The capability declarations and cohort rules for this tool (#1495): one
+#: module, so the coordinator's classification and the CLI's contract cannot
+#: drift apart.
+import pbtest_capabilities  # noqa: E402
 #: Read for ``pbrun.SH`` when the queue is asked, so the conftest's repointing
 #: of the live store reaches it: see :func:`announced_ceilings`.
 import pbrun  # noqa: E402
@@ -745,6 +750,34 @@ def _round_robin(files: list[str], count: int) -> list[list[str]]:
     return buckets
 
 
+def allocate_shards(weights: dict, count: int) -> dict:
+    """Split a shard budget across cohorts: one each, extras by weight.
+
+    ``weights`` maps each cohort key to its predicted seconds -- file counts
+    when nothing is measured.  Every cohort gets one shard first; the rest
+    of ``count`` is handed out by largest remainder, ties breaking by key
+    sort, so the same inputs always pack the same way.  The caller refuses
+    more cohorts than ``count``, so each cohort's one shard is affordable
+    and the total never exceeds the budget (#1495).
+    """
+
+    keys = sorted(weights)
+    total = {key: 1 for key in keys}
+    weight_sum = sum(weights[key] for key in keys)
+    remaining = count - len(keys)
+    if remaining <= 0 or weight_sum <= 0:
+        return total
+    exact = {key: remaining * weights[key] / weight_sum for key in keys}
+    for key in keys:
+        total[key] += int(exact[key])
+    handed = sum(int(exact[key]) for key in keys)
+    order = sorted(keys,
+                   key=lambda key: (-(exact[key] - int(exact[key])), key))
+    for key in order[:remaining - handed]:
+        total[key] += 1
+    return total
+
+
 def load_history(paths: list[str] | None) -> tuple[dict[str, list[float]], list[str]]:
     """Per-file wall-time samples out of prior ``--json`` run reports (#1246).
 
@@ -851,13 +884,26 @@ def load(name):
 
 
 pins = load("pbtest_pins") if "pbtest_pins" in SOURCES else None
+digest = load("pbtest_dependency_digest") if "pbtest_dependency_digest" in SOURCES else None
 load("pbtest_collection")
 selection = None
 if @COLLECTION@:
     import json
     selection = json.loads(sys.argv.pop(1))
+
+
+def preflight():
+    # The reviewed-dependency guard, then the sealed capability
+    # requirements (#1495): each refuses the shard before pytest, which
+    # makes a drifted dependency a failed shard, never a skipped test.
+    refused = 0 if pins is None else pins.preflight()
+    if not refused and digest is not None:
+        refused = digest.verify_sealed(selection)
+    return refused
+
+
 raise SystemExit(load("pbtest_outcomes").main(
-    preflight=None if pins is None else pins.preflight,
+    preflight=preflight,
     resource_source=SOURCES.get("pbtest_resource_scope"),
     collection_spec=selection,
     collection_source=SOURCES["pbtest_collection"]))
@@ -950,15 +996,18 @@ def basetemp_preamble(root: str) -> str:
 
 def shard_entry(python: str, checkout: Path, *, tmpdir: str | None = None,
                 basetemp: str | None = None,
-                trace: bool = False, collection: bool = False) -> list[str]:
+                trace: bool = False, collection: bool = False,
+                capabilities: bool = False) -> list[str]:
     """The argv that runs a shard's pytest under the outcome recorder.
 
     Every shard reports each counted outcome by node ID (#942), so every
     shard runs through ``pbtest_outcomes``.  A checkout that pins a reviewed
     dependency (``tools/resolve_<module>_dev_pin.py``) also carries the guard,
-    which runs before pytest and refuses on drift.  Both travel as source in
-    the argv, never as a path.  Reading either file can raise ``OSError``,
-    which the caller reports.
+    which runs before pytest and refuses on drift.  A run with capability
+    declarations carries the digest verifier, which re-checks every sealed
+    requirement before pytest for the same reason (#1495).  All travel as
+    source in the argv, never as a path.  Reading any of them can raise
+    ``OSError``, which the caller reports.
     """
 
     here = Path(__file__)
@@ -969,6 +1018,10 @@ def shard_entry(python: str, checkout: Path, *, tmpdir: str | None = None,
         # Carry its standalone source into any target project/interpreter.
         sources["pbtest_resource_scope"] = (
             RUNTIME_ROOT / "src" / "prismabuild" / "resource_scope.py").read_text()
+    if capabilities:
+        sources["pbtest_dependency_digest"] = (
+            RUNTIME_ROOT / "src" / "prismabuild" /
+            "dependency_digest.py").read_text()
     if any((checkout / "tools").glob("resolve_*_dev_pin.py")):
         sources["pbtest_pins"] = here.with_name("pbtest_pins.py").read_text()
     program = SHARD_PROGRAM.replace("@SOURCES@", repr(sources)).replace(
@@ -1375,6 +1428,14 @@ def main() -> int:
                          "unmeasured files take the median. Without it the "
                          "shards stay round-robin")
     ap.add_argument(
+        "--capabilities", default=None, metavar="PATH",
+        help="capability configuration relative to --checkout (default "
+             "tests/pbtest_capabilities.json when it exists); files declare "
+             f"requirements with @pytest.mark.{pbtest_capabilities.MARKER}"
+             "(\"name\"), fenced shards carry their cohort's tags and "
+             "sealed dependency digests, and an unclassifiable or undefined "
+             "declaration refuses the run (#1495)")
+    ap.add_argument(
         "--data-manifest", default=None, metavar="PATH",
         help="a data manifest, as pbrun takes it, naming the shared-mount "
              "bytes the tests read; forwarded to every shard so the fleet can "
@@ -1526,6 +1587,41 @@ def main() -> int:
             "no --data-manifest declares it (#915); pass one, or leave them "
             "out of the run: " + ", ".join(reading) + "\n")
         return 2
+    # Per-file capability declarations (#1495).  The config is the
+    # population's versioned statement; a marker the config does not
+    # define, or one that cannot be classified statically, refuses the run
+    # by name -- never an unfenced file.  A population with no
+    # declarations loads nothing and runs exactly as before.
+    capabilities_path = (
+        checkout / args.capabilities if args.capabilities is not None
+        else checkout / "tests" / "pbtest_capabilities.json")
+    if args.capabilities is not None and not capabilities_path.is_file():
+        sys.stderr.write(
+            f"pbtest: --capabilities {args.capabilities!r} is not a file "
+            f"under {checkout}\n")
+        return 2
+    config: dict = {}
+    if capabilities_path.is_file():
+        resolved = capabilities_path.resolve()
+        if not resolved.is_relative_to(checkout):
+            sys.stderr.write(
+                f"pbtest: --capabilities {args.capabilities!r} must name a "
+                "file inside --checkout: the sealed snapshot carries the "
+                "declaration, so an outside file is mutable state the run "
+                "would only claim to declare\n")
+            return 2
+        try:
+            config = pbtest_capabilities.load_config(resolved)
+        except (OSError, ValueError) as exc:
+            sys.stderr.write(
+                f"pbtest: --capabilities {resolved}: {exc}\n")
+            return 2
+    declared, capability_problems = pbtest_capabilities.classify_files(
+        checkout, files, config)
+    for problem in capability_problems:
+        sys.stderr.write(f"pbtest: {problem}\n")
+    if capability_problems:
+        return 2
     # The ceiling the model judges against is sealed later, beside the
     # deadline; the samples load and the predictions resolve above.  The
     # round-robin below is the no-history answer, not a first pass: the
@@ -1538,7 +1634,8 @@ def main() -> int:
         python_entry = shard_entry(args.python, checkout, tmpdir=args.tmpdir,
                                    basetemp=args.basetemp,
                                    trace=pbtest_outcomes.TRACE_OPTION in pytest_args,
-                                   collection=True)
+                                   collection=True,
+                                   capabilities=bool(declared))
     except OSError as exc:
         sys.stderr.write(f"pbtest: cannot load the shard program: {exc}\n")
         return 2
@@ -1558,18 +1655,100 @@ def main() -> int:
         shard_resources["disk_metadata"] = 1
     if args.gpu:
         shard_resources["gpu"] = 1
-    # One placement question before any shard is sealed (#1263): the
-    # interpreter every shard names is a requirement, and if no recorded
-    # worker reports the path, every shard's pbrun would refuse identically.
-    # Answering it once here fails the whole submission fast, naming the path.
-    kind, message = interpreter_refusal(
-        fleet_queue(), args.python,
-        tags=tags, resources=shard_resources,
-        needs_gpu=bool(args.gpu))
-    if message is not None:
-        sys.stderr.write(message + "\n")
-    if kind == "refusal":
+    # One placement question per distinct cohort (#1263, #1495): the
+    # interpreter and dependency requirements every shard of a cohort names,
+    # answered before anything is sealed -- a refusal fails the whole
+    # submission fast, naming what no recorded worker can satisfy.
+    cohort_list = pbtest_capabilities.cohorts(declared, files)
+    if len(cohort_list) > args.shards:
+        listing = "; ".join(
+            f"{'portable' if not names else 'capabilities ' + json.dumps(list(names))}: "
+            f"{len(members)} file(s)"
+            for names, members in cohort_list)
+        sys.stderr.write(
+            f"pbtest: {len(cohort_list)} capability cohorts need at least "
+            f"{len(cohort_list)} shards and --shards is {args.shards}; a "
+            "cohort cannot share a shard with another and no file is "
+            f"dropped: pass --shards >= {len(cohort_list)} (#1495). "
+            f"Cohorts: {listing}\n")
         return 2
+    plans = []
+    weights = {}
+    for names, members in cohort_list:
+        weights[names] = (sum(predicted.get(name, model_default)
+                              for name in members)
+                          if predicted else float(len(members)))
+    counts = allocate_shards(weights, args.shards)
+    placement_by_tags: dict[tuple[str, ...], tuple] = {}
+    for names, members in cohort_list:
+        selection = (pbtest_capabilities.shard_selection(names, config)
+                     if names else None)
+        capability_tags = sorted({tag for name in names
+                                  for tag in config[name]["tags"]})
+        cohort_tags = sorted(set(tags) | set(capability_tags))
+        key = tuple(cohort_tags)
+        if key not in placement_by_tags:
+            placement_by_tags[key] = placement(
+                cohort_tags, gpu=args.gpu, timeout_s=args.timeout_s,
+                test_timeout_s=args.test_timeout_s)
+        cohort_ceilings, cohort_sealed_s, cohort_bound_s = (
+            placement_by_tags[key])
+        bound_env = ([f"{test_bound_contract.TIMEOUT_ENV}={cohort_bound_s:g}"]
+                     if cohort_bound_s > 0 else [])
+        if bound_env and cohort_sealed_s is not None:
+            # A test that starts with less time left than its bound cannot
+            # finish inside the shard; the plugin tightens its alarm to what
+            # is left so the test is failed by name (#1309).
+            bound_env.append(
+                f"{test_bound_contract.SHARD_BUDGET_ENV}={cohort_sealed_s:g}")
+        plans.append({"names": names, "members": members,
+                      "tags": cohort_tags, "capability_tags": capability_tags,
+                      "selection": selection, "shards": counts[names],
+                      "ceilings": cohort_ceilings,
+                      "sealed_s": cohort_sealed_s, "bound_s": cohort_bound_s,
+                      "bound_env": bound_env})
+    preflight_tags: set[tuple[str, ...]] = set()
+    for plan in plans:
+        key = tuple(plan["tags"])
+        if key in preflight_tags:
+            continue
+        preflight_tags.add(key)
+        kind, message = interpreter_refusal(
+            fleet_queue(), args.python, tags=plan["tags"],
+            resources=shard_resources, needs_gpu=bool(args.gpu))
+        if message is not None:
+            sys.stderr.write(message + "\n")
+        if kind == "refusal":
+            return 2
+        if plan["selection"] is None:
+            continue
+        intent = {"tags": plan["tags"], "resources": shard_resources,
+                  "needs_gpu": bool(args.gpu),
+                  "requires_files": [{"path": entry["path"]}
+                                     for entry in plan["selection"]["dependencies"]
+                                     if "path" in entry and "sha256" in entry]}
+        verdict = fleet_queue().dependency_placement_verdict(intent)
+        paths = ", ".join(sorted(
+            str(entry["path"]) for entry in intent["requires_files"]))
+        if verdict == "unknown_capability":
+            sys.stderr.write(
+                f"pbtest: no recorded worker offers the "
+                f"{dependency_digest.DEPENDENCY_DIGEST_TAG} capability, so "
+                f"the fenced shards ({paths}) would wait unclaimed for "
+                "their whole --wait-s; run a worker generation that carries "
+                "the contract first (#1495)\n")
+            return 2
+        if verdict == "absent":
+            sys.stderr.write(
+                f"pbtest: every recorded worker that could claim the fenced "
+                f"shards names their dependencies absent: {paths} (#1495)\n")
+            return 2
+        if verdict == "unknown_paths":
+            print(
+                f"pbtest: no worker has answered for the fenced shards' "
+                f"dependencies ({paths}) yet; the shards publish, the "
+                "claim-time digest check guards every box, and the fleet's "
+                "next poll places them where the bytes live", flush=True)
     # The sizes line prints beside the model below, after the ceiling the
     # model judges against is sealed -- printing it here would report the
     # round-robin the history then replaces.
@@ -1589,62 +1768,87 @@ def main() -> int:
     pytest_workers = (["-n", str(args.workers_per_shard)]
                       if args.workers_per_shard > 1 else [])
 
-    # One read of the announcements serves both numbers below, so the shard's
-    # sealed deadline and the per-test bound inside it cannot disagree
-    # (:func:`placement`).
-    ceilings, sealed_s, test_bound_s = placement(
-        tags, gpu=args.gpu, timeout_s=args.timeout_s,
-        test_timeout_s=args.test_timeout_s)
-    announced = ", ".join(f"{host} {value:g}s" for host, value in sorted(ceilings.items())
-                          if value is not None) or "none"
-    if sealed_s is None:
-        print("pbtest: no --timeout-s and no claimant announced a ceiling; the "
-              "shards seal no deadline and run under their box's own", flush=True)
+    # One read of the announcements per distinct tag set serves each plan's
+    # sealed deadline and its per-test bound (:func:`placement`).  A run
+    # with one portable cohort prints what it always printed; a fenced run
+    # prints its cohorts, so the fences are visible beside the packing.
+    if len(plans) == 1 and plans[0]["selection"] is None:
+        ceilings = plans[0]["ceilings"]
+        sealed_s = plans[0]["sealed_s"]
+        test_bound_s = plans[0]["bound_s"]
+        announced = ", ".join(f"{host} {value:g}s" for host, value in sorted(ceilings.items())
+                              if value is not None) or "none"
+        if sealed_s is None:
+            print("pbtest: no --timeout-s and no claimant announced a ceiling; the "
+                  "shards seal no deadline and run under their box's own", flush=True)
+        else:
+            print(f"pbtest: each shard seals execution_timeout_s={sealed_s:g} "
+                  f"(--timeout-s {'unset' if args.timeout_s is None else f'{args.timeout_s:g}'}; "
+                  f"ceilings announced: {announced}); admission reads it as the "
+                  "shard's declared end (#939)", flush=True)
+            if args.timeout_s is not None and sealed_s < args.timeout_s:
+                print(f"pbtest: --timeout-s {args.timeout_s:g} exceeds the ceiling a "
+                      f"claimant announces, which would cut the shard at {sealed_s:g}s "
+                      "anyway; that is the deadline sealed", flush=True)
+        test_bound = ([f"{test_bound_contract.TIMEOUT_ENV}={test_bound_s:g}"]
+                      if test_bound_s > 0 else [])
+        if test_bound:
+            print(f"pbtest: per-test bound {test_bound_s:g}s "
+                  f"({test_bound_contract.TIMEOUT_ENV}); a test that outlives it "
+                  "fails as itself instead of holding the shard to its ceiling",
+                  flush=True)
+            if sealed_s is not None:
+                print(f"pbtest: each shard also seals its remaining budget "
+                      f"({test_bound_contract.SHARD_BUDGET_ENV}={sealed_s:g}); a "
+                      "test starting with less time left than its bound is failed "
+                      "at what is left", flush=True)
     else:
-        print(f"pbtest: each shard seals execution_timeout_s={sealed_s:g} "
-              f"(--timeout-s {'unset' if args.timeout_s is None else f'{args.timeout_s:g}'}; "
-              f"ceilings announced: {announced}); admission reads it as the "
-              "shard's declared end (#939)", flush=True)
-        if args.timeout_s is not None and sealed_s < args.timeout_s:
-            print(f"pbtest: --timeout-s {args.timeout_s:g} exceeds the ceiling a "
-                  f"claimant announces, which would cut the shard at {sealed_s:g}s "
-                  "anyway; that is the deadline sealed", flush=True)
-    test_bound = ([f"{test_bound_contract.TIMEOUT_ENV}={test_bound_s:g}"]
-                  if test_bound_s > 0 else [])
-    if test_bound:
-        print(f"pbtest: per-test bound {test_bound_s:g}s "
-              f"({test_bound_contract.TIMEOUT_ENV}); a test that outlives it "
-              "fails as itself instead of holding the shard to its ceiling",
-              flush=True)
-        if sealed_s is not None:
-            # A test that starts with less time left than its bound cannot
-            # finish inside the shard; the plugin tightens its alarm to what
-            # is left so the test is failed by name (#1309).
-            test_bound.append(
-                f"{test_bound_contract.SHARD_BUDGET_ENV}={sealed_s:g}")
-            print(f"pbtest: each shard also seals its remaining budget "
-                  f"({test_bound_contract.SHARD_BUDGET_ENV}={sealed_s:g}); a "
-                  "test starting with less time left than its bound is failed "
-                  "at what is left", flush=True)
+        for plan in plans:
+            label = ("portable" if not plan["names"]
+                     else "capabilities " + json.dumps(list(plan["names"])))
+            sealed_word = (
+                f"seals execution_timeout_s={plan['sealed_s']:g}"
+                if plan["sealed_s"] is not None else "seals no deadline")
+            print(f"pbtest: cohort {label}: {len(plan['members'])} file(s) -> "
+                  f"{plan['shards']} shard(s), tags={plan['tags']}, "
+                  f"{sealed_word}, per-test bound {plan['bound_s']:g}s",
+                  flush=True)
+            for entry in (plan["selection"] or {}).get("dependencies") or ():
+                if "kind" in entry:
+                    print(f"pbtest:   pins {entry['module']} in "
+                          f"{entry['distribution']!r} at payload "
+                          f"{entry['sha256']}", flush=True)
+                else:
+                    print(f"pbtest:   pins {entry['path']} at "
+                          f"{entry['sha256']}", flush=True)
+    buckets: list[list[str]] = []
+    plan_of: list[dict] = []
     if predicted:
         # The ceiling is sealed now, so the model can judge against it: the
         # slow file shards alone, the rest pack longest-first (#1246).
         assert model_default is not None
         default = model_default
-        buckets = shard(files, args.shards, durations=predicted,
-                        ceiling=sealed_s, model_default=model_default)
         measured = sum(1 for name in files if name in predicted)
         print(f"pbtest: duration model from {len(args.history)} history "
               f"file(s): {measured}/{len(files)} files measured, the rest "
               f"default to the median {default:.1f}s, predictions are "
               "per-file maxima", flush=True)
+    for plan in plans:
+        if predicted:
+            plan_buckets = shard(plan["members"], plan["shards"],
+                                 durations=predicted,
+                                 ceiling=plan["sealed_s"],
+                                 model_default=model_default)
+        else:
+            plan_buckets = shard(plan["members"], plan["shards"])
+        buckets.extend(plan_buckets)
+        plan_of.extend([plan] * len(plan_buckets))
+    if predicted:
         totals = [sum(predicted.get(name, default) for name in bucket)
                   for bucket in buckets]
         print("pbtest: predicted shard totals: " +
               ", ".join(f"shard {index} {total:.0f}s"
                            for index, total in enumerate(totals)), flush=True)
-    else:
-        buckets = shard(files, args.shards)
     sizes = [len(b) for b in buckets]
     print(f"{len(files)} files -> {len(buckets)} shards "
           f"(min {min(sizes)}, max {max(sizes)} files per shard), tags={tags}, "
@@ -1656,6 +1860,7 @@ def main() -> int:
          "directory" if (checkout / raw).is_dir() else "file"]
         for raw in args.paths or ["tests"]]
     for index, bucket in enumerate(buckets):
+        plan = plan_of[index]
         # Built in order rather than spliced into.  The repeatable --tag used
         # to be inserted at a fixed index, which once landed between --demand
         # and its argument and killed every shard on "expected one argument";
@@ -1674,6 +1879,11 @@ def main() -> int:
             flags += ["--tag", tag]
         if not tags and not pool.is_box_local_path(RUNTIME_ROOT):
             flags += ["--anywhere"]
+        # A fenced shard requires its cohort's capability tags (#1495):
+        # explicit tags, which by design constrain placement beyond the
+        # base run's portability.
+        for tag in plan["capability_tags"]:
+            flags += ["--tag", tag]
         # One --demand token per reserved kind, comma-joined: pbrun parses
         # it as k=v pairs (#1008 item 4 adds disk_metadata beside mem_gb).
         demand_terms = [f"{kind}={value}" for kind, value in shard_resources.items()
@@ -1691,11 +1901,11 @@ def main() -> int:
             flags += ["--gpu"]
         if args.gpu_memory_gb is not None:
             flags += ["--gpu-memory-gb", str(args.gpu_memory_gb)]
-        if sealed_s is not None:
+        if plan["sealed_s"] is not None:
             # ``str`` of the float, the spelling an explicit ``--timeout-s``
             # was always forwarded in, so a request inside every announced
             # ceiling reaches ``pbrun`` byte for byte as before (#939).
-            flags += ["--timeout-s", str(sealed_s)]
+            flags += ["--timeout-s", str(plan["sealed_s"])]
         flags += ["--wait-s", str(args.wait_s)]
         if args.priority != 0:
             # Zero is pbrun's own default; forwarding only a non-zero hint
@@ -1711,6 +1921,14 @@ def main() -> int:
             # Forwarded only when given: the manifest enters the action key,
             # so an unasked flag would re-key every suite run (#915).
             flags += ["--data-manifest", str(Path(args.data_manifest).resolve())]
+        if plan["selection"] is not None:
+            # The claim-relevant projection (#1495): the exact-file entries
+            # the claim gate hashes.  The full sealed selection travels in
+            # the shard's own selection JSON below, which is action
+            # identity, so a changed declaration re-keys the shard.
+            pins = [entry for entry in plan["selection"]["dependencies"]
+                    if "kind" not in entry]
+            flags += ["--requires-files", json.dumps(pins)]
         if args.residency != "none":
             flags += ["--residency", args.residency]
         # Explicit forwarding replaces addopts from both environment and
@@ -1719,9 +1937,13 @@ def main() -> int:
         explicit_env = ["PYTEST_ADDOPTS="] if args.pytest_args is not None else []
         explicit_options = ["-o", "addopts="] if args.pytest_args is not None else []
         environment = [f"TMPDIR={args.tmpdir if args.tmpdir is not None else '/home/rob/tmp'}",
-                       *threads, *test_bound, *explicit_env, "PYTHONPATH=src:experiments"]
+                       *threads, *plan["bound_env"], *explicit_env,
+                       "PYTHONPATH=src:experiments"]
+        spec: dict = {"files": bucket, "roots": requested_roots}
+        if plan["selection"] is not None:
+            spec["capabilities"] = plan["selection"]
         arguments = [
-            json.dumps({"files": bucket, "roots": requested_roots}),
+            json.dumps(spec),
             "-q", "--no-header",
             "-p", "no:cacheprovider", *explicit_options,
             *shard_pytest_args(pytest_args, index), *pytest_workers, *bucket,
@@ -1806,6 +2028,7 @@ def main() -> int:
                         "returncode": returncode, "action_key": action_key,
                         "receipt_path": receipt_path(action_key),
                         "summary": summary,
+                        "capabilities": plan_of[index]["selection"],
                         # The model's prediction for this shard and pytest's
                         # own session seconds beside it, so the report can say
                         # whether the packing bought what it promised (#1246).

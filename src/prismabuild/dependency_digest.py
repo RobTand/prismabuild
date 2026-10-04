@@ -190,7 +190,9 @@ def validate_sealed(sealed: object) -> dict:
             or any(not isinstance(t, str) or not t or "\x00" in t
                    for t in tags)):
         raise ValueError("sealed capability tags must be a list of names")
-    files = validate_requirements(dependencies)
+    files = validate_requirements(
+        [entry for entry in dependencies
+         if isinstance(entry, dict) and "kind" not in entry])
     observations = validate_observations(
         [entry for entry in dependencies
          if isinstance(entry, dict) and "kind" in entry],
