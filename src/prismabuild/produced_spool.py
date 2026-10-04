@@ -129,17 +129,17 @@ def _claimed_operation(queue, claim, key, *extra):
     """Reserve the sealed worker operation of a CLAIMED action before writes.
 
     The envelope comes from the action's own sealed request, so a caller can
-    never substitute a looser declaration, and an already-sealed legacy
-    request (no envelope) keeps exactly its previous owner-local and
-    ``statvfs`` checks -- no fallback intent is invented.  The claimed action
-    itself is the durable owner; this window never releases its tokens.
+    never substitute a looser declaration, and the claimed action itself is
+    the durable owner whose tokens this window never releases.  A request
+    sealed without the envelope has no operation to reserve: it refuses
+    here, before any write, under the guard's own validator.  Under the
+    guarded generation such a request already holds at preflight before any
+    execution fact, so this refusal is reached only outside an executed
+    action -- where refusing is the only honest answer.
     """
     request = (pool._sealed_action_request(str(claim["cas_root"]), key)
                if isinstance(claim, dict) and claim.get("cas_root") else None)
     intent = None if request is None else filesystem_capacity.action_intent(request)
-    if intent is None:
-        yield None
-        return
     filesystem_capacity.operation(intent, "worker")
     paths = [Path(queue.root)]
     if claim.get("cas_root"):
@@ -534,16 +534,16 @@ class ProducedSpool:
     def _operation(self, *extra):
         """Reserve this producer's sealed whole-operation before its writes.
 
-        The envelope is the sealed producer request's own declaration; the
-        producer action is the durable owner.  A request sealed before the
-        caller cutover declares no envelope and keeps the existing
-        owner-local and ``statvfs`` checks unchanged.
+        The envelope is the sealed producer request's own declaration and
+        the producer action is the durable owner.  A request sealed without
+        the envelope has no operation to reserve: it refuses here, before
+        any write, under the guard's own validator.  Under the guarded
+        generation such a request already holds at preflight before any
+        execution fact, so this refusal is reached only outside an executed
+        action -- where refusing is the only honest answer.
         """
         intent = self.request["environment"]["variables"].get(
             filesystem_capacity.OPERATION_ENV)
-        if intent is None:
-            yield None
-            return
         filesystem_capacity.operation(intent, "worker")
         paths = [_existing_operation_parent(self.root), Path(self.queue.root),
                  _existing_operation_parent(Path(self.cas_root))]

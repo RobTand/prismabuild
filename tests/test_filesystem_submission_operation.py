@@ -257,3 +257,22 @@ def test_mover_missing_storage_envelope_refuses_before_owner_or_seal(scope):
         movement_actions.seal_movement_action(
             _movement_template(json.dumps(intent)), command=["/usr/bin/python3", "mover.py"],
             demand={"cpu": 1}, tags=[], log_name="mover.log", container_owner_fn=no_owner)
+
+
+def test_produced_spool_refuses_sealed_request_without_envelope_before_writes(
+        scope, monkeypatch, tmp_path):
+    raw, events, _owner = scope
+    produced_spool = importlib.import_module("prismabuild.produced_spool")
+    # An export request sealed without the envelope has no operation to
+    # reserve: it refuses at spool entry, before any write and before the
+    # window is ever entered -- under the guarded generation preflight
+    # already holds such requests, so there is no reachable legacy path.
+    # (ProducedSpool's own _operation refuses identically; the spool unit
+    # fixtures that sealed no envelope are updated by the parent's fixture
+    # pass, since only they can construct that owner context.)
+    claim = {"cas_root": str(tmp_path / "cas")}
+    with pytest.raises(fs.LocalScratchError):
+        with produced_spool._claimed_operation(
+                SimpleNamespace(root=tmp_path), claim, "a" * 64, tmp_path):
+            pytest.fail("an envelope-less sealed request reached the window")
+    assert not events

@@ -240,15 +240,15 @@ the `storage` role in `fleet_boxes.json`.  Every poll:
 6. Writes `pb-queue/prewarm/<action_key>.json`.
 
 Every finite write of a cycle — the staged objects beside `--stage`, the
-prewarm records, the receipt updates and prunes — rides one committed
-coordinator operation under the shared filesystem guard (#1483): the
-invocation seals its whole-operation envelope with the required
-`--filesystem-operation`, and each cycle admits every used filesystem (the
-queue root and the stage tier) against the aggregate outstanding allowance
-before the first byte.  A cycle whose custody is refused keeps its reads and
-makes no writes at all; the cycle record says so in its `custody` field.
-This is the same fail-closed posture as the role singleton: there is no
-unguarded mode of the storage role.
+prewarm records, the receipt prunes, and the cycle's own log record — rides
+one committed coordinator operation under the shared filesystem guard
+(#1483): the invocation seals its whole-operation envelope with the required
+`--filesystem-operation`, the window is entered before the cycle touches any
+used filesystem, and the log append closes inside that window, so no
+explicit write ever rides outside the committed charges.  A refused custody
+runs nothing at all — no cycle, no record — and defers exactly like a
+maintenance gate; there is no unguarded mode of the storage role, and no
+read-only or diagnostic label exempts the filesystems a cycle actually uses.
 
 ### Windows, when the manifest is larger than the ARC
 

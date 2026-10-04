@@ -3656,7 +3656,7 @@ def manifest_row_skip_reason(room: Mapping, ram_tier_live: bool) -> str | None:
 
 
 def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
-          pacer: DiskPacer | None = None, writes_off: str | None = None) -> dict:
+          pacer: DiskPacer | None = None) -> dict:
     ready = queue.ready_items()
     # One pacer per cycle, shared by every reader thread of every row warmed in
     # it: the disks are one queue, and a per-thread pacer would let N threads
@@ -3670,15 +3670,10 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
         getattr(args, "stage_pool_prefix", STAGE_POOL_PREFIX),
         free_floor_bytes=getattr(args, "stage_free_floor_bytes", None))
         if stage_requested(args) else None)
-    if writes_off and stage is not None and stage.usable:
-        # Custody was refused: the tier keeps its state in the record, and
-        # ``usable`` going false is what stops every staged write below.
-        stage.mark_full(writes_off)
     if (stage is not None and stage.mountpoint and not args.dry_run
-            and not writes_off
             and stage.mountpoint not in _REAPED_STAGE_ROOTS):
         # A dry run does not do it: an unlink is a write, however little it
-        # looks like one.  So is a cycle whose custody was refused.
+        # looks like one.
         _REAPED_STAGE_ROOTS.add(stage.mountpoint)
         stage.reap_temporaries()
     stage_rows: list[dict[str, object]] = []
@@ -3862,7 +3857,7 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
                 # and the record must not let the two be confused.
                 "consumer": dict(STAGE_CONSUMER),
             }
-        if not args.dry_run and not writes_off:
+        if not args.dry_run:
             queue.record_prewarm(key, record)
         # A dry run reads nothing, so ``bytes_warmed`` is 0 and the budget
         # would survive the row untouched: every later row in the same
@@ -3927,7 +3922,7 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
         # A dry run plans the release and performs none of it.  Unlinking a
         # staged object is a write, however little it looks like one, and
         # ``--dry-run`` promises the box is only read.
-        apply = not args.dry_run and not writes_off
+        apply = not args.dry_run
         prior = dict((queue.prewarm(key) or {}).get("stage") or {})
         start = int(prior.get("evicted_through_bytes", 0) or 0)
         outcome = release_stage_band(
@@ -4163,7 +4158,7 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
         # that found no tier says so, which is the whole point of #585.
         orphans = (sweep_orphan_stage(
             queue, stage, live_keys, other_live_rows, cas_root,
-            apply=not args.dry_run and not writes_off) if stage.mountpoint else [])
+            apply=not args.dry_run) if stage.mountpoint else [])
         event["stage"] = {**stage.record(), "released": stage_rows,
                           "orphans": orphans}
     # The verdict, whether it held or not (#575, #585).  A cycle that paced
@@ -4178,20 +4173,15 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
     # receipt the fleet ever wrote on every 10 s poll.  A dry run reads only,
     # so it prunes nothing.
     event["pruned"] = (queue.sweep_prewarm_receipts(live_keys)
-                       if not args.dry_run and not writes_off else [])
+                       if not args.dry_run else [])
     # The claim denials' reason rings retire on the same live set (#991): a
     # terminal or withdrawn key's ring goes, a live key's stays.
     event["denial_rings_pruned"] = (queue.sweep_denial_transitions(live_keys)
-                                    if not args.dry_run and not writes_off else [])
+                                    if not args.dry_run else [])
     # The tier loop's per-consumer event directories retire the same way
     # (#990), plus a live residency plan keeps its consumer's directory.
     event["consumer_events_pruned"] = (queue.sweep_consumer_events(live_keys)
-                                       if not args.dry_run and not writes_off else [])
-    if writes_off:
-        # The record says why this cycle made no writes.  The shape gains a
-        # key only in the refused case, the same way a record gains its
-        # stage block only beside ``--stage``.
-        event["custody"] = writes_off
+                                       if not args.dry_run else [])
     event["summary"] = summarize_cycle(event)
     return event
 
@@ -4422,47 +4412,77 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--filesystem-operation", required=True,
                         help="the sealed whole-operation envelope this role "
                              "publishes under (PRISMABUILD_FILESYSTEM_OPERATION "
-                             "JSON).  The storage role is fail-closed: every "
-                             "finite write of a cycle -- staged objects, "
-                             "prewarm records, receipt updates -- rides one "
-                             "committed coordinator operation admitted by the "
-                             "shared filesystem guard, and a cycle whose "
-                             "custody is refused keeps its reads but makes no "
-                             "writes at all (#709).  Declare the queue root's "
-                             "classes and the stage tier's stable parent root "
-                             "with stage_gib@<tier> growth; every declared "
-                             "root must exist whenever the role serves")
+                             "JSON).  The storage role is fail-closed: a cycle "
+                             "runs only inside one committed coordinator "
+                             "operation that admits every used filesystem -- "
+                             "queue, CAS, stage tier and the log record's -- "
+                             "before the first byte, and the log append itself "
+                             "closes inside that window.  A refused custody "
+                             "runs nothing at all and defers like a "
+                             "maintenance gate (#709).  Declare the queue, "
+                             "CAS and log classes plus the stage tier's "
+                             "stable parent root with stage_gib@<tier> "
+                             "growth; every declared root must exist whenever "
+                             "the role serves")
     return parser
 
 
 def _cycle_custody(args, queue: pool.PoolQueue):
-    """One committed coordinator operation per storage cycle, or no writes.
+    """One committed coordinator operation per storage cycle, or nothing runs.
 
-    The whole cycle's finite writes -- staged objects, prewarm records,
-    receipt updates, receipt prunes -- ride one fresh committed operation
-    key, admitted by the shared filesystem guard against every used
-    filesystem and the aggregate outstanding allowance before the first
-    byte.  A refused admission leaves no custody to release and yields a
-    refusal reason: the cycle below keeps its reads and makes no writes at
-    all, which is fail-closed and never an unguarded write (#709).
+    The whole cycle's finite work -- staged objects, prewarm records,
+    receipt prunes, and the cycle's own log record -- is a single committed
+    operation: the window is entered BEFORE the cycle touches any used
+    filesystem and closes only after the log record is on its filesystem,
+    so no explicit write ever rides outside the committed charges.  A
+    refused admission yields a refusal reason and nothing may run: the
+    storage role never reads or writes a filesystem the shared guard did
+    not just admit (#709).
     """
     filesystem_capacity.operation(args.filesystem_operation, "coordinator")
     paths = [Path(args.pool_root)]
+    if args.cas_root:
+        paths.append(Path(args.cas_root))
     if args.log:
         paths.append(Path(args.log).absolute().parent)
     key = "operation-p-" + secrets.token_hex(32)
-    writes_off = None
+    refused = None
     with contextlib.ExitStack() as stack:
         try:
             stack.enter_context(filesystem_capacity.reserve_operation(
                 queue, args.filesystem_operation, paths, role="coordinator",
                 operation_key=key))
         except filesystem_capacity.LocalScratchError as exc:
-            # Nothing was entered, so no custody exists to release; the
-            # body's own exceptions keep the crash custody the guard gives.
-            writes_off = (f"filesystem custody unavailable, writes stayed "
-                          f"off this cycle: {exc}")
-        yield writes_off
+            # Nothing was entered, so no custody exists to release; a body
+            # exception keeps the crash custody the guard gives.
+            refused = f"filesystem custody unavailable, cycle not run: {exc}"
+        yield refused
+
+
+def _serve_cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
+                 pacer: DiskPacer | None, announce) -> str | None:
+    """One guarded storage cycle, or None when custody was refused.
+
+    Ordering is the correction's point: the cycle's writes AND the explicit
+    log append both happen inside the committed window; the window closes
+    only after the record is on its filesystem.  stdout is not a used
+    filesystem, so the journal line prints after the window.
+    """
+    with _cycle_custody(args, queue) as refused:
+        if refused is not None:
+            announce(refused)
+            return None
+        event = cycle(args, queue, mounts, stop, pacer=pacer)
+        line = json.dumps(event)
+        if args.log:
+            try:
+                with open(args.log, "a") as handle:
+                    handle.write(line + "\n")
+            except OSError as exc:
+                # The append failed, so it moved no bytes; the committed
+                # operation still ends cleanly on its own records.
+                announce(f"prewarm: cycle log append failed: {exc}")
+        return line
 
 
 def _serve(args) -> int:
@@ -4522,18 +4542,18 @@ def _serve(args) -> int:
         # outlived an open gate or the runtime it was preparing to serve.
         if runtime_moved() or runtime_gate.read_maintenance_gate() is not None:
             continue
-        if args.dry_run:
-            # A dry run writes nothing anywhere, so it takes no custody.
-            event = cycle(args, queue, mounts, stop, pacer=pacer)
-        else:
-            with _cycle_custody(args, queue) as writes_off:
-                event = cycle(args, queue, mounts, stop, pacer=pacer,
-                              writes_off=writes_off)
-        line = json.dumps(event)
+        # One guarded path for every cycle, dry run included: a dry run
+        # still reads real queue/manifest/stage filesystems and writes its
+        # log record, so neither mode may run against filesystems the
+        # shared guard has not just admitted.  A refused custody runs
+        # nothing at all and defers exactly like a maintenance gate.
+        line = _serve_cycle(args, queue, mounts, stop, pacer, announce)
+        if line is None:
+            if args.once:
+                return 75
+            time.sleep(args.poll_s)
+            continue
         print(line, flush=True)
-        if args.log:
-            with open(args.log, "a") as handle:
-                handle.write(line + "\n")
         if args.once:
             return 0
         time.sleep(args.poll_s)
