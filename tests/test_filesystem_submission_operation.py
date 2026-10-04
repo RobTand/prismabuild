@@ -159,7 +159,7 @@ def test_nested_call_forwards_new_actual_paths_and_keeps_parent_owner(scope, tmp
                                            queue=other_queue):
             # A different queue is its own committed operation, never a join.
             assert events[-1][4] != events[0][4]
-    assert [event[0] for event in events] == ["enter", "enter", "enter", "exit", "exit", "exit"]
+    assert [event[0] for event in events] == ["enter", "enter", "exit", "enter", "exit", "exit"]
     assert owner == {"held": True, "released": False}
     first_key = events[0][4]
     events.clear()
