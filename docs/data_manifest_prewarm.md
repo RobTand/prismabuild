@@ -239,6 +239,21 @@ the `storage` role in `fleet_boxes.json`.  Every poll:
    any client is reading (below).
 6. Writes `pb-queue/prewarm/<action_key>.json`.
 
+Every finite write of a cycle — the staged objects beside `--stage`, the
+prewarm records, the receipt prunes, and the cycle's own log record — rides
+one committed coordinator operation under the shared filesystem guard
+(#1483): the invocation seals its whole-operation envelope with the required
+`--filesystem-operation`, the window is entered before the cycle touches any
+used filesystem, and the log append closes inside that window, so no
+explicit write ever rides outside the committed charges.  A refused custody
+runs nothing at all — no cycle, no record — and defers exactly like a
+maintenance gate; there is no unguarded mode of the storage role, and no
+read-only or diagnostic label exempts the filesystems a cycle actually uses.
+Refused custody emits the structured `prewarm-filesystem-deferred` event and
+returns 75 in one-shot mode; a cycle log append failure emits
+`prewarm-log-append-failed` while still inside the same committed window.
+Neither diagnostic may turn a filesystem refusal into an unguarded cycle.
+
 ### Windows, when the manifest is larger than the ARC
 
 The jobs that need prewarm most were the ones it refused.  The GLM joint pass

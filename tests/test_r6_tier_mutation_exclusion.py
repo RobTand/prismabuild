@@ -55,6 +55,7 @@ from __future__ import annotations
 import errno
 import os
 import stat
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -677,9 +678,10 @@ def test_r6_visible_enumeration_contract(tmp_path: Path) -> None:
 
 
 def test_r6_mutation_guard_overhead_sample(tmp_path: Path) -> None:
-    """Overhead sample (evidence, not a gate): guarded tier ops vs
-    unguarded host ops.  The generous bound below is deadlock
-    detection, not a performance claim."""
+    """Overhead sample (evidence, not a gate): tier and host guarded ops.
+
+    The generous bound below detects deadlock, not a performance claim.
+    """
     queue, _ = _shaped_queue(tmp_path)
     tier_ledger = queue.tier_ledger(TIER)
     host_ledger = queue.ledger("r6bench")
@@ -696,8 +698,275 @@ def test_r6_mutation_guard_overhead_sample(tmp_path: Path) -> None:
         handle = host_ledger.begin_acquire("k" * 64, {"cpu": 1})
         assert handle is not None
         assert host_ledger.abandon_acquire(handle) == 1
-    unguarded_s = time.monotonic() - start
+    host_s = time.monotonic() - start
     print(f"\nr6-guard-overhead: guarded-tier {guarded_s / repeats * 1e3:.2f}ms/op, "
-          f"unguarded-host {unguarded_s / repeats * 1e3:.2f}ms/op "
+          f"guarded-host {host_s / repeats * 1e3:.2f}ms/op "
           f"({repeats} begin+abandon pairs each)")
     assert guarded_s < 120.0, guarded_s
+    assert host_s < 120.0, host_s
+
+
+# -- host reservation-owner exclusion (Refs #1484, #1483) --------------------
+
+
+def _host_ledger(tmp_path: Path, host: str = "atomic-host"):
+    queue = pool.PoolQueue(tmp_path / "host-queue")
+    queue.ensure_layout()
+    return queue, queue.ledger(host)
+
+
+def _process_host_begin(ledger: pool.ResourceLedger):
+    """A real independent process using the public direct ledger constructor."""
+    completed = subprocess.run(
+        [sys.executable, "-c",
+         "from prismabuild import pool; import sys; "
+         "ledger=pool.ResourceLedger(sys.argv[1], host=sys.argv[2]); "
+         "print(ledger.begin_acquire('p'*64, {'spool_gb': 1}))",
+         str(ledger.root), ledger.host],
+        env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src")},
+        capture_output=True, text=True, timeout=10, check=True)
+    return completed.stdout.strip()
+
+
+def test_host_nested_instances_retain_process_exclusion(tmp_path: Path):
+    queue, ledger = _host_ledger(tmp_path)
+    ledger.ensure_capacity({"spool_gb": 2})
+    with ledger._mutation_locked(blocking=False) as acquired:
+        assert acquired
+        other = pool.ResourceLedger(ledger.root, ledger.host)
+        with other._mutation_locked(blocking=False) as nested:
+            assert nested
+            handle = queue.ledger(ledger.host).begin_acquire(HOLDER_H, {"spool_gb": 1})
+            assert handle is not None
+            assert other.commit_acquire(HOLDER_H, handle) == 1
+            assert other.transfer(HOLDER_H, HOLDER_X) == 1
+            assert other.release(HOLDER_X) == 1
+        assert _process_host_begin(ledger) == "None", (
+            "nested completion closed the outer host-owner exclusion")
+    handle = _process_host_begin(ledger)
+    assert handle.startswith(pool.ACQUIRING_PREFIX)
+    assert ledger.abandon_acquire(handle) == 1
+    assert (ledger.base / ".mutation.lock").is_file()
+
+
+def test_host_exception_releases_only_the_owner_exclusion(tmp_path: Path):
+    _, ledger = _host_ledger(tmp_path)
+    ledger.ensure_capacity({"spool_gb": 1})
+    with pytest.raises(ValueError, match="interrupted decision"):
+        with ledger._mutation_locked():
+            raise ValueError("interrupted decision")
+    handle = _process_host_begin(ledger)
+    assert handle.startswith(pool.ACQUIRING_PREFIX)
+    assert ledger.abandon_acquire(handle) == 1
+
+
+def test_host_begin_declines_but_other_owners_are_independent(tmp_path: Path):
+    queue, ledger = _host_ledger(tmp_path)
+    ledger.ensure_capacity({"spool_gb": 1})
+    other = queue.ledger("independent-host")
+    other.ensure_capacity({"spool_gb": 1})
+    tier = queue.tier_ledger(TIER)
+    tier.ensure_capacity({KIND: 1})
+    result = {}
+
+    def contender():
+        result["same"] = queue.ledger(ledger.host).begin_acquire(HOLDER_H, {"spool_gb": 1})
+        result["other"] = other.begin_acquire(HOLDER_X, {"spool_gb": 1})
+        result["tier"] = tier.begin_acquire(HOLDER_X, {KIND: 1})
+
+    with ledger._mutation_locked():
+        worker = threading.Thread(target=contender, daemon=True)
+        worker.start()
+        worker.join(timeout=10)
+        assert not worker.is_alive(), "nonblocking host admission waited"
+        assert result["same"] is None
+        assert result["other"] is not None
+        assert result["tier"] is not None
+    assert other.abandon_acquire(result["other"]) == 1
+    assert tier.abandon_acquire(result["tier"]) == 1
+    assert ledger.available() == {"spool_gb": 1}
+
+
+@pytest.mark.parametrize("operation", [
+    "commit", "abandon", "transfer", "transfer-subset", "release",
+    "release-count", "release-kinds", "release-except", "grow",
+    "shrink", "retire-held", "stale-sweep",
+])
+def test_host_completion_and_mint_mutators_wait_for_the_owner(
+        tmp_path: Path, operation: str):
+    queue, ledger = _host_ledger(tmp_path)
+    ledger.ensure_capacity({"cpu": 3, "spool_gb": 3})
+    assert ledger.acquire(HOLDER_H, {"spool_gb": 2})
+    handle = ledger.begin_acquire(HOLDER_X, {"cpu": 1})
+    assert handle is not None
+    held_name = sorted(path.name for path in (ledger.held_dir / HOLDER_H).iterdir())[0]
+    entered, completed = threading.Event(), threading.Event()
+    result, errors = {}, []
+
+    def mutate():
+        peer = queue.ledger(ledger.host)
+        try:
+            with peer._mutation_locked(blocking=False) as probe:
+                result["probe"] = probe
+            entered.set()
+            if operation == "commit":
+                result["value"] = peer.commit_acquire(HOLDER_X, handle)
+            elif operation == "abandon":
+                result["value"] = peer.abandon_acquire(handle)
+            elif operation == "transfer":
+                result["value"] = peer.transfer(HOLDER_H, CLAIM_KEY)
+            elif operation == "transfer-subset":
+                result["value"] = peer.transfer_tokens(HOLDER_H, CLAIM_KEY, [held_name])
+            elif operation == "release":
+                result["value"] = peer.release(HOLDER_H)
+            elif operation == "release-count":
+                result["value"] = peer.release_count(HOLDER_H, {"spool_gb": 1})
+            elif operation == "release-kinds":
+                result["value"] = peer.release_kinds(HOLDER_H, {"spool_gb"})
+            elif operation == "release-except":
+                result["value"] = peer.release_except(HOLDER_H, {held_name})
+            elif operation == "grow":
+                result["value"] = peer.ensure_capacity({"cpu": 4, "spool_gb": 3})
+            elif operation == "shrink":
+                result["value"] = peer.retire_free_capacity({"cpu": 2})
+            elif operation == "retire-held":
+                result["value"] = peer.retire_held(HOLDER_H, {"spool_gb": 1})
+            else:
+                result["value"] = peer.sweep_stale_acquisitions(grace_s=0)
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            entered.set()
+            completed.set()
+
+    worker = threading.Thread(target=mutate, daemon=True)
+    try:
+        with ledger._mutation_locked():
+            worker.start()
+            assert entered.wait(timeout=10), "mutator never reached owner contention"
+            assert errors == []
+            assert result["probe"] is False
+            assert not completed.wait(timeout=0.1), "mutator escaped the outer decision"
+            assert ledger.holder_tokens(HOLDER_H) == {"spool_gb": 2}
+            assert ledger.holder_tokens(handle) == {"cpu": 1}
+            assert ledger.capacity() == {"cpu": 3, "spool_gb": 3}
+    finally:
+        worker.join(timeout=10)
+    assert not worker.is_alive(), "completion deadlocked after the owner released"
+    assert errors == []
+    expected = {
+        "commit": 1, "abandon": 1, "transfer": 2, "transfer-subset": 1,
+        "release": 2, "release-count": {"spool_gb": 1}, "release-kinds": 2,
+        "release-except": 1, "grow": None, "shrink": {"cpu": 1},
+        "retire-held": {"spool_gb": 1}, "stale-sweep": [handle],
+    }
+    assert result["value"] == expected[operation]
+    expected_capacity = {"cpu": 3, "spool_gb": 3}
+    if operation == "grow":
+        expected_capacity["cpu"] = 4
+    elif operation == "shrink":
+        expected_capacity["cpu"] = 2
+    elif operation == "retire-held":
+        expected_capacity["spool_gb"] = 2
+    assert ledger.capacity() == expected_capacity
+    if operation in {"commit", "abandon", "stale-sweep"}:
+        assert ledger.holder_tokens(handle) == {}
+    else:
+        assert ledger.holder_tokens(handle) == {"cpu": 1}
+    if operation == "commit":
+        assert ledger.holder_tokens(HOLDER_X) == {"cpu": 1}
+    elif operation in {"transfer", "transfer-subset"}:
+        assert ledger.holder_tokens(CLAIM_KEY) == {
+            "spool_gb": 2 if operation == "transfer" else 1}
+    elif operation in {"abandon", "stale-sweep"}:
+        assert ledger.available()["cpu"] == 3
+
+
+def test_host_release_cannot_land_between_decision_and_private_take(
+        tmp_path: Path):
+    queue, ledger = _host_ledger(tmp_path)
+    ledger.ensure_capacity({"spool_gb": 2})
+    assert ledger.acquire(HOLDER_H, {"spool_gb": 1})
+    started, completed = threading.Event(), threading.Event()
+    errors = []
+
+    def release():
+        started.set()
+        try:
+            assert queue.ledger(ledger.host).release(HOLDER_H) == 1
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            completed.set()
+
+    worker = threading.Thread(target=release, daemon=True)
+    try:
+        with ledger._mutation_locked():
+            assert ledger.held() == {"spool_gb": 1}
+            worker.start()
+            assert started.wait(timeout=10)
+            assert not completed.wait(timeout=0.1), "release landed after the decision census"
+            assert ledger.begin_acquire(CLAIM_KEY, {"spool_gb": 2}) is None
+            assert ledger.holder_tokens(HOLDER_H) == {"spool_gb": 1}
+    finally:
+        worker.join(timeout=10)
+    assert not worker.is_alive()
+    assert errors == []
+    assert ledger.available() == {"spool_gb": 2}
+
+
+def test_host_transfer_cannot_hide_a_token_mid_holder_census(
+        tmp_path: Path, monkeypatch):
+    queue, ledger = _host_ledger(tmp_path)
+    ledger.ensure_capacity({"spool_gb": 1})
+    assert ledger.acquire(HOLDER_H, {"spool_gb": 1})
+    started, completed = threading.Event(), threading.Event()
+    errors, workers = [], []
+    real_glob = pool._glob
+    fired = False
+
+    def transfer():
+        started.set()
+        try:
+            assert queue.ledger(ledger.host).transfer(HOLDER_H, HOLDER_X) == 1
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            completed.set()
+
+    def holder_names(directory, pattern):
+        nonlocal fired
+        if not fired and Path(directory) == ledger.held_dir / HOLDER_H:
+            fired = True
+            worker = threading.Thread(target=transfer, daemon=True)
+            workers.append(worker)
+            worker.start()
+            assert started.wait(timeout=10)
+            assert not completed.wait(timeout=0.1), "transfer hid a captured holder's token"
+        return real_glob(directory, pattern)
+
+    monkeypatch.setattr(pool, "_glob", holder_names)
+    try:
+        with ledger._mutation_locked():
+            assert ledger.held() == {"spool_gb": 1}
+            assert fired
+    finally:
+        for worker in workers:
+            worker.join(timeout=10)
+    assert all(not worker.is_alive() for worker in workers)
+    assert errors == []
+    assert ledger.holder_tokens(HOLDER_X) == {"spool_gb": 1}
+    assert ledger.available() == {}
+
+
+def test_host_mutation_scope_never_reacquires_outer_admission(
+        tmp_path: Path, monkeypatch):
+    _, ledger = _host_ledger(tmp_path)
+    ledger.ensure_capacity({"spool_gb": 1})
+    monkeypatch.setattr(adaptive_cpu, "BOX_STATE_ROOT", tmp_path / "admission")
+    with adaptive_cpu.AdmissionGate(ledger).locked():
+        with ledger._mutation_locked(blocking=False) as acquired:
+            assert acquired
+            assert ledger.acquire(HOLDER_H, {"spool_gb": 1})
+            assert ledger.release(HOLDER_H) == 1
+

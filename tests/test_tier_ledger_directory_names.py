@@ -302,10 +302,14 @@ def test_host_ledgers_and_reads_outside_the_cycle_are_fresh(ledger):
     queue, held, reader = ledger
     host = queue.ledger("test-host")
     host.ensure_capacity({"cpu": 2})
+    assert not host._strict_census()
+    assert held._strict_census()
     with pool.tier_ledger_names_from(_names(reader)):
-        assert host.available() == {"cpu": 2}
-        assert host.capacity_census() == ({"cpu": 2}, [])
-        assert reader.listed == reader.kept == 0
+        with host._mutation_locked() as acquired:
+            assert acquired
+            assert host.available() == {"cpu": 2}
+            assert host.capacity_census() == ({"cpu": 2}, [])
+            assert reader.listed == reader.kept == 0
         assert _view(held) == (4, 3, 1)
     listed, kept = reader.listed, reader.kept
     assert _view(held) == (4, 3, 1)

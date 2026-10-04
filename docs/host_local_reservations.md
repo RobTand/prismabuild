@@ -133,6 +133,46 @@ contracts, which this issue forbids. Per-holder metadata (`.adaptive.json`,
 foreign release, so it stays with the tokens. What admission does about it is
 read it once per holder instead of twice.
 
+### Host token mutation exclusion (#1484, source-only contract)
+
+The shared token owner now supplies a permanent POSIX mutation lock at
+`reservations/<host>/.mutation.lock`, through the existing
+`ResourceLedger._mutation_locked` hook and token-mutator decorators. Direct
+ledger construction and `PoolQueue.ledger` share that identity, including
+foreign finish/reap and private acquisition commit/abandon. Admission begin
+is nonblocking; release, transfer, grow/shrink and completion wait rather
+than report a transition they did not perform. The lock is never removed
+as a stale-owner remedy.
+
+A capacity check-and-reserve owner retains this same reentrant exclusion
+over its complete fresh census, decision and begin/commit or rollback.
+CPU `AdmissionGate`, where applicable, is acquired first; no mutation
+section requests it or another parent/owner lock. Nested operations through
+separate ledger instances preserve the outer descriptor and process
+exclusion. No payload I/O is held under the mutation lock. Tier locks and
+tier-only census/name caching remain distinct; adding host exclusion does
+not turn a legacy host census into complete filesystem-capacity evidence.
+
+This is a bounded prerequisite for #1483, not a live adoption, filesystem
+identity mapping, safe DL diagnostic route or five-percent-floor positive.
+Actual parent/security review and admitted PB controls remain required;
+mixed-version writers outside the exclusion remain unqualified.
+
+The #1483 guard completion keeps this shape and adds, in the same existing
+owners: the single all-used-filesystem predicate
+(`free >= ceil(size/20) + aggregate held-and-additional allowances`, no
+materialization credit); held byte-resource leaves are counted in GiB token
+units and converted to bytes exactly once beside additional GiB demand; the
+registration lock spanning each validator
+decision; distinct committed operationP custody (`operation-p-<64 hex>`
+holders under the same ledgers, released only on clean completion, retained
+on any other ending, never swept) beside the normal claimed actionK
+lifecycle; and an unchanged provenance-owner seam (the frozen
+`materialize._execution_checkout` owner, candidate admission refused inside
+provenance materialization, registration refused inside live transactions).
+Unregistered populations stay UNKNOWN and HOLD. Source only: no live
+adoption, capture, or qualification is asserted.
+
 CPU action identity and the GPU action contract (`adaptive_gpu.action_contract`)
 still read the sealed request from the CAS on the mount. The pool now resolves
 these immutable facts before candidate admission, retaining per-key exclusion,

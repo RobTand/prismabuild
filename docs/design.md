@@ -5689,8 +5689,8 @@ far: the role's own host-local singleton refuses the second minter at
 startup (exit 3), so stop the role first or run the cycle on another box.
 
 Since #733 R6 the same per-tier mint lock is the cache-tier mutation
-exclusion, attached by the explicit `PoolQueue.tier_ledger` factory (host
-ledgers carry none): every token rename through a tier ledger -- claim
+exclusion, attached by the explicit `PoolQueue.tier_ledger` factory.
+Every token rename through a tier ledger -- claim
 begin (non-blocking, declining as `tier_reservation_unavailable`),
 commit/abandon/transfer/release (blocking, completing under the lock),
 mint grow/shrink, egress decharge, stale-handle sweep, and the grant
@@ -5711,6 +5711,80 @@ new tier-admitted workloads until worker AND storage roles converge
 (root reviews the actual publication). No bounded-overshoot exception:
 above-wanted credit from an unguarded interleaving is unbacked at every
 prefix even when a later retire would trim it.
+
+**Host reservation-owner exclusion (#1484, source contract).** Host ledgers
+also serialize every token mutator, using the permanent POSIX lock
+`reservations/<host>/.mutation.lock` inside the existing owner. Both
+`PoolQueue.ledger` and direct `ResourceLedger` construction take the same
+exclusion; foreign recovery therefore cannot bypass a capacity decision.
+`begin_acquire` declines nonblocking contention. Commit/abandon, every
+release and transfer variant, grow/shrink, retirement and stale-private
+acquisition return wait and complete under that owner. Same-thread nesting
+through another ledger instance retains the original POSIX descriptor.
+
+The #1483 validator holds `ledger._mutation_locked(blocking=False)`
+continuously across its fresh authoritative capacity census, decision and
+physical reservation begin/commit or rollback. Two equal snapshots are not
+an exclusion or an ABA proof, so the registration exclusion
+(`reservations/.filesystem-registration.lock`) now spans the validator's whole
+closed census, decision and acquisition: a registration replacement or
+new-owner creation cannot interleave with an aggregate decision. Bodies inside
+that scope stay short token operations, never payload I/O. When CPU
+`AdmissionGate` applies, it is outer; no mutation section acquires that gate,
+a transition/ownership parent, or another ledger owner. Private acquisitions
+stay charged throughout their separate begin/commit lifecycle.
+
+**One aggregate floor, one committed operationP custody (#1483, source).**
+`filesystem_capacity.filesystem_floor` is the single integer predicate: a used
+filesystem admits only while `free >= ceil(size/20) + aggregate allowance`,
+where the aggregate sums every registered owner's complete held byte tokens
+plus the operation's own still-unmaterialized `additional` demand, in bytes,
+with no materialization credit. Native identity dedups (one closed primary per
+physical key, one native export per wire FSID); stale or unknown frames, and
+holders without canonical registration, refuse rather than read as zero.
+
+`filesystem_capacity.reserve_operation(queue, intent, paths, *, role,
+operation_key=None, demand=None)` has exactly two custodies. `role="worker"`
+and `role="storage"` ride the normal claimed actionK lifecycle: the existing
+CLAIMED record, its resource scope and the sealed request own the held tokens;
+the guard proves the floor and rechecks the claim's lifetime, and releases
+nothing. `role="coordinator"` takes distinct committed operationP custody
+under the same existing ledgers: a unique `operation-p-<64 hex>` holder
+(never an action key, never a `claiming.` handle), admitted under the
+aggregate floor with its own allowance charged, then committed with the
+existing `ResourceLedger.acquire` -- a committed non-`claiming` holder every
+later census counts and no stale sweep recovers. The exclusion ends before
+any guarded body runs -- the top-level commit and every nested
+admission-only join alike: no registration, primary or ledger lock is held
+across the body, second processes keep lock access, and their floors read
+the retained charges through the ordinary held census. Clean completion
+releases exactly the committed tokens; any other ending retains them for
+the recorded owner. A same-key entry while that custody is live in the same
+pid/thread joins admission-only (no second commit, no release): new exact
+read paths may join, and the growth intent must equal the committed bound
+exactly, so a larger nested envelope is refused instead of riding the
+original P charges; the outermost frame alone releases. An optional
+`demand` may commit honest existing CPU/memory
+kinds beside the envelope's byte kinds and must cover the declared growth.
+No new ledger, validator, or bootstrap exemption exists: an unregistered
+population is UNKNOWN and HOLD, never zero.
+
+**Unchanged provenance-owner seam (#1483, source).** Registration provenance
+resolves `materialize._execution_checkout` exactly once per process, binds
+the owner object, and refuses to run candidate admission while provenance
+materialization is active; `install_registration` refuses to run inside a
+live used-filesystem transaction or a provenance scope. The materialize owner
+is never modified from the guard, so registration provenance can never demand
+the registration it installs.
+
+Locking is separate from census/cache purpose: only the explicit
+`tier_census=True` factory selects tier grow/reclaim refusal and the existing
+tier directory-name cache. Host legacy readers stay fresh with their prior
+error/report semantics; they are not complete filesystem-capacity proof.
+The sole validator supplies that fresh error-visible proof separately.
+This source contract is necessary, not all-used-filesystem qualification,
+a positive DL offer, a materialization credit, or deployment authority.
+Mixed generations not sharing the host mutation exclusion remain unqualified.
 
 **Bandwidth figures name their side.** The token, the demand key and the tier
 record all read `fill_mb_s_pool_side`, because a file-side rate and a pool-side
@@ -8487,7 +8561,8 @@ shared identity fields, since `batch_namespace` is projection-only (the
 record's closed schema carries no such field). The renamed claim re-checks
 the same agreement.
 Transfer uses the accepted tier mutation guard (`_guarded_mutation`,
-blocking; host ledgers no-op). Writer (744) MUST include the reference for
+blocking); host transfers use their reservation-owner lock. Writer (744) MUST
+include the reference for
 every output mover via `build_produced_output_batch_ref` (omission yields
 legacy treatment).
 Publication derives the projection from the CAS-filed request (contradictory
