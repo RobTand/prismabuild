@@ -10,12 +10,14 @@ the clock and sampler observations are controlled.
 """
 from __future__ import annotations
 
+import sys
+
 from test_measurement_drains_gpu_backfill import fleet as fleet_fixture
 from test_measurement_reservation_backfill_1419 import (
     _assert_holder_unchanged, _holder_snapshot, _observe_real_sharing_permission)
 
 from prismabuild import _measurement_reservation as reservation
-from prismabuild import adaptive_gpu, pool
+from prismabuild import adaptive_cpu, adaptive_gpu, core as pb, pool
 
 fleet = fleet_fixture
 
@@ -80,3 +82,76 @@ def test_undeclared_incumbent_election_leaves_the_other_matching_host_open(fleet
     assert claim("sparky") == candidate, "one election shut both matching GPUs"
     assert set(queue.ledger("sparky").held_keys()) == {other, candidate}
     assert queue.ledger("sparklina").held_keys() == [incumbent]
+
+
+def _export_of(tmp_path, queue, clock, producer, name):
+    """A producer's spool export as ``ProducedSpool._publish`` files it.
+
+    Sealed with ``params.produced_spool.owner`` -- the link
+    ``adaptive_cpu.dependent_owner`` reads -- and published with
+    ``dependent_of``, the producer's priority and its host's tag. No export
+    allowance: it needs free tokens, so it meets every gate a real one meets.
+    """
+    clock[0] += 0.001
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    checkout = tmp_path / "checkout"
+    action = pb.seal_action({
+        "schema": pb.ACTION_SCHEMA_V2,
+        "task": {"definition_id": "tests/produced-export", "definition_version": "v1",
+                 "task_class": "generation", "determinism": "deterministic",
+                 "artifact_family": "generic", "artifact_kind": "generic",
+                 "argv": [sys.executable, "task.py"], "working_directory": ".",
+                 "result_path": name},
+        "inputs": [], "code_closure": pb.build_code_closure(checkout, ["task.py"]),
+        "params": {"gpu_exclusive": False, "execution_timeout_s": None,
+                   "produced_spool": {"manifest_sha256": "f" * 64, "owner": producer,
+                                      "batch_id": name}},
+        "environment": {"variables": {}, "toolchain": {}},
+        "execution_scope": {"portability": "portable", "platform_key": None,
+                            "host_class": None},
+    })
+    cas.publish_action_request(action)
+    key = action["action_key"]
+    queue.publish(action_key=key, cas_root=str(cas.root), checkout_root=str(checkout),
+                  worker_script="worker.py", resources={"cpu": 1, "mem_gb": 1},
+                  needs_gpu=False, tags=["sparklina"], priority=-10,
+                  max_attempts=3, retry_safe=True, dependent_of=producer)
+    return key
+
+
+def test_an_undeclared_producers_own_export_is_not_held_behind_the_election(fleet, tmp_path):
+    """Review of #1504: a -10 producer with no declared deadline holds the
+    host; its spool exports are pinned there at its priority. Holding them
+    back behind the measurement's election would let the producer wait on its
+    exports forever and the measurement on the producer. The export runs; an
+    unrelated -10 refill still does not; the measurement claims after."""
+    queue, clock, readings, sample, publish, tick, claim, denial = fleet
+    producer = publish("undeclared-producer", priority=-10, timeout_s=None,
+                       cpu=2, gpu=1, mem_gb=8)
+    assert claim() == producer
+    measurement = publish("priority-zero-measurement", measurement=True,
+                          priority=0, cpu=8, gpu=1, mem_gb=48)
+    assert claim() is None
+    assert denial(measurement)["evidence"]["withhold"]["why"] == "draining_for_measurement"
+    tick(pool.WITHHOLD_CEILING_S + 60)
+
+    refill = publish("unrelated-refill", priority=-10, timeout_s=None, cpu=1, gpu=0, mem_gb=1)
+    export = _export_of(tmp_path, queue, clock, producer, "export-0")
+    assert adaptive_cpu.dependent_owner(pool._read_json(queue.item_path(pool.READY, export))) == producer
+    assert claim() == export, denial(export)
+    assert set(queue.ledger().held_keys()) == {producer, export}
+    chosen = reservation.selection(pool._read_json(queue.passes_path(measurement)) or {})
+    assert chosen is not None and chosen["host"] == "sparklina"
+
+    assert claim() is None, "an unrelated refill took the elected host"
+    assert denial(refill)["reason"] in (
+        "deferred_for_measurement_reservation", "deferred_behind_withheld_row")
+    assert denial(refill)["evidence"]["withheld_for"] == measurement
+    assert queue.item_path(pool.READY, refill).exists()
+
+    queue.finish(export, status="executed")
+    queue.finish(producer, status="executed")
+    tick(adaptive_gpu.PSI_AVG10_S + 1)
+    assert claim() == measurement, denial(measurement)
+    assert queue.ledger().held_keys() == [measurement]
+    assert queue.item_path(pool.READY, refill).exists()
