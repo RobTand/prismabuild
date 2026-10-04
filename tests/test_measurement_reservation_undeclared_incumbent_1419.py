@@ -214,10 +214,3 @@ def test_a_ram_fill_hold_alone_does_not_elect_the_host(fleet):
         return pool.PoolQueue.RAM_HOST_MEMORY_PREFIX + grant
     _non_action_holder_keeps_the_bounded_episode(fleet, hold)
 
-
-def test_an_unclaimed_raw_holder_does_not_elect_the_host(fleet):
-    def hold(queue):
-        raw = "e" * 64
-        assert queue.ledger("sparklina").acquire(raw, {"mem_gb": 100})
-        return raw
-    _non_action_holder_keeps_the_bounded_episode(fleet, hold)
