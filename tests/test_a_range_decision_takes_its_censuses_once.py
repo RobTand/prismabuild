@@ -1,26 +1,27 @@
-"""A range decision takes its pin, claim and in-flight censuses once (#1028).
+"""A range decision lists its range directory once while it holds still (#1028).
 
-A divergent name's re-decision under the stage ownership lock passes three
-censuses before it may replace: the live pin census (``_live_pins``), the
-live mover claim census (``_live_claim_cover``) and the in-flight-partial
-census (``_inflight_partials``), which lists the destination's range
-directory.  On main each is taken once per name, so a 2,048-name range
-decision lists the range directory 2,048 times -- one listing where one
-answers every name of the range -- and each re-decision holds the lock the
-movers and egresses of the stage root wait for (~1.7 ms a name at the
-campaign's range size, action 1e0a9b624335).
+A divergent name's re-decision under the stage ownership lock passes an
+in-flight-partial census (``_inflight_partials``) before it may replace,
+and on main that census listed the destination's range directory once per
+name -- a 2,048-name range decision listed it 2,048 times, one listing
+where one answers every name of the range, and each re-decision held the
+lock the movers and egresses of the stage root wait for (~1.7 ms a name
+at the campaign's range size, action 1e0a9b624335).
 
-The censuses are now hints the range decision shares: the claim listing
-and each range directory's partial names are read once per stamp of their
-source directory, and every name revalidates with one directory version
-(``_current_directory_version``), re-reading only what moved -- so a
-claim or a partial that appears mid-range moves its directory and is seen
-by the next name of the same range, exactly as the per-name censuses saw
-it.  What is pinned here: an unchanged directory is listed once for a
-whole 2,048-name range decision (the adoption pass over an already-
-correct campaign range, which writes nothing); a partial and a claim that
-appear mid-range are seen by the next name; a mixed range decides each
-name exactly as the per-name censuses answered it; and the
+The hint: the range directory is listed once per
+``_trusted_directory_stamp`` -- the stamp taken before the scan, the
+listing remembered only while a fresh directory version still equals it
+-- and every name revalidates with one directory version, re-listing only
+a directory that moved.  A version the directory's own clock tick
+refuses, and a scan the directory moved, are returned once and never
+remembered, so a partial created in the same tick or during a scan cannot
+hide behind a remembered listing; where the fence cannot hold, every name
+lists fresh.  What is pinned here: an unchanged directory is listed once
+for a whole 2,048-name range decision (the adoption pass over an
+already-correct campaign range, which writes nothing); a same-tick and a
+during-scan partial are never hidden; a partial and a claim that appear
+mid-range are seen by the next name; a mixed range decides each name
+exactly as the per-name censuses answered it; and the
 ``ownership_lock_held`` accounting the receipt publishes is unchanged.
 
 Nothing here measures seconds: a lock-hold claim needs mover receipts and

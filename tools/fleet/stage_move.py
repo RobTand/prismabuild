@@ -1694,21 +1694,14 @@ class _StagedPublisher:
         #: range directory is listed once under
         #: :func:`_trusted_directory_stamp` and a name revalidates the
         #: hint with one directory version, re-listing only what moved.
-        #: The claim census stays per name, exactly as main and #1089 left
-        #: it (the listing and each record read on every check through the
-        #: memo above), and the pin census stays per name (see
-        #: :meth:`_live_pins`): its source is a tree the stat of one
-        #: directory cannot fence.  Guarded by ``_range_lock`` because
-        #: every copy worker thread shares one publisher.
+        #: The claim census and the pin census are main's, per name.
+        #: Guarded by ``_range_lock`` because every copy worker thread
+        #: shares one publisher.
         self._range_lock = threading.Lock()
         #: Each range directory's ``(stamp, partial names)``, listed once
         #: per :func:`_trusted_directory_stamp`; only a fenced listing is
         #: remembered.
         self._range_partials: dict[str, tuple[tuple, tuple[str, ...]]] = {}
-        #: The pin census's parse memo for this publisher's whole run
-        #: (#988): a pin is parsed once per fstat version; every pin file
-        #: is still listed and opened on every check.
-        self._pin_memo: dict[str, object] = {}
 
     @contextmanager
     def _ownership(self):
@@ -2646,22 +2639,11 @@ class _StagedPublisher:
         return names
 
     def _live_pins(self, norm: str) -> list[str] | None:
-        """Pin ids live on one staged path, or None when unknowable.
-
-        The pin census stays per name (#1028, review): its source is a tree
-        -- the leases root plus a directory per consumer -- so no single
-        directory stat can fence a once-per-range snapshot, and a pin file
-        rewritten in place moves no directory.  What the range decision
-        reuses is the parse: ``live_for``'s memo (#988) parses a pin once
-        per fstat version for this whole run, so an unchanged pin costs its
-        open and ``fstat``, not its parse, while every listing stays as
-        fresh as a per-name census's.
-        """
+        """Pin ids live on one staged path, or None when unknowable."""
 
         try:
             owners, tainted = reader_lease.live_for(
-                self.queue, {norm}, residency_root=self.residency_root,
-                memo=self._pin_memo)
+                self.queue, {norm}, residency_root=self.residency_root)
         except Exception:
             return None
         if tainted:
@@ -2723,9 +2705,9 @@ class _StagedPublisher:
         (:func:`_current_directory_version`) and the directory is listed
         again only when it moved.  Each name's check filters the
         remembered listing by the same prefix rule and re-stats only the
-        names that pass it, so a partial reaped since the listing no
-        longer reads as in flight, and a candidate that cannot be stat'ed
-        fails the name closed exactly as the per-name listing's stat did.
+        names that pass it; a candidate that cannot be stat'ed -- one
+        removed since the listing among them -- fails the name closed
+        exactly as the per-name listing's stat did.
         A partial filed after the listing moves the directory, so the next
         name of the same range sees it; the publisher's own temporary and
         rename move it every entry too, so a range of replacements lists
