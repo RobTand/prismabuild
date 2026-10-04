@@ -343,7 +343,7 @@ def test_coordinator_demand_may_commit_honest_extra_kinds(registered):
         names = pool.held_names_visible(ledger, OPERATION_KEY)
         assert {n for n in names if n.startswith("spool_gb")} == {
             "spool_gb-0000", "spool_gb-0001"}
-        assert "cpu-0" in names
+        assert "cpu-0000" in names
 
 
 def test_admission_refuses_inside_provenance_and_registration_scopes(registered):
