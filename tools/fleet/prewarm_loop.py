@@ -4466,8 +4466,10 @@ def _serve_cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.
 
     Ordering is the correction's point: the cycle's writes AND the explicit
     log append both happen inside the committed window; the window closes
-    only after the record is on its filesystem.  stdout is not a used
-    filesystem, so the journal line prints after the window.
+    only after the explicit log append attempt. A redirected stdout can be
+    another used filesystem; its writer must be covered by the operative
+    descriptor/growth packet. These private controls do not establish that
+    all-filesystem coverage.
     """
     with _cycle_custody(args, queue) as refused:
         if refused is not None:
@@ -4480,8 +4482,8 @@ def _serve_cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.
                 with open(args.log, "a") as handle:
                     handle.write(line + "\n")
             except OSError as exc:
-                # The append failed, so it moved no bytes; the committed
-                # operation still ends cleanly on its own records.
+                # An OSError can follow a partial append. This diagnostic
+                # does not establish zero bytes written or operative capacity.
                 announce({"event": "prewarm-log-append-failed", "reason": str(exc)})
         return line
 
