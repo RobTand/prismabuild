@@ -40,6 +40,7 @@ import math
 from pathlib import Path
 from collections.abc import Iterable, Mapping, Sequence
 import os
+import signal
 import socket
 import sys
 import time
@@ -10574,17 +10575,34 @@ def _start(queue: pool.PoolQueue, *, host: str, interval_s: float,
 
 
 def _serve(args) -> int:
+    """TERM/INT request the next completed cycle boundary, never unwind a cycle."""
+    stopping = False
+
+    def request_stop(signum, frame):
+        nonlocal stopping
+        stopping = True
+
+    previous = {}
+    try:
+        for signum in (signal.SIGTERM, signal.SIGINT):
+            previous[signum] = signal.signal(signum, request_stop)
+        return _serve_cycles(args, lambda: stopping)
+    finally:
+        for signum, handler in reversed(tuple(previous.items())):
+            signal.signal(signum, handler)
+
+
+def _serve_cycles(args, stop_requested) -> int:
     global CYCLE_INTERVAL_S
-    # The cadence this loop decides at is part of every horizon it prices
-    # (#903): a range published now is first seen published a cycle later.
     CYCLE_INTERVAL_S = float(args.interval_s)
-    queue = pool.PoolQueue(Path(args.pool_root))
-    queue.ensure_layout()
+    # No layout/adoption writes before the first open-gate boundary.
+    queue = None
+    receipts = liveness = None
     host = socket.gethostname()
-    receipts, liveness = _start(queue, host=host,
-                                interval_s=float(args.interval_s))
     loaded_commit = runtime_gate.loaded_runtime_commit()
     loaded_generation = runtime_gate._generation_at(runtime_gate.GENERATION_VERSION)
+    parked_epoch = None
+    cycle_failed = False
 
     def runtime_moved() -> bool:
         current = runtime_gate.published_commit()
@@ -10594,12 +10612,10 @@ def _serve(args) -> int:
             and loaded_generation != current_generation))
 
     while True:
-        # Read at the top of the cycle, never inside one: every mutation this
-        # loop makes is a single atomic rename, and the one composite -- the
-        # map -- is recomposed from the fragments on disk each cycle, so the
-        # boundary between two cycles is the only place there is nothing to
-        # finish.  The supervisor's ``ensure_roles`` puts the replacement back
-        # on the published generation on its next tick.
+        # All adoption/cycle/final receipt and log writes have finished here.
+        # A raised cycle is not a completed-cycle quiescence certificate.
+        if cycle_failed and stop_requested():
+            return 75
         if runtime_moved():
             print(json.dumps({
                 "event": "tier-runtime-moved", "unix": time.time(), "host": host,
@@ -10607,23 +10623,68 @@ def _serve(args) -> int:
                 "published": runtime_gate.published_commit()[:12],
             }), flush=True)
             return 75 if args.once else 0
+        gate = runtime_gate.read_maintenance_gate()
+        if gate is not None:
+            if cycle_failed:
+                # Retain the failure record, but never label an interrupted
+                # composite cycle as an acknowledged natural boundary.
+                return 75
+            epoch = runtime_gate._gate_key(gate)
+            if parked_epoch != epoch:
+                print(json.dumps({"event": "tier-maintenance-park", "unix": time.time(),
+                                  "host": host, "epoch": epoch}), flush=True)
+            marker = runtime_gate.post_park_marker(gate)
+            current = runtime_gate.read_maintenance_gate()
+            # Post/read failures or an epoch rotation do not certify this drain.
+            stamp = runtime_gate.drain_offer_fields(gate).get("drain_changed_unix")
+            proven = (marker is not None and stamp is not None and stamp > 0
+                      and epoch != "unknown" and current == gate)
+            parked_epoch = epoch if proven else None
+            if args.once:
+                return 75
+            if stop_requested():
+                return 0 if proven else 75
+            time.sleep(args.interval_s)
+            continue
+        parked_epoch = None
+        if stop_requested():
+            return 0
+        if queue is None:
+            # Constructor is read-only. Recheck before EACH startup write;
+            # no signal handler raises through either composite operation.
+            candidate = pool.PoolQueue(Path(args.pool_root))
+            if stop_requested() or runtime_moved() or runtime_gate.read_maintenance_gate() is not None:
+                continue
+            candidate.ensure_layout()
+            if stop_requested() or runtime_moved() or runtime_gate.read_maintenance_gate() is not None:
+                continue
+            receipts, liveness = _start(candidate, host=host,
+                                         interval_s=float(args.interval_s))
+            queue = candidate
+        if stop_requested() or runtime_moved() or runtime_gate.read_maintenance_gate() is not None:
+            continue
         started = time.monotonic()
         try:
             records = cycle(queue, host=host, source_pool=args.source_pool,
                             receipts=receipts, liveness=liveness)
         except (OSError, pool.PoolContractError) as exc:
-            # What the failed cycle cost up to the raise, phase by phase
-            # (#992): a slow failure is still a slow cycle.
             print(json.dumps({"event": "tier-cycle-failed", "error": repr(exc),
                               "unix": time.time(), **LAST_CYCLE}), flush=True)
             records = []
+            cycle_failed = True
         else:
-            print(json.dumps(tier_cycle_line(host, records, LAST_CYCLE)),
-                  flush=True)
+            print(json.dumps(tier_cycle_line(host, records, LAST_CYCLE)), flush=True)
+            cycle_failed = False
         if args.once:
             print(json.dumps(records, indent=1, default=str))
+            if stop_requested() or runtime_gate.read_maintenance_gate() is not None:
+                # Even a one-shot stop must acknowledge only after final writes.
+                continue
             return 0
+        if stop_requested() or runtime_gate.read_maintenance_gate() is not None:
+            continue
         time.sleep(max(0.0, args.interval_s - (time.monotonic() - started)))
+
 
 
 def main(argv: list[str] | None = None) -> int:
