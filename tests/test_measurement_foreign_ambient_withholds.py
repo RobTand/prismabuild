@@ -23,6 +23,8 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "src"), str(ROOT / "tools" / "fleet")]
 from prismabuild import adaptive_cpu, pool  # noqa: E402
+from prismabuild.adaptive_cpu import action_identity as real_action_identity
+from test_measurement_drains_gpu_backfill import fleet  # noqa: F401
 
 T0 = 2_000_000.0
 
@@ -161,7 +163,7 @@ def test_thin_foreign_spread_below_the_per_cpu_line_admits(
 
 
 def test_holder_only_busy_with_foreign_below_the_verdict_keeps_the_withhold(
-    queue: pool.PoolQueue, clock, monkeypatch,
+    fleet, monkeypatch,
 ) -> None:
     """#1233 case 3: no foreign-alone excess, the #924 withhold stands.
 
@@ -171,8 +173,8 @@ def test_holder_only_busy_with_foreign_below_the_verdict_keeps_the_withhold(
     host reads idle.
     """
 
-    capacity = {"cpu": 20, "mem_gb": 120}
-    tiers = {"preferred": list(range(20)), "fallback": []}
+    queue, clock, _readings, _gpu, publish, _tick, claim, _denial = fleet
+    monkeypatch.setattr(adaptive_cpu, "action_identity", real_action_identity)
     state = {"busy": True}
     per_cpu = _flat(0.)
 
@@ -182,19 +184,12 @@ def test_holder_only_busy_with_foreign_below_the_verdict_keeps_the_withhold(
         return _sample(clock, per_cpu=per_cpu)
 
     monkeypatch.setattr(adaptive_cpu.Controller, "sample", lambda self: sample())
-    measurement = _key("measurement")
-    monkeypatch.setattr(adaptive_cpu, "action_identity",
-                        lambda item: ("shape", item["action_key"] == measurement))
-
-    def claim():
-        return _claim(queue, capacity, tiers=tiers)
-
-    holder = _publish(queue, clock, _key("holder"), {"cpu": 2, "mem_gb": 1})
+    holder = publish("holder", cpu=2, gpu=0, mem_gb=1)
     assert claim() == holder
-    _publish(queue, clock, measurement, {"cpu": 4, "mem_gb": 40})
+    measurement = publish("measurement", measurement=True, cpu=4, gpu=0, mem_gb=40)
     for _ in range(pool.STARVATION_FLOOR - 1):
         queue.record_pass(measurement)
-    behind = _publish(queue, clock, _key("behind"), {"cpu": 4, "mem_gb": 40})
+    behind = publish("behind", cpu=4, gpu=0, mem_gb=40)
     assert claim() is None, "the holder's own busy load must still withhold"
     denial = _denial(queue, measurement)
     assert denial["reason"] == "adaptive_cpu_refused_withholding", denial
