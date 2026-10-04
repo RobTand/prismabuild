@@ -191,7 +191,7 @@ def test_holder_busy_keeps_the_withhold_then_admits(
     it waits exactly as it did before #1231.
     """
 
-    queue, clock, _readings, _gpu, publish, _tick, claim, _denial = fleet
+    queue, clock, _readings, _gpu, publish, _tick, claim, _fleet_denial = fleet
     monkeypatch.setattr(adaptive_cpu, "action_identity", real_action_identity)
     state = {"busy": True}
     per_cpu = {str(cpu): 0. for cpu in range(20)}

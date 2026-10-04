@@ -173,7 +173,7 @@ def test_holder_only_busy_with_foreign_below_the_verdict_keeps_the_withhold(
     host reads idle.
     """
 
-    queue, clock, _readings, _gpu, publish, _tick, claim, _denial = fleet
+    queue, clock, _readings, _gpu, publish, _tick, claim, _fleet_denial = fleet
     monkeypatch.setattr(adaptive_cpu, "action_identity", real_action_identity)
     state = {"busy": True}
     per_cpu = _flat(0.)
