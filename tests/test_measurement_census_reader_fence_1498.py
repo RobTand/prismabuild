@@ -144,9 +144,11 @@ def test_the_reader_fence_holds_across_discovery_and_refresh(
     claimed = outcome.get("claimed")
     assert isinstance(claimed, dict) and claimed.get("action_key") == candidate, outcome
     assert _denial(queue, candidate) is None, _denial(queue, candidate)
-    # The refused observer names the busy fence and nothing else: fail-closed
-    # denial is preserved, not bypassed.
-    assert "reader busy" in outcome.get("unavailable", ""), outcome
+    # The observer waits a bounded FENCE_WAIT_S for the fence (#1498): it
+    # either censuses after the pass let go, or is refused naming the busy
+    # fence and nothing else. Fail-closed denial is preserved, not bypassed.
+    assert ("census" in outcome
+            or "reader busy" in outcome.get("unavailable", "")), outcome
     # A settled fence stays reusable: recovery through a fresh acquisition.
     again = reservation.CensusReader(queue, queue.ledger()).capture()
     repeat = reservation.CensusReader(queue, queue.ledger()).capture()

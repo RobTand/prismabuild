@@ -502,8 +502,20 @@ had already taken M and H -- with "measurement census reader busy", the
 sustained denial that stalled EXL3 preflight admission. The single-reader
 fence contract is unchanged: one bounded census child at a time, ownership
 persisted and retained-reader liveness checked per acquisition, and every
-refusal inside the hold (fence, transition key, admission gate) stays
-nonblocking and releases what was taken.
+refusal inside the hold (transition key, admission gate) stays nonblocking and
+releases what was taken. The fence itself is waited for, at most
+`FENCE_WAIT_S` (2 s), before "reader busy" refuses: the waiter holds only its
+own candidate key, never M or H, and no holder waits on a waiter, so one
+sibling loop's census is no longer every other loop's denial (#1498).
+The census input is bounded by retiring what cannot be authority, not by
+skipping reads: on the reaper's `_sweep_due` schedule `sweep_orphan_passes`
+unlinks at most 256 `passes/` sidecars per call whose key has a done, failed
+or withdrawn record, is neither READY nor CLAIMED under its non-blocking
+transition lock, and whose record carries no `measurement_reservation` field
+(valid, retired or malformed elections, unreadable and foreign records stay).
+Withdrawal never removed a sidecar, so ~2,900 concluded ones made a Spark NFS
+census take 3-5 s of its 5 s budget (#1498). Every census still reads every
+remaining sidecar.
 New unlocked M keys, unreadable/incomplete records, unsupported ownership and
 caps (4096 directory entries, 4 MiB per record, five seconds per read) defer the
 pass, never become an empty census. Parent retains M/H only through the actual
