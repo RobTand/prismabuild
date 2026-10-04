@@ -146,6 +146,18 @@ when its cycle is deferred, also with `--dry-run`. Private fixtures must provide
 their own explicit open gate and stable runtime identity. This supplies storage
 participation hooks for #458; fleet barrier activation remains unavailable.
 
+The tier role uses the same maintenance gate and epoch-bound park marker
+(#1487). It checks before layout/adoption writes and again before each cycle.
+`SIGTERM` and `SIGINT` request a cooperative stop: a running cycle and its
+final receipt/log writes finish before parking or exiting. A failed cycle,
+unwritten marker, unknown epoch or epoch rotation cannot certify a completed
+maintenance boundary. `--once` remains 75 when deferred; prior signal handlers
+are restored on exit. A blocked operation can delay the boundary without a
+timeout escape. This is a source contract, **not proof that an already loaded
+older tier process cooperates**: inspect its exact generation and PID/start
+identity before relying on the behavior. Qualification, deployment and any
+bounded stop of an old role require their existing separate authority.
+
 ## Submit one command
 
 The wrapper runs without login profiles. Use an absolute executable or seal
