@@ -475,8 +475,10 @@ priority ordering is unchanged.
 
 **Canonical UNKNOWN-first reservation slice (#1419, source accepted; worker generation adopted).** Bounded
 legacy attention above is distinct from a host election. On affirmative fresh
-CPU/GPU attribution and at least one incumbent on the host, exactly one
-host is selected for this measurement publication under its transition key and
+CPU/GPU attribution and a host whose every holder is a claimed action on it
+(a RAM-tier fill hold, #1222, or a raw holder with no readable claim elects
+nothing: no action lifetime bounds that wait, and the bounded episode lapses
+as before), exactly one host is selected for this measurement publication under its transition key and
 host admission. `passes/<key>.json.measurement_reservation` names the schema,
 action key, publication generation, host, priority, election epoch and original
 `opportunity_unix`. The original incumbent `claimed_unix + requested_timeout_s`
@@ -536,7 +538,8 @@ incumbents can finish without new admissions, so a row whose sealed
 `params.produced_spool.owner` (`adaptive_cpu.dependent_owner`, never the row's
 `dependent_of` hint) currently holds tokens on this host is not held back by the
 measurement's wait: neither by `blocking_selection` at either census check nor
-by the measurement's whole-box withhold. Admitting an incumbent's own dependent
+by the measurement's whole-box withhold. An elected measurement that is itself
+running is not such an incumbent; its dependents keep the `funded_by` rule. Admitting an incumbent's own dependent
 (a producer's spool export, pinned to its host at its priority) only shortens
 the incumbent's life; holding it back deadlocked an undeclared producer against
 its exports (#1504 review). Every other row and every other withhold is unchanged.
