@@ -629,3 +629,22 @@ def test_a_producers_submission_is_findable_by_the_key_it_went_under(
     # are still absent.
     assert not (tmp_path / "pb-queue" / "done").exists()
     assert not (tmp_path / "pb-queue" / "failed").exists()
+
+
+def test_shared_submit_projects_sealed_local_dependency_requirements(tmp_path):
+    cas = _cas(tmp_path)
+    original = _runnable_action(tmp_path, cas)
+    body = {key: value for key, value in original.items() if key != "action_key"}
+    dependency = str(tmp_path / "input.bin")
+    body["params"] = dict(body["params"], local_dependencies={dependency: "path"},
+                          dependency_queries={dependency: "path"})
+    action = pb.seal_action(body)
+    request = cas.publish_action_request(action)
+    queue_root = tmp_path / "queue"
+    fleet_submit.submit(action, cas=cas, request_path=request, transport="pool",
+                        checkout_root=tmp_path, queue_root=queue_root, resources={"cpu": 1})
+    row = json.loads(pool.PoolQueue(queue_root).item_path(pool.READY, action["action_key"]).read_text())
+    assert row["local_dependencies"] == {dependency: "path"}
+    assert row["dependency_queries"] == {dependency: "path"}
+    assert "local-dependency-v1" in row["tags"]
+

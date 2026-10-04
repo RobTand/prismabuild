@@ -49,9 +49,9 @@ Three properties follow from that.
     submit every row, and only the missing ones cost anything.
 
 Placement is part of identity. `pbrun` normalizes and sorts the tags that
-landed, including a hostname pin derived from a box-local executable, and seals
-them before computing the key. Flag order and duplicate tags do not move the
-key; a different admissible worker population does.
+landed, including a dependency-derived host pin or a proven gb10 class
+default, and seals them before computing the key. Flag order and duplicate
+tags do not move the key; a different admissible worker population does.
 
 The runtime-generation path of PB's Docker wrapper is also sealed. Publishing
 a new runtime can therefore change an ordinary re-run's key even when its
@@ -226,6 +226,35 @@ its existing limits. This is not a whole-submission timeout.
 | `--priority N` | A queue hint. Higher runs sooner; a negative value yields to everything at 0, and aging never lifts it past them. Defaults to 0. | `--nice`, sent on every submission. SLURM subtracts the nice from the base priority its scheduler assigned. |
 | `--priority-reason TEXT` | Optional explanation shown beside priority in `pbstatus`; outside action identity and admission policy. | Stored with the lane submission, outside identity and scheduling flags. |
 | `--profile MODE` | Run a profiler around the action's child and store the profile as a CAS blob named on the ending. `sample` is py-spy over the whole process tree; `nsys` is Nsight Systems over CUDA and NVTX, optionally windowed (`nsys:600`); `torch` is a contract the action opts into. **Part of the action identity**, unlike `--priority`. | Carried unchanged; the worker resolves the backend on the box that runs it. |
+
+Without `--tag`, `--here` or `--anywhere`, pool submissions from a
+declared Spark and GPU submissions from celestia default to `gb10` only
+when **every active class member** has fresh, positive worker-offer evidence
+for the command's executable and every direct local argv/environment path.
+The fleet roster supplies membership and aliases; the existing queue still
+chooses the worker by load, not a submitter scheduler.
+
+A host-only dependency, an unanswered path, a missing/stale member offer,
+or a worker without `local-dependency-v1` keeps the conservative host pin
+and prints why. Workers extend the existing interpreter lookup with path
+questions from ready rows, plus local checks of PB's default bash and their
+configured worker interpreter. A first-use path may be unknown; neither the
+submitter's copy nor a busy/missing member proves homogeneity. Name
+`--tag gb10` explicitly when you own that dependency assertion. An executable
+or direct external input absent on the submitter still refuses by default.
+Repository/shared paths remain portable under the snapshot contract; indirect
+shell/application dependencies remain yours to declare.
+
+Sealed local requirements and the capability fence class-default rows during
+rolling adoption. Claim rechecks presence before an attempt; this does not
+attest equal bytes or prevent later deletion. A venv Python names the venv
+path, not just its resolved system interpreter. Explicit `--here` and tags
+remain authoritative; `--anywhere --tag` remains invalid. Use a class tag
+alone, or `--anywhere` alone only if every eligible worker can run the command.
+Measurements keep their submitting-host pin by default. Existing
+`--measurement --host-class CLASS` is the opt-in class contract with unchanged
+platform/toolchain attestation and exclusivity; same-host A/B and TP2 rank
+pins are not rewritten.
 
 `pbrun` accepts only `cpu`, `gpu`, `mem_gb`, and `disk_metadata` in `--demand`.
 It refuses an unknown resource before sealing at this client boundary;

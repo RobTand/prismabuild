@@ -111,6 +111,7 @@ RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from prismabuild import (adaptive_cpu, adaptive_gpu as gpu_admission,  # noqa: E402
                          box_capacity, container_images,
+                         local_dependencies,
                          core as pb, cpu_topology, local_scratch, pool,
                          publication_canary, storage_tiers)
 from pbstatus import Deadline, bounded  # noqa: E402
@@ -1001,6 +1002,30 @@ def interpreter_lookup(items) -> tuple[list[str], list[str]]:
     return present, absent
 
 
+def local_dependency_lookup(items, *, python: str) -> dict[str, str]:
+    """Extend the same offer lookup with command/path questions, not a registry."""
+    import shutil
+    requirements = {python: "executable"}
+    shell = shutil.which("bash", path=os.defpath)
+    if shell:
+        requirements[str(Path(shell).resolve())] = "executable"
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        interpreter = item.get("interpreter")
+        if isinstance(interpreter, str):
+            requirements[interpreter] = "executable"
+        for field in ("dependency_queries", "local_dependencies"):
+            try:
+                queries = local_dependencies.normalize(item.get(field, {}))
+            except ValueError:
+                continue  # A malformed foreign row cannot vouch for any path.
+            for path, kind in queries.items():
+                if kind == "executable" or path not in requirements:
+                    requirements[path] = kind
+    return local_dependencies.observe(requirements)
+
+
 def discover_ready_snapshot(queue, *, budget_s: float,
                             abandoned: list,
                             placement: tuple | None = None) -> DiscoveryResult:
@@ -1558,6 +1583,7 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
         # before the field offers neither, so an interpreter-naming item waits
         # for a box that can run it instead of dying with 127 there.
         tags.append(pb.INTERPRETER_TAG)
+        tags.append(local_dependencies.TAG)
         # Code capability only; configured executed profiles and current root
         # observations separately decide admission. Old workers cannot ignore
         # opted-in sealed traffic during a rolling publication.
@@ -1922,6 +1948,7 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
         # fail-closed answer rather than a guess.
         offered_interpreters, absent_interpreters = interpreter_lookup(
             discovery.snapshot or [])
+        dependency_answers = local_dependency_lookup(discovery.snapshot or [], python=args.python)
 
         # Immutable producer/source verification is cached; small CAS proof
         # inputs and independent current device identity refresh outside the
@@ -1936,6 +1963,7 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
                            observed_images=observed_images, class_verdict=class_verdict,
                            interpreters=offered_interpreters,
                            interpreters_absent=absent_interpreters,
+                           dependency_answers=dependency_answers,
                            observed_detail=observed_detail):
             # (``interpreters`` binds the poll's lookup; the announce call
             # below receives it under that closure-local name.)
@@ -1980,6 +2008,7 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
                 # an interpreter reads that as unknown, never capable.
                 interpreters=interpreters,
                 interpreters_absent=interpreters_absent,
+                local_dependency_answers=dependency_answers,
             )
 
         publication = publish_offer(

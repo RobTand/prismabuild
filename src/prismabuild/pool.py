@@ -147,6 +147,7 @@ from . import materialize, cpu_topology
 from . import adaptive_cpu as cpu_admission
 from . import adaptive_gpu as gpu_admission
 from . import container_images as image_inventory
+from . import local_dependencies
 from . import residency_map
 from . import storage_tiers
 from . import box_capacity
@@ -5695,6 +5696,7 @@ class PoolQueue:
         container_class_verdict: Mapping[str, object] | None = None,
         interpreters: Sequence[str] | None = None,
         interpreters_absent: Sequence[str] | None = None,
+        local_dependency_answers: Mapping[str, str] | None = None,
         state: str | None = None,
         drain_owner: str | None = None,
         drain_reason: str | None = None,
@@ -5853,6 +5855,8 @@ class PoolQueue:
             # with a notice rather than a deadlock.
             record["interpreters_absent"] = sorted(
                 {str(p) for p in interpreters_absent})
+        if local_dependency_answers is not None:
+            record["local_dependencies"] = dict(local_dependency_answers)
         if state is not None:
             record["state"] = str(state)
         if drain_owner is not None:
@@ -5947,6 +5951,10 @@ class PoolQueue:
                 declared_interpreter, str):
             raise PoolContractError(
                 "pool item interpreter must be an absolute path string")
+        try:
+            dependencies = local_dependencies.normalize(item.get("local_dependencies", {}))
+        except ValueError as exc:
+            raise PoolContractError(str(exc)) from exc
         demand = self.demand_of(item)
         needs_gpu = bool(item.get("needs_gpu")) or demand.get("gpu", 0) > 0
         matches: list[Mapping[str, object]] = []
@@ -5979,6 +5987,8 @@ class PoolQueue:
                         declared_interpreter not in {
                             str(entry) for entry in offered_paths}:
                     continue
+            if local_dependencies.missing(dependencies, offer.get("local_dependencies")):
+                continue
             capacity = offer.get("capacity") or {}
             # A kind the offer does not MENTION is unknown, not zero.  The
             # difference is what a publish looks like from the queue: capacity
@@ -6000,6 +6010,34 @@ class PoolQueue:
                 continue          # this box can never fit it, however idle
             matches.append(offer)
         return matches
+
+    def class_dependency_gap(
+        self, klass: str, members: Mapping[str, Sequence[str]],
+        requirements: Mapping[str, str],
+    ) -> str | None:
+        """Every roster member must positively answer; partial offers are not proof."""
+        if not members:
+            return f"no active {klass} class members declared"
+        live = self.offers()
+        known = {alias for aliases in members.values() for alias in aliases}
+        for offer in live:
+            if klass in (offer.get("tags") or []) and offer.get("host") not in known:
+                return f"class offer {offer.get('host')} is not in the fleet inventory"
+        for member, aliases in members.items():
+            offers = [offer for offer in live if offer.get("host") in aliases
+                      and klass in (offer.get("tags") or [])]
+            if len(offers) != 1:
+                return f"{member}: missing or ambiguous fresh {klass} offer"
+            offer = offers[0]
+            if requirements and local_dependencies.TAG not in (offer.get("tags") or []):
+                return f"{member}: dependency capability unknown"
+            missing = local_dependencies.missing(requirements, offer.get("local_dependencies"))
+            if missing:
+                path = missing[0]
+                answers = offer.get("local_dependencies")
+                answer = answers.get(path, "unknown") if isinstance(answers, Mapping) else "unknown"
+                return f"{member}: {path} ({answer})"
+        return None
 
     def interpreter_placement_verdict(
             self, item: Mapping[str, object], interpreter: str, *,
@@ -6326,6 +6364,8 @@ class PoolQueue:
         container_owner: str | None = None,
         container_images: Sequence[str] | None = None,
         interpreter: str | None = None,
+        local_dependencies: Mapping[str, str] | None = None,
+        dependency_queries: Mapping[str, str] | None = None,
         preempted_claim: Mapping[str, object] | None = None,
         handoff_by: str | None = None,
         residency: Mapping[str, object] | None = None,
@@ -6413,6 +6453,14 @@ class PoolQueue:
                     "interpreter must be an absolute path to an executable "
                     f"(got {interpreter!r})")
             declared_interpreter = interpreter
+        # The required map is class-default eligibility; queries alone are
+        # advisory questions from a conservative host-pinned first use.
+        from . import local_dependencies as dependency_contract
+        try:
+            dependencies = dependency_contract.normalize(local_dependencies or {})
+            queries = dependency_contract.normalize(dependency_queries or {})
+        except ValueError as exc:
+            raise PoolContractError(str(exc)) from exc
         # Every declaration check is a precondition, ahead of the first side
         # effect below: a publication this method refuses must not have
         # retired a live withdrawal, created a directory or answered an
@@ -6430,6 +6478,11 @@ class PoolQueue:
                 f"{pb.INTERPRETER_TAG} requires an interpreter; an item may "
                 "not require the declared-interpreter capability without "
                 "naming one")
+        if dependencies:
+            normalized_tags = normalize_placement_tags(
+                [*normalized_tags, dependency_contract.TAG])
+        elif dependency_contract.TAG in normalized_tags:
+            raise PoolContractError(f"{dependency_contract.TAG} requires local_dependencies")
         if image_refs:
             # The capability the claim check rides must travel with the
             # requirement, never be forgotten by a producer: a box that does
@@ -6858,6 +6911,10 @@ class PoolQueue:
             item["container_images"] = image_refs
         if declared_interpreter is not None:
             item["interpreter"] = declared_interpreter
+        if dependencies:
+            item["local_dependencies"] = dependencies
+        if queries:
+            item["dependency_queries"] = queries
         if superseded is not None:
             item["supersedes_withdrawal"] = {
                 "published_unix": superseded.get("published_unix"),
@@ -19430,7 +19487,7 @@ class PoolQueue:
             **addressing,
         }
         for field in ("max_attempts", "retry_safe", "container_owner",
-                      "container_images"):
+                      "container_images", "interpreter", "local_dependencies", "dependency_queries"):
             if record.get(field) is not None:
                 arguments[field] = record[field]
         residency = record.get("residency")
@@ -20297,6 +20354,19 @@ class PoolQueue:
                         self.record_denial(item, "interpreter_not_present", {
                             "interpreter": declared_interpreter})
                         continue
+                try:
+                    dependencies = local_dependencies.normalize(item.get("local_dependencies", {}))
+                    if local_dependencies.TAG in (item.get("tags") or []) and not dependencies:
+                        raise ValueError(f"{local_dependencies.TAG} requires local_dependencies")
+                    missing_dependencies = local_dependencies.missing(
+                        dependencies, local_dependencies.observe(dependencies))
+                except (ValueError, OSError) as exc:
+                    self.record_denial(item, "local_dependencies_unavailable", {"error": str(exc)})
+                    continue
+                if missing_dependencies:
+                    self.record_denial(item, "local_dependency_not_present",
+                                       {"paths": missing_dependencies})
+                    continue
                 declared_images = item.get("container_images")
                 item_tags = item.get("tags")
                 if (not declared_images and isinstance(item_tags, list)

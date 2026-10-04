@@ -2517,13 +2517,28 @@ miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
   `--out=<path>`, quoted command strings, and colon-separated path lists. New
   submissions from non-Git directories refuse: there is no mutable-path
   override. The command executable is resolved exactly from argv[0] and the
-  declared `PATH`. An executable outside the repository and shared storage
-  retains the submitting host's tag; an absent executable refuses unless an
-  explicit tag names the worker class that owns it. Other direct argv and
-  caller-environment paths receive a conservative lexical screen, not a claim
-  that PrismaBuild can parse shell/application indirection. `--tag` explicitly
-  assigns those dependencies to a worker class; `--anywhere` explicitly
-  asserts that they are portable. The normalized effective tags are sealed in
+  declared PATH. Pool defaults from a declared gb10 member, or GPU work from
+  celestia, use gb10 only when every active class member in the fleet roster
+  has a fresh offer positively answering every local dependency (#1511).
+  An absent executable still refuses. The full direct argv and caller-environment
+  screen runs before class selection; repository/shared paths remain portable.
+  Missing, stale, incomplete or old-generation dependency evidence retains the
+  host pin with a notice naming why. The existing queue chooses by load.
+  Class-default requirements are sealed as `local_dependencies`, projected
+  onto the row and fenced by `local-dependency-v1`. The offer lookup extends
+  the named-interpreter mechanism with executable/path answers; it primes only
+  PB's default bash and configured worker Python, then answers the ready rows'
+  sealed `dependency_queries` on every box. Queries from a conservative host
+  pin are advisory, not homogeneity proof. Claim rechecks required paths before
+  spending an attempt. This proves presence, not byte/toolchain equivalence or
+  protection against deletion after the check. Venv invocation paths are not
+  collapsed to their system-Python symlink targets. The screen cannot parse
+  shell/application indirection: `--tag` assigns those dependencies to a
+  worker class; `--anywhere` asserts all-worker portability. Explicit tags
+  and `--here` retain precedence; `--anywhere` with either still refuses.
+  Pool measurements keep existing exclusivity, platform/toolchain identity
+  and implicit host pin unless `--host-class` is explicit.
+  The normalized effective tags are sealed in
   action params, so a receipt produced for one placement conjunction cannot
   answer an otherwise identical submission constrained to another. Workers
   continue to understand

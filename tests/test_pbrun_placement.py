@@ -2113,3 +2113,196 @@ def test_a_tag_no_other_box_offers_today_is_not_called_exclusive(tmp_path) -> No
     assert "match only this box" not in notice
     assert "gb10" in notice
     assert f"--tag {HOST}" in notice           # the submission that IS exclusive
+
+
+@pytest.fixture
+def class_submission(tmp_path, monkeypatch):
+    """Exercise the CLI/sealing boundary with private, declared class offers."""
+    import socket
+    checkout = _git_checkout(tmp_path)
+    fleet = tmp_path / "fleet"
+    queue = pool_module.PoolQueue(fleet / "pb-queue")
+    roster = tmp_path / "fleet_boxes.json"
+    roster.write_text(json.dumps({"boxes": {
+        "spark-a": {"args": ["--class", "gb10"]},
+        "spark-old": {"_alias": "spark-b", "args": ["--class", "gb10"]},
+    }}))
+    monkeypatch.setattr(pbrun, "FLEET_ROSTER_PATH", roster, raising=False)
+    monkeypatch.setattr(pbrun, "SH", fleet)
+    monkeypatch.setattr(pbrun, "RUNTIME_ROOT", PUBLISHED_RUNTIME)
+    monkeypatch.setattr(pbrun, "CONTAINER_WRAPPER_DIR", fleet / "repo" / "tools")
+    sealed = []
+    real_seal = core_module.seal_action
+
+    class StopAfterSeal(Exception):
+        pass
+
+    def capture(body):
+        sealed.append(real_seal(body))
+        raise StopAfterSeal
+
+    monkeypatch.setattr(pbrun.pb, "seal_action", capture)
+
+    def submit(command, *, host="spark-a", flags=(), answers=None, omit=()):
+        for member in ("spark-a", "spark-b"):
+            if member in omit:
+                continue
+            queue.announce(host=member, tags=["gb10", member, "interpreter-path-v1",
+                                             "local-dependency-v1"], has_gpu=True,
+                           capacity={"cpu": 8, "mem_gb": 32, "gpu": 1},
+                           interpreters=[command[0]] if command[0].startswith("/") else [])
+            record = queue.root / "workers" / f"{member}.json"
+            value = json.loads(record.read_text())
+            value["local_dependencies"] = (answers or {}).get(member, {})
+            record.write_text(json.dumps(value))
+        monkeypatch.setattr(socket, "gethostname", lambda: host)
+        monkeypatch.setattr(sys, "argv", ["pbrun.py", "--cwd", str(checkout),
+                                         *flags, "--", *command])
+        with pytest.raises(StopAfterSeal):
+            pbrun.main()
+        return sealed[-1]
+    return submit, tmp_path
+
+
+@pytest.mark.parametrize("case", ["bash", "venv", "host-only", "here", "celestia-gpu"])
+def test_default_class_cli_cases(class_submission, capsys, case):
+    submit, root = class_submission
+    executable = root / "venv" / "bin" / "python"
+    executable.parent.mkdir(parents=True)
+    executable.write_bytes(b"test executable")
+    executable.chmod(0o755)
+    command = ["bash", "-c", "true"] if case == "bash" else [str(executable), "-V"]
+    path = str(Path("/bin/bash").resolve()) if case == "bash" else str(executable)
+    answers = {member: {path: "executable"} for member in ("spark-a", "spark-b")}
+    if case == "host-only":
+        answers["spark-b"][path] = "absent"
+    action = submit(command, answers=answers,
+                    host="celestia" if case == "celestia-gpu" else "spark-a",
+                    flags=["--here"] if case == "here" else ["--gpu"] if case == "celestia-gpu" else [])
+    assert action["params"]["placement"]["required_tags"] == (
+        ["spark-a"] if case in ("host-only", "here") else ["gb10", "local-dependency-v1"])
+    if case == "host-only":
+        notice = capsys.readouterr().err
+        assert path in notice and "spark-b" in notice and "absent" in notice
+
+
+@pytest.mark.parametrize("source", ["argv", "environment"])
+def test_class_default_screens_all_declared_paths(class_submission, source):
+    submit, root = class_submission
+    missing = str(root / "missing-input.bin")
+    flags = ["--env", "INPUT=" + missing] if source == "environment" else []
+    command = ["bash", "-c", "true", *([missing] if source == "argv" else [])]
+    bash = str(Path("/bin/bash").resolve())
+    with pytest.raises(SystemExit, match="external path absent"):
+        submit(command, flags=flags, answers={member: {bash: "executable"}
+                                            for member in ("spark-a", "spark-b")})
+
+
+def test_incomplete_class_evidence_keeps_host_pin(class_submission, capsys):
+    submit, _ = class_submission
+    bash = str(Path("/bin/bash").resolve())
+    action = submit(["bash", "-c", "true"], omit=["spark-b"],
+                    answers={"spark-a": {bash: "executable"}})
+    assert action["params"]["placement"]["required_tags"] == ["spark-a"]
+    assert "spark-b" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("flags,expected", [(["--tag", "x86"], ["x86"]),
+    (["--tag", "gb10", "--here"], ["gb10", "spark-a"]), (["--anywhere"], [])])
+def test_explicit_placement_precedes_class_default(class_submission, flags, expected):
+    submit, _ = class_submission
+    action = submit(["bash", "-c", "true"], flags=flags)
+    assert action["params"]["placement"]["required_tags"] == expected
+
+
+
+@pytest.mark.parametrize("source,present", [("argv", True), ("argv", False),
+                                             ("environment", True), ("environment", False)])
+def test_class_default_includes_direct_dependency_evidence(class_submission, capsys, source, present):
+    submit, root = class_submission
+    dependency = root / "input.bin"
+    dependency.write_text("input")
+    bash = str(Path("/bin/bash").resolve())
+    answers = {member: {bash: "executable", str(dependency): "path"}
+               for member in ("spark-a", "spark-b")}
+    if not present:
+        answers["spark-b"][str(dependency)] = "absent"
+    command = ["bash", "-c", "true", *([str(dependency)] if source == "argv" else [])]
+    flags = ["--env", "INPUT=" + str(dependency)] if source == "environment" else []
+    action = submit(command, flags=flags, answers=answers)
+    assert action["params"]["placement"]["required_tags"] == (
+        ["gb10", "local-dependency-v1"] if present else ["spark-a"])
+    if present:
+        assert action["params"]["local_dependencies"][str(dependency)] == "path"
+    else:
+        notice = capsys.readouterr().err
+        assert str(dependency) in notice and "spark-b" in notice
+
+
+def test_venv_symlink_requires_the_invoked_venv(class_submission, capsys):
+    submit, root = class_submission
+    python = root / "venv" / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    python.symlink_to(sys.executable)
+    system = str(Path(sys.executable).resolve())
+    # System Python exists on both boxes, but that is not the venv contract.
+    action = submit([str(python), "-V"], answers={
+        member: {system: "executable"} for member in ("spark-a", "spark-b")})
+    assert action["params"]["placement"]["required_tags"] == ["spark-a"]
+    assert str(python) in capsys.readouterr().err
+
+
+def test_class_default_native_cli_smoke(tmp_path, monkeypatch):
+    """Real changed CLI -> private queue -> native worker -> verified CAS payload.
+
+    Offers model two class members. Execution is CPU-only on the admitted host;
+    this is not a live two-Spark or GPU qualification.
+    """
+    import socket
+    work = _git_checkout(tmp_path)
+    fleet = tmp_path / "fleet"
+    roster = tmp_path / "roster.json"
+    roster.write_text(json.dumps({"boxes": {
+        name: {"args": ["--class", "gb10"]} for name in ("spark-a", "spark-b")}}))
+    queue = pool_module.PoolQueue(fleet / "pb-queue")
+    bash = str(Path("/bin/bash").resolve())
+    for member in ("spark-a", "spark-b"):
+        queue.announce(host=member, tags=["gb10", member, "local-dependency-v1"],
+                       has_gpu=False, capacity={"cpu": 1, "mem_gb": 4})
+        offer_path = queue.root / "workers" / f"{member}.json"
+        offer = json.loads(offer_path.read_text())
+        offer["local_dependencies"] = {bash: "executable"}
+        offer_path.write_text(json.dumps(offer))
+    monkeypatch.setattr(pbrun, "FLEET_ROSTER_PATH", roster, raising=False)
+    monkeypatch.setattr(pbrun, "SH", fleet)
+    monkeypatch.setattr(pbrun, "RUNTIME_ROOT", PUBLISHED_RUNTIME)
+    monkeypatch.setattr(socket, "gethostname", lambda: "spark-a")
+    monkeypatch.setattr(sys, "argv", ["pbrun.py", "--cwd", str(work), "--detach", "--",
+                                     "bash", "-c", "printf placement-native-ok"])
+    assert pbrun.main() == 0
+    rows = queue.ready_items()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["tags"] == ["gb10", "local-dependency-v1"]
+    assert row["local_dependencies"] == {bash: "executable"}
+    # Only the isolated fixture's runtime address is bound here. The real
+    # source worker executes; no bridge publication, stub or live queue edit.
+    row["worker_script"] = str(Path(__file__).resolve().parents[1] / "tools" / "prismabuild_worker.py")
+    pool_module._write_json_atomic(queue.item_path(pool_module.READY, row["action_key"]), row)
+    item = queue.claim(tags=["gb10", "local-dependency-v1"], has_gpu=False,
+                       capacity={"cpu": 1, "mem_gb": 4})
+    assert item is not None
+    outcome = queue.execute(item, heartbeat_s=0.05)
+    assert outcome["status"] == "executed" and outcome["returncode"] == 0
+    queue.finish(item["action_key"], status=outcome["status"], detail=outcome, claim_snapshot=item)
+    cas = core_module.PrismaBuildCAS(fleet / "cas")
+    action = cas.read_action_request(row["action_key"])
+    assert action is not None
+    receipt = cas.lookup(action)
+    assert receipt is not None
+    payload = cas.result_path(receipt, action).read_text()
+    assert "placement-native-ok" in payload
+    print(json.dumps({"native_cli_smoke": {"key": row["action_key"], "tags": row["tags"],
+        "execution": "CPU-only on the admitted host; synthetic class offers", "python": sys.executable,
+        "receipt": receipt, "payload": payload, "terminal": outcome}}, sort_keys=True))
+
