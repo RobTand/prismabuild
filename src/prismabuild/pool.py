@@ -149,6 +149,7 @@ from . import materialize, cpu_topology
 from . import adaptive_cpu as cpu_admission
 from . import adaptive_gpu as gpu_admission
 from . import container_images as image_inventory
+from . import dependency_digest
 from . import residency_map
 from . import storage_tiers
 from . import box_capacity
@@ -5759,6 +5760,8 @@ class PoolQueue:
         container_class_verdict: Mapping[str, object] | None = None,
         interpreters: Sequence[str] | None = None,
         interpreters_absent: Sequence[str] | None = None,
+        dependency_files: Sequence[str] | None = None,
+        dependency_files_absent: Sequence[str] | None = None,
         state: str | None = None,
         drain_owner: str | None = None,
         drain_reason: str | None = None,
@@ -5917,6 +5920,16 @@ class PoolQueue:
             # with a notice rather than a deadlock.
             record["interpreters_absent"] = sorted(
                 {str(p) for p in interpreters_absent})
+        if dependency_files is not None:
+            # The digest-contract answers (#1495): the requirement paths this
+            # poll's ready rows name, statted on this box.  Present-and-empty
+            # is an answer; a field absent entirely is an older loop, which
+            # is unknown and therefore not capable.
+            record["dependency_files"] = sorted(
+                {str(p) for p in dependency_files})
+        if dependency_files_absent is not None:
+            record["dependency_files_absent"] = sorted(
+                {str(p) for p in dependency_files_absent})
         if state is not None:
             record["state"] = str(state)
         if drain_owner is not None:
@@ -6011,6 +6024,15 @@ class PoolQueue:
                 declared_interpreter, str):
             raise PoolContractError(
                 "pool item interpreter must be an absolute path string")
+        declared_requirements = item.get("requires_files")
+        if declared_requirements is not None and (
+                not isinstance(declared_requirements, list) or any(
+                    not isinstance(entry, dict)
+                    or not isinstance(entry.get("path"), str)
+                    for entry in declared_requirements)):
+            raise PoolContractError(
+                "pool item requires_files must be a list of entries "
+                "naming a path")
         demand = self.demand_of(item)
         needs_gpu = bool(item.get("needs_gpu")) or demand.get("gpu", 0) > 0
         matches: list[Mapping[str, object]] = []
@@ -6042,6 +6064,16 @@ class PoolQueue:
                 if not isinstance(offered_paths, list) or \
                         declared_interpreter not in {
                             str(entry) for entry in offered_paths}:
+                    continue
+            if declared_requirements:
+                # The same positive-evidence rule for digest-pinned
+                # dependencies (#1495): an offer that has not answered for a
+                # required path is unknown, and unknown is not capable.
+                answered = offer.get("dependency_files")
+                if not isinstance(answered, list) or any(
+                        str(entry.get("path")) not in {
+                            str(path) for path in answered}
+                        for entry in declared_requirements):
                     continue
             capacity = offer.get("capacity") or {}
             # A kind the offer does not MENTION is unknown, not zero.  The
@@ -6105,6 +6137,49 @@ class PoolQueue:
                 # absent beside a silent box is unknown (#1266 review r2).
                 unanimous_absent = False
         return "absent" if unanimous_absent else "unknown"
+
+    def dependency_placement_verdict(
+            self, item: Mapping[str, object], *,
+            max_age_s: float = OFFER_TIMEOUT_S,
+    ) -> str:
+        """Whether a row's digest-pinned dependencies are answered anywhere.
+
+        The requirement shape of ``interpreter_placement_verdict`` for
+        digest-pinned dependencies (#1495): asked over the offers that could
+        run ``item`` otherwise (tags, GPU, images, demand, interpreter) and
+        carry ``DEPENDENCY_DIGEST_TAG``.  ``"unknown_capability"`` -- no
+        recorded offer carries the tag at all, which for this contract is a
+        refusal, not a notice: a fleet that cannot see the requirement will
+        never claim the row, and unlike a first *path* submission there is no
+        first use that has to publish.  ``"present"`` wins anywhere;
+        ``"absent"`` is a unanimous answer naming the paths missing; anything
+        else is ``"unknown_paths"`` -- a capable box has not answered for the
+        path yet, the first-submission case the claim gate guards (#1266).
+        """
+
+        eligible = self._matching_offers(
+            {name: value for name, value in item.items()
+             if name != "requires_files"},
+            live=self.offers(max_age_s=max_age_s))
+        capable = [
+            offer for offer in eligible
+            if dependency_digest.DEPENDENCY_DIGEST_TAG in {
+                str(t) for t in (offer.get("tags") or [])}]
+        if not capable:
+            return "unknown_capability"
+        requirements = item.get("requires_files") or []
+        paths = {str(entry.get("path")) for entry in requirements}
+        unanimous_absent = True
+        for offer in capable:
+            answers = offer.get("dependency_files")
+            if isinstance(answers, list) and paths <= {
+                    str(entry) for entry in answers}:
+                return "present"
+            missing = offer.get("dependency_files_absent")
+            if not (isinstance(missing, list) and paths <= {
+                    str(entry) for entry in missing}):
+                unanimous_absent = False
+        return "absent" if unanimous_absent else "unknown_paths"
 
     def placeable(
         self, item: Mapping[str, object], *, max_age_s: float = OFFER_TIMEOUT_S
@@ -6390,6 +6465,7 @@ class PoolQueue:
         container_owner: str | None = None,
         container_images: Sequence[str] | None = None,
         interpreter: str | None = None,
+        requires_files: Sequence[Mapping[str, object]] | None = None,
         preempted_claim: Mapping[str, object] | None = None,
         handoff_by: str | None = None,
         residency: Mapping[str, object] | None = None,
@@ -6478,6 +6554,17 @@ class PoolQueue:
                     "interpreter must be an absolute path to an executable "
                     f"(got {interpreter!r})")
             declared_interpreter = interpreter
+        declared_requirements: list[dict] | None = None
+        if requires_files is not None:
+            # Validated here for the same reason the interpreter is: the row
+            # projection must already be the shape the claim gate reads, so a
+            # direct producer cannot publish a requirement the claim would
+            # have to treat as malformed (#1495).
+            try:
+                declared_requirements = (
+                    dependency_digest.validate_requirements(requires_files))
+            except ValueError as exc:
+                raise PoolContractError(f"requires_files: {exc}") from exc
         # Every declaration check is a precondition, ahead of the first side
         # effect below: a publication this method refuses must not have
         # retired a live withdrawal, created a directory or answered an
@@ -6513,6 +6600,18 @@ class PoolQueue:
                 f"{pb.INTERPRETER_TAG} requires an interpreter; an item may "
                 "not require the declared-interpreter capability without "
                 "naming one")
+        if declared_requirements is not None:
+            # The same ride (#714 shape): a loop from before this contract
+            # offers neither the tag nor the claim check, so a row whose
+            # dependencies it cannot see must be unclaimable by it, not
+            # merely risky to hand it (#1495).
+            normalized_tags = normalize_placement_tags(
+                [*normalized_tags, dependency_digest.DEPENDENCY_DIGEST_TAG])
+        elif dependency_digest.DEPENDENCY_DIGEST_TAG in normalized_tags:
+            raise PoolContractError(
+                f"{dependency_digest.DEPENDENCY_DIGEST_TAG} requires "
+                "requires_files; an item may not require the "
+                "dependency-digest capability without naming any")
         if image_refs:
             # The capability the claim check rides must travel with the
             # requirement, never be forgotten by a producer: a box that does
@@ -6944,6 +7043,11 @@ class PoolQueue:
             item["container_images"] = image_refs
         if declared_interpreter is not None:
             item["interpreter"] = declared_interpreter
+        if declared_requirements is not None:
+            # The claim-relevant projection of the sealed params (#1495):
+            # what a claim gate reads, no more -- the full capability
+            # selection travels in the action's own command.
+            item["requires_files"] = declared_requirements
         if superseded is not None:
             item["supersedes_withdrawal"] = {
                 "published_unix": superseded.get("published_unix"),
@@ -20307,6 +20411,11 @@ class PoolQueue:
         #: a dead hint still pays for the full proof under the key's lock.
         dead_input_hints: dict[str, tuple[str, dict[str, object] | None]] = {}
         interpreter_cache: dict[str, bool] = {}
+        #: Digest-pinned dependency answers, one stat and one hash per
+        #: distinct path per pass (#1495), the interpreter_cache shape: the
+        #: claim gate reads the actual bytes once, whatever passes over it.
+        requirement_present_cache: dict[str, bool] = {}
+        requirement_digest_cache: dict[str, str | None] = {}
         for item in ready:
             key = str(item.get("action_key", ""))
             held_back = withheld_for is not None and (
@@ -20492,8 +20601,65 @@ class PoolQueue:
                         self.record_denial(item, "interpreter_not_present", {
                             "interpreter": declared_interpreter})
                         continue
-                declared_images = item.get("container_images")
+                declared_requirements = item.get("requires_files")
                 item_tags = item.get("tags")
+                if (not declared_requirements and isinstance(item_tags, list)
+                        and dependency_digest.DEPENDENCY_DIGEST_TAG
+                        in item_tags):
+                    # A record this pool did not write (publish refuses the
+                    # pair) that requires the capability but states no
+                    # requirement.  Fail closed: an unstated requirement is
+                    # not an absent one.
+                    self.record_denial(item, "dependency_requirement_missing", {
+                        "tags": item_tags,
+                    })
+                    continue
+                if declared_requirements is not None:
+                    # The claim gate for digest-pinned dependencies (#1495):
+                    # one stat then one hash per distinct path per pass, so
+                    # the bytes a row pins are read before the attempt is
+                    # spent, on the box about to spend it.  The observation
+                    # is the owner module's, the same one the shard's own
+                    # preflight runs -- the claim and the preflight cannot
+                    # disagree about what a drift is.  Nothing here imports
+                    # or executes the pinned bytes.
+                    try:
+                        dependency_digest.validate_requirements(
+                            declared_requirements)
+                    except ValueError as exc:
+                        self.record_denial(item, "malformed_requires_files", {
+                            "error": str(exc)})
+                        continue
+                    paths = [str(entry["path"])
+                             for entry in declared_requirements]
+                    missing = [path for path in paths if not
+                               requirement_present_cache.setdefault(
+                                   path, os.path.isfile(path))]
+                    if missing:
+                        self.record_denial(item, "dependency_not_present", {
+                            "paths": missing})
+                        continue
+                    denial: tuple[str, dict] | None = None
+                    for entry in declared_requirements:
+                        path = str(entry["path"])
+                        if path not in requirement_digest_cache:
+                            requirement_digest_cache[path] = (
+                                dependency_digest.claim_digest(path))
+                        observed = requirement_digest_cache[path]
+                        if observed is None:
+                            denial = ("dependency_unreadable",
+                                      {"path": path})
+                            break
+                        if observed != entry["sha256"]:
+                            denial = ("dependency_digest_mismatch",
+                                      {"path": path,
+                                       "expected": entry["sha256"],
+                                       "observed": observed})
+                            break
+                    if denial is not None:
+                        self.record_denial(item, denial[0], denial[1])
+                        continue
+                declared_images = item.get("container_images")
                 if (not declared_images and isinstance(item_tags, list)
                         and pb.CONTAINER_IMAGE_TAG in item_tags):
                     # A record this pool did not write (publish refuses the
