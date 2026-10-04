@@ -163,9 +163,23 @@ def _finish_retirement(descriptor: int, path: Path) -> None:
         os.close(directory)
 
 
+def canonical(path: Path) -> Path:
+    """The one name every taker of this lock is serialized under.
+
+    Aliased paths -- a symlinked component, a redundant ``.`` -- must reach
+    one key, one per-thread mutex and one descriptor, or two threads of this
+    process could each open the inode and the first close would drop the
+    process's lock.  The parent is resolved; the leaf name is kept.
+    """
+
+    path = Path(path)
+    return path.parent.resolve() / path.name
+
+
 @contextmanager
 def held(path: Path, *, blocking: bool = True,
-         busy: dict[str, object] | None = None):
+         busy: dict[str, object] | None = None,
+         canonicalized: bool = False):
     """Yield acquisition status, with same-thread nesting and crash release.
 
     POSIX locks are process-scoped: serialize threads before opening the inode
@@ -187,9 +201,17 @@ def held(path: Path, *, blocking: bool = True,
     known (always for a thread of this process; for another process only
     when ``F_GETLK`` names one, see :func:`_conflicting_pid`).  It stays
     empty when the lock was taken (#1115).
+
+    ``canonicalized``, when true, vouches that ``path`` already *is*
+    :func:`canonical`, so taking the lock performs no name resolution.  A
+    caller that resolves its lock path once, in its own context, keeps a
+    stalled lookup out of the critical section it is about to hold; the
+    key is the same string every unvouched taker resolves to, so exclusion,
+    nesting and retirement are unchanged.
     """
     path = Path(path)
-    path = path.parent.resolve() / path.name
+    if not canonicalized:
+        path = canonical(path)
     key = str(path)
     with _registry:
         mutex = _threads.setdefault(key, threading.RLock())
@@ -265,8 +287,7 @@ def retire(path: Path) -> str:
     kept, with the reason.
     """
 
-    path = Path(path)
-    path = path.parent.resolve() / path.name
+    path = canonical(path)
     key = str(path)
     with _registry:
         mutex = _threads.setdefault(key, threading.RLock())

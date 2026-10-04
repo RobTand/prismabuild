@@ -3817,8 +3817,9 @@ def _guarded_mutation(*, blocking: bool):
     to free between the free listing and the holder listing is missed by
     both, and the overstated headroom reissues a dead name with no backing
     -- then a claimant takes the phantom before the same apply's retire
-    can trim it (#733 R6).  Host ledgers carry no guard and behave exactly
-    as before.
+    can trim it (#733 R6). Host ledgers use their existing reservation
+    owner's permanent mutation lock, including direct ResourceLedger
+    construction, so foreign recovery and admission cannot bypass it.
 
     ``blocking=False`` is the admission shape: the caller declines with
     its existing unavailable vocabulary instead of waiting (only
@@ -3828,11 +3829,11 @@ def _guarded_mutation(*, blocking: bool):
     dropped.  A contended non-blocking guard returns ``None`` from the
     wrapped call.
 
-    Every ``ResourceLedger`` mutator -- including the pending
-    ``transfer_tokens`` extension (PR748), which must add the blocking
-    guard on integration -- takes this.  Readers take nothing.  Internal
-    helpers that assume the caller holds the guard say so; they take
-    nothing themselves.
+    Every token mutator takes this. Readers take nothing by themselves:
+    a check-and-reserve caller must retain ``_mutation_locked`` across
+    its authoritative census, decision and begin/commit or rollback.
+    Internal helpers that assume the caller holds the guard say so; they
+    take nothing themselves.
     """
 
     def decorator(fn):
@@ -3869,22 +3870,22 @@ class ResourceLedger:
     """Per-host capacity, held as tokens that are acquired by ``rename``.
 
     Capacity is expressed as *countable* tokens rather than as a number in a
-    file that everyone read-modify-writes, because this queue has exactly one
-    concurrency primitive it trusts on NFS -- ``rename`` -- and a ledger that
-    needed a second one would be a ledger with a second failure mode.  One
+    file that everyone read-modify-writes. Token movement uses ``rename``;
+    the existing owner mutation exclusion makes multi-step census and
+    transition decisions atomic among cooperating writers. One
     token is one indivisible unit of a resource (``gpu`` is a device, ``mem_gb``
     is a gigabyte), so acquiring is renaming N of them out of ``free/`` and
     releasing is renaming them back.  A worker that dies holding tokens is
     recovered by the same reaper that recovers its claim, since the tokens are
     filed under the action key.
 
-    Capacity is grown but never shrunk here: removing a token that another
-    process holds is not expressible as a rename, and a box whose capacity
-    dropped mid-flight is a configuration change, not a queue operation.
+    Mint rights are permanent, while free capacity can be retired without
+    revoking a live holder. Explicit held-token retirement remains an owner
+    operation; a lower declared capacity alone never releases live work.
     """
 
     def __init__(self, root: str | Path, host: str | None = None, *,
-                 mutation_guard=None) -> None:
+                 mutation_guard=None, tier_census: bool = False) -> None:
         self.root = Path(root)
         self.host = host or socket.gethostname()
         self.last_token_shortage: dict[str, object] | None = None
@@ -3892,34 +3893,53 @@ class ResourceLedger:
         # census was exact (#936; see report_census).
         self.last_census_report: dict[str, object] | None = None
         # Optional ``(*, blocking: bool) -> context manager`` yielding the
-        # acquisition status.  Set only by PoolQueue.tier_ledger (the
-        # tier's mint lock); host ledgers keep None and no new behavior.
-        # The guard is chosen by the explicit factory, never by sniffing
-        # the host/tier name.
+        # acquisition status. PoolQueue.tier_ledger supplies its mint lock;
+        # otherwise every host constructor uses the reservation-owner lock.
+        # Census/cache purpose is explicit and independent of exclusion,
+        # never inferred from a host/tier name or guard presence.
         self._mutation_guard = mutation_guard
+        self._tier_census = tier_census
+        # The host reservation-owner lock is canonicalized once, here, in
+        # the constructing caller's own context: taking the exclusion later
+        # must never resolve the shared ledger base, so a stalled lookup
+        # cannot run inside a host admission section (the AdmissionGate
+        # stays outer and short).  The canonical name is the string every
+        # resolver of the lock file reaches, so aliased paths still share
+        # one key, one inode and one descriptor.
+        self._mutation_lock = (
+            None if mutation_guard is not None
+            else posix_lock.canonical(self.base / ".mutation.lock"))
 
     def _mutation_locked(self, *, blocking: bool = True):
-        """The ledger's mutation exclusion, or a no-op for host ledgers."""
+        """Retain the same owner exclusion every token mutator uses.
 
+        Same-thread nesting through another ledger instance keeps the outer
+        POSIX descriptor. Capacity callers hold this continuously through the
+        decision and reservation/rollback, not for two matching snapshots.
+        Host AdmissionGate, when used, is outer; this section never acquires
+        that gate, a transition/ownership lock, or another ledger's lock.
+        No payload I/O is performed under this exclusion.  The host owner
+        lock path was canonicalized at construction, so acquiring it
+        performs no name resolution and a stalled lookup cannot park a
+        sibling behind the admission gate.
+        """
         if self._mutation_guard is None:
-            return nullcontext(True)
+            return posix_lock.held(self._mutation_lock, blocking=blocking,
+                                   canonicalized=True)
         return self._mutation_guard(blocking=blocking)
 
     def _strict_census(self) -> bool:
         """Whether this ledger refuses to mint from a partial view.
 
-        Tier ledgers built by :meth:`PoolQueue.tier_ledger` (guard
-        present) enumerate their grow/reclaim census error-visibly and
-        abort the mint/reissue on any census error; host ledgers keep
-        the legacy tolerant scans.  The fork is by explicit factory,
-        never by name.
+        Tier ledgers built by :meth:`PoolQueue.tier_ledger` enumerate
+        their grow/reclaim census error-visibly and abort the mint/reissue
+        on any census error; host ledgers keep the legacy tolerant scans.
+        The fork is by explicit factory purpose, never by name or locking.
         """
-
-        return self._mutation_guard is not None
+        return self._tier_census
 
     def _names_reader(self) -> Callable[[Path], frozenset[str]] | None:
-        """The existing cycle reader only for explicitly guarded tier ledgers."""
-
+        """The existing cycle reader only for the explicit tier purpose."""
         return _TIER_LEDGER_NAMES.get() if self._strict_census() else None
 
     def _scan_names(self, directory: Path, *, strict: bool = False,
@@ -4125,20 +4145,10 @@ class ResourceLedger:
         has free and held tokens and no markers, so the first call creates a
         marker for each token it finds and leaves the totals alone.
 
-        Adoption is a scan, so it inherits the scan's blind spot: a union of
-        ``free/`` and ``held/`` is missable in either order, by a concurrent
-        release in one and a concurrent acquire in the other.  A token missed
-        by adoption is minted a second time here, and that residual duplicate
-        is *transient rather than permanent*, which is the property that makes
-        it tolerable: the duplicate can only be the free copy of a name whose
-        real token is held, and ``release`` renames a held token onto
-        ``free/<name>``, replacing it.  The two copies therefore collapse to
-        one the moment the holder finishes, without anything ever removing a
-        token a holder is using.  An earlier revision of this fix tried to
-        remove the duplicate on sight by inode; that reintroduced exactly the
-        check-then-act over a set a concurrent rename mutates that the markers
-        exist to retire, and it could take a token a second claimant had
-        already acquired.
+        Adoption and minting retain the ledger's mutation exclusion across
+        both scans and the creates. A cooperating release, acquire or
+        transfer cannot hide a token between them. Mixed generations that
+        do not share this owner exclusion are not qualified.
 
         Ordering note for the one window that remains: a process killed between
         the marker create and the token create loses that index until an
@@ -4203,8 +4213,8 @@ class ResourceLedger:
                 if held:
                     # Adoption did not see it, but a holder has it: the marker
                     # now accounts for that token and nothing is minted.  The
-                    # check is a scan and can still miss, which is what the
-                    # docstring's transient duplicate is.
+                    # owner exclusion keeps cooperating token moves out of
+                    # this adoption/mint decision.
                     continue
                 try:
                     descriptor = os.open(
@@ -4675,8 +4685,8 @@ class ResourceLedger:
         it leaves, because a caller that never receives the handle has no way to
         return the tokens itself.
 
-        On a guarded (tier) ledger the take runs under the tier's mint
-        lock, non-blocking: a contended guard returns ``None`` exactly
+        The take runs under the host-owner or tier-mint lock,
+        non-blocking: a contended guard returns ``None`` exactly
         like a shortage, and the tier claim path reports its existing
         ``tier_reservation_unavailable`` -- never a wait on admission,
         never a new vocabulary.
@@ -4831,8 +4841,8 @@ class ResourceLedger:
         the file would delete a token with no retire and no marker, and the
         short count instead makes the caller fail closed.
 
-        On a guarded (tier) ledger the move completes under the tier's
-        mint lock: a contended commit waits rather than reporting success
+        The move completes under the host-owner or tier-mint lock:
+        a contended commit waits rather than reporting success
         it did not earn, and the exact count still fails the caller
         closed on a swept handle.
         """
@@ -4955,11 +4965,10 @@ class ResourceLedger:
         never valid names.  Returns moved+already count; short vs
         ``len(set(names))`` is unknown-retain for the caller.
 
-        The existing tier mutation guard covers every rename, so concurrent
+        The existing owner mutation guard covers every rename, so concurrent
         capacity census cannot miss a token moving between holders. The
-        blocking guard completes the ownership transition; host ledgers
-        retain their no-op guard. Concurrent exclusion qualification remains
-        part of this candidate's pending integration checks.
+        blocking guard completes the ownership transition on host and tier
+        ledgers alike.
         """
 
         if not from_key or not to_key or from_key == to_key:
@@ -5018,8 +5027,8 @@ class ResourceLedger:
     def abandon_acquire(self, handle: str) -> int:
         """Return a claimant's own private tokens.  Its tokens, nothing else.
 
-        On a guarded (tier) ledger the return completes under the tier's
-        mint lock; a count short of the handle is retained for the stale
+        The return completes under the host-owner or tier-mint lock;
+        a count short of the handle is retained for the stale
         sweep, never reported as freed.
         """
 
@@ -5032,23 +5041,31 @@ class ResourceLedger:
         already decided the action is its own.  ``claim`` does not use it: the
         rename that decides ownership sits between the two halves.
 
-        On a guarded (tier) ledger this is two leaf lock operations --
-        a non-blocking begin, then a blocking commit -- which is the
-        accepted shape: the begin declines rather than waits, and the
-        commit completes under the lock.  The private handle between
-        them is recovered by the stale sweep and fail-closed by the
-        commit count, as before.
+        The caller retains the owner exclusion across both halves instead of
+        racing the leaves separately.  A host contender therefore waits its
+        rename-length turn rather than losing the acquisition to the
+        non-blocking begin: eight contenders for three free tokens still win
+        three, because contention is decided by tokens, never by the lock
+        race.  A tier mint lock keeps the non-blocking take at the composed
+        call -- declining as unavailable exactly like its begin -- because
+        its sections can span a reclaim census.  A declined begin still
+        leaves nothing held; a failed commit is still recovered by the
+        stale sweep and fail-closed by the commit count, as before.
         """
 
-        handle = self.begin_acquire(action_key, demand)
-        if handle is None:
-            return False
-        wanted = sum(int(v) for v in demand.values() if int(v) > 0)
-        if self.commit_acquire(action_key, handle) < wanted:
-            self.abandon_acquire(handle)
-            self.release(action_key)
-            return False
-        return True
+        with self._mutation_locked(
+                blocking=self._mutation_guard is None) as acquired:
+            if not acquired:
+                return False
+            handle = self.begin_acquire(action_key, demand)
+            if handle is None:
+                return False
+            wanted = sum(int(v) for v in demand.values() if int(v) > 0)
+            if self.commit_acquire(action_key, handle) < wanted:
+                self.abandon_acquire(handle)
+                self.release(action_key)
+                return False
+            return True
 
     @_guarded_mutation(blocking=True)
     def sweep_stale_acquisitions(
@@ -11512,6 +11529,13 @@ class PoolQueue:
         _write_json_atomic(self.lease_path(action_key), lease)
 
     def ledger(self, host: str | None = None) -> ResourceLedger:
+        """Host tokens share the reservation owner's reentrant mutation lock.
+
+        Direct ResourceLedger construction uses the same lock. A caller
+        deciding capacity must hold ``ledger._mutation_locked`` through
+        reservation or rollback; acquiring the CPU AdmissionGate, if any,
+        precedes that section. Host reads never borrow the tier name cache.
+        """
         return ResourceLedger(self.root / RESERVATIONS, host=host)
 
     # -- storage tiers (#583) --------------------------------------------
@@ -11537,8 +11561,9 @@ class PoolQueue:
         grow/shrink, egress decharge, stale-handle sweep, and the grant
         ``acquire`` in :meth:`_reserve_fence_locked` -- serializes against
         the reclaim headroom scan.  Callers need no per-site locking; the
-        factory attaches the guard.  Host ledgers from :meth:`ledger`
-        carry no guard.  Deployment note: workers without this guard
+        factory attaches the guard and explicit tier census/cache purpose.
+        Host ledgers use a distinct reservation-owner mutation lock.
+        Deployment note: workers without this guard
         (older generations) admit outside the exclusion, so mixed-version
         operation can still overissue -- see the quiescence requirement
         on :meth:`_reclaim_dead_markers`.
@@ -11550,7 +11575,7 @@ class PoolQueue:
             return self.tier_mint_lock(checked, blocking=blocking)
 
         return ResourceLedger(self.root / TIER_RESERVATIONS, host=checked,
-                              mutation_guard=_tier_guard)
+                              mutation_guard=_tier_guard, tier_census=True)
 
     def tier_mint_lock(self, tier_id: str, *, blocking: bool = True):
         """Serialize the minters of one tier's capacity, never other tiers.

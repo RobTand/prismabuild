@@ -5689,8 +5689,8 @@ far: the role's own host-local singleton refuses the second minter at
 startup (exit 3), so stop the role first or run the cycle on another box.
 
 Since #733 R6 the same per-tier mint lock is the cache-tier mutation
-exclusion, attached by the explicit `PoolQueue.tier_ledger` factory (host
-ledgers carry none): every token rename through a tier ledger -- claim
+exclusion, attached by the explicit `PoolQueue.tier_ledger` factory.
+Every token rename through a tier ledger -- claim
 begin (non-blocking, declining as `tier_reservation_unavailable`),
 commit/abandon/transfer/release (blocking, completing under the lock),
 mint grow/shrink, egress decharge, stale-handle sweep, and the grant
@@ -5711,6 +5711,41 @@ new tier-admitted workloads until worker AND storage roles converge
 (root reviews the actual publication). No bounded-overshoot exception:
 above-wanted credit from an unguarded interleaving is unbacked at every
 prefix even when a later retire would trim it.
+
+**Host reservation-owner exclusion (#1484, source contract).** Host ledgers
+also serialize every token mutator, using the permanent POSIX lock
+`reservations/<host>/.mutation.lock` inside the existing owner. Both
+`PoolQueue.ledger` and direct `ResourceLedger` construction take the same
+exclusion; foreign recovery therefore cannot bypass a capacity decision.
+`begin_acquire` declines nonblocking contention. Commit/abandon, every
+release and transfer variant, grow/shrink, retirement and stale-private
+acquisition return wait and complete under that owner. Same-thread nesting
+through another ledger instance retains the original POSIX descriptor.
+The composed `acquire` retains the same exclusion across its begin and
+commit halves: a host contender waits its rename-length turn instead of
+losing the acquisition to the non-blocking begin, so genuine concurrent
+capacity is decided by tokens, never by the lock race, while a tier mint
+lock keeps the non-blocking decline at the composed take. The host lock
+path is canonicalized once, at ledger construction: taking the exclusion
+never resolves the shared ledger base, so a stalled lookup cannot run
+inside a host admission section.
+
+The #1483 validator holds `ledger._mutation_locked(blocking=False)`
+continuously across its fresh authoritative capacity census, decision and
+physical reservation begin/commit or rollback. Two equal snapshots are not
+an exclusion or an ABA proof. When CPU `AdmissionGate` applies, it is outer;
+no mutation section acquires that gate, a transition/ownership parent, or
+another ledger owner. The exclusion does not span payload I/O. Private
+acquisitions stay charged throughout their separate begin/commit lifecycle.
+
+Locking is separate from census/cache purpose: only the explicit
+`tier_census=True` factory selects tier grow/reclaim refusal and the existing
+tier directory-name cache. Host legacy readers stay fresh with their prior
+error/report semantics; they are not complete filesystem-capacity proof.
+The sole validator supplies that fresh error-visible proof separately.
+This source contract is necessary, not all-used-filesystem qualification,
+a positive DL offer, a materialization credit, or deployment authority.
+Mixed generations not sharing the host mutation exclusion remain unqualified.
 
 **Bandwidth figures name their side.** The token, the demand key and the tier
 record all read `fill_mb_s_pool_side`, because a file-side rate and a pool-side
@@ -8487,7 +8522,8 @@ shared identity fields, since `batch_namespace` is projection-only (the
 record's closed schema carries no such field). The renamed claim re-checks
 the same agreement.
 Transfer uses the accepted tier mutation guard (`_guarded_mutation`,
-blocking; host ledgers no-op). Writer (744) MUST include the reference for
+blocking); host transfers use their reservation-owner lock. Writer (744) MUST
+include the reference for
 every output mover via `build_produced_output_batch_ref` (omission yields
 legacy treatment).
 Publication derives the projection from the CAS-filed request (contradictory
