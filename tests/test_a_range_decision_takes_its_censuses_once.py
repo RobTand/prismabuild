@@ -459,11 +459,15 @@ def test_a_partial_created_during_a_scan_is_reported_and_not_kept(
 
     monkeypatch.setattr(os, "scandir", scan)
     entry = {"bytes": SIZE, "sha256": NEW_DIGEST}
-    assert publisher.try_adopt(entry, destinations[0]) is None, (
-        "the scan that saw the creation must report the partial")
+    assert publisher.try_adopt(entry, destinations[0]) is not None, (
+        "the raced partial names another entry; this name is free")
+    # A scan the directory moved during is never kept under the pre-scan
+    # stamp -- nothing sits between the next name and a fresh listing.
+    remembered = getattr(publisher, "_range_partials", {})
+    assert remembered.get(os.path.normpath(target)) is None, (
+        "the raced listing must not be remembered")
     assert publisher.try_adopt(entry, destinations[1]) is None, (
-        "a scan the directory moved during is never kept: the next name "
-        "lists again and sees it too")
+        "the next name lists again and sees the partial")
     # One fresh listing per decision -- the raced listing was not kept.
     assert counted.listings == 2, counted.listings
     assert all(path.read_bytes() == NEW for path in destinations)
