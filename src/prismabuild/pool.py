@@ -20673,8 +20673,12 @@ class PoolQueue:
                             # measurement waits for. Holding it back would let
                             # a producer with no declared deadline wait on its
                             # own spool exports forever (#1419 review).
+                            # A running elected measurement is not such an
+                            # incumbent: its own dependents keep the existing
+                            # ``funded_by`` rule below (#982).
                             serves_incumbent = (isinstance(dependent_owner, str)
-                                                and dependent_owner in ledger.held_keys())
+                                                and dependent_owner in ledger.held_keys()
+                                                and dependent_owner not in census["elections"])
                             if serves_incumbent:
                                 census_blocked = None
                             if census_blocked is not None and dependent_owner != census_blocked["action_key"]:
