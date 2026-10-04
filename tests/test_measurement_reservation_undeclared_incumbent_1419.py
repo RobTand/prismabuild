@@ -184,6 +184,7 @@ def _non_action_holder_keeps_the_bounded_episode(fleet, hold):
     deadlock against the holder's own lower-priority consumers. The bounded
     episode lapses as on main and lower-priority work runs."""
     queue, clock, readings, sample, publish, tick, claim, denial = fleet
+    assert claim() is None  # an empty pass mints the host's capacity tokens
     holder = hold(queue)
     assert queue.ledger("sparklina").held_keys() == [holder]
     assert not queue.item_path(pool.CLAIMED, holder).exists()
