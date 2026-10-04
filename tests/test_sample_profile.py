@@ -231,6 +231,129 @@ def test_pbrun_seals_the_flag_only_when_it_is_given(tmp_path: Path):
     assert "sample" in parser_flags
 
 
+# -- the sealed sample rate (#1494) -----------------------------------------
+
+
+def test_a_sample_rate_seals_a_different_action(tmp_path: Path):
+    """Two rates are two measurements, so they are two actions."""
+
+    plain = _action(tmp_path, profile="sample")
+    ten = _action(tmp_path, profile="sample:10")
+    hundred = _action(tmp_path, profile="sample:100")
+    assert len({plain["action_key"], ten["action_key"],
+                hundred["action_key"]}) == 3
+    assert ten["params"]["profile"] == "sample:10"
+
+
+def test_a_positive_rate_binds_a_copy_and_leaves_the_registry_alone():
+    """One action's rate must not become the next action's default."""
+
+    registered = pb.PROFILE_BACKENDS["sample"]
+    bound = registered.bind("10")
+    assert bound is not registered
+    assert bound.rate_hz == 10
+    assert registered.bind("10") is not bound, "each bind is its own copy"
+    assert registered.rate_hz == pb.PROFILE_SAMPLE_RATE_HZ
+    assert registered.bind(None) is registered, "bare sample binds nothing"
+
+
+@pytest.mark.parametrize("option", ["1", "10", "100", "99999"])
+def test_the_bound_rate_is_what_launch_argv_names(option: str, tmp_path: Path):
+    """The sealed number, not the default, is the ``--rate`` py-spy gets."""
+
+    bound_argv = pb.PROFILE_BACKENDS["sample"].bind(option).launch_argv(
+        ["/bin/true"], profile_path=tmp_path / "p.json")
+    bare_argv = pb.PROFILE_BACKENDS["sample"].launch_argv(
+        ["/bin/true"], profile_path=tmp_path / "p.json")
+    assert bound_argv[bound_argv.index("--rate") + 1] == option
+    assert bare_argv[bare_argv.index("--rate") + 1] == str(
+        pb.PROFILE_SAMPLE_RATE_HZ)
+
+
+@pytest.mark.parametrize("text", [
+    "sample:abc", "sample:0", "sample:-1", "sample:10.5", "sample:100000",
+    "sample:010", "sample:+10", "sample:1e3", "sample: 10",
+])
+def test_a_malformed_or_nonpositive_rate_is_refused_at_the_client(text: str):
+    """A rate nothing can serve is refused before anything is sealed."""
+
+    with pytest.raises(pb.ProfileBackendUnavailable):
+        pb.parse_profile_mode(text)
+
+
+def test_the_rate_refusal_names_the_field_and_the_remedy():
+    with pytest.raises(pb.ProfileBackendUnavailable) as raised:
+        pb.PROFILE_BACKENDS["sample"].bind("0")
+    message = str(raised.value)
+    assert "sample rate" in message
+    assert "sample:10" in message
+
+
+def test_a_refused_rate_never_reaches_an_action_launch(tmp_path: Path):
+    """The same rule the client runs refuses the action at its validation."""
+
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout, profile="sample:0")
+    with pytest.raises(pb.LocalActionError) as raised:
+        pb.run_local_action(
+            action, cas_root=tmp_path / "cas", checkout_root=checkout)
+    assert "sample:0" in str(raised.value)
+
+
+def test_the_ending_reports_the_rate_the_action_asked_for(tmp_path: Path):
+    """``rate_hz`` in the record is the bound rate, not the class default."""
+
+    bound_backend = pb.PROFILE_BACKENDS["sample"].bind("10")
+    bound_backend._version = "py-spy 0.4.2"
+    bound = pb._ProfileSession(
+        mode="sample", backend=bound_backend, directory=tmp_path / "scratch")
+    assert bound.identity()["rate_hz"] == 10
+    bare_backend = pb.PySpyProfileBackend()
+    bare_backend._version = "py-spy 0.4.2"
+    bare = pb._ProfileSession(
+        mode="sample", backend=bare_backend,
+        directory=tmp_path / "scratch-bare")
+    assert bare.identity()["rate_hz"] == pb.PROFILE_SAMPLE_RATE_HZ
+
+
+def test_concurrent_actions_bind_independently():
+    """Two simultaneous bindings take different rates without crossing."""
+
+    registered = pb.PROFILE_BACKENDS["sample"]
+    results: dict[str, int] = {}
+    errors: list[BaseException] = []
+
+    def bind(name: str, option: str) -> None:
+        try:
+            bound = registered.bind(option)
+            # Whichever way the threads interleave, the registry instance
+            # never carries a bound rate and each thread reads its own.
+            assert registered.rate_hz == pb.PROFILE_SAMPLE_RATE_HZ
+            assert bound is not registered
+            results[name] = bound.rate_hz
+        except BaseException as exc:  # recorded below, then asserted
+            errors.append(exc)
+
+    threads = [threading.Thread(target=bind, args=("ten", "10")),
+               threading.Thread(target=bind, args=("hundred", "100"))]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert errors == []
+    assert results == {"ten": 10, "hundred": 100}
+    assert registered.rate_hz == pb.PROFILE_SAMPLE_RATE_HZ
+
+
+def test_pbrun_help_names_the_rate_option(tmp_path: Path):
+    parser_flags = subprocess.run(
+        [sys.executable, str(REPOSITORY / "tools" / "fleet" / "pbrun.py"), "--help"],
+        capture_output=True, text=True, cwd=tmp_path,
+    ).stdout
+    assert "sample:HZ" in parser_flags
+
+
 # -- the worker's contract with a backend -----------------------------------
 
 
