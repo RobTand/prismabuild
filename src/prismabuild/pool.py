@@ -841,6 +841,9 @@ _RESIDENCY_KEYS = frozenset({
     "range_start_bytes", "range_end_bytes", "leads",
 })
 PASSES = "passes"
+#: Pass sidecars one ``sweep_orphan_passes`` call may inspect (#1498): the
+#: backlog drains over successive sweeps without parking a loop on the mount.
+ORPHAN_PASSES_SWEEP_LIMIT = 256
 CLAIM_DENIALS = "claim-denials.json"
 CLAIM_DENIALS_SCHEMA_V1 = "prismabuild.claim_denials.v1"
 #: Per-ledger report of holders a census could not read (#936): written by
@@ -9246,6 +9249,68 @@ class PoolQueue:
                 continue
             rows.append({"action_key": key, "pruned": True, "reason": why})
         return rows
+
+    def sweep_orphan_passes(self, *, limit: int = ORPHAN_PASSES_SWEEP_LIMIT) -> list[str]:
+        """Retire concluded keys' pass sidecars that carry no election (#1498).
+
+        Every measurement census reads every ``passes/`` sidecar, because a
+        canonical election lives there and absence of its row is not
+        retirement. Withdrawal never removed a sidecar and a late
+        ``record_pass`` can recreate one after the claim removed it, so the
+        directory grew to ~2,900 concluded keys -- ~100/day, toward the 4,096
+        census record cap -- and a census on a GB10 NFS client took 3-5 s of
+        its 5 s budget reading them, which kept the host-local reader fence
+        busy for every admission on the box.
+
+        Only a sidecar that cannot be authority goes: its key has a terminal
+        or withdrawal record and is neither READY nor CLAIMED, re-checked
+        under the key's transition lock (taken non-blocking, as the reaper
+        does; ``record_pass`` and ``elect`` write under that same lock), and
+        its bytes carry no ``measurement_reservation`` field at all -- valid,
+        retired or malformed, an election is kept. Unreadable or foreign
+        records are kept. Losing a counter only restarts that key's aging,
+        exactly as a successful claim already does. At most ``limit``
+        concluded sidecars are inspected per call; failures are per row.
+        """
+
+        from . import _measurement_reservation as measurement_reservation
+        pruned: list[str] = []
+        try:
+            with os.scandir(self.root / PASSES) as entries:
+                names = sorted(entry.name for entry in entries)
+        except OSError:
+            return pruned
+        inspected = 0
+        for name in names:
+            if inspected >= limit:
+                break
+            key = name[: -len(".json")]
+            if not name.endswith(".json") or not _is_hex64(key):
+                continue
+            path = self.passes_path(key)
+            try:
+                if (self.item_path(READY, key).exists()
+                        or self.item_path(CLAIMED, key).exists()):
+                    continue
+                if not any(self.item_path(state, key).exists()
+                           for state in (DONE, FAILED, WITHDRAWN)):
+                    continue
+                inspected += 1
+                with self._transition_locked(key, blocking=False) as acquired:
+                    if not acquired:
+                        continue
+                    if (self.item_path(READY, key).exists()
+                            or self.item_path(CLAIMED, key).exists()):
+                        continue
+                    record = _read_json(path)
+                    if (record is None or record.get("action_key") != key
+                            or measurement_reservation.FIELD in record):
+                        continue
+                    path.unlink()
+            except (OSError, PoolContractError):
+                continue
+            pruned.append(key)
+        return pruned
 
     def sweep_consumer_events(
         self, live_keys: "set[str] | frozenset[str]", *, now: float | None = None,
@@ -26422,6 +26487,7 @@ class PoolQueue:
 
         if self._sweep_due():
             self.reap_stale()
+            self.sweep_orphan_passes()
         item = self.claim(tags=tags, has_gpu=has_gpu, capacity=capacity,
                           cpu_tiers=cpu_tiers, adaptive_cpu=adaptive_cpu,
                           ready=ready, observed_images=observed_images,

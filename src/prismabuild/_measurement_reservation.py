@@ -14,6 +14,7 @@ import math
 import os
 from pathlib import Path
 import stat
+import time
 from typing import TYPE_CHECKING
 
 from . import adaptive_cpu, core, local_scratch
@@ -29,6 +30,11 @@ READ_BUDGET_S = 5.0
 MAX_RECORDS = 4096
 MAX_RECORD_BYTES = 4 * 1024 * 1024
 MAX_FENCE_BYTES = 4096
+#: How long a census waits for a sibling loop's fence before it refuses as
+#: "reader busy" (#1498). Taken before any M key or H, so a waiter holds
+#: nothing a holder needs; a holder never waits on a waiter.
+FENCE_WAIT_S = 2.0
+FENCE_POLL_S = 0.02
 
 
 class CensusUnavailable(RuntimeError):
@@ -233,10 +239,21 @@ class CensusReader:
             if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
                     or info.st_nlink != 1 or info.st_mode & 0o077):
                 raise CensusUnavailable("unsafe local census fence lock")
-            try:
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                raise CensusUnavailable("measurement census reader busy") from None
+            # Bounded wait, not an instant refusal (#1498): every loop on a
+            # box censuses each candidate, so a nonblocking fence turned one
+            # sibling's census into this candidate's denial. The waiter holds
+            # only its own candidate key, never M or H, and still refuses once
+            # FENCE_WAIT_S passes; nothing is read without the fence.
+            waited = reader.Deadline(FENCE_WAIT_S)
+            while True:
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    remaining = waited.remaining()
+                    if remaining is None or remaining <= 0:
+                        raise CensusUnavailable("measurement census reader busy") from None
+                    time.sleep(min(FENCE_POLL_S, remaining))
             marker = self.directory / self.name
             previous = _read(marker, optional=True, limit=MAX_FENCE_BYTES)
             if previous is not None:
