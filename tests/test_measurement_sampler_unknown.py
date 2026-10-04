@@ -195,8 +195,15 @@ def test_silence_restart_and_recovery_preserve_the_original_deadline(
     assert claim(q=restarted) is None, "fresh recovery bypassed holder isolation"
     recovered = denial(measurement)["evidence"]["withhold"]
     assert recovered["drain_until_unix"] == original
-    assert recovered["withhold"] is (clock[0] < original)
+    # Canonical election survives the old opportunity deadline (#1435):
+    # telemetry recovery does not retire it or renew its original clock.
+    assert recovered["withhold"] is True
     assert recovered["why"] == (
-        "measurement_drain_expired" if recover_after_expiry else "draining_for_measurement")
+        "measurement_reservation_waiting" if recover_after_expiry
+        else "draining_for_measurement")
+    if recover_after_expiry:
+        assert recovered["selection"]["host"] == "sparklina"
+        assert recovered["selection"]["action_key"] == measurement
+        assert recovered["selection"]["opportunity_unix"] == original
     assert queue.item_path(pool.READY, measurement).exists()
     assert set(queue.ledger().held_keys()) == {holder, backfill}
