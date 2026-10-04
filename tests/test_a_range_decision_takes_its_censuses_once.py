@@ -345,6 +345,84 @@ def test_a_claim_that_appears_mid_range_is_seen_by_the_next_name(
         "the covered name's bytes are never replaced")
 
 
+def test_a_pin_gaining_a_ref_between_names_is_read_by_the_second_name(
+        fleet, monkeypatch: pytest.MonkeyPatch) -> None:  # noqa: F811
+    """Each name parses the pin again, even if descriptor versions alias.
+
+    Acquire adds a real ref to the same pin between the two decisions.
+    Its atomic rewrite normally changes the inode; here the descriptor
+    version is held constant to guard against a publisher-lifetime parse
+    memo returning. The second decision must validate the new ref, not
+    merely keep blocking on the first ref it remembered.
+    """
+
+    queue, stage, _cas = fleet
+    destinations = _campaign_range(stage, 2)
+    _dead_owner(fleet, destinations)
+    pinned = destinations[1]
+    consumer, mover = _terminal_pair(queue, stage, pinned)
+    kwargs = dict(
+        consumer_action_key=consumer,
+        attempt={"nonce": "n1", "scope_id": "s1"}, tier_id=base.TIER,
+        epoch="", span={"start_bytes": SIZE, "end_bytes": 2 * SIZE},
+        holder={"host": "fixture", "pid": os.getpid()},
+        covers=[{"mover_action_key": mover, "manifest_sha256": "a" * 64}])
+    first = reader_lease.acquire(queue, acquire_token="first", **kwargs)
+    assert first.get("ok"), first
+    pin_path = (reader_lease.leases_root(queue) / consumer
+                / f"{first['pin_id']}.lease.json")
+    version = os.stat(pin_path)
+    real_fstat = os.fstat
+
+    class AliasedVersion:
+        def __init__(self, info):
+            self.info = info
+            for name in ("st_dev", "st_ino", "st_size",
+                         "st_mtime_ns", "st_ctime_ns"):
+                setattr(self, name, getattr(version, name))
+
+        def __getattr__(self, name):
+            return getattr(self.info, name)
+
+    def fstat(fd):
+        info = real_fstat(fd)
+        if os.readlink(f"/proc/self/fd/{fd}") == str(pin_path):
+            return AliasedVersion(info)
+        return info
+
+    parsed_refs: list[set[str]] = []
+    real_validate = reader_lease.validate_pin
+
+    def validate(pin):
+        checked = real_validate(pin)
+        if checked["pin_id"] == first["pin_id"]:
+            parsed_refs.append(set(checked["refs"]))
+        return checked
+
+    monkeypatch.setattr(os, "fstat", fstat)
+    monkeypatch.setattr(reader_lease, "validate_pin", validate)
+    copier = base._key()
+    publisher = base._publisher(fleet, copier, base._key())
+    written, digest, _identity_ = _replace(publisher, destinations[0], copier)
+    assert (written, digest) == (SIZE, NEW_DIGEST)
+    assert {first["ref_id"]} in parsed_refs, parsed_refs
+
+    second = reader_lease.acquire(queue, acquire_token="second", **kwargs)
+    assert second.get("ok"), second
+    assert second["pin_id"] == first["pin_id"]
+    assert second["ref_id"] != first["ref_id"]
+    parsed_refs.clear()  # Observe the publisher, not acquire's validation.
+
+    with pytest.raises(stage_move._PublicationRefused) as refused:
+        _replace(publisher, pinned, copier)
+    assert "every owner has ended, but it is live-pinned by" in str(refused.value)
+    assert {first["ref_id"], second["ref_id"]} in parsed_refs, (
+        "the second name must read the ref gained since the first name",
+        parsed_refs)
+    assert destinations[0].read_bytes() == NEW
+    assert pinned.read_bytes() == OLD
+
+
 def test_a_disabled_fence_reads_fresh_per_name_and_never_the_hint(
         fleet, monkeypatch: pytest.MonkeyPatch) -> None:  # noqa: F811
     """Where the fence cannot hold, every name reads fresh -- #1208's rule.
