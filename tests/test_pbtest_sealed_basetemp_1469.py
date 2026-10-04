@@ -63,7 +63,11 @@ def _checkout(tmp_path: Path, source: str, name: str = "checkout") -> Path:
 
 
 def _dispatch(tmp_path: Path, monkeypatch, extra: list[str]) -> list[str]:
-    """Run one shard's worth of dispatch and return the pbrun argv it built."""
+    """Run one shard's worth of dispatch and return the pbrun argv it built.
+
+    The stand-in Popen patch is scoped to the dispatch, so a test may call
+    this repeatedly and still run real subprocesses afterwards.
+    """
 
     checkout = _checkout(tmp_path, "def test_one():\n    assert True\n")
     calls: list[list[str]] = []
@@ -78,14 +82,15 @@ def _dispatch(tmp_path: Path, monkeypatch, extra: list[str]) -> list[str]:
         calls.append(command)
         return FinishedProcess()
 
-    monkeypatch.setattr(pbtest.subprocess, "Popen", popen)
-    monkeypatch.setattr(pbtest, "RUNTIME_ROOT", PUBLISHED_RUNTIME)
-    monkeypatch.setattr(
-        sys, "argv",
-        ["pbtest.py", "--checkout", str(checkout), "--python", "/target/python",
-         "--shards", "1", *extra, "tests"],
-    )
-    assert pbtest.main() == 0
+    with monkeypatch.context() as scoped:
+        scoped.setattr(pbtest.subprocess, "Popen", popen)
+        scoped.setattr(pbtest, "RUNTIME_ROOT", PUBLISHED_RUNTIME)
+        scoped.setattr(
+            sys, "argv",
+            ["pbtest.py", "--checkout", str(checkout), "--python",
+             "/target/python", "--shards", "1", *extra, "tests"],
+        )
+        assert pbtest.main() == 0
     assert len(calls) == 1
     return calls[0]
 
@@ -269,11 +274,14 @@ def test_xdist_children_remain_under_the_action_root(
         ["--basetemp", str(root), "--workers-per-shard", "2"])
     records = _records(root)
     assert len(records) == 2
-    derived = {scratch.parent for scratch in records}
+    # Each xdist worker numbers its own popen-gw directory under the one
+    # derived leaf, so the workers' common ancestor is the action root.
+    derived = {scratch.parent.parent for scratch in records}
     assert len(derived) == 1
     namespace = next(iter(derived)).relative_to(root).parts
     assert namespace == (TEST_ACTION_KEY, TEST_ACTION_NONCE, "pytest")
     for scratch in records:
+        assert scratch.parent.name.startswith("popen-gw")
         assert scratch.is_relative_to(next(iter(derived)))
         assert (scratch / "sentinel").read_text() == "kept"
 
@@ -299,6 +307,7 @@ def test_simultaneous_shards_and_attempts_cannot_delete_each_other(
     # so a second run of the same actions is a second attempt.
     identities: list[tuple[str, str]] = []
     assigned: list[int] = []
+    actual_popen = subprocess.Popen
 
     def with_identity(command, **kwargs):
         index = len(assigned)
@@ -379,9 +388,7 @@ def test_unusable_basetemp_fails_before_pytest(
             requested.write_text("not a directory")
         case = tmp_path / f"case-{kind}"
         case.mkdir()
-        # The stand-in patch must not reach the real subprocess.run below.
-        with monkeypatch.context() as scoped:
-            command = _dispatch(case, scoped, ["--basetemp", str(requested)])
+        command = _dispatch(case, monkeypatch, ["--basetemp", str(requested)])
         checkout = case / "checkout"
         (checkout / "tests" / "test_one.py").write_text(MARKER_TEST)
         payload, environment = admitted_child(command)
@@ -429,8 +436,7 @@ def test_missing_action_identity_refuses_before_pytest(
 
     root = tmp_path / "qualified"
     root.mkdir()
-    with monkeypatch.context() as scoped:
-        command = _dispatch(tmp_path, scoped, ["--basetemp", str(root)])
+    command = _dispatch(tmp_path, monkeypatch, ["--basetemp", str(root)])
     checkout = tmp_path / "checkout"
     (checkout / "tests" / "test_one.py").write_text(MARKER_TEST)
     payload, environment = admitted_child(command)

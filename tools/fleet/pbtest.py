@@ -47,7 +47,7 @@ import subprocess
 import sys
 import threading
 import time
-from pathlib import Path
+from pathlib import Path, PurePath
 
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
 from runtime_paths import (  # noqa: E402
@@ -842,7 +842,92 @@ raise SystemExit(load("pbtest_outcomes").main(
 """
 
 
+#: The worker-only source a sealed ``--basetemp`` executes before anything
+#: else (#1469).  The coordinator never runs it and never needs the root to
+#: exist; the worker refuses an unusable root here, before pytest, rather
+#: than letting a qualification problem surface mid-run.  ``@ROOT@`` becomes
+#: the sealed root.
+BASETEMP_PROGRAM = """\
+import os as _pb_os
+import stat as _pb_stat
+import sys as _pb_sys
+import tempfile as _pb_tempfile
+import uuid as _pb_uuid
+
+
+def _pb_refuse(reason):
+    raise SystemExit("pbtest: cannot use requested --basetemp: " + reason)
+
+
+_pb_root = @ROOT@
+_pb_key = _pb_os.environ.get("PRISMABUILD_ACTION_KEY", "")
+if not _pb_key or "/" in _pb_key or _pb_key in (".", ".."):
+    _pb_refuse(
+        "the worker did not provide a safe PRISMABUILD_ACTION_KEY, so the "
+        "action-owned namespace cannot be derived")
+_pb_attempt = _pb_os.environ.get("PRISMABUILD_ACTION_NONCE", "")
+if _pb_attempt:
+    if len(_pb_attempt) != 32 or any(
+            character not in "0123456789abcdef" for character in _pb_attempt):
+        _pb_refuse(
+            "PRISMABUILD_ACTION_NONCE is not a 32-hex attempt identity")
+else:
+    # No launcher-provided attempt identity on this lane: mint one per
+    # execution, so a second attempt of the same action key never shares a
+    # namespace -- pytest deletes its basetemp, and the wipe must stay
+    # inside this attempt's own directory.
+    _pb_attempt = _pb_uuid.uuid4().hex
+# A relative root is confined to this attempt's own materialized checkout,
+# which is the shard's working directory.
+_pb_root = _pb_os.path.abspath(_pb_root)
+try:
+    _pb_stat_result = _pb_os.lstat(_pb_root)
+except OSError as _pb_exc:
+    _pb_refuse(f"{_pb_root} ({_pb_exc})")
+if _pb_stat.S_ISLNK(_pb_stat_result.st_mode):
+    _pb_refuse(
+        f"{_pb_root} is a symlink; the sealed root is the real directory "
+        "or nothing")
+if not _pb_stat.S_ISDIR(_pb_stat_result.st_mode):
+    _pb_refuse(f"{_pb_root} is not a directory")
+if _pb_stat_result.st_uid != _pb_os.geteuid():
+    _pb_refuse(
+        f"{_pb_root} is owned by uid {_pb_stat_result.st_uid}, not this "
+        f"action's uid {_pb_os.geteuid()}")
+# pytest receives the action-owned leaf, never the sealed root itself:
+# pytest deletes its basetemp at startup, and the sealed root belongs to
+# every attempt of the action, not to this one.
+_pb_derived = _pb_os.path.join(_pb_root, _pb_key, _pb_attempt, "pytest")
+try:
+    _pb_os.makedirs(_pb_derived, exist_ok=True)
+    with _pb_tempfile.TemporaryFile(dir=_pb_derived):
+        pass
+except (OSError, ValueError) as _pb_exc:
+    _pb_refuse(f"{_pb_derived} ({_pb_exc})")
+# The pair goes after the collection JSON (sys.argv[1]) and before the
+# trailing file arguments pbtest_outcomes checks the argv tail against.
+_pb_sys.argv[2:2] = ["--basetemp", _pb_derived]
+"""
+
+
+def basetemp_preamble(root: str) -> str:
+    """The worker source that proves a sealed basetemp and derives its leaf.
+
+    Returned source executes at the top of the shard program, before the
+    dependency guard and before pytest (#1469): the worker refuses a root
+    that is missing, not a directory, a symlink, or not owned by the
+    action's user -- no fallback -- then inserts the derived
+    ``ROOT/<action-key>/<attempt>/pytest`` as pytest's ``--basetemp``.  The
+    root is never passed to pytest itself, because pytest deletes its
+    basetemp at startup, and the sealed root belongs to every attempt of
+    the action, not to this one.
+    """
+
+    return BASETEMP_PROGRAM.replace("@ROOT@", repr(root))
+
+
 def shard_entry(python: str, checkout: Path, *, tmpdir: str | None = None,
+                basetemp: str | None = None,
                 trace: bool = False, collection: bool = False) -> list[str]:
     """The argv that runs a shard's pytest under the outcome recorder.
 
@@ -866,6 +951,12 @@ def shard_entry(python: str, checkout: Path, *, tmpdir: str | None = None,
         sources["pbtest_pins"] = here.with_name("pbtest_pins.py").read_text()
     program = SHARD_PROGRAM.replace("@SOURCES@", repr(sources)).replace(
         "@COLLECTION@", repr(collection))
+    if basetemp is not None:
+        # The derivation runs before every other guard: it is the worker's
+        # refusal point for an unusable or unowned sealed root (#1469), and
+        # the sealed root travels inside this program, so a different root
+        # is a different sealed request.
+        program = basetemp_preamble(basetemp) + program
     if tmpdir is not None:
         # Explicit scratch placement must refuse on the worker rather than let
         # tempfile silently choose another filesystem. The default entry stays
@@ -903,6 +994,25 @@ def summary_count(summary: str, word: str) -> int:
 
     match = re.search(rf"(?:^|[ =,])(\d+) {re.escape(word)}\b", summary)
     return int(match.group(1)) if match else 0
+
+
+def validate_basetemp(root: str) -> None:
+    """The spelling checks a sealed basetemp must satisfy (#1469).
+
+    A worker-visible scratch need not exist on the submitting box, so
+    existence, kind and ownership are the worker's preflight; here only
+    values that could never be a safe sealed root refuse, before any shard
+    is sealed.  An absolute root may name a separately qualified mounted
+    filesystem; a relative root is confined to the attempt's own
+    materialized checkout, so both spellings are sealable.
+    """
+
+    if not root:
+        raise ValueError("--basetemp must be a nonempty path")
+    if "\0" in root:
+        raise ValueError("--basetemp must not contain NUL")
+    if any(part == ".." for part in PurePath(root).parts):
+        raise ValueError("--basetemp must not traverse: no '..' in the root")
 
 
 #: Summary parts that are not outcomes, though the same line prints them.
@@ -1140,6 +1250,17 @@ def main() -> int:
     ap.add_argument("--tmpdir", default=None,
                     help="absolute scratch directory on eligible TARGET workers; "
                          "default /home/rob/tmp (not checked on the coordinator)")
+    ap.add_argument("--basetemp", default=None,
+                    help="sealed scratch root for pytest's own temporary files "
+                         "(#1469), separate from --tmpdir: the worker derives "
+                         "<root>/<action-key>/<attempt>/pytest and hands that "
+                         "to pytest --basetemp, never the sealed root itself "
+                         "(pytest deletes its basetemp). Absolute roots may "
+                         "name a separately qualified filesystem; relative "
+                         "roots live in the attempt's materialized checkout. "
+                         "Refused when empty, NUL-bearing or traversing; the "
+                         "worker refuses a symlink, non-directory or unowned "
+                         "root before pytest, with no fallback")
     ap.add_argument("--tag", action="append", default=[],
                     help="additional placement constraint; CPU default is portable, GPU is gb10")
     ap.add_argument("--shards", type=int, default=20,
@@ -1263,6 +1384,8 @@ def main() -> int:
                              "so its path can be sealed into claim-time eligibility")
         if args.tmpdir is not None and not Path(args.tmpdir).is_absolute():
             raise ValueError("--tmpdir must be an absolute worker-visible path")
+        if args.basetemp is not None:
+            validate_basetemp(args.basetemp)
         if args.mem_gb < 1:
             raise ValueError("--mem-gb must be at least 1")
         require_gpu_memory_scope(gpu_memory_gb=args.gpu_memory_gb,
@@ -1391,6 +1514,7 @@ def main() -> int:
     # their existing commands and identities.
     try:
         python_entry = shard_entry(args.python, checkout, tmpdir=args.tmpdir,
+                                   basetemp=args.basetemp,
                                    trace=pbtest_outcomes.TRACE_OPTION in pytest_args,
                                    collection=True)
     except OSError as exc:
