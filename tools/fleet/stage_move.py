@@ -1672,15 +1672,15 @@ class _StagedPublisher:
         # ``stage_release._claimed_paths`` derives a claimed range mover's
         # staged paths from its sealed request and its data manifest, both
         # immutable under their digests -- so once derived for a claim key
-        # the answer cannot go stale, and a memo may keep it for as long as
-        # this publisher runs, not just for one call.  What is *not*
-        # memoized, by the memo's own contract, is the claim listing and
-        # each claim record: ``_claimed_paths`` reads both fresh on every
-        # call, so a claim that appears, ends or changes since the last
-        # check is still seen at once -- the memo only skips re-deriving
-        # paths for a claim it has already seen unchanged.  Imported here,
-        # not at module scope, because ``stage_release`` imports from this
-        # module (see :meth:`_live_claim_cover`'s own deferred import).
+        # the answer cannot go stale, and a memo may keep it for as long
+        # as this publisher runs, not just for one call.  What the memo
+        # never remembers is a claim's listing or its record: those the
+        # range decision reads once, at the census (#1028), and the next
+        # range decision reads them again -- a claim that appears, ends or
+        # changes since this range's census is seen by the next one, not
+        # by a later name of this range.  Imported here, not at module
+        # scope, because ``stage_release`` imports from this module (see
+        # :meth:`_live_claim_cover`'s own deferred import).
         # Every copy worker thread shares one publisher and can reach
         # ``_live_claim_cover`` concurrently.  No lock is taken around the
         # census: ``_claimed_paths`` touches this memo only through single
@@ -1690,6 +1690,26 @@ class _StagedPublisher:
         # would serialize every worker's check behind them.
         from stage_release import _CensusMemo
         self._claim_memo = _CensusMemo()
+        #: The range decision's censuses (#1028): the pin, claim and
+        #: in-flight-partial evidence a per-name decision consumes, taken
+        #: once for this publisher's range -- one mover, one window -- at
+        #: the first decision that needs it, not once per name and not
+        #: once per publish poll.  Built without any lock but this one
+        #: (plain reads of ``leases/``, ``claimed/`` and each range
+        #: directory); guarded by ``_range_lock`` because every copy
+        #: worker thread shares one publisher.
+        self._range_lock = threading.Lock()
+        #: ``(owners, tainted)`` as :func:`reader_lease.live_for` returned
+        #: them for every pinned stage path.
+        self._range_pins: tuple[dict[str, list[str]], list[str]] | None = None
+        #: The claimed staged paths, normalized against this stage root,
+        #: with ``_claimed_paths``' taints; ``None`` until read.
+        self._range_claims: tuple[frozenset[str], list[str]] | None = None
+        #: The claim authority's unavailable message, when it has none.
+        self._range_claims_note: str | None = None
+        #: Each range directory's ``.partial`` names, listed once,
+        #: ``None`` for a directory that could not be read.
+        self._range_partials: dict[str, tuple[str, ...] | None] = {}
 
     @contextmanager
     def _ownership(self):
@@ -2589,14 +2609,102 @@ class _StagedPublisher:
                 f"shared staged name unattributed, deferring: {destination}",
                 PUBLISH_WAIT_UNATTRIBUTED)
 
-    def _live_pins(self, norm: str) -> list[str] | None:
-        """Pin ids live on one staged path, or None when unknowable."""
+    def _range_pin_census(self) -> tuple[dict[str, list[str]], list[str]]:
+        """Every live pin, read once for this range decision (#1028).
 
-        try:
-            owners, tainted = reader_lease.live_for(
-                self.queue, {norm}, residency_root=self.residency_root)
-        except Exception:
-            return None
+        :func:`reader_lease.live_for` with no wanted set maps every pinned
+        stage path once; each name's check then reads its own row of that
+        answer, exactly the mapping a per-name census returned for it.  A
+        census that cannot be read is stored as a taint, so every name of
+        the range fails closed as its own census would have.
+        """
+
+        if self._range_pins is None:
+            with self._range_lock:
+                if self._range_pins is None:
+                    try:
+                        self._range_pins = reader_lease.live_for(
+                            self.queue, None,
+                            residency_root=self.residency_root)
+                    except Exception as exc:
+                        self._range_pins = (
+                            {}, [f"{self.residency_root}: pin census "
+                                 f"failed: {exc}"])
+        return self._range_pins
+
+    def _range_claim_census(self) -> tuple[frozenset[str], list[str],
+                                           str | None]:
+        """The claimed staged paths, read once for this range decision.
+
+        The claim listing and each claim record are read here, once, with
+        this publisher's ``_claim_memo`` (#1089), and the derived paths are
+        kept normalized against this stage root, so a name's check is one
+        membership test over what ``_claimed_paths`` returned.  Returns
+        ``(paths, tainted, note)``: ``note`` names a claim authority that
+        could not be imported, ``tainted`` a census that failed closed,
+        and both refuse every name exactly as the per-name census's own
+        answers did.
+        """
+
+        if self._range_claims is None and self._range_claims_note is None:
+            with self._range_lock:
+                if (self._range_claims is None
+                        and self._range_claims_note is None):
+                    try:
+                        from stage_release import _claimed_paths
+                    except ImportError as exc:
+                        self._range_claims_note = (
+                            f"claim authority unavailable: {exc}")
+                    else:
+                        try:
+                            paths, tainted = _claimed_paths(
+                                self.queue, str(self.tier_id), self.cas_root,
+                                exclude={str(self.mover)},
+                                memo=self._claim_memo)
+                        except Exception as exc:
+                            self._range_claims = (frozenset(), [str(exc)])
+                        else:
+                            root = str(self.stage_root)
+                            self._range_claims = (
+                                frozenset(os.path.normpath(
+                                    os.path.join(root, str(relative)))
+                                    for relative in paths),
+                                tainted)
+        if self._range_claims is None:
+            return frozenset(), [], self._range_claims_note
+        paths, tainted = self._range_claims
+        return paths, tainted, None
+
+    def _range_partial_census(self, directory: Path) -> tuple[str, ...] | None:
+        """One range directory's partial temporaries, listed once (#1028).
+
+        The names are remembered for this range decision; ``None`` for a
+        directory that could not be read, which fails every name in it
+        closed, as the per-name listing did.
+        """
+
+        key = os.path.normpath(str(directory))
+        with self._range_lock:
+            if key not in self._range_partials:
+                try:
+                    self._range_partials[key] = tuple(sorted(
+                        entry.name for entry in os.scandir(directory)
+                        if entry.name.endswith(".partial")))
+                except OSError:
+                    self._range_partials[key] = None
+            return self._range_partials[key]
+
+    def _live_pins(self, norm: str) -> list[str] | None:
+        """Pin ids live on one staged path, or None when unknowable.
+
+        The pin census is the range decision's (#1028,
+        :meth:`_range_pin_census`): read once per range, not once per name
+        and not once per publish poll.  This check reads its row of that
+        answer and returns what a per-name census returned, ``None``
+        included for a tainted census.
+        """
+
+        owners, tainted = self._range_pin_census()
         if tainted:
             return None
         return sorted(owners.get(norm, []))[:5]
@@ -2610,34 +2718,23 @@ class _StagedPublisher:
         never defers to itself.  ``None`` means unknowable (fail closed);
         the claim paths are stage-root-relative there, joined here.
 
-        Runs once per clean entry at content adoption, once per publish
-        poll while a name waits, and once per divergence invalidation
-        (#1089) -- so this passes ``self._claim_memo``, held for this
-        publisher's whole run, instead of deriving every claimed mover's
-        staged paths fresh on each check.  The memo does not weaken the
-        gate: it only remembers a claim's *derived* paths, which its own
-        sealed request and manifest fix forever; the claim listing and
-        each claim record are still read fresh inside ``_claimed_paths``
-        on every call, so a claim that appears, ends or changes is still
-        seen at once.  Unlocked across the census (see ``__init__``).
+        The claim census is the range decision's (#1028,
+        :meth:`_range_claim_census`): the listing and each claim record
+        are read once per range, not once per name as they were before,
+        and this check is one membership test over the answer.  A claim
+        that appears mid-range is therefore seen by the next range
+        decision, not this one -- the hoist #1028 asks for; the memo's
+        own contract still holds, that a claim's derived paths are fixed
+        forever by its sealed request and manifest.
         """
 
-        try:
-            from stage_release import _claimed_paths
-        except ImportError as exc:
-            return None, f"claim authority unavailable: {exc}"
-        try:
-            paths, tainted = _claimed_paths(
-                self.queue, str(self.tier_id), self.cas_root,
-                exclude={str(self.mover)}, memo=self._claim_memo)
-        except Exception as exc:
-            return None, str(exc)
+        paths, tainted, note = self._range_claim_census()
+        if note is not None:
+            return None, note
         if tainted:
             return None, "; ".join(tainted[:3])
-        root = str(self.stage_root)
-        for relative in paths:
-            if os.path.normpath(os.path.join(root, str(relative))) == norm:
-                return True, "live mover claim"
+        if norm in paths:
+            return True, "live mover claim"
         return False, ""
 
     def _inflight_partials(self, destination: Path) -> list[str] | None:
@@ -2649,37 +2746,43 @@ class _StagedPublisher:
         case the sweep reaps it and a later retry proceeds.  ``None``
         means the directory could not be read (fail closed).
 
-        One deliberate narrowing: only a dirent whose *name* could be a
-        partial for this destination is stat'ed, so a stat that fails on an
-        unrelated sibling no longer fails the whole census closed.  Such a
-        name is not in the answer either way -- it cannot be a partial for
-        this destination -- and an unreadable *directory* still returns
-        ``None``, as does a failure reading a name that does match.
+        The range directory is listed once per range decision (#1028,
+        :meth:`_range_partial_census`), not once per name and not once per
+        publish poll -- on main it was once per name, O(N) listings where
+        one answers every name of the range.  Each name's check filters
+        that remembered listing by the same prefix rule, and re-stats only
+        the names that pass it, so a partial reaped since the listing no
+        longer reads as in flight, and a candidate that cannot be stat'ed
+        fails the name closed exactly as the per-name listing's stat did.
+        A partial filed after the listing is seen by the next range
+        decision, not this one -- the hoist #1028 asks for; a copy in
+        flight is still attributed first by its sealed claim
+        (:meth:`_live_claim_cover`).
         """
 
         own = f".{destination.name}.{str(self.mover)[:16]}.partial"
         # The name decides membership; the stat only confirms what a matching
         # name already is.  Asking them in that order spends one string
         # compare on a sibling that cannot be a partial, instead of a stat on
-        # every dirent.  This runs once per publish poll -- 120 per entry --
-        # and a staged tree can put every entry of a manifest in one
-        # directory, so the stats it no longer does are the cost.  The legacy
-        # shared ``.<name>.partial`` needs no arm of its own: it carries the
-        # same prefix and the same suffix, so the general test names it.
+        # every dirent of the remembered listing.
         prefix = f".{destination.name}."
-        out = []
-        try:
-            for entry in os.scandir(destination.parent):
-                name = entry.name
-                if name == own or not name.startswith(prefix):
-                    continue
-                if not name.endswith(".partial"):
-                    continue
-                if entry.is_file(follow_symlinks=False):
-                    out.append(name)
-        except OSError:
+        remembered = self._range_partial_census(destination.parent)
+        if remembered is None:
             return None
-        return sorted(out)[:5]
+        parent = os.path.normpath(str(destination.parent))
+        out = []
+        for name in remembered:
+            if name == own or not name.startswith(prefix):
+                continue
+            try:
+                info = os.stat(os.path.join(parent, name),
+                               follow_symlinks=False)
+            except OSError:
+                return None
+            if statmod.S_ISREG(info.st_mode):
+                out.append(name)
+        # ``remembered`` is sorted, so ``out`` already is.
+        return out[:5]
 
     def _index_bytes(self) -> int:
         """What the reuse index currently costs, in retained bytes.

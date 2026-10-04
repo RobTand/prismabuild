@@ -6671,6 +6671,29 @@ mover can adopt the old bytes under a name this run has not reached yet.
 Content-keyed stage paths would remove the collision by construction, but
 they are a layout migration; this settles it on the current layout.
 
+The publication gate's own censuses are the range decision's, not the
+name's (#1028): the live pin census, the live mover claim census and the
+in-flight-partial census a re-decision passes before it replaces are each
+read once per publisher run -- one mover, one window -- at the first
+decision that needs them, where before they ran per name, and
+`_inflight_partials` listed its range directory once per name (2,048
+listings for one campaign range). Each name reads its row of the answer:
+the pin census maps every pinned stage path once and the check looks the
+name up; the claim census is read once through the per-publisher claim
+memo and kept normalized against the stage root, so the check is one
+membership test; the partial check filters the remembered directory
+listing by the same prefix rule and re-stats only the names that pass it,
+so a partial reaped since the listing no longer reads as in flight, and a
+candidate that cannot be stat'ed fails the name closed exactly as the
+per-name listing's stat did. The verdicts are the per-name censuses', and
+so are the fail-closed answers. What the hoist gives up is mid-range
+freshness: a pin, a claim or a partial filed after the census is seen by
+the next range decision, not this one -- the trade #1028 prices. A copy in
+flight is still attributed first by its sealed claim, which the census
+read, and the forest census a re-decision runs under the lock keeps its
+stamp fence (#1004), so nothing there changed. `ownership_lock_held`
+accounting is untouched.
+
 The egress holds the lock for its act, not its census (#988). Before this
 change `stage_release.evict` took the stage root's ownership lock and then
 ran the fragment, claim, source and pin censuses, judged every entry with two

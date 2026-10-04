@@ -26,8 +26,11 @@ destination it publishes, not just one -- instead of one per call.
 
 These tests hold the fix to that contract from both sides: the claimed-set
 work must collapse from O(checks x entries) to O(entries) when the claimed
-set does not change, and a claim that appears or ends between two checks
-must still be seen by the second one.
+set does not change, and a claim that appears or ends after a range
+decision's census is missed by the rest of that range and seen by the next
+decision's census (#1028 took the listing and the records themselves into
+the once-per-range census; the derivation is still per key, and still
+never stale).
 
 Every fixture is a temp queue/stage/CAS registered fresh per test (via
 ``test_dead_owner_fragment_blocks_then_retires.fleet``), never the live
@@ -169,10 +172,16 @@ def test_an_unchanged_claim_is_derived_once_across_many_checks(
 
 
 # ---------------------------------------------------------------------------
-# Correctness: the memo must never hide a claim that appears, changes or ends
+# Correctness: a claim that appears, changes or ends after a range decision's
+# census is missed by that decision and seen by the next one (#1028)
 # ---------------------------------------------------------------------------
 
-def test_a_claim_that_appears_between_checks_is_seen_at_once(fleet) -> None:
+def test_a_claim_that_appears_between_decisions_is_seen_by_the_next(fleet
+                                                                    ) -> None:
+    """The census is the range decision's (#1028): sealed after it, the
+    claim is missed by the rest of that range and caught by the next
+    decision's census -- one decision later, never forgotten."""
+
     queue, stage, cas = fleet
     own_mover = base._key()
     other_mover = base._key()
@@ -186,13 +195,22 @@ def test_a_claim_that_appears_between_checks_is_seen_at_once(fleet) -> None:
 
     _claim_range(queue, cas, other_mover, [entry], 0, SIZE)
 
-    after, detail = publisher._live_claim_cover(norm)
+    during, detail = publisher._live_claim_cover(norm)
+    assert during is False, (
+        f"a claim sealed after the range decision's census must not be "
+        f"discovered by a later name of the same range: {detail}")
+
+    successor = _publisher(queue, stage, cas, own_mover)
+    after, detail = successor._live_claim_cover(norm)
     assert after is True, (
-        f"a claim sealed after the first check must still be seen by the "
-        f"second: {detail}")
+        f"the next range decision's census must see the claim: {detail}")
 
 
-def test_a_claim_that_ends_between_checks_is_seen_at_once(fleet) -> None:
+def test_a_claim_that_ends_between_decisions_is_gone_by_the_next(fleet
+                                                                 ) -> None:
+    """The decision that read the claim keeps its answer; the next range
+    decision's census reads the listing again and sees the end."""
+
     queue, stage, cas = fleet
     own_mover = base._key()
     other_mover = base._key()
@@ -207,14 +225,21 @@ def test_a_claim_that_ends_between_checks_is_seen_at_once(fleet) -> None:
 
     (queue.dir(pool.CLAIMED) / f"{other_mover}.json").unlink()
 
-    after, detail = publisher._live_claim_cover(norm)
+    during, detail = publisher._live_claim_cover(norm)
+    assert during is True, (
+        f"the range decision that read the claim keeps the answer it read "
+        f"until the range ends: {detail}")
+
+    successor = _publisher(queue, stage, cas, own_mover)
+    after, detail = successor._live_claim_cover(norm)
     assert after is False, (
-        f"a claim that ended after the first check must not still cover "
-        f"the name on the second: {detail}")
+        f"a claim that ended after the census must not cover the name on "
+        f"the next range decision: {detail}")
 
 
 def test_a_second_unrelated_claim_does_not_disturb_the_first(fleet) -> None:
-    """Two distinct claim keys memoize independently (#1089's per-key cache)."""
+    """Two distinct claim keys memoize independently (#1089's per-key
+    cache), across range decisions as within one."""
 
     queue, stage, cas = fleet
     own_mover = base._key()
@@ -236,7 +261,8 @@ def test_a_second_unrelated_claim_does_not_disturb_the_first(fleet) -> None:
 
     _claim_range(queue, cas, second_mover, [second_entry], 0, SIZE)
 
-    first_after, detail = publisher._live_claim_cover(first_norm)
+    successor = _publisher(queue, stage, cas, own_mover)
+    first_after, detail = successor._live_claim_cover(first_norm)
     assert first_after is True, detail
-    second_after, detail = publisher._live_claim_cover(second_norm)
+    second_after, detail = successor._live_claim_cover(second_norm)
     assert second_after is True, detail
