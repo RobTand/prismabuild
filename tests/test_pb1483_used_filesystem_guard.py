@@ -8,6 +8,7 @@ The private fixture has no NFS-export users: its export roster is explicitly
 empty. The fleet's native nfsd FSID table and operational capture are not
 qualified here; the admitted PermissionError remains an operational prerequisite.
 """
+import contextvars
 import json
 import os
 import socket
@@ -221,17 +222,21 @@ def test_committed_p_custody_joins_releases_and_retains(registered):
                               operation_key=OPERATION_KEY):
         assert {n for n in pool.held_names_visible(ledger, OPERATION_KEY)
                 if n.startswith("spool_gb")} == {"spool_gb-0000", "spool_gb-0001"}
+        assert fs._held(ledger, {"spool_gb"}) == 2
         # Nested join: admission only with the exact committed bound (new
         # read paths may join), no second commit, no release here.
         with fs.reserve_operation(queue, intent, [other], role="coordinator",
                                   operation_key=OPERATION_KEY):
             assert len(pool.held_names_visible(ledger, OPERATION_KEY)) == 2
         assert len(pool.held_names_visible(ledger, OPERATION_KEY)) == 2
-        # A duplicate top-level custody for outstanding tokens is refused.
-        with pytest.raises(LocalScratchError, match="already holds tokens"):
+        # A new top-level context cannot take the key already held by P.
+        # Reusing the enclosing context would be a legitimate nested join.
+        def duplicate():
             with fs.reserve_operation(queue, intent, [root], role="coordinator",
                                       operation_key=OPERATION_KEY):
-                pass
+                pytest.fail("duplicate top-level custody was admitted")
+        with pytest.raises(LocalScratchError, match="already holds tokens"):
+            contextvars.Context().run(duplicate)
     assert pool.held_names_visible(ledger, OPERATION_KEY) == set()
     with pytest.raises(RuntimeError):
         with fs.reserve_operation(queue, intent, [root], role="coordinator",

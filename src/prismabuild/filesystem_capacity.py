@@ -535,7 +535,7 @@ def _seal(body):
 
 
 def _held(ledger, kinds):
-    """Fresh complete private+committed byte tokens, no materialization credit."""
+    """Fresh private+committed GiB token count, no materialization credit."""
     from . import pool
     total = 0
     try:
@@ -555,7 +555,7 @@ def _held(ledger, kinds):
             if (not separator or not ordinal.isascii() or not ordinal.isdigit()
                     or not stat.S_ISREG(info.st_mode) or info.st_nlink != 1):
                 raise LocalScratchError("physical byte token identity unknown")
-            total += GIB
+            total += 1
     return total
 
 

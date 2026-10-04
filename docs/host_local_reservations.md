@@ -161,7 +161,9 @@ mixed-version writers outside the exclusion remain unqualified.
 The #1483 guard completion keeps this shape and adds, in the same existing
 owners: the single all-used-filesystem predicate
 (`free >= ceil(size/20) + aggregate held-and-additional allowances`, no
-materialization credit); the registration lock spanning each validator
+materialization credit); held byte-resource leaves are counted in GiB token
+units and converted to bytes exactly once beside additional GiB demand; the
+registration lock spanning each validator
 decision; distinct committed operationP custody (`operation-p-<64 hex>`
 holders under the same ledgers, released only on clean completion, retained
 on any other ending, never swept) beside the normal claimed actionK
