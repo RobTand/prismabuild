@@ -35,6 +35,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import time
 
 import pytest
 
@@ -249,7 +250,9 @@ def _adoption_world(fleet, count: int):
     one adoption pass: ``try_adopt`` per name, which takes the gate's
     three censuses and its lock per name and writes nothing, so the range
     directory holds still across the whole decision unless the test moves
-    it.
+    it.  Two coarse-clock ticks after the last write, so
+    :func:`_trusted_directory_stamp` will trust the directory at the
+    first decision (a version in its own change tick is refused).
     """
 
     queue, stage, cas = fleet
@@ -260,6 +263,7 @@ def _adoption_world(fleet, count: int):
     # A quiet pool's claimed/: present and empty, so the claim census
     # reads an empty listing rather than failing one closed.
     queue.dir(pool.CLAIMED).mkdir(parents=True, exist_ok=True)
+    time.sleep(2 * time.clock_getres(5))
     successor, copier = base._key(), base._key()
     publisher = base._publisher(fleet, copier, successor)
     return publisher, destinations
@@ -376,6 +380,92 @@ def test_a_disabled_fence_reads_fresh_per_name_and_never_the_hint(
     # Two names past the first, two fresh listings -- the hint was never
     # reused without its fence.
     assert counted.listings >= 2, counted.listings
+    assert all(path.read_bytes() == NEW for path in destinations)
+
+
+def test_a_same_tick_partial_is_never_hidden_by_the_hint(
+        fleet, monkeypatch: pytest.MonkeyPatch) -> None:  # noqa: F811
+    """A version inside its own change tick is refused, so nothing is kept.
+
+    With the range directory's ``lstat`` and the coarse clock pinned into
+    one tick -- the fixture writes and the stamping read land together --
+    :func:`_trusted_directory_stamp` refuses every version, the hint is
+    never stored, and every name of the range lists fresh.  Two names,
+    two listings; a partial added after the first is still seen, because
+    nothing stood between it and the second listing.
+    """
+
+    publisher, destinations = _adoption_world(fleet, 2)
+    counted = _count_range_listings(monkeypatch, destinations[0].parent)
+    target = os.fspath(destinations[0].parent)
+    real_lstat = os.lstat
+    real_clock = time.clock_gettime_ns
+    tick = real_clock(stage_move._COARSE_REALTIME)
+
+    class Pinned:
+        def __init__(self, info):
+            self.info = info
+            self.st_mtime_ns = self.st_ctime_ns = tick
+
+        def __getattr__(self, name):
+            return getattr(self.info, name)
+
+    def lstat(path, *args, **kwargs):
+        info = real_lstat(path, *args, **kwargs)
+        if isinstance(path, (str, os.PathLike)) and os.fspath(path) == target:
+            return Pinned(info)
+        return info
+
+    def clock(clock_id):
+        return (tick if clock_id == stage_move._COARSE_REALTIME
+                else real_clock(clock_id))
+
+    monkeypatch.setattr(os, "lstat", lstat)
+    monkeypatch.setattr(time, "clock_gettime_ns", clock)
+    entry = {"bytes": SIZE, "sha256": NEW_DIGEST}
+
+    sibling = base._key()
+    partial = destinations[1].parent / f".{destinations[1].name}.{sibling[:16]}.partial"
+    assert publisher.try_adopt(entry, destinations[0]) is not None
+    partial.write_bytes(b"half a copy")
+    assert publisher.try_adopt(entry, destinations[1]) is None, (
+        "a partial added inside the refused tick must still be seen")
+    # Nothing was kept while the version sat in its own change tick: two
+    # names, two listings.
+    assert counted.listings == 2, counted.listings
+    assert destinations[1].read_bytes() == NEW
+
+
+def test_a_partial_created_during_a_scan_is_reported_and_not_kept(
+        fleet, monkeypatch: pytest.MonkeyPatch) -> None:  # noqa: F811
+    """The stamp is taken before the scan; a partial that lands between
+    them is inside the listing and must not be remembered under the
+    pre-scan stamp: the next name lists again rather than reusing a scan
+    the directory moved."""
+
+    publisher, destinations = _adoption_world(fleet, 2)
+    counted = _count_range_listings(monkeypatch, destinations[0].parent)
+    target = os.fspath(destinations[0].parent)
+    scans: list[str] = []
+    real_scandir = os.scandir
+    partial = destinations[1].parent / f".{destinations[1].name}.{base._key()[:16]}.partial"
+
+    def scan(path=".", *args, **kwargs):
+        if os.fspath(path) == target:
+            scans.append(os.fspath(path))
+            if len(scans) == 1:
+                partial.write_bytes(b"half a copy")
+        return real_scandir(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "scandir", scan)
+    entry = {"bytes": SIZE, "sha256": NEW_DIGEST}
+    assert publisher.try_adopt(entry, destinations[0]) is None, (
+        "the scan that saw the creation must report the partial")
+    assert publisher.try_adopt(entry, destinations[1]) is None, (
+        "a scan the directory moved during is never kept: the next name "
+        "lists again and sees it too")
+    # One fresh listing per decision -- the raced listing was not kept.
+    assert counted.listings == 2, counted.listings
     assert all(path.read_bytes() == NEW for path in destinations)
 
 

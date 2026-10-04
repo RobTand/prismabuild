@@ -1690,26 +1690,20 @@ class _StagedPublisher:
         # would serialize every worker's check behind them.
         from stage_release import _CensusMemo
         self._claim_memo = _CensusMemo()
-        #: The range decision's census hints (#1028): the claim listing and
-        #: records, and the partial temporaries of each range directory,
-        #: are read once for this publisher's range -- one mover, one
-        #: window -- as a hint, and every name revalidates the hint with
-        #: one stat of its source directory, re-reading only what moved.
-        #: The stamp is :func:`_stage_directory_stamp`.  Guarded by
-        #: ``_range_lock`` because every copy worker thread shares one
-        #: publisher.  The pin census stays per name (see
+        #: The range decision's partial-temporaries hint (#1028): each
+        #: range directory is listed once under
+        #: :func:`_trusted_directory_stamp` and a name revalidates the
+        #: hint with one directory version, re-listing only what moved.
+        #: The claim census stays per name, exactly as main and #1089 left
+        #: it (the listing and each record read on every check through the
+        #: memo above), and the pin census stays per name (see
         #: :meth:`_live_pins`): its source is a tree the stat of one
-        #: directory cannot fence.
+        #: directory cannot fence.  Guarded by ``_range_lock`` because
+        #: every copy worker thread shares one publisher.
         self._range_lock = threading.Lock()
-        #: The remembered claim census for ``claimed/``: its fence stamp,
-        #: the derived staged paths normalized against this stage root,
-        #: and ``_claimed_paths``' taints.  Only a fenced read is
-        #: remembered; the authority's unavailable message, when it has
-        #: none, is ``_range_claims_note``.
-        self._range_claims: tuple[tuple, frozenset[str], list[str]] | None = None
-        self._range_claims_note: str | None = None
         #: Each range directory's ``(stamp, partial names)``, listed once
-        #: per stamp; only a fenced listing is remembered.
+        #: per :func:`_trusted_directory_stamp`; only a fenced listing is
+        #: remembered.
         self._range_partials: dict[str, tuple[tuple, tuple[str, ...]]] = {}
         #: The pin census's parse memo for this publisher's whole run
         #: (#988): a pin is parsed once per fstat version; every pin file
@@ -2614,91 +2608,24 @@ class _StagedPublisher:
                 f"shared staged name unattributed, deferring: {destination}",
                 PUBLISH_WAIT_UNATTRIBUTED)
 
-    def _range_claim_census(self) -> tuple[frozenset[str], list[str],
-                                           str | None]:
-        """The claimed staged paths, as a fenced hint (#1028).
-
-        The claim listing and each claim record are read here -- once per
-        range while ``claimed/`` holds still -- with this publisher's
-        ``_claim_memo`` (#1089), and the derived paths are kept normalized
-        against this stage root, so a name's check is one membership test
-        plus the fence: one directory version per name
-        (:func:`_current_directory_version`), and a re-read only when
-        ``claimed/`` moved.  A claim that appears or ends mid-range moves
-        the directory, so the next name of the same range sees it, exactly
-        as a per-name census did; on a filesystem whose directory times
-        are not this kernel's the fence never holds and every name
-        re-reads, as before.  A census whose read raced the directory --
-        or one that failed -- is returned once and never remembered, so
-        nothing stale is ever reused.
-
-        Returns ``(paths, tainted, note)``: ``note`` names a claim
-        authority that could not be imported, ``tainted`` a census that
-        failed closed, and both refuse every name exactly as the per-name
-        census's own answers did.
-        """
-
-        claimed_dir = self.queue.dir(pool.CLAIMED)
-        cached = self._range_claims
-        if cached is not None and (
-                cached[0] is None
-                or _current_directory_version(claimed_dir) != cached[0]):
-            cached = None
-        if cached is not None:
-            _stamp, paths, tainted = cached
-            return paths, tainted, None
-        if self._range_claims_note is not None:
-            return frozenset(), [], self._range_claims_note
-        try:
-            from stage_release import _claimed_paths
-        except ImportError as exc:
-            self._range_claims_note = f"claim authority unavailable: {exc}"
-            return frozenset(), [], self._range_claims_note
-        return self._read_claim_census(_claimed_paths, claimed_dir)
-
-    def _read_claim_census(self, claimed_paths, claimed_dir: Path,
-                           ) -> tuple[frozenset[str], list[str], str | None]:
-        """:func:`_claimed_paths` once, remembered under a stamp that held.
-
-        The stamp is taken before the read and compared after, the same
-        fence the forest census's listings are kept under (#1004): a
-        directory that moved while it was read returns its census once,
-        unfenced, and the next name reads again.  The reads run without
-        :attr:`_range_lock` -- the same lock-free census the per-name
-        checks always ran -- and only the remembered pair is stored under
-        it; two workers racing one read at worst read twice.
-        """
-
-        stamp = _current_directory_version(claimed_dir)
-        try:
-            paths, tainted = claimed_paths(
-                self.queue, str(self.tier_id), self.cas_root,
-                exclude={str(self.mover)}, memo=self._claim_memo)
-        except Exception as exc:
-            return frozenset(), [str(exc)], None
-        normed = frozenset(
-            os.path.normpath(os.path.join(str(self.stage_root),
-                                          str(relative)))
-            for relative in paths)
-        after = _current_directory_version(claimed_dir)
-        if stamp is not None and stamp == after:
-            with self._range_lock:
-                self._range_claims = (stamp, normed, tainted)
-        return normed, tainted, None
-
     def _range_partial_census(self, directory: Path) -> tuple[str, ...] | None:
         """One range directory's partial temporaries, as a fenced hint (#1028).
 
-        Listed once per stamp of the directory and remembered
-        (:meth:`_inflight_partials` revalidates with one directory version
-        per name); a directory that moved is listed again, and a listing
-        whose stamp moved while it ran is returned once, unfenced.  On a
-        filesystem whose directory times are not this kernel's, the fence
-        never holds and every name lists, as before.  ``None`` for a
-        directory that could not be read, never remembered: every name
-        fails closed on its own, as the per-name listing did.  The reads
-        run without :attr:`_range_lock`; only a fenced listing is stored
-        under it.
+        Listed once per :func:`_trusted_directory_stamp` of the directory
+        and remembered -- the stamp taken before the scan, kept only while
+        a fresh directory version still equals it, the same fence the
+        forest census's listings are kept under (#1004, #992) --
+        :meth:`_inflight_partials` revalidates with one directory version
+        per name and the directory is listed again only when it moved.  A
+        version the directory's own clock tick refuses, and a scan the
+        directory moved, are returned once and never remembered: the next
+        name lists again, so a partial created in the same tick or during
+        a scan cannot hide behind a remembered listing.  On a filesystem
+        whose directory times are not this kernel's, no stamp is ever
+        trusted and every name lists, as before.  ``None`` for a directory
+        that could not be read, never remembered: every name fails closed
+        on its own, as the per-name listing did.  The reads run without
+        :attr:`_range_lock`; only a fenced listing is stored under it.
         """
 
         key = os.path.normpath(str(directory))
@@ -2706,15 +2633,14 @@ class _StagedPublisher:
         if (remembered is not None
                 and _current_directory_version(directory) == remembered[0]):
             return remembered[1]
-        stamp = _current_directory_version(directory)
+        stamp = _trusted_directory_stamp(directory)
         try:
             names = tuple(sorted(
                 entry.name for entry in os.scandir(directory)
                 if entry.name.endswith(".partial")))
         except OSError:
             return None
-        if stamp is not None and stamp == _current_directory_version(
-                directory):
+        if stamp is not None and _current_directory_version(directory) == stamp:
             with self._range_lock:
                 self._range_partials[key] = (stamp, names)
         return names
@@ -2748,28 +2674,37 @@ class _StagedPublisher:
         The existing containment authority: ``stage_release`` attributes
         in-flight copies from their sealed claims, which exist before any
         fragment does.  This mover's own claim is excluded, so a mover
-        never defers to itself.  ``None`` means unknowable (fail closed).
+        never defers to itself.  ``None`` means unknowable (fail closed);
+        the claim paths are stage-root-relative there, joined here.
 
-        The claim census is a fenced hint (#1028,
-        :meth:`_range_claim_census`): the listing and each claim record
-        are read once per range while ``claimed/`` holds still, and every
-        name revalidates the hint with one directory version and re-reads
-        only what moved -- so a claim that appears, ends or changes
-        mid-range is still seen by the next name, exactly as the per-name
-        reads of #1089 saw it.  A claim record rewritten in place between
-        two names moves no directory and is the one change the fence
-        defers to the next range decision; the pool writes a claim record
-        once, at its claim transition, and moves it out at its terminal
-        one.
+        Runs once per clean entry at content adoption, once per publish
+        poll while a name waits, and once per divergence invalidation
+        (#1089) -- so this passes ``self._claim_memo``, held for this
+        publisher's whole run, instead of deriving every claimed mover's
+        staged paths fresh on each check.  The memo does not weaken the
+        gate: it only remembers a claim's *derived* paths, which its own
+        sealed request and manifest fix forever; the claim listing and
+        each claim record are still read fresh inside ``_claimed_paths``
+        on every call, so a claim that appears, ends or changes is still
+        seen at once.  Unlocked across the census (see ``__init__``).
         """
 
-        paths, tainted, note = self._range_claim_census()
-        if note is not None:
-            return None, note
+        try:
+            from stage_release import _claimed_paths
+        except ImportError as exc:
+            return None, f"claim authority unavailable: {exc}"
+        try:
+            paths, tainted = _claimed_paths(
+                self.queue, str(self.tier_id), self.cas_root,
+                exclude={str(self.mover)}, memo=self._claim_memo)
+        except Exception as exc:
+            return None, str(exc)
         if tainted:
             return None, "; ".join(tainted[:3])
-        if norm in paths:
-            return True, "live mover claim"
+        root = str(self.stage_root)
+        for relative in paths:
+            if os.path.normpath(os.path.join(root, str(relative))) == norm:
+                return True, "live mover claim"
         return False, ""
 
     def _inflight_partials(self, destination: Path) -> list[str] | None:
@@ -2781,7 +2716,8 @@ class _StagedPublisher:
         case the sweep reaps it and a later retry proceeds.  ``None``
         means the directory could not be read (fail closed).
 
-        The range directory is listed once per stamp and remembered
+        The range directory is listed once per
+        :func:`_trusted_directory_stamp` and remembered
         (#1028, :meth:`_range_partial_census`); each name revalidates the
         listing with one directory version
         (:func:`_current_directory_version`) and the directory is listed
