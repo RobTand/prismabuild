@@ -105,7 +105,7 @@ def _sealed(command) -> float | None:
 
 def _exported_bound(command) -> float | None:
     """The per-test bound in pbrun's sealed --env values."""
-    value = shard_environment(command).get(pytest_test_bound.TIMEOUT_ENV)
+    value = shard_environment(command).get(pbtest.test_bound_contract.TIMEOUT_ENV)
     return None if value is None else float(value)
 
 

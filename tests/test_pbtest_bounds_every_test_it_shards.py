@@ -79,7 +79,7 @@ def _dispatch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, extra):
 
 def _exported_bound(command) -> str | None:
     """The per-test bound in pbrun's sealed --env values."""
-    value = shard_environment(command).get(pytest_test_bound.TIMEOUT_ENV)
+    value = shard_environment(command).get(pbtest.test_bound_contract.TIMEOUT_ENV)
     return value
 
 
@@ -243,4 +243,4 @@ def test_the_shard_exports_its_remaining_budget(
     code, calls = _dispatch(tmp_path, monkeypatch, ["--timeout-s", "600"])
 
     assert code == 0
-    assert shard_environment(calls[0])[pytest_test_bound.SHARD_BUDGET_ENV] == "600"
+    assert shard_environment(calls[0])[pbtest.test_bound_contract.SHARD_BUDGET_ENV] == "600"

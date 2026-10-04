@@ -49,12 +49,7 @@ import time
 
 import pytest
 
-#: The one name the shard, this plugin and the tests that exercise it share.
-TIMEOUT_ENV = "PRISMABUILD_TEST_TIMEOUT_S"
-
-#: The seconds the shard was sealed for.  A test that starts late is bound by
-#: what is left of this rather than by its full per-test bound (#1309).
-SHARD_BUDGET_ENV = "PRISMABUILD_SHARD_BUDGET_S"
+from . import test_bound_contract
 
 #: Held back from the budget so the handler's stderr, which names the test,
 #: reaches the lease's execution observation while the action is still alive.
@@ -77,19 +72,19 @@ def configured_bound(environ: "os._Environ[str] | dict[str, str] | None" = None)
     to bound its tests and typo'd the number must not run unbounded and green.
     """
 
-    raw = (os.environ if environ is None else environ).get(TIMEOUT_ENV)
+    raw = (os.environ if environ is None else environ).get(test_bound_contract.TIMEOUT_ENV)
     if raw is None or not raw.strip():
         return 0.0
     try:
         seconds = float(raw)
     except ValueError:
         raise pytest.UsageError(
-            f"{TIMEOUT_ENV}={raw!r} is not a number of seconds; a per-test "
+            f"{test_bound_contract.TIMEOUT_ENV}={raw!r} is not a number of seconds; a per-test "
             "bound that cannot be read would leave this session unbounded"
         ) from None
     if seconds != seconds or seconds in (float("inf"), float("-inf")):
         raise pytest.UsageError(
-            f"{TIMEOUT_ENV}={raw!r} is not a finite number of seconds")
+            f"{test_bound_contract.TIMEOUT_ENV}={raw!r} is not a finite number of seconds")
     return seconds if seconds > 0 else 0.0
 
 
@@ -97,17 +92,17 @@ def configured_budget(
         environ: "os._Environ[str] | dict[str, str] | None" = None) -> float:
     """Read the shard's sealed budget in seconds; ``0.0`` means none."""
 
-    raw = (os.environ if environ is None else environ).get(SHARD_BUDGET_ENV)
+    raw = (os.environ if environ is None else environ).get(test_bound_contract.SHARD_BUDGET_ENV)
     if raw is None or not raw.strip():
         return 0.0
     try:
         seconds = float(raw)
     except ValueError:
         raise pytest.UsageError(
-            f"{SHARD_BUDGET_ENV}={raw!r} is not a number of seconds") from None
+            f"{test_bound_contract.SHARD_BUDGET_ENV}={raw!r} is not a number of seconds") from None
     if seconds != seconds or seconds in (float("inf"), float("-inf")):
         raise pytest.UsageError(
-            f"{SHARD_BUDGET_ENV}={raw!r} is not a finite number of seconds")
+            f"{test_bound_contract.SHARD_BUDGET_ENV}={raw!r} is not a finite number of seconds")
     return seconds if seconds > 0 else 0.0
 
 
@@ -148,14 +143,14 @@ class _Alarm:
     def message(self) -> str:
         text = (
             f"{self.nodeid} exceeded the per-test bound of {self.seconds:g}s "
-            f"during {self.phase} ({TIMEOUT_ENV}). A test that runs longer "
+            f"during {self.phase} ({test_bound_contract.TIMEOUT_ENV}). A test that runs longer "
             "than its shard can afford is a hang until measured otherwise: "
             "this fails the test, not the shard's slot (#600)."
         )
         if self.budgeted:
             text += (
                 " The bound was tightened to the time this test had left in "
-                f"its shard ({SHARD_BUDGET_ENV}): it started too late to run "
+                f"its shard ({test_bound_contract.SHARD_BUDGET_ENV}): it started too late to run "
                 "its full bound before the shard's end.")
         return text
 
@@ -252,7 +247,7 @@ def pytest_report_header(config: pytest.Config) -> str | None:
     if not SUPPORTED:
         return (f"per-test bound {seconds:g}s requested but this platform has "
                 "no SIGALRM: tests run unbounded")
-    return f"per-test bound {seconds:g}s per phase ({TIMEOUT_ENV})"
+    return f"per-test bound {seconds:g}s per phase ({test_bound_contract.TIMEOUT_ENV})"
 
 
 @pytest.hookimpl(wrapper=True)

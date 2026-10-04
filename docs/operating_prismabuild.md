@@ -1539,7 +1539,10 @@ subset. Directory expansion and duplicate-file removal still apply.
 
 `--workers-per-shard N` runs N pytest workers in each action with `pytest -n N`.
 The default is 1 and needs no plugin; higher values require `pytest-xdist` in
-the target interpreter. The coordinator still uses only the standard library.
+the target interpreter. The coordinator still uses only the standard library:
+the client and worker-only pytest plugin share their timeout environment names
+through `prismabuild.test_bound_contract`, which imports no pytest. Pytest and
+pytest-xdist are worker dependencies, never submission-client dependencies.
 For example, `--shards 16 --workers-per-shard 5 --threads-per-shard 1` can
 use 80 CPU cores across 16 concurrent actions, subject to available fleet
 capacity and sufficient memory per shard. `--mem-gb` reserves memory for the
