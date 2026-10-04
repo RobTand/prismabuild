@@ -1551,6 +1551,18 @@ added; xdist worker children inherit the derived basetemp and stay under the
 action root. The root stays unsupported through `--pytest-args`: the closed
 vocabulary does not grow.
 
+Nothing removes the derived `root/<action-key>/<attempt>/pytest` namespaces
+automatically. pytest deletes only the basetemp it is handed, at its own
+start. A sealed root is not PrismaBuild-admitted scratch: the attempt
+lifetime contract (#1463, refs #1360) owns declared, registered ephemeral
+roots, not a caller-provisioned `--basetemp` root, so D1 disk admission does
+not see what accumulates there. A relative root needs no extra owner -- it
+lives inside the attempt's materialized checkout and is removed with it. An
+absolute root grows outside every PB accounting path, so the caller who
+provisions ROOT owns the removal of its action namespaces; until #1360
+extends scratch lifetime to sealed client roots, provision absolute roots
+under a retention policy of your own.
+
 Every requested path must be a file or directory. A missing or invalid path
 refuses the whole submission with exit code 2 and a diagnostic before any
 shard starts; valid paths cannot hide a misspelled path by yielding a green
