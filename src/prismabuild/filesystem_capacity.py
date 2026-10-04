@@ -1120,8 +1120,12 @@ def reserve_operation(queue, intent, paths, *, role="coordinator",
                     != current["bound_operation"]):
                 raise LocalScratchError(
                     "nested operation growth exceeds its committed bound")
-            with admission(queue, paths, intent=intent, role=role):
-                yield
+            # The admission-only proof is a short window like the commit: the
+            # exclusion ends before the nested body runs, so nested
+            # freeze/publish/wait bodies never hold a guard lock either.
+            with admission(queue, paths, intent=intent, role=role) as verdict:
+                pass
+            yield verdict
             return
         wanted = terms(intent, role)
         if demand is not None:

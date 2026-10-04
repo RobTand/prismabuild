@@ -5,8 +5,11 @@ operational registration: its capture/provenance/adoption path requires
 authorized PrismaBuild runs and is deliberately not exercised. Frames are real
 native captures of the test's own filesystem (tmpfs/ext4 supported paths).
 """
+import json
 import os
 import socket
+import subprocess
+import sys
 import threading
 import uuid
 from pathlib import Path
@@ -273,9 +276,6 @@ print(json.dumps({"lock_access": True, "held_gib": census}))
 
 
 def test_second_process_keeps_lock_access_and_reads_p_charges(registered):
-    import json
-    import subprocess
-    import sys
     queue, root = registered
     source_root = str(Path(__file__).resolve().parents[1] / "src")
     intent = envelope("coordinator", [root])
@@ -287,6 +287,29 @@ def test_second_process_keeps_lock_access_and_reads_p_charges(registered):
             capture_output=True, text=True, timeout=120)
         assert completed.returncode == 0, completed.stderr
         assert json.loads(completed.stdout) == {"lock_access": True, "held_gib": 2}
+    assert pool.held_names_visible(queue.ledger(HOST), OPERATION_KEY) == set()
+
+
+def test_second_process_keeps_lock_access_inside_nested_window(registered):
+    queue, root = registered
+    other = root.parent / "used-other"
+    other.mkdir()
+    source_root = str(Path(__file__).resolve().parents[1] / "src")
+    intent = envelope("coordinator", [root, other])
+    with fs.reserve_operation(queue, intent, [root, other], role="coordinator",
+                              operation_key=OPERATION_KEY):
+        # Nested join with the exact committed bound: while the NESTED body
+        # runs, no guard lock is held either.
+        with fs.reserve_operation(queue, intent, [other], role="coordinator",
+                                  operation_key=OPERATION_KEY):
+            completed = subprocess.run(
+                [sys.executable, "-c", SECOND_PROCESS_CONTROL, source_root,
+                 str(queue.root), str(root)],
+                capture_output=True, text=True, timeout=120)
+            assert completed.returncode == 0, completed.stderr
+            assert json.loads(completed.stdout) == {"lock_access": True,
+                                                    "held_gib": 2}
+        assert len(pool.held_names_visible(queue.ledger(HOST), OPERATION_KEY)) == 2
     assert pool.held_names_visible(queue.ledger(HOST), OPERATION_KEY) == set()
 
 

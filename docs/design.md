@@ -5754,7 +5754,8 @@ under the same existing ledgers: a unique `operation-p-<64 hex>` holder
 aggregate floor with its own allowance charged, then committed with the
 existing `ResourceLedger.acquire` -- a committed non-`claiming` holder every
 later census counts and no stale sweep recovers. The exclusion ends before
-the guarded body runs: no registration, primary or ledger lock is held
+any guarded body runs -- the top-level commit and every nested
+admission-only join alike: no registration, primary or ledger lock is held
 across the body, second processes keep lock access, and their floors read
 the retained charges through the ordinary held census. Clean completion
 releases exactly the committed tokens; any other ending retains them for
