@@ -191,11 +191,13 @@ budget and the outcome stays visible.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import errno
 import json
 import os
 import queue as queuelib
 import re
+import secrets
 import shutil
 import socket
 import stat as statmod
@@ -219,6 +221,7 @@ sys.path.insert(0, str(generation_root(__file__) / "src"))
 
 import prismabuild.core as pb  # noqa: E402
 from prismabuild import pool  # noqa: E402
+from prismabuild import filesystem_capacity  # noqa: E402
 from prismabuild import produced_output  # noqa: E402
 from prismabuild import progress as progress_v1  # noqa: E402
 from prismabuild import storage_tiers  # noqa: E402
@@ -4406,7 +4409,80 @@ def _parser() -> argparse.ArgumentParser:
                         help="plan without warming data or recording prewarm results; maintenance checks still apply")
     parser.add_argument("--log", default=None,
                         help="append one JSON object per cycle here")
+    parser.add_argument("--filesystem-operation", required=True,
+                        help="the sealed whole-operation envelope this role "
+                             "publishes under (PRISMABUILD_FILESYSTEM_OPERATION "
+                             "JSON).  The storage role is fail-closed: a cycle "
+                             "runs only inside one committed coordinator "
+                             "operation that admits every used filesystem -- "
+                             "queue, CAS, stage tier and the log record's -- "
+                             "before the first byte, and the log append itself "
+                             "closes inside that window.  A refused custody "
+                             "runs nothing at all and defers like a "
+                             "maintenance gate (#709).  Declare the queue, "
+                             "CAS and log classes plus the stage tier's "
+                             "stable parent root with stage_gib@<tier> "
+                             "growth; every declared root must exist whenever "
+                             "the role serves")
     return parser
+
+
+def _cycle_custody(args, queue: pool.PoolQueue):
+    """One committed coordinator operation per storage cycle, or nothing runs.
+
+    The whole cycle's finite work -- staged objects, prewarm records,
+    receipt prunes, and the cycle's own log record -- is a single committed
+    operation: the window is entered BEFORE the cycle touches any used
+    filesystem and closes only after the log record is on its filesystem,
+    so no explicit write ever rides outside the committed charges.  A
+    refused admission yields a refusal reason and nothing may run: the
+    storage role never reads or writes a filesystem the shared guard did
+    not just admit (#709).
+    """
+    filesystem_capacity.operation(args.filesystem_operation, "coordinator")
+    paths = [Path(args.pool_root)]
+    if args.cas_root:
+        paths.append(Path(args.cas_root))
+    if args.log:
+        paths.append(Path(args.log).absolute().parent)
+    key = "operation-p-" + secrets.token_hex(32)
+    refused = None
+    with contextlib.ExitStack() as stack:
+        try:
+            stack.enter_context(filesystem_capacity.reserve_operation(
+                queue, args.filesystem_operation, paths, role="coordinator",
+                operation_key=key))
+        except filesystem_capacity.LocalScratchError as exc:
+            # Nothing was entered, so no custody exists to release; a body
+            # exception keeps the crash custody the guard gives.
+            refused = f"filesystem custody unavailable, cycle not run: {exc}"
+        yield refused
+
+
+def _serve_cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
+                 pacer: DiskPacer | None, announce) -> str | None:
+    """One guarded storage cycle, or None when custody was refused.
+
+    Ordering is the correction's point: the cycle's writes AND the explicit
+    log append both happen inside the committed window; the window closes
+    only after the record is on its filesystem.  stdout is not a used
+    filesystem, so the journal line prints after the window.
+    """
+    with _cycle_custody(args, queue) as refused:
+        if refused is not None:
+            announce(refused)
+            return None
+        event = cycle(args, queue, mounts, stop, pacer=pacer)
+        line = json.dumps(event)
+        if args.log:
+            try:
+                with open(args.log, "a") as handle:
+                    handle.write(line + "\n")
+            except OSError as exc:
+                # The append failed, so it moved no bytes; the committed
+                # operation still ends cleanly on its own records.
+                announce(f"prewarm: cycle log append failed: {exc}")
+        return line
 
 
 def _serve(args) -> int:
@@ -4466,12 +4542,18 @@ def _serve(args) -> int:
         # outlived an open gate or the runtime it was preparing to serve.
         if runtime_moved() or runtime_gate.read_maintenance_gate() is not None:
             continue
-        event = cycle(args, queue, mounts, stop, pacer=pacer)
-        line = json.dumps(event)
+        # One guarded path for every cycle, dry run included: a dry run
+        # still reads real queue/manifest/stage filesystems and writes its
+        # log record, so neither mode may run against filesystems the
+        # shared guard has not just admitted.  A refused custody runs
+        # nothing at all and defers exactly like a maintenance gate.
+        line = _serve_cycle(args, queue, mounts, stop, pacer, announce)
+        if line is None:
+            if args.once:
+                return 75
+            time.sleep(args.poll_s)
+            continue
         print(line, flush=True)
-        if args.log:
-            with open(args.log, "a") as handle:
-                handle.write(line + "\n")
         if args.once:
             return 0
         time.sleep(args.poll_s)
@@ -4497,6 +4579,12 @@ def main(argv: list[str] | None = None) -> int:
     """
 
     args = _parser().parse_args(argv)
+    try:
+        filesystem_capacity.operation(args.filesystem_operation, "coordinator")
+    except filesystem_capacity.LocalScratchError as exc:
+        print(f"prewarm: refusing an incomplete filesystem operation "
+              f"envelope: {exc}", file=sys.stderr, flush=True)
+        return 2
     try:
         with runtime_gate.role_singleton(Path(__file__)):
             return _serve(args)
