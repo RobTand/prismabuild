@@ -1152,11 +1152,11 @@ def reserve_operation(queue, intent, paths, *, role="coordinator",
         try:
             with admission(queue, paths, intent=intent, role=role,
                            additional=owners) as verdict:
-                for base, kinds in owners.items():
+                for base, kinds in per_base.items():
                     if pool.held_names_visible(ledgers[base], operation_key):
                         raise LocalScratchError(
                             "committed operation custody already holds tokens")
-                    if not ledgers[base].acquire(operation_key, per_base[base]):
+                    if not ledgers[base].acquire(operation_key, kinds):
                         raise LocalScratchError(
                             "committed operation custody refused under the floor")
                     committed.append(base)

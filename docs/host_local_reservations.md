@@ -170,6 +170,10 @@ on any other ending, never swept) beside the normal claimed actionK
 lifecycle; and an unchanged provenance-owner seam (the frozen
 `materialize._execution_checkout` owner, candidate admission refused inside
 provenance materialization, registration refused inside live transactions).
+The operation commits every declared existing owner, including a separate
+host CPU/memory ledger when byte growth belongs solely to a tier. Physical
+floor allowances still include only byte-resource owners; clean completion
+releases all of the operation's exact committed resources.
 Unregistered populations stay UNKNOWN and HOLD. Source only: no live
 adoption, capture, or qualification is asserted.
 

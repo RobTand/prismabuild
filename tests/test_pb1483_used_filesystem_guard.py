@@ -64,7 +64,8 @@ def reseal(record):
 
 
 def install_binding(queue, record):
-    base = queue.root / pool.RESERVATIONS / record["owner"]["id"]
+    namespace = pool.TIER_RESERVATIONS if record["owner"]["type"] == "tier" else pool.RESERVATIONS
+    base = queue.root / namespace / record["owner"]["id"]
     pool._write_json_atomic(base / fs.BINDING_FILE, record)
     return base
 
@@ -344,6 +345,28 @@ def test_coordinator_demand_may_commit_honest_extra_kinds(registered):
         assert {n for n in names if n.startswith("spool_gb")} == {
             "spool_gb-0000", "spool_gb-0001"}
         assert "cpu-0000" in names
+
+
+def test_tier_growth_also_commits_its_separate_host_cpu_owner(registered):
+    queue, root = registered
+    host = fs._read_binding(queue.root, owner_ref())
+    tier_owner = {"type": "tier", "id": "fixture-stage"}
+    tier = build_binding(root, kinds=("stage_gib",), owner=tier_owner, primary=owner_ref())
+    tier["primaries"] = []
+    host["primaries"][0]["aliases"].append(
+        {"owner": tier_owner, "kinds": ["stage_gib"], "generation": tier["generation"]})
+    install_binding(queue, reseal(host))
+    install_binding(queue, reseal(tier))
+    queue.mint_tier_capacity("fixture-stage", {"stage_gib": 2})
+    queue.ledger(HOST).ensure_capacity({"cpu": 1})
+    intent = envelope("coordinator", [root], resource="stage_gib@fixture-stage")
+    with fs.reserve_operation(queue, intent, [root], role="coordinator",
+                              operation_key=OPERATION_KEY,
+                              demand={"stage_gib@fixture-stage": 2, "cpu": 1}):
+        assert pool.held_names_visible(queue.ledger(HOST), OPERATION_KEY) == {"cpu-0000"}
+        assert fs._held(queue.tier_ledger("fixture-stage"), {"stage_gib"}) == 2
+    assert pool.held_names_visible(queue.ledger(HOST), OPERATION_KEY) == set()
+    assert pool.held_names_visible(queue.tier_ledger("fixture-stage"), OPERATION_KEY) == set()
 
 
 def test_admission_refuses_inside_provenance_and_registration_scopes(registered):
