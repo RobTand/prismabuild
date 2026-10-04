@@ -217,7 +217,7 @@ def test_committed_p_custody_joins_releases_and_retains(registered):
     ledger = queue.ledger(HOST)
     other = root.parent / "used-other"
     other.mkdir()
-    intent = envelope("coordinator", [root, other])
+    intent = envelope("coordinator", [root, other], max_bytes=GIB)
     with fs.reserve_operation(queue, intent, [root, other], role="coordinator",
                               operation_key=OPERATION_KEY):
         assert {n for n in pool.held_names_visible(ledger, OPERATION_KEY)
@@ -310,7 +310,7 @@ def test_second_process_keeps_lock_access_inside_nested_window(registered):
     other = root.parent / "used-other"
     other.mkdir()
     source_root = str(Path(__file__).resolve().parents[1] / "src")
-    intent = envelope("coordinator", [root, other])
+    intent = envelope("coordinator", [root, other], max_bytes=GIB)
     with fs.reserve_operation(queue, intent, [root, other], role="coordinator",
                               operation_key=OPERATION_KEY):
         # Nested join with the exact committed bound: while the NESTED body
