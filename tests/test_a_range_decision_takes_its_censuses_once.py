@@ -340,6 +340,45 @@ def test_a_claim_that_appears_mid_range_is_seen_by_the_next_name(
         "the covered name's bytes are never replaced")
 
 
+def test_a_disabled_fence_reads_fresh_per_name_and_never_the_hint(
+        fleet, monkeypatch: pytest.MonkeyPatch) -> None:  # noqa: F811
+    """Where the fence cannot hold, every name reads fresh -- #1208's rule.
+
+    ``_current_directory_version`` answers ``None`` for a filesystem whose
+    directory times are not this kernel's clock (NFS); the hint must then
+    be re-read for every name, never reused.  Counted: two names, two
+    listings of the range directory; behavioral: a partial and a claim
+    that appear between the names are still seen.
+    """
+
+    queue, stage, cas = fleet
+    publisher, destinations = _adoption_world(fleet, 3)
+    monkeypatch.setattr(stage_move, "_current_directory_version",
+                        lambda path: None)
+    counted = _count_range_listings(monkeypatch, destinations[0].parent)
+    entry = {"bytes": SIZE, "sha256": NEW_DIGEST}
+    assert publisher.try_adopt(entry, destinations[0]) is not None
+
+    sibling = base._key()
+    partial = destinations[1].parent / f".{destinations[1].name}.{sibling[:16]}.partial"
+    partial.write_bytes(b"half a copy")
+    assert publisher.try_adopt(entry, destinations[1]) is None, (
+        "with the fence disabled the partial must still be seen")
+
+    claim_key = base._key()
+    _claim_range(queue, cas, claim_key,
+                 [{"path": f"{MOUNT_PREFIX}/shard.bin",
+                   "offset": index * SIZE, "bytes": SIZE,
+                   "sha256": NEW_DIGEST} for index in range(3)],
+                 start=2 * SIZE, end=3 * SIZE)
+    assert publisher.try_adopt(entry, destinations[2]) is None, (
+        "with the fence disabled the claim must still be seen")
+    # Two names past the first, two fresh listings -- the hint was never
+    # reused without its fence.
+    assert counted.listings >= 2, counted.listings
+    assert all(path.read_bytes() == NEW for path in destinations)
+
+
 def test_a_mixed_range_decides_each_name_exactly_as_per_name_censuses_did(
         fleet, monkeypatch: pytest.MonkeyPatch) -> None:  # noqa: F811
     """Pinned, claimed, in-flight and free names keep their own answers.

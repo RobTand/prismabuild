@@ -157,7 +157,13 @@ def test_only_matching_names_are_stat_ed(staged: Path, monkeypatch) -> None:
     original = os.stat
 
     def counting_stat(path, *args, **kwargs):
-        stat_ed.append(os.fspath(path))
+        spelled = os.fspath(path)
+        # The fence's own stats -- the directory itself, and the
+        # mount-namespace probes behind the filesystem-type memo -- are
+        # not dirent stats; what the property pins is which *names* in
+        # the range directory get stat'ed.
+        if os.path.dirname(spelled) == os.fspath(staged.parent):
+            stat_ed.append(spelled)
         return original(path, *args, **kwargs)
 
     monkeypatch.setattr(os, "stat", counting_stat)
