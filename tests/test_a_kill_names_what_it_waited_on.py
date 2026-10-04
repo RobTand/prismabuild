@@ -90,7 +90,8 @@ def test_a_stall_kill_names_its_refused_export_its_ready_age_and_the_reason(
 
     queue, consumer = progress_fx._claimed(
         tmp_path, mode="silent", seconds=60,
-        policy=progress_fx._policy(5.0, 5.0, 5.0))
+        policy=progress_fx._policy(5.0, 5.0, 5.0),
+        capacity=CAPACITY, cpu_tiers=CPU_TIERS)
     assert consumer is not None
     owner = str(consumer["action_key"])
     export = _publish_export(queue, owner, "export-0")
@@ -287,7 +288,8 @@ def test_pbstatus_starvation_reads_a_starved_producer_in_one_place(tmp_path, mon
     import pbstatus
 
     queue, consumer = progress_fx._claimed(tmp_path, mode="silent", seconds=1,
-                                           policy=None)
+                                           policy=None, capacity=CAPACITY,
+                                           cpu_tiers=CPU_TIERS)
     owner = str(consumer["action_key"])
     export = _publish_export(queue, owner, "export-status")
     _refuse_with(monkeypatch, ["measurement_holder", "host_pressure"])
