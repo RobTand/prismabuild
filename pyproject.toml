@@ -24,3 +24,7 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# A passing test's tmp_path is removed when it ends, so a long shard on a small
+# or inode-limited scratch (a RAM tmpfs) holds only its failing tests' files.
+# pbtest refuses a command-line -o, so the setting lives in the sealed checkout.
+tmp_path_retention_policy = "failed"
