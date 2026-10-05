@@ -107,9 +107,13 @@ def test_a_relative_data_manifest_is_refused_by_name(tmp_path):
                                          "residency": "stage"}))
 
 
-def test_a_member_declaring_a_manifest_must_declare_residency(tmp_path):
-    with pytest.raises(SystemExit, match="residency"):
-        pbgang.load(_manifest(tmp_path, {"data_manifest": "/data/manifest.json"}))
+@pytest.mark.parametrize("member", [
+    {"data_manifest": "/data/manifest.json"},
+    {"data_manifest": "/data/m.json", "residency": "none"},
+])
+def test_a_member_declaring_a_manifest_must_declare_residency(tmp_path, member):
+    with pytest.raises(SystemExit, match="without residency"):
+        pbgang.load(_manifest(tmp_path, member))
 
 
 @pytest.mark.parametrize("name", [
