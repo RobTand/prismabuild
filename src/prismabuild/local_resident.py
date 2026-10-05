@@ -152,7 +152,6 @@ def copy(store, set_id, host, spec, *, reader_context=None, now=None):
         if not lease_active(store, set_id, now=now):
             raise ValueError("resident lease expired")
         local_tier.reserve(queue, set_id, [host], record["manifest"]["total_bytes"])
-    # (the reservation itself moved inside the lock, above)
         if final.exists():
             verification = _verify_tree(final, record)
         else:
@@ -230,10 +229,12 @@ def publish_actions(template, store, set_id, tiers, *, policy_path):
             action = movement_action(template, store, set_id, tier, policy_path=policy_path, operation=operation)
             cas.publish_action_request(action)
             pair[operation] = movement_row(action, cas, tier)
-        with store.lock(set_id):
-            current = store.read_copy(set_id, host)
-            store.write_copy(set_id, host, {**current, "movement_rows": pair})
-        queue.publish(**pair["copy"], recompute=True, refuse_if_live=True)
+        store.update_movements(set_id, host, pair)
+        if store.read_copy(set_id, host)["state"] != "resident":
+            try:
+                queue.publish(**pair["copy"], recompute=True, refuse_if_live=True)
+            except pool.ActionAlreadyLiveError:
+                pass  # Attach to the existing generation; never replace a live copy.
         rows[host] = pair
     return rows
 
@@ -256,10 +257,10 @@ def _live_rows(store, set_id):
 
 def lease_active(store, set_id, *, now=None):
     now = time.time() if now is None else now
-    status = store.status(set_id)
+    store.read(set_id)
     lease = None
     released = False
-    for event in status["lease_log"]:
+    for event in store.read_lease_log(set_id):
         if event.get("manifest_sha256") != set_id:
             raise ValueError("lease journal manifest disagrees")
         if event["event"] in ("published", "renewed"):
@@ -383,8 +384,7 @@ def request_eviction(store, set_id, host, spec, *, caller_host=None, now=None):
     """The #801 shape: only the owner deletes; other hosts queue its egress."""
     if host == (socket.gethostname() if caller_host is None else caller_host):
         return evict(store, set_id, host, spec, now=now)
-    current = store.read_copy(set_id, host)
-    row = current.get("movement_rows", {}).get("evict")
+    row = store.read_movements(set_id, host).get("evict")
     if row is None:
         raise ValueError("copy has no retained host-pinned egress action")
     queue = pool.PoolQueue(store.queue_root)
@@ -395,17 +395,74 @@ def request_eviction(store, set_id, host, spec, *, caller_host=None, now=None):
     return {"state": "queued", "action_key": row["action_key"], "host": host}
 
 
+def _lease_error_path(store, set_id, host):
+    return store.set_path(set_id).parent / "lease-errors" / (resident_sets._name(host, "host") + ".json")
+
+
+def _lease_failure(store, set_id, host, error, now):
+    result = {"schema": "prismabuild.resident_lease_error.v1", "set_id": set_id,
+              "host": host, "error": f"{type(error).__name__}: {error}",
+              "unix": time.time() if now is None else now}
+    try:
+        resident_sets.write_record(_lease_error_path(store, set_id, host), result)
+    except (ValueError, OSError) as record_error:
+        result["record_error"] = f"{type(record_error).__name__}: {record_error}"
+    return result
+
+
+def _clear_lease_failure(store, set_id, host):
+    path = _lease_error_path(store, set_id, host)
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return
+    resident_sets.fsync_directory(path.parent)
+
+
 def lease_pass(store, host, spec, *, now=None):
+    """Attempt interrupted evictions first; isolate failures without freeing bytes."""
     results = []
-    # An evicting record is always finished first, including a crash between
-    # the state write and the rename. No mint is allowed before this pass.
-    statuses = [row for row in store.status() if host in row["hosts"]]
+    try:
+        directories = sorted(store.root.iterdir())
+    except FileNotFoundError:
+        return results
+    statuses = []
+    for directory in directories:
+        if not directory.is_dir():
+            continue
+        set_id = directory.name
+        try:
+            try:
+                (directory / "body.json").stat()
+            except FileNotFoundError:
+                continue  # A refused publication can leave only its record lock.
+            row = store.read(set_id)
+            if host in row["hosts"]:
+                row["copies"] = {host: store.read_copy(set_id, host)}
+                statuses.append(row)
+        except Exception as error:  # One corrupt set must not abort the host pass.
+            results.append(_lease_failure(store, set_id, host, error, now))
     statuses.sort(key=lambda row: row["copies"][host]["state"] != "evicting")
+    queue = pool.PoolQueue(store.queue_root)
     for row in statuses:
         set_id = row["set_id"]
-        reclaim_pins(store, set_id, host, spec)
-        if row["copies"][host]["state"] == "evicting" or not lease_active(store, set_id, now=now):
-            results.append(evict(store, set_id, host, spec, now=now))
+        try:
+            state = row["copies"][host]["state"]
+            _, final, partial, evicting = _paths(set_id, spec)
+            held = pool.held_names_visible(queue.tier_ledger(local_tier.tier_id(host)), set_id)
+            if (state == "absent" and not final.exists() and not partial.exists()
+                    and not evicting.exists() and not held):
+                _clear_lease_failure(store, set_id, host)
+                continue
+            reclaim_pins(store, set_id, host, spec)
+            result = None
+            if state == "evicting" or not lease_active(store, set_id, now=now):
+                result = evict(store, set_id, host, spec, now=now)
+            _clear_lease_failure(store, set_id, host)
+            if result is not None:
+                results.append(result)
+        except Exception as error:
+            results.append(_lease_failure(store, set_id, host, error, now))
     return results
 
 
@@ -426,12 +483,18 @@ def require_adoption_unmounted(record, source):
             raise ValueError("adoption requires removing global bind mount units before moving bytes")
     if Path(record["canonical_root"]).is_relative_to("/mnt/shared"):
         import subprocess
-        census = subprocess.run(["docker", "ps", "--quiet", "--filter", "status=running"], capture_output=True, text=True)
+        def docker(*arguments):
+            try:
+                return subprocess.run(["docker", *arguments], capture_output=True, text=True)
+            except FileNotFoundError as error:
+                raise ValueError("adoption refused: docker was not found; cannot inspect running shared-mount containers") from error
+
+        census = docker("ps", "--quiet", "--filter", "status=running")
         if census.returncode:
             raise ValueError("adoption cannot establish whether old shared-mount containers are running")
         ids = census.stdout.split()
         if ids:
-            inspected = subprocess.run(["docker", "inspect", *ids], capture_output=True, text=True)
+            inspected = docker("inspect", *ids)
             if inspected.returncode:
                 raise ValueError("adoption cannot inspect running containers")
             for container in json.loads(inspected.stdout):

@@ -116,11 +116,10 @@ def test_restart_finishes_evicting_tree_before_mint(tmp_path, monkeypatch):
 def test_remote_egress_uses_retained_host_pinned_action(tmp_path, monkeypatch):
     from prismabuild import local_resident
     store, record, spec = resident(tmp_path)
-    current = store.read_copy(record["set_id"], "test-host")
     row = {"action_key": "e" * 64, "cas_root": str(tmp_path / "cas"),
            "worker_script": "/worker.py", "checkout_root": str(tmp_path), "tags": ["test-host"],
            "resources": {"cpu": 1, "mem_gb": 1}}
-    store.write_copy(record["set_id"], "test-host", {**current, "movement_rows": {"evict": row}})
+    store.update_movements(record["set_id"], "test-host", {"evict": row})
     def no_local(*args, **kwargs):
         raise AssertionError("cross-host request must not delete in caller")
     monkeypatch.setattr(local_resident, "evict", no_local)

@@ -5995,9 +5995,30 @@ release, each naming the manifest digest. A lease requires either an until
 timestamp or a campaign name, and an explicit hard maximum; no forever default.
 Per-host `copies/<host>.json` records use `prismabuild.resident_copy.v1` and
 `absent`, `copying`, `resident` or `evicting` states, a local root, verification
-receipt, byte count and completion time. `pbresident publish|status|release`
+receipt, byte count and completion time. `pbresident publish|status|release|adopt|dispatch|renew`
 operates these records. `local_tier_policy.json` is published with the runtime;
 its host map is empty by default, so this change activates no local tier.
+
+Operator descriptors live separately in
+`resident-sets/<id>/movements/<host>.json` (`prismabuild.resident_movements.v1`).
+Their `rows` map holds the copy, egress and adoption queue specifications.
+`update_movements` merges under the existing set-record lock; operator
+publication never rewrites `copies/<host>.json`. It may read copy state to
+avoid a redundant dispatch. State remains owned by the host mover under its
+mover lock and host flock. This separation
+prevents a stale operator write from resurrecting an evicted copy or a final
+state write from dropping newly published descriptors. Status exposes the
+descriptor map separately, and lease policy reads only the body and lease
+journal, not operator descriptors.
+
+`pbresident dispatch SET_ID` retries action publication for an already-filed
+immutable body. It never republishes the set or acquires a second publication
+hold. Repeated dispatch attaches to a live copy generation; a resident host
+gets its descriptors refreshed without another copy action. An absent or
+interrupted copy can be re-driven through the existing movement retry policy.
+`pbresident renew SET_ID` appends an explicit until-date or campaign lease with
+a required hard maximum, bounded by the configured renewal ceiling. Neither
+command changes the immutable body or adds a seal/authority requirement.
 
 Capacity uses `local_gib@local:<host>` in the ordinary tier ledger. Publication
 reserves ceil(bytes / GiB) on every host or rolls back the new empty holds.
@@ -6028,14 +6049,29 @@ An explicit `ResidentSets.renew` appends a new bounded lease without changing
 the body. Explicit Phase 1 readers take `local_resident.pin` and release that
 token only after their last read; a crashed reader pin stays until the existing
 broker scope attestation proves stop. Phase 2 will integrate container pins.
+Explicit renewals are capped at `now + renewal_ceiling_s`, a positive finite
+policy value published in `local_tier_policy.json` (default: 14 days). The
+effective ceiling is recorded in the renewal journal; it does not replace
+the lease's required hard maximum or allow automatic renewal past it.
 
 Eviction takes the per-host flock, checks pins, durably records `evicting`,
 then renames to `.evicting` under that lock. It releases the lock before
 deleting, and releases ledger tokens only after every tree is gone. An active
 mover holds its separate move lock, so eviction defers instead of deleting an
-in-flight partial tree. Each localtier cycle finishes interrupted evictions
-before minting. Cross-host requests queue the retained host-pinned egress action
-rather than deleting another host's paths in the caller.
+in-flight partial tree. Each localtier cycle attempts interrupted evictions
+before minting. Failed deletes retain their bytes and occupancy holders; the
+minter still counts the remaining trees and held tokens. Cross-host requests
+queue the retained host-pinned egress action rather than deleting another
+host's paths in the caller.
+
+An absent copy is idle only when no final, partial, or evicting tree exists
+and it holds no local tokens; the lease pass then rewrites no copy record.
+A corrupt record or failed deletion is isolated to that set, with its latest
+failure at `resident-sets/<id>/lease-errors/<host>.json`. A later successful
+pass clears that error. No exception releases occupancy. The serving role
+reports cycle failures and retries at its existing interval instead of
+crashing; `--once` reports failure with a nonzero exit.
+
 Adoption is a host-pinned movement action, not coordinator-side hashing. It
 checks whole-directory coverage and every file SHA-256, fsyncs the existing
 files and directories, then renames on the same filesystem without recopying.
@@ -6044,23 +6080,31 @@ partial/evicting trees and active manual bind mounts. For canonical paths under
 `/mnt/shared`, Docker inspection must establish that no running container
 captured the old recursive shared mount. No live manual copy is touched by
 Phase 1 qualification.
+
+An adoption admitted under a live lease retains its local occupancy hold if
+byte verification, same-filesystem validation, or the unmounted-source check
+refuses it. The source is unchanged and the copy stays absent. This is the
+same conservative failure accounting as a copy: no exception releases a hold
+that might protect another resident or partial incarnation. The bounded lease
+pass or explicit release drives normal ordered eviction to return it. A lease
+refused before reservation takes no new tokens.
+
 `pbrun --resident-set SET_ID` is the single explicit lease-reference declaration.
 It is carried in ordinary action parameters and projected onto the queue row;
 it adds neither an admission gate nor a placement preference. Phase 1 does not
 inject anything: every new claim and immutable attempt writes
 `served_from: "canonical"`, alongside its declared set (if any) and existing
 claiming host. Legacy attempts without this field stay unknown, not retroactively
-labelled canonical. Ending status exposes the recorded field.
+labelled canonical. Ending status exposes the recorded field. Readers already
+accept both `canonical` and `local` so a later Phase 2 producer cannot break an
+older reader; only the Phase 2 shim writes `local`. Phase 1 still writes only
+`canonical` and injects no local mount.
 
 `pbstatus --resident-sets` reads the immutable bodies, copies, lease journals,
 current lease verdict and measured per-host capacity/held tokens through its
 existing bounded reader. Corrupt or unreadable records produce a partial view,
 never a complete empty census. No identity or provenance seal is added;
 whole-directory shape, byte digests, safe deletion and capacity remain refusals.
-
-
-
-
 
 ## Cluster-scoped storage tiers (#583)
 

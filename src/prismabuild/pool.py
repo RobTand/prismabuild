@@ -24202,8 +24202,8 @@ class PoolQueue:
             raise PoolContractError(
                 f"pool attempt outcome differs from its history link: {where}"
             )
-        if "served_from" in value and value["served_from"] != "canonical":
-            raise PoolContractError("Phase 1 attempt served_from must be canonical")
+        if "served_from" in value and value["served_from"] not in ("canonical", "local"):
+            raise PoolContractError("pool attempt served_from must be canonical or local")
         if "preemption_context" in value:
             expected_context = {
                 field: record.get(field) for field in (

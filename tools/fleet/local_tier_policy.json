@@ -1,4 +1,5 @@
 {
   "schema": "prismabuild.local_tier_policy.v1",
+  "renewal_ceiling_s": 1209600,
   "hosts": {}
 }

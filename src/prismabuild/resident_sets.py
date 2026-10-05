@@ -20,7 +20,9 @@ from . import core, posix_lock
 
 SET_SCHEMA = "prismabuild.resident_set.v1"
 COPY_SCHEMA = "prismabuild.resident_copy.v1"
+MOVEMENT_SCHEMA = "prismabuild.resident_movements.v1"
 POLICY_SCHEMA = "prismabuild.local_tier_policy.v1"
+DEFAULT_RENEWAL_CEILING_S = 14 * 24 * 60 * 60
 COPY_STATES = frozenset({"absent", "copying", "resident", "evicting"})
 
 
@@ -121,10 +123,18 @@ def validate_set_manifest(manifest, canonical_root):
     return normalized
 
 
+def _renewal_ceiling(value):
+    if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
+        raise ValueError("renewal_ceiling_s must be a positive finite ceiling")
+    return value
+
+
+
 def read_policy(path):
     policy = json.loads(Path(path).read_text())
-    if not isinstance(policy, dict) or set(policy) != {"schema", "hosts"} or policy["schema"] != POLICY_SCHEMA or not isinstance(policy["hosts"], dict):
+    if not isinstance(policy, dict) or set(policy) not in ({"schema", "hosts"}, {"schema", "hosts", "renewal_ceiling_s"}) or policy["schema"] != POLICY_SCHEMA or not isinstance(policy["hosts"], dict):
         raise ValueError("invalid local_tier_policy")
+    policy["renewal_ceiling_s"] = _renewal_ceiling(policy.get("renewal_ceiling_s", DEFAULT_RENEWAL_CEILING_S))
     for host, spec in policy["hosts"].items():
         _name(host, "host")
         if not isinstance(spec, dict) or set(spec) != {"root", "maximum_gib", "floor_fraction", "docker_allowance_gib"}:
@@ -149,6 +159,42 @@ class ResidentSets:
 
     def copy_path(self, set_id, host):
         return self.set_path(set_id).parent / "copies" / (_name(host, "host") + ".json")
+
+    def movement_path(self, set_id, host):
+        return self.set_path(set_id).parent / "movements" / (_name(host, "host") + ".json")
+
+    def read_movements(self, set_id, host):
+        try:
+            record = json.loads(self.movement_path(set_id, host).read_text())
+        except FileNotFoundError:
+            return {}
+        if (not isinstance(record, dict) or record.get("schema") != MOVEMENT_SCHEMA
+                or record.get("set_id") != set_id or record.get("host") != host
+                or not isinstance(record.get("rows"), dict)):
+            raise ValueError("invalid resident movement descriptor record")
+        rows = record["rows"]
+        if set(rows) - {"copy", "evict", "adopt"} or any(not isinstance(row, dict) for row in rows.values()):
+            raise ValueError("invalid resident movement descriptor rows")
+        return rows
+
+    def update_movements(self, set_id, host, rows):
+        """Merge operator descriptors without reading or writing mover state."""
+        if (not isinstance(rows, Mapping) or set(rows) - {"copy", "evict", "adopt"}
+                or any(not isinstance(row, Mapping) for row in rows.values())):
+            raise ValueError("invalid resident movement descriptor rows")
+        with self.lock(set_id):
+            if host not in self.read(set_id)["hosts"]:
+                raise ValueError("host is not declared by resident set")
+            merged = self.read_movements(set_id, host)
+            merged.update({operation: dict(row) for operation, row in rows.items()})
+            write_record(self.movement_path(set_id, host), {"schema": MOVEMENT_SCHEMA,
+                "set_id": set_id, "host": host, "rows": merged})
+        return merged
+
+    def read_lease_log(self, set_id):
+        path = self.set_path(set_id).parent / "lease.jsonl"
+        return [json.loads(line) for line in path.read_text().splitlines()]
+
 
     def lock(self, set_id):
         return posix_lock.held(self.set_path(set_id).parent / ".record.lock")
@@ -228,9 +274,9 @@ class ResidentSets:
             return [self.status(path.name) for path in sorted(self.root.iterdir())
                     if path.is_dir() and (path / "body.json").exists()]
         record = self.read(set_id)
-        log = self.set_path(set_id).parent / "lease.jsonl"
-        record["lease_log"] = [json.loads(line) for line in log.read_text().splitlines()]
+        record["lease_log"] = self.read_lease_log(set_id)
         record["copies"] = {host: self.read_copy(set_id, host) for host in record["hosts"]}
+        record["movements"] = {host: self.read_movements(set_id, host) for host in record["hosts"]}
         return record
 
     def release(self, set_id, *, by, now=None):
@@ -239,10 +285,13 @@ class ResidentSets:
             self._append_lease(set_id, {"event": "released", "unix": time.time() if now is None else now, "by": by})
         return self.status(set_id)
 
-    def renew(self, set_id, lease, *, by, now=None):
+    def renew(self, set_id, lease, *, by, now=None, renewal_ceiling_s=DEFAULT_RENEWAL_CEILING_S):
         now = time.time() if now is None else now
         lease = validate_lease(lease, now=now)
+        ceiling = _renewal_ceiling(renewal_ceiling_s)
+        if lease["hard_max"] > now + ceiling:
+            raise ValueError("renewed hard_max exceeds the renewal policy ceiling")
         with self.lock(set_id):
             self.read(set_id)
-            self._append_lease(set_id, {"event": "renewed", "lease": lease, "unix": now, "by": by})
+            self._append_lease(set_id, {"event": "renewed", "lease": lease, "unix": now, "by": by, "renewal_ceiling_s": ceiling})
         return self.status(set_id)

@@ -18,7 +18,7 @@ def main(argv=None):
     parser.add_argument("--host", required=True, help="Host that owns the local copy; this action is pinned to it.")
     parser.add_argument("--policy", required=True, help="local_tier_policy.json: each host's local root, maximum GiB, floor fraction and docker allowance.")
     parser.add_argument("--operation", choices=("copy", "evict", "adopt"), required=True,
-                        help="copy: fetch and verify the set from its canonical source; evict: remove the local copy once nothing pins it; adopt: take over an existing verified directory.")
+                        help="copy: fetch and verify the set; evict: remove the local copy only after its lease ends and no pins remain; adopt: take over an existing verified directory.")
     parser.add_argument("--source", help="Directory to adopt; required for --operation adopt, unused otherwise.")
     args = parser.parse_args(argv)
     store = resident_sets.ResidentSets(args.pool_root)

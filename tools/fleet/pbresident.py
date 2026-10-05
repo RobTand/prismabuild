@@ -57,12 +57,26 @@ def submit_adoption(store, set_id, *, host, source, policy_path, checkout):
     action = local_resident.movement_action(template, store, set_id, tiers[host], policy_path=policy_path, operation="adopt", source=source)
     template["cas"].publish_action_request(action)
     row = local_resident.movement_row(action, template["cas"], tiers[host])
-    with store.lock(set_id):
-        current = store.read_copy(set_id, host)
-        store.write_copy(set_id, host, {**current, "adoption_row": row})
+    store.update_movements(set_id, host, {"adopt": row})
     queue.publish(**row, recompute=True, refuse_if_live=True)
     return row
 
+
+
+
+def lease_options(command):
+    choice = command.add_mutually_exclusive_group(required=True)
+    choice.add_argument("--lease-until", type=timestamp,
+                        help="Keep the set until this timezone-qualified ISO 8601 time, no later than its hard maximum.")
+    choice.add_argument("--campaign", help="Campaign id; keep the lease until explicit release or its hard maximum.")
+    command.add_argument("--hard-max", required=True, type=timestamp,
+                         help="Required timezone-qualified latest lease time; live rows cannot extend it automatically.")
+
+
+def lease_from_args(args):
+    lease = {"hard_max": args.hard_max}
+    lease.update({"campaign": args.campaign} if args.campaign else {"until": args.lease_until})
+    return lease
 
 
 
@@ -74,10 +88,7 @@ def main(argv=None):
     publish.add_argument("--manifest", required=True, help="Content manifest JSON (name, bytes and sha256 per file); it must cover the whole canonical directory.")
     publish.add_argument("--canonical-root", required=True, help="The authoritative directory on shared storage that the set mirrors; it stays the source of truth.")
     publish.add_argument("--hosts", required=True, help="Comma-separated hosts that should hold a local copy.")
-    lease = publish.add_mutually_exclusive_group(required=True)
-    lease.add_argument("--lease-until", type=timestamp, help="Keep the set at least until this ISO 8601 time, which must include a timezone.")
-    lease.add_argument("--campaign", help="Campaign id; the lease lasts until it is released or the hard maximum passes.")
-    publish.add_argument("--hard-max", required=True, type=timestamp, help="Latest time the set may stay, even if rows still reference it; required, there is no lease without a maximum.")
+    lease_options(publish)
     publish.add_argument("--created-by", default=getpass.getuser(), help="Operator name recorded on the set (default: the current user).")
     publish.add_argument("--checkout", default=str(Path.cwd()), help="Git checkout snapshotted into the copy actions (default: the current directory).")
     publish.add_argument("--policy", default=str(Path(__file__).with_name("local_tier_policy.json")), help="local_tier_policy.json giving each host's local root, maximum GiB, floor fraction and docker allowance.")
@@ -89,23 +100,41 @@ def main(argv=None):
     adoption = commands.add_parser("adopt")
     adoption.add_argument("set_id", help="Published set id to adopt a directory into.")
     adoption.add_argument("--host", required=True, help="Host whose local tier takes the directory; it must be declared and announce its local tier.")
-    adoption.add_argument("--source", required=True, help="Existing directory to move into the tier root; it must be on the same filesystem, match the manifest, and not be bind-mounted.")
-    adoption.add_argument("--checkout", default=str(Path.cwd()), help="Git checkout snapshotted into the copy actions (default: the current directory).")
+    adoption.add_argument("--source", required=True, help="Existing directory to move into the tier; it must match the manifest, share the same filesystem as the tier, be outside the tier root, neither be nor contain the canonical directory, and not be bind-mounted.")
+    adoption.add_argument("--checkout", default=str(Path.cwd()), help="Git checkout snapshotted into the adoption action (default: the current directory).")
     adoption.add_argument("--policy", default=str(Path(__file__).with_name("local_tier_policy.json")), help="local_tier_policy.json giving each host's local root, maximum GiB, floor fraction and docker allowance.")
+    dispatch = commands.add_parser("dispatch", help="Resume publication of copy actions for an existing immutable set.")
+    dispatch.add_argument("set_id", help="Previously published resident set id to dispatch without republishing its body.")
+    dispatch.add_argument("--checkout", default=str(Path.cwd()),
+                          help="Git checkout snapshotted into copy actions (default: the current directory).")
+    dispatch.add_argument("--policy", default=str(Path(__file__).with_name("local_tier_policy.json")),
+                          help="Local tier policy path carried to each owning host copy action.")
+    renew = commands.add_parser("renew", help="Append an explicit policy-bounded lease renewal without changing the set body.")
+    renew.add_argument("set_id", help="Published resident set id whose lease to renew.")
+    lease_options(renew)
+    renew.add_argument("--by", default=getpass.getuser(), help="Operator recorded on the renewal (default: the current user).")
+    renew.add_argument("--policy", default=str(Path(__file__).with_name("local_tier_policy.json")),
+                       help="Policy supplying renewal_ceiling_s; its default allows at most 14 days from renewal.")
     args = parser.parse_args(argv)
     store = resident_sets.ResidentSets(args.pool_root)
     try:
         if args.command == "publish":
             manifest, _ = core.read_data_manifest(args.manifest)
-            lease = {"hard_max": args.hard_max}
-            lease.update({"campaign": args.campaign} if args.campaign else {"until": args.lease_until})
             result = store.publish(manifest=manifest, canonical_root=args.canonical_root,
-                hosts=args.hosts.split(","), lease=lease, created_by=args.created_by)
+                hosts=args.hosts.split(","), lease=lease_from_args(args), created_by=args.created_by)
             result["movements"] = submit_copies(store, result["set_id"], policy_path=args.policy, checkout=args.checkout)
         elif args.command == "status":
             result = store.status(args.set_id)
         elif args.command == "adopt":
             result = submit_adoption(store, args.set_id, host=args.host, source=args.source, policy_path=args.policy, checkout=args.checkout)
+        elif args.command == "dispatch":
+            store.read(args.set_id)
+            result = {"set_id": args.set_id, "movements": submit_copies(store, args.set_id,
+                policy_path=args.policy, checkout=args.checkout)}
+        elif args.command == "renew":
+            policy = resident_sets.read_policy(args.policy)
+            result = store.renew(args.set_id, lease_from_args(args), by=args.by,
+                renewal_ceiling_s=policy["renewal_ceiling_s"])
         else:
             result = store.release(args.set_id, by=args.by)
     except (ValueError, OSError, core.ActionContractError) as exc:

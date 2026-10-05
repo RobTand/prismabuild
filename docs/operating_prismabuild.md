@@ -26,16 +26,32 @@ a real SHA-256 and must cover a complete regular file. Unlisted files,
 symlinks, ranges and mismatched sizes are refused.
 
 `pbresident.py --pool-root QUEUE status [SET_ID]` returns set bodies, lease
-journals and host copy states as JSON. `release SET_ID` appends a release
+journals, host copy states and separately stored movement descriptors as JSON.
+`release SET_ID` appends a release
 without rewriting the declaration. Phase 1 does not change job paths,
 container mounts or placement. Publication alone does not claim a copy is
 available. The versioned `local_tier_policy.json` declares host roots,
 maximum GiB, the free-space floor and Docker allowance; the shipped host
 map is empty and does not enable any Spark.
+The renewal policy has `renewal_ceiling_s` (default 1209600 seconds, 14 days).
+An explicit renewal cannot set its hard maximum beyond that interval from
+the renewal time; the hard maximum remains required.
 `publish` also queues one ordinary host-pinned copy action per host, with
 a retained host-pinned egress row. It uses the current Git checkout by default;
 `--checkout PATH` selects the checkout that supplies the movement payload.
 The owning host must have announced its local tier tools and capacity.
+
+If publication files its body but action dispatch fails, do not republish the
+same manifest: `pbresident.py --pool-root QUEUE dispatch SET_ID --checkout
+CHECKOUT --policy POLICY` retries dispatch using that existing set. The
+command returns movement rows as JSON, attaches to already-live copy actions,
+and queues no new copy for a host whose copy is resident. Use a bounded Git
+checkout explicitly when the current directory is too large to snapshot.
+
+`pbresident.py --pool-root QUEUE renew SET_ID --lease-until DATE --hard-max
+DATE --policy POLICY --by OPERATOR` appends a new lease without modifying
+the set body. Use `--campaign NAME` instead of `--lease-until` if needed.
+The policy ceiling applies to the new hard maximum relative to renewal time.
 
 `pbresident.py --pool-root QUEUE adopt SET_ID --host HOST --source DIRECTORY`
 queues a verified same-filesystem adoption on the owning host; it does not
@@ -47,12 +63,10 @@ The payload refuses an active bind mount or running captured container. Read
 `pbrun --resident-set SET_ID` declares an optional set reference for lease
 renewal. It does not require a resident copy or change execution placement.
 Phase 1 records every attempt as `served_from: "canonical"`; local mount
-injection is not present. `pbstatus.py --queue-root QUEUE --resident-sets`
+injection is not present. Readers accept `local` for forward compatibility,
+but only the Phase 2 shim writes it. `pbstatus.py --queue-root QUEUE --resident-sets`
 shows set declarations, host copy states, lease journals and capacity as JSON.
 A partial census has `complete: false` and names its unreadable records.
-
-
-
 
 Both transports publish the same verifiable CAS results. Their placement and
 resource enforcement differ, as described below. Examples name
