@@ -2701,6 +2701,9 @@ def ending_row(entry: os.DirEntry, queue_root: str | Path) -> dict:
         # Where a profiled run left its profile (#372 Tier 1).  ``None``
         # on every other row, which is most of them.
         "profile": detail.get("profile"),
+        "withdrawn_attempt": record.get("withdrawn_attempt"),
+        "resource_scope_cleanup": record.get("resource_scope_cleanup"),
+        "container_cleanup": record.get("container_cleanup"),
         # Present on every row so a reader of the JSON can test one field
         # rather than the absence of one.
         "unreadable": None,

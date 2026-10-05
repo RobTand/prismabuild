@@ -609,6 +609,18 @@ def _attempt_evidence(queue_root: Path, record: Mapping[str, object]) -> dict:
     a count the record merely claims.
     """
 
+    if "withdrawn_attempt" in record:
+        retained = record["withdrawn_attempt"]
+        if (not isinstance(retained, Mapping) or "withdrawn_attempt" in retained
+                or retained.get("status") != pool.WITHDRAWN
+                or any(retained.get(field) != record.get(field) for field in
+                       ("action_key", "published_unix", "max_attempts", "retry_safe"))):
+            raise pool.PoolContractError("withdrawn attempt differs from its decision identity")
+        evidence = _attempt_evidence(queue_root, retained)
+        evidence["source"] = "withdrawn_attempt." + str(evidence["source"])
+        evidence["before_withdrawal"] = False
+        return evidence
+
     queue = pool.PoolQueue(Path(queue_root).absolute())
     problems: list[dict] = []
     if (ATTEMPT_HISTORY in record
@@ -1548,6 +1560,9 @@ class Session:
                 "action_signal": detail.get("action_signal"),
                 "receipt_published": detail.get("receipt_published"),
                 "reason": record.get("reason"),
+                "withdrawn_attempt": record.get("withdrawn_attempt"),
+                "resource_scope_cleanup": record.get("resource_scope_cleanup"),
+                "container_cleanup": record.get("container_cleanup"),
             },
             # #372 files a per-action resource profile on the outcome.  Read
             # optionally from both places it can appear, and passed through
@@ -1579,7 +1594,8 @@ class Session:
             receipt=call.read("receipt", lambda: _receipt_summary(record)),
             local_result_claim=call.read("claim", lambda: _derived_claim(record)),
         )
-        logged = adopted if adopted is not None else preserved
+        logged = (adopted if adopted is not None else preserved if preserved is not None
+                  else attempts[-1] if attempts and record.get("withdrawn_attempt") is not None else None)
         if logged is not None:
             payload["log_tail"] = call.read(
                 "log",
@@ -1819,6 +1835,10 @@ class Session:
             "attempts": record.get("attempts"),
             "elapsed_s": detail.get("elapsed_s"),
             "finished_unix": record.get("finished_unix"),
+            "finished_host": record.get("finished_host"),
+            "withdrawn_attempt": record.get("withdrawn_attempt"),
+            "resource_scope_cleanup": record.get("resource_scope_cleanup"),
+            "container_cleanup": record.get("container_cleanup"),
             "superseded": _superseded_view(answer),
             "receipt": call.read(f"receipts:{prefix}:receipt",
                                  lambda: _receipt_summary(record)),

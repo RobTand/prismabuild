@@ -23397,7 +23397,7 @@ class PoolQueue:
         # not a retryable reservation. File the positive binding alongside
         # the original failure; never rewrite the request's attempt budget.
         retry_stop = (self._spent_output_retry_stop(record)
-                      if status not in {"executed", "cache_hit"} else None)
+                      if status not in {"executed", "cache_hit", WITHDRAWN} else None)
         if retry_stop is not None:
             disposition = FAILED
         outcome = {
@@ -23966,6 +23966,7 @@ class PoolQueue:
                 raise PoolContractError("successful attempt cannot stop an output retry")
             self._validate_output_retry_stop(adopted["output_retry_stop"], adopted)
         expected = (
+            WITHDRAWN if status == WITHDRAWN else
             DONE if succeeded else FAILED if stopped or attempt >= max_attempts else "requeued"
         )
         if disposition != expected:
@@ -24142,8 +24143,11 @@ class PoolQueue:
         succeeded = status in {"executed", "cache_hit"}
         limit = int(snapshot.get("max_attempts", DEFAULT_MAX_ATTEMPTS))
         # The same rule ``adopted_attempt_summary`` applies, so this outcome can
-        # never be the one that makes a reader refuse the record.
+        # never be the one that makes a reader refuse the record. A withdrawn
+        # status requires the withdrawn disposition: a cancelled attempt is
+        # not a failure and must not descend the retry ladder.
         disposition = (
+            WITHDRAWN if status == WITHDRAWN else
             DONE if succeeded else FAILED if attempt >= limit else "requeued"
         )
         self.archive_attempt(
@@ -24354,37 +24358,72 @@ class PoolQueue:
             with suppress(Exception):
                 self.note_fill_borrow_end(effective_record)
         if self.withdrawal_covers(record, action_key=action_key) is not None:
-            # An operator cancelled this while it was running.  Filing it under
-            # ``done`` or ``failed`` would put the pool's opinion of the work on
-            # top of a decision about it, and routing it back to ``ready`` --
-            # the retry branch below -- would restart exactly what was
-            # cancelled.  That restart is the race a hand-edited
-            # ``max_attempts`` was trying to lose.  The withdrawal record is
-            # already filed; all that is left here is the cleanup ``finish``
-            # would otherwise do on its way past.
-            #
-            # Read AFTER the record, not before it: a withdrawal that lands
-            # between the read and the write must still be seen, and this is
-            # the last moment at which it can be.
-            #
-            # Generation-scoped like every other guard: a marker left over from
-            # a cancellation the operator has since re-submitted past must not
-            # swallow the NEW run's outcome, which would file it nowhere at
-            # all.  ``record is None`` is the one case with no generation to
-            # compare, and is treated as covered -- the claim was concluded by
-            # somebody else, so there is nothing here to file either way.
+            # Cancellation remains the ending, but the worker owns the proof
+            # that its exact attempt stopped. Preserve that proof before giving
+            # up the claim; never overwrite an operator's decision or a newer
+            # generation's visible marker.
+            dst = self.item_path(WITHDRAWN, action_key)
             if read_claim is None:
-                return self.item_path(WITHDRAWN, action_key)
-            if "scratch_declaration_record" in record:
-                self._file_superseded(record, key=action_key,
-                                      kind="scratch-declarations-after-withdrawal")
-            tombstone, mine = self._entomb_claim(action_key, expect=read_claim)
-            if not mine or tombstone is None:
-                return self.item_path(WITHDRAWN, action_key)
-            self.lease_path(action_key).unlink(missing_ok=True)
-            self._release_reservation(action_key, host=holder)
-            tombstone.unlink(missing_ok=True)
-            return self.item_path(WITHDRAWN, action_key)
+                return dst
+            with self._transition_locked(action_key):
+                live = _read_json(src)
+                if live is None or not _same_claim(live, read_claim):
+                    return dst
+                decision = self.withdrawal_covers(record, action_key=action_key)
+                marker = _read_json(dst)
+                current = (marker is not None and
+                           marker.get("published_unix") == record.get("published_unix"))
+                archive = (None if current else self.superseded_dir() /
+                           f"{action_key}.{self.attempt_generation(record)}.withdrawn-finish.json")
+                filed = dict(marker if current else _read_json(archive) or decision)
+                if "withdrawn_attempt" not in filed:
+                    retained = dict(record)
+                    retained.pop("finish_pending", None)
+                    retained.pop("container_cleanup_pending", None)
+                    prior_attempts = int(retained.get("attempts", 0))
+                    if (prior_attempts and "attempt_history" not in retained
+                            and "attempt_history_missing_before" not in retained):
+                        retained["attempt_history_missing_before"] = prior_attempts
+                    finished_detail = dict(detail or {})
+                    for field in ("resource_scope", "resource_scope_intent", "resource_scope_cleanup"):
+                        if field in record:
+                            finished_detail[field] = record[field]
+                    finished_detail["container_cleanup"] = container_cleanup
+                    retained.update(status=WITHDRAWN, attempts=prior_attempts + 1,
+                                    finished_unix=_now(), finished_host=socket.gethostname(),
+                                    detail=finished_detail)
+                    retained["attempt_history"] = self.archive_attempt(
+                        retained, attempt=retained["attempts"], status=WITHDRAWN,
+                        disposition=WITHDRAWN, detail=finished_detail)
+                    adopted = self.adopted_attempt_summary(retained)
+                    if adopted["status"] != WITHDRAWN:
+                        raise PoolContractError("withdrawn finish conflicts with an archived attempt")
+                    for field in ("status", "finished_unix", "finished_host", "detail"):
+                        retained[field] = adopted[field]
+                    # Nested history keeps the decision's attempt count and
+                    # inherited evidence unchanged. Readers never adopt an
+                    # execution result in place of the cancellation.
+                    filed["withdrawn_attempt"] = retained
+                    for field in ("resource_scope", "resource_scope_intent", "resource_scope_cleanup"):
+                        if field in record:
+                            filed.setdefault(field, record[field])
+                    filed.setdefault("container_cleanup", adopted["detail"]["container_cleanup"])
+                    filed.setdefault("finished_unix", adopted["finished_unix"])
+                    filed.setdefault("finished_host", adopted["finished_host"])
+                    if current:
+                        _write_json_atomic(dst, filed)
+                    else:
+                        pb._atomic_publish(archive, pb._canonical_bytes(filed))
+                if "scratch_declaration_record" in record:
+                    self._file_superseded(record, key=action_key,
+                                          kind="scratch-declarations-after-withdrawal")
+                tombstone, mine = self._entomb_claim(action_key, expect=read_claim)
+                if not mine or tombstone is None:
+                    return dst
+                self.lease_path(action_key).unlink(missing_ok=True)
+                self._release_reservation(action_key, host=holder)
+                tombstone.unlink(missing_ok=True)
+                return dst
         if record is None:
             # A reaper concluded this claim while the work was still running,
             # so the claim file is gone and the item has already been filed
@@ -25836,6 +25875,8 @@ class PoolQueue:
                 ("attempt_history_missing_before",
                  "attempt_history_missing_before_withdrawal"),
                 ("detail", "detail_before_withdrawal"),
+                ("finished_unix", "finished_unix_before_withdrawal"),
+                ("finished_host", "finished_host_before_withdrawal"),
             ):
                 if field in filed:
                     filed[kept] = filed.pop(field)

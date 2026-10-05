@@ -1316,6 +1316,42 @@ process scan. Deployment requires draining and upgrading workers to readers of
 immutable decisions before relying on asynchronous cancellation across a
 re-submission; there is no unsafe legacy fallback.
 
+When that worker concludes a withdrawn running attempt, `finish` adds its
+scope identity and nonce, `resource_scope_cleanup` (including the broker's
+export stop verdict), `container_cleanup`, `finished_unix` and
+`finished_host` to the visible withdrawal. It also retains an immutable
+attempt with status and disposition `withdrawn`. The `withdrawn_attempt`
+object links that attempt through the existing canonical `attempt_history`
+contract and carries its verified summary; its detail retains the scope and
+cleanup evidence and its logs retain the worker's output. This nested history
+leaves every original decision field, including its attempt count, unchanged.
+It does not promote an inherited requeued attempt or the worker's return code
+into the cancellation's outcome. `attempt_history_before_withdrawal` remains
+historical evidence, and the immutable decision file is never rewritten.
+Inherited finish timestamps are kept as `finished_unix_before_withdrawal` and
+`finished_host_before_withdrawal` when the decision is first filed, so a later
+worker conclusion can add its own timestamps without rewriting that decision.
+
+Retention and claim release take the same per-key transition lock as withdrawal
+and publication. If publication already superseded the visible marker, the
+old worker's completed cancellation is filed under `withdrawn/superseded/`,
+never over a successor's marker. Repeated finish preserves the first immutable
+attempt and adds no second ending. No `done/`, `failed/` or retry is filed.
+The superseded conclusion has a stable action-generation filename and is
+published first-writer-wins, so replay after an interrupted claim move retains
+one proof and the original container-cleanup result.
+A READY withdrawal that never ran adds no worker evidence. This changes future
+worker conclusions only; previously concluded withdrawals are not repaired.
+
+`pbwait --json`, `pbstatus` ending rows, `pb_action` and `pb_receipts` expose
+the retained `withdrawn_attempt` alongside the existing scope cleanup structure.
+`pb_action` and `pb_log` read the nested canonical history without adopting it
+as the operator's ending. A deterministic consumer can recognise a stopped
+cancellation by `status: withdrawn`, the retained withdrawn attempt, its scope
+nonce and the export's `stopped`, `empty`, `released`, `settled` and
+`tickets_pending: false` predicates; no successful CAS receipt is invented.
+An unstarted READY cancellation has no retained attempt or scope cleanup.
+
 READY-record examinations use `ready-transitions/` as their recoverable
 intermediate namespace. Withdrawal and orphan cleanup move the original bytes
 there under the key's POSIX transition lock, then either restore them with a
@@ -12629,8 +12665,11 @@ checks. Fresh live-state checks exclude a republication that won discovery.
 The consumer must have exactly one terminal record, and it must be proven. A
 failed consumer needs the queue's verified immutable failed-attempt summary.
 A withdrawn consumer needs its visible withdrawal to agree with its immutable
-decision for that exact action and generation (#892): until 2026-09-22 only
-failure counted, and three withdrawn consumers' owners were cleared by hand
+decision for that exact action and generation (#892).
+Worker conclusion fields are permitted only as the verified immutable withdrawn
+attempt's projection. All original decision fields remain exact; a changed
+decision value or an arbitrary extra field still retains ownership.
+Until 2026-09-22, only failure counted, and three withdrawn consumers' owners were cleared by hand
 that day. A consumer that is live again, done, or both failed and withdrawn
 retains. For the withdrawn mover form, the mover's visible withdrawal must agree with
 its immutable decision for that exact action and generation, and no move
@@ -14249,8 +14288,14 @@ changes. A missing or malformed snapshot never matches a requested Git field.
 withdrawal preserved under `attempt_history_before_withdrawal` exactly as it
 reads a record's own links: `attempts_history` names the source,
 `adopted_attempt` stays null, and `outcome_before_withdrawal` reports the
-preserved ending's returncode. Preserved execution is evidence, never the
-record's ending. The record's attempt count is untrusted input:
+preserved ending's returncode. Preserved execution is evidence, never the record's ending.
+A concluded running withdrawal additionally exposes the worker's nested
+`withdrawn_attempt.attempt_history` through `attempts_detail` and `pb_log`,
+with `attempts_history.source` naming that nested history. Its status remains
+withdrawn and `adopted_attempt` remains null. The normal action and receipt
+views carry its exact scope cleanup; absence of a CAS success receipt remains
+absence, not success inferred from a clean broker stop.
+The record's attempt count is untrusted input:
 `unretained_attempts` is capped at `UNRETAINED_ATTEMPT_LIST_CAP`, with
 `unretained_attempt_count` and `unretained_attempts_truncated` beside it, so a
 forged count cannot expand the reader's work. Every retained link is checked
