@@ -14,12 +14,16 @@ real claim path: per-record latency is injected into the census child's reads
 from __future__ import annotations
 
 import fcntl
+import json
+import math
 import os
 import sys
 import threading
 import time
 
-from prismabuild import _measurement_reservation as reservation, adaptive_cpu, pool
+import pytest
+
+from prismabuild import _measurement_reservation as reservation, adaptive_cpu, core, pool
 
 from test_census_tmpfs_state_1451 import (  # noqa: F401  (fixtures)
     tmpfs_mount, tmpfs_state)
@@ -127,6 +131,95 @@ def test_sweep_keeps_every_sidecar_that_could_be_authority(fleet):
         assert queue.passes_path(key).exists(), key
     # Released, the concluded counter-only sidecar goes on the next sweep.
     assert queue.sweep_orphan_passes() == [locked]
+
+
+@pytest.mark.parametrize("limit", [1, 7, pool.ORPHAN_PASSES_SWEEP_LIMIT])
+def test_sweep_rotates_past_257_kept_sidecars_across_loop_restarts(
+        fleet, monkeypatch, limit):
+    queue, clock, readings, sample, publish, tick, claim, denial = fleet
+    retained = [
+        '{"action_key": "KEY", "measurement_reservation": {"schema": "x"}}',
+        '{"action_key": "' + "f" * 64 + '", "passes": 1}',
+        "{not json",
+    ]
+    kept = [_conclude(queue, index, sidecar=retained[index % len(retained)])
+            for index in range(257)]
+    before = {key: queue.passes_path(key).read_bytes() for key in kept}
+    orphan = _conclude(queue, 300)
+    real_read = pool._read_json
+    inspected = []
+
+    def read(path, **kwargs):
+        if path.parent == queue.root / pool.PASSES:
+            inspected.append(path.name)
+        return real_read(path, **kwargs)
+
+    monkeypatch.setattr(pool, "_read_json", read)
+    pruned = []
+    for _ in range(math.ceil((len(kept) + 1) / limit)):
+        # Different loop instances share the existing host-local sweep owner.
+        restarted = pool.PoolQueue(queue.root)
+        assert restarted._sweep_due()
+        inspected.clear()
+        pruned += restarted.sweep_orphan_passes(limit=limit)
+        assert len(inspected) <= limit
+        assert not restarted._sweep_due(), "cursor writes must not change the schedule"
+        tick(pool.HEARTBEAT_S + 1)
+    assert pruned == [orphan], "the retained sorted prefix starved the later orphan"
+    assert not queue.passes_path(orphan).exists()
+    assert {key: queue.passes_path(key).read_bytes() for key in kept} == before
+
+    # A new earlier key is reached after wrapping, even when the last name
+    # inspected was deleted; the cursor is a name, not a surviving-file index.
+    earlier = _conclude(queue, -1)
+    pruned = []
+    for _ in range(math.ceil((len(kept) + 1) / limit)):
+        inspected.clear()
+        pruned += pool.PoolQueue(queue.root).sweep_orphan_passes(limit=limit)
+        assert len(inspected) <= limit
+    assert pruned == [earlier]
+    assert {key: queue.passes_path(key).read_bytes() for key in kept} == before
+
+
+def test_fair_sweep_recovers_capped_census_without_retiring_elections(
+        fleet, monkeypatch):
+    queue, clock, readings, sample, publish, tick, claim, denial = fleet
+    ordinary = publish("ordinary-after-fair-sweep", gpu=0)
+    queue.record_pass(ordinary)
+    kept = []
+    for index in range(257):
+        key = _conclude(queue, index, state=pool.DONE)
+        publication = {"action_key": key, "published_unix": 1.0}
+        chosen = {"schema": reservation.SCHEMA, **publication,
+                  "generation": core.canonical_sha256(publication),
+                  "host": "sparklina", "priority": 0,
+                  "epoch_unix": 2.0, "opportunity_unix": 3.0}
+        queue.passes_path(key).write_text(json.dumps(
+            {"action_key": key, reservation.FIELD: chosen}), encoding="utf-8")
+        queue.item_path(pool.DONE, key).write_text(json.dumps(
+            {"schema": pool.POOL_OUTCOME_SCHEMA_V1, **publication,
+             "status": "executed", "finished_unix": 4.0}), encoding="utf-8")
+        kept.append(key)
+    before = {key: queue.passes_path(key).read_bytes() for key in kept}
+    orphan = _conclude(queue, 300)
+    # Scale only the record cap: real bounded census, retirement proof, reader
+    # fence, transition locks, admission gate and capacity claim all execute.
+    monkeypatch.setattr(reservation, "MAX_RECORDS", len(kept) + 2)
+    assert _claim(queue, ordinary) is None
+    refusal = denial(ordinary)
+    assert refusal["reason"] == "measurement_census_unavailable"
+    assert "record cap exceeded" in refusal["evidence"]["unavailable"]
+    assert not queue.ledger().held_keys()
+
+    assert queue.sweep_orphan_passes() == []
+    assert pool.PoolQueue(queue.root).sweep_orphan_passes() == [orphan]
+    assert {key: queue.passes_path(key).read_bytes() for key in kept} == before
+    census = reservation.CensusReader(queue, queue.ledger()).capture()
+    assert set(census["selections"]) == set(kept)
+    assert census["elections"] == {}  # exact endings, not missing authority
+    tick(11)
+    claimed = _claim(queue, ordinary)
+    assert claimed is not None and claimed["action_key"] == ordinary
 
 
 def test_swept_census_still_refuses_lower_work_behind_a_live_election(fleet, monkeypatch):
