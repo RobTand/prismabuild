@@ -296,7 +296,9 @@ def test_withdrawn_tombstone_releases_only_its_durably_cleaned_owner(lifetime, m
     queue, item, variables, outcome = launch(lifetime, monkeypatch)
     key = item["action_key"]
     queue.withdraw(key, signal_child=False)
-    withdrawn = queue.item_path(pool.WITHDRAWN, key).read_bytes()
+    withdrawn = pool._read_json(queue.item_path(pool.WITHDRAWN, key))
+    decision = queue.withdrawal_decision_path(withdrawn)
+    decision_bytes = decision.read_bytes()
     with monkeypatch.context() as fault:
         fault.setattr(queue, "_release_reservation", lambda *a, **k:
                       (_ for _ in ()).throw(OSError("fixture withdrawal before release")))
@@ -309,7 +311,11 @@ def test_withdrawn_tombstone_releases_only_its_durably_cleaned_owner(lifetime, m
                         pytest.fail("durably consumed scratch must not be revisited"))
     assert queue.sweep_finish_tombstones(grace_s=-1) == [key]
     assert not tombstones[0].exists() and queue.ledger().held() == {}
-    assert queue.item_path(pool.WITHDRAWN, key).read_bytes() == withdrawn
+    completed = pool._read_json(queue.item_path(pool.WITHDRAWN, key))
+    assert all(field in completed and completed[field] == value for field, value in withdrawn.items())
+    assert decision.read_bytes() == decision_bytes
+    assert completed["resource_scope_cleanup"]["complete"] is True
+    assert queue.attempt_outcomes(completed["withdrawn_attempt"])[-1]["status"] == "withdrawn"
     assert not queue.item_path(pool.CLAIMED, key).exists()
     assert (Path(variables["CACHE_ROOT"]) / "compiled").read_bytes() == b"persistent"
 
