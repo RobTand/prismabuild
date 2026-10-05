@@ -111,8 +111,9 @@ RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from prismabuild import (adaptive_cpu, adaptive_gpu as gpu_admission,  # noqa: E402
                          box_capacity, container_images,
-                         core as pb, cpu_topology, filesystem_floor,
-                         local_scratch, pool, publication_canary, storage_tiers)
+                         core as pb, cpu_topology, dependency_digest,
+                         filesystem_floor, local_scratch, pool,
+                         publication_canary, storage_tiers)
 from pbstatus import Deadline, bounded  # noqa: E402
 
 #: The safety ceiling a worker loop enforces on one action unless told
@@ -1001,6 +1002,25 @@ def interpreter_lookup(items) -> tuple[list[str], list[str]]:
     return present, absent
 
 
+def dependency_lookup(items) -> tuple[list[str], list[str]]:
+    """The requirement paths READY items name, as this box's ``(present, absent)``.
+
+    The interpreter lookup's shape (#1263), one stat per distinct path per
+    poll (#1495): the offer answers exactly what the queue asks about, never
+    scans, and never hashes here -- the claim gate reads the bytes.
+    """
+
+    paths = sorted({
+        str(entry.get("path"))
+        for item in items if isinstance(item, dict)
+        for entry in (item.get("requires_files") or ())
+        if isinstance(entry, dict) and isinstance(entry.get("path"), str)})
+    present, absent = [], []
+    for path in paths:
+        (present if os.path.isfile(path) else absent).append(path)
+    return present, absent
+
+
 def discover_ready_snapshot(queue, *, budget_s: float,
                             abandoned: list,
                             placement: tuple | None = None) -> DiscoveryResult:
@@ -1562,6 +1582,13 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
         # before the field offers neither, so an interpreter-naming item waits
         # for a box that can run it instead of dying with 127 there.
         tags.append(pb.INTERPRETER_TAG)
+        # And for digest-pinned dependencies (#1495): this loop's claim
+        # hashes the row's required bytes on this box before it spends an
+        # attempt, and its offer answers for the paths READY items name.  A
+        # loop from before the contract offers neither, so a row whose
+        # dependencies it would silently ignore waits for a box that can
+        # read the requirement instead of dying inside it.
+        tags.append(dependency_digest.DEPENDENCY_DIGEST_TAG)
         # Code capability only; configured executed profiles and current root
         # observations separately decide admission. Old workers cannot ignore
         # opted-in sealed traffic during a rolling publication.
@@ -1931,6 +1958,10 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
         # fail-closed answer rather than a guess.
         offered_interpreters, absent_interpreters = interpreter_lookup(
             discovery.snapshot or [])
+        # And the digest-contract answers (#1495): the requirement paths this
+        # poll's ready snapshot asks about, statted on this box.
+        offered_dependencies, absent_dependencies = dependency_lookup(
+            discovery.snapshot or [])
 
         # Immutable producer/source verification is cached; small CAS proof
         # inputs and independent current device identity refresh outside the
@@ -1945,6 +1976,8 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
                            observed_images=observed_images, class_verdict=class_verdict,
                            interpreters=offered_interpreters,
                            interpreters_absent=absent_interpreters,
+                           dependency_files=offered_dependencies,
+                           dependency_files_absent=absent_dependencies,
                            observed_detail=observed_detail):
             # (``interpreters`` binds the poll's lookup; the announce call
             # below receives it under that closure-local name.)
@@ -1989,6 +2022,8 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
                 # an interpreter reads that as unknown, never capable.
                 interpreters=interpreters,
                 interpreters_absent=interpreters_absent,
+                dependency_files=dependency_files,
+                dependency_files_absent=dependency_files_absent,
             )
 
         publication = publish_offer(

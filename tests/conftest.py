@@ -214,6 +214,13 @@ def pytest_configure(config: pytest.Config) -> None:
         "fleet_data: the test reads fleet data under the shared mount; pbtest "
         "refuses the file without --data-manifest (#915)",
     )
+    config.addinivalue_line(
+        "markers",
+        "pbtest_capability(name, ...): the file's tests require the named "
+        "capability from tests/pbtest_capabilities.json; pbtest fences the "
+        "file's shard to workers offering the capability's tags and seals "
+        "its dependency digests (#1495)",
+    )
     # An audit hook cannot be removed, so install it once per process even if
     # this module is configured again (a nested in-process pytest run).
     if not getattr(sys, "_prismabuild_live_store_hook", False):

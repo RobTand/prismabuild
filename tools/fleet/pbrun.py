@@ -87,8 +87,8 @@ RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from prismabuild import (  # noqa: E402
     action_edges, adaptive_gpu, container_images, core as pb,
-    decomposition as dc, filesystem_floor, materialize, movement_actions, pool,
-    residency_plan, slurm_lane, storage_tiers,
+    decomposition as dc, dependency_digest, filesystem_floor, materialize,
+    movement_actions, pool, residency_plan, slurm_lane, storage_tiers,
 )
 import pbstatus  # noqa: E402
 
@@ -5231,6 +5231,7 @@ def freeze_action_template(
     container_image_refs: Sequence[str] = (),
     wrapper_dir: Path | None = None,
     gang: Mapping[str, object] | None = None,
+    requires_files: list[dict] | None = None,
 ) -> dict[str, object]:
     """Read the tree and the environment once, and freeze what they say.
 
@@ -5487,6 +5488,11 @@ def freeze_action_template(
         # the row, the matcher and the claim all read one authority: the
         # exact path this action will exec.
         params["interpreter"] = declared_interpreter
+    if requires_files is not None:
+        # Sealed like the interpreter (#1495): the row carries the claim-
+        # relevant projection, and the requirement is part of the action's
+        # own identity, so a changed digest re-keys the action.
+        params["requires_files"] = requires_files
     if data_manifest_summary is not None:
         # A summary, not the list: the prewarm budget and the ARC check read
         # these two numbers every poll, and making them fetch and parse a
@@ -6780,6 +6786,13 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--tag", action="append", default=[],
                     help="require a box offering this tag (e.g. a hardware class)")
     ap.add_argument(
+        "--requires-files", default=None, metavar="JSON",
+        help="a JSON array of {path, sha256} entries this action's bytes "
+             "depend on; the row requires the dependency-digest capability "
+             "tag, the claim hashes the actual bytes before spending an "
+             "attempt, and a missing or drifted digest is a named denial, "
+             "never a run (#1495)")
+    ap.add_argument(
         "--container-image", action="append", default=[], metavar="REF",
         help="require the claiming box's local Docker to positively hold this "
              "image before the action is claimed (repeatable). Accepts "
@@ -7174,6 +7187,19 @@ def prepare_submission(args: argparse.Namespace) -> dict[str, object]:
         require_container_image_scope(images=images, transport=args.transport)
     except ValueError as exc:
         args.refuse_argument(str(exc))
+    # The digest requirements are sealed into the action's identity, so a
+    # malformed entry is an argument error here, before any checkout work,
+    # exactly like a malformed image reference (#1495).
+    requirements = None
+    if args.requires_files is not None:
+        try:
+            parsed = json.loads(args.requires_files)
+        except ValueError as exc:
+            args.refuse_argument(f"--requires-files is not JSON: {exc}")
+        try:
+            requirements = dependency_digest.validate_requirements(parsed)
+        except ValueError as exc:
+            args.refuse_argument(f"--requires-files: {exc}")
 
     cwd = Path(args.cwd).resolve()
     if not cwd.is_dir():
@@ -7344,6 +7370,12 @@ def prepare_submission(args: argparse.Namespace) -> dict[str, object]:
     if scratch_io_intent(variables, transport=args.transport) is not None:
         from prismabuild import local_scratch
         tags = pool.normalize_placement_tags([*tags, local_scratch.IO_CAPABILITY])
+    if requirements:
+        # The capability rides the tags, not the bytes (#714 shape, #1495):
+        # a loop that cannot hash the row's requirements must not be able to
+        # claim the row at all.
+        tags = pool.normalize_placement_tags(
+            [*tags, dependency_digest.DEPENDENCY_DIGEST_TAG])
     require_reachable_runtime(
         tags, hostname=socket.gethostname(), runtime_root=RUNTIME_ROOT)
     # Its offer scan remains lazy so cache-hit, withdrawal and SLURM paths
@@ -7493,6 +7525,7 @@ def prepare_submission(args: argparse.Namespace) -> dict[str, object]:
         container_image_refs=images,
         wrapper_dir=wrapper_dir,
         gang=gang,
+        requires_files=requirements,
     )
     return {
         "args": args,
@@ -7541,6 +7574,15 @@ def announce_placement(
         # answers for the row it is about to write.
         intent["interpreter"] = str(params["interpreter"])
         intent["tags"] = [*tags, pb.INTERPRETER_TAG]
+    if params.get("requires_files"):
+        # Same authority for the digest requirements (#1495): the probe
+        # carries the sealed paths and the capability tag publish adds, so
+        # placeable answers for the row it is about to write.
+        intent["requires_files"] = [
+            {"path": str(entry["path"])}
+            for entry in params["requires_files"]]
+        intent["tags"] = pool.normalize_placement_tags(
+            [*tags, dependency_digest.DEPENDENCY_DIGEST_TAG])
     # Say how wide this action is before saying it was queued.  A pin is a
     # consequence of the checkout path, and nothing used to report it, so a
     # submitter narrowed the fleet to one box without being told.
@@ -7629,6 +7671,39 @@ def announce_placement(
             probe_intent["tags"] = [
                 tag for tag in probe_intent.get("tags") or []
                 if tag != pb.INTERPRETER_TAG]
+    # The digest requirements' verdict (#1495), asked where the caller is
+    # still watching, in the interpreter's shape (#1266): a fleet that offers
+    # no dependency-digest capability is refused -- nothing can ever claim
+    # the row, and unlike a first path there is no first use that must
+    # publish; a unanimous absent is refused naming the paths; a capable box
+    # that has not answered for a path yet publishes with a notice, because
+    # the claim gate hashes the bytes on every box and the fleet's next poll
+    # answers for them.
+    if intent.get("requires_files"):
+        verdict = queue.dependency_placement_verdict(probe_intent)
+        paths = ", ".join(sorted(
+            str(entry["path"]) for entry in intent["requires_files"]))
+        if verdict == "unknown_capability":
+            raise SystemExit(
+                "pbrun: no recorded worker offers the "
+                f"{dependency_digest.DEPENDENCY_DIGEST_TAG} capability, so "
+                f"nothing can ever claim this action's pinned dependencies "
+                f"({paths}); run a worker generation that carries the "
+                "contract before submitting it (#1495)")
+        if verdict == "absent":
+            raise SystemExit(
+                "pbrun: every recorded worker that could claim this action "
+                f"names its required dependencies absent: {paths} (#1495)")
+        if verdict == "unknown_paths":
+            print(
+                "pbrun: no worker has answered for the required "
+                f"dependencies ({paths}) yet; the action publishes, the "
+                "claim-time digest check guards every box, and the fleet's "
+                "next poll places it where the bytes live.",
+                file=sys.stderr, flush=True)
+            probe_intent = {
+                name: value for name, value in probe_intent.items()
+                if name != "requires_files"}
     live_verdict = queue.placeable(probe_intent)
     capability_verdict = queue.placeable(
         probe_intent, max_age_s=RECORDED_OFFER_MAX_AGE_S)
@@ -7839,6 +7914,15 @@ def publication_row(
         row["interpreter"] = str(params["interpreter"])
     if params.get("gang"):
         row["gang"] = dict(params["gang"])
+    if params.get("requires_files") and "requires_files" in (
+            inspect.signature(queue.publish).parameters):
+        # Derived from the sealed body like the interpreter (#1495), and
+        # guarded like retry_safe: in a mixed runtime window the row simply
+        # omits the field and the capability tag in the row's tags alone
+        # still fences every worker that cannot read the requirement.
+        row["requires_files"] = [
+            {"path": str(entry["path"]), "sha256": str(entry["sha256"])}
+            for entry in params["requires_files"]]
     # The repo checkout can advance just before the atomic runtime generation
     # rolls.  The previous PoolQueue already accepts the safety-critical bound,
     # so keep that mixed window usable; add the explanatory annotation once the
