@@ -152,7 +152,6 @@ def copy(store, set_id, host, spec, *, reader_context=None, now=None):
         if not lease_active(store, set_id, now=now):
             raise ValueError("resident lease expired")
         local_tier.reserve(queue, set_id, [host], record["manifest"]["total_bytes"])
-    # (the reservation itself moved inside the lock, above)
         if final.exists():
             verification = _verify_tree(final, record)
         else:
