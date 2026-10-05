@@ -44,11 +44,12 @@ every value exactly as it would for a plain submission: it refuses
 enumerated values of ``--residency``, ``--residency-ram`` and
 ``--residency-share``. Two things ``pbgang`` itself refuses, because the
 submission process, not ``pbrun``, decides them: a ``data_manifest`` must be
-an absolute path (``pbrun`` reads it against its own working directory -- the
-directory ``pbgang`` runs in, not the member's ``cwd``, which is the checkout
-every member snapshots -- so a relative name would ingest a different file of
-the same name), and a member that declares ``data_manifest`` must also declare
-``residency`` (``stage``): the #1247 manifest planner files one row's plan per
+an absolute path (~ and $VAR are not expanded; ``pbrun`` reads it against
+its own working directory -- the directory ``pbgang`` runs in, not the
+member's ``cwd``, which is the checkout every member snapshots -- so a
+relative name would ingest a different file of the same name), and a member
+that declares ``data_manifest`` must also declare ``residency`` (``stage``):
+the #1247 manifest planner files one row's plan per
 tier-loop cycle, so a member left to it would hold its gang -- and its elected
 siblings' hosts -- fenced while it reads the pool unplanned. Any other key is
 refused by name:
@@ -138,8 +139,7 @@ def _field_problem(name: str, value: object) -> str | None:
         # Not a style rule: pbrun reads the manifest against its own working
         # directory -- the directory pbgang runs in -- so a relative name
         # would ingest a different file of the same name.
-        return "must be an absolute path"
-    return "must not be empty" if value == "" else None
+        return "must be an absolute path (~ and $VAR are not expanded)"
 
 
 def _shape_problem(member: dict) -> str | None:
@@ -172,12 +172,12 @@ def _shape_problem(member: dict) -> str | None:
         return "env must be a list of K=V strings or a mapping"
     if "cwd" in member and not (isinstance(member["cwd"], str) and member["cwd"]):
         return "cwd must be a nonempty string"
-    if "data_manifest" in member and "residency" not in member:
+    if "data_manifest" in member and member.get("residency") != "stage":
         # The #1247 planner files one row's plan per tier-loop cycle; a member
-        # left to it holds the gang uncommitted -- and its elected siblings'
-        # hosts fenced -- while it would read the pool at full cost.
+        # left to it -- anything but an explicit ``stage``, including pbrun's
+        # default ``none`` -- holds the gang uncommitted, its elected siblings'
+        # hosts fenced, while it would read the pool at full cost.
         return ("declares data_manifest without residency; set residency: stage")
-    return None
 
 
 def load(path: Path) -> dict:

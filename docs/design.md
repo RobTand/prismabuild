@@ -4628,10 +4628,11 @@ members through the ordinary path, which marks a consumer's frozen plan
 superseded; the leads are separate actions the gang never withdraws, and
 their stage pins are released by the tier loop's orphan sweep (`stage_release`)
 once no live item names them -- for a claimed member, after its covered row
-ends at the worker's withdrawal checkpoint -- not by the gang. A member that
-declares a manifest without `--residency` is
-planned by the manifest planner (#1247) off its own sealed request and is then
-gated by its filed plan exactly like an explicit one, reaching its map at
+ends at the worker's withdrawal checkpoint -- not by the gang. A row that
+carries a manifest and no `--residency` (a member submitted by `pbrun`
+directly -- `pbgang` refuses this shape -- or any other submitter's row) is
+planned by the manifest planner (#1247) off its own sealed request and is
+then gated by its filed plan exactly like an explicit one, reaching its map at
 launch through the declared-manifest branch of `residency_map_environment`.
 Operational consequence: a window whose movers are slow drains its already-
 elected siblings' hosts for the whole mover time, and the wait does not end on
