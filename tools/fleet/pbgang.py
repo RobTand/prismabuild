@@ -19,6 +19,16 @@ Manifest (JSON)::
 ``tag`` is the host (or host class) a member is placed on; members land on
 distinct hosts. ``timeout_s`` and ``priority`` apply to every member unless a
 member overrides them. Prints one JSON line: the group and its member keys.
+
+A member keeps the whole ``pbrun`` submission contract: ``gpu``,
+``gpu_memory_gb``, ``gpu_capacity``, ``exclusive``, ``measurement``,
+``host_class``, ``container_image`` (a list), ``data_manifest``, ``residency``
+and the ``residency_*`` options, ``progress_phase`` (a list), ``progress_cycle``,
+``deterministic`` and ``profile`` each become the one ``pbrun`` flag of that
+name. A switch is true or false, a list repeats its flag, and ``pbrun`` judges
+every value exactly as it would for a plain submission. The gang flags, ``tag``,
+``priority``, the checkout and retries are the driver's: a retry ends the gang,
+so ``max_attempts`` and ``retry_safe`` are not member fields.
 Gang admission must be enabled on the target boxes (worker ``--gang-admission``);
 otherwise ``pbrun`` refuses because no box offers the capability.
 
@@ -47,6 +57,54 @@ SH = Path("/mnt/shared/prismabuild-fleet")
 SCHEMA = "prismabuild.pbgang.v1"
 MEMBER_FIELDS = {"tag", "argv", "demand", "env", "timeout_s", "priority", "cpus"}
 
+#: Member fields that are one ``pbrun`` flag each, so a gang member keeps the
+#: whole submission contract of a plain ``pbrun`` row (#1517).  The kind says
+#: how the JSON value becomes argv: ``switch`` is a boolean flag, ``value`` is
+#: one scalar, ``repeat`` is a list with the flag once per entry.  ``pbrun``
+#: stays the only judge of each value; this table forwards, it never reinterprets.
+#: The gang flags, ``--tag``, ``--priority``, ``--detach`` and ``--cwd`` are
+#: deliberately not here: the driver owns them.
+FLAG_FIELDS: dict[str, tuple[str, str]] = {
+    "gpu": ("--gpu", "switch"),
+    "gpu_memory_gb": ("--gpu-memory-gb", "value"),
+    "gpu_capacity": ("--gpu-capacity", "value"),
+    "exclusive": ("--exclusive", "switch"),
+    "measurement": ("--measurement", "switch"),
+    "host_class": ("--host-class", "value"),
+    "container_image": ("--container-image", "repeat"),
+    "data_manifest": ("--data-manifest", "value"),
+    "residency": ("--residency", "value"),
+    "residency_tier": ("--residency-tier", "value"),
+    "residency_ram": ("--residency-ram", "value"),
+    "residency_share": ("--residency-share", "value"),
+    "residency_mover_mem_gb": ("--residency-mover-mem-gb", "value"),
+    "residency_mover_readers": ("--residency-mover-readers", "value"),
+    "residency_prefetch_depth_gib": ("--residency-prefetch-depth-gib", "value"),
+    "residency_read_mb_s": ("--residency-read-mb-s", "value"),
+    "residency_mover_max_attempts": ("--residency-mover-max-attempts", "value"),
+    "progress_phase": ("--progress-phase", "repeat"),
+    "progress_cycle": ("--progress-cycle", "switch"),
+    "deterministic": ("--deterministic", "switch"),
+    "profile": ("--profile", "value"),
+}
+MEMBER_FIELDS = MEMBER_FIELDS | set(FLAG_FIELDS)
+
+
+def _field_problem(name: str, value: object) -> str | None:
+    """Why ``value`` cannot be this member field, or ``None``."""
+
+    kind = FLAG_FIELDS[name][1]
+    if kind == "switch":
+        return None if isinstance(value, bool) else "must be true or false"
+    if kind == "repeat":
+        if (isinstance(value, list) and value
+                and all(isinstance(item, str) and item for item in value)):
+            return None
+        return "must be a nonempty list of nonempty strings"
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        return "must be one string or number"
+    return "must not be empty" if value == "" else None
+
 
 def load(path: Path) -> dict:
     manifest = json.loads(path.read_text())
@@ -62,6 +120,10 @@ def load(path: Path) -> dict:
                 or not isinstance(member.get("argv"), list) or not member["argv"]):
             raise SystemExit(f"pbgang: member {index} needs a tag and an argv; "
                              f"allowed fields {sorted(MEMBER_FIELDS)}")
+        for name in sorted(set(member) & set(FLAG_FIELDS)):
+            problem = _field_problem(name, member[name])
+            if problem:
+                raise SystemExit(f"pbgang: member {index} field {name!r} {problem}")
     return manifest
 
 
@@ -80,6 +142,18 @@ def member_command(args, manifest: dict, member: dict, *, group: str, index: int
         command += ["--cpus", str(member["cpus"])]
     for entry in member.get("env", []):
         command += ["--env", str(entry)]
+    for name, (flag, kind) in FLAG_FIELDS.items():
+        if name not in member:
+            continue
+        value = member[name]
+        if kind == "switch":
+            if value:
+                command.append(flag)
+        elif kind == "repeat":
+            for entry in value:
+                command += [flag, str(entry)]
+        else:
+            command += [flag, str(value)]
     return [*command, "--", *map(str, member["argv"])]
 
 

@@ -4553,6 +4553,12 @@ attempt and is never `retry_safe`: a retried or preempted member could start
 beside siblings that are already running. `pbgang.py` seals and publishes every
 member (`pbrun --detach --gang-*`) and only then files the immutable group record
 `pb-queue/gangs/<group>.json`. A member is never claimable without that record.
+A member carries the whole `pbrun` submission contract (GPU subset, exclusive and
+measurement class, container image, data manifest and residency options, progress
+phases, profile): each manifest member field is one `pbrun` flag, forwarded as
+given, and `pbrun` judges every value as it does for a plain submission. Only the
+driver's own flags, the tag, the priority, the checkout and retries are not member
+fields.
 
 Per member host, inside the ordinary claim pass:
 
