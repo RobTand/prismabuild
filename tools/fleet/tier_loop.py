@@ -9837,6 +9837,8 @@ def cycle(
     discover=storage_tiers.discover_tiers,
     liveness: Liveness | None = None,
     supply_reader_for=None,
+    evict_gib: int | None = None,
+    evict_tier: str | None = None,
 ) -> list[dict[str, object]]:
     """Discover, mint, announce; returns the records it announced.
 
@@ -9863,12 +9865,27 @@ def cycle(
     :func:`pool.transition_locks_never_wait`, which refuses it with an
     ``OSError`` and emits a ``transition-lock-busy`` event naming the step it
     followed.  ``LAST_CYCLE["transition_lock_busy"]`` counts both kinds.
+
+    ``evict_gib`` is the operator's ``--evict-gib`` one-shot (#1535): the
+    given GiB is merged into the per-tier ``pressure`` the cycle already
+    computes, as a floor (never lower than the window's own pressure), so the
+    ordinary orphan sweep evicts until the tier has that much free.  Only
+    orphans go: a live or claimed consumer's plan still names everything it
+    protects, and the beyond-horizon pass -- which takes a *live* consumer's
+    landed ranges -- is not run at all in this mode.  What the sweep did is
+    left in :data:`EVICT_RUN` for the one-shot's summary line.  ``None``
+    (the default) runs the cycle exactly as before.  ``evict_tier`` names the
+    stage tier when the box announces more than one.
     """
 
+    global EVICT_RUN
     if liveness is not None:
         liveness.begin_cycle()
     phases = _Phases(liveness)
     _LOCK_BUSY_COUNT[0] = 0
+    EVICT_RUN = ({"requested_gib": int(evict_gib), "tier_id": None,
+                  "sweep_receipts": [], "beyond_horizon": None}
+                 if evict_gib is not None else None)
 
     def refused(record: dict[str, object]) -> None:
         _emit(queue, host, {"event": LOCK_BUSY_EVENT,
@@ -9901,13 +9918,19 @@ def cycle(
                                        receipts=receipts, now=now,
                                        discover=discover, phases=phases,
                                        **({"supply_reader_for": supply_reader_for}
-                                          if supply_reader_for is not None else {}))
+                                          if supply_reader_for is not None else {}),
+                                       **({} if evict_gib is None else
+                                          {"evict_gib": evict_gib,
+                                           "evict_tier": evict_tier}))
             else:
                 announced = _cycle(queue, host=host, source_pool=source_pool,
                                    receipts=receipts, now=now, discover=discover,
                                    phases=phases,
                                    **({"supply_reader_for": supply_reader_for}
-                                      if supply_reader_for is not None else {}))
+                                      if supply_reader_for is not None else {}),
+                                   **({} if evict_gib is None else
+                                      {"evict_gib": evict_gib,
+                                       "evict_tier": evict_tier}))
         completed = True
         return announced
     finally:
@@ -9947,6 +9970,8 @@ def _cycle(
     discover,
     phases: _Phases,
     supply_reader_for=None,
+    evict_gib: int | None = None,
+    evict_tier: str | None = None,
 ) -> list[dict[str, object]]:
     """The body of :func:`cycle`; ``phases`` is lapped after every step."""
 
@@ -10416,6 +10441,20 @@ def _cycle(
                                withdrawn=withdrawn, unknown=planned_unknown,
                                commitments=commitments, claim_order=claim_order)
     phases.lap("window_pressure")
+    # The operator's --evict-gib (#1535) joins the window's own pressure as a
+    # floor on the stage tier it names, so the sweep below evicts orphans
+    # until the tier has that much free.  Only the orphan sweep sees it: the
+    # beyond-horizon pass is skipped entirely in this mode, because what it
+    # evicts is a *live* consumer's landed ranges (past a refill horizon, or
+    # ranked behind a claim-order head), and an operator reclaim of nobody's
+    # bytes must never be paid for with a reader's.
+    evict_target = (_evict_stage_tier(announced_tiers, host=host,
+                                      requested=evict_tier)
+                    if evict_gib is not None else None)
+    if evict_target is not None and EVICT_RUN is not None:
+        EVICT_RUN["tier_id"] = evict_target
+        pressure[evict_target] = max(pressure.get(evict_target, 0),
+                                     int(evict_gib or 0))
     # Failed movers' partials next: a terminal, unpinned mover that still
     # names bytes is an eviction candidate when the window has no room (#627).
     # Its egress rows land in ``ready/`` before the sweep runs, so the window
@@ -10429,16 +10468,26 @@ def _cycle(
                                **phases.budgeted()):
         _emit(queue, host, {"event": "stage-orphan-evicted", **event},
               stamp_unix=False)
+        if EVICT_RUN is not None:
+            EVICT_RUN["sweep_receipts"].append(dict(event))
     phases.lap("sweep_orphans")
     # Orphans first, then the ranges past their readers' refill horizons
     # (#903): an orphan is nobody's, a range past a horizon is somebody's
     # later, so the sweep that returns what nobody will read goes first.
-    for event in evict_beyond_horizon(queue, announced_tiers,
-                                      consumers=planned, pressure=pressure,
-                                      withdrawn=withdrawn,
-                                      claim_order=claim_order,
-                                      **phases.budgeted()):
-        _emit(queue, host, event, tier_consumers=tier_consumers)
+    # --evict-gib runs neither: the ranges this pass takes belong to live
+    # consumers (#903, #1011), and the operator asked for orphans (#1535).
+    if evict_target is not None:
+        if EVICT_RUN is not None:
+            EVICT_RUN["beyond_horizon"] = (
+                "skipped (orphans-only run: the beyond-horizon and "
+                "claim-order passes evict a live consumer's ranges)")
+    else:
+        for event in evict_beyond_horizon(queue, announced_tiers,
+                                          consumers=planned, pressure=pressure,
+                                          withdrawn=withdrawn,
+                                          claim_order=claim_order,
+                                          **phases.budgeted()):
+            _emit(queue, host, event, tier_consumers=tier_consumers)
     phases.lap("evict_beyond_horizon")
     # Each consumer still reading a shared range gets its own copy of the
     # range's vouch before either window reads residency (#1026): after the
@@ -10515,6 +10564,354 @@ def _cycle(
     return announced
 
 
+# ------------------------------------------------- operator evict (#1535)
+
+
+class EvictTargetError(RuntimeError):
+    """``--evict-gib`` cannot say which stage tier its pressure applies to."""
+
+
+#: What the running one-shot's orphan sweep did, or ``None`` outside an
+#: ``--evict-gib`` cycle.  Rebound fresh by :func:`cycle` and read by
+#: :func:`_serve` after the cycle returns, so a caller's reference is never
+#: rewritten under it -- :data:`LAST_CYCLE`'s pattern.
+EVICT_RUN: dict[str, object] | None = None
+
+
+def _evict_stage_tier(tiers: Mapping[str, Mapping[str, object]], *,
+                      host: str, requested: str | None) -> str:
+    """The one stage tier an operator eviction applies to.
+
+    dl380g10 announces exactly one.  None, or several with no
+    ``--evict-tier``, is a refusal, not a guess: the pressure is a
+    physical promise about one dataset.
+    """
+
+    stage = {str(tier_id): record for tier_id, record in tiers.items()
+             if isinstance(record, Mapping) and record.get("tier") == "stage"}
+    if requested is not None:
+        if requested not in stage:
+            raise EvictTargetError(
+                f"--evict-tier {requested} is not a stage tier this box "
+                f"announces (host {host}); announced stage tiers: "
+                f"{sorted(stage) or '(none)'}")
+        return requested
+    if not stage:
+        raise EvictTargetError(
+            f"--evict-gib found no stage tier this box announces (host "
+            f"{host}); run the tiers role once, or name one with --evict-tier")
+    if len(stage) > 1:
+        raise EvictTargetError(
+            f"--evict-gib needs --evict-tier: {len(stage)} stage tiers are "
+            f"announced on {host}: {sorted(stage)}")
+    return next(iter(stage))
+
+
+def _stage_dataset_available(source_pool: str, *,
+                             runner=None) -> tuple[int | None, str | None]:
+    """``(available_bytes, dataset)`` off the source pool, as discovery reads it.
+
+    The same ``zfs list -Hp -r -o name,available,...`` read
+    :func:`storage_tiers.stage_dataset` mints stage capacity from, so the
+    before/after in the operator's summary line is the same number the
+    ledger's next mint will announce.  ``(None, None)`` when the box cannot
+    answer -- a summary line never invents the number.
+    """
+
+    try:
+        record = storage_tiers.stage_dataset(source_pool, runner=runner)
+    except (OSError, ValueError):
+        record = None
+    if not isinstance(record, Mapping):
+        return None, None
+    available = record.get("available_bytes")
+    return (int(available) if isinstance(available, int) else None,
+            str(record.get("dataset") or "") or None)
+
+
+def _evict_held_vs_staged(queue: pool.PoolQueue, tier_id: str,
+                          ) -> dict[str, object]:
+    """The one-shot's ledger cross-check: held tokens versus receipt ranges.
+
+    The same comparison ``assert_ledger_matches_the_stage`` makes in the
+    tests, read the one way an operator can verify from the summary line
+    alone: every held key's tokens beside the range its move receipt
+    declares, with the keys that have no receipt counted rather than
+    guessed.
+    """
+
+    kind = storage_tiers.capacity_kind_of(tier_id)
+    held_tokens_gib = 0
+    receipt_range_gib = 0
+    without_receipt = 0
+    unreadable = 0
+    try:
+        ledger = queue.tier_ledger(tier_id)
+        held = {key: int(ledger.holder_tokens(key).get(kind, 0))
+                for key in ledger.held_keys()}
+    except (OSError, pool.PoolContractError, ValueError) as exc:
+        return {"error": repr(exc)}
+    gib = float(storage_tiers.GIB)
+    for key, tokens in held.items():
+        if tokens <= 0:
+            continue
+        held_tokens_gib += tokens
+        receipt = queue.move_record(key)
+        if receipt is None:
+            without_receipt += 1
+            continue
+        try:
+            receipt_range_gib += ((int(receipt["range_end_bytes"])
+                                   - int(receipt["range_start_bytes"])) / gib)
+        except (KeyError, TypeError, ValueError):
+            unreadable += 1
+    return {"held_tokens_gib": held_tokens_gib,
+            "receipt_range_gib": round(receipt_range_gib, 3),
+            "held_keys_without_receipt": without_receipt,
+            "receipts_unreadable": unreadable}
+
+
+def _evict_run_summary(queue: pool.PoolQueue, *, requested_gib: int,
+                       source_pool: str,
+                       before: tuple[int | None, str | None],
+                       after: tuple[int | None, str | None],
+                       loaded_commit: str, published_commit: str,
+                       ) -> dict[str, object]:
+    """The one JSON line a ``--evict-gib`` one-shot prints at its end."""
+
+    run = EVICT_RUN or {}
+    tier_id = run.get("tier_id")
+    receipts = run.get("sweep_receipts") or []
+    gib = float(storage_tiers.GIB)
+    record: Mapping[str, object] = {}
+    if tier_id:
+        record = next((one for one in queue.tiers()
+                       if str(one.get("tier_id")) == tier_id), {})
+    try:
+        ledger = queue.tier_ledger(str(tier_id))
+        capacity = ledger.capacity()
+        available = ledger.available()
+        kind = storage_tiers.capacity_kind_of(str(tier_id))
+        # Ledger reads are token counts -- one stage_gib token per GiB -- so
+        # they are the GiB numbers already; nothing here divides.
+        ledger_gib = {"capacity_gib": int(capacity.get(kind, 0)),
+                      "available_gib": int(available.get(kind, 0)),
+                      "held_gib": (int(capacity.get(kind, 0))
+                                   - int(available.get(kind, 0)))}
+    except (OSError, pool.PoolContractError, ValueError) as exc:
+        ledger_gib = {"error": repr(exc)}
+    return {
+        "event": "evict-gib",
+        "requested_gib": int(requested_gib),
+        "tier_id": tier_id,
+        "stage_root": record.get("mountpoint"),
+        "bytes_evicted": sum(int(one.get("bytes_deleted") or 0)
+                             for one in receipts
+                             if isinstance(one, Mapping)),
+        "tokens_released": sum(int(one.get("tokens_released") or 0)
+                               for one in receipts
+                               if isinstance(one, Mapping)),
+        "available_before_bytes": before[0],
+        "available_after_bytes": after[0],
+        "available_dataset": after[1] or before[1],
+        # The read the numbers above came from: the same zfs answer discovery
+        # mints stage capacity from, not a second fact.
+        "available_read": ("storage_tiers.stage_dataset: zfs list -Hp -r "
+                           "-o name,available,mountpoint,primarycache "
+                           f"{source_pool}"),
+        "ledger_gib": ledger_gib,
+        "held_vs_staged": (_evict_held_vs_staged(queue, str(tier_id))
+                           if tier_id else {"error": "no tier resolved"}),
+        "sweep_receipts": receipts,
+        "beyond_horizon": run.get("beyond_horizon"),
+        # The runtime-moved gate is skipped for this run, on purpose: it
+        # exists to keep a *serving* loop on the published generation (#615),
+        # and an operator one-shot running a branch's own code is not the
+        # fleet's serving loop.  Both commits are named so the line says what
+        # ran instead of hiding the skip.
+        "runtime_gate": {"skipped": True, "loaded_commit": loaded_commit,
+                         "published_commit": published_commit},
+        # Where the operator confirms the ledger afterwards: the starvation
+        # report's per-tier ledger and commitment records (#930, #661).
+        "ledger_report": ("python3 tools/fleet/pbstatus.py --starvation "
+                          "(tiers[]: ledger_capacity/ledger_available/"
+                          "ledger_held, commitment: capacity_gib, held_gib, "
+                          "evictable_gib, queued_gib)"),
+    }
+
+
+def _evict_dry_run_candidates(queue: pool.PoolQueue, tier_id: str,
+                              stage_root: str,
+                              ) -> tuple[list[dict[str, object]],
+                                         list[dict[str, object]],
+                                         list[dict[str, object]]]:
+    """``(candidates, skipped, notes)`` for the dry run, read-only.
+
+    The candidates are the held keys the orphan sweep would evict, in its
+    order: the produced-output dead first (the sweep takes them during its
+    held-key walk, pressure or none, #929), then the rest oldest receipt
+    first (#598).  Each carries its held tokens as bytes.  A key a live or
+    claimed item still names is listed among ``skipped`` -- the protection
+    the operator is being shown, not a candidate.  Nothing here writes:
+    every predicate is the sweep's own read.
+    """
+
+    wanted, owners = stage_release.live_claims(queue)
+    kind = storage_tiers.capacity_kind_of(tier_id)
+    ledger = queue.tier_ledger(tier_id)
+    root = queue.residency_fragment_root()
+    fragment_owners: dict[str, list[tuple[str, bool]]] | str | None = None
+
+    def bytes_of(key: str) -> int:
+        try:
+            return int(ledger.holder_tokens(key).get(kind, 0)) * int(
+                storage_tiers.GIB)
+        except (OSError, pool.PoolContractError, ValueError):
+            return 0
+
+    walk: list[dict[str, object]] = []
+    ordered: list[tuple[float, str, str]] = []
+    skipped: list[dict[str, object]] = []
+    notes: list[dict[str, object]] = []
+    for key in ledger.held_keys():
+        if key in wanted or key in owners:
+            skipped.append({"mover": key,
+                            "why": "SKIPPED, owned by a live consumer"})
+            continue
+        verdict = stage_release.produced_holder(queue, tier_id, key)
+        if verdict is not None:
+            if verdict["class"] == "dead":
+                walk.append({"mover": key, "bytes": bytes_of(key),
+                             "why": "its produced batch is dead: "
+                                    + str(verdict["why"]),
+                             "when": "held-key walk, before the age order"})
+            elif verdict["class"] == "live":
+                skipped.append({"mover": key,
+                                "why": "SKIPPED, owned by a live consumer: "
+                                       + str(verdict["why"])})
+            else:
+                notes.append({"holder": key, "why": str(verdict["why"])})
+            continue
+        receipt = queue.move_record(key)
+        consumer = (str(receipt.get("consumer_action_key"))
+                    if isinstance(receipt, dict) else "")
+        if not consumer:
+            # The sweep's receipt-less rule (#892), asked the same way: the
+            # fragment names the owner, an ending proves it ended.
+            if fragment_owners is None:
+                fragment_owners = stage_release._held_mover_fragment_owners(
+                    root)
+            consumer, why = stage_release._receiptless_owner(
+                fragment_owners, key)
+            if consumer:
+                why = stage_release._unended_owner(queue, consumer)
+                if why:
+                    consumer = ""
+            if not consumer:
+                if not stage_release._held_by_a_live_item(queue, key, owners):
+                    notes.append({"holder": key,
+                                  "why": why or "retained: unresolvable"})
+                continue
+        ordered.append((stage_release._staged_unix(receipt), key, consumer))
+    ordered.sort()
+    candidates = walk + [
+        {"mover": key, "consumer": consumer,
+         "staged_unix": staged_unix, "bytes": bytes_of(key),
+         "why": ("held by no live item: no ready or claimed consumer's plan "
+                 f"names it (consumer {consumer[:12]})")}
+        for staged_unix, key, consumer in ordered]
+    return candidates, skipped, notes
+
+
+def _evict_dry_run(args) -> int:
+    """``--evict-dry-run``: report what a real ``--evict-gib`` run would take.
+
+    Reads only.  It does not mint or announce a tier, write the queue, unlink
+    a byte or move a frontier -- it runs before the singleton lock is even
+    taken, precisely because it is not a second minter.
+    """
+
+    queue = pool.PoolQueue(Path(args.pool_root))
+    try:
+        announced = {str(one.get("tier_id")): one for one in queue.tiers()
+                     if isinstance(one, dict)}
+    except (OSError, ValueError, pool.PoolContractError) as exc:
+        print(f"tier_loop: --evict-dry-run cannot read the announced tiers "
+              f"at {queue.root}: {exc!r}", file=sys.stderr, flush=True)
+        return 2
+    try:
+        tier_id = _evict_stage_tier(announced, host=socket.gethostname(),
+                                    requested=args.evict_tier)
+    except EvictTargetError as exc:
+        print(f"tier_loop: {exc}", file=sys.stderr, flush=True)
+        return 2
+    record = announced[tier_id]
+    stage_root = str(record.get("mountpoint") or "")
+    refusal = (stage_release.stage_root_refusal(queue, stage_root)
+               if stage_root else "the announced tier record names no mountpoint")
+    print(json.dumps({"event": "evict-dry-run", "tier_id": tier_id,
+                      "stage_root": stage_root,
+                      "requested_gib": args.evict_gib}), flush=True)
+    if refusal is not None:
+        print(json.dumps({"event": "evict-dry-run-refused", "tier_id": tier_id,
+                          "stage_root": stage_root, "refusal": refusal,
+                          "note": "the real sweep refuses this root too; "
+                                  "nothing would be evicted"}),
+              flush=True)
+        return 1
+    try:
+        candidates, skipped, notes = _evict_dry_run_candidates(
+            queue, tier_id, stage_root)
+    except (OSError, pool.PoolContractError, ValueError) as exc:
+        print(json.dumps({"event": "evict-dry-run-refused", "tier_id": tier_id,
+                          "stage_root": stage_root, "refusal": repr(exc),
+                          "note": "the sweep's own reads failed; nothing "
+                                  "would be evicted"}),
+              flush=True)
+        return 1
+    gib = float(storage_tiers.GIB)
+    running = 0
+    for ordinal, candidate in enumerate(candidates, start=1):
+        running += int(candidate.get("bytes") or 0)
+        print(json.dumps({"event": "evict-dry-run-candidate",
+                          "order": ordinal, "age_order": ordinal,
+                          **candidate,
+                          "bytes_gib": round(
+                              int(candidate.get("bytes") or 0) / gib, 3),
+                          "running_total_gib": round(running / gib, 3)}),
+              flush=True)
+    for entry in skipped:
+        print(json.dumps({"event": "evict-dry-run-skipped", **entry}),
+              flush=True)
+    for note in notes:
+        print(json.dumps({"event": "evict-dry-run-retained", **note}),
+              flush=True)
+    would_free_gib = round(running / gib, 3)
+    reaches = running >= args.evict_gib * int(gib)
+    print(json.dumps({"event": "evict-dry-run-summary",
+                      "requested_gib": args.evict_gib,
+                      "would_free_gib": would_free_gib,
+                      "candidates": len(candidates),
+                      "skipped_live_owned": len(skipped),
+                      "retained": len(notes),
+                      "reaches_requested": reaches,
+                      "note": (f"would free {would_free_gib} GiB of the "
+                               f"{args.evict_gib} requested"
+                               if reaches else
+                               f"would free {would_free_gib} GiB of the "
+                               f"{args.evict_gib} requested: the candidates "
+                               f"cannot reach it; they reach "
+                               f"{would_free_gib} GiB"),
+                      # The real run also retires uncharged dead owners and
+                      # reconciles unowned bytes; neither is listed here
+                      # because proving them is a write path's work.
+                      "not_listed": ["uncharged dead owners (#1061)",
+                                     "dead-owner fragments (#839)",
+                                     "reconciliation of unowned bytes"]}),
+          flush=True)
+    return 0
+
+
 def _parser() -> argparse.ArgumentParser:
     """The role's own parser, built before anything takes the singleton.
 
@@ -10541,6 +10938,22 @@ def _parser() -> argparse.ArgumentParser:
                         help="count each tier's unheld produced-output window "
                              "in the joint-fit gate and the fence check (#747); "
                              f"sets {OUTPUT_WINDOWS_ENV}=1. Off by default")
+    parser.add_argument("--evict-gib", type=int, default=None, metavar="N",
+                        help="with --once: merge N GiB of operator pressure "
+                             "into the stage tier's window pressure, so the "
+                             "ordinary orphan sweep evicts oldest-first until "
+                             "the tier has N GiB free (#1535).  Orphans only: "
+                             "nothing a live or claimed consumer's plan names "
+                             "is touched, and the beyond-horizon pass does not "
+                             "run at all in this mode")
+    parser.add_argument("--evict-tier", default=None, metavar="TIER_ID",
+                        help="the stage tier --evict-gib applies to, needed "
+                             "only when this box announces more than one")
+    parser.add_argument("--evict-dry-run", action="store_true",
+                        help="with --evict-gib: list, read-only and in the "
+                             "real sweep's eviction order, what a real run "
+                             "would take and what it would skip; writes "
+                             "nothing and takes no lock")
     return parser
 
 
@@ -10593,14 +11006,15 @@ def _serve(args) -> int:
             loaded_generation and current_generation
             and loaded_generation != current_generation))
 
+    # The one-shot operator eviction (#1535) runs this checkout's own code on
+    # purpose -- the flag exists only on a branch -- so the runtime-moved gate
+    # does not govern it; both commits are named in its summary line.  A
+    # plain --once keeps the gate and its exit 75.
+    evict_mode = args.evict_gib is not None
+    if evict_mode:
+        evict_before = _stage_dataset_available(args.source_pool)
     while True:
-        # Read at the top of the cycle, never inside one: every mutation this
-        # loop makes is a single atomic rename, and the one composite -- the
-        # map -- is recomposed from the fragments on disk each cycle, so the
-        # boundary between two cycles is the only place there is nothing to
-        # finish.  The supervisor's ``ensure_roles`` puts the replacement back
-        # on the published generation on its next tick.
-        if runtime_moved():
+        if not evict_mode and runtime_moved():
             print(json.dumps({
                 "event": "tier-runtime-moved", "unix": time.time(), "host": host,
                 "loaded": loaded_commit[:12] or "(unversioned)",
@@ -10610,7 +11024,13 @@ def _serve(args) -> int:
         started = time.monotonic()
         try:
             records = cycle(queue, host=host, source_pool=args.source_pool,
-                            receipts=receipts, liveness=liveness)
+                            receipts=receipts, liveness=liveness,
+                            **({} if not evict_mode else
+                               {"evict_gib": args.evict_gib,
+                                "evict_tier": args.evict_tier}))
+        except EvictTargetError as exc:
+            print(f"tier_loop: {exc}", file=sys.stderr, flush=True)
+            return 2
         except (OSError, pool.PoolContractError) as exc:
             # What the failed cycle cost up to the raise, phase by phase
             # (#992): a slow failure is still a slow cycle.
@@ -10622,6 +11042,15 @@ def _serve(args) -> int:
                   flush=True)
         if args.once:
             print(json.dumps(records, indent=1, default=str))
+            if evict_mode:
+                print(json.dumps(_evict_run_summary(
+                    queue, requested_gib=args.evict_gib,
+                    source_pool=args.source_pool,
+                    before=evict_before,
+                    after=_stage_dataset_available(args.source_pool),
+                    loaded_commit=loaded_commit,
+                    published_commit=runtime_gate.published_commit()),
+                    default=str), flush=True)
             return 0
         time.sleep(max(0.0, args.interval_s - (time.monotonic() - started)))
 
@@ -10642,11 +11071,29 @@ def main(argv: list[str] | None = None) -> int:
     Safety never depends on naming the holder: the holder pid is a
     /proc/locks diagnostic the ``RoleLockHeld`` message may carry, read only
     when the flock is refused, and an unreadable holder is still a refusal.
+
+    The one exception is ``--evict-dry-run`` (#1535): it reads the announced
+    tiers and the ledger and prints what a real ``--evict-gib`` run would
+    take.  It writes nothing, so it is not a second minter and takes no
+    lock -- the operator can read it beside a running role.
     """
 
-    args = _parser().parse_args(argv)
+    parser = _parser()
+    args = parser.parse_args(argv)
+    if args.evict_gib is not None:
+        if not args.once:
+            parser.error("--evict-gib needs --once: it is a one operator "
+                         "cycle, never a serving loop's posture")
+        if args.evict_gib <= 0:
+            parser.error(f"--evict-gib must be a positive number of GiB, "
+                         f"not {args.evict_gib}")
+    if args.evict_dry_run and args.evict_gib is None:
+        parser.error("--evict-dry-run needs --evict-gib: there is nothing "
+                     "to preview without a request")
     if args.interval_s <= 0:
         raise SystemExit("--interval-s must be positive")
+    if args.evict_dry_run:
+        return _evict_dry_run(args)
     if args.output_windows:
         os.environ[OUTPUT_WINDOWS_ENV] = "1"
     try:

@@ -137,6 +137,76 @@ Keep the supervisor running. Verify the replacement's PID/start time, resolved
 script path and manifest hash, configured arguments, and a new cycle event.
 See the [storage-role restart procedure](data_manifest_prewarm.md#restarting-the-role-after-a-publication).
 
+### Freeing orphaned stage bytes with `--evict-gib`
+
+The stage tier evicts only under pressure a live window creates, so orphaned
+ranges — a gone consumer's landed movers nothing live names — hold their
+tokens until some window happens to need the room. When the stage holds more
+evictable orphan bytes than any waiting window will ask for,
+`tier_loop.py --once --evict-gib N` gives them back through the loop's own
+orphan sweep: the operator's N GiB is merged into the per-tier pressure the
+cycle already computes (never lowering it), and `stage_release.sweep` takes
+the oldest orphans first until the tier has N GiB free. The ledger stays
+consistent the whole time — held tokens equal the bytes on the stage at every
+instant — because the sweep, not an `rm`, does the evicting.
+
+Orphans only. Nothing a live or claimed consumer's frozen plan names is a
+candidate, and the beyond-horizon and claim-order passes — whose candidates
+are a *live* consumer's landed ranges past its refill horizon — do not run at
+all in this mode. With no flag, a cycle is exactly what it was.
+
+1. Preview it read-only while the role still runs. `--evict-dry-run` takes no
+   lock and writes nothing:
+
+       python3 tools/fleet/tier_loop.py --once --evict-gib 180 --evict-dry-run
+
+   It lists, in the real sweep's eviction order (oldest receipt first), each
+   candidate mover with its bytes, why it is an orphan and the running total;
+   any holder a live consumer owns as `SKIPPED, owned by a live consumer`; and
+   a final `would free X GiB of the Y requested`, said plainly when the
+   candidates cannot reach Y. Uncharged dead owners (#1061) and the
+   reconciliation of unowned bytes are part of the real run but are not
+   listed: proving them is write-path work.
+
+2. Stop the tiers role for the shortest possible time, by the
+   [storage-role restart procedure](data_manifest_prewarm.md#restarting-the-role-after-a-publication):
+   the one-shot takes the same host-local singleton lock the role holds (exit
+   3 while it is held), and a SIGSTOPped role keeps holding it, so stopping
+   does not help. From the supervisor log, record the tiers child's PID,
+   `/proc/<pid>/stat` start time and `/proc/<pid>/cmdline`; recheck that
+   identity immediately before; `kill -TERM <pid>`; and start the one-shot at
+   once. The supervisor respawns the role within one 5 s tick, and a
+   replacement that loses the race refuses with
+   `tier_loop: refusing a second tiers role; <lock path> is held by pid N`
+   (exit 3) — harmless. That replacement is itself backed off up to
+   `ROLE_REFUSAL_BACKOFF_MAX_S` (300 s), so a retry after the backoff finds
+   the lock free without another kill.
+
+3. Run the one-shot from the checkout that carries the flag (a branch: the
+   published generation has no `--evict-gib`):
+
+       python3 tools/fleet/tier_loop.py --once --evict-gib 180
+
+   The runtime-moved gate does not govern this run — it exists to keep a
+   *serving* loop on the published generation, which cannot carry a branch
+   flag; a plain `--once` from a branch still exits 75 with
+   `tier-runtime-moved`. The final JSON line carries the requested GiB, the
+   bytes evicted, the tokens released, the stage dataset's `available` before
+   and after (the same `zfs` read discovery mints capacity from), the held
+   tokens versus the receipt-declared ranges still on the stage, and the
+   receipt of every eviction. `--evict-tier TIER_ID` names the stage tier
+   when the box announces several; with none or several and no `--evict-tier`
+   the run refuses by name and evicts nothing.
+
+4. Confirm the ledger, then let the role back. The sweep releases tokens as
+   it evicts, so held tokens equal the bytes on the stage when the line
+   prints. `python3 tools/fleet/pbstatus.py --starvation` shows the same
+   ledger per tier (`ledger_capacity`, `ledger_available`, `ledger_held`)
+   beside the commitment record (`capacity_gib`, `held_gib`, `evictable_gib`,
+   `queued_gib`). Verify the replacement per the restart procedure: its
+   PID/start time, resolved script path in the live generation, and a new
+   cycle event in the supervisor log.
+
 The published storage loop honors the host maintenance gate before every
 cycle. Missing or unreadable gates keep it parked too. It finishes an active
 cycle before parking; a blocked disk read or pacing hold can delay that boundary.
