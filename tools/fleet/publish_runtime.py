@@ -159,6 +159,10 @@ FLEET_SCRIPTS = (
     # holding the mount, and it reads /proc on the box it runs on to find out
     # what is still live there.
     "pb_gc.py",
+    # pbgang.py submits a gang (#1517) from a box that has no checkout; a tool
+    # missing from this list is a tool no box can run, so the gang canary could
+    # not start from a published generation.
+    "pbgang.py",
     # Explicit plan-first banked-checkout recovery runs on the owning host.
     "pbrecover_checkout.py",
     # The reconcile, for the same reason: the endings it files are the ones
