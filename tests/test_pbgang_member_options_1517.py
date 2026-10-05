@@ -152,7 +152,7 @@ def test_the_residency_options_forward_in_table_order_after_the_window_options(t
                                   "data_manifest": "/m.json"})
     flags = command[:command.index("--")]
     assert flags.index("--measurement") < flags.index("--data-manifest") \
-        < flags.index("--residency") < flags.index("--")
+        < flags.index("--residency") < len(flags)
 
 
 @pytest.mark.parametrize("member", [
