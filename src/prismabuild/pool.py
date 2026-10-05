@@ -19919,6 +19919,7 @@ class PoolQueue:
         demand: Mapping[str, int],
         priority: int,
         controller: cpu_admission.Controller | None = None,
+        exclude_gang_election: Mapping[str, object] | None = None,
     ) -> str | None:
         """Take the box back for a denied foreground item.  Name who yielded.
 
@@ -19985,7 +19986,8 @@ class PoolQueue:
                 ledger, action_key=action_key)
             with self._admission_lock(controller):
                 selected = self._select_background_holder(
-                    ledger, action_key=action_key, wanted=wanted, proofs=proofs)
+                    ledger, action_key=action_key, wanted=wanted, proofs=proofs,
+                    exclude_gang_election=exclude_gang_election)
             if selected is None:
                 return None
             holder, record = selected
@@ -20092,6 +20094,7 @@ class PoolQueue:
         self, ledger: ResourceLedger, *, action_key: str,
         wanted: Mapping[str, int],
         proofs: Mapping[str, tuple[Mapping[str, object], bytes, bool]] | None = None,
+        exclude_gang_election: Mapping[str, object] | None = None,
     ) -> tuple[str, dict[str, object]] | None:
         """Read the current gap and pending releases under host admission.
 
@@ -20134,6 +20137,10 @@ class PoolQueue:
                 for kind, count in tokens.items():
                     pending[kind] = pending.get(kind, 0) + count
                 continue
+            if exclude_gang_election is not None:
+                from . import _gang
+                if _gang.backfill_matches(record, exclude_gang_election):
+                    continue
             try:
                 holder_priority = int(record.get("priority", 0))
                 claimed_unix = float(record.get("claimed_unix") or 0.0)
@@ -21587,14 +21594,20 @@ class PoolQueue:
                                     cpu_decision=cpu_decision,
                                     gpu_sample=_gpu_sample_for(gpu_controller, demand))
                             denials = self.record_pass(key)
-                            if not preempted and gang_record is None:
+                            if not preempted:
                                 # Selection reacquires admission, while the separate
                                 # handoff lock spans withdrawal/requeue as well. A
                                 # stalled handoff cannot stop ordinary fitting work.
+                                exclusion = None
+                                if gang_record is not None and not _gang.backfill_reclaiming(self, gang_record):
+                                    exclusion = _gang.elections(
+                                        self, gang["group"], gang["size"]).get(gang["index"])
                                 preempted = self._preempt_background_holder(
                                     ledger, action_key=key, demand=asked,
                                     priority=int(item.get("priority", 0)),
-                                    controller=controller) is not None
+                                    controller=controller,
+                                    **({"exclude_gang_election": exclusion}
+                                       if exclusion is not None else {})) is not None
                             withholding = bool(verdict["eligible"])
                             age = self.withhold_age(key) if withholding else None
                             evidence = {

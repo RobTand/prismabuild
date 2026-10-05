@@ -244,3 +244,61 @@ def test_a_stale_ready_member_never_lends_its_host(gang_fleet, fleet, monkeypatc
     assert queue.item_path(pool.READY, keys[0]).exists()
     assert queue.item_path(pool.READY, key).exists()
 
+
+
+def token_gang_claim(queue, host, tick, monkeypatch):
+    """Exercise ordinary token denial, without adaptive CPU/GPU refusals."""
+    from test_gang_reservation_1517 import CAPACITY, TIERS
+    monkeypatch.setattr(pool.socket, "gethostname", lambda: host)
+    tick(0.01)
+    row = queue.claim(capacity=CAPACITY, cpu_tiers=TIERS, has_gpu=True,
+                      tags=["gb10", host, _gang.TAG], adaptive_cpu=False)
+    return None if row is None else row["action_key"]
+
+
+def test_a_token_short_gang_member_preempts_an_unmarked_incumbent(
+        gang_fleet, fleet, monkeypatch):
+    queue, clock, publish, finish, claim, denial, members = gang_fleet
+    holder = publish("before-election", priority=-10, retry_safe=True,
+                     mem_gb=24, tags=["sparklina"])
+    assert token_gang_claim(queue, "sparklina", fleet[5], monkeypatch) == holder
+    assert "gang_backfill" not in pool._read_json(queue.item_path(pool.CLAIMED, holder))
+    group, keys = members("ordinary-preemption", priority=10, mem_gb=104)
+    assert token_gang_claim(queue, "sparklina", fleet[5], monkeypatch) is None
+    decisions = queue.withdrawal_decisions(holder)
+    assert len(decisions) == 1, "gang token denial lost ordinary preemption of unmarked work"
+    assert decisions[0][1]["preempted_by"] == keys[0]
+    assert queue.item_path(pool.READY, holder).exists()
+    assert queue.ledger("sparklina").held_keys() == [holder]
+    assert not queue.item_path(pool.CLAIMED, keys[0]).exists()
+
+
+def test_ordinary_token_preemption_protects_the_members_own_lent_backfill(
+        gang_fleet, fleet, monkeypatch):
+    queue, clock, publish, finish, claim, denial, members = gang_fleet
+    group, keys, incumbent = waiting(gang_fleet)
+    holder = backfill(publish)
+    assert claim("sparklina") == holder
+    assert token_gang_claim(queue, "sparklina", fleet[5], monkeypatch) is None
+    assert not _gang.backfill_reclaiming(queue, _gang.read_group(queue, group))
+    assert not queue.withdrawal_decisions(holder), "ordinary token denial stopped an untriggered loan"
+    assert queue.ledger("sparklina").held_keys() == [holder]
+
+
+def test_both_token_short_members_preempt_their_unmarked_incumbents(
+        gang_fleet, fleet, monkeypatch):
+    queue, clock, publish, finish, claim, denial, members = gang_fleet
+    hosts = ("sparklina", "sparky")
+    holders = [publish(f"before-election-{host}", priority=-10, retry_safe=True,
+                       mem_gb=24, tags=[host]) for host in hosts]
+    for host, holder in zip(hosts, holders):
+        assert token_gang_claim(queue, host, fleet[5], monkeypatch) == holder
+    group, keys = members("both-unmarked", priority=10, mem_gb=104)
+    for host, holder, member in zip(hosts, holders, keys):
+        assert token_gang_claim(queue, host, fleet[5], monkeypatch) is None
+        decisions = queue.withdrawal_decisions(holder)
+        assert len(decisions) == 1, "two unmarked token holders prevented ordinary gang preemption"
+        assert decisions[0][1]["preempted_by"] == member
+        assert queue.item_path(pool.READY, holder).exists()
+        assert queue.ledger(host).held_keys() == [holder]
+

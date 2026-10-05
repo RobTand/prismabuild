@@ -4646,6 +4646,18 @@ Per member host, inside the ordinary claim pass:
    denial `gang_waiting_for_backfill_release`, even if peer readiness has
    since expired. A torn-down gang continues to release its fence normally.
 
+   **Ordinary background preemption still applies to gang members.** A
+   foreground member refused by its token gate may stop an existing
+   restartable negative-priority holder whose actual token return closes the
+   gap, including work admitted before the election with no `gang_backfill`
+   mark. This does not wait for sibling readiness; two hosts each blocked by
+   unmarked work can therefore drain independently. Before the reclamation
+   phase, selection excludes only live holders marked as loans from THIS
+   member's election. It does not disable ordinary preemption for the whole
+   gang. Once reclamation starts, that exclusion ends. Restartability,
+   remaining attempts, pending-release accounting and real cleanup retain
+   their existing authority.
+
    **Release telemetry and its limit.** The holder's immutable withdrawal
    records `gang_backfill_preemption.requested_unix` and
    `tokens_returned_unix: null` (not yet). After actual token return, the
