@@ -4,7 +4,7 @@ Run only in the parent's admitted PB action. Tiny real recorder executions use
 existing queue/Core/CAS fixture helpers. Source changes are confined to private
 copies, never the tracked checkout or the executing worker's Core. Independent
 hashlib/JSON recipes here are expected-byte oracles, not production recipes.
-Pbrun's action code closure contains only its identity stamp; the three producer
+Pbrun's action code closure contains only its identity stamp; the four producer
 sources are proved from the sealed checkout snapshot through the real materializer.
 """
 from __future__ import annotations
@@ -37,6 +37,7 @@ from test_local_scratch_measured_placement import (
 @pytest.fixture
 def fleet(tmp_path, monkeypatch):
     return ScratchFleet(tmp_path, monkeypatch)
+
 
 
 class IntegerSubclass(int):
@@ -127,7 +128,7 @@ def test_local_scratch_bootstrap_binds_one_fixed_sibling_core_without_package_im
     owner = core_globals["digest_primitives"]
     assert Path(owner.__file__) == REPO / "src/prismabuild/digest_primitives.py"
     body = {"unicode": "λ", "value": 1.0}
-    assert owner._canonical_file_bytes(body) == pb._canonical_file_bytes(body)
+    assert owner._canonical_bytes(body) + b"\n" == pb._canonical_file_bytes(body)
     assert owner.canonical_sha256(body) == pb.canonical_sha256(body)
     assert block(256) == pb._local_scratch_profile_block(256)
     assert canonical(body) == pb._canonical_file_bytes(body)
