@@ -20014,6 +20014,10 @@ class PoolQueue:
         #: ``None`` for every row, which is what every withhold but a GPU
         #: refusal's does.
         withheld_kinds: frozenset[str] | None = None
+        #: The rows among them withholding as a waiting measurement (#1419).
+        #: Their wait ends when this host's incumbents finish, so it never
+        #: holds back work an incumbent itself depends on.
+        measurement_withholds: set[str] = set()
         #: This host's latest verdicts, read once, at the pass's first row it
         #: could not evaluate (#1085, #1143).
         host_verdicts: Mapping[str, object] | None = None
@@ -20663,6 +20667,20 @@ class PoolQueue:
                                 continue
                             census_blocked = measurement_reservation.blocking_selection(
                                 census, item, host=ledger.base.name, funded_by=None)
+                            # A dependent of a current incumbent on this host
+                            # (its sealed producer holds tokens here) only
+                            # shortens that incumbent's life, which is what the
+                            # measurement waits for. Holding it back would let
+                            # a producer with no declared deadline wait on its
+                            # own spool exports forever (#1419 review).
+                            # A running elected measurement is not such an
+                            # incumbent: its own dependents keep the existing
+                            # ``funded_by`` rule below (#982).
+                            serves_incumbent = (isinstance(dependent_owner, str)
+                                                and dependent_owner in ledger.held_keys()
+                                                and dependent_owner not in census["elections"])
+                            if serves_incumbent:
+                                census_blocked = None
                             if census_blocked is not None and dependent_owner != census_blocked["action_key"]:
                                 self.record_denial(item, "deferred_for_measurement_reservation", {
                                     "withheld_for": census_blocked["action_key"],
@@ -20707,9 +20725,12 @@ class PoolQueue:
                                           for kind, need in demand.items()
                                           if int(need) - covered.get(kind, 0) > 0}
                                 reservation_demand = dict(demand)
-                            elif held_back:
+                            elif held_back and not (serves_incumbent
+                                                    and withheld_for in measurement_withholds):
                                 # An earlier item is withholding what this row
-                                # takes.  Only a dependent on its producer's
+                                # takes.  A measurement's wait does not hold
+                                # back its host's incumbents' own dependents
+                                # (#1419 review); every other withhold does.  Only a dependent on its producer's
                                 # allowance takes nothing that item waits for
                                 # (#985); any other row is left as the withhold
                                 # always left it, unevaluated: no pass, no
@@ -20892,6 +20913,8 @@ class PoolQueue:
                                         keep_refused_room(key, reservation_demand, reason, evidence, free_at_refusal)
                                     self.record_denial(item, reason, evidence)
                                     withhold(key, kinds)
+                                    if identity and identity[1]:
+                                        measurement_withholds.add(key)
                                     continue
                                 reason = f"{reason}{_starved_suffix(verdict)}"
                                 evidence["starved"] = {"why": verdict["why"],
@@ -20940,6 +20963,8 @@ class PoolQueue:
                                 self.record_denial(
                                     item, "reservation_unavailable_withholding", evidence)
                                 withhold(key, None)
+                                if identity and identity[1]:
+                                    measurement_withholds.add(key)
                                 continue
                             if withholding:
                                 # Keep its passes, and so its place, but let the
