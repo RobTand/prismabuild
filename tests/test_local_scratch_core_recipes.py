@@ -117,17 +117,20 @@ def test_local_scratch_bootstrap_binds_one_fixed_sibling_core_without_package_im
     assert ls._local_scratch_profile_block is pb._local_scratch_profile_block
     assert ls._canonical_file_bytes is pb._canonical_file_bytes
     isolated = runpy.run_path(str(REPO / "src/prismabuild/local_scratch.py"))
-    for name in ("_local_scratch_profile_block", "_canonical_file_bytes",
-                 "_core_positive_finite"):
-        assert isolated[name] is getattr(pb, name)
-    core_globals = isolated["_local_scratch_profile_block"].__globals__
+    block = isolated["_local_scratch_profile_block"]
+    canonical = isolated["_canonical_file_bytes"]
+    predicate = isolated["_core_positive_finite"]
+    assert block.__globals__ is canonical.__globals__ is predicate.__globals__
+    core_globals = block.__globals__
     assert Path(core_globals["__file__"]) == REPO / "src/prismabuild/core.py"
     assert core_globals["__package__"] == ""
-    assert Path(core_globals["digest_primitives"].__file__) == REPO / "src/prismabuild/digest_primitives.py"
-    assert core_globals["digest_primitives"].canonical_sha256 is pb.canonical_sha256
-    assert isolated["_local_scratch_profile_block"](256) == pb._local_scratch_profile_block(256)
+    owner = core_globals["digest_primitives"]
+    assert Path(owner.__file__) == REPO / "src/prismabuild/digest_primitives.py"
     body = {"unicode": "λ", "value": 1.0}
-    assert isolated["_canonical_file_bytes"](body) == pb._canonical_file_bytes(body)
+    assert owner._canonical_file_bytes(body) == pb._canonical_file_bytes(body)
+    assert owner.canonical_sha256(body) == pb.canonical_sha256(body)
+    assert block(256) == pb._local_scratch_profile_block(256)
+    assert canonical(body) == pb._canonical_file_bytes(body)
 
 
 def _assert_materialized_producer_snapshot(fleet, action, *, expected_source_root=REPO):
