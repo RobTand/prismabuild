@@ -39,6 +39,8 @@ TEARDOWN_SCHEMA = "prismabuild.gang_teardown.v1"
 #: pass that finds the member admissible refreshes it.
 READY_FRESH_S = 30.0
 DEFAULT_SKEW_S = 120.0
+#: How often a claimed member re-reads its siblings before launch.
+BARRIER_POLL_S = 0.25
 MAX_MEMBERS = 16
 MAX_RECORD_BYTES = 64 * 1024
 
@@ -248,3 +250,40 @@ def sibling_readiness(queue, record: Mapping[str, object], entry: Mapping[str, o
             continue
         hosts.add(other_host)
     return {"complete": not waiting, "waiting": waiting}
+
+
+def tear_down(queue, group: str, *, reason: str, by: str, now: float) -> bool:
+    """File the gang's one teardown; ``False`` when another already did.
+
+    The writer that wins withdraws the other members (``PoolQueue``); every
+    claim pass and start barrier also refuses on the marker, so a crash
+    between this write and those withdrawals still ends the gang.
+    """
+    return _link_new(state_dir(queue, group) / "teardown.json",
+                     {"schema": TEARDOWN_SCHEMA, "group": group, "reason": str(reason),
+                      "by": str(by), "torn_down_unix": float(now)})
+
+
+def sibling_states(queue, record: Mapping[str, object], entry: Mapping[str, object]) -> dict[int, str]:
+    """Each sibling's exact-generation state: claimed, done, failed, withdrawn, ready-row."""
+    from . import pool
+    states: dict[int, str] = {}
+    for other in record["members"]:  # type: ignore[union-attr]
+        if other["index"] == entry["index"]:
+            continue
+        state = "absent"
+        for name, directory in (("claimed", pool.CLAIMED), ("done", pool.DONE),
+                                ("failed", pool.FAILED), ("withdrawn", pool.WITHDRAWN),
+                                ("ready", pool.READY)):
+            row = _read(queue.item_path(directory, other["action_key"]))
+            if (row is not None and row.get("action_key") == other["action_key"]
+                    and float(row.get("published_unix", other["published_unix"]))
+                    == float(other["published_unix"])):
+                state = name
+                break
+        states[int(other["index"])] = state
+    return states
+
+
+#: A row mid-rename can read absent for an instant; only an exact ending counts.
+UNSUCCESSFUL = frozenset({"failed", "withdrawn"})

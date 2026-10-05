@@ -1180,6 +1180,10 @@ def build_parser() -> argparse.ArgumentParser:
                          "inputs keep --mem-gb (#1222)")
     ap.add_argument("--tag", action="append", default=[],
                     help="extra placement tag this box offers")
+    ap.add_argument("--gang-admission", action="store_true",
+                    default=os.environ.get("PRISMABUILD_GANG_ADMISSION") == "1",
+                    help="offer the gang-v1 capability and admit gang members "
+                         "(#1517; default off, or PRISMABUILD_GANG_ADMISSION=1)")
     ap.add_argument("--assume-idle", action="store_true",
                     help="offer declared CPU and host memory without observing "
                          "them (debug); GPU evidence remains mandatory")
@@ -1564,6 +1568,11 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
         tags.append(local_scratch.IO_CAPABILITY)
         # Versioned lifetime actions cannot run on declaration-only workers.
         tags.append(local_scratch.SCRATCH_LIFETIME_TAG)
+        if args.gang_admission:
+            # Default off (#1517): without this no box offers the tag, so no
+            # gang member is ever claimed and no gang code runs in a pass.
+            from prismabuild import _gang
+            tags.append(_gang.TAG)
         if loaded_generation:
             tags.extend((publication_canary.CAPABILITY,
                          f"runtime-generation:{loaded_generation}"))

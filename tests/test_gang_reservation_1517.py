@@ -39,7 +39,7 @@ def gang_fleet(fleet, tmp_path, monkeypatch):
                              has_gpu=True, tags=["gb10", host, _gang.TAG])
         return None if result is None else result["action_key"]
 
-    def members(name, *, priority=0, mem_gb=100):
+    def members(name, *, priority=0, mem_gb=100, skew_s=_gang.DEFAULT_SKEW_S):
         """Seal and publish a two-member gang, one member pinned per host."""
         group = secrets.token_hex(16)
         cas = pb.PrismaBuildCAS(tmp_path / "cas")
@@ -68,7 +68,7 @@ def gang_fleet(fleet, tmp_path, monkeypatch):
                           resources={"cpu": 2, "gpu": 1, "mem_gb": mem_gb},
                           needs_gpu=True, tags=[host], priority=priority, gang=gang)
             rows.append(pool._read_json(queue.item_path(pool.READY, key)))
-        _gang.publish_group(queue, group, rows)
+        _gang.publish_group(queue, group, rows, skew_s=skew_s)
         return group, [row["action_key"] for row in rows]
 
     return queue, clock, publish, finish, gclaim, denial, members
