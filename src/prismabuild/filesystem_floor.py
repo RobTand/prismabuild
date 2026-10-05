@@ -319,8 +319,9 @@ def _sample(found: Mapping[str, object]) -> dict:
     """Fresh bytes and inodes after identity was proved outside the floor lock."""
 
     try:
-        if os.stat(found["path"]).st_dev != found["device"]:
-            raise FloorError(f"{found['path']}: filesystem changed under the sample")
+        if found["fstype"] != "zfs":
+            if os.stat(found["path"]).st_dev != found["device"]:
+                raise FloorError(f"{found['path']}: filesystem changed under the sample")
         room = filesystem_capacity.local_disk_room(found["path"], 5)
     except OSError as exc:
         raise FloorError(f"{found['path']}: {exc}") from exc

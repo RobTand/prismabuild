@@ -21,6 +21,7 @@ import subprocess
 import sys
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -128,6 +129,58 @@ def test_used_path_checks_inode_floor_with_free_bytes(tmp_path, monkeypatch, fre
     if free_inodes < 50:
         assert verdicts[0]["reason"] == "below_inode_floor"
         assert "inodes" in ff.describe_verdict(verdicts[0])
+
+
+def test_zfs_sample_keeps_pool_capacity_when_dataset_device_changes(monkeypatch):
+    found = {"path": "/mnt/stage-work", "fstype": "zfs",
+             "pool": "prismabuild-stage", "device": 10}
+    sampled = os.statvfs_result((4096, 4096, 1000 * GIB // 4096,
+                                900 * GIB // 4096, 900 * GIB // 4096,
+                                1000, 900, 900, 0, 255))
+    original_stat = os.stat
+
+    def changed_device(path, *args, **kwargs):
+        if path == found["path"]:
+            return SimpleNamespace(st_dev=11)
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", changed_device)
+    monkeypatch.setattr(os, "statvfs", lambda path: sampled)
+    pools_read = []
+
+    def pool_space(name):
+        pools_read.append(name)
+        return 1000 * GIB, 900 * GIB
+
+    monkeypatch.setattr(ff, "_zfs_space", pool_space)
+    space = ff._sample(found)
+    assert pools_read == [found["pool"]]
+    assert space["size_bytes"] == 1000 * GIB
+    assert space["free_bytes"] == 900 * GIB
+    assert space["free_inodes"] == 900
+    assert space["floor_inodes"] == 50
+    assert space["inode_refusal"] is None
+
+
+def test_btrfs_zero_inode_totals_do_not_add_a_capacity_refusal(tmp_path, monkeypatch):
+    # btrfs reports no fixed inode limit; the fixture filesystem may differ.
+    sampled = os.statvfs_result((4096, 4096, 1000, 900, 900, 0, 0, 0, 0, 255))
+    monkeypatch.setattr(os, "fstatvfs", lambda fd: sampled)
+    verdict, = ff.check_paths(tmp_path / "queue", [tmp_path])
+    assert verdict["allowed"] is True
+    assert verdict["size_inodes"] == 0
+    assert verdict["floor_inodes"] == 0
+    assert verdict["inode_refusal"] is None
+
+
+def test_available_inode_floor_does_not_spend_privileged_free_inodes(tmp_path, monkeypatch):
+    sampled = os.statvfs_result((4096, 4096, 1000, 900, 900, 1000, 900, 49, 0, 255))
+    monkeypatch.setattr(os, "fstatvfs", lambda fd: sampled)
+    verdict, = ff.check_paths(tmp_path / "queue", [tmp_path])
+    assert verdict["allowed"] is False
+    assert verdict["reason"] == "below_inode_floor"
+    assert verdict["free_inodes"] == 49
+    assert verdict["floor_inodes"] == 50
 
 
 # -- off is off ---------------------------------------------------------------------

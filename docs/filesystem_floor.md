@@ -29,6 +29,11 @@ samples carry its counters and refusal. A byte-only sample is
 inode headroom. No inode demand estimate or reservation is implied: this
 is a sampled floor, not protection against later exhaustion.
 
+ZFS refresh keeps byte accounting on the pool and samples inode availability
+without comparing a stored dataset device number. A device-number change
+within that pool does not add a capacity refusal; the pre-existing device
+comparison remains limited to non-ZFS sampling.
+
 ## Bindings and stable identity
 
 A ledger kind is *bound* to the filesystem its bytes land on by
