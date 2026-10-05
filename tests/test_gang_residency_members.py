@@ -17,9 +17,11 @@ Q2. Once every lead is executed and pinned and the map is composed, the gang
     residency, and to nobody else.
 Q3. A teardown (member failure or member withdrawal) withdraws the members
     through the ordinary path, which marks the consumer's frozen plan
-    superseded; the leads are separate actions the gang never withdraws, and
-    their stage pins are released by the tier loop's orphan sweep, not by
-    the gang itself.
+    superseded; the leads are separate actions the gang never withdraws.
+    Their stage pins are released by the tier loop's orphan sweep -- once no
+    live item names them, which for a claimed member means after its covered
+    row has ended at the worker's withdrawal checkpoint -- not by the gang
+    itself.
 Q4. A member that declares a manifest with no ``--residency`` flag (the
     #1247 planner's row) is gated by its filed plan exactly like an explicit
     one: same verdict, same wait, same map at launch through the declared-
@@ -272,8 +274,16 @@ def test_teardown_supersedes_the_members_plan_and_leaves_the_leads_to_the_tier_l
     # releases its pins. The tokens stand for bytes still on the stage.
     assert not queue.item_path(pool.WITHDRAWN, lead).exists()
     assert ledger.holder_tokens(lead) == {"stage_gib": 2}
-    # The tier loop's sweep is what releases them: no live item names the
-    # mover any more, so it is an orphan and its tokens go back.
+    # The withdrawn member's row is covered, and until its worker reaches the
+    # withdrawal checkpoint a covered claimed row is still a live consumer:
+    # the sweep retains the lead, because live_claims still names it. This
+    # fixture has no worker, so take the checkpoint the worker would take.
+    claimed_row = pool._read_json(queue.item_path(pool.CLAIMED, first))
+    if claimed_row is not None:
+        assert queue.withdrawal_covers(claimed_row) is not None
+        queue.finish(first, status="withdrawn")
+    # The tier loop's sweep is what releases the tokens: no live item names
+    # the mover any more, so it is an orphan and its tokens go back.
     stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
     swept = stage_release.sweep(queue, stage_roots={TIER: str(stage)})
     assert ledger.holder_tokens(lead) == {}, {
