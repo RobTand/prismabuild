@@ -6,6 +6,7 @@ import base64
 import hashlib
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
 from pbtest_shard_output import admitted_child
@@ -181,3 +182,209 @@ def test_a_second_pin_cannot_hide_behind_a_matching_one(tmp_path, monkeypatch, c
     assert result == 1
     assert not (checkout / "pytest-ran").exists()
     assert "missingfixture" in capsys.readouterr().out
+
+
+# --- Installed-byte integrity vs. pin identity (#1544) -------------------
+#
+# These tests exercise the split between the two things verify_install used
+# to fuse: pin/provenance identity (which D32 may stamp) and installed-byte
+# integrity (which is never skipped). They run against REAL installs: pip
+# installs the package from git+file://<repo>@<sha> into a venv, so
+# direct_url.json carries pip's own vcs_info and RECORD carries pip's own
+# digests. No digest loop is mocked; corruption is applied to installed
+# bytes and read back by importlib.metadata in this process.
+
+PINS_SOURCE = (ROOT / "tools/fleet/pbtest_pins.py").read_text(encoding="utf-8")
+OTHER = "c" * 40
+
+
+@pytest.fixture(scope="module")
+def pins_module():
+    spec = importlib.util.spec_from_file_location(
+        "pbtest_pins_unit_1544", ROOT / "tools/fleet/pbtest_pins.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture(scope="module")
+def pins_repo(tmp_path_factory):
+    repo = tmp_path_factory.mktemp("pins1544") / "repo"
+    (repo / "pinsbyte1544").mkdir(parents=True)
+    (repo / "pyproject.toml").write_text(
+        "[build-system]\n"
+        'requires = ["setuptools>=61"]\n'
+        'build-backend = "setuptools.build_meta"\n'
+        "\n"
+        "[project]\n"
+        'name = "pinsbyte1544"\n'
+        'version = "1.0"\n')
+    (repo / "pinsbyte1544/__init__.py").write_text("VALUE = 1\n")
+    git = ["git", "-c", "user.email=1544@t", "-c", "user.name=1544"]
+    for command in (["git", "init", "-q"], [*git, "add", "-A"],
+                    [*git, "commit", "-qm", "pins1544"]):
+        subprocess.run(command, cwd=repo, check=True, capture_output=True)
+    commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, check=True,
+                            capture_output=True, text=True).stdout.strip()
+    return repo, commit
+
+
+def pip_installed(tmp_path, pins_repo):
+    """A real non-editable pip install from git+file:// at a real commit.
+
+    The box has no ``python3-venv``/ensurepip for 3.14, so the venv is
+    created ``--without-pip`` and the ambient pip re-execs into it via
+    ``pip --python``; ``--no-build-isolation`` keeps the whole path offline
+    (setuptools comes from the system site packages the venv shares).
+    """
+    missing = [name for name in ("pip", "setuptools")
+               if importlib.util.find_spec(name) is None]
+    if missing:
+        pytest.skip("offline real-install path needs pip and setuptools in the "
+                    f"test interpreter environment; missing {missing}")
+    repo, commit = pins_repo
+    venv = tmp_path / "venv"
+    made = subprocess.run([sys.executable, "-m", "venv", "--without-pip",
+                           "--system-site-packages", str(venv)],
+                          capture_output=True, text=True)
+    assert made.returncode == 0, made.stderr[-2000:]
+    installed = subprocess.run(
+        [sys.executable, "-m", "pip", "--python", str(venv / "bin" / "python"),
+         "install", "--no-build-isolation", "--no-deps",
+         "--disable-pip-version-check", "-q",
+         f"git+file://{repo}@{commit}#egg=pinsbyte1544"],
+        capture_output=True, text=True)
+    assert installed.returncode == 0, installed.stderr[-2000:]
+    site = next((venv / "lib").glob("python*/site-packages"))
+    direct = json.loads(
+        (site / "pinsbyte1544-1.0.dist-info/direct_url.json").read_text())
+    assert direct["vcs_info"]["vcs"] == "git"
+    assert direct["vcs_info"]["commit_id"] == commit
+    return site, commit
+
+
+def test_default_identity_refusal_is_unchanged(tmp_path, monkeypatch,
+                                               pins_module, pins_repo):
+    site, commit = pip_installed(tmp_path, pins_repo)
+    monkeypatch.syspath_prepend(str(site))
+    with pytest.raises(ValueError) as excinfo:
+        pins_module.verify_install("pinsbyte1544", OTHER)
+    assert str(excinfo.value) == (
+        f"distribution=pinsbyte1544 installed commit={commit}; "
+        "require a non-editable Git install at the reviewed commit "
+        "(local-directory installs do not record a Git commit)")
+
+
+def test_tolerant_policy_accepts_a_real_install_at_another_commit(
+        tmp_path, monkeypatch, pins_module, pins_repo):
+    site, commit = pip_installed(tmp_path, pins_repo)
+    monkeypatch.syspath_prepend(str(site))
+    seen = {}
+
+    def tolerate(message, facts):
+        seen["message"], seen["facts"] = message, dict(facts)
+
+    evidence = pins_module.verify_install("pinsbyte1544", OTHER,
+                                          identity_policy=tolerate)
+    assert evidence["installed_commit"] == commit
+    assert evidence["expected_commit"] == OTHER
+    assert evidence["verified_files"] >= 4
+    assert evidence["identity_drift_tolerated"] == seen["message"]
+    assert "non-editable Git install" in seen["message"]
+    assert seen["facts"]["expected_commit"] == OTHER
+    assert seen["facts"]["installed_commit"] == commit
+
+
+def test_tolerant_policy_still_refuses_corrupt_installed_bytes(
+        tmp_path, monkeypatch, pins_module, pins_repo):
+    site, commit = pip_installed(tmp_path, pins_repo)
+    init = site / "pinsbyte1544/__init__.py"
+    init.write_text(init.read_text() + "# corrupted\n")
+    monkeypatch.syspath_prepend(str(site))
+    with pytest.raises(ValueError) as excinfo:
+        pins_module.verify_install("pinsbyte1544", commit,
+                                   identity_policy=lambda message, facts: None)
+    assert "installed bytes differ from RECORD" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("change, diagnostic", [
+    ("missing_record", "installed RECORD is missing"),
+    ("unsupported_hash", "unsupported RECORD hash"),
+    ("unrecorded_file", "unrecorded package file"),
+    ("shadow", "not owned by its RECORD"),
+])
+def test_tolerant_policy_never_weakens_integrity(tmp_path, monkeypatch,
+                                                 pins_module, pins_repo,
+                                                 change, diagnostic):
+    site, commit = pip_installed(tmp_path, pins_repo)
+    if change == "missing_record":
+        (site / "pinsbyte1544-1.0.dist-info/RECORD").unlink()
+    elif change == "unsupported_hash":
+        record = site / "pinsbyte1544-1.0.dist-info/RECORD"
+        record.write_text(record.read_text().replace("sha256=", "md5=", 1))
+    elif change == "unrecorded_file":
+        (site / "pinsbyte1544/extra.py").write_text("VALUE = 2\n")
+    elif change == "shadow":
+        shadow = tmp_path / "shadow"
+        shadow.mkdir()
+        (shadow / "pinsbyte1544.py").write_text("VALUE = 2\n")
+        monkeypatch.syspath_prepend(str(site))
+        monkeypatch.syspath_prepend(str(shadow))
+    if change != "shadow":
+        monkeypatch.syspath_prepend(str(site))
+    with pytest.raises(ValueError) as excinfo:
+        pins_module.verify_install("pinsbyte1544", commit,
+                                   identity_policy=lambda message, facts: None)
+    assert diagnostic in str(excinfo.value)
+
+
+def test_standalone_byte_phase_ignores_identity_and_refuses_corruption(
+        tmp_path, monkeypatch, pins_module, pins_repo):
+    site, commit = pip_installed(tmp_path, pins_repo)
+    monkeypatch.syspath_prepend(str(site))
+    # The byte entry point takes no pin at all, so it cannot read one: it
+    # passes on intact bytes of an install whose recorded commit differs
+    # from any expected pin (identity drift verify_install would raise on).
+    assert commit != OTHER
+    evidence = pins_module.verify_record_bytes("pinsbyte1544")
+    assert evidence["installed_commit"] == commit
+    assert evidence["verified_files"] >= 4
+    assert "expected_commit" not in evidence
+    init = site / "pinsbyte1544/__init__.py"
+    init.write_text(init.read_text() + "# corrupted\n")
+    with pytest.raises(ValueError) as excinfo:
+        pins_module.verify_record_bytes("pinsbyte1544")
+    assert "installed bytes differ from RECORD" in str(excinfo.value)
+
+
+def test_a_raising_policy_propagates_unchanged(tmp_path, monkeypatch,
+                                               pins_module, pins_repo):
+    site, commit = pip_installed(tmp_path, pins_repo)
+    monkeypatch.syspath_prepend(str(site))
+
+    def refuses(message, facts):
+        raise RuntimeError("policy refuses this drift")
+
+    with pytest.raises(RuntimeError, match="policy refuses this drift"):
+        pins_module.verify_install("pinsbyte1544", OTHER, identity_policy=refuses)
+
+
+def test_verify_install_routes_through_the_one_byte_implementation(
+        tmp_path, monkeypatch, pins_module, pins_repo):
+    site, commit = pip_installed(tmp_path, pins_repo)
+    monkeypatch.syspath_prepend(str(site))
+    calls = []
+    original = pins_module.verify_record_bytes
+
+    def spy(module):
+        calls.append(module)
+        return original(module)
+
+    monkeypatch.setattr(pins_module, "verify_record_bytes", spy)
+    evidence = pins_module.verify_install("pinsbyte1544", commit)
+    assert calls == ["pinsbyte1544"]
+    assert evidence["verified_files"] >= 4
+
+
+def test_source_has_exactly_one_digest_construction():
+    assert re.findall(r"hashlib\.\w+\(", PINS_SOURCE) == ["hashlib.new("]

@@ -17,8 +17,18 @@ import subprocess
 import sys
 
 
-def verify_install(module: str, expected: str) -> dict:
-    """Require unambiguous Git provenance and intact installed package bytes."""
+def verify_record_bytes(module: str) -> dict:
+    """Require the imported module's installed bytes to match their RECORD.
+
+    This is the integrity phase of :func:`verify_install`, exposed on its
+    own: one distribution owning ``module``, a present RECORD, every hashed
+    RECORD entry matching the bytes on disk, the module Python actually
+    imports owned by that RECORD, and no unrecorded file inside the package.
+    It never reads the pin. In particular the ownership refusal ("imported
+    module is not owned by its RECORD") belongs to this phase, so an
+    editable or shadowed import is refused here even when a caller has
+    decided to tolerate recorded identity drift.
+    """
     owners = metadata.packages_distributions().get(module, [])
     if len(owners) != 1:
         raise ValueError(f"installed commit=<unknown>; expected one distribution "
@@ -28,11 +38,6 @@ def verify_install(module: str, expected: str) -> dict:
     vcs = direct.get("vcs_info", {})
     observed = vcs.get("commit_id", "<unknown>")
     identity = f"distribution={owners[0]} installed commit={observed}"
-    if (direct.get("dir_info", {}).get("editable") or
-            vcs.get("vcs") != "git" or observed != expected):
-        raise ValueError(f"{identity}; require a non-editable Git install at "
-                         "the reviewed commit (local-directory installs do "
-                         "not record a Git commit)")
 
     files = dist.files
     if not files:
@@ -62,8 +67,53 @@ def verify_install(module: str, expected: str) -> dict:
             if path.is_file() and path.suffix != ".pyc" and path.resolve() not in recorded:
                 raise ValueError(f"{identity}; unrecorded package file: {path}")
     return {"module": module, "distribution": owners[0],
-            "expected_commit": expected, "installed_commit": observed,
+            "installed_commit": observed,
             "origin": spec.origin, "verified_files": len(recorded)}
+
+
+def verify_install(module: str, expected: str, *,
+                   identity_policy=None) -> dict:
+    """Require unambiguous Git provenance and intact installed package bytes.
+
+    ``identity_policy`` decides nothing about bytes. The default ``None``
+    keeps the historical behavior: any identity failure (editable install,
+    non-Git origin, or an installed commit other than ``expected``) raises
+    the same ValueError as before and the integrity phase never runs. A
+    callable receives the identity-failure message and the observed facts;
+    returning normally (any return value is ignored) records the drift as
+    tolerated -- stamped in the returned evidence as
+    ``identity_drift_tolerated`` -- and the full integrity phase still runs
+    and can still refuse. A policy that raises propagates unchanged.
+    """
+    owners = metadata.packages_distributions().get(module, [])
+    if len(owners) != 1:
+        raise ValueError(f"installed commit=<unknown>; expected one distribution "
+                         f"owning {module}, found {owners}")
+    dist = metadata.distribution(owners[0])
+    direct = json.loads(dist.read_text("direct_url.json") or "{}")
+    vcs = direct.get("vcs_info", {})
+    observed = vcs.get("commit_id", "<unknown>")
+    identity = f"distribution={owners[0]} installed commit={observed}"
+    tolerated = None
+    if (direct.get("dir_info", {}).get("editable") or
+            vcs.get("vcs") != "git" or observed != expected):
+        message = (f"{identity}; require a non-editable Git install at "
+                   "the reviewed commit (local-directory installs do "
+                   "not record a Git commit)")
+        if identity_policy is None:
+            raise ValueError(message)
+        identity_policy(message, {
+            "module": module, "expected_commit": expected,
+            "distribution": owners[0], "installed_commit": observed,
+            "editable": bool(direct.get("dir_info", {}).get("editable")),
+            "vcs": vcs.get("vcs"),
+        })
+        tolerated = message
+    evidence = verify_record_bytes(module)
+    evidence["expected_commit"] = expected
+    if tolerated is not None:
+        evidence["identity_drift_tolerated"] = tolerated
+    return evidence
 
 
 def check_pins() -> None:
