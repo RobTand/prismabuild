@@ -279,11 +279,13 @@ def test_teardown_supersedes_the_members_plan_and_leaves_the_leads_to_the_tier_l
     # the sweep retains the lead, because live_claims still names it. This
     # fixture has no worker, so take the checkpoint the worker would take.
     claimed_row = pool._read_json(queue.item_path(pool.CLAIMED, first))
-    if claimed_row is not None:
-        assert queue.withdrawal_covers(claimed_row) is not None
-        queue.finish(first, status="withdrawn")
-    # The tier loop's sweep is what releases the tokens: no live item names
-    # the mover any more, so it is an orphan and its tokens go back.
+    assert claimed_row is not None, "the withdrawn member's row already left claimed/"
+    assert queue.withdrawal_covers(claimed_row) is not None
+    queue.finish(first, status="withdrawn")
+    # The tier loop's dead-consumer pass archives the plan a live row can no
+    # longer name, and then the sweep is what releases the tokens: no live
+    # item names the mover any more, so it is an orphan and its tokens go back.
+    tier_loop.withdraw_dead_consumer_movers(queue)
     stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
     swept = stage_release.sweep(queue, stage_roots={TIER: str(stage)})
     assert ledger.holder_tokens(lead) == {}, {
@@ -319,6 +321,52 @@ def test_a_withdrawn_member_tears_down_the_same_way(gang_fleet, monkeypatch, tmp
     assert queue.item_path(pool.WITHDRAWN, second).exists()
     assert not queue.item_path(pool.WITHDRAWN, lead).exists()
     assert queue.tier_ledger(TIER).holder_tokens(lead) == {"stage_gib": 2}
+
+
+def test_two_members_sharing_one_lead_go_resident_together(gang_fleet, monkeypatch,
+                                                           tmp_path):
+    """--residency-share auto against one registered shared lead (#1026).
+
+    Two members declare the same manifest and the same ``--residency stage``
+    plan against ONE movement node: both rows name the identical lead, one
+    mover is published, executed and pinned once, and both verdicts sit at
+    the same gate -- lead resident, map not yet composed -- until each
+    member's own map is composed, the only per-member difference; then both
+    claim. The fixture publishes the shared plan the way a shared sealing
+    writes it (identical leads); what it does not exercise is pbrun's
+    share-namespace dedup itself, i.e. that one sealing consumer's mover key
+    is the same object the other binds -- only the queue-side consequence is
+    asserted here.
+    """
+    queue, clock, publish, finish, gclaim, denial, members = gang_fleet
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    lead = _hexkey("shared-lead")
+    group, (first, second) = members("shared", residency=_consumer_block([lead]),
+                                     residency_all=True)
+    rows = {key: json.loads(queue.item_path(pool.READY, key).read_text())
+            for key in (first, second)}
+    assert rows[first]["residency"]["leads"] == [lead]
+    assert rows[second]["residency"]["leads"] == [lead]
+
+    # One registered shared mover: published once, executed and pinned once.
+    queue.mint_tier_capacity(TIER, {"stage_gib": 8})
+    _stage_lead(queue, clock, monkeypatch, lead, first, stage)
+    assert queue.tier_ledger(TIER).holder_tokens(lead) == {"stage_gib": 2}
+    for key in (first, second):
+        item = json.loads(queue.item_path(pool.READY, key).read_text())
+        assert queue.residency_verdict(item)["state"] == "map_not_composed", (key,)
+
+    for key in (first, second):
+        _compose_map(monkeypatch, queue, key, [lead])
+    assert gclaim("sparklina") == first, denial(first, "sparklina")
+    assert gclaim("sparky") == second, denial(second, "sparky")
+    for key in (first, second):
+        claimed = pool._read_json(queue.item_path(pool.CLAIMED, key))
+        assert claimed["residency_verdict"]["state"] == "resident"
+        environment = queue.launch_environment(claimed)
+        assert environment[pb.RESIDENCY_MAP_ENV] == str(queue.residency_map_path(key))
+    assert queue.residency_map_path(first) != queue.residency_map_path(second)
 
 
 # ------------------------------------------------ Q4: the planner's gang row

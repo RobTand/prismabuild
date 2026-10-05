@@ -41,11 +41,12 @@ def gang_fleet(fleet, tmp_path, monkeypatch):
         return None if result is None else result["action_key"]
 
     def members(name, *, priority=0, mem_gb=100, skew_s=_gang.DEFAULT_SKEW_S, file_group=True,
-                residency=None, declares_manifest=False, inputs=None):
+                residency=None, residency_all=False, declares_manifest=False, inputs=None):
         """Seal and publish a two-member gang, one member pinned per host.
 
-        ``residency`` is published as member 0's row residency block (the
-        ``--residency stage`` submitter's row); ``declares_manifest`` seals
+        ``residency`` is published as a row residency block (the
+        ``--residency stage`` submitter's row) -- member 0 only, or every
+        member with ``residency_all``; ``declares_manifest`` seals
         member 0 with a ``pbcampaign.data-manifest`` input and
         ``params.data_manifest`` instead (the #1247 planner's row, no
         residency block).  ``inputs`` are extra CAS input entries for both
@@ -116,7 +117,7 @@ def gang_fleet(fleet, tmp_path, monkeypatch):
                           resources={"cpu": 2, "gpu": 1, "mem_gb": mem_gb},
                           needs_gpu=True, tags=[host], priority=priority, gang=gang,
                           max_attempts=1,
-                          **({} if index or residency is None
+                          **({} if residency is None or (index and not residency_all)
                              else {"residency": residency}))
             rows.append(pool._read_json(queue.item_path(pool.READY, key)))
         if file_group:

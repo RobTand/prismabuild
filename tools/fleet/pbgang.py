@@ -42,20 +42,20 @@ residency options ``data_manifest``, ``residency``, ``residency_tier``,
 every value exactly as it would for a plain submission: it refuses
 ``--residency stage`` without ``--data-manifest``, and it enforces the
 enumerated values of ``--residency``, ``--residency-ram`` and
-``--residency-share``. A relative ``data_manifest`` is read by ``pbrun`` against
-its own working directory -- the directory ``pbgang`` runs in, not the member's
-``cwd``, which is the checkout every member snapshots -- so name an absolute
-path when members submit from elsewhere. Any other key is refused by name:
+``--residency-share``. Two things ``pbgang`` itself refuses, because the
+submission process, not ``pbrun``, decides them: a ``data_manifest`` must be
+an absolute path (``pbrun`` reads it against its own working directory -- the
+directory ``pbgang`` runs in, not the member's ``cwd``, which is the checkout
+every member snapshots -- so a relative name would ingest a different file of
+the same name), and a member that declares ``data_manifest`` must also declare
+``residency`` (``stage``): the #1247 manifest planner files one row's plan per
+tier-loop cycle, so a member left to it would hold its gang -- and its elected
+siblings' hosts -- fenced while it reads the pool unplanned. Any other key is
+refused by name:
 the gang flags, ``tag``, ``priority`` and ``retry_safe`` are the driver's (a
 retry ends the gang, so a member gets one attempt). ``--cwd`` is the
 default checkout every member snapshots; a member's own ``cwd`` overrides it.
 ``priority_reason`` may also be set once in the manifest, like ``priority``.
-
-A member that declares a manifest but no residency option is planned by the
-storage role's manifest planner (#1247), which files a residency plan for it
-off its own sealed request; the member itself is submitted exactly like any
-other. See ``docs/design.md`` for what a residency-carrying member does to its
-gang's admission.
 
 Gang admission must be enabled on the target boxes (worker ``--gang-admission``);
 otherwise ``pbrun`` refuses because no box offers the capability.
@@ -68,6 +68,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import secrets
 import subprocess
 import sys
@@ -133,6 +134,11 @@ def _field_problem(name: str, value: object) -> str | None:
         # One attempt is what a gang member gets: an unsuccessful one ends the
         # whole gang.  Declaring it is allowed; asking for more is not.
         return None if value == 1 else "must be 1: a gang member gets one attempt"
+    if name == "data_manifest" and isinstance(value, str) and not os.path.isabs(value):
+        # Not a style rule: pbrun reads the manifest against its own working
+        # directory -- the directory pbgang runs in -- so a relative name
+        # would ingest a different file of the same name.
+        return "must be an absolute path"
     return "must not be empty" if value == "" else None
 
 
@@ -166,6 +172,11 @@ def _shape_problem(member: dict) -> str | None:
         return "env must be a list of K=V strings or a mapping"
     if "cwd" in member and not (isinstance(member["cwd"], str) and member["cwd"]):
         return "cwd must be a nonempty string"
+    if "data_manifest" in member and "residency" not in member:
+        # The #1247 planner files one row's plan per tier-loop cycle; a member
+        # left to it holds the gang uncommitted -- and its elected siblings'
+        # hosts fenced -- while it would read the pool at full cost.
+        return ("declares data_manifest without residency; set residency: stage")
     return None
 
 
