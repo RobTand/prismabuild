@@ -17,7 +17,7 @@ import stat
 import time
 from typing import TYPE_CHECKING
 
-from . import adaptive_cpu, core, local_scratch
+from . import adaptive_cpu, core, local_scratch, storage_tiers
 from . import _bounded_reader as reader
 
 if TYPE_CHECKING:
@@ -134,12 +134,14 @@ def _capture(queue: PoolQueue) -> dict:
                         raise CensusUnavailable("unreadable publication priority")
                     rows.setdefault(key, []).append(record)
                     if state == pool.CLAIMED and not is_mark:
+                        # Every claimed action is an incumbent; only a sealed
+                        # deadline contributes a finite opportunity (#1419).
                         governed, requested = pool._declared_run_bound(record, max_bytes=MAX_RECORD_BYTES)
-                        if governed == "deadline" and requested is not None:
-                            opportunities[key] = {
-                                "host": record.get("claimed_host"), "requested": requested,
-                                "claimed_unix": record.get("claimed_unix"),
-                                "generation": queue.attempt_generation(record)}
+                        opportunities[key] = {
+                            "host": record.get("claimed_host"),
+                            "requested": requested if governed == "deadline" else None,
+                            "claimed_unix": record.get("claimed_unix"),
+                            "generation": queue.attempt_generation(record)}
     measurements: dict[str, list[dict]] = {}
     for key, versions in rows.items():
         for record in versions:
@@ -407,7 +409,7 @@ def blocking_selection(census: dict, item: dict, *, host: str, funded_by: str | 
 
 def elect(queue: PoolQueue, ledger: ResourceLedger, controller, item: dict,
           verdict: dict, *, sampled_unix: object, gpu_sample: Mapping | None) -> dict | None:
-    """Choose a host once, using a finite incumbent *opportunity*, not a bound."""
+    """Choose a host once; a finite incumbent *opportunity* is metadata, not a bound."""
     from . import pool
     generation = queue.attempt_generation(item)
     with locked_census(queue, ledger, controller) as census:
@@ -437,24 +439,34 @@ def elect(queue: PoolQueue, ledger: ResourceLedger, controller, item: dict,
             raise CensusUnavailable("measurement publication changed before election")
         # Re-read sealed incumbent opportunities while H serializes admission.
         # No optimistic timeout-derived safe-fit/backfill permission follows.
+        # Every incumbent must be a claimed action on this host, whose own
+        # lifetime bounds the wait. A claimed action that declared no finite
+        # deadline (``pbrun`` without ``--timeout-s``, a progress-governed
+        # action) still elects: refusing left the host open to refill once
+        # the bounded attention lapsed, and a continuous lower-priority stream
+        # starved the measurement (#1419). A RAM-tier fill hold (#1222) or a
+        # raw holder with no readable claim is not an action lifetime: no
+        # election, exactly as before, so the bounded episode still lapses.
+        holders = [key for key in ledger.held_keys()
+                   if not key.startswith(storage_tiers.RAM_HOST_MEMORY_PREFIX)]
+        if not holders or len(holders) != len(ledger.held_keys()):
+            return None
         ends = []
-        for key in ledger.held_keys():
-            opportunity = census["opportunities"].get(key, {})
-            requested, claimed = opportunity.get("requested"), opportunity.get("claimed_unix")
-            if (opportunity.get("host") != ledger.base.name
-                    or not isinstance(requested, (int, float)) or isinstance(requested, bool)
+        for key in holders:
+            opportunity = census["opportunities"].get(key)
+            claimed = opportunity.get("claimed_unix") if isinstance(opportunity, dict) else None
+            if (opportunity is None or opportunity.get("host") != ledger.base.name
                     or not isinstance(claimed, (int, float)) or isinstance(claimed, bool)):
                 return None
-            end = float(claimed) + float(requested)
-            if not math.isfinite(end):
-                return None
-            ends.append(end)
-        if not ends:
-            return None
+            requested = opportunity.get("requested")
+            if isinstance(requested, (int, float)) and not isinstance(requested, bool):
+                end = float(claimed) + float(requested)
+                if math.isfinite(end):
+                    ends.append(end)
         chosen = {"schema": SCHEMA, "action_key": item["action_key"], "generation": generation,
                   "host": ledger.base.name, "published_unix": float(item["published_unix"]),
                   "priority": int(item.get("priority", 0)), "epoch_unix": pool._now(),
-                  "opportunity_unix": max(pool._now(), max(ends))}
+                  "opportunity_unix": max([pool._now(), *ends])}
         prior[FIELD] = chosen
         prior["action_key"] = item["action_key"]
         pool._write_json_atomic(queue.passes_path(item["action_key"]), prior)
