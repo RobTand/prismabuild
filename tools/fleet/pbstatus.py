@@ -888,12 +888,6 @@ def _admission_sample(record: dict | None | Exception, *, now: float, max_age_s:
 OFFER_RETIRED_AFTER_S = 86400.0
 
 
-def _valid_pool_offer(host: str, offer: dict | None) -> bool:
-    return (offer is not None and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*', host) is not None
-            and offer.get("schema") == pool.POOL_OFFER_SCHEMA_V1
-            and offer.get("host") == host and isinstance(offer.get("capacity"), dict)
-            and isinstance(offer.get("tags"), list)
-            and all(type(v) is int and v >= 0 for v in offer['capacity'].values()))
 
 
 def _valid_pool_item(key: str, record: dict | None) -> bool:
@@ -1033,7 +1027,7 @@ def read_pool(queue_root: str | Path) -> dict:
     claimed, claim_notes = _pool_records(queue.dir(pool.CLAIMED))
     admission = {}
     for host, offer in workers.items():
-        if _valid_pool_offer(host, offer):
+        if pool.valid_offer_record(host, offer):
             # This observation needs a path, not a mutating ledger: building
             # one canonicalizes its lock and probes every ancestor (#1528).
             base = queue.root / pool.RESERVATIONS / host / "adaptive"
@@ -1063,7 +1057,7 @@ def read_pool(queue_root: str | Path) -> dict:
     nodes: list[dict] = []
     live: list[dict] = []
     for host, offer in workers.items():
-        if not _valid_pool_offer(host, offer):
+        if not pool.valid_offer_record(host, offer):
             nodes.append({"node": host, "state": "unreadable", "healthy": False,
                           "reason": "invalid worker offer"})
             notes.append(f"pool worker {host}: invalid worker offer")

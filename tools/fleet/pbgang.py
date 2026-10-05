@@ -142,11 +142,16 @@ def load(path: Path) -> dict:
     members = manifest.get("members") if isinstance(manifest, dict) else None
     if not isinstance(members, list) or not 2 <= len(members) <= _gang.MAX_MEMBERS:
         raise SystemExit(f"pbgang: manifest needs 2..{_gang.MAX_MEMBERS} members")
-    unknown = set(manifest) - {"members", "priority", "priority_reason", "skew_s", "timeout_s"}
+    unknown = set(manifest) - {"members", "priority", "priority_reason", "skew_s", "timeout_s",
+                               "queue_wait_timeout_s"}
     if "priority_reason" in manifest and not isinstance(manifest["priority_reason"], str):
         raise SystemExit("pbgang: manifest priority_reason must be a string")
     if unknown:
         raise SystemExit(f"pbgang: unknown manifest fields {sorted(unknown)}")
+    try:
+        _gang.queue_wait_timeout(manifest.get("queue_wait_timeout_s"))
+    except _gang.GangContractError as exc:
+        raise SystemExit(f"pbgang: {exc}") from None
     for index, member in enumerate(members):
         if not isinstance(member, dict):
             raise SystemExit(f"pbgang: member {index} must be an object")
@@ -172,6 +177,11 @@ def member_command(args, manifest: dict, member: dict, *, group: str, index: int
         command += ["--tag", tag]
     command += ["--gang-group", group, "--gang-size", str(size), "--gang-index", str(index),
                 "--priority", str(member.get("priority", manifest.get("priority", 0)))]
+    queue_wait = getattr(args, "queue_wait_timeout_s", None)
+    if queue_wait is None:
+        queue_wait = manifest.get("queue_wait_timeout_s")
+    if queue_wait is not None:
+        command += ["--gang-queue-wait-timeout-s", str(queue_wait)]
     timeout = member.get("timeout_s", manifest.get("timeout_s"))
     if timeout is not None:
         command += ["--timeout-s", str(timeout)]
@@ -217,8 +227,15 @@ def main(argv: list[str] | None = None) -> int:
                     help="checkout every member snapshots, unless the member names its own cwd")
     ap.add_argument("--queue", type=Path, default=SH / "pb-queue",
                     help="queue root where pbgang reads the published member rows and files the group record; must be the queue pbrun publishes to")
+    ap.add_argument("--queue-wait-timeout-s", type=float, default=None,
+                    help="opt in only this gang to a positive queue-wait deadline in seconds; "
+                         "overrides the manifest, stops at first claim, default off")
     args = ap.parse_args(argv)
     manifest = load(args.manifest)
+    try:
+        _gang.queue_wait_timeout(args.queue_wait_timeout_s)
+    except _gang.GangContractError as exc:
+        ap.error(str(exc))
     if args.cwd is None and any("cwd" not in member for member in manifest["members"]):
         ap.error("--cwd is required unless every member names its own cwd")
     skew_s = float(manifest.get("skew_s", _gang.DEFAULT_SKEW_S))

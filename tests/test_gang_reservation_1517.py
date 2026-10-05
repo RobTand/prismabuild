@@ -39,7 +39,8 @@ def gang_fleet(fleet, tmp_path, monkeypatch):
                              has_gpu=True, tags=["gb10", host, _gang.TAG])
         return None if result is None else result["action_key"]
 
-    def members(name, *, priority=0, mem_gb=100, skew_s=_gang.DEFAULT_SKEW_S, file_group=True):
+    def members(name, *, priority=0, mem_gb=100, skew_s=_gang.DEFAULT_SKEW_S, file_group=True,
+                queue_wait_timeout_s=None):
         """Seal and publish a two-member gang, one member pinned per host."""
         group = secrets.token_hex(16)
         cas = pb.PrismaBuildCAS(tmp_path / "cas")
@@ -56,7 +57,9 @@ def gang_fleet(fleet, tmp_path, monkeypatch):
                          "argv": [sys.executable, "task.py"], "working_directory": ".",
                          "result_path": f"{name}-{index}"},
                 "inputs": [], "code_closure": pb.build_code_closure(checkout, ["task.py"]),
-                "params": {"gpu_exclusive": False, "execution_timeout_s": 3600, "gang": gang},
+                "params": {"gpu_exclusive": False, "execution_timeout_s": 3600, "gang": gang,
+                           **({"gang_queue_wait_timeout_s": queue_wait_timeout_s}
+                              if queue_wait_timeout_s is not None else {})},
                 "environment": {"variables": {}, "toolchain": {}},
                 "execution_scope": {"portability": "portable", "platform_key": None,
                                     "host_class": None},
@@ -67,7 +70,7 @@ def gang_fleet(fleet, tmp_path, monkeypatch):
                           worker_script="worker.py",
                           resources={"cpu": 2, "gpu": 1, "mem_gb": mem_gb},
                           needs_gpu=True, tags=[host], priority=priority, gang=gang,
-                          max_attempts=1)
+                          max_attempts=1, gang_queue_wait_timeout_s=queue_wait_timeout_s)
             rows.append(pool._read_json(queue.item_path(pool.READY, key)))
         if file_group:
             _gang.publish_group(queue, group, rows, skew_s=skew_s)

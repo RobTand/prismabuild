@@ -22,10 +22,11 @@ State lives under ``pb-queue/gangs/``: ``<group>.json`` (immutable record),
 from __future__ import annotations
 
 from collections.abc import Mapping
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 import math
 import os
 from pathlib import Path
+from time import monotonic
 import uuid
 
 from . import core
@@ -122,6 +123,26 @@ def _link_new(path: Path, payload: Mapping[str, object]) -> bool:
         temporary.unlink(missing_ok=True)
 
 
+def queue_wait_timeout(value: object) -> float | None:
+    """An explicit positive finite queue budget; omitted means no deadline."""
+    if value is None:
+        return None
+    if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
+        raise GangContractError("gang queue wait timeout must be a positive finite number")
+    return float(value)
+
+
+@contextmanager
+def locked_members(queue, record: Mapping[str, object]):
+    """Share the existing member transitions for publication and expiry."""
+    with ExitStack() as held:
+        for entry in sorted(record["members"], key=lambda entry: entry["action_key"]):
+            if not held.enter_context(queue._transition_locked(entry["action_key"], blocking=False)):
+                yield False
+                return
+        yield True
+
+
 def publish_group(queue, group: str, members: list[Mapping[str, object]], *,
                   skew_s: float = DEFAULT_SKEW_S) -> dict:
     """File the immutable group record once every member row is published.
@@ -149,12 +170,13 @@ def publish_group(queue, group: str, members: list[Mapping[str, object]], *,
     record = {"schema": GROUP_SCHEMA, "group": group, "size": len(members),
               "skew_s": float(skew_s), "members": entries,
               "priority": max(entry["priority"] for entry in entries)}
-    with ExitStack() as held:
-        # Publication and orphan retirement share the existing member keys,
-        # in stable order. No separate registration lock/index is needed.
-        for entry in sorted(entries, key=lambda entry: entry["action_key"]):
-            if not held.enter_context(queue._transition_locked(entry["action_key"], blocking=False)):
-                raise GangContractError("gang group publication busy with a member transition")
+    deadlines = [float(row["published_unix"]) + queue_wait_timeout(row["gang_queue_wait_timeout_s"])
+                 for row in members if row.get("gang_queue_wait_timeout_s") is not None]
+    if deadlines:
+        record["queue_wait_deadline_unix"] = min(deadlines)
+    with locked_members(queue, record) as acquired:
+        if not acquired:
+            raise GangContractError("gang group publication busy with a member transition")
         if read_group(queue, group) is None and any(
                 state != "ready" for state in member_states(queue, record).values()):
             raise GangContractError("gang member ended before group publication")
@@ -442,4 +464,85 @@ def observe_backfill_releases(queue, election: Mapping[str, object]) -> bool:
                 and release.get("tokens_returned_unix") is not None):
             complete = note_backfill_preemption(queue, election, release) and complete
     return complete
+
+
+# CEO dec-1005-212936-9249: no time-only fence expiry.
+ABSENCE_CONFIRM_S = 600.0
+MAX_ABSENCE_LOAN_S = 1800.0
+ABSENCE_SCHEMA = "prismabuild.gang_partner_absence.v1"
+
+
+def absence_backfill_enabled() -> bool:
+    return os.environ.get("PRISMABUILD_GANG_ABSENCE_BACKFILL") != "0"
+
+
+def bounded_loan_budget(item: Mapping[str, object]) -> float | None:
+    """Read the existing declared payload budget, never a worker ceiling."""
+    from . import pool
+    _, requested = pool._declared_run_bound(item)
+    return requested if requested is not None and 0 < requested <= MAX_ABSENCE_LOAN_S else None
+
+
+def observe_partner_absence(queue, record: Mapping[str, object], entry: Mapping[str, object],
+                            host: str, inventory: Mapping[str, object]) -> bool:
+    """Credit successive complete observations; unknown or uncovered gaps reset.
+
+    The queue-instance seen set is bookkeeping, not a data cache. Its first
+    observation after an observer restart cannot inherit elapsed credit.
+    Monotonic times are host-local; persisted state is readable after restart
+    but never sufficient on its own to grant a loan.
+    """
+    from . import pool
+    chosen = elections(queue, str(record["group"]), int(record["size"]))
+    mine = chosen.get(int(entry["index"]))
+    if mine is None or mine["host"] != host:
+        return False
+    enabled = absence_backfill_enabled()
+    claimed = any(state == "claimed" for state in member_states(queue, record).values())
+    live_hosts = {offer["host"] for offer in inventory.get("live", [])}
+    seen = queue.__dict__.setdefault("_gang_presence_seen", set())
+    invalid = queue.__dict__.setdefault("_gang_presence_invalid", set())
+    qualified = False
+    for peer in record["members"]:
+        if peer["index"] == entry["index"]:
+            continue
+        election = chosen.get(peer["index"])
+        if election is None:
+            continue  # No elected host is not evidence of a dead partner.
+        key = (record["group"], entry["index"], peer["index"])
+        path = state_dir(queue, str(record["group"])) / f"absence-{entry['index']}-{peer['index']}.json"
+        with queue._transition_locked(str(entry["action_key"]), blocking=False) as acquired:
+            if not acquired:
+                invalid.add(key)
+                continue
+            now = monotonic()
+            try:
+                prior = _read(path)
+            except (OSError, ValueError, core.PrismaBuildError):
+                prior = None
+            absent = (enabled and not claimed and inventory.get("complete") is True
+                      and election["host"] not in live_hosts)
+            usable = (key in seen and key not in invalid and prior is not None
+                      and prior.get("schema") == ABSENCE_SCHEMA
+                      and prior.get("host") == election["host"] and prior.get("absent") is True
+                      and all(type(prior.get(field)) in (int, float) and math.isfinite(prior[field])
+                              for field in ("last_monotonic", "covered_s", "since_monotonic"))
+                      and 0 <= now - prior["last_monotonic"] <= pool.OFFER_TIMEOUT_S)
+            covered = (prior["covered_s"] + now - prior["last_monotonic"]
+                       if absent and usable else 0.0)
+            since = prior["since_monotonic"] if absent and usable else now
+            observation = {"schema": ABSENCE_SCHEMA, "group": record["group"],
+                           "index": entry["index"], "partner_index": peer["index"],
+                           "host": election["host"], "absent": absent,
+                           "since_monotonic": since, "last_monotonic": now,
+                           "covered_s": covered, "observed_unix": pool._now()}
+            seen.add(key)
+            try:
+                pool._write_json_atomic(path, observation)
+            except (OSError, ValueError, core.PrismaBuildError):
+                invalid.add(key)
+                continue
+            invalid.discard(key)
+            qualified = qualified or (absent and covered >= ABSENCE_CONFIRM_S)
+    return qualified
 

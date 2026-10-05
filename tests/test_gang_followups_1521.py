@@ -85,3 +85,40 @@ def test_the_design_names_simultaneous_first_elections():
     ranking = design.split("**Ranking between gangs.**", 1)[1].split("**Lost workers.**", 1)[0]
     assert "simultaneous first elections" in ranking, "the residual race only names late publication"
     assert "two hosts" in ranking
+
+
+
+def test_group_publication_cannot_race_a_member_transition(gang_fleet):
+    import threading
+    queue, clock, publish, finish, claim, denial, members = gang_fleet
+    group, keys = members("publication-lock", file_group=False)
+    rows = [pool._read_json(queue.item_path(pool.READY, key)) for key in keys]
+    entered, release = threading.Event(), threading.Event()
+    def hold():
+        with queue._transition_locked(keys[0]):
+            entered.set()
+            release.wait(10)
+    thread = threading.Thread(target=hold)
+    thread.start()
+    try:
+        assert entered.wait(10)
+        with pytest.raises(_gang.GangContractError, match="publication busy"):
+            _gang.publish_group(queue, group, rows)
+        assert not _gang.group_path(queue, group).exists()
+    finally:
+        release.set()
+        thread.join(10)
+    assert not thread.is_alive()
+    assert _gang.publish_group(queue, group, rows)["group"] == group
+
+
+def test_a_late_publisher_cannot_resurrect_expired_unregistered_members(gang_fleet):
+    queue, clock, publish, finish, claim, denial, members = gang_fleet
+    group, keys = members("late-publication", file_group=False)
+    rows = [pool._read_json(queue.item_path(pool.READY, key)) for key in keys]
+    clock[0] += pool.LEASE_TIMEOUT_S + 1
+    queue.sweep_gangs()
+    with pytest.raises(_gang.GangContractError, match="member ended"):
+        _gang.publish_group(queue, group, rows)
+    assert not _gang.group_path(queue, group).exists()
+

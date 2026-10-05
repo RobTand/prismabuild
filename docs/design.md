@@ -4697,6 +4697,74 @@ Per member host, inside the ordinary claim pass:
    pre-gate trigger and recovery after an explicit release, not that live
    120 s latency claim.
 
+   **Pre-claim policy (#1521, CEO dec-1005-212936-9249).** There is no
+   time-only fence lapse. Age, a stale ready mark, or a slow registered member
+   never tears a gang down. Terminal gang evidence releases the fence;
+   otherwise the existing proven-preemptible loans remain the default. This
+   does not resolve general starvation of lower-ranked gangs or unbounded,
+   non-restartable work.
+
+   A narrowed additional exception is on by default:
+   `PRISMABUILD_GANG_ABSENCE_BACKFILL=0` disables NEW bounded absence loans
+   without changing the original `PRISMABUILD_GANG_BACKFILL` switch. The
+   partner must have an elected host. The queue's own complete offer reader
+   supplies both facts: no fresh matching offer and no live host in the
+   runtime inventory. ANY fresh readable offer on that host resets the
+   window, irrespective of tags, including draining or a loop temporarily
+   missing `gang-v1` during a rolling publication. Retained readable stale
+   offers (age greater than `OFFER_TIMEOUT_S`, currently 120 s), retired
+   offers, and a host missing from a successfully complete inventory can
+   accumulate not-live observations. This is an offer-liveness classification,
+   not proof that the physical host has died. Unreadable offers, partial or
+   failed reads, unknown timestamps, and ESTALE not retried to a successful
+   read reset the window and grant nothing. The claim pass never calls pbmcp.
+
+   Evidence must cover 600 seconds across successive successful observations.
+   One sighting followed by another 600 seconds later is insufficient:
+   uncovered gaps longer than the existing 120 s offer freshness interval
+   reset credit. The observer's first pass after restart also resets it; a
+   restart gap earns no elapsed credit. Host-local monotonic times and
+   accumulated covered seconds are atomically recorded at
+   `gangs/<group>/absence-<member-index>-<partner-index>.json`, under the
+   existing member transition. Lost, corrupt or unwritable records fail toward
+   NOT granting the exception. A single fresh offer observed mid-window resets
+   it, so a later absence must establish a new 600-second window.
+
+   After qualification, an idle fenced host may admit one additional action
+   with an explicitly declared `execution_timeout_s` no greater than 1800 s.
+   The existing `_declared_run_bound` reads that exact requested value from
+   the CAS request, as #939's incumbent opportunity does. No requested value
+   means no declared bound: a worker ceiling, age, or an observed completion
+   cannot substitute for it. A 31-minute declaration is refused. This loan
+   uses the existing host ledger under admission: any held reservation,
+   including an uncommitted acquisition, prevents a second bounded loan.
+   It is recorded on the claim as `gang_bounded_backfill` and removed on retry.
+   It does not erase elections or grant a fresh start barrier. All ordinary
+   resource and isolation gates remain in force.
+
+   If the partner returns mid-loan, the not-live window resets before the
+   member's gates. A non-restartable loan is never forcibly stopped; its owner
+   returns the real tokens on completion, after which normal ready/claim
+   admission resumes. The returning partner can therefore wait behind one
+   bounded loan. A non-restartable, unbounded job already running is not
+   preempted. The 1800-second declaration bounds payload runtime, NOT checkout,
+   credited waits, blocked filesystem calls or uncertain resource cleanup;
+   no absolute wall-clock resource-return guarantee is claimed. These are
+   accepted residual risks, and #1521's general-starvation criterion is not
+   declared resolved.
+
+   **Opt-in queue-wait deadline.** `pbgang --queue-wait-timeout-s SECONDS`
+   (or the manifest's `queue_wait_timeout_s`) forwards
+   `pbrun --gang-queue-wait-timeout-s SECONDS` to its members. Only positive
+   finite values are valid, and pbrun requires a gang declaration. Omitted
+   means OFF and adds no field to ordinary actions or rows. The group records
+   the earliest opted-in member publication plus its requested duration as
+   `queue_wait_deadline_unix`. Claim passes and the sweep cancel only that
+   group before its first member claim, through ordinary teardown/withdrawal.
+   A first claim ends queue waiting; payload execution remains separately
+   governed. Existing member transition keys serialize expiry with claims.
+   Other gangs and unrelated rows are never canceled by someone else's budget.
+
 2. **Ready.** When the member passes every ordinary gate, it writes
    `ready-<i>.json`. Unless every sibling is fresh-ready (`READY_FRESH_S`) or
    claimed on a distinct host, it abandons the acquisition and is denied

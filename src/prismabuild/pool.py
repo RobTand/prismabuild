@@ -1179,6 +1179,15 @@ def _residency_action_key(value: object) -> str:
     return value
 
 
+def valid_offer_record(host: str, offer: dict | None) -> bool:
+    """The offer grammar shared by diagnostics and complete presence reads."""
+    return (offer is not None and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*', host) is not None
+            and offer.get("schema") == POOL_OFFER_SCHEMA_V1
+            and offer.get("host") == host and isinstance(offer.get("capacity"), dict)
+            and isinstance(offer.get("tags"), list)
+            and all(type(v) is int and v >= 0 for v in offer['capacity'].values()))
+
+
 def offer_timing(announced: object, *, now: float) -> OfferTiming:
     """Usable age and observed future skew, relative to the reader's clock.
 
@@ -5944,36 +5953,59 @@ class PoolQueue:
         directory.mkdir(parents=True, exist_ok=True)
         _write_json_atomic(directory / f"{host}.json", record)
 
-    def _offer_records(self) -> list[dict[str, object]]:
+    def _offer_records(self, *, errors: list[str] | None = None) -> list[dict[str, object]]:
         directory = self.root / WORKERS
-        if not directory.is_dir():
-            return []
+        if errors is None:
+            if not directory.is_dir():
+                return []
+            paths = sorted(directory.glob("*.json"))
+        else:
+            try:
+                with os.scandir(directory) as entries:
+                    paths = sorted(Path(entry.path) for entry in entries if entry.name.endswith(".json"))
+            except OSError as exc:
+                errors.append(f"worker inventory unavailable: {exc}")
+                return []
         records: list[dict[str, object]] = []
-        for path in sorted(directory.glob("*.json")):
-            # An offer that went away while we were reading the list is a box
-            # that left, which is the same answer as an offer that expired:
-            # not currently placeable.  It is never a reason to refuse the
-            # submission -- the box it described was at worst one candidate
-            # among several.  ``tolerate_stale`` is what makes that true on
-            # the shared filesystem the pool actually lives on (#208).
-            record = _read_json(path, tolerate_stale=True)
-            if record is None:
-                # ...but one failed read does not show that the box left.
-                # Every loop on a live box rewrites its offer each poll with
-                # ``_write_json_atomic``, whose ``os.replace`` never removes the
-                # name.  A reader that opened the old file can still get
-                # ``ESTALE`` once the server frees it, so one read can miss a
-                # live host.  A pbcampaign then refused "no recorded worker can
-                # run this action" for a tag only that host offered (#560).  A
-                # read-only probe of the live ``workers/`` directory saw it in
-                # 2 of 589 scans, and the immediate re-read returned the offer
-                # both times.  A second read opens the name again, so it gets
-                # the replacement.  An offer that is really gone fails both
-                # reads and is still left out.
+        for path in paths:
+            if errors is None:
+                # Preserve the existing best-effort reader for normal callers.
                 record = _read_json(path, tolerate_stale=True)
+                if record is None:
+                    record = _read_json(path, tolerate_stale=True)
+            else:
+                try:
+                    try:
+                        record = _read_json(path)
+                    except OSError as exc:
+                        if exc.errno != errno.ESTALE:
+                            raise
+                        record = _read_json(path)
+                    if record is None or not valid_offer_record(path.stem, record):
+                        errors.append(f"worker offer unreadable: {path.name}")
+                        continue
+                except (OSError, ValueError, pb.PrismaBuildError) as exc:
+                    errors.append(f"worker offer unreadable: {path.name}: {exc}")
+                    continue
             if record is not None:
                 records.append(record)
         return records
+
+    def offer_inventory(self) -> dict[str, object]:
+        """One complete-presence observation; failures never become absence."""
+        errors: list[str] = []
+        records = self._offer_records(errors=errors)
+        now = _now()
+        live = []
+        for record in records:
+            age = offer_timing(record.get("announced_unix"), now=now).age_s
+            if age is None:
+                errors.append(f"worker timestamp unknown: {record.get('host')}")
+            elif age <= OFFER_TIMEOUT_S:
+                live.append(record)
+        return {"records": records, "live": live, "complete": not errors,
+                "errors": errors, "sampled_unix": now}
+
 
     def offers(self, *, max_age_s: float = OFFER_TIMEOUT_S) -> list[dict[str, object]]:
         """Every worker offer still fresh enough to believe, allowing bounded skew."""
@@ -6479,6 +6511,7 @@ class PoolQueue:
         refuse_if_live: bool = False,
         gang: Mapping[str, object] | None = None,
         resident_set: str | None = None,
+        gang_queue_wait_timeout_s: float | None = None,
     ) -> Path:
         """Enqueue one sealed action.  The action itself already lives in the CAS.
 
@@ -6577,6 +6610,9 @@ class PoolQueue:
         from . import _gang
         try:
             declared_gang = _gang.declaration(gang)
+            queue_wait = _gang.queue_wait_timeout(gang_queue_wait_timeout_s)
+            if queue_wait is not None and declared_gang is None:
+                raise _gang.GangContractError("gang queue wait timeout requires a gang")
         except _gang.GangContractError as exc:
             raise PoolContractError(str(exc)) from exc
         if declared_gang is not None:
@@ -7026,6 +7062,8 @@ class PoolQueue:
         if declared_gang is not None:
             # A hint checked against the sealed ``params.gang`` at claim.
             item["gang"] = declared_gang
+            if queue_wait is not None:
+                item["gang_queue_wait_timeout_s"] = queue_wait
         if recompute:
             # A movement node.  Its key is a content hash and its receipt is
             # filed in the CAS like any other, so a republish of the same key
@@ -7093,7 +7131,7 @@ class PoolQueue:
     #: is claimed by nobody and holds no tokens, so none of it may survive a
     #: requeue.  ``passes`` belongs to the aging sidecar, not to the item.
     _CLAIM_SCOPED_FIELDS = (
-        "gang_backfill", "gang_backfill_release", "gang_backfill_preemption",
+        "gang_bounded_backfill", "gang_backfill", "gang_backfill_release", "gang_backfill_preemption",
         "claimed_by", "claimed_unix", "claimed_host", "reserved_on", "passes", "gpu_admission",
         "cpu_allocation", "tier_reservations", "tier_funding", "residency_verdict",
         "container_cleanup_pending", "container_cleanup_checked_unix",
@@ -9616,6 +9654,24 @@ class PoolQueue:
                     KeyError, TypeError, ValueError):
                 continue
 
+    def _expire_gang_queue_wait(self, record) -> str:
+        """Cancel only an explicitly opted-in gang before its first claim."""
+        from . import _gang
+        deadline = _gang.queue_wait_timeout(record.get("queue_wait_deadline_unix"))
+        if deadline is None or _now() < deadline:
+            return "not_due"
+        if any(state == "claimed" for state in _gang.member_states(self, record).values()):
+            return "admitted"
+        with _gang.locked_members(self, record) as acquired:
+            if not acquired:
+                return "busy"
+            if any(state == "claimed" for state in _gang.member_states(self, record).values()):
+                return "admitted"
+            self._gang_teardown(
+                {"gang": {"group": record["group"], "size": record["size"], "index": 0}},
+                by=f"gang-queue-wait:{record['group']}", reason="gang queue wait deadline exceeded")
+            return "expired"
+
     def sweep_gangs(self, *, limit: int = ORPHAN_PASSES_SWEEP_LIMIT) -> list[str]:
         """Finish torn-down gangs and prune ended ones (#1517).
 
@@ -9641,6 +9697,7 @@ class PoolQueue:
                 record = _gang.read_group(self, group)
                 if record is None:
                     continue
+                self._expire_gang_queue_wait(record)
                 keys = [str(member["action_key"]) for member in record["members"]]
                 torn = _gang.teardown(self, group)
                 if torn is None:
@@ -20411,10 +20468,20 @@ class PoolQueue:
         # ordinary scan still reads the worker registry not at all.
         placement_offers: list[dict[str, object]] | None = None
 
+        presence_inventory = None
+        absence_ready: dict[tuple[str, int], bool] = {}
+        def gang_offer_inventory():
+            nonlocal presence_inventory
+            if presence_inventory is None:
+                presence_inventory = self.offer_inventory()
+            return presence_inventory
+
         def offer_snapshot() -> list[dict[str, object]]:
             nonlocal placement_offers
             if placement_offers is None:
-                placement_offers = self.offers()
+                from . import _gang
+                placement_offers = (gang_offer_inventory()["live"] if _gang.TAG in tagset
+                                    else self.offers())
             return placement_offers
 
         #: Hosts without a GPU as this pass read them, for the CPU-only rows a
@@ -21242,6 +21309,10 @@ class PoolQueue:
                                     continue
                                 if gang_record is not None:
                                     gang_entry = _gang.member(gang_record, item, gang)
+                                    expiry = self._expire_gang_queue_wait(gang_record)
+                                    if expiry in ("expired", "busy"):
+                                        self.record_denial(item, "gang_queue_wait_deadline", {"state": expiry})
+                                        continue
                                     ended = {index: state for index, state in
                                              _gang.sibling_states(self, gang_record, gang_entry).items()
                                              if state in _gang.UNSUCCESSFUL}
@@ -21261,10 +21332,18 @@ class PoolQueue:
                                 self.record_denial(item, "gang_contract_invalid", {"error": str(exc)})
                                 continue
                         gang_backfill = []
+                        gang_bounded_backfill = []
+                        bounded_budget = None
+                        if gang_record is None and any(absence_ready.values()):
+                            from . import _gang
+                            with suppress(OSError, ValueError, pb.PrismaBuildError):
+                                bounded_budget = _gang.bounded_loan_budget(item)
                         backfill_binding = None
                         backfill_eligible = None
                         if gang_record is not None:
                             try:
+                                absence_ready[(gang["group"], gang["index"])] = _gang.observe_partner_absence(
+                                    self, gang_record, gang_entry, ledger.base.name, gang_offer_inventory())
                                 pending_backfill = self._preempt_gang_backfill(
                                     ledger, gang_record, gang_entry, controller=host_gate)
                             except (_gang.GangContractError, OSError, pb.PrismaBuildError,
@@ -21324,12 +21403,26 @@ class PoolQueue:
                                 except (_gang.GangContractError, OSError, pb.PrismaBuildError,
                                         KeyError, TypeError, ValueError):
                                     allowed = False
+                                if not allowed and bounded_budget is not None:
+                                    try:
+                                        allowed = (absence_ready.get((gang_blocked["group"], gang_blocked["index"]), False)
+                                                   and _gang.absence_backfill_enabled()
+                                                   and not any(ledger.held().values())
+                                                   and _gang.backfill_allowed(self, gang_blocked, _now()))
+                                    except (_gang.GangContractError, OSError, pb.PrismaBuildError,
+                                            KeyError, TypeError, ValueError):
+                                        allowed = False
+                                    if allowed:
+                                        gang_bounded_backfill.append(dict(
+                                            gang_blocked, execution_timeout_s=bounded_budget))
                                 if not allowed:
                                     break
-                                gang_backfill.append(gang_blocked)
+                                if not gang_bounded_backfill or gang_bounded_backfill[-1]["action_key"] != gang_blocked["action_key"]:
+                                    gang_backfill.append(gang_blocked)
                                 remaining = dict(census, gang_elections={
                                     k: e for k, e in census["gang_elections"].items()
-                                    if e not in gang_backfill})
+                                    if e not in gang_backfill and not any(
+                                        e["action_key"] == b["action_key"] for b in gang_bounded_backfill)})
                                 gang_blocked = measurement_reservation.gang_blocking(
                                     remaining, item, host=ledger.base.name, group=None)
                             if gang_blocked is not None:
@@ -21833,6 +21926,16 @@ class PoolQueue:
                         # Every ordinary gate has passed: this member could
                         # start here now. It commits only beside a complete
                         # set; otherwise it says so and holds nothing (#1517).
+                        expiry = self._expire_gang_queue_wait(gang_record)
+                        if expiry in ("expired", "busy"):
+                            self._abandon_tier_acquire(tier_handles)
+                            tier_handles.clear()
+                            if ledger is not None and handle is not None:
+                                ledger.abandon_acquire(handle)
+                                self._return_borrow(controller, borrow)
+                                self._return_gpu_probe(controller, gpu_controller, gpu_probe)
+                            self.record_denial(item, "gang_queue_wait_deadline", {"state": expiry})
+                            continue
                         try:
                             _gang.mark_ready(self, gang_record, gang_entry, socket.gethostname(), _now())
                             readiness = _gang.sibling_readiness(
@@ -22149,6 +22252,9 @@ class PoolQueue:
                 claimed.pop("gang_backfill", None)
                 if gang_backfill:
                     claimed["gang_backfill"] = gang_backfill
+                claimed.pop("gang_bounded_backfill", None)
+                if gang_bounded_backfill:
+                    claimed["gang_bounded_backfill"] = gang_bounded_backfill
                 claimed.pop("container_class_verdict", None)
                 if class_verdict is not None:
                     claimed["container_class_verdict"] = class_verdict

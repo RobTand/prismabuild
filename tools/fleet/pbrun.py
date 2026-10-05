@@ -5206,6 +5206,8 @@ def gang_declaration(args) -> dict | None:
     """``--gang-*`` as a sealed declaration, refusing what a gang cannot be (#1517)."""
     fields = (args.gang_group, args.gang_size, args.gang_index)
     if all(field is None for field in fields):
+        if getattr(args, "gang_queue_wait_timeout_s", None) is not None:
+            raise SystemExit("pbrun: gang queue wait timeout requires a gang")
         return None
     if any(field is None for field in fields):
         raise SystemExit("pbrun: --gang-group, --gang-size and --gang-index go together")
@@ -5218,6 +5220,7 @@ def gang_declaration(args) -> dict | None:
         raise SystemExit("pbrun: a gang member cannot be deferred with --after")
     from prismabuild import _gang
     try:
+        _gang.queue_wait_timeout(getattr(args, "gang_queue_wait_timeout_s", None))
         return _gang.declaration({"group": args.gang_group, "size": args.gang_size,
                                   "index": args.gang_index})
     except _gang.GangContractError as exc:
@@ -5250,6 +5253,7 @@ def freeze_action_template(
     container_image_refs: Sequence[str] = (),
     wrapper_dir: Path | None = None,
     gang: Mapping[str, object] | None = None,
+    gang_queue_wait_timeout_s: float | None = None,
     requires_files: list[dict] | None = None,
     resident_set: str | None = None,
 ) -> dict[str, object]:
@@ -5538,6 +5542,11 @@ def freeze_action_template(
         # Sealed membership (#1517): the group, its size and this index are
         # part of the action key. Absent, the key is byte-identical to before.
         params["gang"] = dict(gang)
+    if gang_queue_wait_timeout_s is not None:
+        from prismabuild import _gang
+        if gang is None:
+            raise SystemExit("pbrun: gang queue wait timeout requires a gang")
+        params["gang_queue_wait_timeout_s"] = _gang.queue_wait_timeout(gang_queue_wait_timeout_s)
     if progress is not None:
         # Sealed, like the profiler mode and for the same reason: an action
         # admitted under the progress contract is a different action from its
@@ -7005,6 +7014,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
                     help="members in the gang (with --gang-group)")
     ap.add_argument("--gang-index", type=int, default=None,
                     help="this member's index, 0..size-1 (with --gang-group)")
+    ap.add_argument("--gang-queue-wait-timeout-s", type=float, default=None,
+                    help="opt in this gang to a positive queue-wait deadline, in seconds; "
+                         "cancels only this gang before its first claim (default off)")
     ap.add_argument(
         "--retry-safe",
         action="store_true",
@@ -7552,6 +7564,7 @@ def prepare_submission(args: argparse.Namespace) -> dict[str, object]:
         container_image_refs=images,
         wrapper_dir=wrapper_dir,
         gang=gang,
+        gang_queue_wait_timeout_s=getattr(args, "gang_queue_wait_timeout_s", None),
         resident_set=getattr(args, "resident_set", None),
         requires_files=requirements,
     )
@@ -7942,6 +7955,8 @@ def publication_row(
         row["interpreter"] = str(params["interpreter"])
     if params.get("gang"):
         row["gang"] = dict(params["gang"])
+    if params.get("gang_queue_wait_timeout_s") is not None:
+        row["gang_queue_wait_timeout_s"] = params["gang_queue_wait_timeout_s"]
     if params.get("requires_files") and "requires_files" in (
             inspect.signature(queue.publish).parameters):
         # Derived from the sealed body like the interpreter (#1495), and
