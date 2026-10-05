@@ -19435,11 +19435,55 @@ class PoolQueue:
             return evidence
         return None
 
+    @staticmethod
+    def _ready_gpu_refused_here(
+        item: Mapping[str, object], records: Mapping[str, object], *, host: str,
+    ) -> bool:
+        """This publication/attempt's latest refusal no pool drain clears (#1526)."""
+        published = item.get("published_unix")
+        if type(published) not in (int, float) or not math.isfinite(published):
+            return False
+        key = str(item.get("action_key", ""))
+        record = records.get(f"{key}:{float(published)!r}")
+        if (not isinstance(record, Mapping) or record.get("host") != host
+                or record.get("action_key") != key
+                or record.get("published_unix") != published
+                or record.get("attempts", 0) != item.get("attempts", 0)):
+            return False
+        reason, evidence = record.get("reason"), record.get("evidence")
+        if not isinstance(evidence, Mapping):
+            return False
+        if reason == "gang_member_elected_elsewhere":
+            return True
+        for name in ("withhold", "starved"):
+            verdict = evidence.get(name)
+            if (isinstance(verdict, Mapping)
+                    and verdict.get("why") == "measurement_reserved_on_other_host"):
+                return True
+        source = next((base for base in ("adaptive_gpu_refused", "adaptive_cpu_refused")
+                       if reason in (base, base + "_withholding",
+                                     base + "_starved", base + "_past_ceiling")), None)
+        decision = evidence.get("decision")
+        if (source is None or not isinstance(decision, Mapping)
+                or not isinstance(decision.get("reason"), str)
+                or not decision["reason"]):
+            return False
+        # The refusal path owns the drain classification; do not restate it.
+        if evidence.get("drain_resolves") is False:
+            return True
+        # These existing verdicts also remain usable before the first pass
+        # publishes the explicit drain fact. Unknown verdicts keep protection.
+        return source == "adaptive_gpu_refused" and (
+            bool(decision.get("foreign_processes"))
+            or decision["reason"] in ("sample_invalid_or_stale",
+                                       "gpu_memory_sample_invalid"))
+
     def _ready_gpu_for_host(
         self, ready: Sequence[Mapping[str, object]], *, tags: frozenset[str],
         has_gpu: bool, total: Mapping[str, int], gpu_controller: object | None,
         offers: Callable[[], Sequence[Mapping[str, object]]],
         observed_images: Container[str] | None,
+        verdicts: Callable[[], Mapping[str, object]],
     ) -> Mapping[str, object] | None:
         """The first READY GPU row eligible for this host's capacity (#1526).
 
@@ -19473,7 +19517,9 @@ class PoolQueue:
                     }
                 # Reuse the placement owner's interpreter, image and dependency
                 # capability checks; a GPU row this host cannot run is no veto.
-                if self._matching_offers({**item, "resources": reservation}, live=[local]):
+                if (self._matching_offers({**item, "resources": reservation}, live=[local])
+                        and not self._ready_gpu_refused_here(
+                            item, verdicts(), host=socket.gethostname())):
                     return item
             except (TypeError, ValueError):
                 continue  # an unplaceable or malformed GPU row cannot starve CPU work
@@ -20342,12 +20388,22 @@ class PoolQueue:
         ready = publication_canary.promote(
             self.root, ready, eligible=lambda item: self._placement_matches(
                 item, tags=tagset, has_gpu=has_gpu))
+        # Shared with carried-withhold reads below: one existing, lock-free
+        # host denial snapshot per pass, taken only when a reader needs it.
+        host_verdicts: Mapping[str, object] | None = None
+
+        def verdict_snapshot() -> Mapping[str, object]:
+            nonlocal host_verdicts
+            if host_verdicts is None:
+                host_verdicts = self._host_denial_records()
+            return host_verdicts
+
         # Protect GPU capacity even across priority bands and when a CPU row
         # fits beside it. This is a placement rule, not #1169's scan ordering.
         ready_gpu = self._ready_gpu_for_host(
             ready, tags=tagset, has_gpu=has_gpu, total=total,
             gpu_controller=gpu_controller, offers=offer_snapshot,
-            observed_images=observed_images)
+            observed_images=observed_images, verdicts=verdict_snapshot)
         host = socket.gethostname()
         #: The rooms of those rows this pass could not evaluate because another
         #: loop held their transition lock (#1169, :meth:`_ready_gpu_row_room`).
@@ -20369,9 +20425,6 @@ class PoolQueue:
         #: Their wait ends when this host's incumbents finish, so it never
         #: holds back work an incumbent itself depends on.
         measurement_withholds: set[str] = set()
-        #: This host's latest verdicts, read once, at the pass's first row it
-        #: could not evaluate (#1085, #1143).
-        host_verdicts: Mapping[str, object] | None = None
         #: Whether a row this pass already withheld the whole box for (#1230
         #: review): ``carry_withhold``'s None then means "held elsewhere in
         #: this pass", not "no live carry", and the busy-row room must not
@@ -20395,14 +20448,12 @@ class PoolQueue:
             # as ``withhold_carried`` in its denial, so the next such pass
             # reads the same start.  Read before that denial overwrites the
             # host's record.
-            nonlocal host_verdicts, whole_box_held
+            nonlocal whole_box_held
             if withheld_for is not None and withheld_kinds is None:
                 whole_box_held = True
                 return None                 # the whole box is held already
-            if host_verdicts is None:
-                host_verdicts = self._host_denial_records()
             carried = self._carried_withhold(
-                host_verdicts, item, host=socket.gethostname(), now=_now())
+                verdict_snapshot(), item, host=socket.gethostname(), now=_now())
             if carried is not None:
                 withhold(key, WITHHOLD_KINDS.get(str(carried["mode"])))
             return carried
@@ -21407,6 +21458,10 @@ class PoolQueue:
                             drain_resolves = (mode is not None and not foreign
                                               and (verdict is None
                                                    or verdict.get("drain_resolves") is not False))
+                            if (demand.get("gpu") and isinstance(decision, Mapping)
+                                    and isinstance(decision.get("reason"), str)
+                                    and decision["reason"]):
+                                evidence["drain_resolves"] = drain_resolves
                             if verdict is not None and verdict["eligible"]:
                                 # #924: an occupied-box refusal holds the box
                                 # shut while its holders drain soon, exactly as

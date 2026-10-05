@@ -4878,6 +4878,18 @@ This rule crosses priority bands and has no timeout: aging or a higher CPU
 priority cannot spend the GPU host's CPUs or memory ahead of eligible GPU work.
 Once no such GPU row is READY, ordinary CPU placement resumes.
 
+An eligible-fit GPU row stops holding CPU work back when this host's latest
+verdict for that exact publication and attempt says pool jobs draining will
+not make it runnable here. The refusal path's existing drain classifier
+records `drain_resolves: false` in the denial evidence; foreign GPU processes
+(including exempt vLLM serving), invalid/stale GPU samples and device-state
+refusals therefore do not starve CPU work. A gang member elected elsewhere
+or a measurement reserved on another host likewise has no CPU veto here.
+Missing or unrelated verdicts leave the original protection in place, and a
+pool-holder drain still protects the GPU row. This exception shares the
+existing lock-free host-denial snapshot used for carried withholds, adds no
+lock or timeout, and grants no GPU or CPU admission credit.
+
 A CPU row whose sealed tags include this host's hostname is pinned, whether
 by `--tag sparky`, `--tag sparklina`, or `--here`, and is exempt. Hosts without
 a GPU are also unchanged. The rule is evaluated once from the existing READY
