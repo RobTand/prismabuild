@@ -21,7 +21,7 @@ def fleet(tmp_path, monkeypatch, request):
     worker_tags = [host, "gb10", pb.INTERPRETER_TAG, pb.CONTAINER_IMAGE_TAG]
     queue.announce(host=host, tags=worker_tags, has_gpu=True,
                    capacity=CAPACITY, observed_capacity=CAPACITY,
-                   interpreters=[sys.executable], container_images=[])
+                   interpreters=[sys.executable], observed_images=[])
 
     def publish(key, *, gpu=False, tags=None, resources=None, priority=0, **fields):
         queue.publish(
