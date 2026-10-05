@@ -22,8 +22,7 @@ member overrides them. Prints one JSON line: the group and its member keys.
 
 The manifest may also be a bare list of members. A member names its host with
 ``tag`` or with ``tags`` (a list), may give ``demand`` as ``gpu=1,mem_gb=100`` or
-as a mapping, ``env`` as ``K=V`` strings or as a mapping, and its own ``cwd``
-(``--cwd`` is then optional).
+as a mapping, and ``env`` as ``K=V`` strings or as a mapping.
 
 A member carries the existing ``pbrun`` options a measurement window needs, each
 as the one flag of that name: ``gpu_memory_gb``, ``exclusive`` and ``measurement``

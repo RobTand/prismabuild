@@ -1,4 +1,4 @@
-"""A gang member keeps the whole ``pbrun`` submission contract (#1517).
+"""A gang member carries the ``pbrun`` options a measurement window declares (#1517).
 
 ``pbgang`` submits each member through ``pbrun``.  It used to forward only a
 tag, argv, demand, env, timeout, priority and cpus, so a member that needs a
