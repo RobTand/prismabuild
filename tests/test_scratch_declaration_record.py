@@ -12,7 +12,7 @@ import sys
 
 import pytest
 
-from prismabuild import client, core as pb, pool, resource_scope
+from prismabuild import adaptive_snapshot, client, core as pb, pool, resource_scope
 
 OPT_IN = "PRISMABUILD_EPHEMERAL_SCRATCH_DECLARATIONS"
 SELECTED = [{"root_env": "TEMP_ROOT", "name": "row-temp"}]
@@ -80,12 +80,22 @@ def runtime(tmp_path, monkeypatch):
     return create, calls
 
 
+def is_snapshot_helper(argv):
+    """True when argv launches the adaptive-snapshot diagnostic copy (#1539).
+
+    The helper is a diagnostic, not the payload: it may spawn before scratch
+    registration, so the payload spy must pass it through uninspected.
+    """
+    return (isinstance(argv, (list, tuple)) and len(argv) >= 2
+            and argv[1] == str(adaptive_snapshot._ENTRY))
+
+
 def process(monkeypatch, inspect=None, *, returncode=0):
     class Process:
         pid = 999999999
         def __init__(self, argv, **kwargs):
             self.returncode = returncode
-            if inspect is not None:
+            if inspect is not None and not is_snapshot_helper(argv):
                 inspect(argv, kwargs)
         def communicate(self, *, timeout):
             return "fixture output", ""
