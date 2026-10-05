@@ -106,6 +106,12 @@ def test_recovery_main_result_bytes_and_nonfinite_refusal_match_main(monkeypatch
 
 def test_gang_main_result_bytes_match_main(monkeypatch, capsys, tmp_path):
     module = fleet_module("pbgang")
+    old = main_definitions("tools/fleet/pbgang.py", ["main"],
+                           argparse=module.argparse, secrets=module.secrets, sys=sys,
+                           subprocess=module.subprocess, pool=module.pool, _gang=module._gang,
+                           SH=module.SH, SCHEMA=module.SCHEMA, __doc__=module.__doc__,
+                           load=module._pbgang_load_manifest,
+                           member_command=module.member_command, withdraw=module.withdraw)
     manifest = tmp_path / "manifest.json"
     manifest.write_text(json.dumps({"members": [{"tag": "one", "argv": ["/bin/true"]},
                                               {"tag": "two", "argv": ["/bin/true"]}]}))
@@ -118,12 +124,7 @@ def test_gang_main_result_bytes_match_main(monkeypatch, capsys, tmp_path):
     monkeypatch.setattr(module.pool, "_read_json", lambda path: {})
     monkeypatch.setattr(module._gang, "publish_group", lambda *args, **kwargs:
         {"skew_s": 1.25, "priority": 7})
-    old = main_definitions("tools/fleet/pbgang.py", ["main"],
-                           argparse=module.argparse, secrets=module.secrets, sys=sys,
-                           subprocess=module.subprocess, pool=module.pool, _gang=module._gang,
-                           SH=module.SH, SCHEMA=module.SCHEMA, __doc__=module.__doc__,
-                           load=module._pbgang_load_manifest,
-                           member_command=module.member_command, withdraw=module.withdraw)
+
     argv = ["--manifest", str(manifest), "--cwd", str(tmp_path)]
     assert old.main(argv) == 0
     expected = capsys.readouterr().out
