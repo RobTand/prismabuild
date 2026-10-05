@@ -53,7 +53,6 @@ DATE --policy POLICY --by OPERATOR` appends a new lease without modifying
 the set body. Use `--campaign NAME` instead of `--lease-until` if needed.
 The policy ceiling applies to the new hard maximum relative to renewal time.
 
-
 `pbresident.py --pool-root QUEUE adopt SET_ID --host HOST --source DIRECTORY`
 queues a verified same-filesystem adoption on the owning host; it does not
 hash or move bytes on the coordinator. `--checkout` and `--policy` have the
