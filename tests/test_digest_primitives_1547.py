@@ -50,16 +50,17 @@ def test_fixed_corpus_matches_main_and_real_isolated_shard(tmp_path):
         assert owner._canonical_bytes(value) == old._canonical_bytes(value)
     mapping = {"z": "λ", "a": [1.25, None]}
     assert owner._sorted_lf_bytes(mapping) == old._sorted_lf_bytes(mapping)
+    pbtest = fleet_module("pbtest")
     (tmp_path / "pytest.ini").write_text("[pytest]\n")
     (tmp_path / "test_shipped.py").write_text(
         "import sys\nfrom pathlib import Path\n"
-        "from prismabuild.digest_primitives import canonical_sha256, raw_sha256, stream_sha256\n"
+        f"from {pbtest.SHARD_DIGEST_MODULE} import canonical_sha256, raw_sha256, stream_sha256\n"
         f"def test_exact_owner():\n"
         f"    assert [canonical_sha256(v) for v in {values!r}] == {expected['canonical']!r}\n"
         f"    assert raw_sha256({raw!r}) == {expected['raw']!r}\n"
         f"    assert stream_sha256(Path('payload.bin')) == {expected['stream']!r}\n"
         "    assert 'prismabuild.core' not in sys.modules\n")
-    pbtest = fleet_module("pbtest")
+
     command = pbtest.shard_entry(sys.executable, tmp_path)
     command.insert(1, "-I")
     result = subprocess.run([*command, "-q", "-p", "no:cacheprovider", "test_shipped.py"],
@@ -150,7 +151,8 @@ def test_shipped_owner_bytes_equal_the_loaded_package_module():
     sources = next(node.value for node in tree.body
                    if isinstance(node, ast.Assign) and node.targets[0].id == "SOURCES")
     from ast import literal_eval
-    shipped = literal_eval(sources)["prismabuild.digest_primitives"]
+    assert pbtest.SHARD_DIGEST_MODULE != "prismabuild.digest_primitives"
+    shipped = literal_eval(sources)[pbtest.SHARD_DIGEST_MODULE]
     loaded = Path(core.digest_primitives.__file__).read_bytes()
     assert shipped.encode("utf-8") == loaded
     assert hashlib.sha256(shipped.encode("utf-8")).hexdigest() == hashlib.sha256(loaded).hexdigest()

@@ -16352,9 +16352,12 @@ validation, identity or byte-integrity rule.
 The owner split is approved by CEO decisions `dec-1005-170450-5ec5` and
 `rep-1005-170658-9efc`: exactly two attested owner files, no third file or raw-site
 exemption. Core re-exports the identical helper and exception objects. pbtest's
-existing source loader binds the shipped half under `prismabuild.digest_primitives`
-before loading its target-interpreter helpers, so package installation is not
-required. File hashing and diagnostic encoding use that same source; pin and
+existing source loader binds the shipped half under the private shard-only
+`_prismabuild_pbtest_digest_primitives` name. Its helper-scoped import binding
+serves the target helpers without occupying `prismabuild.digest_primitives` in
+the package import table, so a later real package/core import loads and attests
+the on-disk owner. Package installation is not required by the target helpers.
+File hashing and diagnostic encoding use that same shipped source; pin and
 capability identity checks retain their previous behavior. Composing with #1549
 keeps `pbtest_pins.verify_install` and `verify_record_bytes` separate: the latter
 hashes RECORD bytes through the owner's `stream_digest` with the recorded

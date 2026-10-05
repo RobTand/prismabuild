@@ -863,29 +863,44 @@ def summary_seconds(summary: str) -> float | None:
                       ANSI.sub("", summary).strip())
     return float(match.group(1)) if match else None
 
+SHARD_DIGEST_MODULE = "_prismabuild_pbtest_digest_primitives"
+
 
 #: The interpreter program every shard runs.  It carries the modules it runs
 #: as text, so the action key names their bytes and no helper path has to
 #: exist on the worker -- the rule the dependency guard already followed.
 SHARD_PROGRAM = """\
 # A pbtest shard: pytest under pbtest_outcomes' recorder.
+import builtins
 import sys
 import types
 
 SOURCES = @SOURCES@
+DIGEST_MODULE = @DIGEST_MODULE@
 
 
 def load(name):
     module = types.ModuleType(name)
     module.__file__ = "<pbtest " + name + ">"
+    if name != DIGEST_MODULE:
+        module.__dict__["__builtins__"] = HELPER_BUILTINS
     sys.modules[name] = module
     exec(compile(SOURCES[name], module.__file__, "exec"), module.__dict__)
     return module
 
 
-# The one binding helper installs the shipped owner under its package name.
-# Target helpers use the same imports here as in a normal installed package.
-load("prismabuild.digest_primitives")
+# Only shipped helper imports bind to the private owner. A later package
+# import loads its real on-disk module, preserving core's source identity.
+shipped_owner = load(DIGEST_MODULE)
+
+
+def helper_import(name, globals=None, locals=None, fromlist=(), level=0):
+    if name == "prismabuild.digest_primitives" and fromlist and level == 0:
+        return shipped_owner
+    return builtins.__import__(name, globals, locals, fromlist, level)
+
+
+HELPER_BUILTINS = dict(vars(builtins), __import__=helper_import)
 pins = load("pbtest_pins") if "pbtest_pins" in SOURCES else None
 digest = load("pbtest_dependency_digest") if "pbtest_dependency_digest" in SOURCES else None
 load("pbtest_collection")
@@ -1001,7 +1016,7 @@ def shard_entry(python: str, checkout: Path, *, tmpdir: str | None = None,
     """
 
     here = Path(__file__)
-    sources = {"prismabuild.digest_primitives":
+    sources = {SHARD_DIGEST_MODULE:
                    Path(core.digest_primitives.__file__).read_bytes().decode("utf-8"),
                "pbtest_outcomes": here.with_name("pbtest_outcomes.py").read_text(),
                "pbtest_collection": here.with_name("pbtest_collection.py").read_text()}
@@ -1017,6 +1032,7 @@ def shard_entry(python: str, checkout: Path, *, tmpdir: str | None = None,
     if any((checkout / "tools").glob("resolve_*_dev_pin.py")):
         sources["pbtest_pins"] = here.with_name("pbtest_pins.py").read_text()
     program = SHARD_PROGRAM.replace("@SOURCES@", repr(sources)).replace(
+        "@DIGEST_MODULE@", repr(SHARD_DIGEST_MODULE)).replace(
         "@COLLECTION@", repr(collection))
     if basetemp is not None:
         # The derivation runs before every other guard: it is the worker's
