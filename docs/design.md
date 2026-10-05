@@ -5923,6 +5923,18 @@ A separate role is needed: `tiers` discovers file-server ZFS, ARC and tmpfs
 windows and sweeps their rolling fragments; neither it nor `storage` runs
 on each local-disk owner. No fleet host is enabled in this phase.
 
+Resident movers reuse `movement_actions.seal_movement_action`, one CPU and
+one GiB of host memory, pinned to the disk owner. Occupancy belongs to the
+set rather than the action, so finishing a mover does not free its local
+tokens. Copies prefer complete staged coverage protected by an ordinary
+`reader_lease` pin for the whole copy, otherwise read the canonical files.
+Every file is SHA-256 checked against the manifest and fsynced; nested
+directories are fsynced before the whole `.partial` tree is renamed.
+Retries rehash and reuse completed partial files, and replace corrupt partial
+files. Only the final verified tree can be recorded as resident. Source
+size and modification time are diagnostics, not refusals.
+
+
 ## Cluster-scoped storage tiers (#583)
 
 Off by default. Nothing the fleet publishes today carries tier demand or a

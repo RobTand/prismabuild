@@ -80,7 +80,7 @@ FLEET_SCRIPTS = (
     # ...and tier_loop.py on a box declaring the tiers role (#583): it
     # mints and announces the box's discovered storage tiers, and a role
     # script that does not travel cannot be spawned.
-    "tier_loop.py", "pbresident.py", "local_tier_loop.py",
+    "tier_loop.py", "pbresident.py", "local_tier_loop.py", "local_resident.py",
     # ...and stage_move.py, which is not a role script at all: it is the
     # movement node itself, exec'd by an admitted action on the storage box
     # (#583).  A generation without it publishes movers nothing can run.
