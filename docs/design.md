@@ -1850,7 +1850,11 @@ and `--requires-files` (the exact-file entries), the row requires the
 offers neither the tag nor the claim check, so it can never claim the row),
 and the claim gate stats and hashes the actual bytes — a missing, unreadable
 or drifted dependency is a named denial on the box about to spend the
-attempt. The shard's own preflight re-verifies every sealed requirement
+attempt. A cohort whose capability union pins no bytes — a tags-only fence —
+forwards neither flag: `--requires-files` refuses an empty list by contract,
+so the shard is submitted as an ordinary tagged row, while an explicit
+`--requires-files` on a standalone submission must still name at least one
+entry. The shard's own preflight re-verifies every sealed requirement
 before pytest from the same owner module, so a refusal is a failed shard and
 a red run, never a skipped test. The sealed selection rides in the shard's
 selection JSON, which is action identity: a changed declaration re-keys every

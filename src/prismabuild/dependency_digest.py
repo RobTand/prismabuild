@@ -171,7 +171,8 @@ def validate_sealed(sealed: object) -> dict:
     """The sealed per-shard capability selection a shard is asked to verify.
 
     ``{"names", "tags", "dependencies"}`` -- which capabilities, which
-    placement tags they resolved to, and their requirements.  Anything else is
+    placement tags they resolved to, and their requirements; a tags-only
+    fence leaves the requirements empty (#1495).  Anything else is
     a malformed seal and refuses the shard before pytest rather than running
     with a fence nobody can read.
     """
@@ -190,9 +191,12 @@ def validate_sealed(sealed: object) -> dict:
             or any(not isinstance(t, str) or not t or "\x00" in t
                    for t in tags)):
         raise ValueError("sealed capability tags must be a list of names")
-    files = validate_requirements(
-        [entry for entry in dependencies
-         if isinstance(entry, dict) and "kind" not in entry])
+    file_entries = [entry for entry in dependencies
+                    if isinstance(entry, dict) and "kind" not in entry]
+    # A tags-only fence seals an empty requirement union (#1495): the
+    # nonempty rule belongs to the standalone --requires-files contract,
+    # not to a seal.
+    files = validate_requirements(file_entries) if file_entries else []
     observations = validate_observations(
         [entry for entry in dependencies
          if isinstance(entry, dict) and "kind" in entry],

@@ -223,9 +223,11 @@ def shard_selection(names: tuple[str, ...], config: dict) -> dict:
     Tags are the union of the cohort's capabilities; dependencies are the
     merged requirement entries, deduplicated across capabilities by the one
     validator -- which refuses the same path pinned to two digests, so a
-    merge can never quietly pick a side.  The result rides in the shard's
-    selection JSON, which is part of the action's identity: a changed
-    declaration re-keys every shard it fences.
+    merge can never quietly pick a side.  A cohort whose capabilities fence
+    by tags alone merges to an empty requirement union (#1495); only the
+    standalone ``--requires-files`` must be nonempty.  The result rides in
+    the shard's selection JSON, which is part of the action's identity: a
+    changed declaration re-keys every shard it fences.
     """
 
     tags: set[str] = set()
@@ -236,7 +238,8 @@ def shard_selection(names: tuple[str, ...], config: dict) -> dict:
         tags.update(body["tags"])
         files.extend(body["files"])
         observations.extend(body["observations"])
-    merged_files = dependency_digest.validate_requirements(files)
+    merged_files = (dependency_digest.validate_requirements(files)
+                    if files else [])
     merged_observations = dependency_digest.validate_observations(
         observations, files=merged_files)
     return {"names": sorted(names), "tags": sorted(tags),

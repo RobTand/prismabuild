@@ -1727,6 +1727,12 @@ def main() -> int:
                   "requires_files": [{"path": entry["path"]}
                                      for entry in plan["selection"]["dependencies"]
                                      if "path" in entry and "sha256" in entry]}
+        if not intent["requires_files"]:
+            # A tags-only fence seals no requirement (#1495): the digest
+            # question below is only about bytes, and asking it here would
+            # refuse a fleet whose workers offer no digest capability the
+            # requirement-less row would never need.
+            continue
         verdict = fleet_queue().dependency_placement_verdict(intent)
         paths = ", ".join(sorted(
             str(entry["path"]) for entry in intent["requires_files"]))
@@ -1925,10 +1931,15 @@ def main() -> int:
             # The claim-relevant projection (#1495): the exact-file entries
             # the claim gate hashes.  The full sealed selection travels in
             # the shard's own selection JSON below, which is action
-            # identity, so a changed declaration re-keys the shard.
+            # identity, so a changed declaration re-keys the shard.  A
+            # tags-only fence has no exact-file entries: pbrun refuses an
+            # empty --requires-files by contract, so the flag is omitted
+            # entirely and the shard is submitted as an ordinary tagged
+            # row (#1495).
             pins = [entry for entry in plan["selection"]["dependencies"]
                     if "kind" not in entry]
-            flags += ["--requires-files", json.dumps(pins)]
+            if pins:
+                flags += ["--requires-files", json.dumps(pins)]
         if args.residency != "none":
             flags += ["--residency", args.residency]
         # Explicit forwarding replaces addopts from both environment and
