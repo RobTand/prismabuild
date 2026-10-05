@@ -220,6 +220,7 @@ def pins_repo(tmp_path_factory):
         'name = "pinsbyte1544"\n'
         'version = "1.0"\n')
     (repo / "pinsbyte1544/__init__.py").write_text("VALUE = 1\n")
+    (repo / "pinsbyte1544/data.py").write_text("DATA = 1\n")
     git = ["git", "-c", "user.email=1544@t", "-c", "user.name=1544"]
     for command in (["git", "init", "-q"], [*git, "add", "-A"],
                     [*git, "commit", "-qm", "pins1544"]):
@@ -314,17 +315,40 @@ def test_tolerant_policy_still_refuses_corrupt_installed_bytes(
     assert "require a non-editable Git install" not in str(excinfo.value)
 
 
-def test_tolerant_policy_missing_installed_file_still_fails(
+def test_tolerant_policy_deleted_imported_module_file_still_refuses(
         tmp_path, monkeypatch, pins_module, pins_repo):
+    """Deleting the file Python imports is refused, by the ownership check.
+
+    ``importlib.metadata`` drops RECORD entries whose files no longer exist
+    (``Distribution.files`` filters them), so the hash loop never sees the
+    missing file; the imported module then is not in the recorded set.
+    """
     site, commit = pip_installed(tmp_path, pins_repo)
     (site / "pinsbyte1544/__init__.py").unlink()
     monkeypatch.syspath_prepend(str(site))
     calls = []
-    with pytest.raises(OSError):
+    with pytest.raises(ValueError) as excinfo:
         pins_module.verify_install(
             "pinsbyte1544", OTHER,
             identity_policy=lambda message, facts: calls.append(message))
     assert len(calls) == 1
+    assert "not owned by its RECORD" in str(excinfo.value)
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "KNOWN PRE-EXISTING GAP, not introduced by #1544 and present in the strict "
+    "path on main: importlib.metadata's Distribution.files silently drops RECORD "
+    "entries whose files are missing, so a deleted package file that is not the "
+    "imported module is never hashed and the install is reported intact. Fix "
+    "needs a decision (it changes the pin guard every PQ pbtest shard runs); "
+    "tracked in its own issue. Remove this marker when fixed."))
+def test_a_deleted_non_imported_package_file_should_be_refused(
+        tmp_path, monkeypatch, pins_module, pins_repo):
+    site, commit = pip_installed(tmp_path, pins_repo)
+    (site / "pinsbyte1544/data.py").unlink()
+    monkeypatch.syspath_prepend(str(site))
+    with pytest.raises(ValueError):
+        pins_module.verify_install("pinsbyte1544", commit)
 
 
 @pytest.mark.parametrize("change, diagnostic", [

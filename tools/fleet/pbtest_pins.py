@@ -24,7 +24,11 @@ def verify_record_bytes(module: str) -> dict:
     own: one distribution owning ``module``, a present RECORD, every hashed
     RECORD entry matching the bytes on disk, the module Python actually
     imports owned by that RECORD, and no unrecorded file inside the package.
-    It never reads the pin. In particular the ownership refusal ("imported
+    It never compares against the expected pin (it reads ``direct_url.json``
+    only to label its messages and report ``installed_commit``). Known limit:
+    ``importlib.metadata`` hides RECORD entries whose files are missing, so a
+    deleted package file other than the imported module is not detected here.
+    In particular the ownership refusal ("imported
     module is not owned by its RECORD") belongs to this phase, so an
     editable or shadowed import is refused here even when a caller has
     decided to tolerate recorded identity drift.
