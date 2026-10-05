@@ -230,7 +230,11 @@ def publish_actions(template, store, set_id, tiers, *, policy_path):
             cas.publish_action_request(action)
             pair[operation] = movement_row(action, cas, tier)
         store.update_movements(set_id, host, pair)
-        queue.publish(**pair["copy"], recompute=True, refuse_if_live=True)
+        if store.read_copy(set_id, host)["state"] != "resident":
+            try:
+                queue.publish(**pair["copy"], recompute=True, refuse_if_live=True)
+            except pool.ActionAlreadyLiveError:
+                pass  # Attach to the existing generation; never replace a live copy.
         rows[host] = pair
     return rows
 

@@ -5908,7 +5908,7 @@ release, each naming the manifest digest. A lease requires either an until
 timestamp or a campaign name, and an explicit hard maximum; no forever default.
 Per-host `copies/<host>.json` records use `prismabuild.resident_copy.v1` and
 `absent`, `copying`, `resident` or `evicting` states, a local root, verification
-receipt, byte count and completion time. `pbresident publish|status|release|adopt`
+receipt, byte count and completion time. `pbresident publish|status|release|adopt|dispatch|renew`
 operates these records. `local_tier_policy.json` is published with the runtime;
 its host map is empty by default, so this change activates no local tier.
 
@@ -5922,6 +5922,16 @@ prevents a stale operator write from resurrecting an evicted copy or a final
 state write from dropping newly published descriptors. Status exposes the
 descriptor map separately, and lease policy reads only the body and lease
 journal, not operator descriptors.
+
+`pbresident dispatch SET_ID` retries action publication for an already-filed
+immutable body. It never republishes the set or acquires a second publication
+hold. Repeated dispatch attaches to a live copy generation; a resident host
+gets its descriptors refreshed without another copy action. An absent or
+interrupted copy can be re-driven through the existing movement retry policy.
+`pbresident renew SET_ID` appends an explicit until-date or campaign lease with
+a required hard maximum, bounded by the configured renewal ceiling. Neither
+command changes the immutable body or adds a seal/authority requirement.
+
 
 
 Capacity uses `local_gib@local:<host>` in the ordinary tier ledger. Publication

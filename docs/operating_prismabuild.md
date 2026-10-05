@@ -41,6 +41,19 @@ a retained host-pinned egress row. It uses the current Git checkout by default;
 `--checkout PATH` selects the checkout that supplies the movement payload.
 The owning host must have announced its local tier tools and capacity.
 
+If publication files its body but action dispatch fails, do not republish the
+same manifest: `pbresident.py --pool-root QUEUE dispatch SET_ID --checkout
+CHECKOUT --policy POLICY` retries dispatch using that existing set. The
+command returns movement rows as JSON, attaches to already-live copy actions,
+and queues no new copy for a host whose copy is resident. Use a bounded Git
+checkout explicitly when the current directory is too large to snapshot.
+
+`pbresident.py --pool-root QUEUE renew SET_ID --lease-until DATE --hard-max
+DATE --policy POLICY --by OPERATOR` appends a new lease without modifying
+the set body. Use `--campaign NAME` instead of `--lease-until` if needed.
+The policy ceiling applies to the new hard maximum relative to renewal time.
+
+
 `pbresident.py --pool-root QUEUE adopt SET_ID --host HOST --source DIRECTORY`
 queues a verified same-filesystem adoption on the owning host; it does not
 hash or move bytes on the coordinator. `--checkout` and `--policy` have the
