@@ -16355,8 +16355,12 @@ exemption. Core re-exports the identical helper and exception objects. pbtest's
 existing source loader binds the shipped half under `prismabuild.digest_primitives`
 before loading its target-interpreter helpers, so package installation is not
 required. File hashing and diagnostic encoding use that same source; pin and
-capability identity checks retain their previous behavior. This is a source
-repair, not a claim that the new runtime has been deployed.
+capability identity checks retain their previous behavior. Composing with #1549
+keeps `pbtest_pins.verify_install` and `verify_record_bytes` separate: the latter
+hashes RECORD bytes through the owner's `stream_digest` with the recorded
+SHA-256, SHA-384 or SHA-512 algorithm. Its old primitive baseline site is
+removed, not renamed. This is a source repair, not a claim that the new runtime
+has been deployed.
 
 
 Repeated failed merge candidates bind a separate negative identity (#1450):
