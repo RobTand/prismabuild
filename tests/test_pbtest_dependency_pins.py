@@ -341,7 +341,7 @@ def test_tolerant_policy_deleted_imported_module_file_still_refuses(
     "entries whose files are missing, so a deleted package file that is not the "
     "imported module is never hashed and the install is reported intact. Fix "
     "needs a decision (it changes the pin guard every PQ pbtest shard runs); "
-    "tracked in its own issue. Remove this marker when fixed."))
+    "tracked as RobTand/prismabuild#1548. Remove this marker when fixed."))
 def test_a_deleted_non_imported_package_file_should_be_refused(
         tmp_path, monkeypatch, pins_module, pins_repo):
     site, commit = pip_installed(tmp_path, pins_repo)
