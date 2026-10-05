@@ -122,6 +122,7 @@ import hashlib
 import json
 import math
 import os
+import re
 from pathlib import Path
 import resource
 import select
@@ -3465,8 +3466,20 @@ def _docker_owned_container_ids(owner: str) -> list[str]:
     return _docker_containers_with_label(CONTAINER_OWNER_LABEL, owner)
 
 
+_DOCKER_REMOVAL_IN_PROGRESS = re.compile(
+    r"Error response from daemon: removal of container ([0-9a-f]{12,64}) is already in progress")
+
+
 def _docker_remove_containers(container_ids: list[str]) -> list[str]:
-    """Force-remove exactly the container ids the ownership query returned."""
+    """Force-remove exactly the container ids the ownership query returned.
+
+    A daemon already removing one of those ids answers ``removal of container
+    <id> is already in progress`` and exits 1.  That is not a failure: the
+    caller's follow-up ownership query still lists the container, so cleanup
+    stays incomplete and the next sweep proves its absence (#1403, #1500).
+    Every other error line, or one naming an id this call did not ask for,
+    still raises.
+    """
 
     if not container_ids:
         return []
@@ -3478,9 +3491,16 @@ def _docker_remove_containers(container_ids: list[str]) -> list[str]:
         check=False,
     )
     if result.returncode != 0:
-        detail = (result.stderr or result.stdout).strip()
-        raise PoolContractError(
-            f"docker cleanup failed ({result.returncode}): {detail}")
+        errors = [line.strip() for line in result.stderr.splitlines() if line.strip()]
+        busy = [_DOCKER_REMOVAL_IN_PROGRESS.fullmatch(line) for line in errors]
+        if not errors or not all(
+                match is not None and any(
+                    cid and (match[1].startswith(cid) or cid.startswith(match[1]))
+                    for cid in container_ids)
+                for match in busy):
+            detail = (result.stderr or result.stdout).strip()
+            raise PoolContractError(
+                f"docker cleanup failed ({result.returncode}): {detail}")
     return sorted({line.strip() for line in result.stdout.splitlines() if line.strip()})
 
 
