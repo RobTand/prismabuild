@@ -80,7 +80,7 @@ FLEET_SCRIPTS = (
     # ...and tier_loop.py on a box declaring the tiers role (#583): it
     # mints and announces the box's discovered storage tiers, and a role
     # script that does not travel cannot be spawned.
-    "tier_loop.py",
+    "tier_loop.py", "pbresident.py", "local_tier_loop.py", "local_resident.py",
     # ...and stage_move.py, which is not a role script at all: it is the
     # movement node itself, exec'd by an admitted action on the storage box
     # (#583).  A generation without it publishes movers nothing can run.
@@ -336,7 +336,7 @@ CANARY_RECORD_SCHEMA = "prismaquant.prismabuild.canary_status.v1"
 #: reads ``50-prismabuild-resource-broker.conf`` beside itself and provisions
 #: it as needrestart's exact-service restart exclusion (#1378), so a
 #: generation published without it would install an unprotected broker.
-FLEET_DATA = ("fleet_boxes.json", "ram_tier_policy.json",
+FLEET_DATA = ("fleet_boxes.json", "ram_tier_policy.json", "local_tier_policy.json",
               "50-prismabuild-resource-broker.conf")
 
 # These originate at tools/, without a second tools/fleet/ spelling. The

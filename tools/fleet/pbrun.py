@@ -5251,6 +5251,7 @@ def freeze_action_template(
     wrapper_dir: Path | None = None,
     gang: Mapping[str, object] | None = None,
     requires_files: list[dict] | None = None,
+    resident_set: str | None = None,
 ) -> dict[str, object]:
     """Read the tree and the environment once, and freeze what they say.
 
@@ -5499,6 +5500,9 @@ def freeze_action_template(
         "checkout_snapshot": checkout_snapshot,
         "retry_policy": retry_policy,
     }
+    if resident_set is not None:
+        from prismabuild import resident_sets
+        params["resident_set"] = resident_sets._set_id(resident_set)
     if recorder is not None:
         params["local_scratch_profile"] = recorder
     declared_interpreter = interpreter_of(command)
@@ -6846,6 +6850,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
                          "the snapshot are identical on every eligible worker")
     ap.add_argument("--here", action="store_true",
                     help="pin the materialized checkout to this box")
+    ap.add_argument("--resident-set", help="explicit resident set declaration for bounded lease renewal; Phase 1 serves canonical paths")
     ap.add_argument(
         "--data-manifest",
         help="path to a plain JSON or gzip data manifest (64 MiB stored; "
@@ -7547,6 +7552,7 @@ def prepare_submission(args: argparse.Namespace) -> dict[str, object]:
         container_image_refs=images,
         wrapper_dir=wrapper_dir,
         gang=gang,
+        resident_set=getattr(args, "resident_set", None),
         requires_files=requirements,
     )
     return {
@@ -7953,6 +7959,8 @@ def publication_row(
     if "retry_safe" in inspect.signature(queue.publish).parameters:
         row["retry_safe"] = (args.retry_safe if retry_safe is None
                              else bool(retry_safe))
+    if params.get("resident_set") is not None:
+        row["resident_set"] = params["resident_set"]
     return row
 
 

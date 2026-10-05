@@ -5892,6 +5892,89 @@ a logical request's common half carries a nonblank `data_manifest`, so a
 producer whose reads are not visible in the declaration can still require them
 to be declared.
 
+## Whole-directory local resident sets (#1545)
+
+Resident sets are optional accelerators, not rolling residency windows or
+admission gates. Phase 1 does not inject container mounts or alter placement.
+`resident_sets.ResidentSets` stores `resident-sets/<manifest sha256>/body.json`
+under the queue root. The body is immutable: the normalized data manifest,
+canonical directory, hosts, initial lease and creator. Every manifest entry
+is a whole regular file with a real SHA-256 digest; publication lists the
+canonical directory and requires exact whole-directory name and size coverage.
+Symlinks and special files are refused. Source metadata is not an identity gate.
+
+The separate append-only `lease.jsonl` journal records publication and explicit
+release, each naming the manifest digest. A lease requires either an until
+timestamp or a campaign name, and an explicit hard maximum; no forever default.
+Per-host `copies/<host>.json` records use `prismabuild.resident_copy.v1` and
+`absent`, `copying`, `resident` or `evicting` states, a local root, verification
+receipt, byte count and completion time. `pbresident publish|status|release`
+operates these records. `local_tier_policy.json` is published with the runtime;
+its host map is empty by default, so this change activates no local tier.
+
+Capacity uses `local_gib@local:<host>` in the ordinary tier ledger. Publication
+reserves ceil(bytes / GiB) on every host or rolls back the new empty holds.
+The separate supervised `localtier` role re-mints from unprivileged
+`f_bavail - filesystem floor - Docker allowance + occupied tier bytes`, capped
+by the policy maximum. Held tokens are never revoked by a falling budget.
+The mover also enforces both D1 limits before copying and checks the floor
+before each file. This is cooperative accounting, not a filesystem quota.
+A separate role is needed: `tiers` discovers file-server ZFS, ARC and tmpfs
+windows and sweeps their rolling fragments; neither it nor `storage` runs
+on each local-disk owner. No fleet host is enabled in this phase.
+
+Resident movers reuse `movement_actions.seal_movement_action`, one CPU and
+one GiB of host memory, pinned to the disk owner. Occupancy belongs to the
+set rather than the action, so finishing a mover does not free its local
+tokens. Copies prefer complete staged coverage protected by an ordinary
+`reader_lease` pin for the whole copy, otherwise read the canonical files.
+Every file is SHA-256 checked against the manifest and fsynced; nested
+directories are fsynced before the whole `.partial` tree is renamed.
+Retries rehash and reuse completed partial files, and replace corrupt partial
+files. Only the final verified tree can be recorded as resident. Source
+size and modification time are diagnostics, not refusals.
+Lease renewal uses only explicit queue-row `resident_set` declarations, not
+manifest-subset inference (the design note section 3.3 supersedes its older
+lifecycle wording). Until leases may be extended by ready or claimed rows,
+but never past their hard maximum. Campaign leases end on release or maximum.
+An explicit `ResidentSets.renew` appends a new bounded lease without changing
+the body. Explicit Phase 1 readers take `local_resident.pin` and release that
+token only after their last read; a crashed reader pin stays until the existing
+broker scope attestation proves stop. Phase 2 will integrate container pins.
+
+Eviction takes the per-host flock, checks pins, durably records `evicting`,
+then renames to `.evicting` under that lock. It releases the lock before
+deleting, and releases ledger tokens only after every tree is gone. An active
+mover holds its separate move lock, so eviction defers instead of deleting an
+in-flight partial tree. Each localtier cycle finishes interrupted evictions
+before minting. Cross-host requests queue the retained host-pinned egress action
+rather than deleting another host's paths in the caller.
+Adoption is a host-pinned movement action, not coordinator-side hashing. It
+checks whole-directory coverage and every file SHA-256, fsyncs the existing
+files and directories, then renames on the same filesystem without recopying.
+It refuses cross-filesystem moves, the canonical directory itself, outstanding
+partial/evicting trees and active manual bind mounts. For canonical paths under
+`/mnt/shared`, Docker inspection must establish that no running container
+captured the old recursive shared mount. No live manual copy is touched by
+Phase 1 qualification.
+`pbrun --resident-set SET_ID` is the single explicit lease-reference declaration.
+It is carried in ordinary action parameters and projected onto the queue row;
+it adds neither an admission gate nor a placement preference. Phase 1 does not
+inject anything: every new claim and immutable attempt writes
+`served_from: "canonical"`, alongside its declared set (if any) and existing
+claiming host. Legacy attempts without this field stay unknown, not retroactively
+labelled canonical. Ending status exposes the recorded field.
+
+`pbstatus --resident-sets` reads the immutable bodies, copies, lease journals,
+current lease verdict and measured per-host capacity/held tokens through its
+existing bounded reader. Corrupt or unreadable records produce a partial view,
+never a complete empty census. No identity or provenance seal is added;
+whole-directory shape, byte digests, safe deletion and capacity remain refusals.
+
+
+
+
+
 ## Cluster-scoped storage tiers (#583)
 
 Off by default. Nothing the fleet publishes today carries tier demand or a

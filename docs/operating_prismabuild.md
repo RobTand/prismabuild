@@ -15,6 +15,45 @@ adaptive CPU and GPU admission. SLURM (`slurm`) is an optional transport; its
 [scheduler decision](scheduler_decision_2026-09-04.md) describe that deployment
 path. See [the design document](design.md) for the current system contracts.
 
+## Resident set records (Phase 1)
+
+`pbresident.py --pool-root QUEUE publish --manifest MANIFEST` accepts
+`--canonical-root DIRECTORY --hosts HOST[,HOST] --lease-until DATE` and
+`--hard-max DATE`. Dates include a timezone, for example
+`2026-10-10T00:00:00Z`. Use `--campaign NAME` instead of `--lease-until`
+for a campaign lease; the hard maximum is still required. Every entry needs
+a real SHA-256 and must cover a complete regular file. Unlisted files,
+symlinks, ranges and mismatched sizes are refused.
+
+`pbresident.py --pool-root QUEUE status [SET_ID]` returns set bodies, lease
+journals and host copy states as JSON. `release SET_ID` appends a release
+without rewriting the declaration. Phase 1 does not change job paths,
+container mounts or placement. Publication alone does not claim a copy is
+available. The versioned `local_tier_policy.json` declares host roots,
+maximum GiB, the free-space floor and Docker allowance; the shipped host
+map is empty and does not enable any Spark.
+`publish` also queues one ordinary host-pinned copy action per host, with
+a retained host-pinned egress row. It uses the current Git checkout by default;
+`--checkout PATH` selects the checkout that supplies the movement payload.
+The owning host must have announced its local tier tools and capacity.
+
+`pbresident.py --pool-root QUEUE adopt SET_ID --host HOST --source DIRECTORY`
+queues a verified same-filesystem adoption on the owning host; it does not
+hash or move bytes on the coordinator. `--checkout` and `--policy` have the
+same meaning as on publication. Remove manual global bind-mount units first
+and stop every container that captured the old `/mnt/shared` recursive bind.
+The payload refuses an active bind mount or running captured container. Read
+`status SET_ID` for completion and its per-file verification receipt.
+`pbrun --resident-set SET_ID` declares an optional set reference for lease
+renewal. It does not require a resident copy or change execution placement.
+Phase 1 records every attempt as `served_from: "canonical"`; local mount
+injection is not present. `pbstatus.py --queue-root QUEUE --resident-sets`
+shows set declarations, host copy states, lease journals and capacity as JSON.
+A partial census has `complete: false` and names its unreadable records.
+
+
+
+
 Both transports publish the same verifiable CAS results. Their placement and
 resource enforcement differ, as described below. Examples name
 `--transport slurm` where SLURM behaviour is the point. You can set
