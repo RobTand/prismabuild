@@ -30,7 +30,7 @@ delivers every worker's reports.
 from __future__ import annotations
 
 import json
-import hashlib
+from prismabuild.digest_primitives import raw_sha256
 import os
 import posixpath
 from contextlib import nullcontext
@@ -350,7 +350,7 @@ def main(argv: list[str] | None = None, *, preflight=None,
             encoded = nodeid.encode("utf-8", errors="replace")
             if len(encoded) > TRACE_NODEID_MAX_BYTES:
                 fields.update(nodeid_truncated=True,
-                              nodeid_sha256=hashlib.sha256(encoded).hexdigest())
+                              nodeid_sha256=raw_sha256(encoded))
                 nodeid = encoded[:TRACE_NODEID_MAX_BYTES].decode("utf-8", errors="ignore")
             line = TRACE_PREFIX + json.dumps({
                 "schema": TRACE_SCHEMA, "event": event, "nodeid": nodeid,

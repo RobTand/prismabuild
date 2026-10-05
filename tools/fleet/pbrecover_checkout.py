@@ -7,7 +7,6 @@ install privileged source, or discover candidates. Keep the host quiescent.
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
 import sys
 

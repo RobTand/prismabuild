@@ -883,6 +883,9 @@ def load(name):
     return module
 
 
+# The one binding helper installs the shipped owner under its package name.
+# Target helpers use the same imports here as in a normal installed package.
+load("prismabuild.digest_primitives")
 pins = load("pbtest_pins") if "pbtest_pins" in SOURCES else None
 digest = load("pbtest_dependency_digest") if "pbtest_dependency_digest" in SOURCES else None
 load("pbtest_collection")
@@ -998,7 +1001,9 @@ def shard_entry(python: str, checkout: Path, *, tmpdir: str | None = None,
     """
 
     here = Path(__file__)
-    sources = {"pbtest_outcomes": here.with_name("pbtest_outcomes.py").read_text(),
+    sources = {"prismabuild.digest_primitives": (
+                   RUNTIME_ROOT / "src" / "prismabuild" / "digest_primitives.py").read_text(),
+               "pbtest_outcomes": here.with_name("pbtest_outcomes.py").read_text(),
                "pbtest_collection": here.with_name("pbtest_collection.py").read_text()}
     if trace:
         # The diagnostic plugin reuses the existing exact-process I/O reader.

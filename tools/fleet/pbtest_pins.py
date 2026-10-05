@@ -6,7 +6,7 @@ installs packages or executes a resolver on the submitting machine.
 from __future__ import annotations
 
 import base64
-import hashlib
+from prismabuild.digest_primitives import stream_digest
 import importlib.metadata as metadata
 import importlib.util
 import json
@@ -52,11 +52,8 @@ def verify_record_bytes(module: str) -> dict:
         if entry.hash is not None:
             if entry.hash.mode not in {"sha256", "sha384", "sha512"}:
                 raise ValueError(f"{identity}; unsupported RECORD hash: {entry}")
-            digest = hashlib.new(entry.hash.mode)
-            with path.open("rb") as handle:
-                for block in iter(lambda: handle.read(1024 * 1024), b""):
-                    digest.update(block)
-            actual = base64.urlsafe_b64encode(digest.digest()).rstrip(b"=").decode()
+            digest = stream_digest(path, algorithm=entry.hash.mode)
+            actual = base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
             if actual != entry.hash.value:
                 raise ValueError(f"{identity}; installed bytes differ from RECORD: {entry}")
             recorded[path] = actual

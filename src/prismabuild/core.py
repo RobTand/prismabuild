@@ -42,6 +42,13 @@ from typing import NoReturn
 import uuid
 import zlib
 
+from . import digest_primitives
+from .digest_primitives import (
+    ActionContractError, PrismaBuildError, _canonical_bytes,
+    _sorted_json_bytes, _sorted_lf_bytes, canonical_sha256, raw_sha256,
+    stream_sha256,
+)
+
 ACTION_SCHEMA_V1 = "prismaquant.prismabuild.action.v1"
 ACTION_SCHEMA_V2 = "prismaquant.prismabuild.action.v2"
 CODE_CLOSURE_SCHEMA_V1 = "prismaquant.prismabuild.code_closure.v1"
@@ -517,12 +524,6 @@ def _declared_distributions(toolchain: Mapping[str, object]) -> list[str]:
     return sorted(set(toolchain) - _PLATFORM_TOOLCHAIN_KEYS)
 
 
-class PrismaBuildError(RuntimeError):
-    """Base class for PrismaBuild core failures."""
-
-
-class ActionContractError(PrismaBuildError, ValueError):
-    """An action, closure, receipt, or worker identity is not exact."""
 
 
 class CASTamperError(PrismaBuildError):
@@ -686,37 +687,8 @@ def _sha256(
     return _text(value, where=where, pattern=_SHA256_RE, fail=fail)
 
 
-def _canonical_bytes(value: object) -> bytes:
-    try:
-        return json.dumps(
-            value,
-            sort_keys=True,
-            separators=(",", ":"),
-            ensure_ascii=False,
-            allow_nan=False,
-        ).encode("utf-8")
-    except (TypeError, ValueError) as exc:
-        raise ActionContractError("value is not finite canonical JSON data") from exc
-
-
 def _canonical_file_bytes(value: object) -> bytes:
     return _canonical_bytes(value) + b"\n"
-
-
-def _sorted_json_bytes(value: object, *, allow_nan: bool = True) -> bytes:
-    """Sorted default JSON without a terminator, including list values (#1386).
-
-    Preserve spacing and ASCII escaping. Callers that already reject nonfinite
-    numbers explicitly select ``allow_nan=False`` without changing other bytes.
-    """
-
-    return json.dumps(value, sort_keys=True, allow_nan=allow_nan).encode("utf-8")
-
-
-def _sorted_lf_bytes(value: object) -> bytes:
-    """The hand-rolled mapping writers' spelling, owned here (#1331)."""
-
-    return _sorted_json_bytes(dict(value)) + b"\n"
 
 
 def _indented_lf_bytes(value: object) -> bytes:
@@ -731,24 +703,6 @@ def _indented_lf_bytes(value: object) -> bytes:
             + "\n").encode("utf-8")
 
 
-def canonical_sha256(value: object) -> str:
-    """Hash canonical JSON without importing another repository module."""
-
-    return hashlib.sha256(_canonical_bytes(value)).hexdigest()
-
-
-def raw_sha256(data: bytes) -> str:
-    """The raw-bytes digest: sha256 of the bytes themselves (#1386).
-
-    The canonical profiles hash the JSON encoding of a value; a caller whose
-    contract is the digest of bytes as read -- a host configuration file, a
-    command's output -- uses this so no tool spells its own ``hashlib``
-    recipe.
-    """
-
-    return hashlib.sha256(data).hexdigest()
-
-
 def chunks_sha256(chunks) -> str:
     """SHA-256 of ordered byte chunks without joining or reopening a stream."""
     digest = hashlib.sha256()
@@ -761,34 +715,6 @@ def _compact_ascii_lf_bytes(value: object) -> bytes:
     """Compact sorted ASCII JSON with default nonfinite handling and one LF."""
     return (json.dumps(value, sort_keys=True, separators=(",", ":"),
                        ensure_ascii=True) + "\n").encode("ascii")
-
-
-def stream_sha256(
-    path: str | Path, *, offset: int = 0, length: int | None = None
-) -> str:
-    """Chunked sha256 over a byte range of a file (#1386).
-
-    ``offset`` seeks before the first read and ``length`` bounds how many
-    bytes are hashed; a short file hashes what it has.  No size cap and no
-    mmap: the caller this exists for hashes multi-gigabyte Git pack sections.
-    """
-
-    digest = hashlib.sha256()
-    remaining = length
-    with open(path, "rb") as handle:
-        if offset:
-            handle.seek(offset)
-        while True:
-            want = 1 << 20 if remaining is None else min(1 << 20, remaining)
-            if want <= 0:
-                break
-            chunk = handle.read(want)
-            if not chunk:
-                break
-            digest.update(chunk)
-            if remaining is not None:
-                remaining -= len(chunk)
-    return digest.hexdigest()
 
 
 def _normalize_relative_path(value: object, *, where: str, dot_ok: bool) -> str:
@@ -1094,6 +1020,9 @@ def _identify_runtime_source(path: str | Path, *, where: str) -> dict[str, objec
 _LOADED_WORKER_CORE_IDENTITY = _identify_runtime_source(
     Path(__file__).resolve(), where="PrismaBuild worker core"
 )
+_LOADED_WORKER_DIGEST_IDENTITY = _identify_runtime_source(
+    Path(digest_primitives.__file__).resolve(), where="PrismaBuild worker digest primitives"
+)
 
 
 def _normalize_runtime_source(value: object, *, where: str) -> dict[str, object]:
@@ -1137,6 +1066,11 @@ def _worker_runtime_identity(
         where="PrismaBuild worker core",
         changed_message="PrismaBuild worker core changed after module import",
     )
+    digest_owner = _normalize_runtime_source(
+        _LOADED_WORKER_DIGEST_IDENTITY, where="loaded PrismaBuild worker digest primitives")
+    _verify_runtime_source_unchanged(
+        digest_owner, where="PrismaBuild worker digest primitives",
+        changed_message="PrismaBuild worker digest primitives changed after module import")
     launcher = (
         None
         if worker_launcher_identity is None
@@ -1157,6 +1091,7 @@ def _worker_runtime_identity(
         "schema": WORKER_RUNTIME_SCHEMA_V1,
         "launch_kind": "in_process" if launcher is None else "script",
         "core": core,
+        "digest_primitives": digest_owner,
         "launcher": launcher,
     }
     return {**body, "runtime_sha256": canonical_sha256(body)}
@@ -1224,6 +1159,16 @@ def _verify_worker_runtime_unchanged(runtime: object) -> None:
         where="PrismaBuild worker core",
         changed_message="PrismaBuild worker core changed after module import",
     )
+    if "digest_primitives" in expected:
+        digest_owner = expected["digest_primitives"]
+        loaded_digest = _normalize_runtime_source(
+            _LOADED_WORKER_DIGEST_IDENTITY, where="loaded PrismaBuild worker digest primitives")
+        if digest_owner != loaded_digest:
+            raise LocalActionError(
+                "attested PrismaBuild worker digest primitives differs from module import identity")
+        _verify_runtime_source_unchanged(
+            digest_owner, where="PrismaBuild worker digest primitives",
+            changed_message="PrismaBuild worker digest primitives changed after module import")
     launcher = expected["launcher"]
     if isinstance(launcher, Mapping):
         _verify_runtime_source_unchanged(

@@ -24,13 +24,10 @@ alone):
 - **Primitive digest sites** (PB #1328). Raw ``hashlib`` constructor calls
   and literal ``sort_keys=True`` JSON encodings, counted per enclosing
   scope with import aliases resolved. Sites inside :data:`DIGEST_OWNERS`
-  are the sanctioned home and are not ratcheted; a new site anywhere else
-  fails the gate, and removing one lowers the baseline.  New byte work uses
-  the owner's named profiles -- ``_canonical_bytes``/``_canonical_file_bytes``
-  (compact canonical JSON), ``_sorted_lf_bytes`` (sorted keys plus one LF),
-  ``_indented_lf_bytes`` (sorted keys, ``indent=1``, one LF),
-  ``canonical_sha256``, ``raw_sha256`` and ``stream_sha256`` -- never a new
-  raw recipe or a per-site exemption.
+  belong to the single core owner: its main file and its shipped standard-library
+  half, ``digest_primitives.py`` (#1547, CEO dec-1005-170450-5ec5). New sites
+  anywhere else fail; removing one lowers the baseline. Byte work calls the
+  owner's named profiles, never a new raw recipe or per-site exemption.
 
 ``tests/test_duplication_baseline.py`` holds the live result against
 ``tests/fixtures/duplication_baseline.json``, which only shrinks.
@@ -67,16 +64,12 @@ _K, _BANDS = 64, 16
 # CLI entry points are expected once per script, not duplication.
 ENTRY_POINTS = frozenset({"main", "_main", "parse_args", "_parse_args",
                           "build_parser", "_build_parser", "cli"})
-#: The sanctioned owner of digest recipes: ``core.py`` holds
-#: ``_canonical_bytes`` (the ``sort_keys`` JSON home),
-#: ``_canonical_file_bytes``, ``_sorted_lf_bytes``, ``_indented_lf_bytes``,
-#: ``canonical_sha256``, ``raw_sha256``, ``stream_sha256`` and
-#: ``_decode_strict_json``. A new primitive ``hashlib`` or
-#: sorted-JSON site inside it is expected -- that is where
-#: consolidation moves sites to -- so only sites OUTSIDE it are
-#: ratcheted. Never widen this to a whole second module: that exempts
-#: it from the shrink-only gate forever (#1331 review).
-DIGEST_OWNERS = frozenset({"src/prismabuild/core.py"})
+#: One owner in two attested files, not two independently sanctioned modules.
+#: The standard-library half exists only so pbtest can ship the exact owner
+#: source into target interpreters without installing PrismaBuild (#1547).
+#: No third file or raw-site exemption may be added.
+DIGEST_OWNERS = frozenset({"src/prismabuild/core.py",
+                           "src/prismabuild/digest_primitives.py"})
 
 
 def _files(root: Path):

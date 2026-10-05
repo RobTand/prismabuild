@@ -15,19 +15,15 @@ import sys
 import pytest
 
 FLEET = Path(__file__).resolve().parents[1] / "tools/fleet"
+sys.path.insert(0, str(FLEET))
+import pbtest  # noqa: E402
 
-DRIVER = """\
-import sys
-sys.path.insert(0, {fleet!r})
-import pbtest_outcomes
-raise SystemExit(pbtest_outcomes.main({argv!r}))
-"""
 
 
 def run_shard(root: Path, *named: str) -> tuple[int, dict]:
     argv = ["-q", "-p", "no:cacheprovider", *named]
     proc = subprocess.run(
-        [sys.executable, "-c", DRIVER.format(fleet=str(FLEET), argv=argv)],
+        [*pbtest.shard_entry(sys.executable, root), *argv],
         cwd=root, capture_output=True, text=True, timeout=120)
     lines = [ln for ln in proc.stdout.splitlines()
              if ln.startswith("pbtest-outcomes: ")]

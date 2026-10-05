@@ -28,7 +28,7 @@ installed.
 """
 from __future__ import annotations
 
-import hashlib
+from prismabuild.digest_primitives import _sorted_json_bytes, stream_sha256
 import json
 import os
 import subprocess
@@ -45,7 +45,6 @@ DEPENDENCY_DIGEST_TAG = "dependency-digest-v1"
 EVIDENCE_PREFIX = "pbtest dependency digest: "
 
 _HEX64 = frozenset("0123456789abcdef")
-_READ_CHUNK = 1 << 20
 
 
 def _dependency_digest_is_hex64(value: object) -> bool:
@@ -213,14 +212,7 @@ def validate_sealed(sealed: object) -> dict:
 def digest_file(path: str) -> str:
     """The sha256 of one file's bytes, read in bounded chunks."""
 
-    digest = hashlib.sha256()
-    with open(path, "rb") as handle:
-        while True:
-            chunk = handle.read(_READ_CHUNK)
-            if not chunk:
-                break
-            digest.update(chunk)
-    return digest.hexdigest()
+    return stream_sha256(path)
 
 
 def presence(paths: list[str]) -> tuple[list[str], list[str]]:
@@ -399,5 +391,5 @@ def verify_sealed(selection: object) -> int:
     except (ValueError, OSError, subprocess.SubprocessError) as exc:
         sys.stderr.write(f"pbtest: capability refusal: {exc}\n")
         return 1
-    print(EVIDENCE_PREFIX + json.dumps(evidence, sort_keys=True), flush=True)
+    print(EVIDENCE_PREFIX + _sorted_json_bytes(evidence).decode("utf-8"), flush=True)
     return 0

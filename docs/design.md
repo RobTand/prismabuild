@@ -2496,11 +2496,13 @@ miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
   NVIDIA workers additionally require the CUDA capability and driver fields.
 - The worker implementation is a separate closed
   `prismaquant.prismabuild.worker_runtime.v1` object. It binds the exact
-  `prismaquant/prismabuild.py` source snapshot taken once while that module
-  initializes. Canonical JSON and SHA-256 are implemented in that same file,
-  so the receipt-digest implementation does not escape into an unrecorded
-  repository import. The live core file must still match the load-time
-  snapshot at preflight, after task execution, and at publication. For the
+  `src/prismabuild/core.py` snapshot taken during module initialization and,
+  since #1547, its standard-library digest half `digest_primitives.py` in the
+  `digest_primitives` field. Canonical JSON and SHA-256 therefore live in the
+  two recorded owner files rather than an unrecorded repository import. Both
+  files must match their load-time snapshots at preflight, after task execution
+  and at publication. Retained pre-split v1 receipts keep their original body;
+  no new owner identity is invented for historical executions. For the
   SLURM path, `tools/prismabuild_worker.py` snapshots its own source at the
   earliest executed wrapper code, before importing the core, and passes that
   identity into preflight. The launcher is checked there and at the same two
@@ -16328,7 +16330,7 @@ partial log. This changes newly sealed capture argv identities; retained sealed
 requests and receipts remain immutable and can be recovered as sealed. No system
 tool, fleet runtime, active queue, placement or result-population policy changes.
 
-Core also owns the default sorted JSON byte profile used by retained-reader
+Core's attested `digest_primitives.py` half owns the default sorted JSON profile used by retained-reader
 diagnostics and merge-queue duration hints (#1386). `_sorted_json_bytes` accepts
 the original JSON values, including list reports, with default spacing, ASCII
 escaping and nonfinite-number behavior and no trailing LF. `_sorted_lf_bytes`
@@ -16346,6 +16348,14 @@ where their previous writer already refused nonfinite values; the default
 remains unchanged. Rollout qualification uses `_compact_ascii_lf_bytes` for
 its existing compact ASCII line spelling. Helper collision renames change no
 validation, identity or byte-integrity rule.
+The owner split is approved by CEO decisions `dec-1005-170450-5ec5` and
+`rep-1005-170658-9efc`: exactly two attested owner files, no third file or raw-site
+exemption. Core re-exports the identical helper and exception objects. pbtest's
+existing source loader binds the shipped half under `prismabuild.digest_primitives`
+before loading its target-interpreter helpers, so package installation is not
+required. File hashing and diagnostic encoding use that same source; pin and
+capability identity checks retain their previous behavior. This is a source
+repair, not a claim that the new runtime has been deployed.
 
 
 Repeated failed merge candidates bind a separate negative identity (#1450):

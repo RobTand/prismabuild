@@ -18,11 +18,11 @@ exempt name fails, and the shrink-only map never absorbs an exempt path.
 
 The baseline also ratchets primitive digest sites (PB #1328): a new raw
 ``hashlib`` constructor or literal ``sort_keys=True`` JSON encoding outside
-``src/prismabuild/core.py`` -- the home of ``_canonical_bytes``,
-``_canonical_file_bytes``, ``_sorted_json_bytes``, ``_sorted_lf_bytes``, ``_indented_lf_bytes``,
-``canonical_sha256``, ``raw_sha256``, ``stream_sha256`` and
-``_decode_strict_json`` -- fails, and consolidating a site onto one of those
-named profiles lowers the baseline the same way.
+the single core owner, implemented in ``src/prismabuild/core.py`` and its
+attested standard-library half ``src/prismabuild/digest_primitives.py`` (#1547),
+fails. Both files own the byte recipes; the latter is shipped into target
+interpreters rather than creating a second policy. Consolidating a site onto
+the owner lowers the baseline the same way; no third owner file is allowed.
 """
 from __future__ import annotations
 
