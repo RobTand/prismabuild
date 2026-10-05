@@ -51,7 +51,7 @@ from runtime_paths import generation_root  # noqa: E402
 sys.path.insert(0, str(generation_root(__file__) / "src"))
 
 from prismabuild import core as pb  # noqa: E402
-from prismabuild import filesystem_floor  # noqa: E402
+from prismabuild import filesystem_capacity, filesystem_floor  # noqa: E402
 from prismabuild import movement_actions  # noqa: E402
 from prismabuild import pool  # noqa: E402
 from prismabuild import produced_output  # noqa: E402
@@ -9379,9 +9379,10 @@ def _supply_reader_for(record: Mapping[str, object], tier_id: str, *,
             return None
 
         def read_ram(mountpoint=mountpoint):
-            sampled = os.statvfs(mountpoint)
-            return (max(0, int(sampled.f_bavail))
-                    * max(0, int(sampled.f_frsize))) // storage_tiers.GIB
+            room = filesystem_capacity.local_disk_room(mountpoint, 0)
+            if room["inode_refusal"] is not None:
+                raise OSError(28, room["inode_refusal"], mountpoint)
+            return max(0, room["free_bytes"]) // storage_tiers.GIB
 
         return read_ram
     return None

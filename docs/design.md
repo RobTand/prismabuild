@@ -6011,6 +6011,17 @@ locked acquisition. Bindings, stable identity, refresh, used-path checks,
 coordinator growth and the bootstrap order are in
 [filesystem_floor.md](filesystem_floor.md).
 
+The inode term (#1535) also requires `f_favail >= ceil(f_files / 20)`,
+with no fixed inode floor when the filesystem reports `f_files == 0`.
+The existing disk-room helper now lives in `filesystem_capacity.py` and
+supplies this same five percent predicate to the floor sampler, supervisor
+spool offers, output reservations, RAM-tier admission and worker-side
+`pbtest` scratch preflight. Published floor samples include both inode
+counters and the refusal; a byte-only sample refuses until refreshed.
+The floor's `off`/`observe`/`enforce` modes are unchanged. Explicit
+`pbtest --tmpdir` and `--basetemp` roots refuse low inode headroom before
+creating their files, independently of the optional floor mode.
+
 Locking is separate from census/cache purpose: only the explicit
 `tier_census=True` factory selects tier grow/reclaim refusal and the existing
 tier directory-name cache. Host legacy readers stay fresh with their prior
@@ -8034,6 +8045,10 @@ raises leaves nothing behind.
 - An unchanged queue costs one `lstat` per directory the census reads (the
   state directories, each decision directory, each consumer's fragment
   directory and each tier ledger directory), and no listing and no file read.
+  The worker and metrics censuses read admission sidecar, telemetry and
+  unreadable-holder report paths without constructing mutating host
+  ledgers: lock canonicalization belongs to mutation, not to every
+  diagnostic lookup (#1528).
 - A changed directory costs one listing and one `stat` per entry in it, and a
   read of each entry whose #761 version changed. Every entry is `stat`-ed for
   the reason the tier loop's are: records are replaced under their own names,

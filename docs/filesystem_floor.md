@@ -11,6 +11,7 @@ answers, finding by finding, at the end.
 For every physical filesystem PrismaBuild writes:
 
     free_bytes >= ceil(size_bytes / 20) + charge_bytes (+ demand_bytes)
+    free_inodes >= ceil(size_inodes / 20)
 
 `charge_bytes` is every byte allowance PrismaBuild has granted on that
 filesystem and not yet taken back: the held tokens of the byte kinds
@@ -18,6 +19,20 @@ filesystem and not yet taken back: the held tokens of the byte kinds
 to the filesystem.  A held token is charged whole even after its bytes are
 written (no materialization credit), so the charge is an upper bound on the
 bytes still to come.  The module is `src/prismabuild/filesystem_floor.py`.
+
+Inodes are sampled from `statvfs` `f_files` and `f_favail` (#1535), including
+on ZFS where byte capacity still comes from the pool dataset. A zero total
+reports no fixed inode limit. The shared disk-room helper in
+`filesystem_capacity.py` owns the five percent inode predicate; published
+samples carry its counters and refusal. A byte-only sample is
+`inode_sample_missing` until the next owner refresh, never evidence of
+inode headroom. No inode demand estimate or reservation is implied: this
+is a sampled floor, not protection against later exhaustion.
+
+ZFS refresh keeps byte accounting on the pool and samples inode availability
+without comparing a stored dataset device number. A device-number change
+within that pool does not add a capacity refusal; the pre-existing device
+comparison remains limited to non-ZFS sampling.
 
 ## Bindings and stable identity
 

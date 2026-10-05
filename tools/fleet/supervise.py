@@ -86,7 +86,7 @@ import role_log_identity  # noqa: E402
 import worker_loop as runtime_gate  # noqa: E402
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
-from prismabuild import local_scratch, pool  # noqa: E402
+from prismabuild import filesystem_capacity, local_scratch, pool  # noqa: E402
 
 MIRROR = Path("/mnt/shared/prismabuild-fleet")
 CONFIG = Path(__file__).resolve().parent / "fleet_boxes.json"
@@ -578,24 +578,6 @@ _SPOOL_WAITING: dict[tuple, str] = {}
 _SPOOL_LIVE: dict[tuple, object] = {}
 
 
-def local_disk_room(path: str, floor_percent: int, *,
-                    statvfs=None) -> dict[str, int]:
-    """What the filesystem under ``path`` can still give, above the floor.
-
-    ``free_bytes`` is what an unprivileged writer can allocate (``f_bavail``,
-    which already withholds root's reserve) and ``floor_bytes`` is
-    ``floor_percent`` of the filesystem's size, rounded up.  ``room_bytes``
-    is the first minus the second and may be negative.
-    """
-
-    # Bound at call time, not definition time, so a repointed ``os.statvfs``
-    # is the one read.
-    stat_result = (os.statvfs if statvfs is None else statvfs)(path)
-    size = int(stat_result.f_blocks) * int(stat_result.f_frsize)
-    free = int(stat_result.f_bavail) * int(stat_result.f_frsize)
-    floor = -(-size * floor_percent // 100)
-    return {"size_bytes": size, "free_bytes": free, "floor_bytes": floor,
-            "room_bytes": free - floor}
 
 
 def _spool_gb_of(args: list[str]) -> int | None:
@@ -731,13 +713,15 @@ def _spool_budget(host: str, entry: dict, document: dict, args: list[str], *,
     if waiting is not None:
         return waiting
     try:
-        room = local_disk_room(path, floor, statvfs=statvfs)
+        room = filesystem_capacity.local_disk_room(path, floor, statvfs=statvfs)
     except OSError as exc:
         return ("refuse", f"cannot read free space on {LOCAL_DISK_FIELD} "
                 f"{path}: {exc}")
     waiting = holders_wait()
     if waiting is not None:
         return waiting
+    if room["inode_refusal"] is not None:
+        return ("refuse", room["inode_refusal"])
     gib = max(0, room["room_bytes"]) // GIB
     if ceiling is not None:
         gib = min(ceiling, gib)

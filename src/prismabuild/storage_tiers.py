@@ -72,6 +72,8 @@ import subprocess
 import tempfile
 import time
 
+from . import filesystem_capacity
+
 TIER_RECORD_SCHEMA_V1 = "prismabuild.storage_tier.v1"
 #: A ZFS pool is a stage tier when its name carries this prefix.
 STAGE_POOL_PREFIX = "prismabuild-stage"
@@ -1254,9 +1256,9 @@ def ram_tier(policy: Mapping[str, object], *, host: str,
     memory_nodes = (None if node_memtotal_bytes is None
                     else tuple(node_memtotal_bytes))
     try:
-        sampled = statvfs(mountpoint)
-        ceiling = int(sampled.f_blocks) * int(sampled.f_frsize)
-        capacity = int(sampled.f_bavail) * int(sampled.f_frsize)
+        room = filesystem_capacity.local_disk_room(mountpoint, 0, statvfs=statvfs)
+        ceiling = room["size_bytes"]
+        capacity = room["free_bytes"]
         error = None
     except OSError as exc:
         ceiling = capacity = 0
@@ -1279,6 +1281,9 @@ def ram_tier(policy: Mapping[str, object], *, host: str,
                                   rows_held_gib=rows_held_gib,
                                   memory_nodes=memory_nodes,
                                   node_memtotal_bytes=node_memtotal_bytes)
+    if error is None and room["inode_refusal"] is not None:
+        admission.update(admissible=False, reason="below_inode_floor",
+                         error=room["inode_refusal"])
     return {
         "schema": TIER_RECORD_SCHEMA_V1,
         "tier": "ram",

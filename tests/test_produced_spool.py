@@ -100,6 +100,15 @@ def direct_export(spool, handle):
                            record["manifest_sha256"], handle["export_key"])
 
 
+def test_output_reservation_defers_inode_exhaustion_with_free_bytes(tmp_path, monkeypatch):
+    spool = world(tmp_path)
+    sampled = os.statvfs_result((4096, 4096, 1000, 900, 900, 1000, 0, 0, 0, 255))
+    monkeypatch.setattr(ps.os, "statvfs", lambda path: sampled)
+    with pytest.raises(ps.SpoolCapacityDeferred, match="inodes"):
+        prepare(spool)
+    assert not spool._group("b1").exists()
+
+
 def test_local_group_exports_as_real_pb_action_then_stages_and_leases(tmp_path):
     spool = world(tmp_path)
     source, destination, entries = prepare(spool)

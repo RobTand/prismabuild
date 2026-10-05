@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+import re
 import sys
 
 import pytest
@@ -68,9 +69,13 @@ def test_priority_says_what_it_is_and_what_each_transport_does_with_it(
     """
 
     text = _help(monkeypatch, capsys)
-    # The last mention is the option list's; the first is the usage line's.
-    priority = text[text.rindex("--priority"):]
-    priority = priority[:priority.index("--env")]
+    # Anchor the option row, not the usage line or a longer option name.
+    option = re.search(r"^\s+--priority PRIORITY\b", text, re.MULTILINE)
+    assert option is not None
+    priority = text[option.end():]
+    following = re.search(r"^\s+--[a-z]", priority, re.MULTILINE)
+    assert following is not None
+    priority = priority[:following.start()]
 
     assert "higher runs sooner" in priority
     assert "not part of the action" in priority

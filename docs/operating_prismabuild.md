@@ -1535,10 +1535,11 @@ is absolute, since a remote directory need not exist on the submitting box.
 The path is sealed as one literal `TMPDIR` environment argument. Each pytest
 shard keeps its own temporary children and outcome record. This is configurable
 scratch placement, not proof of direct-I/O support or of an earlier disk-write
-failure's cause. With an explicit option, the child checks the directory by
-creating and closing an anonymous temporary file before pytest and refuses an
-unavailable or unusable parent. The default keeps its existing fallback behavior.
-This startup check does not guarantee free space or later availability.
+failure's cause. With an explicit option, the child checks free inodes against
+the five percent filesystem floor before creating and closing an anonymous
+temporary file. It refuses low inode headroom or an unavailable or unusable
+parent by name. The default keeps its existing fallback behavior. This startup
+check does not guarantee later byte or inode availability.
 
 A passing test's `tmp_path` directory is removed as soon as the test ends
 (`tmp_path_retention_policy = "failed"` under `[tool.pytest.ini_options]` in
@@ -1548,6 +1549,10 @@ a RAM tmpfs with a fixed inode table (`nr_inodes`) held 750,000 inodes from six
 concurrent suites on dl380g10 and made every action there fail in preflight with
 `OSError 28` while the filesystem still reported free bytes. `pbtest` refuses a
 command-line `-o`, so this setting is part of the checkout the shards snapshot.
+The status error-injection fixtures also delegate integer directory descriptors
+to the real system call. Their named-path error injections and assertions stay
+unchanged; descriptor-based temporary-directory cleanup can therefore finish
+under the failed-only retention policy instead of failing in the fixture itself.
 Only `tmp_path` is removed per test. A directory made with `tmp_path_factory.mktemp`,
 and the directory of any failing test, lasts as long as the session's base temporary
 directory. By default `pbtest` passes no `--basetemp`, so that base is
@@ -1742,6 +1747,10 @@ counts do not establish zero execution, and `ran=false` is not a claim that no
 case ran. Such a shard remains non-green even if its process returned zero.
 Retained logs can identify individual observed failures, but cannot certify an
 unreported final population.
+When retained output names `ENOSPC`, `[Errno 28]` or `No space left on device`,
+the missing-summary report names `STORAGE EXHAUSTED (ENOSPC: No space left on
+device)` instead of only `NO PYTEST SUMMARY`. Coverage still remains unknown;
+the log alone cannot distinguish exhausted bytes from exhausted inodes.
 
 ### Choose the project's test environment
 

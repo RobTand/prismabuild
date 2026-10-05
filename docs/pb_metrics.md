@@ -54,8 +54,9 @@ needs directory timestamps from the local kernel's clock, so it holds on the
 queue host and never over NFS: an exporter on a Spark reads the whole queue
 over NFS on every refresh, as every exporter did before #1020. On an unchanged
 queue a refresh costs one `lstat` per directory the census reads and no
-listing or file read. `docs/design.md` states the full cost contract and the
-measurements.
+listing or file read. Admission sidecar observations construct only their
+paths, not mutating ledgers or their canonical lock identities (#1528).
+`docs/design.md` states the full cost contract and measurements.
 
 Before #1020 three exporters ran, each installed as a unit by
 `install_pbmetrics.sh` below: on sparky, on sparklina and on dl380g10. The two

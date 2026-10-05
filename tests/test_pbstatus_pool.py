@@ -195,7 +195,7 @@ def test_empty_pool_is_distinct_from_missing_or_unreadable_state(tmp_path, monke
     assert not missing.exists()
     original = pbstatus.os.scandir
     def denied(path):
-        if Path(path) == queue.dir(pool.CLAIMED):
+        if not isinstance(path, int) and Path(path) == queue.dir(pool.CLAIMED):
             raise PermissionError('permission denied')
         return original(path)
     monkeypatch.setattr(pbstatus.os, 'scandir', denied)

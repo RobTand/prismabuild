@@ -74,7 +74,7 @@ import sys
 import time
 import uuid
 
-from . import posix_lock
+from . import filesystem_capacity, posix_lock
 
 GIB = 1 << 30
 #: The floor is one twentieth (five percent) of the filesystem, rounded up.
@@ -142,8 +142,11 @@ def floor_verdict(filesystem: str, *, size_bytes: int, free_bytes: int,
         raise FloorError(f"{filesystem}: space or charge is not a whole byte count")
     floor = floor_bytes(size_bytes) if floor is None else floor
     required = floor + charge_bytes + demand_bytes
-    return {"filesystem": filesystem, "allowed": free_bytes >= required,
-            "reason": "ok" if free_bytes >= required else "below_floor",
+    inode_refusal = detail.get("inode_refusal")
+    allowed = free_bytes >= required and inode_refusal is None
+    return {"filesystem": filesystem, "allowed": allowed,
+            "reason": ("below_inode_floor" if inode_refusal is not None else
+                       "ok" if allowed else "below_floor"),
             "size_bytes": size_bytes, "free_bytes": free_bytes,
             "floor_bytes": floor, "charge_bytes": charge_bytes,
             "demand_bytes": demand_bytes, "required_bytes": required, **detail}
@@ -154,6 +157,8 @@ def floor_refusal(filesystem: str, reason: str, **detail) -> dict[str, object]:
 
 
 def describe_verdict(v: Mapping[str, object]) -> str:
+    if v.get("inode_refusal") is not None:
+        return f"{v['filesystem']}: {v['reason']} {v['inode_refusal']}"
     if "required_bytes" in v:
         return (f"{v['filesystem']}: {v['reason']} free {v['free_bytes']} "
                 f"< floor {v['floor_bytes']} + charge {v['charge_bytes']} + "
@@ -265,8 +270,8 @@ def identify(path: str | os.PathLike) -> dict[str, object]:
         fstype, source, options = _mount_row(fd)
         stat = os.fstat(fd)
         space = os.fstatvfs(fd)
-        size = space.f_blocks * space.f_frsize
-        free = space.f_bavail * space.f_frsize
+        room = filesystem_capacity.local_disk_room(real, 5, statvfs=lambda path: space)
+        size, free = room["size_bytes"], room["free_bytes"]
         found: dict[str, object] = {"path": str(real), "fstype": fstype,
                                     "source": source, "device": stat.st_dev}
         if fstype in NFS_TYPES:
@@ -296,6 +301,8 @@ def identify(path: str | os.PathLike) -> dict[str, object]:
         if size <= 0 or not 0 <= free <= size:
             raise FloorError(f"{real}: space sample invalid")
         found.update(size_bytes=size, free_bytes=free)
+        found.update({name: room[name] for name in
+                      ("size_inodes", "free_inodes", "floor_inodes", "inode_refusal")})
         return found
     except OSError as exc:
         raise FloorError(f"{real}: {exc}") from exc
@@ -308,26 +315,22 @@ def identify(path: str | os.PathLike) -> dict[str, object]:
 _VIRTUAL_INTERFACES = ("lo", "docker", "br-", "veth", "virbr", "cni", "flannel")
 
 
-def _sample(found: Mapping[str, object]) -> tuple[int, int]:
-    """Size and free of an identified filesystem, and nothing else.
+def _sample(found: Mapping[str, object]) -> dict:
+    """Fresh bytes and inodes after identity was proved outside the floor lock."""
 
-    What a refresh runs under the floor lock: one ``zfs get`` or one
-    ``statvfs``, after :func:`identify` proved the identity outside it.
-    """
-
-    if found["fstype"] == "zfs":
-        size, free = _zfs_space(str(found["pool"]))
-    else:
-        try:
+    try:
+        if found["fstype"] != "zfs":
             if os.stat(found["path"]).st_dev != found["device"]:
                 raise FloorError(f"{found['path']}: filesystem changed under the sample")
-            space = os.statvfs(found["path"])
-        except OSError as exc:
-            raise FloorError(f"{found['path']}: {exc}") from exc
-        size, free = space.f_blocks * space.f_frsize, space.f_bavail * space.f_frsize
-    if size <= 0 or not 0 <= free <= size:
+        room = filesystem_capacity.local_disk_room(found["path"], 5)
+    except OSError as exc:
+        raise FloorError(f"{found['path']}: {exc}") from exc
+    if found["fstype"] == "zfs":
+        room["size_bytes"], room["free_bytes"] = _zfs_space(str(found["pool"]))
+    if room["size_bytes"] <= 0 or not 0 <= room["free_bytes"] <= room["size_bytes"]:
         raise FloorError(f"{found['path']}: space sample invalid")
-    return size, free
+    return {name: room[name] for name in ("size_bytes", "free_bytes",
+            "size_inodes", "free_inodes", "floor_inodes", "inode_refusal")}
 
 
 def _host_addresses() -> list[str]:
@@ -573,6 +576,9 @@ def published_verdict(queue_root, binding: Mapping, *, demand_bytes: int = 0,
     sample = _floor_read(directory / "sample.json")
     if sample is None or sample.get("key") != key:
         return floor_refusal(key, "no_sample")
+    if any(name not in sample for name in
+           ("size_inodes", "free_inodes", "floor_inodes", "inode_refusal")):
+        return floor_refusal(key, "inode_sample_missing")
     age = (time.time() if now is None else now) - float(sample["sampled_unix"])
     if not -CLOCK_SKEW_S <= age <= SAMPLE_MAX_AGE_S:
         return floor_refusal(key, "sample_stale", detail=f"age {age:.0f}s")
@@ -580,7 +586,9 @@ def published_verdict(queue_root, binding: Mapping, *, demand_bytes: int = 0,
     return floor_verdict(key, size_bytes=int(sample["size_bytes"]),
                    free_bytes=int(sample["free_bytes"]),
                    charge_bytes=int(sample["census_bytes"]) + max(0, since),
-                   demand_bytes=demand_bytes, sample_age_s=round(age, 1))
+                   demand_bytes=demand_bytes, sample_age_s=round(age, 1),
+                   **{name: sample[name] for name in
+                      ("size_inodes", "free_inodes", "floor_inodes", "inode_refusal")})
 
 
 # -- registration and refresh ------------------------------------------------
@@ -698,16 +706,18 @@ def refresh_binding(queue_root, binding: Mapping, *, now: float | None = None) -
             return floor_refusal(key, "binding_" + str(binding.get("status")))
         granted = _granted(directory)
         counted = census(queue_root, binding)
-        size, free = _sample(found)
+        space = _sample(found)
         sample = {"schema": SAMPLE_SCHEMA, "key": key, "host": socket.gethostname(),
                   "boot_id": _floor_boot_id(),
                   "sampled_unix": time.time() if now is None else now,
-                  "size_bytes": size, "free_bytes": free,
+                  **space,
                   "census": counted, "census_bytes": sum(counted.values()),
                   "granted_at": granted}
         _floor_write(directory / "sample.json", sample)
     return floor_verdict(key, size_bytes=sample["size_bytes"], free_bytes=sample["free_bytes"],
-                   charge_bytes=sample["census_bytes"])
+                   charge_bytes=sample["census_bytes"],
+                   **{name: sample[name] for name in
+                      ("size_inodes", "free_inodes", "floor_inodes", "inode_refusal")})
 
 
 _LAST_REFRESH: dict[str, float] = {}
@@ -887,11 +897,14 @@ def check_paths(queue_root, paths: Iterable, *, now: float | None = None
                         name, size_bytes=int(found["size_bytes"]),
                         free_bytes=int(found["free_bytes"]),
                         charge_bytes=int(published["charge_bytes"]), path=str(path),
-                        sample="fresh-local"))
+                        sample="fresh-local", **{field: found[field] for field in
+                            ("size_inodes", "free_inodes", "floor_inodes", "inode_refusal")}))
             else:
                 verdicts.append(floor_verdict(name, size_bytes=int(found["size_bytes"]),
                                         free_bytes=int(found["free_bytes"]),
-                                        path=str(path), sample="fresh-unbound"))
+                                        path=str(path), sample="fresh-unbound",
+                                        **{field: found[field] for field in
+                            ("size_inodes", "free_inodes", "floor_inodes", "inode_refusal")}))
         except (FloorError, OSError, KeyError, ValueError, TypeError) as exc:
             verdicts.append(floor_refusal(name, "unreadable", detail=str(exc)))
     return verdicts
@@ -913,7 +926,9 @@ def _nfs_verdicts(queue_root, found, name, known, now) -> list[dict[str, object]
         floor=max([floor_bytes(int(found["size_bytes"]))]
                   + [int(v["floor_bytes"]) for v in published]),
         path=found["path"], sample="fresh-nfs-client",
-        matched=sorted(str(b["key"]) for b in matched))
+        matched=sorted(str(b["key"]) for b in matched),
+        **{field: found[field] for field in
+           ("size_inodes", "free_inodes", "floor_inodes", "inode_refusal")})
     return [*published, client]
 
 

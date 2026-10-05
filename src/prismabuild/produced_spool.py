@@ -23,7 +23,7 @@ import stat
 import time
 
 from . import core, movement_actions, pool, produced_output as po, reader_lease
-from . import adaptive_cpu, storage_tiers
+from . import adaptive_cpu, filesystem_capacity, storage_tiers
 
 API_VERSION = 1
 ROOT_ENV = "PRISMABUILD_PRODUCED_SPOOL_ROOT"
@@ -537,8 +537,10 @@ class ProducedSpool:
                     reserved += _positive(other.get("ceiling_bytes"), "stored ceiling")
             if reserved + ceiling_bytes > self.max_bytes:
                 raise SpoolCapacityDeferred("local spool byte bound reached")
-            free = os.statvfs(self.directory)
-            if ceiling_bytes > free.f_bavail * free.f_frsize:
+            room = filesystem_capacity.local_disk_room(self.directory, 0)
+            if room["inode_refusal"] is not None:
+                raise SpoolCapacityDeferred(room["inode_refusal"])
+            if ceiling_bytes > room["free_bytes"]:
                 raise SpoolCapacityDeferred("local filesystem lacks physical allocation headroom")
             group.mkdir(mode=0o700)
             (group / "payload").mkdir(mode=0o700)

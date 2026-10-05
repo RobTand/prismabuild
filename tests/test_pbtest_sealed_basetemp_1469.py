@@ -407,7 +407,9 @@ def test_unowned_basetemp_root_refuses(tmp_path: Path, monkeypatch) -> None:
 
     root = tmp_path / "qualified"
     root.mkdir()
-    source = pbtest.basetemp_preamble(str(root))
+    source = pbtest.shard_entry(sys.executable, tmp_path,
+                                basetemp=str(root), collection=True)[2]
+    source = source.split("# A pbtest shard:", 1)[0]
     argv = ["-c", json.dumps({}), "-q", "tests/test_one.py"]
     monkeypatch.setattr(sys, "argv", list(argv))
     monkeypatch.setenv("PRISMABUILD_ACTION_KEY", "testaction")

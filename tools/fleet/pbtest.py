@@ -962,6 +962,7 @@ if _pb_stat_result.st_uid != _pb_os.geteuid():
     _pb_refuse(
         f"{_pb_root} is owned by uid {_pb_stat_result.st_uid}, not this "
         f"action's uid {_pb_os.geteuid()}")
+_pb_check_capacity(_pb_root)
 # pytest receives the action-owned leaf, never the sealed root itself:
 # pytest deletes its basetemp at startup, and the sealed root belongs to
 # every attempt of the action, not to this one.
@@ -978,20 +979,6 @@ _pb_sys.argv[2:2] = ["--basetemp", _pb_derived]
 """
 
 
-def basetemp_preamble(root: str) -> str:
-    """The worker source that proves a sealed basetemp and derives its leaf.
-
-    Returned source executes at the top of the shard program, before the
-    dependency guard and before pytest (#1469): the worker refuses a root
-    that is missing, not a directory, a symlink, or not owned by the
-    action's user -- no fallback -- then inserts the derived
-    ``ROOT/<action-key>/<attempt>/pytest`` as pytest's ``--basetemp``.  The
-    root is never passed to pytest itself, because pytest deletes its
-    basetemp at startup, and the sealed root belongs to every attempt of
-    the action, not to this one.
-    """
-
-    return BASETEMP_PROGRAM.replace("@ROOT@", repr(root))
 
 
 def shard_entry(python: str, checkout: Path, *, tmpdir: str | None = None,
@@ -1031,7 +1018,7 @@ def shard_entry(python: str, checkout: Path, *, tmpdir: str | None = None,
         # refusal point for an unusable or unowned sealed root (#1469), and
         # the sealed root travels inside this program, so a different root
         # is a different sealed request.
-        program = basetemp_preamble(basetemp) + program
+        program = BASETEMP_PROGRAM.replace("@ROOT@", repr(basetemp)) + program
     if tmpdir is not None:
         # Explicit scratch placement must refuse on the worker rather than let
         # tempfile silently choose another filesystem. The default entry stays
@@ -1040,11 +1027,24 @@ def shard_entry(python: str, checkout: Path, *, tmpdir: str | None = None,
             "import tempfile\n"
             f"_pb_requested_tmpdir = {tmpdir!r}\n"
             "try:\n"
+            "    _pb_check_capacity(_pb_requested_tmpdir)\n"
             "    with tempfile.TemporaryFile(dir=_pb_requested_tmpdir):\n"
             "        pass\n"
             "except (OSError, ValueError) as exc:\n"
             "    raise SystemExit('pbtest: cannot use requested --tmpdir: ' + "
             "str(exc)) from exc\n"
+        ) + program
+    if tmpdir is not None or basetemp is not None:
+        capacity_source = (generation_root(__file__) / "src" / "prismabuild" /
+                           "filesystem_capacity.py").read_text()
+        program = (
+            "_pb_capacity = {}\n"
+            f"exec(compile({capacity_source!r}, '<pbtest capacity>', 'exec'), _pb_capacity)\n"
+            "def _pb_check_capacity(path):\n"
+            "    room = _pb_capacity['local_disk_room'](path, 0)\n"
+            "    if room['inode_refusal'] is not None:\n"
+            "        raise SystemExit('pbtest: scratch capacity refused: ' + "
+            "room['inode_refusal'])\n"
         ) + program
     return [python, "-c", program]
 
@@ -2021,6 +2021,11 @@ def main() -> int:
                            "be running or may already have landed; read "
                            f"pb-queue/{{done,failed,withdrawn}}/{unobserved}*.json "
                            "before rerunning)")
+            elif any(re.search(r"\[Errno 28\]|\bENOSPC\b|No space left on device", line)
+                     for line in tail):
+                summary = (f"STORAGE EXHAUSTED (ENOSPC: No space left on device) -- "
+                           f"{len(bucket)} file(s) have no verified final result "
+                           f"(the shard ended {how}; execution/coverage unknown)")
             else:
                 summary = (f"NO PYTEST SUMMARY -- {len(bucket)} file(s) have no "
                            f"verified final result (the shard ended {how}; "

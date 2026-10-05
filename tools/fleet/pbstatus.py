@@ -1034,7 +1034,9 @@ def read_pool(queue_root: str | Path) -> dict:
     admission = {}
     for host, offer in workers.items():
         if _valid_pool_offer(host, offer):
-            base = queue.ledger(host).base / 'adaptive'
+            # This observation needs a path, not a mutating ledger: building
+            # one canonicalizes its lock and probes every ancestor (#1528).
+            base = queue.root / pool.RESERVATIONS / host / "adaptive"
             admission[host] = {
                 'cpu': _pool_sidecar(base / 'cpu-sample.json'),
                 'gpu': _pool_sidecar(base / 'gpu-state.json') if offer.get('has_gpu') else None,
@@ -2075,7 +2077,7 @@ def _starvation_census_unreadable(queue: pool.PoolQueue, *, notes: list[str],
     an exact census removes it.
     """
 
-    ledgers: list[tuple[str, str, pool.ResourceLedger]] = []
+    report_paths: list[tuple[str, str, Path]] = []
     try:
         with os.scandir(queue.root / pool.RESERVATIONS) as entries:
             hosts = sorted(entry.name for entry in entries if entry.is_dir())
@@ -2085,17 +2087,19 @@ def _starvation_census_unreadable(queue: pool.PoolQueue, *, notes: list[str],
         notes.append(f"starvation host ledgers: {exc}")
         unreadable.append(f"starvation host ledgers: {exc}")
         hosts = []
-    ledgers.extend(("host", host, queue.ledger(host)) for host in hosts)
+    report_paths.extend(("host", host, queue.root / pool.RESERVATIONS / host /
+                         pool.CENSUS_UNREADABLE) for host in hosts)
     try:
-        ledgers.extend(("tier", tier_id, queue.tier_ledger(tier_id))
-                       for tier_id in queue.tier_ids())
+        report_paths.extend(("tier", tier_id, queue.root / pool.TIER_RESERVATIONS /
+                             queue._check_tier_id(tier_id) / pool.CENSUS_UNREADABLE)
+                            for tier_id in queue.tier_ids())
     except (OSError, ValueError, pool.PoolContractError) as exc:
         notes.append(f"starvation tier census reports: {exc}")
         unreadable.append(f"starvation tier census reports: {exc}")
     reports: list[dict] = []
-    for kind, name, ledger in ledgers:
+    for kind, name, report_path in report_paths:
         try:
-            report = pool._read_json(ledger.census_report_path)
+            report = pool._read_json(report_path)
         except (OSError, pool.PoolContractError) as exc:
             notes.append(f"starvation {kind} ledger {name} census report: {exc}")
             unreadable.append(f"starvation {kind} ledger {name} census report: {exc}")
