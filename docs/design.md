@@ -5892,6 +5892,25 @@ a logical request's common half carries a nonblank `data_manifest`, so a
 producer whose reads are not visible in the declaration can still require them
 to be declared.
 
+## Whole-directory local resident sets (#1545)
+
+Resident sets are optional accelerators, not rolling residency windows or
+admission gates. Phase 1 does not inject container mounts or alter placement.
+`resident_sets.ResidentSets` stores `resident-sets/<manifest sha256>/body.json`
+under the queue root. The body is immutable: the normalized data manifest,
+canonical directory, hosts, initial lease and creator. Every manifest entry
+is a whole regular file with a real SHA-256 digest; publication lists the
+canonical directory and requires exact whole-directory name and size coverage.
+Symlinks and special files are refused. Source metadata is not an identity gate.
+
+The separate append-only `lease.jsonl` journal records publication and explicit
+release, each naming the manifest digest. A lease requires either an until
+timestamp or a campaign name, and an explicit hard maximum; no forever default.
+Per-host `copies/<host>.json` records use `prismabuild.resident_copy.v1` and
+`absent`, `copying`, `resident` or `evicting` states, a local root, verification
+receipt, byte count and completion time. `pbresident publish|status|release`
+operates these records. `local_tier_policy.json` is published with the runtime;
+its host map is empty by default, so this change activates no local tier.
 ## Cluster-scoped storage tiers (#583)
 
 Off by default. Nothing the fleet publishes today carries tier demand or a
