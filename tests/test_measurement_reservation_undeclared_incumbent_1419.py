@@ -124,7 +124,7 @@ def test_an_undeclared_producers_own_export_is_not_held_behind_the_election(flee
     host; its spool exports are pinned there at its priority. Holding them
     back behind the measurement's election would let the producer wait on its
     exports forever and the measurement on the producer. The export runs; an
-    unrelated -10 refill still does not; the measurement claims after."""
+    unrelated pinned -10 refill still does not; the measurement claims after."""
     queue, clock, readings, sample, publish, tick, claim, denial = fleet
     producer = publish("undeclared-producer", priority=-10, timeout_s=None,
                        cpu=2, gpu=1, mem_gb=8)
@@ -135,7 +135,8 @@ def test_an_undeclared_producers_own_export_is_not_held_behind_the_election(flee
     assert denial(measurement)["evidence"]["withhold"]["why"] == "draining_for_measurement"
     tick(pool.WITHHOLD_CEILING_S + 60)
 
-    refill = publish("unrelated-refill", priority=-10, timeout_s=None, cpu=1, gpu=0, mem_gb=1)
+    refill = publish("unrelated-refill", priority=-10, timeout_s=None,
+                     cpu=1, gpu=0, mem_gb=1, pinned=True)
     export = _export_of(tmp_path, queue, clock, producer, "export-0")
     assert adaptive_cpu.dependent_owner(pool._read_json(queue.item_path(pool.READY, export))) == producer
     assert claim() == export, denial(export)
@@ -182,7 +183,7 @@ def _non_action_holder_keeps_the_bounded_episode(fleet, hold):
     """A mem_gb shortage whose only holder is not a claimed action elects
     nothing: no action lifetime bounds that wait, and fencing the host could
     deadlock against the holder's own lower-priority consumers. The bounded
-    episode lapses as on main and lower-priority work runs."""
+    episode lapses as on main and lower-priority host-pinned work runs."""
     queue, clock, readings, sample, publish, tick, claim, denial = fleet
     ledger = queue.ledger("sparklina")
     ledger.ensure_capacity({"mem_gb": 120})  # the fixture's host capacity
@@ -199,7 +200,7 @@ def _non_action_holder_keeps_the_bounded_episode(fleet, hold):
     assert reservation.selection(pool._read_json(queue.passes_path(measurement)) or {}) is None
     tick(pool.WITHHOLD_CEILING_S + 60)
     refill = publish("lower-priority-consumer", priority=-10, timeout_s=None,
-                     cpu=1, gpu=0, mem_gb=1)
+                     cpu=1, gpu=0, mem_gb=1, pinned=True)
     assert claim() == refill, denial(refill)
     assert reservation.selection(pool._read_json(queue.passes_path(measurement)) or {}) is None
     lapsed = denial(measurement)["evidence"]["withhold"]

@@ -57,7 +57,7 @@ def fleet(tmp_path, monkeypatch):
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
 
     def publish(name, *, measurement=False, pinned=False, priority=-10, timeout_s=4200,
-                cpu=2, gpu=1, mem_gb=8):
+                cpu=2, gpu=1, mem_gb=8, tags=None):
         clock[0] += 0.001
         action = pb.seal_action({
             "schema": pb.ACTION_SCHEMA_V2,
@@ -80,7 +80,9 @@ def fleet(tmp_path, monkeypatch):
         key = action["action_key"]
         queue.publish(action_key=key, cas_root=str(cas.root), checkout_root=str(checkout),
                       worker_script="worker.py", resources={"cpu": cpu, "gpu": gpu, "mem_gb": mem_gb},
-                      needs_gpu=bool(gpu), tags=["sparklina"] if pinned else [], priority=priority)
+                      needs_gpu=bool(gpu),
+                      tags=(["sparklina"] if pinned else []) if tags is None else tags,
+                      priority=priority)
         return key
 
     def tick(seconds=2.0):
