@@ -126,6 +126,7 @@ LOOP_SCRIPT = "worker_loop.py"
 #: it is.  ``storage`` is the file server, which makes the next actions'
 #: declared bytes resident before anybody claims them (issue #487).
 ROLE_SCRIPTS = {"storage": "prewarm_loop.py", "tiers": "tier_loop.py",
+                "localtier": "local_tier_loop.py",
                 # The Prometheus exporter (#1020): one per fleet, on the box
                 # whose own filesystem holds the queue, where an unchanged
                 # queue costs a scrape one ``lstat`` per directory.

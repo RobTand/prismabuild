@@ -20,6 +20,8 @@ def source(tmp_path):
 
 def publish(tmp_path, **changes):
     from prismabuild import resident_sets as rs
+    from prismabuild import pool
+    pool.PoolQueue(tmp_path / "queue").mint_tier_capacity("local:test-host", {"local_gib": 1})
     root, manifest = source(tmp_path)
     args = dict(manifest=manifest, canonical_root=str(root), hosts=["test-host"],
                 lease={"until": 150, "hard_max": 200}, created_by="test", now=100)
@@ -65,6 +67,8 @@ def test_publish_refuses_invalid_set_before_filing(tmp_path, defect):
 def test_cli_publish_status_release_and_policy_publication(tmp_path, capsys):
     import pbresident
     import publish_runtime
+    from prismabuild import pool
+    pool.PoolQueue(tmp_path / "queue").mint_tier_capacity("local:test-host", {"local_gib": 1})
     root, manifest = source(tmp_path)
     path = tmp_path / "manifest.json"
     path.write_text(json.dumps(manifest))

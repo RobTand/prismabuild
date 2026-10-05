@@ -5911,6 +5911,18 @@ Per-host `copies/<host>.json` records use `prismabuild.resident_copy.v1` and
 receipt, byte count and completion time. `pbresident publish|status|release`
 operates these records. `local_tier_policy.json` is published with the runtime;
 its host map is empty by default, so this change activates no local tier.
+
+Capacity uses `local_gib@local:<host>` in the ordinary tier ledger. Publication
+reserves ceil(bytes / GiB) on every host or rolls back the new empty holds.
+The separate supervised `localtier` role re-mints from unprivileged
+`f_bavail - filesystem floor - Docker allowance + occupied tier bytes`, capped
+by the policy maximum. Held tokens are never revoked by a falling budget.
+The mover also enforces both D1 limits before copying and checks the floor
+before each file. This is cooperative accounting, not a filesystem quota.
+A separate role is needed: `tiers` discovers file-server ZFS, ARC and tmpfs
+windows and sweeps their rolling fragments; neither it nor `storage` runs
+on each local-disk owner. No fleet host is enabled in this phase.
+
 ## Cluster-scoped storage tiers (#583)
 
 Off by default. Nothing the fleet publishes today carries tier demand or a

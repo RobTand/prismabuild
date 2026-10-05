@@ -190,11 +190,21 @@ class ResidentSets:
                 if any(existing[key] != record[key] for key in ("manifest", "canonical_root", "hosts")):
                     raise ValueError("resident set immutable body conflicts with publication")
                 raise ValueError("resident set already published; its body cannot be rewritten")
-            core._atomic_publish(path, _json(record) + b"\n")
-            self._append_lease(set_id, {"event": "published", "lease": lease, "unix": now, "by": created_by})
-            for host in hosts:
-                self.write_copy(set_id, host, {"state": "absent", "local_root": None,
-                    "verification": [], "bytes": 0, "completed_unix": None})
+            from . import local_tier, pool
+            queue = pool.PoolQueue(self.queue_root)
+            acquired = local_tier.reserve(queue, set_id, hosts, manifest["total_bytes"])
+            try:
+                core._atomic_publish(path, _json(record) + b"\n")
+                self._append_lease(set_id, {"event": "published", "lease": lease, "unix": now, "by": created_by})
+                for host in hosts:
+                    self.write_copy(set_id, host, {"state": "absent", "local_root": None,
+                        "verification": [], "bytes": 0, "completed_unix": None})
+            except BaseException:
+                # Once the immutable body exists, recovery owns its reservations.
+                if not path.exists():
+                    for ledger in acquired:
+                        ledger.release(set_id)
+                raise
         return record
 
     def write_copy(self, set_id, host, record):
