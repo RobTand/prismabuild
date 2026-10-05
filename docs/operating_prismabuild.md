@@ -1716,6 +1716,22 @@ an unprovable installed commit is shown as `<unknown>`. A matching package
 prints `pbtest dependency pin` JSON into the action's retained stdout.
 Contract/package version equality alone does not prove the reviewed revision.
 
+`verify_install(module, expected, *, identity_policy=None)` in
+`tools/fleet/pbtest_pins.py` keeps that behavior by default. A caller that may
+stamp recorded identity drift (an editable flag, a non-Git origin, or a
+different recorded commit) passes a callable: it receives the identity-failure
+message and the observed facts, and returning normally — instead of raising —
+marks the run's evidence with `identity_drift_tolerated` and continues. The
+integrity phase is not optional and is not weakened by the policy:
+`verify_record_bytes(module)` is the one implementation of it (one owning
+distribution, RECORD present, every hashed entry matching the bytes on disk,
+the imported module owned by that RECORD, no unrecorded package file), and
+`verify_install` always routes through it. Ownership of the imported module is
+an integrity check, so an editable or shadowed import refuses even when
+identity drift is tolerated. A raising policy propagates unchanged.
+`check_pins` and `preflight` (the shard gate) do not take a policy: a shard
+either proves its reviewed pins or refuses.
+
 Provision an environment with an immutable Git requirement, for example
 `python -m pip install --no-deps 'git+https://github.com/RobTand/tessera.git@<full-reviewed-commit>'`,
 then qualify it through PB. A local-directory `pip install` does not preserve

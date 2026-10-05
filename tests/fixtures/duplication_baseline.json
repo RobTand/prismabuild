@@ -138,7 +138,7 @@
   "hashlib:tools/fleet/pbrun.py::result_and_stamp_names",
   "hashlib:tools/fleet/pbrun.py::verify_retained_wrapper",
   "hashlib:tools/fleet/pbsnapshot.py::verified_stamp",
-  "hashlib:tools/fleet/pbtest_pins.py::verify_install",
+  "hashlib:tools/fleet/pbtest_pins.py::verify_record_bytes",
   "hashlib:tools/fleet/publish_runtime.py::_agent_definitions",
   "hashlib:tools/fleet/publish_runtime.py::_coordinator_sha256",
   "hashlib:tools/fleet/publish_runtime.py::_sha256",
