@@ -16,6 +16,13 @@ Manifest (JSON)::
        {"tag": "sparky", "demand": "gpu=1,mem_gb=100",
         "argv": ["/home/rob/venvs/x/bin/python", "worker.py"]}]}
 
+A member may declare the bytes it reads and ask for them staged first::
+
+    {"tag": "sparky", "demand": "gpu=1,mem_gb=100",
+     "data_manifest": "/data/window4/manifest.json", "residency": "stage",
+     "residency_ram": "auto", "residency_share": "auto",
+     "argv": ["/home/rob/venvs/x/bin/python", "worker.py"]}
+
 ``tag`` is the host (or host class) a member is placed on; members land on
 distinct hosts. ``timeout_s`` and ``priority`` apply to every member unless a
 member overrides them. Prints one JSON line: the group and its member keys.
@@ -27,13 +34,28 @@ as a mapping, and ``env`` as ``K=V`` strings or as a mapping.
 A member carries the existing ``pbrun`` options a measurement window needs, each
 as the one flag of that name: ``gpu_memory_gb``, ``exclusive`` and ``measurement``
 (true or false), ``host_class``, ``container_images`` (a list, one flag per image),
-``priority_reason`` and ``max_attempts`` (only 1). ``pbrun`` judges every value
-exactly as it would for a plain submission. Any other key is refused by name:
-the gang flags, ``tag``, ``priority`` and ``retry_safe`` are the driver's (a retry
-ends the gang, so a member gets one attempt), and options a window does not
-declare, such as a data manifest or residency, are not carried. ``--cwd`` is the
+``priority_reason``, ``max_attempts`` (only 1), and the data-manifest and
+residency options ``data_manifest``, ``residency``, ``residency_tier``,
+``residency_ram``, ``residency_share``, ``residency_mover_mem_gb``,
+``residency_mover_readers``, ``residency_prefetch_depth_gib``,
+``residency_read_mb_s`` and ``residency_mover_max_attempts``. ``pbrun`` judges
+every value exactly as it would for a plain submission: it refuses
+``--residency stage`` without ``--data-manifest``, and it enforces the
+enumerated values of ``--residency``, ``--residency-ram`` and
+``--residency-share``. A relative ``data_manifest`` is read by ``pbrun`` against
+its own working directory -- the directory ``pbgang`` runs in, not the member's
+``cwd``, which is the checkout every member snapshots -- so name an absolute
+path when members submit from elsewhere. Any other key is refused by name:
+the gang flags, ``tag``, ``priority`` and ``retry_safe`` are the driver's (a
+retry ends the gang, so a member gets one attempt). ``--cwd`` is the
 default checkout every member snapshots; a member's own ``cwd`` overrides it.
 ``priority_reason`` may also be set once in the manifest, like ``priority``.
+
+A member that declares a manifest but no residency option is planned by the
+storage role's manifest planner (#1247), which files a residency plan for it
+off its own sealed request; the member itself is submitted exactly like any
+other. See ``docs/design.md`` for what a residency-carrying member does to its
+gang's admission.
 
 Gang admission must be enabled on the target boxes (worker ``--gang-admission``);
 otherwise ``pbrun`` refuses because no box offers the capability.
@@ -64,7 +86,9 @@ SCHEMA = "prismabuild.pbgang.v1"
 MEMBER_FIELDS = {"tag", "tags", "cwd", "argv", "demand", "env", "timeout_s", "priority", "cpus"}
 
 #: Member fields that are one ``pbrun`` flag each: exactly the existing options a
-#: measurement window declares (#1517).  The kind says
+#: measurement window declares (#1517), plus the data-manifest and residency
+#: options (#583, #909, #1026) a gang member may declare like any other
+#: submission.  The kind says
 #: how the JSON value becomes argv: ``switch`` is a boolean flag, ``value`` is
 #: one scalar, ``repeat`` is a list with the flag once per entry.  ``pbrun``
 #: stays the only judge of each value; this table forwards, it never reinterprets.
@@ -78,6 +102,16 @@ FLAG_FIELDS: dict[str, tuple[str, str]] = {
     "container_images": ("--container-image", "repeat"),
     "priority_reason": ("--priority-reason", "value"),
     "max_attempts": ("--max-attempts", "value"),
+    "data_manifest": ("--data-manifest", "value"),
+    "residency": ("--residency", "value"),
+    "residency_tier": ("--residency-tier", "value"),
+    "residency_ram": ("--residency-ram", "value"),
+    "residency_share": ("--residency-share", "value"),
+    "residency_mover_mem_gb": ("--residency-mover-mem-gb", "value"),
+    "residency_mover_readers": ("--residency-mover-readers", "value"),
+    "residency_prefetch_depth_gib": ("--residency-prefetch-depth-gib", "value"),
+    "residency_read_mb_s": ("--residency-read-mb-s", "value"),
+    "residency_mover_max_attempts": ("--residency-mover-max-attempts", "value"),
 }
 MEMBER_FIELDS = MEMBER_FIELDS | set(FLAG_FIELDS)
 
