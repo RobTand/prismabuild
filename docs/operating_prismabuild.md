@@ -15,6 +15,25 @@ adaptive CPU and GPU admission. SLURM (`slurm`) is an optional transport; its
 [scheduler decision](scheduler_decision_2026-09-04.md) describe that deployment
 path. See [the design document](design.md) for the current system contracts.
 
+## Resident set records (Phase 1)
+
+`pbresident.py --pool-root QUEUE publish --manifest MANIFEST` accepts
+`--canonical-root DIRECTORY --hosts HOST[,HOST] --lease-until DATE` and
+`--hard-max DATE`. Dates include a timezone, for example
+`2026-10-10T00:00:00Z`. Use `--campaign NAME` instead of `--lease-until`
+for a campaign lease; the hard maximum is still required. Every entry needs
+a real SHA-256 and must cover a complete regular file. Unlisted files,
+symlinks, ranges and mismatched sizes are refused.
+
+`pbresident.py --pool-root QUEUE status [SET_ID]` returns set bodies, lease
+journals and host copy states as JSON. `release SET_ID` appends a release
+without rewriting the declaration. Phase 1 does not change job paths,
+container mounts or placement. Publication alone does not claim a copy is
+available. The versioned `local_tier_policy.json` declares host roots,
+maximum GiB, the free-space floor and Docker allowance; the shipped host
+map is empty and does not enable any Spark.
+
+
 Both transports publish the same verifiable CAS results. Their placement and
 resource enforcement differ, as described below. Examples name
 `--transport slurm` where SLURM behaviour is the point. You can set
