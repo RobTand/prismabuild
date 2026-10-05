@@ -4516,6 +4516,20 @@ Per member host, inside the ordinary claim pass:
    orphan-passes schedule, withdraws leftover READY members and prunes the
    records of a gang whose every member has an exact ending.
 
+**Ranking between gangs.** Gangs are totally ordered by (higher priority,
+earliest member publication, group). Before electing or readying, a member is
+deferred (`deferred_for_gang_reservation`, `ranked_behind`) while a better-ranked
+live gang holds an election on any host its gang uses. Two gangs sharing hosts
+therefore never each commit one member and then wait on each other until both
+fail. Residual: a better-ranked gang that first appears after a lower gang has
+already committed one member costs that lower gang its run, bounded by `skew_s`.
+
+**Lost workers.** `sweep_gangs` runs beside `sweep_orphan_passes` in the claim-site
+sweep. It also tears down any gang with a member whose exact-generation ending is
+FAILED or WITHDRAWN, including a one-attempt member the reaper failed after a lost
+lease, so a sibling that is already running is withdrawn rather than left waiting
+in its collective.
+
 **Priority rule.** A gang fences only against strictly lower priority. Equal or
 higher priority work can still take a fenced host; that is the existing priority
 semantics. Run window gangs (Goal 1 EXL3/PACT, Goal 2 served A/Bs) at priority 10,
