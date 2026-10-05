@@ -190,3 +190,57 @@ def test_release_telemetry_failure_does_not_gate_cleanup(gang_fleet, monkeypatch
     assert claim("sparklina") == keys[0]
     assert claim("sparky") == keys[1]
 
+
+
+def claim_backfill_snapshot(queue, key, tick, monkeypatch):
+    """A concurrent worker's prefetched scan must not refresh the member."""
+    from test_gang_reservation_1517 import CAPACITY, TIERS
+    monkeypatch.setattr(pool.socket, "gethostname", lambda: "sparklina")
+    tick(0.01)
+    row = pool._read_json(queue.item_path(pool.READY, key))
+    return queue.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True,
+                       has_gpu=True, tags=["gb10", "sparklina", _gang.TAG], ready=[row])
+
+
+@pytest.mark.parametrize("peer_state", ["ready", "claimed"])
+def test_a_startable_gang_never_lends_its_fresh_ready_host(
+        gang_fleet, fleet, monkeypatch, peer_state):
+    queue, clock, publish, finish, claim, denial, members = gang_fleet
+    group, keys, incumbent = waiting(gang_fleet)
+    finish(incumbent, "sparky")
+    record = _gang.read_group(queue, group)
+    if peer_state == "ready":
+        _gang.mark_ready(queue, record, record["members"][1], "sparky", clock[0])
+    else:
+        assert claim("sparky") == keys[1]
+    ready = pool._read_json(_gang.state_dir(queue, group) / "ready-0.json")
+    assert 0 <= clock[0] - ready["ready_unix"] <= _gang.READY_FRESH_S
+    assert _gang.sibling_readiness(queue, record, record["members"][0],
+                                  "sparklina", clock[0])["complete"]
+    key = backfill(publish)
+    assert claim_backfill_snapshot(queue, key, fleet[5], monkeypatch) is None, (
+        "backfill borrowed a fresh-ready host after the whole gang could start")
+    assert denial(key, "sparklina")["reason"] == "deferred_for_gang_reservation"
+    assert queue.ledger("sparklina").held_keys() == []
+    assert not queue.withdrawal_decisions(key)
+    assert claim("sparklina") == keys[0]
+    if peer_state == "ready":
+        assert claim("sparky") == keys[1]
+    assert queue.item_path(pool.CLAIMED, keys[0]).exists()
+    assert queue.item_path(pool.CLAIMED, keys[1]).exists()
+    assert queue.item_path(pool.READY, key).exists()
+
+
+def test_a_stale_ready_member_never_lends_its_host(gang_fleet, fleet, monkeypatch):
+    queue, clock, publish, finish, claim, denial, members = gang_fleet
+    group, keys, incumbent = waiting(gang_fleet)
+    ready = pool._read_json(_gang.state_dir(queue, group) / "ready-0.json")
+    clock[0] = ready["ready_unix"] + _gang.READY_FRESH_S + 1
+    key = backfill(publish)
+    assert claim_backfill_snapshot(queue, key, fleet[5], monkeypatch) is None, (
+        "backfill borrowed the fenced host using an expired ready record")
+    assert denial(key, "sparklina")["reason"] == "deferred_for_gang_reservation"
+    assert queue.ledger("sparklina").held_keys() == []
+    assert queue.item_path(pool.READY, keys[0]).exists()
+    assert queue.item_path(pool.READY, key).exists()
+
