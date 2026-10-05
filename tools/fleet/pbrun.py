@@ -3334,11 +3334,30 @@ def outcome_summary(q, outcome_path, outcome) -> dict:
                 if isinstance(candidate, str) and candidate:
                     claimed_host = candidate
                     break
+    withdrawn_attempt = None
+    if "withdrawn_attempt" in outcome:
+        retained = outcome["withdrawn_attempt"]
+        if (not isinstance(retained, dict) or status != pool.WITHDRAWN
+                or any(retained.get(field) != outcome.get(field) for field in
+                       ("action_key", "published_unix", "max_attempts", "retry_safe"))):
+            raise pool.PoolContractError("withdrawn attempt differs from its decision identity")
+        stopped = q.adopted_attempt_summary(retained)
+        if stopped["status"] != pool.WITHDRAWN or stopped["disposition"] != pool.WITHDRAWN:
+            raise pool.PoolContractError("withdrawn attempt is not a concluded cancellation")
+        for field in ("resource_scope_cleanup", "container_cleanup"):
+            if stopped["detail"].get(field) != outcome.get(field):
+                raise pool.PoolContractError("withdrawn cleanup differs from its immutable attempt")
+        withdrawn_attempt = {field: stopped[field] for field in
+                             ("attempt", "status", "disposition", "finished_unix", "finished_host")}
+        withdrawn_attempt["outcome"] = retained["attempt_history"][-1]["outcome"]
     return {
         "action_key": str(outcome.get("action_key") or ""),
         "status": status,
         "detail": detail,
         "adopted": adopted,
+        "withdrawn_attempt": withdrawn_attempt,
+        "resource_scope_cleanup": outcome.get("resource_scope_cleanup"),
+        "container_cleanup": outcome.get("container_cleanup"),
         # ``executed`` and ``cache_hit`` both mean the work is done; that is
         # the pull queue's own rule, in ``adopted_attempt_summary``, which
         # routes both to ``done/``.

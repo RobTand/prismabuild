@@ -4293,23 +4293,39 @@ def _owner_record(queue: pool.PoolQueue, state: str, key: str) -> dict:
 
 
 def _require_exact_withdrawal(queue: pool.PoolQueue, key: str) -> dict:
-    """The withdrawn record of ``key``, proven by its one immutable decision.
+    """The withdrawn record of key, with its decision unchanged.
 
-    A withdrawn marker by filename alone is not proof: the decision filed for
-    the marker's generation must be exactly one, must equal the marker, and
-    must be the one ``withdrawal_covers`` answers with.  Anything else raises,
-    and the caller retains.
+    The generation has exactly one immutable decision and withdrawal_covers
+    must answer that decision. Worker additions are accepted only as the
+    verified immutable withdrawn attempt's projection; every decision field
+    remains exact and arbitrary extra fields still refuse.
     """
 
     marker = _owner_record(queue, pool.WITHDRAWN, key)
-    decisions = queue.withdrawal_decisions(
-        key, generation=marker["published_unix"])
-    if (marker.get("status") != "withdrawn"
-            or len(decisions) != 1
-            or decisions[0][1] != marker
-            or queue.withdrawal_covers(marker, action_key=key) != marker):
-        raise pool.PoolContractError(
-            "withdrawal lacks its exact immutable decision")
+    decisions = queue.withdrawal_decisions(key, generation=marker["published_unix"])
+    if (marker.get("status") != "withdrawn" or len(decisions) != 1
+            or queue.withdrawal_covers(marker, action_key=key) != decisions[0][1]):
+        raise pool.PoolContractError("withdrawal lacks its exact immutable decision")
+    decision = decisions[0][1]
+    if marker == decision:
+        return marker
+    retained = marker.get("withdrawn_attempt")
+    if (not isinstance(retained, Mapping)
+            or any(retained.get(field) != decision.get(field) for field in
+                   ("action_key", "published_unix", "max_attempts", "retry_safe"))):
+        raise pool.PoolContractError("withdrawal lacks its exact immutable decision")
+    ending = queue.adopted_attempt_summary(retained)
+    if ending["status"] != pool.WITHDRAWN or ending["disposition"] != pool.WITHDRAWN:
+        raise pool.PoolContractError("withdrawal lacks its exact immutable decision")
+    expected = {**decision, "withdrawn_attempt": retained}
+    for field in ("resource_scope", "resource_scope_intent", "resource_scope_cleanup", "container_cleanup"):
+        if field not in decision and field in ending["detail"]:
+            expected[field] = ending["detail"][field]
+    for field in ("finished_unix", "finished_host"):
+        if field not in decision:
+            expected[field] = ending[field]
+    if marker != expected:
+        raise pool.PoolContractError("withdrawal lacks its exact immutable decision")
     return marker
 
 

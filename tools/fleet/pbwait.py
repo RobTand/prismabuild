@@ -413,6 +413,9 @@ def _from_record(q, outcome_path, outcome) -> dict:
         action_signal=summary["action_signal"],
         receipt_published=summary["receipt_published"],
         succeeded=summary["succeeded"],
+        withdrawn_attempt=summary["withdrawn_attempt"],
+        resource_scope_cleanup=summary["resource_scope_cleanup"],
+        container_cleanup=summary["container_cleanup"],
     )
 
 
