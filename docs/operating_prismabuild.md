@@ -1548,6 +1548,9 @@ a RAM tmpfs with a fixed inode table (`nr_inodes`) held 750,000 inodes from six
 concurrent suites on dl380g10 and made every action there fail in preflight with
 `OSError 28` while the filesystem still reported free bytes. `pbtest` refuses a
 command-line `-o`, so this setting is part of the checkout the shards snapshot.
+Only `tmp_path` is removed per test: a directory made with `tmp_path_factory.mktemp`
+lasts until the session's base temporary directory goes, which under `pbtest` is
+when PrismaBuild removes the action's root.
 
 `--basetemp root` seals a separate scratch root for pytest's own temporary
 files (#1469), so selecting real test scratch no longer moves the process
