@@ -4557,12 +4557,13 @@ A member carries the existing `pbrun` options a measurement window declares (GPU
 memory subset, exclusive and measurement class, host class, container images,
 priority reason, and a declared single attempt): each manifest member field is one
 `pbrun` flag, forwarded as given, and `pbrun` judges every value as it does for a
-plain submission. Any other key is refused by name. The driver's own flags, the tag,
-the priority, the checkout and `retry_safe` are not member fields, and options a
-window does not declare (data manifest, residency) are not carried; `max_attempts`
-may be declared only as 1. A manifest may be a bare list of members; a member names its
-host with `tag` or `tags`, may give `demand` and `env` as mappings, and may name its
-own `cwd` (`--cwd` is then optional).
+plain submission. Any other key is refused by name. The driver's own flags, the tag
+and the priority and `retry_safe` are not member fields, and options a window does
+not declare (data manifest, residency) are not carried; `max_attempts` may be
+declared only as 1. A manifest may be a bare list of members; a member names its host
+with `tag` or `tags` and may give `demand` and `env` as mappings. `--cwd` is the
+default checkout every member snapshots; a member's own `cwd` overrides it, and
+`--cwd` is then optional when every member names one.
 
 Per member host, inside the ordinary claim pass:
 

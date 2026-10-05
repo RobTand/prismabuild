@@ -30,9 +30,10 @@ as the one flag of that name: ``gpu_memory_gb``, ``exclusive`` and ``measurement
 (true or false), ``host_class``, ``container_images`` (a list, one flag per image),
 ``priority_reason`` and ``max_attempts`` (only 1). ``pbrun`` judges every value
 exactly as it would for a plain submission. Any other key is refused by name:
-the gang flags, ``tag``, ``priority``, the checkout and ``retry_safe`` are the
-driver's (a retry ends the gang, so a member gets one attempt), and options a
-window does not declare, such as a data manifest or residency, are not carried.
+the gang flags, ``tag``, ``priority`` and ``retry_safe`` are the driver's (a retry
+ends the gang, so a member gets one attempt), and options a window does not
+declare, such as a data manifest or residency, are not carried. ``--cwd`` is the
+default checkout every member snapshots; a member's own ``cwd`` overrides it.
 ``priority_reason`` may also be set once in the manifest, like ``priority``.
 
 Gang admission must be enabled on the target boxes (worker ``--gang-admission``);
