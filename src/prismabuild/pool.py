@@ -6434,6 +6434,8 @@ class PoolQueue:
             # unsuccessful one ends the whole gang.
             if max_attempts != 1 or retry_safe:
                 raise PoolContractError("a gang member must have max_attempts=1 and not be retry_safe")
+            if not any(int(value) > 0 for value in (resources or {}).values()):
+                raise PoolContractError("a gang member must declare a resource demand")
         elif _gang.TAG in normalized_tags:
             raise PoolContractError(f"{_gang.TAG} requires a gang declaration")
         if declared_interpreter is not None:
@@ -9363,7 +9365,6 @@ class PoolQueue:
             except (OSError, PoolContractError):
                 continue
             pruned.append(key)
-        self.sweep_gangs()
         return pruned
 
     def sweep_gangs(self, *, limit: int = ORPHAN_PASSES_SWEEP_LIMIT) -> list[str]:
@@ -9392,6 +9393,20 @@ class PoolQueue:
                     continue
                 keys = [str(member["action_key"]) for member in record["members"]]
                 torn = _gang.teardown(self, group)
+                if torn is None:
+                    # Every terminal path, including the reaper failing a
+                    # member whose lease was lost, ends the gang here: a
+                    # sibling already running is withdrawn (#1519 review).
+                    ended = {index: state for index, state in _gang.member_states(self, record).items()
+                             if state in _gang.UNSUCCESSFUL}
+                    if ended:
+                        index = min(ended)
+                        member = record["members"][index]
+                        self._gang_teardown(
+                            {"gang": {"group": group, "size": record["size"], "index": index}},
+                            by=str(member["action_key"]),
+                            reason=f"member {str(member['action_key'])[:12]} ended {ended[index]}")
+                        torn = _gang.teardown(self, group)
                 if torn is not None:
                     for key in keys:
                         if self.item_path(READY, key).exists():
@@ -20812,6 +20827,22 @@ class PoolQueue:
                                 sibling_here = any(election["host"] == here
                                                    for index, election in standing.items()
                                                    if index != gang["index"])
+                                # Only the best-ranked gang on a shared host
+                                # set elects, readies or commits: two gangs
+                                # never each commit a member on a different
+                                # host and wait on each other (#1519 review).
+                                ours = {here, *(election["host"] for election in standing.values())}
+                                my_rank = list(_gang.rank(gang_record))
+                                ahead = sorted(
+                                    (election for election in census["gang_elections"].values()
+                                     if election["group"] != gang["group"] and election["host"] in ours
+                                     and election["rank"] < my_rank),
+                                    key=lambda election: election["rank"])
+                                if ahead:
+                                    self.record_denial(item, "deferred_for_gang_reservation", {
+                                        "withheld_for": ahead[0]["action_key"],
+                                        "gang_election": ahead[0], "ranked_behind": True})
+                                    continue
                                 if mine is None and not sibling_here:
                                     try:
                                         mine = _gang.elect(self, gang_record, gang_entry, here, _now())
@@ -27064,6 +27095,7 @@ class PoolQueue:
         if self._sweep_due():
             self.reap_stale()
             self.sweep_orphan_passes()
+            self.sweep_gangs()
         item = self.claim(tags=tags, has_gpu=has_gpu, capacity=capacity,
                           cpu_tiers=cpu_tiers, adaptive_cpu=adaptive_cpu,
                           ready=ready, observed_images=observed_images,

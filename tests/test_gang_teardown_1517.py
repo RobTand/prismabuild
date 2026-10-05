@@ -5,6 +5,7 @@ census and controllers; only the clock and sampler are controlled.
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import sys
 from pathlib import Path
 
@@ -31,10 +32,10 @@ def _both_claimed(queue, publish, finish, gclaim, members, **kwargs):
     return group, first, second
 
 
-def test_a_member_failure_tears_the_gang_down_and_releases_its_fences(gang_fleet):
+def test_a_member_failure_tears_the_gang_down_and_releases_its_fences(gang_fleet, monkeypatch):
     queue, clock, publish, finish, gclaim, denial, members = gang_fleet
     group, first, second = _both_claimed(queue, publish, finish, gclaim, members)
-    pool.socket.gethostname = lambda: "sparky"  # noqa: E731 (gclaim resets it per call)
+    monkeypatch.setattr(pool.socket, "gethostname", lambda: "sparky")
     queue.finish(second, status="failed", detail={"returncode": 1})
     torn = _gang.teardown(queue, group)
     assert torn is not None and second[:12] in torn["reason"], torn
@@ -68,7 +69,7 @@ def test_withdrawing_a_waiting_member_withdraws_the_gang_and_releases_both_hosts
     assert not _gang.state_dir(queue, group).exists()
 
 
-def test_a_claimed_member_never_launches_alone(gang_fleet):
+def test_a_claimed_member_never_launches_alone(gang_fleet, monkeypatch):
     queue, clock, publish, finish, gclaim, denial, members = gang_fleet
     incumbents = _busy_both(publish, gclaim)
     group, (first, second) = members("barrier", skew_s=0.5)
@@ -82,7 +83,7 @@ def test_a_claimed_member_never_launches_alone(gang_fleet):
     urgent = publish("urgent", priority=20, timeout_s=None, cpu=2, gpu=1, mem_gb=100)
     assert gclaim("sparklina") == urgent
     record = pool._read_json(queue.item_path(pool.CLAIMED, second))
-    pool.socket.gethostname = lambda: "sparky"  # noqa: E731
+    monkeypatch.setattr(pool.socket, "gethostname", lambda: "sparky")
     outcome = queue._gang_start_barrier(record, owner="test", heartbeat_s=60.0)
     assert outcome is not None, "the member was released to launch without its sibling"
     assert outcome["termination_reason"] == "gang_start_skew_exceeded", outcome
@@ -121,3 +122,50 @@ def test_pbrun_seals_a_gang_member_and_refuses_retries():
     with pytest.raises(SystemExit, match="go together"):
         pbrun.gang_declaration(pbrun.parse_args(["--cwd", ".", "--transport", "pool", "--gang-size", "2", "--", "true"]))
     assert pbrun.gang_declaration(pbrun.parse_args(["--cwd", ".", "--", "true"])) is None
+
+
+def test_a_member_whose_lease_is_lost_tears_the_gang_down(gang_fleet, monkeypatch):
+    """#1519 review: the reaper fails a one-attempt member whose worker died;
+    its running sibling must be withdrawn and the fences released."""
+    queue, clock, publish, finish, gclaim, denial, members = gang_fleet
+    group, first, second = _both_claimed(queue, publish, finish, gclaim, members)
+    clock[0] += pool.LEASE_TIMEOUT_S + 10
+    record = pool._read_json(queue.item_path(pool.CLAIMED, first))
+    monkeypatch.setattr(pool.socket, "gethostname", lambda: "sparklina")
+    queue.write_lease(first, owner=str(record.get("claimed_by") or ""), claim_snapshot=record)
+    monkeypatch.setattr(pool.socket, "gethostname", lambda: "sparky")
+    queue.reap_stale()
+    assert queue.item_path(pool.FAILED, second).exists(), "the lost member was not failed"
+    queue.sweep_gangs()
+    torn = _gang.teardown(queue, group)
+    assert torn is not None and second[:12] in torn["reason"], torn
+    live = pool._read_json(queue.item_path(pool.CLAIMED, first))
+    assert live is not None and queue.withdrawal_covers(live) is not None
+
+
+def test_two_equal_priority_gangs_never_split_the_two_hosts(gang_fleet):
+    """#1519 review: interleaved passes must not commit G1 on one host and G2
+    on the other. Another loop holding G1m0's transition lock makes sparklina
+    mark only G2m0 ready first; on main sparky then commits G2m1 beside G1m1's
+    ready mark, and the two gangs wait on each other until both fail."""
+    queue, clock, publish, finish, gclaim, denial, members = gang_fleet
+    g1 = members("g1", priority=10)[1]
+    g2 = members("g2", priority=10)[1]
+    with (ThreadPoolExecutor(max_workers=1) as executor,
+          queue._transition_locked(g1[0]) as acquired):
+        assert acquired
+        assert executor.submit(gclaim, "sparklina").result(timeout=30) is None
+    assert denial(g2[0], "sparklina")["reason"] == "gang_waiting_for_peers"
+    assert gclaim("sparky") is None, "sparky committed the lower-ranked gang"
+    behind = denial(g2[1], "sparky")
+    assert behind["reason"] == "deferred_for_gang_reservation", behind
+    assert behind["evidence"]["withheld_for"] == g1[1]
+    assert gclaim("sparklina") == g1[0], denial(g1[0], "sparklina")
+    assert gclaim("sparky") == g1[1], denial(g1[1], "sparky")
+    for key in g2:
+        assert queue.item_path(pool.READY, key).exists()
+    finish(g1[0], "sparklina")
+    finish(g1[1], "sparky")
+    assert gclaim("sparklina") is None  # G2m0 ready, waiting for its peer
+    assert gclaim("sparky") == g2[1], denial(g2[1], "sparky")
+    assert gclaim("sparklina") == g2[0], denial(g2[0], "sparklina")

@@ -221,10 +221,11 @@ def _gang_elections(queue: PoolQueue, rows: dict[str, list[dict]], count: int) -
                                for row in rows.get(member["action_key"], []))]
                 if not live:
                     continue
+                rank = list(_gang.rank(record))
                 for index, election in _gang.elections(queue, group, record["size"]).items():
                     found[election["action_key"]] = {
                         "group": group, "index": index, "action_key": election["action_key"],
-                        "host": election["host"], "priority": election["priority"]}
+                        "host": election["host"], "priority": election["priority"], "rank": rank}
     except _gang.GangContractError as exc:
         raise CensusUnavailable(str(exc)) from exc
     return found

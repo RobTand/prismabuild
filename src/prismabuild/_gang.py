@@ -266,11 +266,26 @@ def tear_down(queue, group: str, *, reason: str, by: str, now: float) -> bool:
 
 def sibling_states(queue, record: Mapping[str, object], entry: Mapping[str, object]) -> dict[int, str]:
     """Each sibling's exact-generation state: claimed, done, failed, withdrawn, ready-row."""
+    return {index: state for index, state in member_states(queue, record).items()
+            if index != entry["index"]}
+
+
+def rank(record: Mapping[str, object]) -> tuple[int, float, str]:
+    """Total order between gangs: higher priority, then earlier publication.
+
+    Two gangs that share hosts must not each commit a member on a different
+    one and then wait on each other (#1519 review). Only the best-ranked live
+    gang holding an election on a shared host may elect, ready or commit.
+    """
+    first = min(float(member["published_unix"]) for member in record["members"])  # type: ignore[union-attr]
+    return (-int(record["priority"]), first, str(record["group"]))  # type: ignore[call-overload]
+
+
+def member_states(queue, record: Mapping[str, object]) -> dict[int, str]:
+    """Every member's exact-generation state: claimed, done, failed, withdrawn, ready."""
     from . import pool
     states: dict[int, str] = {}
     for other in record["members"]:  # type: ignore[union-attr]
-        if other["index"] == entry["index"]:
-            continue
         state = "absent"
         for name, directory in (("claimed", pool.CLAIMED), ("done", pool.DONE),
                                 ("failed", pool.FAILED), ("withdrawn", pool.WITHDRAWN),
