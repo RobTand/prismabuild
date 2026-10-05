@@ -4490,6 +4490,67 @@ the ordinary suite on a small shape of the same kind.  One of them puts the
 pre-#965 byte-cut splitter back into the driver and requires the gate to
 fail with `movement_refused` and `residency_overran_reservation`.
 
+## Gang reservation (#1517, default off)
+
+A gang is N sealed actions (2..16), one per target host or host class, admitted
+together or not at all. Each member seals `params.gang = {group, size, index}`.
+Its row requires the worker tag `gang-v1`, which a worker offers only with
+`--gang-admission` (or `PRISMABUILD_GANG_ADMISSION=1`). A member has exactly one
+attempt and is never `retry_safe`: a retried or preempted member could start
+beside siblings that are already running. `pbgang.py` seals and publishes every
+member (`pbrun --detach --gang-*`) and only then files the immutable group record
+`pb-queue/gangs/<group>.json`. A member is never claimable without that record.
+
+Per member host, inside the ordinary claim pass:
+
+1. **Elect (fence).** Under host admission H, the host writes a no-clobber
+   election `gangs/<group>/elect-<i>.json`. The census reads live gang elections
+   in its bounded child, and `gang_blocking` denies strictly lower-priority rows
+   on that host (`deferred_for_gang_reservation`), with the same rule and the same
+   incumbent-dependent exemption as a #1419/#1504 measurement election. Running
+   work drains; no token, CPU/GPU, isolation or foreign-load gate is waived. One
+   member per host; the no-clobber election settles a race between matching hosts.
+2. **Ready.** When the member passes every ordinary gate, it writes
+   `ready-<i>.json`. Unless every sibling is fresh-ready (`READY_FRESH_S`) or
+   claimed on a distinct host, it abandons the acquisition and is denied
+   `gang_waiting_for_peers`. A ready member holds no tokens, so no cross-host
+   hold can deadlock two gangs.
+3. **Commit** is the ordinary rename once the set is complete. The peer's next
+   pass sees it and commits too.
+4. **Start barrier.** Before launch, a claimed member waits, renewing its lease,
+   until every sibling is claimed, bounded by `skew_s` (default 120 s). Past the
+   bound, or on a teardown or sibling ending, it never launches
+   (`gang_start_skew_exceeded` / `gang_torn_down`). A member never runs alone.
+5. **Teardown.** Any unsuccessful member ending, any member withdrawal, an
+   expired barrier, or a sibling found failed files `gangs/<group>/teardown.json`
+   once. The writer withdraws the other members through the ordinary withdrawal
+   path. The census stops fencing for a torn-down gang. `sweep_gangs`, on the
+   orphan-passes schedule, withdraws leftover READY members and prunes the
+   records of a gang whose every member has an exact ending.
+
+**Ranking between gangs.** Gangs are totally ordered by (higher priority,
+earliest member publication, group). Before electing or readying, a member is
+deferred (`deferred_for_gang_reservation`, `ranked_behind`) while a better-ranked
+live gang holds an election on any host its gang uses. Two gangs sharing hosts
+therefore never each commit one member and then wait on each other until both
+fail. Residual: a better-ranked gang that first appears after a lower gang has
+already committed one member costs that lower gang its run, bounded by `skew_s`.
+
+**Lost workers.** `sweep_gangs` runs beside `sweep_orphan_passes` in the claim-site
+sweep. It also tears down any gang with a member whose exact-generation ending is
+FAILED or WITHDRAWN, including a one-attempt member the reaper failed after a lost
+lease, so a sibling that is already running is withdrawn rather than left waiting
+in its collective.
+
+**Priority rule.** A gang fences only against strictly lower priority. Equal or
+higher priority work can still take a fenced host; that is the existing priority
+semantics. Run window gangs (Goal 1 EXL3/PACT, Goal 2 served A/Bs) at priority 10,
+with routine work at 0 or below.
+
+**Mixed generations.** An old worker offers no `gang-v1` and ignores `gangs/`, so
+it never claims a member. During a rolling publish it may not honour a gang
+fence on its host; the start barrier still prevents a lone start.
+
 ## Physical and adaptive GPU admission
 
 Both current GB10 workers have one physical GPU. Their fleet shape uses the
