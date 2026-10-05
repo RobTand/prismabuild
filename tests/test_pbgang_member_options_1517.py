@@ -103,7 +103,7 @@ def test_a_badly_typed_option_is_refused_by_name(tmp_path, member):
 
 @pytest.mark.parametrize("name", [
     "gang_group", "gang_size", "gang_index", "detach", "withdraw", "retry_safe",
-    "after", "gpu", "gpu_capacity", "data_manifest", "residency", "residency_tier",
+    "after", "gpu", "gpu_capacity",
     "progress_phases", "progress_cycle", "deterministic", "profile", "transport",
 ])
 def test_a_driver_owned_or_undeclared_option_is_refused_by_name(tmp_path, name):

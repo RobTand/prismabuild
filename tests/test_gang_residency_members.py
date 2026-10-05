@@ -275,8 +275,12 @@ def test_teardown_supersedes_the_members_plan_and_leaves_the_leads_to_the_tier_l
     # The tier loop's sweep is what releases them: no live item names the
     # mover any more, so it is an orphan and its tokens go back.
     stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
-    stage_release.sweep(queue, stage_roots={TIER: str(stage)})
-    assert ledger.holder_tokens(lead) == {}
+    swept = stage_release.sweep(queue, stage_roots={TIER: str(stage)})
+    assert ledger.holder_tokens(lead) == {}, {
+        "swept": swept,
+        "wanted_owners": stage_release.live_claims(queue),
+        "plan_still_filed": residency_plan.read(queue, first) is not None,
+        "superseded": residency_plan.superseded(queue, plan) is not None}
     # The gang's fences are gone with it.
     refill = publish("after-torn-teardown", priority=-10, timeout_s=None,
                      cpu=1, gpu=0, mem_gb=1)
@@ -322,7 +326,7 @@ def test_a_planner_row_member_is_gated_like_an_explicit_one(gang_fleet,
     queue.mint_tier_capacity(TIER, {"stage_gib": 16})
     outcomes = manifest_promotion.promote_ready_manifest_rows(
         queue, tmp_path / "cas", _stage_tier(tmp_path),
-        ready=queue.ready_items())
+        ready=queue.ready_items(), limit=2)
     by_key = {outcome["action_key"]: outcome for outcome in outcomes}
     assert by_key[first]["outcome"] == "planned", by_key
     assert by_key[second]["outcome"] == "no_manifest", by_key
