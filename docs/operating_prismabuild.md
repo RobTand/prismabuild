@@ -47,7 +47,8 @@ The payload refuses an active bind mount or running captured container. Read
 `pbrun --resident-set SET_ID` declares an optional set reference for lease
 renewal. It does not require a resident copy or change execution placement.
 Phase 1 records every attempt as `served_from: "canonical"`; local mount
-injection is not present. `pbstatus.py --queue-root QUEUE --resident-sets`
+injection is not present. Readers accept `local` for forward compatibility,
+but only the Phase 2 shim writes it. `pbstatus.py --queue-root QUEUE --resident-sets`
 shows set declarations, host copy states, lease journals and capacity as JSON.
 A partial census has `complete: false` and names its unreadable records.
 

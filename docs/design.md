@@ -5972,7 +5972,10 @@ it adds neither an admission gate nor a placement preference. Phase 1 does not
 inject anything: every new claim and immutable attempt writes
 `served_from: "canonical"`, alongside its declared set (if any) and existing
 claiming host. Legacy attempts without this field stay unknown, not retroactively
-labelled canonical. Ending status exposes the recorded field.
+labelled canonical. Ending status exposes the recorded field. Readers already
+accept both `canonical` and `local` so a later Phase 2 producer cannot break an
+older reader; only the Phase 2 shim writes `local`. Phase 1 still writes only
+`canonical` and injects no local mount.
 
 `pbstatus --resident-sets` reads the immutable bodies, copies, lease journals,
 current lease verdict and measured per-host capacity/held tokens through its
