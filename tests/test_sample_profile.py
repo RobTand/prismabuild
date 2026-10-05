@@ -222,17 +222,19 @@ def test_omitting_profile_leaves_the_key_untouched(tmp_path: Path):
     assert "profile" not in first["params"]
 
 
-def test_pbrun_seals_the_flag_only_when_it_is_given(tmp_path: Path):
-    """The client seals ``profile`` only when the flag was passed.
+def test_pbrun_parse_args_accepts_a_rate_and_refuses_a_nonpositive_one():
+    """The client's parser takes ``--profile sample:HZ`` and refuses a rate
+    nothing can serve, before any submission work starts.
 
-    The mode string travels to ``params`` verbatim; without the flag the
-    param is absent, so the key stays what it always was.
+    ``--profile`` is a typed argument: pbrun's ``_profile_mode`` runs
+    ``core.parse_profile_mode`` at parse time, so a bad rate exits the
+    parser itself instead of reaching ``prepare_submission``.
     """
 
-    given = _action(tmp_path, profile="sample:10")
-    omitted = _action(tmp_path, profile=None)
-    assert given["params"]["profile"] == "sample:10"
-    assert "profile" not in omitted["params"]
+    args = pbrun.parse_args(["--profile", "sample:10", "--", "true"])
+    assert args.profile == "sample:10"
+    with pytest.raises(SystemExit):
+        pbrun.parse_args(["--profile", "sample:0", "--", "true"])
 
 
 # -- the sealed sample rate (#1494) -----------------------------------------
@@ -247,6 +249,27 @@ def test_a_sample_rate_seals_a_different_action(tmp_path: Path):
     assert len({plain["action_key"], ten["action_key"],
                 hundred["action_key"]}) == 3
     assert ten["params"]["profile"] == "sample:10"
+
+
+def test_a_bound_rate_reaches_py_spy_and_the_ending(tmp_path: Path):
+    """The sealed rate is the ``--rate`` py-spy gets, and the ``rate_hz``
+    the ending's identity reports.
+
+    Both read the bound copy, so hard-coding the 100 Hz default in either
+    ``launch_argv`` or the session identity fails here, while the registry's
+    own instance keeps the default for the next action.
+    """
+
+    registered = pb.PROFILE_BACKENDS["sample"]
+    bound_backend = registered.bind("25")
+    bound_backend._version = "py-spy 0.4.2"
+    bound_argv = bound_backend.launch_argv(
+        ["/bin/true"], profile_path=tmp_path / "p.json")
+    assert bound_argv[bound_argv.index("--rate") + 1] == "25"
+    session = pb._ProfileSession(
+        mode="sample", backend=bound_backend, directory=tmp_path / "scratch")
+    assert session.identity()["rate_hz"] == 25
+    assert registered.rate_hz == pb.PROFILE_SAMPLE_RATE_HZ
 
 
 @pytest.mark.parametrize("text", [

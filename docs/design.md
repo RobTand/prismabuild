@@ -2134,7 +2134,11 @@ matters). Rules:
   profiled arm with an unprofiled one would compare two different executions.
   `--priority` is the contrast and stays out of the key, being a hint about
   *when* the same work runs. Omitting `--profile` leaves the key what it was
-  before the flag existed. The blob itself is content-addressed like any
+  before the flag existed. `--profile sample:HZ` (whole samples per second,
+  1 to 99999) seals the rate into the action key through the mode string, so
+  two rates are two actions, while bare `sample` keeps the 100 Hz default
+  and the key it has always had. The ending reports `rate_hz` as the rate
+  the action ran at. The blob itself is content-addressed like any
   payload and referenced from the pool's ending, never from the CAS receipt,
   whose v3 key set is an immutable interpretation domain.
 - **Native Nsys does not trace Docker daemon children** — `nsys` and its
