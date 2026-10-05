@@ -55,6 +55,7 @@ except ImportError:  # Isolated -I -S execution binds the sibling owner directly
         "digest_primitives",
         str(Path(__file__).resolve().with_name("digest_primitives.py")))
     digest_primitives = _digest_util.module_from_spec(_spec)
+    sys.modules["digest_primitives"] = digest_primitives
     _spec.loader.exec_module(digest_primitives)
     from digest_primitives import (  # noqa: F401
         ActionContractError, PrismaBuildError, _canonical_bytes,
