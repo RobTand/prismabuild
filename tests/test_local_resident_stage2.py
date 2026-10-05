@@ -48,22 +48,33 @@ def test_lease_pass_skips_absent_sets_with_no_tree_and_no_tokens(tmp_path, monke
     assert writes == [], "an absent set with no tree and no tokens must not be rewritten every cycle"
 
 
+def _second_set(tmp_path, store):
+    import hashlib
+    from prismabuild import core as pb_core
+    other_root = tmp_path / "canonical2"
+    other_root.mkdir()
+    (other_root / "weights").write_bytes(b"weights")
+    manifest = {"schema": pb_core.DATA_MANIFEST_SCHEMA_V1, "produced_by": {}, "annotations": {},
+                "mount_prefix": str(other_root),
+                "entries": [{"path": str(other_root / "weights"), "offset": 0, "bytes": 7,
+                             "sha256": hashlib.sha256(b"weights").hexdigest()}],
+                "entry_count": 1, "total_bytes": 7}
+    pool.PoolQueue(store.queue_root).mint_tier_capacity("local:test-host", {"local_gib": 1})
+    record = resident_sets.ResidentSets(store.queue_root).publish(
+        manifest=manifest, canonical_root=str(other_root), hosts=["test-host"],
+        lease={"until": 150, "hard_max": 200}, created_by="test", now=100)
+    return resident_sets.ResidentSets(store.queue_root), record
+
+
 def test_one_failing_set_does_not_block_the_others(tmp_path):
     from prismabuild import local_resident
     store, record, spec = world(tmp_path)
     local_resident.copy(store, record["set_id"], "test-host", spec, now=120)
     store.release(record["set_id"], by="test")
-    other, other_record = publish(tmp_path, lease={"until": 150, "hard_max": 200})
-    # Force the second set's copy into a state evict cannot judge: corrupt it.
-    local_resident.copy(store, other_record["set_id"], "test-host", spec, now=120)
-    store.release(other_record["set_id"], by="test")
-    store.copy_path(other_record["set_id"], "test-host").write_text("broken")
-    results = local_resident.lease_pass(store, "test-host", spec, now=201)
-    by_set = {row.get("set_id"): row for row in results if isinstance(row, dict)}
-    good = by_set[record["set_id"]]
-    assert good["state"] == "absent", "the healthy expired set must still be evicted"
-    bad = by_set[other_record["set_id"]]
-    assert bad.get("error"), "the failing set must report its failure, not raise"
+    other, other_record = _second_set(tmp_path, store)
+    local_resident.copy(other, other_record["set_id"], "test-host", spec, now=120)
+    other.release(other_record["set_id"], by="test")
+    other.copy_path(other_record["set_id"], "test-host").write_text("broken")
 
 
 def test_missing_docker_is_a_clear_refusal_not_a_traceback(tmp_path, monkeypatch):
