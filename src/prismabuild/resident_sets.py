@@ -21,6 +21,7 @@ from . import core, posix_lock
 SET_SCHEMA = "prismabuild.resident_set.v1"
 COPY_SCHEMA = "prismabuild.resident_copy.v1"
 POLICY_SCHEMA = "prismabuild.local_tier_policy.v1"
+DEFAULT_RENEWAL_CEILING_S = 14 * 24 * 60 * 60
 COPY_STATES = frozenset({"absent", "copying", "resident", "evicting"})
 
 
@@ -121,10 +122,18 @@ def validate_set_manifest(manifest, canonical_root):
     return normalized
 
 
+def _renewal_ceiling(value):
+    if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
+        raise ValueError("renewal_ceiling_s must be a positive finite ceiling")
+    return value
+
+
+
 def read_policy(path):
     policy = json.loads(Path(path).read_text())
-    if not isinstance(policy, dict) or set(policy) != {"schema", "hosts"} or policy["schema"] != POLICY_SCHEMA or not isinstance(policy["hosts"], dict):
+    if not isinstance(policy, dict) or set(policy) not in ({"schema", "hosts"}, {"schema", "hosts", "renewal_ceiling_s"}) or policy["schema"] != POLICY_SCHEMA or not isinstance(policy["hosts"], dict):
         raise ValueError("invalid local_tier_policy")
+    policy["renewal_ceiling_s"] = _renewal_ceiling(policy.get("renewal_ceiling_s", DEFAULT_RENEWAL_CEILING_S))
     for host, spec in policy["hosts"].items():
         _name(host, "host")
         if not isinstance(spec, dict) or set(spec) != {"root", "maximum_gib", "floor_fraction", "docker_allowance_gib"}:
@@ -239,10 +248,13 @@ class ResidentSets:
             self._append_lease(set_id, {"event": "released", "unix": time.time() if now is None else now, "by": by})
         return self.status(set_id)
 
-    def renew(self, set_id, lease, *, by, now=None):
+    def renew(self, set_id, lease, *, by, now=None, renewal_ceiling_s=DEFAULT_RENEWAL_CEILING_S):
         now = time.time() if now is None else now
         lease = validate_lease(lease, now=now)
+        ceiling = _renewal_ceiling(renewal_ceiling_s)
+        if lease["hard_max"] > now + ceiling:
+            raise ValueError("renewed hard_max exceeds the renewal policy ceiling")
         with self.lock(set_id):
             self.read(set_id)
-            self._append_lease(set_id, {"event": "renewed", "lease": lease, "unix": now, "by": by})
+            self._append_lease(set_id, {"event": "renewed", "lease": lease, "unix": now, "by": by, "renewal_ceiling_s": ceiling})
         return self.status(set_id)

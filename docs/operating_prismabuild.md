@@ -32,6 +32,9 @@ container mounts or placement. Publication alone does not claim a copy is
 available. The versioned `local_tier_policy.json` declares host roots,
 maximum GiB, the free-space floor and Docker allowance; the shipped host
 map is empty and does not enable any Spark.
+The renewal policy has `renewal_ceiling_s` (default 1209600 seconds, 14 days).
+An explicit renewal cannot set its hard maximum beyond that interval from
+the renewal time; the hard maximum remains required.
 `publish` also queues one ordinary host-pinned copy action per host, with
 a retained host-pinned egress row. It uses the current Git checkout by default;
 `--checkout PATH` selects the checkout that supplies the movement payload.
@@ -51,9 +54,6 @@ injection is not present. Readers accept `local` for forward compatibility,
 but only the Phase 2 shim writes it. `pbstatus.py --queue-root QUEUE --resident-sets`
 shows set declarations, host copy states, lease journals and capacity as JSON.
 A partial census has `complete: false` and names its unreadable records.
-
-
-
 
 Both transports publish the same verifiable CAS results. Their placement and
 resource enforcement differ, as described below. Examples name

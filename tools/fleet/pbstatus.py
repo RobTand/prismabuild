@@ -3326,7 +3326,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("pbstatus: resident-sets read " + read["status"], file=sys.stderr)
         return EXIT_INCOMPLETE
 
-
     if args.deferred:
         # Pool-only, like --starvation: deferred submissions are pull-queue
         # records (#913).  The published generation is the repo link's.

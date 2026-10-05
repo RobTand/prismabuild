@@ -5908,7 +5908,7 @@ release, each naming the manifest digest. A lease requires either an until
 timestamp or a campaign name, and an explicit hard maximum; no forever default.
 Per-host `copies/<host>.json` records use `prismabuild.resident_copy.v1` and
 `absent`, `copying`, `resident` or `evicting` states, a local root, verification
-receipt, byte count and completion time. `pbresident publish|status|release`
+receipt, byte count and completion time. `pbresident publish|status|release|adopt`
 operates these records. `local_tier_policy.json` is published with the runtime;
 its host map is empty by default, so this change activates no local tier.
 
@@ -5941,6 +5941,10 @@ An explicit `ResidentSets.renew` appends a new bounded lease without changing
 the body. Explicit Phase 1 readers take `local_resident.pin` and release that
 token only after their last read; a crashed reader pin stays until the existing
 broker scope attestation proves stop. Phase 2 will integrate container pins.
+Explicit renewals are capped at `now + renewal_ceiling_s`, a positive finite
+policy value published in `local_tier_policy.json` (default: 14 days). The
+effective ceiling is recorded in the renewal journal; it does not replace
+the lease's required hard maximum or allow automatic renewal past it.
 
 Eviction takes the per-host flock, checks pins, durably records `evicting`,
 then renames to `.evicting` under that lock. It releases the lock before
@@ -5993,10 +5997,6 @@ current lease verdict and measured per-host capacity/held tokens through its
 existing bounded reader. Corrupt or unreadable records produce a partial view,
 never a complete empty census. No identity or provenance seal is added;
 whole-directory shape, byte digests, safe deletion and capacity remain refusals.
-
-
-
-
 
 ## Cluster-scoped storage tiers (#583)
 

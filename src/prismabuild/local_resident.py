@@ -481,12 +481,18 @@ def require_adoption_unmounted(record, source):
             raise ValueError("adoption requires removing global bind mount units before moving bytes")
     if Path(record["canonical_root"]).is_relative_to("/mnt/shared"):
         import subprocess
-        census = subprocess.run(["docker", "ps", "--quiet", "--filter", "status=running"], capture_output=True, text=True)
+        def docker(*arguments):
+            try:
+                return subprocess.run(["docker", *arguments], capture_output=True, text=True)
+            except FileNotFoundError as error:
+                raise ValueError("adoption refused: docker was not found; cannot inspect running shared-mount containers") from error
+
+        census = docker("ps", "--quiet", "--filter", "status=running")
         if census.returncode:
             raise ValueError("adoption cannot establish whether old shared-mount containers are running")
         ids = census.stdout.split()
         if ids:
-            inspected = subprocess.run(["docker", "inspect", *ids], capture_output=True, text=True)
+            inspected = docker("inspect", *ids)
             if inspected.returncode:
                 raise ValueError("adoption cannot inspect running containers")
             for container in json.loads(inspected.stdout):
