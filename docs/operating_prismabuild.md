@@ -1532,6 +1532,37 @@ creating and closing an anonymous temporary file before pytest and refuses an
 unavailable or unusable parent. The default keeps its existing fallback behavior.
 This startup check does not guarantee free space or later availability.
 
+`--basetemp root` seals a separate scratch root for pytest's own temporary
+files (#1469), so selecting real test scratch no longer moves the process
+`TMPDIR` -- and with it the torch compiler/native-cache context -- of the
+shard. The coordinator validates only the spelling: a nonempty, NUL-free path
+with no `..`; absolute for a separately qualified mounted filesystem, relative
+for scratch confined to the attempt's own materialized checkout. The worker
+derives `root/<action-key>/<attempt>/pytest` from the action's own identity
+(`PRISMABUILD_ACTION_NONCE` where the launcher provides one, a per-execution
+identity where it does not) and hands that leaf to pytest as `--basetemp`;
+pytest deletes its basetemp at startup, so the sealed root is never passed to
+it, and simultaneous shards, separate actions and separate attempts each own
+a namespace the others cannot reach. Before pytest, the worker refuses a root
+that is missing, not a directory, a symlink, or not owned by the action's
+user -- no fallback. `TMPDIR` and `--tmpdir` keep their existing meaning, no
+`PYTEST_DEBUG_TEMPROOT` is injected, and no arbitrary `--env` forwarding is
+added; xdist worker children inherit the derived basetemp and stay under the
+action root. The root stays unsupported through `--pytest-args`: the closed
+vocabulary does not grow.
+
+Nothing removes the derived `root/<action-key>/<attempt>/pytest` namespaces
+automatically. pytest deletes only the basetemp it is handed, at its own
+start. A sealed root is not PrismaBuild-admitted scratch: the attempt
+lifetime contract (#1463, refs #1360) owns declared, registered ephemeral
+roots, not a caller-provisioned `--basetemp` root, so D1 disk admission does
+not see what accumulates there. A relative root needs no extra owner -- it
+lives inside the attempt's materialized checkout and is removed with it. An
+absolute root grows outside every PB accounting path, so the caller who
+provisions ROOT owns the removal of its action namespaces; until #1360
+extends scratch lifetime to sealed client roots, provision absolute roots
+under a retention policy of your own.
+
 Every requested path must be a file or directory. A missing or invalid path
 refuses the whole submission with exit code 2 and a diagnostic before any
 shard starts; valid paths cannot hide a misspelled path by yielding a green
