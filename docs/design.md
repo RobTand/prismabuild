@@ -8045,6 +8045,10 @@ raises leaves nothing behind.
 - An unchanged queue costs one `lstat` per directory the census reads (the
   state directories, each decision directory, each consumer's fragment
   directory and each tier ledger directory), and no listing and no file read.
+  The worker and metrics censuses read admission sidecar, telemetry and
+  unreadable-holder report paths without constructing mutating host
+  ledgers: lock canonicalization belongs to mutation, not to every
+  diagnostic lookup (#1528).
 - A changed directory costs one listing and one `stat` per entry in it, and a
   read of each entry whose #761 version changed. Every entry is `stat`-ed for
   the reason the tier loop's are: records are replaced under their own names,

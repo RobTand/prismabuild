@@ -349,7 +349,8 @@ def test_a_holder_that_stays_unreadable_is_reported_every_cycle(
     queue, _dead = _shaped_queue(tmp_path)
     ledger = queue.tier_ledger(TIER)
     holder = ledger.held_dir / HOLDER_H
-    small = "s" * 64
+    # Claim admission reads immutable authority by its real hexadecimal key.
+    small = "e" * 64
     _publish_claimant(queue)
     _publish_claimant(queue, key=small, tokens=1)
     reports = []
