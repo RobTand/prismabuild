@@ -16,9 +16,12 @@ SELECTION = {"schema": "prismabuild.scratch_lifetime_selection.v1", "entries": [
     {"root_env": "CACHE_ROOT", "name": "compile", "lifetime": "persistent"}]}
 
 
-@pytest.fixture
-def lifetime(runtime, monkeypatch):
-    create, calls = runtime
+def lifetime_state(create, calls, monkeypatch):
+    """The ``lifetime`` fixture body, runnable after the spy is installed.
+
+    Installing the fake process first means no real adaptive-snapshot child
+    is ever started, so a forced publish cannot lose its lock to one (#1539).
+    """
     claim = pool.PoolQueue.claim
     monkeypatch.setattr(pool.PoolQueue, "claim", lambda self, **kw: claim(
         self, **{ "tags": [scratch.SCRATCH_LIFETIME_TAG], **kw}))
@@ -32,6 +35,12 @@ def lifetime(runtime, monkeypatch):
         "released": True, "retired": False, "settled": True,
         "tickets_pending": False, "stopped_unix": 1.0})
     return queue, item, variables, calls
+
+
+@pytest.fixture
+def lifetime(runtime, monkeypatch):
+    create, calls = runtime
+    return lifetime_state(create, calls, monkeypatch)
 
 
 def leaf(item):
@@ -205,13 +214,20 @@ def test_predecessor_late_finish_never_deletes_successor_scratch(lifetime, monke
 
 
 def test_diagnostic_publish_before_successor_registration_passes_payload_spy(
-        lifetime, monkeypatch):
+        runtime, monkeypatch):
     """The adaptive-snapshot helper is a diagnostic, not the payload (#1539).
 
     Forces the helper spawn while the successor claim is still
     unregistered: the shared payload spy must pass it through instead of
     raising ``KeyError: 'scratch_lifetime_record'``.
+
+    The fake process goes in before the first claim, so no real diagnostic
+    child is ever started and the forced publish below cannot lose the
+    publication lock to one.
     """
+    create, calls = runtime
+    process(monkeypatch)
+    lifetime = lifetime_state(create, calls, monkeypatch)
     queue, old, variables, outcome = launch(lifetime, monkeypatch, returncode=1)
     queue.finish(old["action_key"], status="failed", detail=outcome, claim_snapshot=old)
     successor = queue.claim(capacity=old["resources"], tags=[scratch.SCRATCH_LIFETIME_TAG])
