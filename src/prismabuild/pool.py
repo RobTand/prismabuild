@@ -6892,6 +6892,7 @@ class PoolQueue:
     #: is claimed by nobody and holds no tokens, so none of it may survive a
     #: requeue.  ``passes`` belongs to the aging sidecar, not to the item.
     _CLAIM_SCOPED_FIELDS = (
+        "gang_backfill", "gang_backfill_release", "gang_backfill_preemption",
         "claimed_by", "claimed_unix", "claimed_host", "reserved_on", "passes", "gpu_admission",
         "cpu_allocation", "tier_reservations", "tier_funding", "residency_verdict",
         "container_cleanup_pending", "container_cleanup_checked_unix",
@@ -19387,6 +19388,45 @@ class PoolQueue:
         arguments.pop("preempted_claim", None)
         return {"arguments": arguments, "snapshot": snapshot}
 
+    def _preempt_gang_backfill(self, ledger, record, entry, *, controller=None):
+        """Request reclamation BEFORE capacity gates; never credit future releases."""
+        from . import _gang
+        here = ledger.base.name
+        mine = _gang.elections(self, record["group"], record["size"]).get(entry["index"])
+        if mine is None or mine["host"] != here:
+            return []
+        # Timing observation must not become a correctness or identity gate.
+        with suppress(OSError, ValueError, pb.PrismaBuildError):
+            _gang.observe_backfill_releases(self, mine)
+        holders = _gang.backfill_holders(self, mine)
+        def pending():
+            return [key for key, holder in _gang.backfill_holders(self, mine).items()
+                    if self.withdrawal_covers(holder, action_key=key) is not None]
+        if not holders or not (_gang.backfill_reclaiming(self, record)
+                or _gang.sibling_readiness(
+                    self, record, entry, here, _now(), reclaimable=True)["complete"]):
+            return pending()
+        with self._preemption_locked(ledger) as acquired:
+            if not acquired:
+                return pending()
+            proofs = self._preemption_eligibility_proofs(ledger, action_key=entry["action_key"])
+            selected = None
+            with self._admission_lock(controller):
+                for key, holder in sorted(_gang.backfill_holders(self, mine).items()):
+                    proof = proofs.get(key)
+                    if (proof is not None and proof[2] and _same_claim(holder, proof[0])
+                            and self._preemption_proof_binding(holder) == proof[1]
+                            and self.withdrawal_covers(holder, action_key=key) is None
+                            and holder.get("finish_pending") is None
+                            and holder.get("container_cleanup_pending") is None):
+                        selected = key, holder
+                        break
+            if selected is not None:
+                if _gang.begin_backfill_reclaim(self, mine):
+                    self._preempt_selected_holder(*selected, action_key=entry["action_key"],
+                                                  gang_election=mine)
+        return pending()
+
     def _preempt_background_holder(
         self,
         ledger: ResourceLedger,
@@ -19395,6 +19435,7 @@ class PoolQueue:
         demand: Mapping[str, int],
         priority: int,
         controller: cpu_admission.Controller | None = None,
+        exclude_gang_election: Mapping[str, object] | None = None,
     ) -> str | None:
         """Take the box back for a denied foreground item.  Name who yielded.
 
@@ -19461,7 +19502,8 @@ class PoolQueue:
                 ledger, action_key=action_key)
             with self._admission_lock(controller):
                 selected = self._select_background_holder(
-                    ledger, action_key=action_key, wanted=wanted, proofs=proofs)
+                    ledger, action_key=action_key, wanted=wanted, proofs=proofs,
+                    exclude_gang_election=exclude_gang_election)
             if selected is None:
                 return None
             holder, record = selected
@@ -19568,6 +19610,7 @@ class PoolQueue:
         self, ledger: ResourceLedger, *, action_key: str,
         wanted: Mapping[str, int],
         proofs: Mapping[str, tuple[Mapping[str, object], bytes, bool]] | None = None,
+        exclude_gang_election: Mapping[str, object] | None = None,
     ) -> tuple[str, dict[str, object]] | None:
         """Read the current gap and pending releases under host admission.
 
@@ -19610,6 +19653,10 @@ class PoolQueue:
                 for kind, count in tokens.items():
                     pending[kind] = pending.get(kind, 0) + count
                 continue
+            if exclude_gang_election is not None:
+                from . import _gang
+                if _gang.backfill_matches(record, exclude_gang_election):
+                    continue
             try:
                 holder_priority = int(record.get("priority", 0))
                 claimed_unix = float(record.get("claimed_unix") or 0.0)
@@ -19645,6 +19692,7 @@ class PoolQueue:
 
     def _preempt_selected_holder(
         self, holder: str, record: Mapping[str, object], *, action_key: str,
+        gang_election: Mapping[str, object] | None = None,
     ) -> str | None:
         """Complete one handoff outside admission, rechecking exact ownership."""
         # Keep cancellation and replacement publication in one transition.
@@ -19667,6 +19715,12 @@ class PoolQueue:
                     by=f"prismabuild admission on {socket.gethostname()}",
                     preempted_by=action_key,
                     expected_claim=record,
+                    **({"gang_backfill_preemption": {
+                        "election": dict(gang_election), "holder": holder,
+                        "published_unix": record["published_unix"],
+                        "generation": self.attempt_generation(record),
+                        "requested_unix": _now(), "tokens_returned_unix": None,
+                    }} if gang_election is not None else {}),
                 )
             except PoolContractError:
                 # The holder concluded, or its reservations contradict each other,
@@ -20629,6 +20683,17 @@ class PoolQueue:
                                     KeyError, TypeError, ValueError) as exc:
                                 self.record_denial(item, "gang_contract_invalid", {"error": str(exc)})
                                 continue
+                        gang_backfill = []
+                        backfill_binding = None
+                        backfill_eligible = None
+                        if gang_record is not None:
+                            pending_backfill = self._preempt_gang_backfill(
+                                ledger, gang_record, gang_entry, controller=host_gate)
+                            if pending_backfill:
+                                self.record_denial(item, "gang_waiting_for_backfill_release", {
+                                    "group": gang["group"], "holders": pending_backfill,
+                                    "tokens_returned_unix": None})
+                                continue
                         from . import _measurement_reservation as measurement_reservation
                         census_blocked = None
                         census_guard = measurement_reservation.admission_census(self, ledger, host_gate)
@@ -20659,8 +20724,32 @@ class PoolQueue:
                                 continue
                             gang_blocked = (None if serves_incumbent else
                                             measurement_reservation.gang_blocking(
-                                                census, item, host=socket.gethostname(),
+                                                census, item, host=ledger.base.name,
                                                 group=gang["group"] if gang is not None else None))
+                            while gang_blocked is not None:
+                                from . import _gang
+                                try:
+                                    if backfill_eligible is None:
+                                        backfill_eligible = (item.get("priority") == -10
+                                                             and item.get("gang") is None
+                                                             and _gang.backfill_enabled())
+                                        if backfill_eligible:
+                                            backfill_eligible = self._preemption_eligible(item)
+                                            if backfill_eligible:
+                                                backfill_binding = self._preemption_proof_binding(item)
+                                    allowed = (backfill_eligible
+                                               and _gang.backfill_allowed(self, gang_blocked, _now()))
+                                except (_gang.GangContractError, OSError, pb.PrismaBuildError,
+                                        KeyError, TypeError, ValueError):
+                                    allowed = False
+                                if not allowed:
+                                    break
+                                gang_backfill.append(gang_blocked)
+                                remaining = dict(census, gang_elections={
+                                    k: e for k, e in census["gang_elections"].items()
+                                    if e not in gang_backfill})
+                                gang_blocked = measurement_reservation.gang_blocking(
+                                    remaining, item, host=ledger.base.name, group=None)
                             if gang_blocked is not None:
                                 self.record_denial(item, "deferred_for_gang_reservation", {
                                     "withheld_for": gang_blocked["action_key"],
@@ -20966,10 +21055,16 @@ class PoolQueue:
                                 # Selection reacquires admission, while the separate
                                 # handoff lock spans withdrawal/requeue as well. A
                                 # stalled handoff cannot stop ordinary fitting work.
+                                exclusion = None
+                                if gang_record is not None and not _gang.backfill_reclaiming(self, gang_record):
+                                    exclusion = _gang.elections(
+                                        self, gang["group"], gang["size"]).get(gang["index"])
                                 preempted = self._preempt_background_holder(
                                     ledger, action_key=key, demand=asked,
                                     priority=int(item.get("priority", 0)),
-                                    controller=controller) is not None
+                                    controller=controller,
+                                    **({"exclude_gang_election": exclusion}
+                                       if exclusion is not None else {})) is not None
                             withholding = bool(verdict["eligible"])
                             age = self.withhold_age(key) if withholding else None
                             evidence = {
@@ -21221,6 +21316,8 @@ class PoolQueue:
                             if moved.get("container_images") else None)
                     class_refused = class_verdict is not None and not class_verdict["container_work_eligible"]
                     if (class_refused
+                            or (gang_backfill and (moved.get("priority") != -10
+                                or self._preemption_proof_binding(moved) != backfill_binding))
                             or not self._placement_matches(moved, tags=tagset, has_gpu=has_gpu)
                             or self.demand_of(moved) != sealed_demand
                             or (scratch_intent is not None and (
@@ -21467,6 +21564,9 @@ class PoolQueue:
                 # reason; the record this method returns is the last place that
                 # still did not.
                 claimed = dict(moved)
+                claimed.pop("gang_backfill", None)
+                if gang_backfill:
+                    claimed["gang_backfill"] = gang_backfill
                 claimed.pop("container_class_verdict", None)
                 if class_verdict is not None:
                     claimed["container_class_verdict"] = class_verdict
@@ -24422,6 +24522,19 @@ class PoolQueue:
                     return dst
                 self.lease_path(action_key).unlink(missing_ok=True)
                 self._release_reservation(action_key, host=holder)
+                if isinstance(decision.get("gang_backfill_preemption"), Mapping):
+                    from . import _gang
+                    timing = {**decision["gang_backfill_preemption"], "tokens_returned_unix": _now()}
+                    filed["gang_backfill_release"] = timing
+                    # The decision stays immutable; the worker's conclusion
+                    # records when its exact released reservation came back.
+                    with suppress(OSError, ValueError, pb.PrismaBuildError):
+                        _write_json_atomic(dst if current else archive, filed)
+                    election = timing["election"]
+                    with self._transition_locked(election["action_key"], blocking=False) as acquired:
+                        if acquired:
+                            with suppress(OSError, ValueError, pb.PrismaBuildError):
+                                _gang.note_backfill_preemption(self, election, timing)
                 tombstone.unlink(missing_ok=True)
                 return dst
         if record is None:
@@ -25604,6 +25717,7 @@ class PoolQueue:
         preempted_by: str | None = None,
         expected_claim: Mapping[str, object] | None = None,
         membership_handoff: Mapping[str, object] | None = None,
+        gang_backfill_preemption: Mapping[str, object] | None = None,
         signal_child: bool = True,
     ) -> dict[str, object]:
         """Cancel one generation; its owner concludes any claimed attempt.
@@ -25894,6 +26008,12 @@ class PoolQueue:
             )
             if preempted_by is not None:
                 filed["preempted_by"] = str(preempted_by)
+            if gang_backfill_preemption is not None:
+                from . import _gang
+                filed["gang_backfill_preemption"] = dict(gang_backfill_preemption)
+                with suppress(OSError, ValueError, pb.PrismaBuildError):
+                    _gang.note_backfill_preemption(
+                        self, gang_backfill_preemption["election"], gang_backfill_preemption)
             if handoff_proof is not None:
                 # Explicit durable handoff identity: persisted only after
                 # the proof above, read back by the tier-loop window

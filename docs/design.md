@@ -4464,8 +4464,95 @@ Per member host, inside the ordinary claim pass:
    in its bounded child, and `gang_blocking` denies strictly lower-priority rows
    on that host (`deferred_for_gang_reservation`), with the same rule and the same
    incumbent-dependent exemption as a #1419/#1504 measurement election. Running
-   work drains; no token, CPU/GPU, isolation or foreign-load gate is waived. One
-   member per host; the no-clobber election settles a race between matching hosts.
+   work drains; no token, CPU/GPU, isolation or foreign-load gate is waived.
+   Fence checks consistently identify this host by its resource-ledger name.
+   One member per host; the no-clobber election settles a race between matching hosts.
+   A fresh-ready member may lend its elected host while another member waits:
+   only priority -10 generation rows satisfying the existing restartability
+   proof (explicit retry-safe permission, valid interruption lineage, and an
+   unused launch after interruption) bypass this gang fence. They still pass
+   every ordinary gate. Priority 0 and above, other negative priorities,
+   measurements and rows without that proof remain fenced when strictly below
+   the gang. The claimed row records the elections it borrowed as
+   `gang_backfill`; the metadata is claim-scoped and is removed on retry.
+   Restartability is evaluated lazily, once per candidate, only when a live
+   gang fence applies and the backfill policy is enabled. Unfenced ordinary
+   priority -10 admission does not need a preemption proof read.
+
+   `PRISMABUILD_GANG_BACKFILL=0` in the worker environment restores the strict
+   fence on that host; set it on all workers for a fleet-wide rollback. The
+   policy is on by default (any value other than exactly 0). Turning it off
+   prevents new loans; already admitted backfill is still reclaimed safely.
+
+   Reclamation runs **before the member's CPU, GPU and token gates**. When
+   siblings are fresh-ready or claimed on distinct hosts, the member requests
+   ordinary exact-attempt withdrawal/requeue of its marked backfill, one holder
+   per pass. For gangs with backfill on several hosts, a sibling's marked
+   backfill also triggers reclamation: this is advisory permission to stop
+   restartable work, NOT readiness or permission to commit. It prevents a
+   cycle in which all ready marks expire while backfill holds the tokens.
+   The first reclamation sets the election's monotone
+   `backfill_reclaiming: true` phase. Any such election closes new loans for
+   the whole gang and continues reclamation even if ready marks later expire.
+   Returned capacity cannot be re-lent to the just-requeued background row
+   while the peer gets to its next claim pass. This is scheduler state,
+   separate from the timing observations below; neither grants capacity or
+   changes commit readiness.
+   Restartability and the exact live claim are rechecked by the existing
+   preemption mechanism. No projected capacity is spent: tokens remain held
+   until the owner proves scope/container cleanup and returns them. All
+   ordinary gates then run again, and only actual ready marks permit commit.
+   While a requested holder retains tokens, the member reports the distinct
+   denial `gang_waiting_for_backfill_release`, even if peer readiness has
+   since expired. A torn-down gang continues to release its fence normally.
+
+   **Ordinary background preemption still applies to gang members.** A
+   foreground member refused by its token gate may stop an existing
+   restartable negative-priority holder whose actual token return closes the
+   gap, including work admitted before the election with no `gang_backfill`
+   mark. This does not wait for sibling readiness; two hosts each blocked by
+   unmarked work can therefore drain independently. Before the reclamation
+   phase, selection excludes only live holders marked as loans from THIS
+   member's election. It does not disable ordinary preemption for the whole
+   gang. Once reclamation starts, that exclusion ends. Restartability,
+   remaining attempts, pending-release accounting and real cleanup retain
+   their existing authority.
+
+   **Release telemetry and its limit.** The holder's immutable withdrawal
+   records `gang_backfill_preemption.requested_unix` and
+   `tokens_returned_unix: null` (not yet). After actual token return, the
+   worker's withdrawal conclusion (including `withdrawn/superseded/` for a
+   requeue) adds `gang_backfill_release.tokens_returned_unix`. The election's
+   `backfill_preemptions` records the same request/release pair. The finisher
+   updates the election nonblocking; the next member pass catches a missed
+   update from the exact withdrawal conclusion. All election update paths
+   share the member's nonblocking transition exclusion; archive reads stay
+   outside it and a final merge re-reads the current election. A delayed
+   request cannot erase a recorded token return or replace its original
+   request time. Busy observation writers defer, never wait. The monotone
+   reclamation phase is persisted before requesting the holder's withdrawal.
+   Timing fields remain observations, never gates. Their difference measures
+   request-to-token-return, including
+   stopping and cleanup, not just signal delivery.
+
+   There is **no finite code-derived worst-case stop-to-release bound** on
+   GB10: failed or unproved Docker/GPU/scope cleanup retains tokens indefinitely
+   (the existing cleanup contract), and a shared-filesystem syscall can stall.
+   The process-group ladder spends up to `WITHDRAW_GRACE_S` (5 s) on its two
+   signal waits; the broker socket has a 10 s client timeout and writes
+   `cgroup.freeze`/`cgroup.kill`. Neither proves GPU memory or container
+   settlement. These are not a release bound and cannot be added together to
+   certify one. Fresh-ready expires after 30 s; it is refreshed only after
+   real gates pass. Once a peer commits, the unchanged default 120 s start
+   barrier tears down rather than launching an incomplete gang if release
+   cannot complete in time. Before any commit, waiting can be indefinite.
+   A live GB10 qualification must measure the new request/release pairs with
+   representative container/CUDA holders, observe broker scope emptiness,
+   Docker settlement and returned GPU/host-memory capacity, and include claim
+   polling and delayed/failed cleanup. Private-queue tests establish the
+   pre-gate trigger and recovery after an explicit release, not that live
+   120 s latency claim.
+
 2. **Ready.** When the member passes every ordinary gate, it writes
    `ready-<i>.json`. Unless every sibling is fresh-ready (`READY_FRESH_S`) or
    claimed on a distinct host, it abandons the acquisition and is denied
