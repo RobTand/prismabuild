@@ -4400,6 +4400,17 @@ attempt and is never `retry_safe`: a retried or preempted member could start
 beside siblings that are already running. `pbgang.py` seals and publishes every
 member (`pbrun --detach --gang-*`) and only then files the immutable group record
 `pb-queue/gangs/<group>.json`. A member is never claimable without that record.
+A member carries the existing `pbrun` options a measurement window declares (GPU
+memory subset, exclusive and measurement class, host class, container images,
+priority reason, and a declared single attempt): each manifest member field is one
+`pbrun` flag, forwarded as given, and `pbrun` judges every value as it does for a
+plain submission. Any other key is refused by name. The driver's own flags, the tag
+and the priority and `retry_safe` are not member fields, and options a window does
+not declare (data manifest, residency) are not carried; `max_attempts` may be
+declared only as 1. A manifest may be a bare list of members; a member names its host
+with `tag` or `tags` and may give `demand` and `env` as mappings. `--cwd` is the
+default checkout every member snapshots; a member's own `cwd` overrides it, and
+`--cwd` is then optional when every member names one.
 The runtime publisher carries `pbgang.py` in `FLEET_SCRIPTS`, under both
 `tools/pbgang.py` and `tools/fleet/pbgang.py`, so operators can submit a gang
 from the published generation without a source checkout.
