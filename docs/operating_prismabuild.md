@@ -1535,10 +1535,11 @@ is absolute, since a remote directory need not exist on the submitting box.
 The path is sealed as one literal `TMPDIR` environment argument. Each pytest
 shard keeps its own temporary children and outcome record. This is configurable
 scratch placement, not proof of direct-I/O support or of an earlier disk-write
-failure's cause. With an explicit option, the child checks the directory by
-creating and closing an anonymous temporary file before pytest and refuses an
-unavailable or unusable parent. The default keeps its existing fallback behavior.
-This startup check does not guarantee free space or later availability.
+failure's cause. With an explicit option, the child checks free inodes against
+the five percent filesystem floor before creating and closing an anonymous
+temporary file. It refuses low inode headroom or an unavailable or unusable
+parent by name. The default keeps its existing fallback behavior. This startup
+check does not guarantee later byte or inode availability.
 
 A passing test's `tmp_path` directory is removed as soon as the test ends
 (`tmp_path_retention_policy = "failed"` under `[tool.pytest.ini_options]` in
@@ -1742,6 +1743,10 @@ counts do not establish zero execution, and `ran=false` is not a claim that no
 case ran. Such a shard remains non-green even if its process returned zero.
 Retained logs can identify individual observed failures, but cannot certify an
 unreported final population.
+When retained output names `ENOSPC`, `[Errno 28]` or `No space left on device`,
+the missing-summary report names `STORAGE EXHAUSTED (ENOSPC: No space left on
+device)` instead of only `NO PYTEST SUMMARY`. Coverage still remains unknown;
+the log alone cannot distinguish exhausted bytes from exhausted inodes.
 
 ### Choose the project's test environment
 

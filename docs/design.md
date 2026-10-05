@@ -6011,6 +6011,17 @@ locked acquisition. Bindings, stable identity, refresh, used-path checks,
 coordinator growth and the bootstrap order are in
 [filesystem_floor.md](filesystem_floor.md).
 
+The inode term (#1535) also requires `f_favail >= ceil(f_files / 20)`,
+with no fixed inode floor when the filesystem reports `f_files == 0`.
+The existing disk-room helper now lives in `filesystem_capacity.py` and
+supplies this same five percent predicate to the floor sampler, supervisor
+spool offers, output reservations, RAM-tier admission and worker-side
+`pbtest` scratch preflight. Published floor samples include both inode
+counters and the refusal; a byte-only sample refuses until refreshed.
+The floor's `off`/`observe`/`enforce` modes are unchanged. Explicit
+`pbtest --tmpdir` and `--basetemp` roots refuse low inode headroom before
+creating their files, independently of the optional floor mode.
+
 Locking is separate from census/cache purpose: only the explicit
 `tier_census=True` factory selects tier grow/reclaim refusal and the existing
 tier directory-name cache. Host legacy readers stay fresh with their prior

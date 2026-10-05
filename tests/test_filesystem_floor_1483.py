@@ -115,6 +115,21 @@ def test_identify_resolves_symlinks_and_absent_paths(tmp_path):
     assert absent["path"] == str(tmp_path.resolve())
 
 
+@pytest.mark.parametrize("free_inodes", [0, 49, 50])
+def test_used_path_checks_inode_floor_with_free_bytes(tmp_path, monkeypatch, free_inodes):
+    sampled = os.statvfs_result((4096, 4096, 1000, 900, 900,
+                                1000, free_inodes, free_inodes, 0, 255))
+    monkeypatch.setattr(ff.os, "fstatvfs", lambda fd: sampled)
+    verdicts = ff.check_paths(tmp_path / "queue", [tmp_path])
+    assert len(verdicts) == 1
+    assert verdicts[0]["allowed"] is (free_inodes >= 50), verdicts
+    assert verdicts[0]["free_inodes"] == free_inodes
+    assert verdicts[0]["floor_inodes"] == 50
+    if free_inodes < 50:
+        assert verdicts[0]["reason"] == "below_inode_floor"
+        assert "inodes" in ff.describe_verdict(verdicts[0])
+
+
 # -- off is off ---------------------------------------------------------------------
 
 def test_off_reads_nothing_and_changes_nothing(tmp_path, monkeypatch):

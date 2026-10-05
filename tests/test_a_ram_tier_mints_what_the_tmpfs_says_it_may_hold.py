@@ -24,6 +24,9 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import prismabuild.storage_tiers as storage_tiers  # noqa: E402
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
+import tier_loop  # noqa: E402
+
 GIB = storage_tiers.GIB
 HOST = "dl380g10"
 #: 294 GiB, as /proc/meminfo reports it on the storage box.
@@ -115,6 +118,31 @@ def _ram_tier(tmp_path: Path, *, mount: Path | None = None,
         memory_numa_root=str(tmp_path / "memory_nodes"),
         rows_held_gib=rows_held_gib)
     return tiers.get(storage_tiers.tier_id("ram", HOST))
+
+
+def test_ram_mint_resample_refuses_inode_exhaustion_with_free_bytes(tmp_path, monkeypatch):
+    sampled = os.statvfs_result((4096, 4096, 1000, 900, 900, 1000, 0, 0, 0, 255))
+    monkeypatch.setattr(os, "statvfs", lambda path: sampled)
+    read = tier_loop._supply_reader_for(
+        {"tier": "ram", "mountpoint": str(tmp_path)}, "ram:test", fallback_tokens=1)
+    try:
+        read()
+    except OSError as exc:
+        assert exc.errno == 28
+        assert "inodes" in str(exc)
+    else:
+        raise AssertionError("RAM mint ignored exhausted inode headroom")
+
+
+def test_ram_tier_refuses_inode_exhaustion_with_free_bytes(tmp_path):
+    mount = _mount(tmp_path)
+    sampled = os.statvfs_result((4096, 4096, 256 * GIB // 4096,
+                                200 * GIB // 4096, 200 * GIB // 4096,
+                                1000, 0, 0, 0, 255))
+    tier = _ram_tier(tmp_path, mount=mount, statvfs=lambda path: sampled)
+    assert tier["ram_admission"]["admissible"] is False
+    assert tier["ram_admission"]["reason"] == "below_inode_floor"
+    assert storage_tiers.tier_tokens(tier) == {}
 
 
 def test_capacity_is_what_the_mount_may_still_hold(tmp_path: Path) -> None:
