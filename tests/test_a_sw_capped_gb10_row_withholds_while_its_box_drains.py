@@ -107,9 +107,12 @@ def box(tmp_path: Path, monkeypatch):
     def publish(name: str, resources: dict[str, int]) -> str:
         clock[0] += 0.001
         key = _key(name)
+        # Test device/occupancy policy, not #1526's portable-CPU deferral.
+        tags = [] if resources.get("gpu") else [pool.socket.gethostname()]
         queue.publish(action_key=key, cas_root=str(tmp_path / "cas"),
                       checkout_root=str(tmp_path), worker_script="worker.py",
-                      resources=resources, needs_gpu=bool(resources.get("gpu")))
+                      resources=resources, needs_gpu=bool(resources.get("gpu")),
+                      tags=tags)
         return key
 
     def tick(seconds: float = 2.0) -> None:
@@ -128,7 +131,8 @@ def box(tmp_path: Path, monkeypatch):
 
     def claim():
         return _key_of(queue.claim(capacity=capacity, cpu_tiers=tiers,
-                                   adaptive_cpu=True, has_gpu=True))
+                                   adaptive_cpu=True, has_gpu=True,
+                                   tags=[pool.socket.gethostname()]))
 
     return queue, clock, sample, publish, tick, claim
 
@@ -181,7 +185,7 @@ def test_a_row_refused_for_broker_jobs_withholds_the_whole_box(box) -> None:
 def test_a_row_refused_for_a_gpu_holder_withholds_gpu_rows_then_the_box(box) -> None:
     """The incident's arrival: a GPU holder, then the CPU shards beside it.
 
-    Holders present take the GPU drain, so CPU-only rows still fill the box.
+    Holders present take the GPU drain, so host-pinned CPU rows still fill the box.
     Once the GPU holder leaves, those rows are the broker jobs in the way, and
     the next refusal takes the whole-box drain.
     """
@@ -196,7 +200,7 @@ def test_a_row_refused_for_a_gpu_holder_withholds_gpu_rows_then_the_box(box) -> 
     cpu_row = publish("cpu-test-shard", SMALL_CPU)
     tick()
 
-    assert claim() == cpu_row, "CPU-only work stopped filling the box behind a GPU drain"
+    assert claim() == cpu_row, "Pinned CPU-only work stopped filling the box behind a GPU drain"
     denial = _denial(queue, big)
     assert denial["reason"] == "adaptive_gpu_refused_withholding", (
         "a row whose only unmet SW-cap condition is the GPU holder was overtaken (#1125)")

@@ -69,6 +69,14 @@ def rig(tmp_path, monkeypatch):
     return queue
 
 
+def _pin_sibling(queue):
+    """Test host-lock independence, not #1526's portable-CPU placement rule."""
+    path = queue.item_path(pool.READY, KEYS[1])
+    item = json.loads(path.read_text())
+    item['tags'] = [pool.socket.gethostname()]
+    pool._write_json_atomic(path, item)
+
+
 def _claim(queue):
     return queue.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True)
 
@@ -417,10 +425,12 @@ def test_a_busy_admission_lock_after_the_rename_cannot_undo_the_claim(
 def test_sibling_claims_while_refusal_accounting_stalls(rig, monkeypatch, refusal, operation):
     """An unfunded candidate's aging write must not hold host admission (#266)."""
     capacity = dict(CAPACITY, gpu=1)
+    _pin_sibling(rig)
 
     def claim(queue):
         return queue.claim(capacity=capacity, cpu_tiers=TIERS,
-                           adaptive_cpu=True, has_gpu=True)
+                           adaptive_cpu=True, has_gpu=True,
+                           tags=[pool.socket.gethostname()])
 
     if refusal == 'tokens':
         # A real committed holder leaves enough for B, but not A's memory.
@@ -518,6 +528,7 @@ def test_sibling_claims_while_action_request_read_stalls(rig, monkeypatch, gpu, 
     """Sealed request reads need no host exclusion, unlike capacity decisions."""
     monkeypatch.setattr(pool.gpu_admission.Controller, 'sample', lambda self: {})
     capacity = dict(CAPACITY, gpu=1) if gpu else CAPACITY
+    _pin_sibling(rig)
     if gpu:
         path = rig.item_path(pool.READY, KEYS[0])
         item = json.loads(path.read_text())
@@ -541,7 +552,8 @@ def test_sibling_claims_while_action_request_read_stalls(rig, monkeypatch, gpu, 
 
     def claim(queue):
         return queue.claim(capacity=capacity, cpu_tiers=TIERS,
-                           adaptive_cpu=True, has_gpu=gpu)
+                           adaptive_cpu=True, has_gpu=gpu,
+                           tags=[pool.socket.gethostname()])
 
     def run():
         try:

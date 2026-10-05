@@ -94,9 +94,11 @@ def test_both_hosts_busy_fences_each_host_and_starts_nothing(gang_fleet):
     elections = _gang.elections(queue, group, 2)
     assert {index: election["host"] for index, election in elections.items()} == {
         0: "sparklina", 1: "sparky"}
-    # Each host is fenced against new lower-priority work; running work drains.
+    # A gang fences even host-pinned CPU work, independently of #1526's
+    # portable-CPU deferral. Running work drains.
     for host in HOSTS:
-        refill = publish(f"refill-{host}", priority=-10, timeout_s=None, cpu=1, gpu=0, mem_gb=1)
+        refill = publish(f"refill-{host}", priority=-10, timeout_s=None,
+                         cpu=1, gpu=0, mem_gb=1, tags=[host])
         assert gclaim(host) is None, f"{host} admitted lower-priority work past the gang fence"
         # The member's own token-shortage withhold may hold the box first.
         assert denial(refill, host)["reason"] in (
@@ -123,8 +125,9 @@ def test_the_host_that_frees_first_does_not_start_its_member_alone(gang_fleet):
     # Ready holds nothing: the freed host carries no member tokens.
     assert queue.ledger("sparklina").held_keys() == []
     assert queue.item_path(pool.READY, first).exists()
-    # ... and the fence still keeps lower-priority work off the freed host.
-    refill = publish("refill-freed", priority=-10, timeout_s=None, cpu=1, gpu=0, mem_gb=1)
+    # The gang fence also holds back host-pinned CPU work on the freed host.
+    refill = publish("refill-freed", priority=-10, timeout_s=None,
+                     cpu=1, gpu=0, mem_gb=1, tags=["sparklina"])
     assert gclaim("sparklina") is None
     assert denial(refill, "sparklina")["reason"] == "deferred_for_gang_reservation"
 

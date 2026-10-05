@@ -4730,6 +4730,40 @@ could not run; the only effect is a bounded wait that a better placement may
 or may not win. With no alternative, a stale reading on either side, or no
 GPU-power evidence, there is no preference at all.
 
+Ahead of both placement preferences, a GPU host leaves portable CPU-only rows
+READY while any READY GPU row is eligible for that host (#1526). Eligibility
+uses the existing placement matcher (tags, interpreter, image and dependency
+capabilities) and the GPU row's host reservation demand against this host's
+total capacity, using the same demand split and physical GPU normalization as
+claim admission. The local offer's capability evidence and the claimant's image
+inventory are reused; this check probes no paths and reserves nothing. A row
+for another tag or host class, a row without the required local capabilities,
+a malformed demand, or a demand this host cannot fit does not hold CPU work back.
+This rule crosses priority bands and has no timeout: aging or a higher CPU
+priority cannot spend the GPU host's CPUs or memory ahead of eligible GPU work.
+Once no such GPU row is READY, ordinary CPU placement resumes.
+
+An eligible-fit GPU row stops holding CPU work back when this host's latest
+verdict for that exact publication and attempt says pool jobs draining will
+not make it runnable here. The refusal path's existing drain classifier
+records `drain_resolves: false` in the denial evidence; foreign GPU processes
+(including exempt vLLM serving), invalid/stale GPU samples and device-state
+refusals therefore do not starve CPU work. A gang member elected elsewhere
+or a measurement reserved on another host likewise has no CPU veto here.
+Missing or unrelated verdicts leave the original protection in place, and a
+pool-holder drain still protects the GPU row. This exception shares the
+existing lock-free host-denial snapshot used for carried withholds, adds no
+lock or timeout, and grants no GPU or CPU admission credit.
+
+A CPU row whose sealed tags include this host's hostname is pinned, whether
+by `--tag sparky`, `--tag sparklina`, or `--here`, and is exempt. Hosts without
+a GPU are also unchanged. The rule is evaluated once from the existing READY
+snapshot before candidate transition locks, and a deferred CPU row records
+`deferred_for_ready_gpu` without a pass or reservation. It adds no census,
+transition, or host-admission lock and does not change GPU admission, GPU row
+order, measurement election, or running claims. The READY snapshot remains
+advisory; the existing per-key transition and claim rename still decide ownership.
+
 CPU-only work on a GPU host is governed by a placement rule ahead of that
 preference, and the rule has no timer (#1262). A GPU host's CPUs and memory
 feed its GPU; CPU-only rows it admits leave GPU rows arriving behind them to be
@@ -4741,11 +4775,13 @@ that host already evaluated the row and did not take it: its published latest
 denial for the generation (`reservations/<host>/adaptive/claim-denials.json`),
 any reason but `transition_busy`, or, when that file is at its record cap, an
 entry of that host in the row's reason ring. The GPU host records
-`deferred_for_cpu_only_host`, ages nothing, and claims the row as before once
-no such host remains, so CPU-only work still overflows onto GPU hosts when the
-CPU host is full or refuses. A host without a GPU never yields, so no two hosts
-wait on each other, and a row whose tags exclude every host without a GPU is
-unaffected. Remote reads are made once per host per claim pass and each yield
+`deferred_for_cpu_only_host`, ages nothing, and this CPU-host deferral ends once
+no such host remains. CPU-only work still overflows onto GPU hosts when the CPU
+host is full or refuses, but portable rows must also pass the eligible-READY-GPU
+rule above. A host without a GPU never yields, so no two hosts wait on each
+other. Tags excluding every host without a GPU bypass only this CPU-host
+deferral, not the READY-GPU rule. Remote reads are made once per host per claim
+pass and each yield
 charges that view, so a pass never leaves a host more rows than it fits.
 
 It is not a thermal control and nothing here measures temperature or
