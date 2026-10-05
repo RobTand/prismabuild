@@ -6925,7 +6925,7 @@ within10% and an hour without pswpout growth remain owed; full #1032 is open.
 Related inventory repairs (Refs #1182/#1386) publish the existing nested scratch
 recorder and register exact, genuinely different helper contracts without growing
 shrink baselines. Scratch qualification still binds the exact
-`tools/fleet/local_scratch_profile.py` command and its three source files. The
+`tools/fleet/local_scratch_profile.py` command and its four source files. The
 publisher's flat copy supplies inventory bytes, not an executable recorder alias;
 no producer bytes, command identity or qualification rules change.
 
@@ -15945,9 +15945,10 @@ operator configuration and CAS boundary; it is not cryptographic CPython
 provenance or authentication of arbitrary Python-like binaries/hostile CAS.
 Legacy stdout-only records and missing inode/envelope facts refuse; no silent
 migration or manufactured defaults. It uses the existing CAS checkout materializer and
-closure verifier to prove the executed snapshot's three producer files
+closure verifier to prove the executed snapshot's four producer files
 (`tools/fleet/local_scratch_profile.py`, `src/prismabuild/local_scratch.py`,
-`src/prismabuild/core.py`) match the installed producer and verifies the derived
+`src/prismabuild/core.py`, `src/prismabuild/digest_primitives.py`) match the
+installed producer and verifies the derived
 owner/marker against original sealed checkout identity. The isolated -I -S
 producer depends only on stdlib and those verified files. Normal package mode
 imports Core's recipes; isolated mode loads only sibling `core.py` derived from
@@ -15957,7 +15958,7 @@ BODY+LF writer without loading Core again. Core owns raw source-byte SHA-256,
 the fixed SHAKE-256 block recipe (positive integer length only), and positive
 finite validation; the scratch predicate discards normalization so accepted
 int/float observations retain their original types. Core's self-source capture
-runs at startup, outside I/O timing. All three installed/materialized file
+runs at startup, outside I/O timing. All four installed/materialized file
 identities remain in verification and its cache key. This recipe Core identity
 is not the receipt's worker-launcher Core identity, and does not require
 producer/consumer interpreter-byte equality. Full-Core binding means even

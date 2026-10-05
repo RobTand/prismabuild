@@ -42,12 +42,26 @@ from typing import NoReturn
 import uuid
 import zlib
 
-from . import digest_primitives
-from .digest_primitives import (
-    ActionContractError, PrismaBuildError, _canonical_bytes,
-    _sorted_json_bytes, _sorted_lf_bytes, canonical_sha256, raw_sha256,
-    stream_sha256,
-)
+try:
+    from . import digest_primitives
+    from .digest_primitives import (
+        ActionContractError, PrismaBuildError, _canonical_bytes,
+        _sorted_json_bytes, _sorted_lf_bytes, canonical_sha256, raw_sha256,
+        stream_sha256,
+    )
+except ImportError:  # Isolated -I -S execution binds the sibling owner directly.
+    import importlib.util as _digest_util
+    _spec = _digest_util.spec_from_file_location(
+        "digest_primitives",
+        str(Path(__file__).resolve().with_name("digest_primitives.py")))
+    digest_primitives = _digest_util.module_from_spec(_spec)
+    _spec.loader.exec_module(digest_primitives)
+    from digest_primitives import (  # noqa: F401
+        ActionContractError, PrismaBuildError, _canonical_bytes,
+        _sorted_json_bytes, _sorted_lf_bytes, canonical_sha256, raw_sha256,
+        stream_sha256,
+    )
+    del _digest_util, _spec
 
 ACTION_SCHEMA_V1 = "prismaquant.prismabuild.action.v1"
 ACTION_SCHEMA_V2 = "prismaquant.prismabuild.action.v2"

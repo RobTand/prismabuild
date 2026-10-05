@@ -1001,8 +1001,8 @@ def shard_entry(python: str, checkout: Path, *, tmpdir: str | None = None,
     """
 
     here = Path(__file__)
-    sources = {"prismabuild.digest_primitives": (
-                   RUNTIME_ROOT / "src" / "prismabuild" / "digest_primitives.py").read_text(),
+    sources = {"prismabuild.digest_primitives":
+                   Path(core.digest_primitives.__file__).read_bytes().decode("utf-8"),
                "pbtest_outcomes": here.with_name("pbtest_outcomes.py").read_text(),
                "pbtest_collection": here.with_name("pbtest_collection.py").read_text()}
     if trace:

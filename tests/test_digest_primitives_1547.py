@@ -140,6 +140,22 @@ def test_trace_long_node_digest_and_bytes_match_main(monkeypatch):
     assert expected in lines
 
 
+def test_shipped_owner_bytes_equal_the_loaded_package_module():
+    pbtest = fleet_module("pbtest")
+    from pathlib import Path as _Path
+    import ast as _ast
+    entry = pbtest.shard_entry(sys.executable, _Path("."), collection=False)
+    program = entry[-1]
+    tree = _ast.parse(program, mode="exec")
+    sources = next(node.value for node in tree.body
+                   if isinstance(node, ast.Assign) and node.targets[0].id == "SOURCES")
+    from ast import literal_eval
+    shipped = literal_eval(sources)["prismabuild.digest_primitives"]
+    loaded = Path(core.digest_primitives.__file__).read_bytes()
+    assert shipped.encode("utf-8") == loaded
+    assert hashlib.sha256(shipped.encode("utf-8")).hexdigest() == hashlib.sha256(loaded).hexdigest()
+
+
 @pytest.mark.parametrize("part", ["core", "digest_primitives"])
 def test_either_owner_file_changes_the_recorded_runtime_identity(tmp_path, monkeypatch, part):
     paths = {name: tmp_path / (name + ".py") for name in ("core", "digest_primitives")}

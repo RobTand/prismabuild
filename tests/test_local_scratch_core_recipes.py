@@ -117,20 +117,23 @@ def test_local_scratch_bootstrap_binds_one_fixed_sibling_core_without_package_im
     assert ls._local_scratch_profile_block is pb._local_scratch_profile_block
     assert ls._canonical_file_bytes is pb._canonical_file_bytes
     isolated = runpy.run_path(str(REPO / "src/prismabuild/local_scratch.py"))
-    block = isolated["_local_scratch_profile_block"]
-    canonical = isolated["_canonical_file_bytes"]
-    predicate = isolated["_core_positive_finite"]
-    assert block.__globals__ is canonical.__globals__ is predicate.__globals__
-    assert Path(block.__globals__["__file__"]) == REPO / "src/prismabuild/core.py"
-    assert block.__globals__["__package__"] == ""
-    assert block(256) == pb._local_scratch_profile_block(256)
+    for name in ("_local_scratch_profile_block", "_canonical_file_bytes",
+                 "_core_positive_finite"):
+        assert isolated[name] is getattr(pb, name)
+    core_globals = isolated["_local_scratch_profile_block"].__globals__
+    assert Path(core_globals["__file__"]) == REPO / "src/prismabuild/core.py"
+    assert core_globals["__package__"] == ""
+    assert Path(core_globals["digest_primitives"].__file__) == REPO / "src/prismabuild/digest_primitives.py"
+    assert core_globals["digest_primitives"].canonical_sha256 is pb.canonical_sha256
+    assert isolated["_local_scratch_profile_block"](256) == pb._local_scratch_profile_block(256)
     body = {"unicode": "λ", "value": 1.0}
-    assert canonical(body) == pb._canonical_file_bytes(body)
+    assert isolated["_canonical_file_bytes"](body) == pb._canonical_file_bytes(body)
 
 
 def _assert_materialized_producer_snapshot(fleet, action, *, expected_source_root=REPO):
     assert ls.PRODUCER_FILES == (ls.RECORDER, "src/prismabuild/local_scratch.py",
-                                 "src/prismabuild/core.py")
+                                 "src/prismabuild/core.py",
+                                 "src/prismabuild/digest_primitives.py")
     stamp_files = action["code_closure"]["files"]
     assert len(stamp_files) == 1
     assert Path(stamp_files[0]["path"]).name.startswith(pb.PBRUN_STAMP_PREFIX)
@@ -152,7 +155,7 @@ def _assert_materialized_producer_snapshot(fleet, action, *, expected_source_roo
     return sources
 
 
-def test_real_isolated_tiny_profile_receipt_and_loader_accept_all_three_sources(fleet, monkeypatch):
+def test_real_isolated_tiny_profile_receipt_and_loader_accept_all_four_sources(fleet, monkeypatch):
     action = _recorder_action(fleet)
     _assert_materialized_producer_snapshot(fleet, action)
     assert action["task"]["argv"][1:3] == ["-I", "-S"]
@@ -165,7 +168,7 @@ def test_real_isolated_tiny_profile_receipt_and_loader_accept_all_three_sources(
     assert receipt["producer"]["executable"]["path"] == sys.executable
     reader = _profile_reader(fleet, action, pb.canonical_sha256(body))
     assert reader.expected_sources is not None
-    assert len(reader.expected_sources) == 3
+    assert len(reader.expected_sources) == 4
     detail = worker_loop.scratch_observed_detail(None, reader)
     assert detail[PROFILES] == [{**body, "artifact_sha256": pb.canonical_sha256(body)}]
     assert detail[DEVICES][fleet.scratch] == fleet.actual_root_identity(fleet.scratch)
