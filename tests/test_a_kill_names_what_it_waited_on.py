@@ -78,8 +78,11 @@ def _publish_export(queue: pool.PoolQueue, owner: str, seed: str) -> dict:
 
 
 def _claim_pass(queue: pool.PoolQueue) -> dict | None:
+    # Reuse the holder's immutable map when this fixture really executes.
+    tiers = pool._read_json(queue.ledger().base / "cpu-map.json")
     return queue.claim(capacity=CAPACITY, tags=[socket.gethostname()],
-                       cpu_tiers=CPU_TIERS, adaptive_cpu=True)
+                       cpu_tiers=CPU_TIERS if tiers is None else tiers,
+                       adaptive_cpu=True)
 
 
 # -- #990: the ending record names the rows the action waited on ----------
@@ -90,7 +93,10 @@ def test_a_stall_kill_names_its_refused_export_its_ready_age_and_the_reason(
 
     queue, consumer = progress_fx._claimed(
         tmp_path, mode="silent", seconds=60,
-        policy=progress_fx._policy(5.0, 5.0, 5.0))
+        policy=progress_fx._policy(5.0, 5.0, 5.0),
+        capacity=CAPACITY, cpu_tiers={
+            "preferred": sorted(os.sched_getaffinity(0))[:CAPACITY["cpu"]],
+            "fallback": []})
     assert consumer is not None
     owner = str(consumer["action_key"])
     export = _publish_export(queue, owner, "export-0")
@@ -287,7 +293,10 @@ def test_pbstatus_starvation_reads_a_starved_producer_in_one_place(tmp_path, mon
     import pbstatus
 
     queue, consumer = progress_fx._claimed(tmp_path, mode="silent", seconds=1,
-                                           policy=None)
+                                           policy=None, capacity=CAPACITY,
+                                           cpu_tiers={
+                                               "preferred": sorted(os.sched_getaffinity(0))[:CAPACITY["cpu"]],
+                                               "fallback": []})
     owner = str(consumer["action_key"])
     export = _publish_export(queue, owner, "export-status")
     _refuse_with(monkeypatch, ["measurement_holder", "host_pressure"])
