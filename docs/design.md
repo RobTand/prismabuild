@@ -4619,6 +4619,9 @@ Per member host, inside the ordinary claim pass:
    measurements and rows without that proof remain fenced when strictly below
    the gang. The claimed row records the elections it borrowed as
    `gang_backfill`; the metadata is claim-scoped and is removed on retry.
+   Restartability is evaluated lazily, once per candidate, only when a live
+   gang fence applies and the backfill policy is enabled. Unfenced ordinary
+   priority -10 admission does not need a preemption proof read.
 
    `PRISMABUILD_GANG_BACKFILL=0` in the worker environment restores the strict
    fence on that host; set it on all workers for a fleet-wide rollback. The

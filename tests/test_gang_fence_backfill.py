@@ -366,3 +366,14 @@ def test_a_late_request_observation_cannot_erase_the_token_return(gang_fleet):
     assert observed["tokens_returned_unix"] == clock[0] + 1, "late request erased a completed release"
     assert observed["requested_unix"] == clock[0]
 
+
+
+def test_an_unfenced_minus_ten_row_needs_no_preemption_eligibility_read(
+        gang_fleet, monkeypatch):
+    queue, clock, publish, finish, claim, denial, members = gang_fleet
+    key = backfill(publish)
+    def forbidden_read(record):
+        raise AssertionError("unfenced backfill unnecessarily read a restartability proof")
+    monkeypatch.setattr(queue, "_preemption_eligible", forbidden_read)
+    assert claim("sparklina") == key
+

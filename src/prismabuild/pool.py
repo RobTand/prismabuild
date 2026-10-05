@@ -21230,13 +21230,8 @@ class PoolQueue:
                                 self.record_denial(item, "gang_contract_invalid", {"error": str(exc)})
                                 continue
                         gang_backfill = []
-                        backfill_binding = self._preemption_proof_binding(item)
-                        backfill_eligible = False
-                        if item.get("priority") == -10 and item.get("gang") is None:
-                            try:
-                                backfill_eligible = self._preemption_eligible(item)
-                            except (OSError, ValueError, pb.PrismaBuildError):
-                                pass
+                        backfill_binding = None
+                        backfill_eligible = None
                         if gang_record is not None:
                             pending_backfill = self._preempt_gang_backfill(
                                 ledger, gang_record, gang_entry, controller=host_gate)
@@ -21280,7 +21275,15 @@ class PoolQueue:
                             while gang_blocked is not None:
                                 from . import _gang
                                 try:
-                                    allowed = (backfill_eligible and _gang.backfill_enabled()
+                                    if backfill_eligible is None:
+                                        backfill_eligible = (item.get("priority") == -10
+                                                             and item.get("gang") is None
+                                                             and _gang.backfill_enabled())
+                                        if backfill_eligible:
+                                            backfill_eligible = self._preemption_eligible(item)
+                                            if backfill_eligible:
+                                                backfill_binding = self._preemption_proof_binding(item)
+                                    allowed = (backfill_eligible
                                                and _gang.backfill_allowed(self, gang_blocked, _now()))
                                 except (_gang.GangContractError, OSError, pb.PrismaBuildError,
                                         KeyError, TypeError, ValueError):
