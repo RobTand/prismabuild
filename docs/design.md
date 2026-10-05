@@ -4591,15 +4591,57 @@ member (`pbrun --detach --gang-*`) and only then files the immutable group recor
 `pb-queue/gangs/<group>.json`. A member is never claimable without that record.
 A member carries the existing `pbrun` options a measurement window declares (GPU
 memory subset, exclusive and measurement class, host class, container images,
-priority reason, and a declared single attempt): each manifest member field is one
+priority reason, and a declared single attempt) plus the data-manifest and
+residency options (`data_manifest`, `residency`, `residency_tier`,
+`residency_ram`, `residency_share`, `residency_mover_mem_gb`,
+`residency_mover_readers`, `residency_prefetch_depth_gib`, `residency_read_mb_s`,
+`residency_mover_max_attempts`): each manifest member field is one
 `pbrun` flag, forwarded as given, and `pbrun` judges every value as it does for a
 plain submission. Any other key is refused by name. The driver's own flags, the tag
-and the priority and `retry_safe` are not member fields, and options a window does
-not declare (data manifest, residency) are not carried; `max_attempts` may be
-declared only as 1. A manifest may be a bare list of members; a member names its host
+and the priority and `retry_safe` are not member fields;
+`max_attempts` may be declared only as 1. Two things `pbgang` refuses itself,
+because the submission process decides them: a member's `data_manifest` must be
+an absolute path (`pbrun` reads a relative one against `pbgang`'s own working
+directory, so a different file of the same name would be ingested), and every
+gang member that declares a manifest must also declare `residency` (`stage`) --
+the #1247 planner files one row's plan per tier-loop cycle, so a member left to
+it would fence its elected siblings' hosts while reading the pool unplanned. A
+manifest may be a bare list of members; a member names its host
 with `tag` or `tags` and may give `demand` and `env` as mappings. `--cwd` is the
 default checkout every member snapshots; a member's own `cwd` overrides it, and
 `--cwd` is then optional when every member names one.
+
+**Gang members with residency (#583, #1247).** The admission order is the
+ordinary one: the claim pass evaluates `residency_verdict` on a member row
+*before* the gang code, so a member whose leads are not yet resident is denied
+`residency_lead_not_resident` for that pass and never reaches its election --
+it does not ready, does not fence its own host, and lower-priority work can
+still take its host while its movers run. Its siblings, which pass every gate,
+do elect and ready, so their hosts fence strictly lower-priority work for as
+long as the wait lasts, and the wait is not bounded: `skew_s` bounds only the
+post-claim start barrier, never the ready-wait. Nothing commits until the
+leads are executed and pinned and the map is composed (`resident`); the gang
+then starts whole, each member's claim record carries the verdict, and the
+launcher passes `PRISMABUILD_RESIDENCY_MAP` to the members that declared
+residency. A teardown (member failure or member withdrawal) withdraws the
+members through the ordinary path, which marks a consumer's frozen plan
+superseded; the leads are separate actions the gang never withdraws, and
+their stage pins are released by the tier loop's orphan sweep (`stage_release`)
+once no live item names them -- for a claimed member, after its covered row
+ends at the worker's withdrawal checkpoint -- not by the gang. A row that
+carries a manifest and no `--residency` (a member submitted by `pbrun`
+directly -- `pbgang` refuses this shape -- or any other submitter's row) is
+planned by the manifest planner (#1247) off its own sealed request and is
+then gated by its filed plan exactly like an explicit one, reaching its map at
+launch through the declared-manifest branch of `residency_map_environment`.
+Operational consequence: a window whose movers are slow drains its already-
+elected siblings' hosts for the whole mover time, and the wait does not end on
+its own if a lead ends terminally (`residency_lead_terminal`) or the plan is
+refused (`plan_unreadable`, `plan_superseded`): gang elections never expire,
+and the gang sweep tears a gang down only on an UNSUCCESSFUL member, which a
+READY member never is -- the wait lasts until the gang is withdrawn. Size
+`--residency` windows with that fence in mind, submit the movers before the
+gang, and withdraw the gang when a member's residency can no longer land.
 
 Per member host, inside the ordinary claim pass:
 

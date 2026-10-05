@@ -16,6 +16,13 @@ Manifest (JSON)::
        {"tag": "sparky", "demand": "gpu=1,mem_gb=100",
         "argv": ["/home/rob/venvs/x/bin/python", "worker.py"]}]}
 
+A member may declare the bytes it reads and ask for them staged first::
+
+    {"tag": "sparky", "demand": "gpu=1,mem_gb=100",
+     "data_manifest": "/data/window4/manifest.json", "residency": "stage",
+     "residency_ram": "auto", "residency_share": "auto",
+     "argv": ["/home/rob/venvs/x/bin/python", "worker.py"]}
+
 ``tag`` is the host (or host class) a member is placed on; members land on
 distinct hosts. ``timeout_s`` and ``priority`` apply to every member unless a
 member overrides them. Prints one JSON line: the group and its member keys.
@@ -27,11 +34,27 @@ as a mapping, and ``env`` as ``K=V`` strings or as a mapping.
 A member carries the existing ``pbrun`` options a measurement window needs, each
 as the one flag of that name: ``gpu_memory_gb``, ``exclusive`` and ``measurement``
 (true or false), ``host_class``, ``container_images`` (a list, one flag per image),
-``priority_reason`` and ``max_attempts`` (only 1). ``pbrun`` judges every value
-exactly as it would for a plain submission. Any other key is refused by name:
-the gang flags, ``tag``, ``priority`` and ``retry_safe`` are the driver's (a retry
-ends the gang, so a member gets one attempt), and options a window does not
-declare, such as a data manifest or residency, are not carried. ``--cwd`` is the
+``priority_reason``, ``max_attempts`` (only 1), and the data-manifest and
+residency options ``data_manifest``, ``residency``, ``residency_tier``,
+``residency_ram``, ``residency_share``, ``residency_mover_mem_gb``,
+``residency_mover_readers``, ``residency_prefetch_depth_gib``,
+``residency_read_mb_s`` and ``residency_mover_max_attempts``. ``pbrun`` judges
+every value exactly as it would for a plain submission: it refuses
+``--residency stage`` without ``--data-manifest``, and it enforces the
+enumerated values of ``--residency``, ``--residency-ram`` and
+``--residency-share``. Two things ``pbgang`` itself refuses, because the
+submission process, not ``pbrun``, decides them: a ``data_manifest`` must be
+an absolute path (~ and $VAR are not expanded; ``pbrun`` reads it against
+its own working directory -- the directory ``pbgang`` runs in, not the
+member's ``cwd``, which is the checkout every member snapshots -- so a
+relative name would ingest a different file of the same name), and a member
+that declares ``data_manifest`` must also declare ``residency`` (``stage``):
+the #1247 manifest planner files one row's plan per
+tier-loop cycle, so a member left to it would hold its gang -- and its elected
+siblings' hosts -- fenced while it reads the pool unplanned. Any other key is
+refused by name:
+the gang flags, ``tag``, ``priority`` and ``retry_safe`` are the driver's (a
+retry ends the gang, so a member gets one attempt). ``--cwd`` is the
 default checkout every member snapshots; a member's own ``cwd`` overrides it.
 ``priority_reason`` may also be set once in the manifest, like ``priority``.
 
@@ -46,6 +69,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import secrets
 import subprocess
 import sys
@@ -64,7 +88,9 @@ SCHEMA = "prismabuild.pbgang.v1"
 MEMBER_FIELDS = {"tag", "tags", "cwd", "argv", "demand", "env", "timeout_s", "priority", "cpus"}
 
 #: Member fields that are one ``pbrun`` flag each: exactly the existing options a
-#: measurement window declares (#1517).  The kind says
+#: measurement window declares (#1517), plus the data-manifest and residency
+#: options (#583, #909, #1026) a gang member may declare like any other
+#: submission.  The kind says
 #: how the JSON value becomes argv: ``switch`` is a boolean flag, ``value`` is
 #: one scalar, ``repeat`` is a list with the flag once per entry.  ``pbrun``
 #: stays the only judge of each value; this table forwards, it never reinterprets.
@@ -78,6 +104,16 @@ FLAG_FIELDS: dict[str, tuple[str, str]] = {
     "container_images": ("--container-image", "repeat"),
     "priority_reason": ("--priority-reason", "value"),
     "max_attempts": ("--max-attempts", "value"),
+    "data_manifest": ("--data-manifest", "value"),
+    "residency": ("--residency", "value"),
+    "residency_tier": ("--residency-tier", "value"),
+    "residency_ram": ("--residency-ram", "value"),
+    "residency_share": ("--residency-share", "value"),
+    "residency_mover_mem_gb": ("--residency-mover-mem-gb", "value"),
+    "residency_mover_readers": ("--residency-mover-readers", "value"),
+    "residency_prefetch_depth_gib": ("--residency-prefetch-depth-gib", "value"),
+    "residency_read_mb_s": ("--residency-read-mb-s", "value"),
+    "residency_mover_max_attempts": ("--residency-mover-max-attempts", "value"),
 }
 MEMBER_FIELDS = MEMBER_FIELDS | set(FLAG_FIELDS)
 
@@ -99,6 +135,11 @@ def _field_problem(name: str, value: object) -> str | None:
         # One attempt is what a gang member gets: an unsuccessful one ends the
         # whole gang.  Declaring it is allowed; asking for more is not.
         return None if value == 1 else "must be 1: a gang member gets one attempt"
+    if name == "data_manifest" and isinstance(value, str) and not os.path.isabs(value):
+        # Not a style rule: pbrun reads the manifest against its own working
+        # directory -- the directory pbgang runs in -- so a relative name
+        # would ingest a different file of the same name.
+        return "must be an absolute path (~ and $VAR are not expanded)"
     return "must not be empty" if value == "" else None
 
 
@@ -132,7 +173,12 @@ def _shape_problem(member: dict) -> str | None:
         return "env must be a list of K=V strings or a mapping"
     if "cwd" in member and not (isinstance(member["cwd"], str) and member["cwd"]):
         return "cwd must be a nonempty string"
-    return None
+    if "data_manifest" in member and member.get("residency") != "stage":
+        # The #1247 planner files one row's plan per tier-loop cycle; a member
+        # left to it -- anything but an explicit ``stage``, including pbrun's
+        # default ``none`` -- holds the gang uncommitted, its elected siblings'
+        # hosts fenced, while it would read the pool at full cost.
+        return ("declares data_manifest without residency; set residency: stage")
 
 
 def load(path: Path) -> dict:
