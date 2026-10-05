@@ -1549,6 +1549,10 @@ a RAM tmpfs with a fixed inode table (`nr_inodes`) held 750,000 inodes from six
 concurrent suites on dl380g10 and made every action there fail in preflight with
 `OSError 28` while the filesystem still reported free bytes. `pbtest` refuses a
 command-line `-o`, so this setting is part of the checkout the shards snapshot.
+The status error-injection fixtures also delegate integer directory descriptors
+to the real system call. Their named-path error injections and assertions stay
+unchanged; descriptor-based temporary-directory cleanup can therefore finish
+under the failed-only retention policy instead of failing in the fixture itself.
 Only `tmp_path` is removed per test. A directory made with `tmp_path_factory.mktemp`,
 and the directory of any failing test, lasts as long as the session's base temporary
 directory. By default `pbtest` passes no `--basetemp`, so that base is
