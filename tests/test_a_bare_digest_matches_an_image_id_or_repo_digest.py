@@ -189,8 +189,8 @@ def test_missing_judges_every_requirement_against_the_whole_inventory():
     assert container_images.missing(
         [BARE, BARE], (entry for entry in [BARE])) == ()
     assert container_images.missing(
-        [BARE, "sha256:" + "e" * 64], (entry for entry in SPARKLINA_SET)) == (
-        "sha256:" + "e" * 64)
+        [BARE, "sha256:" + "e" * 64],
+        (entry for entry in SPARKLINA_SET)) == ("sha256:" + "e" * 64,)
 
 
 @pytest.mark.parametrize("shape", [list, tuple, set, frozenset])
