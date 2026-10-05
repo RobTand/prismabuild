@@ -24921,7 +24921,9 @@ class PoolQueue:
                 marker = _read_json(dst)
                 current = (marker is not None and
                            marker.get("published_unix") == record.get("published_unix"))
-                filed = dict(marker if current else decision)
+                archive = (None if current else self.superseded_dir() /
+                           f"{action_key}.{self.attempt_generation(record)}.withdrawn-finish.json")
+                filed = dict(marker if current else _read_json(archive) or decision)
                 if "withdrawn_attempt" not in filed:
                     retained = dict(record)
                     retained.pop("finish_pending", None)
@@ -24953,13 +24955,13 @@ class PoolQueue:
                     for field in ("resource_scope", "resource_scope_intent", "resource_scope_cleanup"):
                         if field in record:
                             filed.setdefault(field, record[field])
-                    filed.setdefault("container_cleanup", container_cleanup)
+                    filed.setdefault("container_cleanup", adopted["detail"]["container_cleanup"])
                     filed.setdefault("finished_unix", adopted["finished_unix"])
                     filed.setdefault("finished_host", adopted["finished_host"])
                     if current:
                         _write_json_atomic(dst, filed)
                     else:
-                        self._file_superseded(filed, key=action_key, kind="withdrawn-finish")
+                        pb._atomic_publish(archive, pb._canonical_bytes(filed))
                 if ("scratch_declaration_record" in record
                         or local_scratch.SCRATCH_LIFETIME_FIELD in record):
                     self._file_superseded(record, key=action_key,

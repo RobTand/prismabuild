@@ -1354,6 +1354,9 @@ and publication. If publication already superseded the visible marker, the
 old worker's completed cancellation is filed under `withdrawn/superseded/`,
 never over a successor's marker. Repeated finish preserves the first immutable
 attempt and adds no second ending. No `done/`, `failed/` or retry is filed.
+The superseded conclusion has a stable action-generation filename and is
+published first-writer-wins, so replay after an interrupted claim move retains
+one proof and the original container-cleanup result.
 A READY withdrawal that never ran adds no worker evidence. This changes future
 worker conclusions only; previously concluded withdrawals are not repaired.
 

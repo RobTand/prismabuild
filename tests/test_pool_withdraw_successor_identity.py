@@ -23,9 +23,12 @@ def test_withdraw_preserves_successor_that_claims_after_marker(tmp_path, monkeyp
 
     def advance_after_marker(path, record):
         write(path, record)
-        if path == queue.item_path(pool.WITHDRAWN, KEY) and not successor:
+        if (path == queue.item_path(pool.WITHDRAWN, KEY) and not successor
+                and "withdrawn_attempt" not in record):
             # The holder sees the marker and stops; a fresh submission then
             # supersedes it and is admitted before the withdrawing host resumes.
+            # This hook represents the decision write, not the later worker
+            # annotation of that same withdrawn record.
             queue.finish(KEY, status="withdrawn", claim_snapshot=first)
             publish()
             successor.update(queue.claim(owner="second", capacity={"cpu": 1}))

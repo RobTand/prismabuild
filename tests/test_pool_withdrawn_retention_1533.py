@@ -245,6 +245,10 @@ def test_superseding_publication_does_not_gain_the_old_attempts_evidence(scoped,
     queue.withdraw(key, by="second operator", reason="new generation", signal_child=False)
     new_path = queue.item_path(pool.WITHDRAWN, key)
     new_bytes = new_path.read_bytes()
+    entomb = queue._entomb_claim
+    monkeypatch.setattr(queue, "_entomb_claim", lambda *args, **kwargs: (None, False))
+    queue.finish(key, status="withdrawn", claim_snapshot=live)
+    monkeypatch.setattr(queue, "_entomb_claim", entomb)
     queue.finish(key, status="withdrawn", claim_snapshot=live)
     assert new_path.read_bytes() == new_bytes
     assert decision_path.read_bytes() == decision_bytes
