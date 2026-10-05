@@ -156,14 +156,18 @@ def test_role_reports_a_cycle_error_instead_of_crashing(tmp_path, monkeypatch, c
     assert "localtier-cycle-error" in output and "temporary cycle failure" in output
 
 
-def test_missing_docker_is_a_clear_refusal_not_a_traceback(tmp_path, monkeypatch):
+@pytest.mark.parametrize("missing_at", ["ps", "inspect"])
+def test_missing_docker_is_a_clear_refusal_not_a_traceback(tmp_path, monkeypatch, missing_at):
     from prismabuild import local_resident
     source = tmp_path / "manual"
     source.mkdir()
     (source / "weights").write_bytes(b"weights")
     import subprocess as _subprocess
 
-    def no_docker(*args, **kwargs):
+    def no_docker(command, *args, **kwargs):
+        if missing_at == "inspect" and command[1] == "ps":
+            from types import SimpleNamespace
+            return SimpleNamespace(returncode=0, stdout="running-container")
         raise FileNotFoundError("docker")
 
     monkeypatch.setattr(_subprocess, "run", no_docker)
@@ -177,3 +181,18 @@ def test_renew_refuses_a_hard_max_beyond_the_policy_ceiling(tmp_path):
         store.renew(record["set_id"], {"until": 150, "hard_max": 150 + 40 * 86400}, by="test", now=100)
     store.renew(record["set_id"], {"until": 150, "hard_max": 100 + 14 * 86400}, by="test", now=100)
     assert store.status(record["set_id"])["lease_log"][-1]["event"] == "renewed"
+
+
+def test_renewal_uses_the_configured_policy_ceiling(tmp_path):
+    store, record = publish(tmp_path)
+    policy_path = tmp_path / "local-policy.json"
+    policy_path.write_text(json.dumps({"schema": resident_sets.POLICY_SCHEMA,
+        "hosts": {}, "renewal_ceiling_s": 3 * 86400}))
+    policy = resident_sets.read_policy(policy_path)
+    assert policy["renewal_ceiling_s"] == 3 * 86400
+    with pytest.raises(ValueError, match="ceiling"):
+        store.renew(record["set_id"], {"until": 150, "hard_max": 100 + 4 * 86400},
+                    by="test", now=100, renewal_ceiling_s=policy["renewal_ceiling_s"])
+    store.renew(record["set_id"], {"until": 150, "hard_max": 100 + 3 * 86400},
+                by="test", now=100, renewal_ceiling_s=policy["renewal_ceiling_s"])
+    assert store.status(record["set_id"])["lease_log"][-1]["lease"]["hard_max"] == 100 + 3 * 86400
