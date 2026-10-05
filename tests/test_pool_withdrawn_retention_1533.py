@@ -23,6 +23,7 @@ import pbmcp
 import pbstatus
 import pbwait
 import pool_reset
+import stage_release
 
 
 @pytest.fixture
@@ -292,3 +293,18 @@ def test_public_views_expose_a_stopped_withdrawn_attempt(scoped, monkeypatch, ca
     assert body["withdrawn_attempt"]["status"] == "withdrawn"
     assert body["resource_scope_cleanup"] == record["resource_scope_cleanup"]
     assert body["resource_scope_cleanup"]["nonce"] == live["resource_scope"]["nonce"]
+
+
+def test_stage_release_accepts_only_additive_completed_withdrawal(scoped, monkeypatch):
+    queue, item, calls = scoped
+    queue, live, path, record = _conclude(queue, item, monkeypatch)
+    key = live["action_key"]
+    assert stage_release._require_exact_withdrawal(queue, key) == record
+    for changed in ({**record, "reason": "forged"},
+                    {**record, "finished_unix": -1},
+                    {**record, "unattested_field": True}):
+        path.write_text(json.dumps(changed))
+        with pytest.raises(pool.PoolContractError, match="withdrawal lacks its exact immutable decision"):
+            stage_release._require_exact_withdrawal(queue, key)
+    path.write_text(json.dumps(record))
+    assert stage_release._require_exact_withdrawal(queue, key) == record

@@ -13020,8 +13020,11 @@ checks. Fresh live-state checks exclude a republication that won discovery.
 The consumer must have exactly one terminal record, and it must be proven. A
 failed consumer needs the queue's verified immutable failed-attempt summary.
 A withdrawn consumer needs its visible withdrawal to agree with its immutable
-decision for that exact action and generation (#892): until 2026-09-22 only
-failure counted, and three withdrawn consumers' owners were cleared by hand
+decision for that exact action and generation (#892).
+Worker conclusion fields are permitted only as the verified immutable withdrawn
+attempt's projection. All original decision fields remain exact; a changed
+decision value or an arbitrary extra field still retains ownership.
+Until 2026-09-22, only failure counted, and three withdrawn consumers' owners were cleared by hand
 that day. A consumer that is live again, done, or both failed and withdrawn
 retains. For the withdrawn mover form, the mover's visible withdrawal must agree with
 its immutable decision for that exact action and generation, and no move
