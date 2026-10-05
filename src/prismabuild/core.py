@@ -1149,9 +1149,9 @@ def _worker_runtime_identity(
 
 
 def _validate_worker_runtime(value: object) -> dict[str, object]:
-    raw = _exact_mapping(
-        value, keys=_RUNTIME_KEYS, where="worker attestation.runtime"
-    )
+    # Retained v1 receipts predate the split and keep their exact recorded body.
+    keys = _RUNTIME_KEYS | {"digest_primitives"} if isinstance(value, Mapping) and "digest_primitives" in value else _RUNTIME_KEYS
+    raw = _exact_mapping(value, keys=keys, where="worker attestation.runtime")
     if raw["schema"] != WORKER_RUNTIME_SCHEMA_V1:
         _fail(
             "worker attestation.runtime.schema must be "
@@ -1181,6 +1181,9 @@ def _validate_worker_runtime(value: object) -> dict[str, object]:
         "core": core,
         "launcher": launcher,
     }
+    if "digest_primitives" in raw:
+        body["digest_primitives"] = _normalize_runtime_source(
+            raw["digest_primitives"], where="worker attestation.runtime.digest_primitives")
     recorded = _sha256(
         raw["runtime_sha256"],
         where="worker attestation.runtime.runtime_sha256",
