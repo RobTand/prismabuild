@@ -4609,7 +4609,8 @@ Per member host, inside the ordinary claim pass:
    on that host (`deferred_for_gang_reservation`), with the same rule and the same
    incumbent-dependent exemption as a #1419/#1504 measurement election. Running
    work drains; no token, CPU/GPU, isolation or foreign-load gate is waived. One
-   member per host; the no-clobber election settles a race between matching hosts.
+   Fence checks consistently identify this host by its resource-ledger name.
+   One member per host; the no-clobber election settles a race between matching hosts.
    A fresh-ready member may lend its elected host while another member waits:
    only priority -10 generation rows satisfying the existing restartability
    proof (explicit retry-safe permission, valid interruption lineage, and an

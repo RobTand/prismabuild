@@ -21275,7 +21275,7 @@ class PoolQueue:
                                 continue
                             gang_blocked = (None if serves_incumbent else
                                             measurement_reservation.gang_blocking(
-                                                census, item, host=socket.gethostname(),
+                                                census, item, host=ledger.base.name,
                                                 group=gang["group"] if gang is not None else None))
                             while gang_blocked is not None:
                                 from . import _gang
