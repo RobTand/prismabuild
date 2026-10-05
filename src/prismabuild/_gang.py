@@ -7,9 +7,9 @@ member; nothing is claimable before it exists.
 
 Per member host the claim pass (``PoolQueue._claim_pass``):
 
-1. elects the host for the member under host admission (H), which fences
-   strictly lower-priority work there through the census, exactly like a
-   #1419 measurement election;
+1. elects the host under host admission (H), fencing strictly lower priority
+   except proven priority -10 backfill while a sibling waits; reclamation
+   precedes capacity gates and never credits tokens before actual release;
 2. after every ordinary gate passes, marks the member ready and abandons the
    acquisition unless every sibling is fresh-ready or claimed -- a ready
    member holds no tokens, so no cross-host hold can deadlock two gangs;
@@ -223,7 +223,7 @@ def mark_ready(queue, record: Mapping[str, object], entry: Mapping[str, object],
 
 
 def sibling_readiness(queue, record: Mapping[str, object], entry: Mapping[str, object],
-                      host: str, now: float) -> dict:
+                      host: str, now: float, *, reclaimable: bool = False) -> dict:
     """Whether every sibling is claimed or fresh-ready on a distinct host."""
     from . import pool
     waiting = []
@@ -244,6 +244,10 @@ def sibling_readiness(queue, record: Mapping[str, object], entry: Mapping[str, o
                      and 0 <= now - float(ready["ready_unix"]) <= READY_FRESH_S)
             other_host = ready.get("host") if fresh else None  # type: ignore[union-attr]
             state = "ready" if fresh else "waiting"
+        if state == "waiting" and reclaimable:
+            election = elections(queue, str(record["group"]), int(record["size"])).get(other["index"])
+            if election is not None and backfill_holders(queue, election):
+                other_host, state = election["host"], "backfill"
         if state == "waiting" or not isinstance(other_host, str) or other_host in hosts:
             waiting.append({"index": other["index"], "action_key": other["action_key"][:12],
                             "state": state, "host": other_host})
@@ -302,3 +306,104 @@ def member_states(queue, record: Mapping[str, object]) -> dict[int, str]:
 
 #: A row mid-rename can read absent for an instant; only an exact ending counts.
 UNSUCCESSFUL = frozenset({"failed", "withdrawn"})
+
+
+# One emergency switch for a host's worker environment or the whole fleet.
+def backfill_enabled() -> bool:
+    return os.environ.get("PRISMABUILD_GANG_BACKFILL") != "0"
+
+
+def backfill_matches(holder: Mapping[str, object], election: Mapping[str, object]) -> bool:
+    marks = holder.get("gang_backfill")
+    return (holder.get("priority") == -10 and isinstance(marks, list)
+            and any(isinstance(mark, Mapping)
+                    and all(mark.get(field) == election.get(field)
+                            for field in ("group", "index", "action_key", "host"))
+                    for mark in marks))
+
+
+def backfill_holders(queue, election: Mapping[str, object]) -> dict[str, dict]:
+    """Advisory discovery only; the preemption path rechecks restartability."""
+    from . import pool
+    found = {}
+    for key in queue.ledger(str(election["host"])).held_keys():
+        holder = _read(queue.item_path(pool.CLAIMED, key))
+        if (holder is not None and holder.get("claimed_host") == election["host"]
+                and backfill_matches(holder, election)):
+            found[key] = holder
+    return found
+
+
+def backfill_reclaiming(queue, record: Mapping[str, object]) -> bool:
+    """Reclamation is monotone for a gang: returned capacity cannot be re-lent."""
+    return any(election.get("backfill_reclaiming") is True
+               for election in elections(queue, str(record["group"]), int(record["size"])).values())
+
+
+def begin_backfill_reclaim(queue, election: Mapping[str, object]) -> None:
+    from . import pool
+    path = state_dir(queue, str(election["group"])) / f"elect-{election['index']}.json"
+    standing = _read(path)
+    if standing is not None:
+        standing["backfill_reclaiming"] = True
+        pool._write_json_atomic(path, standing)
+
+
+def backfill_allowed(queue, election: Mapping[str, object], now: float) -> bool:
+    """Lend only an actually ready member's host while its peers cannot commit."""
+    record = read_group(queue, str(election["group"]))
+    if record is None or teardown(queue, str(record["group"])) is not None:
+        return False
+    if backfill_reclaiming(queue, record):
+        return False
+    entry = record["members"][int(election["index"])]
+    if entry["action_key"] != election["action_key"]:
+        return False
+    ready = _read(state_dir(queue, str(record["group"])) / f"ready-{entry['index']}.json")
+    if (ready is None or ready.get("schema") != READY_SCHEMA
+            or ready.get("action_key") != entry["action_key"]
+            or ready.get("host") != election["host"]
+            or type(ready.get("ready_unix")) not in (int, float)
+            or not 0 <= now - ready["ready_unix"] <= READY_FRESH_S):
+        return False
+    return not sibling_readiness(queue, record, entry, str(election["host"]), now,
+                                 reclaimable=True)["complete"]
+
+
+def note_backfill_preemption(queue, election: Mapping[str, object], timing: Mapping[str, object]) -> None:
+    """Observations, never admission authority; caller holds the member transition."""
+    from . import pool
+    path = state_dir(queue, str(election["group"])) / f"elect-{election['index']}.json"
+    standing = _read(path)
+    if standing is None or any(standing.get(k) != election.get(k)
+                               for k in ("group", "index", "action_key", "host")):
+        return
+    observations = list(standing.get("backfill_preemptions", []))
+    for index, prior in enumerate(observations):
+        if (prior.get("holder") == timing["holder"]
+                and prior.get("published_unix") == timing["published_unix"]):
+            observations[index] = {**prior, **timing}
+            break
+    else:
+        observations.append(dict(timing))
+    standing["backfill_preemptions"] = observations
+    pool._write_json_atomic(path, standing)
+
+
+def observe_backfill_releases(queue, election: Mapping[str, object]) -> None:
+    """Catch a release whose finisher could not take the member's transition."""
+    from . import pool
+    standing = _read(state_dir(queue, str(election["group"])) / f"elect-{election['index']}.json")
+    for timing in (standing or {}).get("backfill_preemptions", []):
+        if timing.get("tokens_returned_unix") is not None:
+            continue
+        archive = queue.superseded_dir() / (
+            f"{timing['holder']}.{timing['generation']}.withdrawn-finish.json")
+        finished = _read(archive)
+        if finished is None:
+            finished = _read(queue.item_path(pool.WITHDRAWN, str(timing["holder"])))
+        release = (finished or {}).get("gang_backfill_release")
+        if (isinstance(release, Mapping) and release.get("generation") == timing["generation"]
+                and release.get("tokens_returned_unix") is not None):
+            note_backfill_preemption(queue, election, release)
+
