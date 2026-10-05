@@ -337,33 +337,49 @@ class CensusReader:
 
 @contextmanager
 def locked_census(queue: PoolQueue, ledger: ResourceLedger, controller):
-    """M transition keys (sorted/nonblocking) BEFORE H; refresh through acquire.
+    """Elections on this host (sorted/nonblocking) BEFORE H; refresh through acquire.
 
-    The candidate key may already be owned: the existing reentrant transition
-    contract is intentional. No cross-key wait or publisher host-gate protocol
-    is added. The guarantee starts at canonical election, not at arbitrary
-    future publication. An unlocked newly discovered M denies this pass.
-    The reader fence is acquired once for both phases and released after the
-    refresh (#1498): a concurrent observer cannot consume it between them, and
-    a fence, transition or admission refusal releases what was taken.
+    Only a measurement elected for *this* host can fence its admission
+    (``blocking_selection`` is host-filtered), so only those keys are locked.
+    Locking every READY/CLAIMED measurement key instead turned a large
+    measurement batch into a fleet-wide livelock: each of a box's worker loops
+    holds its own candidate's transition lock through its pass, so almost
+    every census met one busy key and denied every row on every host
+    (2026-10-05, 38-49 READY PACT rows, 6 loops per Spark).
+
+    An elected key another loop holds mid-transition is not a refusal: it is
+    kept as a live election for this pass, the conservative reading, so lower
+    priority work stays fenced and the pass still decides everything else.
+    Unlocked reads only ever err toward fencing: a missing row is not
+    retirement, and retirement needs an exact ending or a strictly newer
+    publication, both durable. Election writes stay serialized as before: a
+    measurement elects only in its own claim pass, under its own transition
+    key and the elected host's H, and this refresh runs under this host's H.
+    The candidate key may already be owned by the caller (the reentrant
+    transition contract). The reader fence is acquired once for both phases
+    (#1498); a fence or admission refusal releases what was taken.
     """
     census_reader = CensusReader(queue, ledger)
+    here = ledger.base.name
     with census_reader.held():
         discovered = census_reader.capture()
         with ExitStack() as held:
-            keys = set(discovered["keys"])
-            for key in sorted(keys):
+            busy: set[str] = set()
+            for key in sorted(key for key, chosen in discovered["selections"].items()
+                              if chosen["host"] == here):
                 if not held.enter_context(queue._transition_locked(key, blocking=False)):
-                    raise CensusUnavailable(f"measurement transition busy: {key}")
+                    busy.add(key)
             held.enter_context(queue._admission_lock(controller))
             current = census_reader.capture()
-            if not set(current["keys"]).issubset(keys):
-                raise CensusUnavailable("new unlocked measurement generation; restart census")
+            for key in busy:
+                # Mid-transition under another loop: fenced for this pass.
+                chosen = current["selections"].get(key, discovered["selections"][key])
+                current["elections"][key] = chosen
             # A success/cancellation slot is not physical ownership settlement.
             # Under H, retained tokens on this elected host still prevent refill.
             for key in ledger.held_keys():
                 chosen = current["selections"].get(key)
-                if chosen is not None and chosen["host"] == ledger.base.name:
+                if chosen is not None and chosen["host"] == here:
                     current["elections"][key] = chosen
             yield current
 

@@ -54,12 +54,15 @@ def test_new_unlocked_measurement_at_refresh_restarts_without_tokens(fleet, monk
             measurement.append(publish("arrives-before-H-refresh", measurement=True, priority=0))
         return result
     monkeypatch.setattr(reservation.CensusReader, "capture", capture)
-    assert claim() is None
-    assert denial(lower)["reason"] == "measurement_census_unavailable"
-    assert "new unlocked" in denial(lower)["evidence"]["unavailable"]
-    assert not queue.ledger().held_keys()
-    monkeypatch.setattr(reservation.CensusReader, "capture", original)
-    assert claim() == measurement[0]
+    # The guarantee starts at canonical election, not at publication: a
+    # measurement with no election yet fences nothing, so the refresh does not
+    # deny the pass (locking every measurement key did, and livelocked
+    # admission under a large measurement batch -- #1498 follow-up). An
+    # election for this host is written under this host's H, so the refresh
+    # would see it.
+    assert claim() == lower, denial(lower)
+    assert queue.ledger().held_keys() == [lower]
+    assert queue.item_path(pool.READY, measurement[0]).exists()
 
 
 def test_busy_measurement_key_is_nonblocking_even_with_stale_candidates(fleet):
@@ -74,7 +77,10 @@ def test_busy_measurement_key_is_nonblocking_even_with_stale_candidates(fleet):
                            ready=[candidate])
     with queue._transition_locked(measurement), ThreadPoolExecutor(max_workers=1) as executor:
         assert executor.submit(candidate_only).result(timeout=5) is None
-    assert denial(lower)["reason"] == "measurement_census_unavailable"
+    # Still nonblocking and still no refill: the busy elected key is kept as a
+    # live election for the pass (#1498 follow-up), not a census refusal.
+    assert denial(lower)["reason"] == "deferred_for_measurement_reservation"
+    assert denial(lower)["evidence"]["withheld_for"] == measurement
     assert queue.ledger().held_keys() == [holder]
 
 
