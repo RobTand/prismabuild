@@ -1,6 +1,7 @@
 """Existing pool finalization owns scratch cleanup and the capacity barrier."""
 import copy
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -15,9 +16,12 @@ SELECTION = {"schema": "prismabuild.scratch_lifetime_selection.v1", "entries": [
     {"root_env": "CACHE_ROOT", "name": "compile", "lifetime": "persistent"}]}
 
 
-@pytest.fixture
-def lifetime(runtime, monkeypatch):
-    create, calls = runtime
+def lifetime_state(create, calls, monkeypatch):
+    """The ``lifetime`` fixture body, runnable after the spy is installed.
+
+    Installing the fake process first means no real adaptive-snapshot child
+    is ever started, so a forced publish cannot lose its lock to one (#1539).
+    """
     claim = pool.PoolQueue.claim
     monkeypatch.setattr(pool.PoolQueue, "claim", lambda self, **kw: claim(
         self, **{ "tags": [scratch.SCRATCH_LIFETIME_TAG], **kw}))
@@ -31,6 +35,12 @@ def lifetime(runtime, monkeypatch):
         "released": True, "retired": False, "settled": True,
         "tickets_pending": False, "stopped_unix": 1.0})
     return queue, item, variables, calls
+
+
+@pytest.fixture
+def lifetime(runtime, monkeypatch):
+    create, calls = runtime
+    return lifetime_state(create, calls, monkeypatch)
 
 
 def leaf(item):
@@ -201,6 +211,41 @@ def test_predecessor_late_finish_never_deletes_successor_scratch(lifetime, monke
     assert queue.item_path(pool.CLAIMED, old["action_key"]).read_bytes() == before
     assert queue.lease_path(old["action_key"]).read_bytes() == lease
     assert queue.ledger().held() == held
+
+
+def test_diagnostic_publish_before_successor_registration_passes_payload_spy(
+        runtime, monkeypatch):
+    """The adaptive-snapshot helper is a diagnostic, not the payload (#1539).
+
+    Forces the helper spawn while the successor claim is still
+    unregistered: the shared payload spy must pass it through instead of
+    raising ``KeyError: 'scratch_lifetime_record'``.
+
+    The fake process goes in before the first claim, so no real diagnostic
+    child is ever started and the forced publish below cannot lose the
+    publication lock to one.
+    """
+    create, calls = runtime
+    process(monkeypatch)
+    lifetime = lifetime_state(create, calls, monkeypatch)
+    queue, old, variables, outcome = launch(lifetime, monkeypatch, returncode=1)
+    queue.finish(old["action_key"], status="failed", detail=outcome, claim_snapshot=old)
+    successor = queue.claim(capacity=old["resources"], tags=[scratch.SCRATCH_LIFETIME_TAG])
+    assert successor is not None
+    seen = []
+
+    def inspect(*args):
+        seen.append(args)
+        assert live_record(queue, successor)[FIELD]["registration_complete"] is True
+
+    process(monkeypatch, inspect)
+    snapshot = pool.cpu_admission.adaptive_snapshot
+    base = pool.cpu_admission.local_state_base(queue.ledger().base)
+    (base / "publisher-result.json").unlink(missing_ok=True)
+    pool._write_json_atomic(base / "publisher-owner.json", {
+        "started_monotonic": time.monotonic() - 60.0})
+    assert snapshot.publish(base, queue.ledger().base / "adaptive") is not None
+    assert seen == []
 
 
 def test_missing_record_in_snapshot_cannot_bypass_durable_owner(lifetime, monkeypatch):
