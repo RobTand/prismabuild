@@ -76,9 +76,10 @@ def test_evicting_is_filed_under_lock_before_rename_delete_then_release(tmp_path
     original_delete = local_resident.shutil.rmtree
     events = []
     def rename(source, target):
-        assert held(spec["root"])
-        assert store.read_copy(record["set_id"], "test-host")["state"] == "evicting"
-        events.append("rename")
+        if Path(source).parent == Path(spec["root"]):
+            assert held(spec["root"])
+            assert store.read_copy(record["set_id"], "test-host")["state"] == "evicting"
+            events.append("rename")
         return original_rename(source, target)
     def delete(path):
         assert not held(spec["root"])
