@@ -1,9 +1,10 @@
 """Portable CPU work cannot overtake a GPU row eligible for this host (#1526)."""
 from contextlib import contextmanager
+import sys
 
 import pytest
 
-from prismabuild import pool
+from prismabuild import core as pb, pool
 
 
 CAPACITY = {"cpu": 8, "gpu": 1, "mem_gb": 32}
@@ -17,8 +18,12 @@ def fleet(tmp_path, monkeypatch, request):
     host = request.param
     monkeypatch.setattr(pool.socket, "gethostname", lambda: host)
     queue = pool.PoolQueue(tmp_path / "queue")
+    worker_tags = [host, "gb10", pb.INTERPRETER_TAG, pb.CONTAINER_IMAGE_TAG]
+    queue.announce(host=host, tags=worker_tags, has_gpu=True,
+                   capacity=CAPACITY, observed_capacity=CAPACITY,
+                   interpreters=[sys.executable], container_images=[])
 
-    def publish(key, *, gpu=False, tags=None, resources=None, priority=0):
+    def publish(key, *, gpu=False, tags=None, resources=None, priority=0, **fields):
         queue.publish(
             action_key=key, cas_root=str(tmp_path / "cas"),
             checkout_root=str(tmp_path), worker_script="worker.py",
@@ -26,11 +31,13 @@ def fleet(tmp_path, monkeypatch, request):
             needs_gpu=gpu, priority=priority,
             resources=resources or ({"cpu": 2, "gpu": 1, "mem_gb": 8} if gpu
                                     else {"cpu": 4, "mem_gb": 8}),
+            interpreter=fields.pop("interpreter", sys.executable if not gpu else None),
+            **fields,
         )
 
     def claim(*, has_gpu=True, tags=None):
         return queue.claim(
-            tags=tags or [host, "gb10", "interpreter-path-v1"],
+            tags=tags or worker_tags,
             has_gpu=has_gpu, capacity=CAPACITY, cpu_tiers=TIERS,
         )
 
@@ -38,10 +45,12 @@ def fleet(tmp_path, monkeypatch, request):
 
 
 @pytest.mark.parametrize("cpu_priority", [0, 1])
-def test_eligible_ready_gpu_precedes_portable_cpu(fleet, cpu_priority):
+@pytest.mark.parametrize("gpu_interpreter", [False, True], ids=["bare-gpu", "named-interpreter"])
+def test_eligible_ready_gpu_precedes_portable_cpu(fleet, cpu_priority, gpu_interpreter):
     queue, publish, claim, _host = fleet
     publish(CPU_KEY, priority=cpu_priority)
-    publish(GPU_KEY, gpu=True, priority=0)
+    publish(GPU_KEY, gpu=True, priority=0,
+            interpreter=sys.executable if gpu_interpreter else None)
     claimed = claim()
     assert claimed and claimed["action_key"] == GPU_KEY
     queue.finish(GPU_KEY, status="executed")
@@ -55,6 +64,12 @@ def test_ready_gpu_keeps_portable_cpu_back_without_taking_its_lock(fleet, monkey
     publish(GPU_KEY, gpu=True)
     transition_hold = queue._timed_transition_hold
     acquired_keys = []
+    reason_transitions = []
+    record_transition = queue._record_denial_transition
+
+    def transition(item, **kwargs):
+        reason_transitions.append(item["action_key"])
+        return record_transition(item, **kwargs)
 
     @contextmanager
     def contested(key, holds):
@@ -66,8 +81,10 @@ def test_ready_gpu_keeps_portable_cpu_back_without_taking_its_lock(fleet, monkey
                 yield acquired
 
     monkeypatch.setattr(queue, "_timed_transition_hold", contested)
+    monkeypatch.setattr(queue, "_record_denial_transition", transition)
     assert claim() is None
     assert acquired_keys == [GPU_KEY]
+    assert reason_transitions == []  # no unlocked reason-ring writer either
     assert not queue.passes_path(CPU_KEY).exists()
     assert not queue.ledger().held_keys()
 
@@ -85,14 +102,20 @@ def test_spark_pinned_cpu_is_unaffected(fleet, pin):
     assert queue.item_path(pool.READY, GPU_KEY).exists()
 
 
-@pytest.mark.parametrize("ineligible", ["wrong-tag", "wrong-class", "cpu", "memory", "gpu"])
-def test_ineligible_ready_gpu_does_not_starve_cpu(fleet, ineligible):
+@pytest.mark.parametrize("ineligible", [
+    "wrong-tag", "wrong-class", "cpu", "memory", "gpu", "interpreter", "image",
+])
+def test_ineligible_ready_gpu_does_not_starve_cpu(fleet, ineligible, tmp_path):
     queue, publish, claim, _host = fleet
     kwargs = {}
     if ineligible == "wrong-tag":
         kwargs["tags"] = ["other-host"]
     elif ineligible == "wrong-class":
         kwargs["tags"] = ["x86"]
+    elif ineligible == "interpreter":
+        kwargs["interpreter"] = str(tmp_path / "missing-python")
+    elif ineligible == "image":
+        kwargs["container_images"] = ["sha256:" + "d" * 64]
     else:
         kind = {"memory": "mem_gb"}.get(ineligible, ineligible)
         kwargs["resources"] = {"cpu": 2, "gpu": 1, "mem_gb": 8,

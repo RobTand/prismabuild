@@ -15,10 +15,10 @@ never fired on the two paths that row took:
     host took that lock for every ready row, including dl380g10, which can
     never place a GPU row, so the collision was routine.
 
-These fixtures pin the fix: the GPU refusal withholds GPU rows only, so
-CPU-only rows still fill the box; a live withhold on this host carries
-across a busy lock for one pass; a box that cannot place a row does not take
-its lock; and every withhold stays bounded.
+These fixtures pin the GPU-kind withhold: it holds back GPU rows only, so
+host-pinned CPU rows still fill the box (#1526 protects portable CPU rows
+separately); a live withhold carries across a busy lock for one pass; a box
+that cannot place a row takes no lock; and every withhold stays bounded.
 
 Nothing here touches the live queue, a real pool or a real device.
 """
@@ -146,7 +146,8 @@ def box(tmp_path: Path, monkeypatch):
 
     def claim():
         return _key_of(queue.claim(capacity=capacity, cpu_tiers=tiers,
-                                   adaptive_cpu=True, has_gpu=True))
+                                   adaptive_cpu=True, has_gpu=True,
+                                   tags=[pool.socket.gethostname()]))
 
     return queue, clock, contracts, publish, tick, claim
 
@@ -175,7 +176,9 @@ def _big_row_behind_a_gpu_borrower(box, contract):
     for _ in range(pool.STARVATION_FLOOR - 1):
         queue.record_pass(big)
     gpu_row = publish("gpu-test-shard", {"cpu": 4, "gpu": 1, "mem_gb": 16})
-    cpu_row = publish("cpu-test-shard", {"cpu": 2, "mem_gb": 4})
+    cpu_row = publish(
+        "cpu-test-shard", {"cpu": 2, "mem_gb": 4},
+        tags=[pool.socket.gethostname()])
     tick()
     return holder, holder_claimed, big, gpu_row, cpu_row
 
@@ -184,7 +187,7 @@ def _big_row_behind_a_gpu_borrower(box, contract):
 
 
 @BIG_ROW_CONTRACTS
-def test_a_gpu_refused_big_row_withholds_later_gpu_rows_but_not_cpu_rows(
+def test_a_gpu_refused_big_row_withholds_later_gpu_rows_but_not_pinned_cpu_rows(
     box, contract, refusal: str,
 ) -> None:
     queue, clock, contracts, publish, tick, claim = box
@@ -193,7 +196,7 @@ def test_a_gpu_refused_big_row_withholds_later_gpu_rows_but_not_cpu_rows(
     first = claim()
     assert first != gpu_row, (
         "a later GPU row took the GPU the refused big row waits for (#1085 path 1)")
-    assert first == cpu_row, "CPU-only work stopped filling the box"
+    assert first == cpu_row, "Host-pinned CPU-only work stopped filling the box"
     denial = _denial(queue, big)
     assert denial["reason"] == "adaptive_gpu_refused_withholding"
     assert denial["evidence"]["decision"]["reason"] == refusal
@@ -246,14 +249,16 @@ def test_the_gpu_withhold_is_bounded_by_its_holders(box, contract, refusal: str)
 
 
 def test_a_gpu_withhold_carries_its_kind_across_a_busy_lock(box, monkeypatch) -> None:
-    """Paths 1 and 2 together: the carried withhold is still GPU-only."""
+    """Paths 1 and 2 together: the GPU-only withhold still lets pinned CPU work run."""
 
     queue, clock, contracts, publish, tick, claim = box
     holder, _, big, gpu_row, cpu_row = _big_row_behind_a_gpu_borrower(
         box, ("shape", True))
     assert claim() == cpu_row
     _contest(monkeypatch, queue, big)
-    second_cpu_row = publish("cpu-test-shard-2", {"cpu": 2, "mem_gb": 4})
+    second_cpu_row = publish(
+        "cpu-test-shard-2", {"cpu": 2, "mem_gb": 4},
+        tags=[pool.socket.gethostname()])
     tick()
     assert claim() == second_cpu_row, (
         "the GPU row overtook the big row while another loop held its lock")

@@ -375,9 +375,11 @@ EXPORT_WAIT_LIVE_EVIDENCE = frozenset({
 #: written before #1085 may still carry it, which ``_mover_refusal`` reads as
 #: neutral.  ``deferred_behind_withheld_row`` is a row held back, unevaluated,
 #: behind an earlier row's GPU-kind withhold (#1085); it says why the row
-#: waited and is neither a refusal nor a withhold of its own.
+#: waited and is neither a refusal nor a withhold of its own. Likewise,
+#: ``deferred_for_ready_gpu`` leaves portable CPU work unevaluated (#1526).
 DENIAL_RING_EXEMPT_REASONS = frozenset({
-    "transition_busy", "placement_mismatch", "deferred_behind_withheld_row"})
+    "transition_busy", "placement_mismatch", "deferred_behind_withheld_row",
+    "deferred_for_ready_gpu"})
 
 #: Denials a claim pass files for a row it could not evaluate, for a
 #: transient reason that says nothing about whether this box can run the row
@@ -19390,11 +19392,12 @@ class PoolQueue:
         This is a placement rule, not the bounded preference above, and it
         has no timer: it ends on evidence.  The row is claimed here as before
         once every such host has refused it, filled up, gone stale or
-        disappeared, so CPU-only work still overflows onto the GPU hosts when
-        the CPU host cannot take it.  A host without a GPU never yields, so
-        two hosts cannot wait on each other.  A row whose tags exclude every
-        host without a GPU (aarch64-only work tagged ``gb10``) has no such
-        host to wait for and is claimed here, spread across the GPU hosts by
+        disappeared. CPU-only work still overflows onto GPU hosts when the CPU
+        host cannot take it, subject to #1526's eligible-READY-GPU rule above
+        this preference. A host without a GPU never yields, so two hosts cannot
+        wait on each other. A row whose tags exclude every host without a GPU
+        (aarch64-only work tagged ``gb10``) has no CPU host to wait for and is
+        spread across GPU hosts, subject to the same READY-GPU rule, by
         their own claims.
         """
 
@@ -19430,6 +19433,50 @@ class PoolQueue:
                     observed[kind] = int(observed[kind]) - int(need)         # type: ignore[index]
             view["free_preferred"] = int(view["free_preferred"]) - int(demand.get("cpu", 0))  # type: ignore[call-overload]
             return evidence
+        return None
+
+    def _ready_gpu_for_host(
+        self, ready: Sequence[Mapping[str, object]], *, tags: frozenset[str],
+        has_gpu: bool, total: Mapping[str, int], gpu_controller: object | None,
+        offers: Callable[[], Sequence[Mapping[str, object]]],
+        observed_images: Container[str] | None,
+    ) -> Mapping[str, object] | None:
+        """The first READY GPU row eligible for this host's capacity (#1526).
+
+        Read the existing snapshot, never census or transition locks. Eligibility
+        is placement and total host reservation capacity, not free tokens: CPU
+        overflow must not keep refilling a host while eligible GPU work waits.
+        Ordinary GPU admission still decides whether the row can claim now.
+        """
+        if not has_gpu or total.get("gpu", 0) < 1:
+            return None
+        local: Mapping[str, object] | None = None
+        for item in ready:
+            try:
+                if not self._placement_matches(item, tags=tags, has_gpu=has_gpu):
+                    continue
+                host_demand, _tiers = storage_tiers.split_demand(self.demand_of(item))
+                if not host_demand.get("gpu"):
+                    continue
+                reservation = self._reservation_demand(
+                    host_demand, gpu_controller=gpu_controller)
+                if not self._room_fits(total, reservation):
+                    continue
+                if local is None:
+                    host = socket.gethostname()
+                    local = {
+                        **next((offer for offer in offers()
+                                if offer.get("host") == host), {}),
+                        "tags": tags, "has_gpu": has_gpu, "capacity": total,
+                        "container_images": (list(observed_images)
+                                             if observed_images is not None else None),
+                    }
+                # Reuse the placement owner's interpreter, image and dependency
+                # capability checks; a GPU row this host cannot run is no veto.
+                if self._matching_offers({**item, "resources": reservation}, live=[local]):
+                    return item
+            except (TypeError, ValueError):
+                continue  # an unplaceable or malformed GPU row cannot starve CPU work
         return None
 
     def claim(
@@ -20178,8 +20225,10 @@ class PoolQueue:
         could never fit is skipped, because withholding a box for work that
         will never run there is the deadlock, not the fix.  An item refused
         because the pool's own GPU holders are on the device withholds only
-        the rows behind it that demand a GPU, and CPU-only rows still fill the
-        box (#1085, :data:`DRAIN_GPU_HOLDERS`).  A row this pass cannot
+        the rows behind it that demand a GPU (#1085, :data:`DRAIN_GPU_HOLDERS`).
+        CPU-only rows still require placement admission: on a GPU host #1526
+        leaves portable rows READY while eligible GPU work waits; hostname-pinned
+        rows remain exempt. A row this pass cannot
         evaluate for a transient reason -- its transition lock held by another
         loop, an unknown image inventory, an unreadable residency lead record
         (:data:`WITHHOLD_CARRYING_REASONS`, #1143) -- keeps the withhold this
@@ -20293,6 +20342,13 @@ class PoolQueue:
         ready = publication_canary.promote(
             self.root, ready, eligible=lambda item: self._placement_matches(
                 item, tags=tagset, has_gpu=has_gpu))
+        # Protect GPU capacity even across priority bands and when a CPU row
+        # fits beside it. This is a placement rule, not #1169's scan ordering.
+        ready_gpu = self._ready_gpu_for_host(
+            ready, tags=tagset, has_gpu=has_gpu, total=total,
+            gpu_controller=gpu_controller, offers=offer_snapshot,
+            observed_images=observed_images)
+        host = socket.gethostname()
         #: The rooms of those rows this pass could not evaluate because another
         #: loop held their transition lock (#1169, :meth:`_ready_gpu_row_room`).
         #: A row behind one that demands no GPU is admitted only beside them.
@@ -20441,6 +20497,19 @@ class PoolQueue:
                 self.record_denial(item, "placement_mismatch", {
                     "worker_tags": sorted(tagset), "worker_has_gpu": has_gpu,
                     "required_tags": item.get("tags"), "needs_gpu": item.get("needs_gpu"),
+                })
+                continue
+            if (ready_gpu is not None and key not in released
+                    and host not in (item.get("tags") or [])
+                    and not item.get("needs_gpu")
+                    and not self._demands_withheld_kind(item, frozenset({"gpu"}))):
+                # Before this row's transition lock: no new locks, passes,
+                # reservations or timeout escape. Hostname tags also encode
+                # --here, so explicitly pinned CPU work keeps its priority.
+                self.record_denial(item, "deferred_for_ready_gpu", {
+                    "gpu_row": ready_gpu.get("action_key"),
+                    "gpu_published_unix": ready_gpu.get("published_unix"),
+                    "capacity_total": total,
                 })
                 continue
             if held_back and not producer:
