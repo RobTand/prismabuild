@@ -513,6 +513,16 @@ unlinks at most 256 `passes/` sidecars per call whose key has a done, failed
 or withdrawn record, is neither READY nor CLAIMED under its non-blocking
 transition lock, and whose record carries no `measurement_reservation` field
 (valid, retired or malformed elections, unreadable and foreign records stay).
+The same host-local `<box-identity>.sweep` marker owns the fair-start cursor
+(#1503): its bytes hold the last inspected concluded sidecar name, while its
+mtime retains the existing heartbeat schedule. Each call resumes strictly
+after that name in sorted order and wraps at most once, even if the cursor
+name has been deleted. Retained elections, foreign/unreadable rows and busy
+transition locks consume the inspection budget and advance the cursor rather
+than pinning a permanent prefix. There is no second ledger or process cache.
+The marker remains deliberately unlocked: racing loops may perform a redundant
+pass, as before. Missing/legacy/malformed cursor bytes start at the beginning;
+unavailable host-local state retains the existing best-effort cleanup fallback.
 Withdrawal never removed a sidecar, so ~2,900 concluded ones made a Spark NFS
 census take 3-5 s of its 5 s budget (#1498). Every census still reads every
 remaining sidecar.

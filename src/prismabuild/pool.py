@@ -109,6 +109,7 @@ immediately. Execution deadlines and progress watches use local monotonic time.
 
 from __future__ import annotations
 
+from bisect import bisect_right
 from collections.abc import Callable, Container, Iterable, Iterator, Mapping, Sequence
 from typing import Any, NamedTuple, cast
 from contextlib import contextmanager, nullcontext, suppress
@@ -9303,7 +9304,10 @@ class PoolQueue:
         retired or malformed, an election is kept. Unreadable or foreign
         records are kept. Losing a counter only restarts that key's aging,
         exactly as a successful claim already does. At most ``limit``
-        concluded sidecars are inspected per call; failures are per row.
+        concluded sidecars are inspected per call; failures are per row. The
+        existing host-local sweep marker retains the last inspected name, so
+        each call resumes strictly after it and wraps once. Kept and busy rows
+        advance the cursor too; no unknown authority is skipped by the census.
         """
 
         from . import _measurement_reservation as measurement_reservation
@@ -9313,36 +9317,77 @@ class PoolQueue:
                 names = sorted(entry.name for entry in entries)
         except OSError:
             return pruned
+        if not names or limit <= 0:
+            return pruned
+
+        # The existing host-local sweep marker owns both the heartbeat and
+        # this cursor. Its bytes survive loop/process replacement; no second
+        # ledger or per-process cache decides which prefix to revisit.
+        descriptor = None
+        cursor = ""
+        cursor_bytes = 64 + len(".json")
+        try:
+            descriptor = os.open(self._sweep_marker(),
+                                 os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW
+                                 | os.O_NONBLOCK | os.O_CLOEXEC, 0o600)
+            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                raise OSError("sweep marker is not a regular file")
+            cursor = os.pread(descriptor, cursor_bytes + 1, 0).decode("ascii", errors="replace")
+            if not cursor.endswith(".json") or not _is_hex64(cursor[:-len(".json")]):
+                cursor = ""  # absent/legacy/malformed bookkeeping is no authority
+        except Exception:                                        # noqa: BLE001
+            # Like _sweep_due, unavailable local state never disables cleanup.
+            if descriptor is not None:
+                os.close(descriptor)
+                descriptor = None
+        start = bisect_right(names, cursor)
         inspected = 0
-        for name in names:
-            if inspected >= limit:
-                break
-            key = name[: -len(".json")]
-            if not name.endswith(".json") or not _is_hex64(key):
-                continue
-            path = self.passes_path(key)
-            try:
-                if (self.item_path(READY, key).exists()
-                        or self.item_path(CLAIMED, key).exists()):
+        after = None
+        try:
+            for offset in range(len(names)):
+                if inspected >= limit:
+                    break
+                name = names[(start + offset) % len(names)]
+                key = name[: -len(".json")]
+                if not name.endswith(".json") or not _is_hex64(key):
                     continue
-                if not any(self.item_path(state, key).exists()
-                           for state in (DONE, FAILED, WITHDRAWN)):
-                    continue
-                inspected += 1
-                with self._transition_locked(key, blocking=False) as acquired:
-                    if not acquired:
-                        continue
+                path = self.passes_path(key)
+                try:
                     if (self.item_path(READY, key).exists()
                             or self.item_path(CLAIMED, key).exists()):
                         continue
-                    record = _read_json(path)
-                    if (record is None or record.get("action_key") != key
-                            or measurement_reservation.FIELD in record):
+                    if not any(self.item_path(state, key).exists()
+                               for state in (DONE, FAILED, WITHDRAWN)):
                         continue
-                    path.unlink()
-            except (OSError, PoolContractError):
-                continue
-            pruned.append(key)
+                    inspected += 1
+                    after = name  # kept, unreadable and busy rows still advance
+                    with self._transition_locked(key, blocking=False) as acquired:
+                        if not acquired:
+                            continue
+                        if (self.item_path(READY, key).exists()
+                                or self.item_path(CLAIMED, key).exists()):
+                            continue
+                        record = _read_json(path)
+                        if (record is None or record.get("action_key") != key
+                                or measurement_reservation.FIELD in record):
+                            continue
+                        path.unlink()
+                except (OSError, PoolContractError):
+                    continue
+                pruned.append(key)
+        finally:
+            if descriptor is not None:
+                try:
+                    if after is not None:
+                        # Cursor progress must not postpone/expire the heartbeat.
+                        stamp = os.fstat(descriptor)
+                        os.pwrite(descriptor, after.encode("ascii"), 0)
+                        os.ftruncate(descriptor, cursor_bytes)
+                        os.utime(descriptor, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+                except OSError:
+                    pass
+                finally:
+                    os.close(descriptor)
         return pruned
 
     def sweep_consumer_events(
@@ -21883,6 +21928,12 @@ class PoolQueue:
                 pids.add(pid)
         return pids
 
+    def _sweep_marker(self) -> Path:
+        """The single host-local owner of sweep timing and cursor progress."""
+
+        directory, digest = cpu_admission.box_state(self.ledger().base)
+        return directory / f"{digest}.sweep"
+
     def _sweep_due(self, *, interval_s: float = HEARTBEAT_S) -> bool:
         """Claim this box's turn to run the reaper, or decline it.
 
@@ -21939,12 +21990,11 @@ class PoolQueue:
         """
 
         try:
-            directory, digest = cpu_admission.box_state(self.ledger().base)
+            marker = self._sweep_marker()
         except Exception:                                        # noqa: BLE001
             # No host-local rendezvous (a read-only or absent ``/tmp``, an
             # unresolvable ledger): sweep, as this method's caller always did.
             return True
-        marker = directory / f"{digest}.sweep"
         now = _now()
         try:
             if 0 <= now - marker.stat().st_mtime < interval_s:
