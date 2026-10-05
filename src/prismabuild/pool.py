@@ -157,6 +157,7 @@ from . import posix_lock
 from . import window_credit
 from . import publication_canary
 from . import local_scratch
+from . import filesystem_floor
 
 POOL_ITEM_SCHEMA_V1 = "prismaquant.prismabuild.pool_item.v1"
 POOL_CLAIM_INTENT_SCHEMA_V1 = "prismaquant.prismabuild.pool_claim_intent.v1"
@@ -4676,8 +4677,50 @@ class ResourceLedger:
             counts[kind] = counts.get(kind, 0) + 1
         return counts
 
-    @_guarded_mutation(blocking=False)
     def begin_acquire(
+        self, action_key: str, demand: Mapping[str, int], *,
+        adaptive: dict | None = None, cpu_tiers: Mapping | None = None,
+        adaptive_gpu: dict | None = None,
+    ) -> str | None:
+        """Take the whole demand, after the used-filesystem floor allows it.
+
+        Byte kinds (``filesystem_floor.BYTE_KINDS``) bound to a filesystem
+        are checked against its floor (#1483).  The gate's mode and bindings
+        come from a per-process cache the loop tick refreshes outside every
+        lock; its floor locks are taken inside the mutation lock and are
+        innermost.  A refusal is a shortage: ``None``, with
+        ``last_token_shortage`` naming ``filesystem_floor``.  With the floor
+        mode ``off`` (the default) this is exactly the locked acquisition.
+        """
+
+        kwargs = {"adaptive": adaptive, "cpu_tiers": cpu_tiers,
+                  "adaptive_gpu": adaptive_gpu}
+        try:
+            gate = filesystem_floor.ledger_gate(self, demand)
+        except Exception as exc:                                 # noqa: BLE001
+            if filesystem_floor.mode(self.root.parent) != "enforce":
+                gate = None
+            else:
+                self.last_token_shortage = {
+                    "resource": "filesystem_floor", "requested": 0, "available": 0,
+                    "reason": "gate_unreadable", "detail": repr(exc)}
+                return None
+        if gate is None:
+            return self._begin_acquire_locked(action_key, demand, **kwargs)
+        with self._mutation_locked(blocking=False) as acquired:
+            if not acquired:
+                return None
+            with gate.admitted() as allowed:
+                if not allowed:
+                    self.last_token_shortage = gate.shortage()
+                    return None
+                handle = self._begin_acquire_locked(action_key, demand, **kwargs)
+                if handle is not None:
+                    gate.granted()
+                return handle
+
+    @_guarded_mutation(blocking=False)
+    def _begin_acquire_locked(
         self, action_key: str, demand: Mapping[str, int], *,
         adaptive: dict | None = None, cpu_tiers: Mapping | None = None,
         adaptive_gpu: dict | None = None,

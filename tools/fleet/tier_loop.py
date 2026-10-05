@@ -51,6 +51,7 @@ from runtime_paths import generation_root  # noqa: E402
 sys.path.insert(0, str(generation_root(__file__) / "src"))
 
 from prismabuild import core as pb  # noqa: E402
+from prismabuild import filesystem_floor  # noqa: E402
 from prismabuild import movement_actions  # noqa: E402
 from prismabuild import pool  # noqa: E402
 from prismabuild import produced_output  # noqa: E402
@@ -10675,6 +10676,11 @@ def _serve_cycles(args, stop_requested) -> int:
         else:
             print(json.dumps(tier_cycle_line(host, records, LAST_CYCLE)), flush=True)
             cycle_failed = False
+        # The used-filesystem floor's owner work (#1483): refresh the bindings
+        # this box owns (a stage pool is sampled only here) and reap dead
+        # growth holders.  Throttled and exception-isolated; every mode.
+        if getattr(queue, "root", None) is not None:
+            filesystem_floor.loop_tick(queue.root, label=f"tier_loop {host}")
         if args.once:
             print(json.dumps(records, indent=1, default=str))
             if stop_requested() or runtime_gate.read_maintenance_gate() is not None:
