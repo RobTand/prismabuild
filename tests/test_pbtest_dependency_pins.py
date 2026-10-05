@@ -301,10 +301,30 @@ def test_tolerant_policy_still_refuses_corrupt_installed_bytes(
     init = site / "pinsbyte1544/__init__.py"
     init.write_text(init.read_text() + "# corrupted\n")
     monkeypatch.syspath_prepend(str(site))
+    calls = []
+    # ``OTHER`` is not the installed commit, so the identity check FAILS and the
+    # policy is genuinely invoked; the refusal below therefore comes from the
+    # byte phase running AFTER a tolerated drift, not from the strict path.
     with pytest.raises(ValueError) as excinfo:
-        pins_module.verify_install("pinsbyte1544", commit,
-                                   identity_policy=lambda message, facts: None)
+        pins_module.verify_install(
+            "pinsbyte1544", OTHER,
+            identity_policy=lambda message, facts: calls.append(message))
+    assert len(calls) == 1 and "require a non-editable Git install" in calls[0]
     assert "installed bytes differ from RECORD" in str(excinfo.value)
+    assert "require a non-editable Git install" not in str(excinfo.value)
+
+
+def test_tolerant_policy_missing_installed_file_still_fails(
+        tmp_path, monkeypatch, pins_module, pins_repo):
+    site, commit = pip_installed(tmp_path, pins_repo)
+    (site / "pinsbyte1544/__init__.py").unlink()
+    monkeypatch.syspath_prepend(str(site))
+    calls = []
+    with pytest.raises(OSError):
+        pins_module.verify_install(
+            "pinsbyte1544", OTHER,
+            identity_policy=lambda message, facts: calls.append(message))
+    assert len(calls) == 1
 
 
 @pytest.mark.parametrize("change, diagnostic", [
@@ -332,10 +352,16 @@ def test_tolerant_policy_never_weakens_integrity(tmp_path, monkeypatch,
         monkeypatch.syspath_prepend(str(shadow))
     if change != "shadow":
         monkeypatch.syspath_prepend(str(site))
+    calls = []
+    # ``OTHER`` makes the identity check fail so the policy is really called;
+    # every integrity refusal must still follow the tolerated drift.
     with pytest.raises(ValueError) as excinfo:
-        pins_module.verify_install("pinsbyte1544", commit,
-                                   identity_policy=lambda message, facts: None)
+        pins_module.verify_install(
+            "pinsbyte1544", OTHER,
+            identity_policy=lambda message, facts: calls.append(message))
+    assert len(calls) == 1
     assert diagnostic in str(excinfo.value)
+    assert "require a non-editable Git install" not in str(excinfo.value)
 
 
 def test_standalone_byte_phase_ignores_identity_and_refuses_corruption(
