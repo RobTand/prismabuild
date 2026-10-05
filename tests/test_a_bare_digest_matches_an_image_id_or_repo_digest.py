@@ -173,3 +173,26 @@ def test_any_repository_carrying_the_digest_satisfies_a_bare_requirement():
     assert container_images.missing([BARE], [OTHER_REPO_DIGEST]) == ()
     assert container_images.missing([BARE], [REPO_DIGEST, OTHER_REPO_DIGEST]) == ()
     assert container_images.missing([BARE], [OTHER_REPO_DIGEST, REPO_DIGEST]) == ()
+
+
+def test_missing_judges_every_requirement_against_the_whole_inventory():
+    """A one-shot ``present`` must not starve the second requirement.
+
+    Pre-fix failure (tip f997a4cf): ``missing([BARE, BARE], iter([BARE]))``
+    raised ``AssertionError: (BARE,)`` -- ``satisfied`` had consumed the
+    generator on the first requirement, so the second was judged against an
+    exhausted iterator.
+    """
+
+    assert container_images.missing(
+        [BARE, BARE], (entry for entry in [BARE])) == ()
+    assert container_images.missing(
+        [BARE, "sha256:" + "e" * 64], (entry for entry in SPARKLINA_SET)) == (
+        "sha256:" + "e" * 64)
+
+
+@pytest.mark.parametrize("shape", [list, tuple, set, frozenset])
+def test_satisfied_agrees_across_collection_shapes(shape):
+    assert container_images.satisfied(BARE, shape(SPARKLINA_SET)) is True
+    assert container_images.satisfied(BARE, shape([SPARKLINA_SET[0]])) is False
+    assert container_images.satisfied(REPO_DIGEST, shape([BARE])) is False

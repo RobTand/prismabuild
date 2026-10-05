@@ -25,12 +25,11 @@ Three reference forms are accepted, and they are deliberately not aliases:
   Engine 29.6.2).
 * ``repository@sha256:<64 hex>`` names a repository **manifest digest**.  It is
   satisfied only by that exact ``repository@sha256:...`` string among the
-  box's RepoDigests -- a bare ID never satisfies it, even with the same hex.
-  The inventory does present RepoDigests repository-qualified and never bare,
-  and since 2026-10-05 the bare-ID requirement reads the digest part of
-  exactly those entries, so the old rule that a hex collision cannot satisfy
-  an ID requirement holds in one direction only.  It exists only for an image
-  that
+  box's RepoDigests.  A bare ``sha256:`` requirement, by contrast, is
+  satisfied by the image ID itself or by the digest part of any RepoDigest.
+  A ``repository@sha256:`` requirement is therefore never satisfied by a
+  bare ID, whatever the hex.  The inventory presents RepoDigests
+  repository-qualified and never bare.  It exists only for an image that
   was pulled: 18 of 32 images on sparklina's classic store carry an empty
   RepoDigests list, the campaign image among them, so this form does not
   rescue a locally built or ``docker load``-ed image.
@@ -807,6 +806,12 @@ def satisfied(ref, present) -> bool:
     ``content:sha256:``.  Every match is a full, shape-checked string match
     against :data:`_IMAGE_ID`/:data:`_REPO_DIGEST`; a hex that appears as a
     prefix, a suffix, a tag or any other bystander string satisfies nothing.
+
+    ``present`` is a collection of inventory entries -- list, tuple, set,
+    frozenset all fine -- and is iterated exactly once; it is not required
+    to be a set.  :func:`missing` materializes it once for all of
+    ``required``, so callers holding a one-shot iterator should go through
+    :func:`missing` rather than call this per requirement.
     """
 
     text = str(ref)
@@ -830,7 +835,8 @@ def missing(required, present) -> tuple[str, ...]:
     qualified forms stay exact, and nothing else counts.
     """
 
-    return tuple(str(ref) for ref in required if not satisfied(ref, present))
+    known = [str(entry) for entry in present]
+    return tuple(str(ref) for ref in required if not satisfied(ref, known))
 
 
 def _read_capped(stream, *, limit: int, deadline: float) -> bytes | None:
