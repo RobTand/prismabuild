@@ -101,6 +101,17 @@ def test_a_badly_typed_option_is_refused_by_name(tmp_path, member):
         pbgang.load(_manifest(tmp_path, member))
 
 
+def test_a_relative_data_manifest_is_refused_by_name(tmp_path):
+    with pytest.raises(SystemExit, match="absolute path"):
+        pbgang.load(_manifest(tmp_path, {"data_manifest": "window4/manifest.json",
+                                         "residency": "stage"}))
+
+
+def test_a_member_declaring_a_manifest_must_declare_residency(tmp_path):
+    with pytest.raises(SystemExit, match="residency"):
+        pbgang.load(_manifest(tmp_path, {"data_manifest": "/data/manifest.json"}))
+
+
 @pytest.mark.parametrize("name", [
     "gang_group", "gang_size", "gang_index", "detach", "withdraw", "retry_safe",
     "after", "gpu", "gpu_capacity",
