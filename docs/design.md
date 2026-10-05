@@ -5933,6 +5933,23 @@ directories are fsynced before the whole `.partial` tree is renamed.
 Retries rehash and reuse completed partial files, and replace corrupt partial
 files. Only the final verified tree can be recorded as resident. Source
 size and modification time are diagnostics, not refusals.
+Lease renewal uses only explicit queue-row `resident_set` declarations, not
+manifest-subset inference (the design note section 3.3 supersedes its older
+lifecycle wording). Until leases may be extended by ready or claimed rows,
+but never past their hard maximum. Campaign leases end on release or maximum.
+An explicit `ResidentSets.renew` appends a new bounded lease without changing
+the body. Explicit Phase 1 readers take `local_resident.pin` and release that
+token only after their last read; a crashed reader pin stays until the existing
+broker scope attestation proves stop. Phase 2 will integrate container pins.
+
+Eviction takes the per-host flock, checks pins, durably records `evicting`,
+then renames to `.evicting` under that lock. It releases the lock before
+deleting, and releases ledger tokens only after every tree is gone. An active
+mover holds its separate move lock, so eviction defers instead of deleting an
+in-flight partial tree. Each localtier cycle finishes interrupted evictions
+before minting. Cross-host requests queue the retained host-pinned egress action
+rather than deleting another host's paths in the caller.
+
 
 
 ## Cluster-scoped storage tiers (#583)
