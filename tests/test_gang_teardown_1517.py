@@ -5,7 +5,6 @@ census and controllers; only the clock and sampler are controlled.
 """
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
 import sys
 from pathlib import Path
 
@@ -145,18 +144,21 @@ def test_a_member_whose_lease_is_lost_tears_the_gang_down(gang_fleet, monkeypatc
 
 def test_two_equal_priority_gangs_never_split_the_two_hosts(gang_fleet):
     """#1519 review: interleaved passes must not commit G1 on one host and G2
-    on the other. Another loop holding G1m0's transition lock makes sparklina
-    mark only G2m0 ready first; on main sparky then commits G2m1 beside G1m1's
-    ready mark, and the two gangs wait on each other until both fail."""
+    on the other. G1 is published first but its group record lands late (its
+    pbgang is still submitting), so sparklina's first pass readies only G2m0.
+    On the previous head sparky then readies G1m1 and commits G2m1 against
+    G2m0's fresh mark; sparklina commits G1m0 against G1m1's, and the two
+    gangs wait on each other until both fail."""
     queue, clock, publish, finish, gclaim, denial, members = gang_fleet
-    g1 = members("g1", priority=10)[1]
-    g2 = members("g2", priority=10)[1]
-    with (ThreadPoolExecutor(max_workers=1) as executor,
-          queue._transition_locked(g1[0]) as acquired):
-        assert acquired
-        assert executor.submit(gclaim, "sparklina").result(timeout=30) is None
+    group1, g1 = members("g1", priority=10, file_group=False)
+    group2, g2 = members("g2", priority=10)
+    assert gclaim("sparklina") is None
+    assert denial(g1[0], "sparklina")["reason"] == "gang_group_incomplete"
     assert denial(g2[0], "sparklina")["reason"] == "gang_waiting_for_peers"
+    _gang.publish_group(queue, group1, [pool._read_json(queue.item_path(pool.READY, key))
+                                        for key in g1])
     assert gclaim("sparky") is None, "sparky committed the lower-ranked gang"
+    assert denial(g1[1], "sparky")["reason"] == "gang_waiting_for_peers"
     behind = denial(g2[1], "sparky")
     assert behind["reason"] == "deferred_for_gang_reservation", behind
     assert behind["evidence"]["withheld_for"] == g1[1]
