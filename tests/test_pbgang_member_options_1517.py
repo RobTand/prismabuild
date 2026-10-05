@@ -44,9 +44,10 @@ def _command(tmp_path: Path, member: dict, index: int = 0) -> list[str]:
 
 WINDOW_MEMBER = {
     "gpu": True, "gpu_memory_gb": 102, "exclusive": True, "measurement": True,
-    "host_class": "gb10", "container_image": [IMAGE],
+    "host_class": "gb10", "max_attempts": 1, "priority_reason": "Window 4 pair",
+    "container_images": [IMAGE],
     "data_manifest": "/mnt/shared/manifests/window.json", "residency": "stage",
-    "residency_mover_mem_gb": 2, "progress_phase": ["load=600", "run=1200"],
+    "residency_mover_mem_gb": 2, "progress_phases": ["load=600", "run=1200"],
     "progress_cycle": True, "deterministic": True,
 }
 
@@ -63,6 +64,7 @@ def test_a_full_member_reaches_pbruns_own_parser_with_every_option(tmp_path):
     assert args.data_manifest == "/mnt/shared/manifests/window.json"
     assert args.residency == "stage" and args.residency_mover_mem_gb == 2
     assert args.progress_phase == ["load=600", "run=1200"]
+    assert args.max_attempts == 1 and args.priority_reason == "Window 4 pair"
     assert args.progress_cycle is True and args.deterministic is True
     assert (args.gang_group, args.gang_size, args.gang_index) == (GROUP, 2, 0)
     assert args.priority == 10 and args.tag == ["sparky"]
@@ -86,7 +88,7 @@ def test_a_false_switch_adds_no_flag(tmp_path):
 
 def test_a_repeated_field_repeats_its_flag(tmp_path):
     other = "content:sha256:" + "b" * 64
-    command = _command(tmp_path, {"container_image": [IMAGE, other]})
+    command = _command(tmp_path, {"container_images": [IMAGE, other]})
     pairs = [command[i + 1] for i, token in enumerate(command)
              if token == "--container-image"]
     assert pairs == [IMAGE, other]
@@ -95,8 +97,8 @@ def test_a_repeated_field_repeats_its_flag(tmp_path):
 @pytest.mark.parametrize("member", [
     {"gpu": "yes"}, {"exclusive": 1}, {"gpu_memory_gb": True},
     {"gpu_memory_gb": [102]}, {"gpu_memory_gb": ""},
-    {"container_image": IMAGE}, {"container_image": []}, {"container_image": [""]},
-    {"progress_phase": "load=600"}, {"data_manifest": None},
+    {"container_images": IMAGE}, {"container_images": []}, {"container_images": [""]},
+    {"progress_phases": "load=600"}, {"data_manifest": None},
 ], ids=["gpu-string", "exclusive-int", "memory-bool", "memory-list", "memory-empty",
         "image-string", "image-empty-list", "image-empty-entry", "phase-string",
         "manifest-none"])
@@ -107,8 +109,115 @@ def test_a_badly_typed_option_is_refused_by_name(tmp_path, member):
 
 @pytest.mark.parametrize("name", [
     "gang_group", "gang_size", "gang_index", "detach", "cwd", "withdraw",
-    "max_attempts", "retry_safe", "after",
+    "retry_safe", "after",
 ])
 def test_a_driver_owned_flag_cannot_be_smuggled_in_as_a_member_field(tmp_path, name):
     with pytest.raises(SystemExit, match="allowed fields"):
         pbgang.load(_manifest(tmp_path, {name: 1}))
+
+
+def test_a_member_may_declare_one_attempt_and_no_more(tmp_path):
+    assert "--max-attempts" in _command(tmp_path, {"max_attempts": 1})
+    with pytest.raises(SystemExit, match="one attempt"):
+        pbgang.load(_manifest(tmp_path, {"max_attempts": 2}))
+
+
+def test_a_priority_reason_is_a_member_field_and_a_manifest_default(tmp_path):
+    path = tmp_path / "gang.json"
+    path.write_text(json.dumps({
+        "priority": 10, "priority_reason": "window default",
+        "members": [{"tag": "sparky", "argv": ["/bin/true"]},
+                    {"tag": "sparklina", "argv": ["/bin/true"],
+                     "priority_reason": "member own"}]}))
+    manifest = pbgang.load(path)
+    args = SimpleNamespace(cwd=tmp_path)
+    reasons = []
+    for index, member in enumerate(manifest["members"]):
+        command = pbgang.member_command(args, manifest, member, group=GROUP, index=index)
+        reasons.append([command[i + 1] for i, token in enumerate(command)
+                        if token == "--priority-reason"])
+    assert reasons == [["window default"], ["member own"]]
+
+
+def test_a_manifest_priority_reason_must_be_text(tmp_path):
+    path = tmp_path / "gang.json"
+    path.write_text(json.dumps({"priority_reason": ["x"], "members": [
+        {"tag": "a", "argv": ["x"]}, {"tag": "b", "argv": ["x"]}]}))
+    with pytest.raises(SystemExit, match="priority_reason"):
+        pbgang.load(path)
+
+
+# The prepared Window 4 pair, as the flat list its owner wrote: two members, each
+# with its own host, resource demand, GPU subset, exclusive measurement class,
+# one attempt, priority and reason, image, timeout and a mapping environment.
+WINDOW4_CWD = "/mnt/shared/tessera-measurements/window4-953-approved-b5e154-20261005"
+WINDOW4_IMAGE = ("localhost/prismaquant/spark-vllm-nccl230@sha256:"
+                 "5be13705acaecc7b4aaf342a84f80d67844c9970ff8375bf9fbeecc9c98ce84a")
+WINDOW4_ENV = {
+    "TS": "/mnt/shared/tessera-runs/worktrees/ts-d13-public-2dbac191",
+    "FABRIC": "socket", "WINDOW_MODE": "window4-eager-2048-4096",
+    "GRAPH_PEER_WAIT_SECONDS": "3600", "OMP_NUM_THREADS": "1", "MAX_JOBS": "1",
+}
+
+
+def _window4_member(host: str, cpus: int) -> dict:
+    return {
+        "argv": ["/usr/bin/python3", "tools/window4.py", "--arm", "eager"],
+        "cwd": WINDOW4_CWD, "tags": [host],
+        "demand": {"cpu": cpus, "mem_gb": 104, "gpu": 1},
+        "gpu_memory_gb": 102, "exclusive": True, "measurement": True,
+        "host_class": "gb10", "max_attempts": 1, "priority": 10,
+        "priority_reason": "Goal: exact reviewed A8S eager Window4 MNBT2048/4096",
+        "container_images": [WINDOW4_IMAGE], "timeout_s": 5400, "env": dict(WINDOW4_ENV),
+    }
+
+
+def test_the_window4_pair_reaches_pbruns_argv_intact(tmp_path):
+    path = tmp_path / "window4.json"
+    path.write_text(json.dumps([_window4_member("sparklina", 8), _window4_member("sparky", 6)]))
+    manifest = pbgang.load(path)
+    args = SimpleNamespace(cwd=None)
+    for index, (host, cpus) in enumerate([("sparklina", 8), ("sparky", 6)]):
+        command = pbgang.member_command(args, manifest, manifest["members"][index],
+                                        group=GROUP, index=index)
+        flags = command[2:command.index("--")]
+        parsed = pbrun.parse_args([*flags, "--", *command[command.index("--") + 1:]])
+        assert str(parsed.cwd) == WINDOW4_CWD
+        assert parsed.tag == [host]
+        assert parsed.demand == f"cpu={cpus},mem_gb=104,gpu=1"
+        assert parsed.gpu_memory_gb == 102.0
+        assert parsed.exclusive is True and parsed.measurement is True
+        assert parsed.host_class == "gb10" and parsed.max_attempts == 1
+        assert parsed.priority == 10
+        assert parsed.priority_reason == "Goal: exact reviewed A8S eager Window4 MNBT2048/4096"
+        assert parsed.container_image == [WINDOW4_IMAGE]
+        assert parsed.timeout_s == 5400
+        assert parsed.env == [f"{key}={value}" for key, value in WINDOW4_ENV.items()]
+        assert (parsed.gang_group, parsed.gang_size, parsed.gang_index) == (GROUP, 2, index)
+        assert command[command.index("--") + 1:] == [
+            "/usr/bin/python3", "tools/window4.py", "--arm", "eager"]
+
+
+@pytest.mark.parametrize("member", [
+    {"tag": "sparky", "tags": ["sparky"]}, {"tags": []}, {"tags": [""]},
+    {"demand": {"cpu": True}}, {"demand": {"": 1}}, {"demand": 7},
+    {"env": {"K": ["v"]}}, {"env": [1]}, {"cwd": ""},
+], ids=["tag-and-tags", "tags-empty", "tags-blank-entry", "demand-bool", "demand-blank-key",
+        "demand-number", "env-list-value", "env-number-entry", "cwd-empty"])
+def test_a_malformed_native_shape_is_refused_by_name(tmp_path, member):
+    base = {"tag": "sparky", "argv": ["/bin/true"]}
+    if "tag" in member or "tags" in member:
+        base.pop("tag")
+    path = tmp_path / "gang.json"
+    path.write_text(json.dumps([{**base, **member}, {"tag": "sparklina", "argv": ["/bin/true"]}]))
+    with pytest.raises(SystemExit, match="member 0"):
+        pbgang.load(path)
+
+
+def test_cwd_is_required_unless_every_member_names_one(tmp_path, capsys):
+    path = tmp_path / "gang.json"
+    path.write_text(json.dumps([_window4_member("sparky", 6),
+                                {"tag": "sparklina", "argv": ["/bin/true"]}]))
+    with pytest.raises(SystemExit):
+        pbgang.main(["--manifest", str(path), "--queue", str(tmp_path / "q")])
+    assert "--cwd is required" in capsys.readouterr().err
