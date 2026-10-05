@@ -192,8 +192,18 @@ def test_a_mutable_or_malformed_reference_is_refused(bad):
         ci.normalize_refs([bad])
 
 
-def test_the_three_forms_with_the_same_hex_are_not_aliases():
-    assert ci.missing([ID_A], [REF_A]) == (ID_A,)
+def test_a_bare_digest_takes_a_repo_digest_but_qualified_forms_stay_exact():
+    """One direction of the old alias wall moved (2026-10-05 decision).
+
+    A bare ``sha256:`` requirement is satisfied by the image ID *or* by the
+    digest part of any RepoDigest -- a repository-qualified digest is
+    content-addressed, so the same hex under any repository name is the same
+    bytes, on either image store (#805).  The other directions hold: a
+    ``repository@sha256:`` requirement is never satisfied by a bare ID, and
+    ``content:`` matches content only.
+    """
+
+    assert ci.missing([ID_A], [REF_A]) == ()
     assert ci.missing([REF_A], [ID_A]) == (REF_A,)
     assert ci.missing([CONTENT_A], [ID_A, REF_A]) == (CONTENT_A,)
     assert ci.missing([ID_A], [CONTENT_A]) == (ID_A,)
