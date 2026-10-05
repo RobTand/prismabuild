@@ -25,7 +25,7 @@ def test_copy_hashes_fsyncs_then_lands_whole_tree(tmp_path, monkeypatch):
         fsyncs.append(fd)
         return real(fd)
     monkeypatch.setattr(local_resident.os, "fsync", fsync)
-    result = local_resident.copy(store, record["set_id"], "test-host", spec)
+    result = local_resident.copy(store, record["set_id"], "test-host", spec, now=120)
     assert result["state"] == "resident"
     assert Path(result["local_root"]).joinpath("weights").read_bytes() == b"weights"
     assert result["verification"][0]["sha256"] == record["manifest"]["entries"][0]["sha256"]
@@ -40,11 +40,11 @@ def test_corrupt_source_never_becomes_resident_and_retry_resumes(tmp_path):
     source = Path(record["canonical_root"]) / "weights"
     source.write_bytes(b"corrupt")
     with pytest.raises(ValueError, match="sha256"):
-        local_resident.copy(store, record["set_id"], "test-host", spec)
+        local_resident.copy(store, record["set_id"], "test-host", spec, now=120)
     assert store.read_copy(record["set_id"], "test-host")["state"] == "copying"
     assert not Path(spec["root"]).joinpath(record["set_id"]).exists()
     source.write_bytes(b"weights")
-    assert local_resident.copy(store, record["set_id"], "test-host", spec)["state"] == "resident"
+    assert local_resident.copy(store, record["set_id"], "test-host", spec, now=120)["state"] == "resident"
 
 
 def test_verified_partial_file_is_reused_but_rehashed(tmp_path, monkeypatch):
@@ -56,7 +56,7 @@ def test_verified_partial_file_is_reused_but_rehashed(tmp_path, monkeypatch):
     def no_copy(*_args, **_kwargs):
         raise AssertionError("already verified file must not be recopied")
     monkeypatch.setattr(local_resident, "copy_file", no_copy)
-    assert local_resident.copy(store, record["set_id"], "test-host", spec)["state"] == "resident"
+    assert local_resident.copy(store, record["set_id"], "test-host", spec, now=120)["state"] == "resident"
 
 
 def test_source_metadata_is_diagnostic_not_a_gate(tmp_path):
@@ -64,7 +64,7 @@ def test_source_metadata_is_diagnostic_not_a_gate(tmp_path):
     store, record, spec = world(tmp_path)
     source = Path(record["canonical_root"]) / "weights"
     source.touch()
-    result = local_resident.copy(store, record["set_id"], "test-host", spec)
+    result = local_resident.copy(store, record["set_id"], "test-host", spec, now=120)
     assert result["source_stamp"][str(source)]["mtime_ns"] == source.stat().st_mtime_ns
 
 
@@ -74,7 +74,7 @@ def test_copy_checks_capacity_and_never_serves_partial(tmp_path, monkeypatch):
     store, record, spec = world(tmp_path)
     monkeypatch.setattr(local_resident.os, "statvfs", lambda _: sample(10))
     with pytest.raises(ValueError, match="capacity"):
-        local_resident.copy(store, record["set_id"], "test-host", spec)
+        local_resident.copy(store, record["set_id"], "test-host", spec, now=120)
     assert store.read_copy(record["set_id"], "test-host")["state"] != "resident"
 
 
@@ -120,7 +120,7 @@ def test_stage_selection_holds_real_reader_pin_until_copy_finishes(tmp_path, mon
         observed.append(str(source))
         return original(source, *args, **kwargs)
     monkeypatch.setattr(local_resident, "copy_file", copying)
-    assert local_resident.copy(store, record["set_id"], "test-host", spec, reader_context=ctx)["state"] == "resident"
+    assert local_resident.copy(store, record["set_id"], "test-host", spec, reader_context=ctx, now=120)["state"] == "resident"
     assert observed == [str(staged)]
     pins, errors = reader_lease.live_for(queue, {str(staged)})
     assert not errors and not pins

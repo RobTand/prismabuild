@@ -12,7 +12,7 @@ from test_local_resident_mover import world
 def resident(tmp_path):
     from prismabuild import local_resident
     store, record, spec = world(tmp_path)
-    local_resident.copy(store, record["set_id"], "test-host", spec)
+    local_resident.copy(store, record["set_id"], "test-host", spec, now=120)
     return store, record, spec
 
 

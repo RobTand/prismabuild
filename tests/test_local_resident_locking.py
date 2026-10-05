@@ -43,21 +43,34 @@ def test_copy_after_a_completed_eviction_holds_tokens_again(tmp_path):
     copy waits on the mover lock, and the copy lands resident holding zero
     tokens.
     """
-    from prismabuild import local_resident
+    from prismabuild import local_resident, local_tier
     store, record, spec = world(tmp_path)
+    store.release(record["set_id"], by="test")
     child = _child(HOLD_AND_EVICT, store.queue_root, record["set_id"], "test-host", spec_json(spec))
     try:
         assert child.stdout.readline().strip() == "held"
         outcome = {}
+        reserved = threading.Event()
+        original_reserve = local_tier.reserve
+
+        def observed_reserve(*args, **kwargs):
+            reserved.set()
+            return original_reserve(*args, **kwargs)
 
         def run():
-            try:
-                outcome["result"] = local_resident.copy(store, record["set_id"], "test-host", spec, now=201)
-            except ValueError as exc:
-                outcome["refusal"] = str(exc)
+            from unittest import mock
+            with mock.patch.object(local_tier, "reserve", observed_reserve):
+                try:
+                    outcome["result"] = local_resident.copy(store, record["set_id"], "test-host", spec)
+                except ValueError as exc:
+                    outcome["refusal"] = str(exc)
 
         worker = threading.Thread(target=run)
         worker.start()
+        # Force the B1 order: the unfixed copy reserves BEFORE waiting on the
+        # mover lock, so wait until that call has happened before the child
+        # evicts and releases the ledger underneath it.
+        assert reserved.wait(30), "copy() never reached its reservation"
         child.stdin.write("go\n")
         child.stdin.flush()
         worker.join(60)
@@ -76,8 +89,9 @@ def test_copy_after_a_completed_eviction_holds_tokens_again(tmp_path):
 def test_copy_refuses_an_expired_lease_before_any_byte(tmp_path):
     from prismabuild import local_resident
     store, record, spec = world(tmp_path)
+    store.release(record["set_id"], by="test")
     with pytest.raises(ValueError, match="lease"):
-        local_resident.copy(store, record["set_id"], "test-host", spec, now=201)
+        local_resident.copy(store, record["set_id"], "test-host", spec)
     assert store.read_copy(record["set_id"], "test-host")["state"] != "resident"
     assert not Path(spec["root"]).joinpath(record["set_id"]).exists()
     assert not Path(spec["root"]).joinpath(record["set_id"] + ".partial").exists()
@@ -86,11 +100,12 @@ def test_copy_refuses_an_expired_lease_before_any_byte(tmp_path):
 def test_adopt_refuses_an_expired_lease_and_keeps_the_source(tmp_path):
     from prismabuild import local_resident
     store, record, spec = world(tmp_path)
+    store.release(record["set_id"], by="test")
     source = tmp_path / "manual"
     source.mkdir()
     (source / "weights").write_bytes(b"weights")
     with pytest.raises(ValueError, match="lease"):
-        local_resident.adopt(store, record["set_id"], "test-host", spec, source, now=201)
+        local_resident.adopt(store, record["set_id"], "test-host", spec, source)
     assert (source / "weights").read_bytes() == b"weights"
     assert not Path(spec["root"]).joinpath(record["set_id"]).exists()
     assert store.read_copy(record["set_id"], "test-host")["state"] == "absent"
@@ -146,7 +161,7 @@ def test_reordering_the_pin_check_fails_the_protection_test(tmp_path, monkeypatc
     root, final, partial, evicting = local_resident._paths(record["set_id"], spec)
     import os as _os
 
-    def mutant(store_, set_id_, host_, spec_, *, now_=None):
+    def mutant(store_, set_id_, host_, spec_, *, now=None):
         with local_resident.posix_lock.held(store_.copy_path(set_id_, host_).with_suffix(".move.lock"), blocking=False) as got:
             if not got:
                 return {"state": "copying", "reason": "copy_in_progress"}
@@ -172,7 +187,9 @@ def test_reordering_the_pin_check_fails_the_protection_test(tmp_path, monkeypatc
 
 
 def test_legacy_attempt_without_served_from_still_validates(tmp_path):
-    queue = pool.PoolQueue(tmp_path / "queue")
+    from admitted_queue_fixture import AdmittedQueueFixture
+    queue = AdmittedQueueFixture(pool.PoolQueue(tmp_path / "queue"), capacity={"cpu": 1, "mem_gb": 2},
+                                 default_demand={"cpu": 1, "mem_gb": 1})
     queue.ensure_layout()
     key = "c" * 64
     queue.publish(action_key=key, cas_root=str(tmp_path / "cas"), checkout_root=str(tmp_path),
