@@ -67,10 +67,13 @@ def test_copy_after_a_completed_eviction_holds_tokens_again(tmp_path):
 
         worker = threading.Thread(target=run)
         worker.start()
-        # Force the B1 order: the unfixed copy reserves BEFORE waiting on the
-        # mover lock, so wait until that call has happened before the child
-        # evicts and releases the ledger underneath it.
-        assert reserved.wait(30), "copy() never reached its reservation"
+        # On the unfixed code the reservation happens BEFORE the lock wait, so
+        # it fires while the child still holds the lock; on the fixed code it
+        # happens only after the child's eviction has released it. Give the
+        # pre-fix ordering time to surface, then let the eviction run either
+        # way: the fixed copy must refuse, and any resident result must hold
+        # its tokens.
+        reserved.wait(5)
         child.stdin.write("go\n")
         child.stdin.flush()
         worker.join(60)
@@ -180,10 +183,13 @@ def test_reordering_the_pin_check_fails_the_protection_test(tmp_path, monkeypatc
     monkeypatch.setattr(local_resident, "evict", mutant)
     result = local_resident.evict(store, record["set_id"], "test-host", spec, now=201)
     assert result["reason"] == "pinned"
-    # The mutant already wrote evicting and left the tree renamed-eligible:
-    assert store.read_copy(record["set_id"], "test-host")["state"] == "resident", (
-        "a pinned refusal must never leave the record evicting")
-    assert not evicting.exists()
+    # The mutant's damage is observable: it left the record evicting for a
+    # pinned copy. The strengthened assertions in the pinned-refusal test
+    # (state resident, no .evicting tree) are exactly what fail against it,
+    # which is the review's required demonstration.
+    assert store.read_copy(record["set_id"], "test-host")["state"] == "evicting"
+    monkeypatch.undo()
+    assert local_resident.evict(store, record["set_id"], "test-host", spec, now=201)["reason"] == "pinned"
 
 
 def test_legacy_attempt_without_served_from_still_validates(tmp_path):
