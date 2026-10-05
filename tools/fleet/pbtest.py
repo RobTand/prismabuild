@@ -900,6 +900,7 @@ def helper_import(name, globals=None, locals=None, fromlist=(), level=0):
     return builtins.__import__(name, globals, locals, fromlist, level)
 
 
+# Helpers snapshot builtins for isolation; the import fallback delegates live.
 HELPER_BUILTINS = dict(vars(builtins), __import__=helper_import)
 pins = load("pbtest_pins") if "pbtest_pins" in SOURCES else None
 digest = load("pbtest_dependency_digest") if "pbtest_dependency_digest" in SOURCES else None

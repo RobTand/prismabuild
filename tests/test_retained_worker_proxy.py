@@ -35,6 +35,7 @@ KEY = "c" * 64
 NONCE = "b" * 32
 RECEIPT_SCHEMA = "prismaquant.prismabuild.runtime_version.v1"
 COMMIT = "ab" * 20
+PRE_SPLIT_COMMIT = "59719c7db39862490268caa055df9926a52a90c4"
 
 _CHECKOUT = Path(__file__).resolve().parents[1]
 
@@ -60,14 +61,15 @@ def _seal_tree(root: Path, members: dict[str, str]) -> None:
 
 
 def _published_generation(store: Path, name: str, *,
-                          layout: str = "published") -> Path:
+                          layout: str = "published", digest_owner: bool = True) -> Path:
     """A sealed fixture generation under the fixture store.
 
     ``published`` carries both proxy spellings with identical bytes (as
     ``_publication_manifest`` dual-lists them); ``checkout`` carries only
     the ``tools/fleet/`` spelling. Both carry the sealed worker, the
     proxy's own imports, and a standalone core for the authority-chain
-    check.
+    check. Pre-split fixtures use the actual pinned pre-split core and
+    carry neither the owner file nor a receipt entry for it.
     """
 
     root = store / name
@@ -79,8 +81,19 @@ def _published_generation(store: Path, name: str, *,
 
     add("tools/prismabuild_worker.py",
         _CHECKOUT / "tools" / "prismabuild_worker.py")
-    add("src/prismabuild/core.py",
-        _CHECKOUT / "src" / "prismabuild" / "core.py")
+    if digest_owner:
+        add("src/prismabuild/core.py", _CHECKOUT / "src/prismabuild/core.py")
+        add("src/prismabuild/digest_primitives.py",
+            _CHECKOUT / "src/prismabuild/digest_primitives.py")
+    else:
+        rel = "src/prismabuild/core.py"
+        original = subprocess.run(
+            ["git", "show", f"{PRE_SPLIT_COMMIT}:{rel}"], cwd=_CHECKOUT,
+            check=True, capture_output=True).stdout
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(original)
+        members[rel] = hashlib.sha256(original).hexdigest()
     # resource_exec.main imports the package before entering the broker
     # scope. Keep that real import closure in the retained fixture too.
     for module in ("__init__", "resource_scope", "progress",
@@ -310,6 +323,38 @@ def _retained_item(tmp_path, worker: str):
                   checkout_root=checkout, worker_script=worker,
                   resources=demand, max_attempts=2, retry_safe=True)
     return queue, queue.claim(capacity=demand)
+
+
+def test_receipt_listed_digest_owner_tamper_refuses_before_proxy_launch(
+        fleet_store, tmp_path, monkeypatch) -> None:
+    gen = _published_generation(fleet_store, "gen-owner-tamper")
+    owner = gen / "src/prismabuild/digest_primitives.py"
+    owner.chmod(0o644)
+    owner.write_bytes(owner.read_bytes() + b"\n# changed after publication\n")
+    owner.chmod(0o444)
+    worker = str(gen / "tools/prismabuild_worker.py")
+    queue, item = _retained_item(tmp_path, worker)
+    seen: list = []
+    _contained_harness(monkeypatch, tmp_path, queue, item, seen)
+    with pytest.raises(OSError, match="retained runtime hash mismatch: src/prismabuild/digest_primitives.py"):
+        queue.execute(item, containment=True)
+    assert seen == [], "a tampered owner must be refused before the proxy launches"
+
+
+def test_pre_split_receipt_without_digest_owner_keeps_retained_proxy_launch(
+        fleet_store, tmp_path, monkeypatch) -> None:
+    gen = _published_generation(fleet_store, "gen-pre-split", digest_owner=False)
+    receipt = json.loads((gen / "RUNTIME_VERSION.json").read_text())
+    assert "src/prismabuild/digest_primitives.py" not in receipt["files"]
+    assert not (gen / "src/prismabuild/digest_primitives.py").exists()
+    worker = str(gen / "tools/prismabuild_worker.py")
+    queue, item = _retained_item(tmp_path, worker)
+    seen: list = []
+    _contained_harness(monkeypatch, tmp_path, queue, item, seen)
+    outcome = queue.execute(item, containment=True)
+    assert outcome["status"] == "executed"
+    assert len(seen) == 1
+    assert seen[0][1] == str(gen / "tools/resource_exec.py")
 
 
 @pytest.mark.parametrize("affinity", [False, True])

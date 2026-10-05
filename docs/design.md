@@ -1521,6 +1521,10 @@ byte-for-byte over sealed non-symlink files
 (the `supervise._proven_roots` / `_published_generation` and
 `publish_runtime._barrier_generation` rule); anything else refuses
 rather than executing an untrusted proxy outside the contained slice.
+Post-split receipts also name `src/prismabuild/digest_primitives.py`; its bytes
+receive the same manifest-digest proof before the retained proxy is launched.
+The check is conditional on the receipt listing the member, so pre-split
+generations retain their existing verified import closure without that file.
 Dev stubs and missing shapes keep the current-runtime proxy.
 `run_local_action` forwards exactly
 these three from the launcher environment through the residency
