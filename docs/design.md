@@ -5946,9 +5946,20 @@ Eviction takes the per-host flock, checks pins, durably records `evicting`,
 then renames to `.evicting` under that lock. It releases the lock before
 deleting, and releases ledger tokens only after every tree is gone. An active
 mover holds its separate move lock, so eviction defers instead of deleting an
-in-flight partial tree. Each localtier cycle finishes interrupted evictions
-before minting. Cross-host requests queue the retained host-pinned egress action
-rather than deleting another host's paths in the caller.
+in-flight partial tree. Each localtier cycle attempts interrupted evictions
+before minting. Failed deletes retain their bytes and occupancy holders; the
+minter still counts the remaining trees and held tokens. Cross-host requests
+queue the retained host-pinned egress action rather than deleting another
+host's paths in the caller.
+
+An absent copy is idle only when no final, partial, or evicting tree exists
+and it holds no local tokens; the lease pass then rewrites no copy record.
+A corrupt record or failed deletion is isolated to that set, with its latest
+failure at `resident-sets/<id>/lease-errors/<host>.json`. A later successful
+pass clears that error. No exception releases occupancy. The serving role
+reports cycle failures and retries at its existing interval instead of
+crashing; `--once` reports failure with a nonzero exit.
+
 Adoption is a host-pinned movement action, not coordinator-side hashing. It
 checks whole-directory coverage and every file SHA-256, fsyncs the existing
 files and directories, then renames on the same filesystem without recopying.
