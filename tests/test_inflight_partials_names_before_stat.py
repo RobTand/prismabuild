@@ -9,6 +9,7 @@ temporary never counting as a rival.
 
 import os
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -23,6 +24,15 @@ OTHER = "b" * 16
 
 class _Stub:
     mover = OWN
+
+    #: The census is the publisher's own method; the stub carries its
+    #: state (#1028).  Instance state: every census call below is its own
+    #: range decision.
+    _range_partial_census = stage_move._StagedPublisher._range_partial_census
+
+    def __init__(self) -> None:
+        self._range_lock = threading.Lock()
+        self._range_partials = {}
 
 
 def _previous_implementation(mover: str, destination: Path) -> list[str] | None:
@@ -134,21 +144,29 @@ def test_the_answer_is_capped_and_sorted(staged: Path) -> None:
 def test_only_matching_names_are_stat_ed(staged: Path, monkeypatch) -> None:
     """The point of the reorder: a sibling that cannot match is never stat'ed.
 
-    This is the property that removes the cost, so it is pinned rather than
-    left to the benchmark.
+    The listing is remembered once per range decision (#1028) and each
+    name re-stats only the remembered names its prefix admits, so a
+    sibling that cannot match is never stat'ed.  This is the property
+    that removes the cost, so it is pinned rather than left to the
+    benchmark.
     """
 
     _siblings(staged, [f"bulk-{i:05d}.bin" for i in range(64)]
               + [f".{staged.name}.{OTHER}.partial"])
     stat_ed: list[str] = []
-    original = os.DirEntry.is_file
+    original = os.stat
 
-    def counting_is_file(self, *args, **kwargs):
-        stat_ed.append(self.name)
-        return original(self, *args, **kwargs)
+    def counting_stat(path, *args, **kwargs):
+        spelled = os.fspath(path)
+        # The fence's own stats -- the directory itself, and the
+        # mount-namespace probes behind the filesystem-type memo -- are
+        # not dirent stats; what the property pins is which *names* in
+        # the range directory get stat'ed.
+        if os.path.dirname(spelled) == os.fspath(staged.parent):
+            stat_ed.append(spelled)
+        return original(path, *args, **kwargs)
 
-    monkeypatch.setattr(os.DirEntry, "is_file", counting_is_file,
-                        raising=False)
+    monkeypatch.setattr(os, "stat", counting_stat)
     assert _census(staged) == [f".{staged.name}.{OTHER}.partial"]
-    assert stat_ed == [f".{staged.name}.{OTHER}.partial"], (
+    assert stat_ed == [os.fspath(staged.parent / f".{staged.name}.{OTHER}.partial")], (
         "only the one candidate name may be stat'ed")

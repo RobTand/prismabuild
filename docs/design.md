@@ -6808,6 +6808,35 @@ mover can adopt the old bytes under a name this run has not reached yet.
 Content-keyed stage paths would remove the collision by construction, but
 they are a layout migration; this settles it on the current layout.
 
+The publication gate's range-directory hint (#1028): the in-flight-partial
+census a re-decision passes lists its range directory once per
+`_trusted_directory_stamp` -- the stamp taken before the scan, the listing
+remembered only while a fresh directory version (`_current_directory_version`,
+the #1004/#1208 fence) still equals it -- and every name revalidates with
+that one directory version, re-listing only a directory that moved. A
+version the directory's own clock tick refuses, and a scan the directory
+moved, are returned once and never remembered, so a partial created in the
+same tick or during a scan cannot hide behind a remembered listing; on a
+filesystem whose directory times are not this kernel's, no stamp is ever
+trusted and every name lists, as before. The publisher's own temporary and
+rename move the range directory every entry, so a range of replacements
+lists it once an entry, as before; the hint's win is every decision that
+runs while the directory holds still -- the polls of a waiting entry, an
+adoption pass over an already-correct range. The check filters the
+remembered listing by the same prefix rule and re-stats only the names
+that pass it; a candidate that cannot be stat'ed -- one removed since
+the listing among them -- fails the name closed exactly as the per-name
+listing's stat did. The claim census and the pin census stay per name,
+exactly as main and #1089 left them: the claim listing and each claim
+record are read on every check through #1089's path-derivation memo, and
+the pins are listed, opened and parsed on every check with no memo -- a
+pin rewritten twice in one clock tick would hide a new ref behind one.
+A review round also reverted an earlier stamp-fenced claim hint for the
+same per-record freshness. The verdicts and the fail-closed answers
+are the per-name censuses'. The forest census a re-decision runs under the
+lock keeps its stamp fence (#1004), and `ownership_lock_held` accounting
+is untouched.
+
 The egress holds the lock for its act, not its census (#988). Before this
 change `stage_release.evict` took the stage root's ownership lock and then
 ran the fragment, claim, source and pin censuses, judged every entry with two
