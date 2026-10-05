@@ -24694,8 +24694,11 @@ class PoolQueue:
         succeeded = status in {"executed", "cache_hit"}
         limit = int(snapshot.get("max_attempts", DEFAULT_MAX_ATTEMPTS))
         # The same rule ``adopted_attempt_summary`` applies, so this outcome can
-        # never be the one that makes a reader refuse the record.
+        # never be the one that makes a reader refuse the record. A withdrawn
+        # status requires the withdrawn disposition: a cancelled attempt is
+        # not a failure and must not descend the retry ladder.
         disposition = (
+            WITHDRAWN if status == WITHDRAWN else
             DONE if succeeded else FAILED if attempt >= limit else "requeued"
         )
         self.archive_attempt(

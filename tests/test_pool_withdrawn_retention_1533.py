@@ -262,6 +262,92 @@ def test_superseding_publication_does_not_gain_the_old_attempts_evidence(scoped,
     assert matching[0]["resource_scope_cleanup"]["nonce"] == live["resource_scope"]["nonce"]
 
 
+def _publish_successor(queue, item):
+    # A replacement publication: a new generation of the same key, still READY.
+    queue.publish(action_key=item["action_key"], cas_root=item["cas_root"],
+                  checkout_root=item["checkout_root"], worker_script=item["worker_script"],
+                  resources=dict(item["resources"]), max_attempts=2, retry_safe=True)
+
+
+def test_late_withdrawn_finish_archives_the_withdrawn_disposition(scoped):
+    """A cancelled attempt finishing after a successor was published is withdrawn/withdrawn."""
+    queue, item, calls = scoped
+    key = item["action_key"]
+    queue.withdraw(key, by="rob", reason="cancel this run", signal_child=False)
+    # The reaper concludes a withdrawal-covered claim without filing an
+    # attempt, so this worker's finish becomes a late one.
+    queue.reap_stale(timeout_s=-1)
+    assert not queue.item_path(pool.CLAIMED, key).exists()
+    decision_path = queue.item_path(pool.WITHDRAWN, key)
+    decision = pool._read_json(decision_path)
+    immutable = queue.withdrawal_decision_path(decision)
+    immutable_bytes = immutable.read_bytes()
+    _publish_successor(queue, item)
+    # A re-submission retires the visible marker; the durable decision stays.
+    assert not decision_path.exists()
+    result = queue.finish(key, status="withdrawn", detail={"returncode": -15,
+                          "stdout": "last output\n", "stderr": "stopped\n"},
+                          claim_snapshot=item)
+    assert result == queue.attempt_path(item, 1)
+    archived = pool._read_json(result)
+    assert archived["status"] == pool.WITHDRAWN
+    assert archived["disposition"] == pool.WITHDRAWN
+    # The verifying reader checks the attempt's identity, digests and adopted
+    # summary, and reports no terminal: only cancellation owns this ending.
+    assert queue.archived_generation_outcomes(key, generation=item["published_unix"]) == []
+    assert immutable.read_bytes() == immutable_bytes
+    assert queue.item_path(pool.READY, key).exists()
+    assert not any(queue.item_path(state, key).exists()
+                   for state in (pool.CLAIMED, pool.DONE, pool.FAILED))
+    assert queue.ledger().held() == {}
+
+
+def test_late_withdrawn_finish_after_a_charged_retry_reads_back_withdrawn(scoped):
+    """The charged retry's slot cannot turn a late cancellation into a failure."""
+    queue, item, calls = scoped
+    key = item["action_key"]
+    queue.finish(key, status="failed", detail={"stderr": "prior failure"})
+    item = queue.claim(capacity={"cpu": 1, "mem_gb": 2})
+    assert item["attempts"] == 1
+    queue.withdraw(key, by="rob", reason="cancel this run", signal_child=False)
+    queue.reap_stale(timeout_s=-1)
+    _publish_successor(queue, item)
+    result = queue.finish(key, status="withdrawn", detail={"returncode": -15},
+                          claim_snapshot=item)
+    assert result == queue.attempt_path(item, 2)
+    archived = pool._read_json(result)
+    assert archived["status"] == pool.WITHDRAWN
+    assert archived["disposition"] == pool.WITHDRAWN
+    # With a charged retry this attempt was on the failure ladder pre-#1537:
+    # the verifying reader refused the whole generation as a conflicting
+    # disposition instead of answering the cancellation.
+    assert queue.archived_generation_outcomes(key, generation=item["published_unix"]) == []
+    assert queue.ledger().held() == {}
+
+
+def test_late_scope_withdrawn_finish_archives_the_withdrawn_disposition(scoped, monkeypatch):
+    """The exact-scope late-finish recovery keeps the withdrawn disposition too."""
+    queue, item, calls = scoped
+    live = _start(queue, item, monkeypatch)
+    key = live["action_key"]
+    queue.withdraw(key, by="rob", reason="cancel this run", signal_child=False)
+    queue.reap_stale(timeout_s=-1)
+    _publish_successor(queue, item)
+    result = queue.finish(key, status="withdrawn", detail={"returncode": -15,
+                          "stdout": "last output\n", "stderr": "stopped\n"},
+                          claim_snapshot=live)
+    assert result == queue.attempt_path(live, 1)
+    archived = pool._read_json(result)
+    assert archived["status"] == pool.WITHDRAWN
+    assert archived["disposition"] == pool.WITHDRAWN
+    assert archived["detail"]["resource_scope_cleanup"]["nonce"] == live["resource_scope"]["nonce"]
+    assert not list(queue.dir(pool.CLAIMED).glob(f"{key}.*{pool.LATE_FINISH_SUFFIX}"))
+    retained = [pool._read_json(path) for path
+                in queue.superseded_dir().glob(f"{key}.*.late-finish.json")]
+    assert len(retained) == 1 and retained[0]["status"] == pool.WITHDRAWN
+    assert queue.archived_generation_outcomes(key, generation=live["published_unix"]) == []
+
+
 @pytest.mark.parametrize("view", ["pbwait_json", "pb_action", "pb_receipts", "pb_log"])
 def test_public_views_expose_a_stopped_withdrawn_attempt(scoped, monkeypatch, capsys, view):
     queue, item, calls = scoped
