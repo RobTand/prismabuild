@@ -181,3 +181,35 @@ def test_a_busy_fence_refuses_before_any_transition_or_host_lock(
     finally:
         fcntl.flock(descriptor, fcntl.LOCK_UN)
         os.close(descriptor)
+
+
+def test_a_body_exception_under_the_held_fence_keeps_its_type(fleet, tmpfs_state, monkeypatch):
+    """#1506: only acquiring the fence is a census failure. An exception the
+    caller's own body raises while it holds the fence (a GPU sample write in
+    ``reserve_probe``) is not relabelled CensusUnavailable, the fence is
+    released, and a busy fence is still refused as CensusUnavailable."""
+    queue, clock, readings, sample, publish, tick, claim, denial = fleet
+    monkeypatch.setattr(adaptive_cpu, "BOX_STATE_ROOT", tmpfs_state / "box-state")
+    census = reservation.CensusReader(queue, queue.ledger())
+    for error in (OSError("sample persistence unavailable"), ValueError("body value")):
+        try:
+            with census.held():
+                raise error
+        except reservation.CensusUnavailable as exc:
+            raise AssertionError(f"body {type(error).__name__} relabelled: {exc}") from exc
+        except type(error) as exc:
+            assert exc is error
+        assert census._held is None
+    guard = census.directory / (census.name + ".guard")
+    descriptor = os.open(guard, os.O_RDWR | os.O_NOFOLLOW)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)  # released by the body exits
+        monkeypatch.setattr(reservation, "FENCE_WAIT_S", 0.0)
+        try:
+            with census.held():
+                raise AssertionError("acquired a fence another holder owns")
+        except reservation.CensusUnavailable as exc:
+            assert "reader busy" in str(exc)
+    finally:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
