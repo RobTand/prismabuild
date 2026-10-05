@@ -1,122 +1,195 @@
+"""Lock-order regressions with a live caller and an expired evictor clock."""
+import ast
+from contextlib import contextmanager
+import fcntl
+import inspect
 import json
+import os
+from pathlib import Path
 import subprocess
 import sys
 import threading
-from pathlib import Path
+import textwrap
 
 import pytest
 
-from prismabuild import pool, resident_sets
+from prismabuild import local_resident, local_tier, pool
 from test_local_resident_mover import world
-
-
-def spec_json(spec):
-    return json.dumps(spec)
-
-
-def _child(script, *args):
-    return subprocess.Popen([sys.executable, "-c", script, *map(str, args)],
-                            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
 
 
 HOLD_AND_EVICT = """
 import json, sys
-import fcntl
-from prismabuild import local_resident, resident_sets
-queue_root, set_id, host, spec = sys.argv[1:5]
-spec = json.loads(spec)
-lock = resident_sets.ResidentSets(queue_root).copy_path(set_id, host).with_suffix('.move.lock')
-handle = open(lock, 'a')
-fcntl.lockf(handle, fcntl.LOCK_EX)
-print('held', flush=True)
-sys.stdin.readline()
-result = local_resident.evict(resident_sets.ResidentSets(queue_root), set_id, host, spec, now=201)
-print('evicted ' + result['state'], flush=True)
+from prismabuild import local_resident, posix_lock, resident_sets
+queue_root, set_id, host, spec_json = sys.argv[1:5]
+store = resident_sets.ResidentSets(queue_root)
+spec = json.loads(spec_json)
+lock = store.copy_path(set_id, host).with_suffix('.move.lock')
+with posix_lock.held(lock):
+    print('held', flush=True)
+    if sys.stdin.readline().strip() != 'go':
+        raise SystemExit('caller did not enter its mover-lock acquire')
+    result = local_resident.evict(store, set_id, host, spec, now=201)
+    print('evicted ' + result['state'], flush=True)
 """
 
 
-def test_copy_after_a_completed_eviction_holds_tokens_again(tmp_path):
-    """B1: the reserve must happen inside the mover lock, after the lease check.
+def _reservation(statement):
+    return (isinstance(statement, ast.Expr)
+            and isinstance(statement.value, ast.Call)
+            and isinstance(statement.value.func, ast.Attribute)
+            and isinstance(statement.value.func.value, ast.Name)
+            and statement.value.func.value.id == "local_tier"
+            and statement.value.func.attr == "reserve")
 
-    The published hold is still present when copy() calls reserve() today, so
-    it acquires nothing; the eviction then releases the ledger while this
-    copy waits on the mover lock, and the copy lands resident holding zero
-    tokens.
+
+def _reserve_before_lock(original):
+    """Compile the actual function with ONLY its reservation hoisted.
+
+    This is the review's M2/M3 mutation, not a replacement implementation.
+    It remains in the suite, so the race oracle must reject that exact
+    ordering even when the lease check is still correctly inside the lock.
     """
-    from prismabuild import local_resident, local_tier
+    syntax = ast.parse(textwrap.dedent(inspect.getsource(original)))
+    function = syntax.body[0]
+    locks = [node for node in function.body if isinstance(node, ast.With)
+             and isinstance(node.items[0].context_expr, ast.Call)
+             and isinstance(node.items[0].context_expr.func, ast.Attribute)
+             and node.items[0].context_expr.func.attr == "held"]
+    assert len(locks) == 1, "mutation requires the mover's one top-level lock"
+    lock = locks[0]
+    reservations = [node for node in lock.body if _reservation(node)]
+    if not reservations:
+        # A scratch checkout with M2/M3 already applied is already this mutant.
+        assert len([node for node in function.body if _reservation(node)]) == 1
+        return original
+    assert len(reservations) == 1
+    reservation = reservations[0]
+    lock.body.remove(reservation)
+    function.body.insert(function.body.index(lock), reservation)
+    namespace = {}
+    exec(compile(ast.fix_missing_locations(syntax), "<reserve-before-lock mutant>", "exec"),
+         original.__globals__, namespace)
+    return namespace[original.__name__]
+
+
+def _live_lease_race(tmp_path, monkeypatch, operation, *, mutation=False):
     store, record, spec = world(tmp_path)
-    store.release(record["set_id"], by="test")
-    child = _child(HOLD_AND_EVICT, store.queue_root, record["set_id"], "test-host", spec_json(spec))
+    set_id = record["set_id"]
+    # Start with occupied bytes and their publication hold. The caller sees a
+    # LIVE until=150/max=200 lease at now=120; only the evictor sees now=201.
+    local_resident.copy(store, set_id, "test-host", spec, now=120)
+    source = tmp_path / "manual"
+    if operation == "adopt":
+        source.mkdir()
+        (source / "weights").write_bytes(b"weights")
+        source_inode = (source / "weights").stat().st_ino
+    function = getattr(local_resident, operation)
+    if mutation:
+        function = _reserve_before_lock(function)
+    mover_lock = store.copy_path(set_id, "test-host").with_suffix(".move.lock").resolve()
+    child = subprocess.Popen([sys.executable, "-c", HOLD_AND_EVICT,
+        str(store.queue_root), set_id, "test-host", json.dumps(spec)],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    entering = threading.Event()
+    outcome = {}
+    caller = None
+    original_lockf = local_resident.posix_lock._lockf
+
+    def observed_lockf(descriptor, blocking):
+        if (threading.current_thread() is caller and blocking
+                and Path(os.readlink(f"/proc/self/fd/{descriptor}")) == mover_lock):
+            # The child positively holds THIS lock. Signal immediately before
+            # the caller's real blocking kernel acquire, never by a timed sleep.
+            entering.set()
+        return original_lockf(descriptor, blocking)
+
+    def call():
+        try:
+            args = (store, set_id, "test-host", spec)
+            if operation == "adopt":
+                args += (source,)
+            outcome["result"] = function(*args, now=120)
+        except BaseException as exc:
+            outcome["error"] = exc
+
     try:
         assert child.stdout.readline().strip() == "held"
-        outcome = {}
-        reserved = threading.Event()
-        original_reserve = local_tier.reserve
-
-        def observed_reserve(*args, **kwargs):
-            reserved.set()
-            return original_reserve(*args, **kwargs)
-
-        def run():
-            from unittest import mock
-            with mock.patch.object(local_tier, "reserve", observed_reserve):
-                try:
-                    outcome["result"] = local_resident.copy(store, record["set_id"], "test-host", spec)
-                except ValueError as exc:
-                    outcome["refusal"] = str(exc)
-
-        worker = threading.Thread(target=run)
-        worker.start()
-        # On the unfixed code the reservation happens BEFORE the lock wait, so
-        # it fires while the child still holds the lock; on the fixed code it
-        # happens only after the child's eviction has released it. Give the
-        # pre-fix ordering time to surface, then let the eviction run either
-        # way: the fixed copy must refuse, and any resident result must hold
-        # its tokens.
-        reserved.wait(5)
-        child.stdin.write("go\n")
-        child.stdin.flush()
-        worker.join(60)
-        assert not worker.is_alive()
-        assert child.stdout.readline().strip() == "evicted absent"
-        if "result" in outcome:
-            ledger = pool.PoolQueue(store.queue_root).tier_ledger("local:test-host")
-            assert ledger.held()["local_gib"] == 1, "resident copy must hold its tokens"
-        else:
-            assert "lease" in outcome["refusal"]
+        assert local_resident.lease_active(store, set_id, now=120)
+        assert not local_resident.lease_active(store, set_id, now=201)
+        with monkeypatch.context() as patch:
+            patch.setattr(local_resident.posix_lock, "_lockf", observed_lockf)
+            caller = threading.Thread(target=call)
+            caller.start()
+            assert entering.wait(10), "caller did not enter the real blocking mover-lock acquire"
+            child.stdin.write("go\n")
+            child.stdin.flush()
+            caller.join(30)
+            assert not caller.is_alive(), "caller did not finish after eviction released the lock"
+            stdout, stderr = child.communicate(timeout=10)
+            assert child.returncode == 0, stderr
+            assert stdout.strip() == "evicted absent"
+        assert "error" not in outcome, outcome.get("error")
+        assert outcome["result"]["state"] == "resident"
+        assert store.read_copy(set_id, "test-host")["state"] == "resident"
+        ledger = pool.PoolQueue(store.queue_root).tier_ledger("local:test-host")
+        assert ledger.held().get("local_gib", 0) == 1, "resident copy must hold its tokens"
+        final = Path(outcome["result"]["local_root"])
+        assert (final / "weights").read_bytes() == b"weights"
+        assert not final.with_name(set_id + ".evicting").exists()
+        assert not final.with_name(set_id + ".partial").exists()
+        if operation == "adopt":
+            assert not source.exists(), "adoption must consume its source exactly once"
+            assert (final / "weights").stat().st_ino == source_inode
+            # A retry verifies the already moved tree without consuming it twice
+            # or taking another occupancy reservation.
+            replay = function(store, set_id, "test-host", spec, source, now=120)
+            assert replay["state"] == "resident"
+            assert ledger.held().get("local_gib", 0) == 1
+            assert (final / "weights").stat().st_ino == source_inode
     finally:
-        child.stdin.close()
-        child.wait(timeout=30)
+        if child.poll() is None:
+            if not child.stdin.closed:
+                child.stdin.close()
+            child.wait(timeout=10)
+        if caller is not None:
+            caller.join(30)
+
+
+@pytest.mark.parametrize("operation", ["copy", "adopt"])
+def test_live_lease_caller_blocked_on_mover_lock_lands_with_tokens(tmp_path, monkeypatch, operation):
+    _live_lease_race(tmp_path, monkeypatch, operation)
+
+
+@pytest.mark.parametrize("operation", ["copy", "adopt"])
+def test_reservation_before_mover_lock_mutant_fails_the_same_oracle(tmp_path, monkeypatch, operation):
+    with pytest.raises(AssertionError, match="resident copy must hold its tokens"):
+        _live_lease_race(tmp_path, monkeypatch, operation, mutation=True)
 
 
 def test_copy_refuses_an_expired_lease_before_any_byte(tmp_path):
-    from prismabuild import local_resident
     store, record, spec = world(tmp_path)
     store.release(record["set_id"], by="test")
-    with pytest.raises(ValueError, match="lease"):
+    with pytest.raises(ValueError, match="resident lease expired"):
         local_resident.copy(store, record["set_id"], "test-host", spec)
-    assert store.read_copy(record["set_id"], "test-host")["state"] != "resident"
+    assert store.read_copy(record["set_id"], "test-host")["state"] == "absent"
     assert not Path(spec["root"]).joinpath(record["set_id"]).exists()
     assert not Path(spec["root"]).joinpath(record["set_id"] + ".partial").exists()
 
 
 def test_adopt_refuses_an_expired_lease_and_keeps_the_source(tmp_path):
-    from prismabuild import local_resident
     store, record, spec = world(tmp_path)
     store.release(record["set_id"], by="test")
     source = tmp_path / "manual"
     source.mkdir()
     (source / "weights").write_bytes(b"weights")
-    with pytest.raises(ValueError, match="lease"):
+    with pytest.raises(ValueError, match="resident lease expired"):
         local_resident.adopt(store, record["set_id"], "test-host", spec, source)
     assert (source / "weights").read_bytes() == b"weights"
     assert not Path(spec["root"]).joinpath(record["set_id"]).exists()
     assert store.read_copy(record["set_id"], "test-host")["state"] == "absent"
 
 
-def held(root):
-    import fcntl
-    import os
+def _host_locked(root):
     fd = os.open(Path(root) / ".resident.lock", os.O_RDWR)
     try:
         try:
@@ -128,68 +201,54 @@ def held(root):
         os.close(fd)
 
 
-def test_pinned_refusal_leaves_record_resident_and_lock_held_during_check(tmp_path, monkeypatch):
-    from prismabuild import local_resident
-    store, record, spec = world(tmp_path)
-    local_resident.copy(store, record["set_id"], "test-host", spec, now=120)
-    ctx = {"action_key": "a" * 64, "nonce": "b" * 32, "scope_id": "s"}
-    token = local_resident.pin(store, record["set_id"], "test-host", spec, ctx, now=120)
-    seen = {}
+def _pin_protection(store, set_id, spec, monkeypatch):
+    checked = []
     original = local_resident._pinned
 
-    def checked(store_, set_id, host, final):
-        seen["host_lock_held"] = held(spec["root"])
-        return original(store_, set_id, host, final)
+    def observe(*args):
+        assert _host_locked(spec["root"]), "pin check must run under the host flock"
+        checked.append(True)
+        return original(*args)
 
-    monkeypatch.setattr(local_resident, "_pinned", checked)
-    result = local_resident.evict(store, record["set_id"], "test-host", spec, now=201)
+    with monkeypatch.context() as patch:
+        patch.setattr(local_resident, "_pinned", observe)
+        result = local_resident.evict(store, set_id, "test-host", spec, now=201)
     assert result["reason"] == "pinned"
-    assert seen["host_lock_held"] is True
-    assert store.read_copy(record["set_id"], "test-host")["state"] == "resident"
-    assert not Path(spec["root"]).joinpath(record["set_id"] + ".evicting").exists()
-    local_resident.release_pin(store, record["set_id"], "test-host", spec, token)
+    assert checked
+    assert store.read_copy(set_id, "test-host")["state"] == "resident", "pinned copy must stay resident"
+    assert not Path(spec["root"]).joinpath(set_id + ".evicting").exists()
+
+
+def _pinned_world(tmp_path):
+    store, record, spec = world(tmp_path)
+    local_resident.copy(store, record["set_id"], "test-host", spec, now=120)
+    context = {"action_key": "a" * 64, "nonce": "b" * 32, "scope_id": "s"}
+    token = local_resident.pin(store, record["set_id"], "test-host", spec, context, now=120)
+    return store, record["set_id"], spec, token
+
+
+def test_pinned_refusal_leaves_record_resident_and_lock_held_during_check(tmp_path, monkeypatch):
+    store, set_id, spec, token = _pinned_world(tmp_path)
+    _pin_protection(store, set_id, spec, monkeypatch)
+    local_resident.release_pin(store, set_id, "test-host", spec, token)
 
 
 def test_reordering_the_pin_check_fails_the_protection_test(tmp_path, monkeypatch):
-    """N2(b): a mutant that checks pins after writing evicting must fail.
-
-    The strengthened assertions above (state resident, no .evicting tree)
-    are what catch it; this test executes the mutant to prove it.
-    """
-    from prismabuild import local_resident
-    store, record, spec = world(tmp_path)
-    local_resident.copy(store, record["set_id"], "test-host", spec, now=120)
-    ctx = {"action_key": "a" * 64, "nonce": "b" * 32, "scope_id": "s"}
-    local_resident.pin(store, record["set_id"], "test-host", spec, ctx, now=120)
-    root, final, partial, evicting = local_resident._paths(record["set_id"], spec)
-    import os as _os
+    store, set_id, spec, token = _pinned_world(tmp_path)
 
     def mutant(store_, set_id_, host_, spec_, *, now=None):
-        with local_resident.posix_lock.held(store_.copy_path(set_id_, host_).with_suffix(".move.lock"), blocking=False) as got:
-            if not got:
-                return {"state": "copying", "reason": "copy_in_progress"}
-            with local_tier_host_lock(spec_["root"]):
+        with local_resident.posix_lock.held(store_.copy_path(set_id_, host_).with_suffix(".move.lock")):
+            with local_tier.host_lock(spec_["root"]):
                 current = store_.read_copy(set_id_, host_)
                 store_.write_copy(set_id_, host_, {**current, "state": "evicting"})
-                if local_resident._pinned(store_, set_id_, host_, final):
-                    return {"state": "evicting", "reason": "pinned"}
-        return {"state": "evicting", "reason": "unreachable"}
+                final = Path(spec_["root"]) / set_id_
+                assert local_resident._pinned(store_, set_id_, host_, final)
+                return {"state": "evicting", "reason": "pinned"}
 
-    from prismabuild import local_tier
-
-    def local_tier_host_lock(path):
-        return local_tier.host_lock(path)
-
-    monkeypatch.setattr(local_resident, "evict", mutant)
-    result = local_resident.evict(store, record["set_id"], "test-host", spec, now=201)
-    assert result["reason"] == "pinned"
-    # The mutant's damage is observable: it left the record evicting for a
-    # pinned copy. The strengthened assertions in the pinned-refusal test
-    # (state resident, no .evicting tree) are exactly what fail against it,
-    # which is the review's required demonstration.
-    assert store.read_copy(record["set_id"], "test-host")["state"] == "evicting"
-    monkeypatch.undo()
-    assert local_resident.evict(store, record["set_id"], "test-host", spec, now=201)["reason"] == "pinned"
+    with monkeypatch.context() as patch:
+        patch.setattr(local_resident, "evict", mutant)
+        with pytest.raises(AssertionError, match="pinned copy must stay resident"):
+            _pin_protection(store, set_id, spec, patch)
 
 
 def test_legacy_attempt_without_served_from_still_validates(tmp_path):
@@ -202,9 +261,7 @@ def test_legacy_attempt_without_served_from_still_validates(tmp_path):
                   worker_script="/worker.py", max_attempts=1)
     assert queue.claim() is not None
     terminal = json.loads(queue.finish(key, status="executed").read_text())
-    attempts = queue.attempt_outcomes(terminal)
-    assert attempts[0]["served_from"] == "canonical"
-    # A legacy attempt record, rewritten without the field, must still read.
+    assert queue.attempt_outcomes(terminal)[0]["served_from"] == "canonical"
     outcome_path = queue.root / terminal["attempt_history"][0]["outcome"]
     legacy = json.loads(outcome_path.read_text())
     legacy.pop("served_from")
@@ -212,5 +269,4 @@ def test_legacy_attempt_without_served_from_still_validates(tmp_path):
     outcome_path.chmod(0o644)
     outcome_path.write_text(json.dumps(legacy))
     outcome_path.chmod(0o444)
-    reread = queue.attempt_outcomes(terminal)
-    assert "served_from" not in reread[0]
+    assert "served_from" not in queue.attempt_outcomes(terminal)[0]
