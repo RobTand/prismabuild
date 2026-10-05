@@ -12,8 +12,11 @@ after the attempt was already spent.
 Three reference forms are accepted, and they are deliberately not aliases:
 
 * ``sha256:<64 hex>`` names the local **image ID**: whatever the box's own
-  image store calls the image.  It is satisfied only by an image the inventory
-  reports by that ID, and it **is not portable between stores**.  Docker's
+  image store calls the image.  It is satisfied by an image the inventory
+  reports by that ID, **or by any RepoDigest carrying that digest** (decided
+  2026-10-05): a repository-qualified digest is content-addressed, so the
+  same 64 hex under any repository name is the same bytes.  The ID itself
+  still differs between stores.  Docker's
   classic store reports the config digest; Docker's containerd store reports
   the digest of the image's top-level descriptor -- an OCI index for 16 of
   sparky's 27 images and a manifest for the rest, so it varies with how the
@@ -22,9 +25,12 @@ Three reference forms are accepted, and they are deliberately not aliases:
   Engine 29.6.2).
 * ``repository@sha256:<64 hex>`` names a repository **manifest digest**.  It is
   satisfied only by that exact ``repository@sha256:...`` string among the
-  box's RepoDigests.  A bare digest from a RepoDigest is never presented, so a
-  manifest digest cannot accidentally satisfy an ID requirement (or the
-  reverse) merely because the hex matches.  It exists only for an image that
+  box's RepoDigests -- a bare ID never satisfies it, even with the same hex.
+  The inventory does present RepoDigests repository-qualified and never bare,
+  and since 2026-10-05 the bare-ID requirement reads the digest part of
+  exactly those entries, so the old rule that a hex collision cannot satisfy
+  an ID requirement holds in one direction only.  It exists only for an image
+  that
   was pulled: 18 of 32 images on sparklina's classic store carry an empty
   RepoDigests list, the campaign image among them, so this form does not
   rescue a locally built or ``docker load``-ed image.
@@ -189,7 +195,8 @@ _HEALTHCHECK_INTS = ("Interval", "Retries", "StartInterval", "StartPeriod",
 
 _DIGEST = r"sha256:[0-9a-f]{64}"
 _IMAGE_ID = re.compile(rf"{_DIGEST}\Z")
-_REPO_DIGEST = re.compile(rf"[a-zA-Z0-9][a-zA-Z0-9._:/-]*@{_DIGEST}\Z")
+_REPO_DIGEST = re.compile(
+    rf"(?P<repository>[a-zA-Z0-9][a-zA-Z0-9._:/-]*)@(?P<digest>{_DIGEST})\Z")
 _CONTENT_REF = re.compile(rf"content:{_DIGEST}\Z")
 
 #: ID, repository and digest per image, tab-separated: one listing covers both
@@ -787,16 +794,43 @@ def image_ids(text: str) -> tuple[str, ...]:
     return tuple(seen)
 
 
+def satisfied(ref, present) -> bool:
+    """Whether one requirement is positively satisfied by an inventory.
+
+    A bare ``sha256:<64 hex>`` requirement is satisfied by an entry that is
+    exactly that image ID, or by any ``repository@sha256:<64 hex>`` entry
+    whose digest part is exactly that hex -- both stores' inventories
+    (decided 2026-10-05, the two-store row ``fd9ca6b5...``): a
+    repository-qualified digest is content-addressed, so the same 64 hex
+    under any repository name is the same bytes.  A ``repository@sha256:``
+    requirement is exact -- a bare ID never satisfies it -- and so is
+    ``content:sha256:``.  Every match is a full, shape-checked string match
+    against :data:`_IMAGE_ID`/:data:`_REPO_DIGEST`; a hex that appears as a
+    prefix, a suffix, a tag or any other bystander string satisfies nothing.
+    """
+
+    text = str(ref)
+    for entry in present:
+        candidate = str(entry)
+        if candidate == text:
+            return True
+        if _IMAGE_ID.fullmatch(text):
+            match = _REPO_DIGEST.fullmatch(candidate)
+            if match is not None and match.group("digest") == text:
+                return True
+    return False
+
+
 def missing(required, present) -> tuple[str, ...]:
     """Which requirements ``present`` does not positively satisfy.
 
-    Exact string membership is the whole test, and that is the point: the
-    inventory presents IDs bare and manifest digests repository-qualified, so
-    a hex collision between the two kinds cannot satisfy either.
+    Answered by :func:`satisfied`, the one predicate every reader of a
+    declared ``container_images`` entry goes through: a bare ``sha256:``
+    requirement takes the image ID or any RepoDigest carrying the hex, the
+    qualified forms stay exact, and nothing else counts.
     """
 
-    known = {str(entry) for entry in present}
-    return tuple(str(ref) for ref in required if str(ref) not in known)
+    return tuple(str(ref) for ref in required if not satisfied(ref, present))
 
 
 def _read_capped(stream, *, limit: int, deadline: float) -> bytes | None:

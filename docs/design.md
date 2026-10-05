@@ -3239,12 +3239,18 @@ inside its wrapper, spending its only attempt (2026-09-20, `gb10`).
 
 Contract:
 
-- **Reference forms.** `sha256:<64 hex>` names a local image ID;
+- **Reference forms.** `sha256:<64 hex>` names a local image ID, satisfied
+  by that ID or by any `repository@sha256:<64 hex>` entry whose digest part
+  is exactly that hex (decided 2026-10-05: a repository-qualified digest is
+  content-addressed, so the same hex under any repository name is the same
+  bytes, on either store);
   `repository@sha256:<64 hex>` names a repository manifest digest, matched
-  only as that exact `repository@sha256:...` string; `content:sha256:<64
-  hex>` names the image's store-independent content (#805, below). A bare
-  RepoDigest is never announced, so a hex collision cannot satisfy another
-  form. A mutable tag is refused at declaration: it is not an identity and
+  only as that exact `repository@sha256:...` string -- a bare ID never
+  satisfies it; `content:sha256:<64
+  hex>` names the image's store-independent content (#805, below). The
+  inventory presents RepoDigests repository-qualified and never bare, and
+  only the bare-ID requirement reads their digest part. A mutable tag is
+  refused at declaration: it is not an identity and
   cannot be sealed into an action key.
 - **Store-independent content identity (#805).** An image ID is what the
   box's own image store calls the image, and the two Sparks do not agree.
