@@ -5912,6 +5912,18 @@ receipt, byte count and completion time. `pbresident publish|status|release|adop
 operates these records. `local_tier_policy.json` is published with the runtime;
 its host map is empty by default, so this change activates no local tier.
 
+Operator descriptors live separately in
+`resident-sets/<id>/movements/<host>.json` (`prismabuild.resident_movements.v1`).
+Their `rows` map holds the copy, egress and adoption queue specifications.
+`update_movements` merges under the existing set-record lock; operator
+publication never reads or rewrites `copies/<host>.json`. Copy state remains
+owned by the host mover under its mover lock and host flock. This separation
+prevents a stale operator write from resurrecting an evicted copy or a final
+state write from dropping newly published descriptors. Status exposes the
+descriptor map separately, and lease policy reads only the body and lease
+journal, not operator descriptors.
+
+
 Capacity uses `local_gib@local:<host>` in the ordinary tier ledger. Publication
 reserves ceil(bytes / GiB) on every host or rolls back the new empty holds.
 The separate supervised `localtier` role re-mints from unprivileged

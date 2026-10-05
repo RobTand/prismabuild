@@ -229,9 +229,7 @@ def publish_actions(template, store, set_id, tiers, *, policy_path):
             action = movement_action(template, store, set_id, tier, policy_path=policy_path, operation=operation)
             cas.publish_action_request(action)
             pair[operation] = movement_row(action, cas, tier)
-        with store.lock(set_id):
-            current = store.read_copy(set_id, host)
-            store.write_copy(set_id, host, {**current, "movement_rows": pair})
+        store.update_movements(set_id, host, pair)
         queue.publish(**pair["copy"], recompute=True, refuse_if_live=True)
         rows[host] = pair
     return rows
@@ -255,10 +253,10 @@ def _live_rows(store, set_id):
 
 def lease_active(store, set_id, *, now=None):
     now = time.time() if now is None else now
-    status = store.status(set_id)
+    store.read(set_id)
     lease = None
     released = False
-    for event in status["lease_log"]:
+    for event in store.read_lease_log(set_id):
         if event.get("manifest_sha256") != set_id:
             raise ValueError("lease journal manifest disagrees")
         if event["event"] in ("published", "renewed"):
@@ -382,8 +380,7 @@ def request_eviction(store, set_id, host, spec, *, caller_host=None, now=None):
     """The #801 shape: only the owner deletes; other hosts queue its egress."""
     if host == (socket.gethostname() if caller_host is None else caller_host):
         return evict(store, set_id, host, spec, now=now)
-    current = store.read_copy(set_id, host)
-    row = current.get("movement_rows", {}).get("evict")
+    row = store.read_movements(set_id, host).get("evict")
     if row is None:
         raise ValueError("copy has no retained host-pinned egress action")
     queue = pool.PoolQueue(store.queue_root)
@@ -435,8 +432,9 @@ def lease_pass(store, host, spec, *, now=None):
                 (directory / "body.json").stat()
             except FileNotFoundError:
                 continue  # A refused publication can leave only its record lock.
-            row = store.status(set_id)
+            row = store.read(set_id)
             if host in row["hosts"]:
+                row["copies"] = {host: store.read_copy(set_id, host)}
                 statuses.append(row)
         except Exception as error:  # One corrupt set must not abort the host pass.
             results.append(_lease_failure(store, set_id, host, error, now))

@@ -26,7 +26,8 @@ a real SHA-256 and must cover a complete regular file. Unlisted files,
 symlinks, ranges and mismatched sizes are refused.
 
 `pbresident.py --pool-root QUEUE status [SET_ID]` returns set bodies, lease
-journals and host copy states as JSON. `release SET_ID` appends a release
+journals, host copy states and separately stored movement descriptors as JSON.
+`release SET_ID` appends a release
 without rewriting the declaration. Phase 1 does not change job paths,
 container mounts or placement. Publication alone does not claim a copy is
 available. The versioned `local_tier_policy.json` declares host roots,

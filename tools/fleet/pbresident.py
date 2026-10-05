@@ -57,9 +57,7 @@ def submit_adoption(store, set_id, *, host, source, policy_path, checkout):
     action = local_resident.movement_action(template, store, set_id, tiers[host], policy_path=policy_path, operation="adopt", source=source)
     template["cas"].publish_action_request(action)
     row = local_resident.movement_row(action, template["cas"], tiers[host])
-    with store.lock(set_id):
-        current = store.read_copy(set_id, host)
-        store.write_copy(set_id, host, {**current, "adoption_row": row})
+    store.update_movements(set_id, host, {"adopt": row})
     queue.publish(**row, recompute=True, refuse_if_live=True)
     return row
 
