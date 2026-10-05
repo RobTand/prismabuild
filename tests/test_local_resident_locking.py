@@ -72,7 +72,38 @@ def _reserve_before_lock(original):
     return namespace[original.__name__]
 
 
-def _live_lease_race(tmp_path, monkeypatch, operation, *, mutation=False):
+def _lease_before_lock(original):
+    """Move only the actual lease check before the mover lock."""
+    syntax = ast.parse(textwrap.dedent(inspect.getsource(original)))
+    function = syntax.body[0]
+    locks = [node for node in function.body if isinstance(node, ast.With)
+             and isinstance(node.items[0].context_expr, ast.Call)
+             and isinstance(node.items[0].context_expr.func, ast.Attribute)
+             and node.items[0].context_expr.func.attr == "held"]
+    assert len(locks) == 1
+    lock = locks[0]
+
+    def lease_check(node):
+        return isinstance(node, ast.If) and any(
+            isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+            and call.func.id == "lease_active" for call in ast.walk(node.test))
+
+    checks = [node for node in lock.body if lease_check(node)]
+    if not checks:
+        assert len([node for node in function.body if lease_check(node)]) == 1
+        return original  # The scratch checkout already carries this mutation.
+    assert len(checks) == 1
+    lock.body.remove(checks[0])
+    function.body.insert(function.body.index(lock), checks[0])
+    namespace = {}
+    exec(compile(ast.fix_missing_locations(syntax), "<lease-before-lock mutant>", "exec"),
+         original.__globals__, namespace)
+    return namespace[original.__name__]
+
+
+
+def _live_lease_race(tmp_path, monkeypatch, operation, *, mutation=False,
+                     expire_while_waiting=False, lease_mutation=False):
     store, record, spec = world(tmp_path)
     set_id = record["set_id"]
     # Start with occupied bytes and their publication hold. The caller sees a
@@ -86,6 +117,8 @@ def _live_lease_race(tmp_path, monkeypatch, operation, *, mutation=False):
     function = getattr(local_resident, operation)
     if mutation:
         function = _reserve_before_lock(function)
+    if lease_mutation:
+        function = _lease_before_lock(function)
     mover_lock = store.copy_path(set_id, "test-host").with_suffix(".move.lock").resolve()
     child = subprocess.Popen([sys.executable, "-c", HOLD_AND_EVICT,
         str(store.queue_root), set_id, "test-host", json.dumps(spec)],
@@ -94,6 +127,7 @@ def _live_lease_race(tmp_path, monkeypatch, operation, *, mutation=False):
     outcome = {}
     caller = None
     original_lockf = local_resident.posix_lock._lockf
+    clock = {"now": 120}
 
     def observed_lockf(descriptor, blocking):
         if (threading.current_thread() is caller and blocking
@@ -108,7 +142,7 @@ def _live_lease_race(tmp_path, monkeypatch, operation, *, mutation=False):
             args = (store, set_id, "test-host", spec)
             if operation == "adopt":
                 args += (source,)
-            outcome["result"] = function(*args, now=120)
+            outcome["result"] = function(*args, now=None if expire_while_waiting else 120)
         except BaseException as exc:
             outcome["error"] = exc
 
@@ -118,9 +152,15 @@ def _live_lease_race(tmp_path, monkeypatch, operation, *, mutation=False):
         assert not local_resident.lease_active(store, set_id, now=201)
         with monkeypatch.context() as patch:
             patch.setattr(local_resident.posix_lock, "_lockf", observed_lockf)
+            if expire_while_waiting:
+                patch.setattr(local_resident.time, "time", lambda: clock["now"])
             caller = threading.Thread(target=call)
             caller.start()
             assert entering.wait(10), "caller did not enter the real blocking mover-lock acquire"
+            if expire_while_waiting:
+                # Only advance after the caller has entered its blocking acquire,
+                # and before the eviction child is permitted to unlock.
+                clock["now"] = 201
             child.stdin.write("go\n")
             child.stdin.flush()
             caller.join(30)
@@ -128,6 +168,19 @@ def _live_lease_race(tmp_path, monkeypatch, operation, *, mutation=False):
             stdout, stderr = child.communicate(timeout=10)
             assert child.returncode == 0, stderr
             assert stdout.strip() == "evicted absent"
+        if expire_while_waiting:
+            assert isinstance(outcome.get("error"), ValueError), "caller must refuse an expired lease after locking"
+            assert str(outcome["error"]) == "resident lease expired"
+            assert "result" not in outcome
+            assert store.read_copy(set_id, "test-host")["state"] == "absent"
+            ledger = pool.PoolQueue(store.queue_root).tier_ledger("local:test-host")
+            assert ledger.holder_tokens(set_id).get("local_gib", 0) == 0
+            assert not Path(spec["root"]).joinpath(set_id).exists()
+            assert not Path(spec["root"]).joinpath(set_id + ".partial").exists()
+            if operation == "adopt":
+                assert source.exists()
+                assert (source / "weights").stat().st_ino == source_inode
+            return
         assert "error" not in outcome, outcome.get("error")
         assert outcome["result"]["state"] == "resident"
         assert store.read_copy(set_id, "test-host")["state"] == "resident"
@@ -164,6 +217,19 @@ def test_live_lease_caller_blocked_on_mover_lock_lands_with_tokens(tmp_path, mon
 def test_reservation_before_mover_lock_mutant_fails_the_same_oracle(tmp_path, monkeypatch, operation):
     with pytest.raises(AssertionError, match="resident copy must hold its tokens"):
         _live_lease_race(tmp_path, monkeypatch, operation, mutation=True)
+
+
+@pytest.mark.parametrize("operation", ["copy", "adopt"])
+def test_lease_expiring_while_waiting_is_checked_after_the_lock(tmp_path, monkeypatch, operation):
+    _live_lease_race(tmp_path, monkeypatch, operation, expire_while_waiting=True)
+
+
+@pytest.mark.parametrize("operation", ["copy", "adopt"])
+def test_lease_before_lock_mutant_fails_the_advancing_clock_oracle(tmp_path, monkeypatch, operation):
+    with pytest.raises(AssertionError, match="caller must refuse an expired lease after locking"):
+        _live_lease_race(tmp_path, monkeypatch, operation,
+                         expire_while_waiting=True, lease_mutation=True)
+
 
 
 def test_copy_refuses_an_expired_lease_before_any_byte(tmp_path):
