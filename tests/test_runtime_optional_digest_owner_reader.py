@@ -58,9 +58,15 @@ def test_a_runtime_that_also_attests_the_digest_owner_validates(tmp_path):
 
 def test_a_retained_runtime_without_the_digest_owner_keeps_validating(tmp_path):
     action, attestation = _attested(tmp_path)
-    assert "digest_primitives" not in attestation["runtime"]
-    assert pb.validate_worker_attestation(attestation, action=action) == attestation
-    assert "digest_primitives" not in pb._validate_worker_runtime(attestation["runtime"])
+    # A retained body predates the digest owner, so build one explicitly: a fresh
+    # attestation carries the key once the emitter ships (PR 1553), and this test
+    # must hold before and after that.
+    retained = copy.deepcopy(attestation)
+    retained["runtime"].pop("digest_primitives", None)
+    _seal_runtime(retained)
+    assert "digest_primitives" not in retained["runtime"]
+    assert pb.validate_worker_attestation(retained, action=action) == retained
+    assert "digest_primitives" not in pb._validate_worker_runtime(retained["runtime"])
 
 
 def test_the_runtime_digest_binds_the_digest_owner_identity(tmp_path):
