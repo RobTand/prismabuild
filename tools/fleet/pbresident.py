@@ -20,6 +20,30 @@ def timestamp(value):
     return parsed.astimezone(timezone.utc).timestamp()
 
 
+def submit_copies(store, set_id, *, policy_path, checkout):
+    """Freeze through the existing submitter, then use its movement builder."""
+    from prismabuild import local_resident, pool
+    import pbrun
+    queue = pool.PoolQueue(store.queue_root)
+    record = store.read(set_id)
+    tiers = queue.tiers()
+    by_host = {row["host"]: row for row in tiers if row.get("tier_id", "").startswith("local:")}
+    for host in record["hosts"]:
+        if host not in by_host:
+            raise ValueError(f"local tier has not announced its movement tools on {host}")
+    template = pbrun.freeze_action_template(
+        command=["pbresident", "publish", set_id], cwd=Path(checkout).resolve(),
+        logical_cwd=str(Path(checkout).resolve()), demand={"cpu": 1, "mem_gb": 1},
+        placement={"required_tags": []}, variables={"PATH": "/usr/bin:/bin"},
+        determinism="stochastic", retry_policy={"max_attempts": 3, "retry_safe": True},
+        host_class=None, measurement=False, transport="pool", pool_measurement_class=False,
+        data_manifest_path=None, checkout_snapshot_max_bytes=pbrun.CHECKOUT_SNAPSHOT_MAX_BYTES,
+        snapshot_refs=(), exclusive=False, gpu_memory_gb=None, execution_timeout_s=None,
+        progress=None, profile=None)
+    return local_resident.publish_actions(template, store, set_id, tiers, policy_path=policy_path)
+
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--pool-root", required=True)
@@ -33,6 +57,8 @@ def main(argv=None):
     lease.add_argument("--campaign")
     publish.add_argument("--hard-max", required=True, type=timestamp)
     publish.add_argument("--created-by", default=getpass.getuser())
+    publish.add_argument("--checkout", default=str(Path.cwd()))
+    publish.add_argument("--policy", default=str(Path(__file__).with_name("local_tier_policy.json")))
     status = commands.add_parser("status")
     status.add_argument("set_id", nargs="?")
     release = commands.add_parser("release")
@@ -47,6 +73,7 @@ def main(argv=None):
             lease.update({"campaign": args.campaign} if args.campaign else {"until": args.lease_until})
             result = store.publish(manifest=manifest, canonical_root=args.canonical_root,
                 hosts=args.hosts.split(","), lease=lease, created_by=args.created_by)
+            result["movements"] = submit_copies(store, result["set_id"], policy_path=args.policy, checkout=args.checkout)
         elif args.command == "status":
             result = store.status(args.set_id)
         else:

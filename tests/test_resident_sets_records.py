@@ -64,9 +64,10 @@ def test_publish_refuses_invalid_set_before_filing(tmp_path, defect):
     assert not list((tmp_path / "queue").rglob("body.json"))
 
 
-def test_cli_publish_status_release_and_policy_publication(tmp_path, capsys):
+def test_cli_publish_status_release_and_policy_publication(tmp_path, capsys, monkeypatch):
     import pbresident
     import publish_runtime
+    monkeypatch.setattr(pbresident, "submit_copies", lambda *args, **kwargs: {})
     from prismabuild import pool
     pool.PoolQueue(tmp_path / "queue").mint_tier_capacity("local:test-host", {"local_gib": 1})
     root, manifest = source(tmp_path)

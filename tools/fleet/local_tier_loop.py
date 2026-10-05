@@ -19,7 +19,11 @@ def cycle(queue, host, policy):
     spec = policy["hosts"].get(host)
     if spec is None:
         return queue.mint_tier_capacity(local_tier.tier_id(host), {local_tier.KIND: 0})
-    return local_tier.mint(queue, host, spec)
+    result = local_tier.mint(queue, host, spec)
+    queue.announce_tier({"tier_id": local_tier.tier_id(host), "tier": "local",
+        "host": host, "mountpoint": spec["root"], "capacity_bytes": result["wanted_gib"] * local_tier.GIB,
+        "mover_python": sys.executable, "mover_tools_root": str(Path(__file__).resolve().parent)})
+    return result
 
 
 def main(argv=None):
