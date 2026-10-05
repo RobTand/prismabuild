@@ -30,10 +30,11 @@ def cycle(queue, host, policy):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--pool-root", required=True)
-    parser.add_argument("--policy", default=str(Path(__file__).with_name("local_tier_policy.json")))
-    parser.add_argument("--interval-s", type=float, default=5)
-    parser.add_argument("--once", action="store_true")
+    parser.add_argument("--pool-root", required=True, help="PrismaBuild queue root (the pool directory) that holds the resident set records.")
+    parser.add_argument("--policy", default=str(Path(__file__).with_name("local_tier_policy.json")),
+                        help="local_tier_policy.json; a host missing from its host map mints nothing and runs no lease pass (the shipped map is empty).")
+    parser.add_argument("--interval-s", type=float, default=5, help="Seconds between passes of lease expiry, eviction and capacity minting.")
+    parser.add_argument("--once", action="store_true", help="Run one pass for this host and exit instead of looping.")
     args = parser.parse_args(argv)
     if args.interval_s <= 0:
         parser.error("interval must be positive")
