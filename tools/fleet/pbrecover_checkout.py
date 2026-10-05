@@ -35,10 +35,13 @@ def main() -> int:
     parser = _JSONParser(description=__doc__)
     parser.add_argument('--queue-root', required=True, type=Path,
                         help='existing absolute queue root (never created)')
-    parser.add_argument('--bank-root', required=True, type=Path)
-    parser.add_argument('--maintenance-owner', required=True)
+    parser.add_argument('--bank-root', required=True, type=Path,
+                        help='root of the bank holding the archived checkouts the plan names')
+    parser.add_argument('--maintenance-owner', required=True,
+                        help='explicit bounded name of the maintenance hold owner; apply must match the plan')
     parser.add_argument('--candidates', type=Path, help='explicit JSON selection list; plan only')
-    parser.add_argument('--apply', action='store_true')
+    parser.add_argument('--apply', action='store_true',
+                        help='apply a saved plan as root (needs --plan and --plan-sha256); without it only plan')
     parser.add_argument('--plan', type=Path, help='exact JSON plan saved from plan output')
     parser.add_argument('--plan-sha256', help='Core canonical SHA256 authorized by RootGO')
     args = parser.parse_args()
