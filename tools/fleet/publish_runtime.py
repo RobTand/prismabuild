@@ -69,7 +69,7 @@ _PUBLISH_LOCK_DEPTH = 0
 _PUBLISH_LOCK_PID: int | None = None
 #: Published as ``tools/<name>`` *and* ``tools/fleet/<name>``.
 FLEET_SCRIPTS = (
-    "docker", "pbrun.py", "pbtest.py", "pbtest_outcomes.py", "pbtest_collection.py", "pbtest_pins.py", "require_pool.py", "worker_loop.py", "worker.py",
+    "docker", "pbrun.py", "pbgang.py", "pbtest.py", "pbtest_outcomes.py", "pbtest_collection.py", "pbtest_pins.py", "require_pool.py", "worker_loop.py", "worker.py",
     "seal_and_publish.py",
     "publish_runtime.py", "pool_reset.py", "runtime_paths.py", "supervise.py",
     "role_log_identity.py", "migrate_role_logs.py",

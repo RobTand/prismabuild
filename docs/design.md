@@ -4400,6 +4400,9 @@ attempt and is never `retry_safe`: a retried or preempted member could start
 beside siblings that are already running. `pbgang.py` seals and publishes every
 member (`pbrun --detach --gang-*`) and only then files the immutable group record
 `pb-queue/gangs/<group>.json`. A member is never claimable without that record.
+The runtime publisher carries `pbgang.py` in `FLEET_SCRIPTS`, under both
+`tools/pbgang.py` and `tools/fleet/pbgang.py`, so operators can submit a gang
+from the published generation without a source checkout.
 
 Per member host, inside the ordinary claim pass:
 
