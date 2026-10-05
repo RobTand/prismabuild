@@ -135,17 +135,24 @@ def _verify_tree(root, record):
     return receipt
 
 
-def copy(store, set_id, host, spec, *, reader_context=None):
+def copy(store, set_id, host, spec, *, reader_context=None, now=None):
     record = store.read(set_id)
     root, final, partial, evicting = _paths(set_id, spec)
     queue = pool.PoolQueue(store.queue_root)
-    local_tier.reserve(queue, set_id, [host], record["manifest"]["total_bytes"])
     # A mover lock serializes retries without holding the host transition lock
-    # across source reads. Eviction checks this lock nonblocking.
+    # across source reads. Eviction checks this lock nonblocking. The lease
+    # check and the token reservation both happen INSIDE it, after the
+    # evicting check: an eviction that releases the ledger while this copy
+    # waited on the lock must not leave a resident tree holding no tokens,
+    # and a copy whose lease expired while queued must copy nothing.
     with posix_lock.held(store.copy_path(set_id, host).with_suffix(".move.lock")):
         current = store.read_copy(set_id, host)
         if evicting.exists() or current["state"] == "evicting":
             raise ValueError("resident copy is being evicted")
+        if not lease_active(store, set_id, now=now):
+            raise ValueError("resident lease expired")
+        local_tier.reserve(queue, set_id, [host], record["manifest"]["total_bytes"])
+    # (the reservation itself moved inside the lock, above)
         if final.exists():
             verification = _verify_tree(final, record)
         else:
@@ -433,7 +440,7 @@ def require_adoption_unmounted(record, source):
                         raise ValueError("adoption requires stopping containers that captured the shared recursive bind")
 
 
-def adopt(store, set_id, host, spec, source):
+def adopt(store, set_id, host, spec, source, *, now=None):
     record = store.read(set_id)
     root, final, partial, evicting = _paths(set_id, spec)
     source = Path(source).absolute()
@@ -445,6 +452,9 @@ def adopt(store, set_id, host, spec, source):
         current = store.read_copy(set_id, host)
         if partial.exists() or evicting.exists() or current["state"] == "evicting":
             raise ValueError("adoption conflicts with an unfinished copy or eviction")
+        if not lease_active(store, set_id, now=now):
+            raise ValueError("resident lease expired")
+        local_tier.reserve(pool.PoolQueue(store.queue_root), set_id, [host], record["manifest"]["total_bytes"])
         if final.exists():
             if source.exists():
                 raise ValueError("adoption destination already exists")
@@ -454,7 +464,6 @@ def adopt(store, set_id, host, spec, source):
                 raise ValueError("adoption requires the same filesystem")
             require_adoption_unmounted(record, source)
             verification = _verify_tree(source, record)
-            local_tier.reserve(pool.PoolQueue(store.queue_root), set_id, [host], record["manifest"]["total_bytes"])
             for entry in record["manifest"]["entries"]:
                 file = source / Path(entry["path"]).relative_to(record["canonical_root"])
                 with file.open("rb") as stream:
