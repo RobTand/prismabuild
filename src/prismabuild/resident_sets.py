@@ -225,7 +225,8 @@ class ResidentSets:
         if set_id is None:
             if not self.root.exists():
                 return []
-            return [self.status(path.name) for path in sorted(self.root.iterdir()) if path.is_dir()]
+            return [self.status(path.name) for path in sorted(self.root.iterdir())
+                    if path.is_dir() and (path / "body.json").exists()]
         record = self.read(set_id)
         log = self.set_path(set_id).parent / "lease.jsonl"
         record["lease_log"] = [json.loads(line) for line in log.read_text().splitlines()]
@@ -236,4 +237,12 @@ class ResidentSets:
         with self.lock(set_id):
             self.read(set_id)
             self._append_lease(set_id, {"event": "released", "unix": time.time() if now is None else now, "by": by})
+        return self.status(set_id)
+
+    def renew(self, set_id, lease, *, by, now=None):
+        now = time.time() if now is None else now
+        lease = validate_lease(lease, now=now)
+        with self.lock(set_id):
+            self.read(set_id)
+            self._append_lease(set_id, {"event": "renewed", "lease": lease, "unix": now, "by": by})
         return self.status(set_id)
