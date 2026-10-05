@@ -1540,6 +1540,25 @@ creating and closing an anonymous temporary file before pytest and refuses an
 unavailable or unusable parent. The default keeps its existing fallback behavior.
 This startup check does not guarantee free space or later availability.
 
+A passing test's `tmp_path` directory is removed as soon as the test ends
+(`tmp_path_retention_policy = "failed"` under `[tool.pytest.ini_options]` in
+`pyproject.toml`); only a failing test's directory is kept for diagnosis. Without
+it pytest keeps every test's directory until a later session prunes it, which on
+a RAM tmpfs with a fixed inode table (`nr_inodes`) held 750,000 inodes from six
+concurrent suites on dl380g10 and made every action there fail in preflight with
+`OSError 28` while the filesystem still reported free bytes. `pbtest` refuses a
+command-line `-o`, so this setting is part of the checkout the shards snapshot.
+Only `tmp_path` is removed per test. A directory made with `tmp_path_factory.mktemp`,
+and the directory of any failing test, lasts as long as the session's base temporary
+directory. By default `pbtest` passes no `--basetemp`, so that base is
+`$TMPDIR/pytest-of-<user>/pytest-N`, where `TMPDIR` is the default `/home/rob/tmp` or the
+`--tmpdir` directory when one is given. pytest removes the whole directory itself when
+the session ends with exit status 0 (policy `failed`); after a session with any failure it
+stays until later sessions prune older numbered directories (pytest keeps the newest three
+by default). With `--basetemp root` pytest does not remove the directory at the end of the
+session: it deletes and recreates the root at the start of the next session that uses that
+path, so a leftover root has to be cleaned by whoever sealed it.
+
 `--basetemp root` seals a separate scratch root for pytest's own temporary
 files (#1469), so selecting real test scratch no longer moves the process
 `TMPDIR` -- and with it the torch compiler/native-cache context -- of the
