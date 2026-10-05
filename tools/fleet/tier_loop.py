@@ -11014,6 +11014,12 @@ def _serve(args) -> int:
     if evict_mode:
         evict_before = _stage_dataset_available(args.source_pool)
     while True:
+        # Read at the top of the cycle, never inside one: every mutation this
+        # loop makes is a single atomic rename, and the one composite -- the
+        # map -- is recomposed from the fragments on disk each cycle, so the
+        # boundary between two cycles is the only place there is nothing to
+        # finish.  The supervisor's ``ensure_roles`` puts the replacement back
+        # on the published generation on its next tick.
         if not evict_mode and runtime_moved():
             print(json.dumps({
                 "event": "tier-runtime-moved", "unix": time.time(), "host": host,
