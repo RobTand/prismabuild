@@ -91,9 +91,11 @@ def withdraw(keys: list[str], reason: str) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--manifest", type=Path, required=True)
+    ap.add_argument("--manifest", type=Path, required=True,
+                    help="JSON manifest naming every gang member (see the module docstring)")
     ap.add_argument("--cwd", type=Path, required=True, help="checkout every member snapshots")
-    ap.add_argument("--queue", type=Path, default=SH / "pb-queue")
+    ap.add_argument("--queue", type=Path, default=SH / "pb-queue",
+                    help="queue root where pbgang reads the published member rows and files the group record; must be the queue pbrun publishes to")
     args = ap.parse_args(argv)
     manifest = load(args.manifest)
     skew_s = float(manifest.get("skew_s", _gang.DEFAULT_SKEW_S))
