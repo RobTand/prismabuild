@@ -66,7 +66,8 @@ def gang_fleet(fleet, tmp_path, monkeypatch):
             queue.publish(action_key=key, cas_root=str(cas.root), checkout_root=str(checkout),
                           worker_script="worker.py",
                           resources={"cpu": 2, "gpu": 1, "mem_gb": mem_gb},
-                          needs_gpu=True, tags=[host], priority=priority, gang=gang)
+                          needs_gpu=True, tags=[host], priority=priority, gang=gang,
+                          max_attempts=1)
             rows.append(pool._read_json(queue.item_path(pool.READY, key)))
         _gang.publish_group(queue, group, rows, skew_s=skew_s)
         return group, [row["action_key"] for row in rows]
