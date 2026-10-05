@@ -492,9 +492,21 @@ an explicitly requested
 payload budget without promising when preparation or settlement finishes.
 
 Discover potential measurement generations and elected sidecars outside H;
-acquire sorted measurement transition keys M **nonblocking before H**, using the
-existing candidate/reentrant lock contract, then refresh strict READY, CLAIMED,
-finish-mark, sidecar and relevant exact terminal/withdrawal authority under H.
+acquire the sorted transition keys of the measurements **elected for this host**
+(M) **nonblocking before H**, using the existing candidate/reentrant lock
+contract, then refresh strict READY, CLAIMED, finish-mark, sidecar and relevant
+exact terminal/withdrawal authority under H. Only an election on this host can
+fence this host's admission (`blocking_selection` is host-filtered). An elected
+key that another loop holds mid-transition is kept as a live election for the
+pass (the conservative reading), not a refusal. Locking every READY/CLAIMED
+measurement key instead livelocked admission on 2026-10-05: with 38-49 READY
+PACT measurement rows and six loops per Spark, each loop held one of those keys
+as its candidate, nearly every census met a busy key, and both Sparks denied
+every row `measurement transition busy`. Unlocked reads only err toward
+fencing: a missing row is not retirement, and retirement needs an exact ending
+or a strictly newer publication, both durable. Election writes stay serialized
+by the electing measurement's own transition key and the elected host's H, and
+this refresh runs under this host's H.
 The host-local reader fence is acquired once for the whole two-pass census and
 released after the refresh (#1498): releasing it between the phases let a
 concurrent observer take it and deny the under-H refresh -- after the caller
@@ -516,7 +528,7 @@ transition lock, and whose record carries no `measurement_reservation` field
 Withdrawal never removed a sidecar, so ~2,900 concluded ones made a Spark NFS
 census take 3-5 s of its 5 s budget (#1498). Every census still reads every
 remaining sidecar.
-New unlocked M keys, unreadable/incomplete records, unsupported ownership and
+Unreadable/incomplete records, unsupported ownership and
 caps (4096 directory entries, 4 MiB per record, five seconds per read) defer the
 pass, never become an empty census. Parent retains M/H only through the actual
 `begin_acquire`; materialization/commit/rename/execute stay outside H. An arbitrary
