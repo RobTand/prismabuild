@@ -53,11 +53,15 @@ def test_a_window_is_part_of_the_action_identity(tmp_path: Path):
 
 
 @pytest.mark.parametrize("text", [
-    "nsys:abc", "nsys:0", "nsys:-1", "nsys:1000000", "sample:5", "torch:1",
+    "nsys:abc", "nsys:0", "nsys:-1", "nsys:1000000", "torch:1",
     "nvprof", "ncu",
 ])
 def test_a_mode_this_runtime_cannot_honour_is_refused_at_the_client(text: str):
-    """A submission that only the worker would reject is a wasted round trip."""
+    """A submission that only the worker would reject is a wasted round trip.
+
+    ``sample:HZ`` takes a positive rate since #1494, so its own refusals live
+    beside the sample tests in ``test_sample_profile.py``.
+    """
 
     with pytest.raises(pb.ProfileBackendUnavailable):
         pb.parse_profile_mode(text)

@@ -242,7 +242,11 @@ their original policies; adopt checkpoints through a newly sealed request.
 
 `--profile sample` runs py-spy around the action's child at 100 Hz and files
 the speedscope profile as a CAS blob whose digest and path appear on the
-ending, for `pbrun`, `pbstatus` and a human with speedscope. Reach for it when
+ending, for `pbrun`, `pbstatus` and a human with speedscope. `--profile
+sample:HZ` seals a positive whole sampling rate instead (`sample:10` samples
+ten times a second); malformed and nonpositive rates refuse at `pbrun`, bare
+`sample` keeps the 100 Hz default, and two rates are two actions because the
+mode string is sealed into the key. Reach for it when
 you need to know where an action's time went, not routinely: unlike
 `--priority` it **is** sealed into the action key, so a profiled run is a
 different action -- never a cache hit for the unprofiled one, and never an A/B

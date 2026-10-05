@@ -225,7 +225,7 @@ its existing limits. This is not a whole-submission timeout.
 | `--anywhere` | Assert that dependencies outside the snapshot are identical on every eligible worker. | No constraint, and the default partition. |
 | `--priority N` | A queue hint. Higher runs sooner; a negative value yields to everything at 0, and aging never lifts it past them. Defaults to 0. | `--nice`, sent on every submission. SLURM subtracts the nice from the base priority its scheduler assigned. |
 | `--priority-reason TEXT` | Optional explanation shown beside priority in `pbstatus`; outside action identity and admission policy. | Stored with the lane submission, outside identity and scheduling flags. |
-| `--profile MODE` | Run a profiler around the action's child and store the profile as a CAS blob named on the ending. `sample` is py-spy over the whole process tree; `nsys` is Nsight Systems over CUDA and NVTX, optionally windowed (`nsys:600`); `torch` is a contract the action opts into. **Part of the action identity**, unlike `--priority`. | Carried unchanged; the worker resolves the backend on the box that runs it. |
+| `--profile MODE` | Run a profiler around the action's child and store the profile as a CAS blob named on the ending. `sample` is py-spy over the whole process tree, optionally at a sealed positive rate (`sample:10`); `nsys` is Nsight Systems over CUDA and NVTX, optionally windowed (`nsys:600`); `torch` is a contract the action opts into. **Part of the action identity**, unlike `--priority`. | Carried unchanged; the worker resolves the backend on the box that runs it. |
 
 `pbrun` accepts only `cpu`, `gpu`, `mem_gb`, and `disk_metadata` in `--demand`.
 It refuses an unknown resource before sealing at this client boundary;
@@ -373,7 +373,14 @@ Class evidence is not a daemon lock or a guarantee against later image deletion.
 ### `--profile`: an opt-in profile, sealed into the key
 
 `--profile sample` runs py-spy at 100 Hz over the action's whole process tree
-and files the speedscope profile as a CAS blob. The ending carries
+and files the speedscope profile as a CAS blob. `--profile sample:HZ` seals a
+positive whole sampling rate instead — `sample:10` samples ten times a second,
+which is the lever to reach for when the 100 Hz default's own observer cost is
+the thing distorting a long instrumented run (#1494). Malformed and
+nonpositive rates are refused at `pbrun` before anything is sealed, and again
+at the worker's action validation; bare `sample` is byte-for-byte the mode
+that always existed, and two rates are two actions because the mode string is
+sealed into the key. The ending carries
 `profile: {mode, backend, backend_version, backend_path, backend_resolved_path,
 backend_sha256, backend_bytes, backend_returncode, rate_hz, blob_sha256, bytes,
 samples, blob_path, produced}`, and both `pbrun` and `pbstatus` print the digest
@@ -410,10 +417,11 @@ What is worth knowing before using it:
     medians and 4.12 % on the means; the paired 95 % interval is **1.2-7.0 %**
     (n = 5, shared box at loadavg 1.4-3.4). The tier's ~5 % budget is met as
     a point estimate and not established: the interval's upper end crosses
-    it. The rate stays at 100 Hz on that reading; a re-measurement on a quiet
-    box with more repeats is what would settle it. The rate is a property of the mode and is reported
-    in the ending, never sealed: receipts taken across a rate change are
-    comparable only through the `rate_hz` each one carries.
+    it. The rate stayed at 100 Hz on that reading; a re-measurement on a quiet
+    box with more repeats is what would settle it. The bare mode's rate is the
+    mode's default and is reported in the ending; a `sample:HZ` action seals
+    its rate through the mode string, and receipts taken across a rate change
+    remain comparable only through the `rate_hz` each one carries.
 *   **The backend has to be visible to the launcher's interpreter.** The
     backend is looked up beside `sys.executable` first and then on `PATH`, and
     `sys.executable` is the worker loop's `--python`. Eligibility comes from

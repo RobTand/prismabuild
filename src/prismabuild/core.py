@@ -5808,8 +5808,11 @@ PROFILE_SPEEDSCOPE_SCHEMA = "https://www.speedscope.app/file-format-schema.json"
 #: interval 1.2-7.0 % (n = 5), on a box that other work had at loadavg
 #: 1.4-3.4.  The tier's ~5 % budget is met as a point estimate, not
 #: established.  ``docs/operating_prismabuild.md`` carries the table and the
-#: paired deltas.  The rate is a property of the mode, not of the
-#: submission, so it is reported in the ending and never sealed into the key.
+#: paired deltas.  This is the *default* rate of the bare ``sample`` mode: it
+#: is reported in the ending and sealed nowhere.  An action that asks for
+#: ``sample:HZ`` (#1494) seals that rate through the mode string -- two rates
+#: are two actions -- and the ending reports the rate the action actually
+#: ran at.
 PROFILE_SAMPLE_RATE_HZ = 100
 
 #: Where a profile is written while the action runs.  Under the action's own
@@ -6001,6 +6004,9 @@ class PySpyProfileBackend:
     flush_signal = signal.SIGINT
     flush_seconds = 3.0
     name = "py-spy"
+    #: The rate bare ``sample`` runs at.  ``sample:HZ`` binds a per-action
+    #: copy whose own ``rate_hz`` is the sealed one; this class attribute is
+    #: then the default the bare mode keeps (#1494).
     rate_hz = PROFILE_SAMPLE_RATE_HZ
     profile_suffix = "speedscope.json"
     #: py-spy samples the action's descendants, and the Docker daemon's
@@ -6014,11 +6020,31 @@ class PySpyProfileBackend:
         self._version: str | None = None
 
     def bind(self, option: str | None) -> "PySpyProfileBackend":
-        if option is not None:
+        """A per-action copy carrying the sealed rate, if one was given.
+
+        ``sample`` stays the 100 Hz default this mode has always run at.
+        ``sample:HZ`` (#1494) names a positive whole rate in samples per
+        second and must not reconfigure the registry's instance for the next
+        action, so -- exactly as ``NsysProfileBackend.bind`` does for the
+        window -- the option makes a copy.  The bound rate is what
+        ``launch_argv`` passes to py-spy and what ``_ProfileSession.identity``
+        reports as ``rate_hz``; malformed and nonpositive input is refused
+        here, at the client's parse and again at the worker's action
+        validation, before anything is sealed or launched.
+        """
+
+        if option is None:
+            return self
+        if not re.fullmatch(r"[1-9][0-9]{0,4}", option):
             raise ProfileBackendUnavailable(
-                f"the sample mode takes no option, and was given {option!r}"
+                f"the sample rate must be whole samples per second, 1 to "
+                f"99999, not {option!r}: --profile sample:10 samples ten "
+                "times a second"
             )
-        return self
+        bound = PySpyProfileBackend()
+        bound.rate_hz = int(option)
+        bound._path, bound._version = self._path, self._version
+        return bound
 
     def environment(self, *, profile_path: Path) -> dict[str, str]:
         """The guard and marker path the action's Docker shim reads.
@@ -6518,8 +6544,9 @@ PROFILE_BACKENDS: dict[str, object] = {
 #: What ``--profile`` accepts, in the order a help message should list it.
 PROFILE_MODES: tuple[str, ...] = tuple(sorted(PROFILE_BACKENDS))
 
-#: How a mode carries its one option.  ``nsys:600`` is the whole vocabulary:
-#: a mode name, and a number the backend knows how to read.
+#: How a mode carries its one option.  A mode name, and one number the
+#: backend knows how to read: ``nsys:600`` is a window in seconds,
+#: ``sample:10`` a sampling rate in samples per second (#1494).
 PROFILE_MODE_SEPARATOR = ":"
 
 
