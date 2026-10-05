@@ -19,6 +19,8 @@ from __future__ import annotations
 from pathlib import Path
 import sys
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from prismabuild import adaptive_cpu  # noqa: E402
 from prismabuild import container_images  # noqa: E402
