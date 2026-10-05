@@ -69,7 +69,7 @@ _PUBLISH_LOCK_DEPTH = 0
 _PUBLISH_LOCK_PID: int | None = None
 #: Published as ``tools/<name>`` *and* ``tools/fleet/<name>``.
 FLEET_SCRIPTS = (
-    "docker", "pbrun.py", "pbtest.py", "pbtest_outcomes.py", "pbtest_collection.py", "pbtest_pins.py", "require_pool.py", "worker_loop.py", "worker.py",
+    "docker", "pbrun.py", "pbtest.py", "pbtest_outcomes.py", "pbtest_collection.py", "pbtest_pins.py", "pbtest_capabilities.py", "require_pool.py", "worker_loop.py", "worker.py",
     "seal_and_publish.py",
     "publish_runtime.py", "pool_reset.py", "runtime_paths.py", "supervise.py",
     "role_log_identity.py", "migrate_role_logs.py",
@@ -159,6 +159,10 @@ FLEET_SCRIPTS = (
     # holding the mount, and it reads /proc on the box it runs on to find out
     # what is still live there.
     "pb_gc.py",
+    # pbgang.py submits a gang (#1517) from a box that has no checkout; a tool
+    # missing from this list is a tool no box can run, so the gang canary could
+    # not start from a published generation.
+    "pbgang.py",
     # Explicit plan-first banked-checkout recovery runs on the owning host.
     "pbrecover_checkout.py",
     # The reconcile, for the same reason: the endings it files are the ones
