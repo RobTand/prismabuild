@@ -88,12 +88,20 @@ def test_recovery_main_result_bytes_and_nonfinite_refusal_match_main(monkeypatch
     monkeypatch.setattr(module.pool, "PoolQueue", lambda path: None)
     monkeypatch.setattr(module, "_pbrecover_checkout_read", lambda path: [])
     monkeypatch.setattr(module.recovery, "prepare_checkout_recovery", lambda *args, **kwargs: result)
+    old_recovery = SimpleNamespace(**vars(module.recovery))
+    old_recovery._path = recovery._checkout_recovery_path
+    old = main_definitions("tools/fleet/pbrecover_checkout.py", ["_JSONParser", "main"],
+                           argparse=module.argparse, recovery=old_recovery, pool=module.pool,
+                           pb=core, _read=module._pbrecover_checkout_read, __doc__=module.__doc__)
+    assert old.main() == 2
+    expected = capsys.readouterr().out
     assert module.main() == 2
-    assert capsys.readouterr().out == json.dumps(result, sort_keys=True, allow_nan=False) + "\n"
+    assert capsys.readouterr().out == expected
     result["extra"] = float("nan")
-    with pytest.raises(ValueError):
-        module.main()
-    assert capsys.readouterr().out == ""
+    for main_function in (old.main, module.main):
+        with pytest.raises(ValueError):
+            main_function()
+        assert capsys.readouterr().out == ""
 
 
 def test_gang_main_result_bytes_match_main(monkeypatch, capsys, tmp_path):
@@ -110,10 +118,18 @@ def test_gang_main_result_bytes_match_main(monkeypatch, capsys, tmp_path):
     monkeypatch.setattr(module.pool, "_read_json", lambda path: {})
     monkeypatch.setattr(module._gang, "publish_group", lambda *args, **kwargs:
         {"skew_s": 1.25, "priority": 7})
-    assert module.main(["--manifest", str(manifest), "--cwd", str(tmp_path)]) == 0
-    expected = {"schema": module.SCHEMA, "group": "c" * 32,
-                "members": ["a" * 64, "b" * 64], "skew_s": 1.25, "priority": 7}
-    assert capsys.readouterr().out == json.dumps(expected, sort_keys=True) + "\n"
+    old = main_definitions("tools/fleet/pbgang.py", ["main"],
+                           argparse=module.argparse, secrets=module.secrets, sys=sys,
+                           subprocess=module.subprocess, pool=module.pool, _gang=module._gang,
+                           SH=module.SH, SCHEMA=module.SCHEMA, __doc__=module.__doc__,
+                           load=module._pbgang_load_manifest,
+                           member_command=module.member_command, withdraw=module.withdraw)
+    argv = ["--manifest", str(manifest), "--cwd", str(tmp_path)]
+    assert old.main(argv) == 0
+    expected = capsys.readouterr().out
+    keys = iter(["a" * 64, "b" * 64])
+    assert module.main(argv) == 0
+    assert capsys.readouterr().out == expected
 
 
 def test_rollout_private_ascii_line_profile_matches_main():
