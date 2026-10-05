@@ -175,7 +175,7 @@ def test_the_census_reader_runs_on_a_real_tmpfs_state_directory(
     assert census.directory == state
     value = census.capture()
     assert set(value) == {"measurements", "elections", "selections",
-                          "opportunities", "keys"}
+                          "opportunities", "keys", "gang_elections"}
     assert value["keys"] == []
     # The reader ran from this exact directory: its guard lives here and stays.
     # A permanent guard is the design, and the state root must never be cleared

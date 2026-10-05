@@ -183,7 +183,51 @@ def _capture(queue: PoolQueue) -> dict:
             continue
         elections[key] = chosen  # missing authority stays fenced, indefinitely
     return {"measurements": measurements, "elections": elections, "selections": selected,
-            "opportunities": opportunities, "keys": sorted(set(measurements) | set(selected))}
+            "opportunities": opportunities, "keys": sorted(set(measurements) | set(selected)),
+            "gang_elections": _gang_elections(queue, rows, count)}
+
+
+def _gang_elections(queue: PoolQueue, rows: dict[str, list[dict]], count: int) -> dict:
+    """Live gang host elections (#1517), read in the same bounded child.
+
+    A gang election fences its host while any member row of a gang without a
+    teardown is still READY or CLAIMED. An unreadable or malformed gang
+    record fails the census closed, exactly as a malformed publication does.
+    Elections are written only by the elected host's own pass under its host
+    admission, which also serializes this host's readers, so no member key
+    joins the M lock set.
+    """
+    from . import _gang
+    directory = _gang.root(queue)
+    try:
+        entries = os.scandir(directory)
+    except FileNotFoundError:
+        return {}  # gang admission was never used on this pool
+    found: dict[str, dict] = {}
+    try:
+        with entries:
+            for entry in entries:
+                count += 1
+                if count > MAX_RECORDS:
+                    raise CensusUnavailable("measurement census record cap exceeded")
+                if not entry.name.endswith(".json") or entry.name.startswith("."):
+                    continue
+                group = entry.name[:-5]
+                record = _gang.read_group(queue, group)
+                if record is None or _gang.teardown(queue, group) is not None:
+                    continue
+                live = [member for member in record["members"]
+                        if any(float(row.get("published_unix", math.nan)) == member["published_unix"]
+                               for row in rows.get(member["action_key"], []))]
+                if not live:
+                    continue
+                for index, election in _gang.elections(queue, group, record["size"]).items():
+                    found[election["action_key"]] = {
+                        "group": group, "index": index, "action_key": election["action_key"],
+                        "host": election["host"], "priority": election["priority"]}
+    except _gang.GangContractError as exc:
+        raise CensusUnavailable(str(exc)) from exc
+    return found
 
 
 class CensusReader:
@@ -313,9 +357,11 @@ class CensusReader:
                 raise CensusUnavailable(f"measurement census unavailable: {reply}")
             value = reply.get("value")
             if (not isinstance(value, dict)
-                    or set(value) != {"measurements", "elections", "selections", "opportunities", "keys"}
+                    or set(value) != {"measurements", "elections", "selections", "opportunities", "keys",
+                                      "gang_elections"}
                     or not all(isinstance(value[field], dict)
-                               for field in ("measurements", "elections", "selections", "opportunities"))
+                               for field in ("measurements", "elections", "selections", "opportunities",
+                                             "gang_elections"))
                     or not isinstance(value["keys"], list)
                     or len(value["keys"]) > MAX_RECORDS
                     or any(not isinstance(key, str) or len(key) != 64
@@ -382,6 +428,19 @@ def blocking_selection(census: dict, item: dict, *, host: str, funded_by: str | 
     for key, chosen in sorted(census["elections"].items()):
         if (chosen["host"] == host and key != item["action_key"]
                 and int(item.get("priority", 0)) < chosen["priority"] and funded_by != key):
+            return chosen
+    return None
+
+
+def gang_blocking(census: dict, item: dict, *, host: str, group: str | None) -> dict | None:
+    """A live gang election fences its host against strictly lower priority (#1517).
+
+    The same rule as :func:`blocking_selection`; the gang's own members are
+    never fenced by their siblings' elections.
+    """
+    for key, chosen in sorted(census.get("gang_elections", {}).items()):
+        if (chosen["host"] == host and key != item["action_key"] and chosen["group"] != group
+                and int(item.get("priority", 0)) < chosen["priority"]):
             return chosen
     return None
 

@@ -6335,6 +6335,7 @@ class PoolQueue:
         recompute: bool = False,
         refuse_withdrawn: bool = False,
         refuse_if_live: bool = False,
+        gang: Mapping[str, object] | None = None,
     ) -> Path:
         """Enqueue one sealed action.  The action itself already lives in the CAS.
 
@@ -6419,6 +6420,17 @@ class PoolQueue:
         # adoption on its way to refusing (#714 review, #708's cancellation
         # contract).
         normalized_tags = normalize_placement_tags(tags)
+        from . import _gang
+        try:
+            declared_gang = _gang.declaration(gang)
+        except _gang.GangContractError as exc:
+            raise PoolContractError(str(exc)) from exc
+        if declared_gang is not None:
+            # Default off (#1517): only a box offering the gang capability
+            # places a member, so an old or disabled worker never claims one.
+            normalized_tags = normalize_placement_tags([*normalized_tags, _gang.TAG])
+        elif _gang.TAG in normalized_tags:
+            raise PoolContractError(f"{_gang.TAG} requires a gang declaration")
         if declared_interpreter is not None:
             # The capability tag rides the requirement (the #714 shape): a
             # loop from before the field does not offer it, so an old worker
@@ -6838,6 +6850,9 @@ class PoolQueue:
             if not cpu_admission._is_key(dependent_of):
                 raise PoolContractError("dependent_of must be a 64-hex action key")
             item["dependent_of"] = dependent_of
+        if declared_gang is not None:
+            # A hint checked against the sealed ``params.gang`` at claim.
+            item["gang"] = declared_gang
         if recompute:
             # A movement node.  Its key is a content hash and its receipt is
             # filed in the CAS like any other, so a republish of the same key
@@ -20507,6 +20522,7 @@ class PoolQueue:
                 sealed_host_demand = dict(demand)
                 allowance = None
                 dependent_owner: object = cpu_admission._UNREAD
+                gang = gang_record = gang_entry = None  # #1517, read below
                 handle: str | None = None
                 tier_handles: dict[str, str] = {}
                 tier_funded: dict[str, dict[str, object]] = {}
@@ -20658,6 +20674,32 @@ class PoolQueue:
                             except (ValueError, OSError, KeyError, TypeError) as exc:
                                 self.record_denial(item, "local_scratch_io_profile_invalid", {"error": str(exc)})
                                 continue
+                        # Gang membership (#1517, default off: only a box
+                        # offering ``_gang.TAG`` places these rows). Read from
+                        # the sealed request and the immutable group record
+                        # before host admission, as the producer link is.
+                        gang = gang_record = gang_entry = None
+                        if item.get("gang") is not None:
+                            from . import _gang
+                            try:
+                                gang = _gang.sealed(item)
+                                gang_record = (_gang.read_group(self, gang["group"])
+                                               if gang is not None else None)
+                                if gang is not None and gang_record is None:
+                                    self.record_denial(item, "gang_group_incomplete",
+                                                       {"group": gang["group"]})
+                                    continue
+                                if gang_record is not None:
+                                    gang_entry = _gang.member(gang_record, item, gang)
+                                    torn = _gang.teardown(self, gang["group"])
+                                    if torn is not None:
+                                        self.record_denial(item, "gang_torn_down",
+                                                           {"group": gang["group"], "teardown": torn})
+                                        continue
+                            except (_gang.GangContractError, OSError, pb.PrismaBuildError,
+                                    KeyError, TypeError, ValueError) as exc:
+                                self.record_denial(item, "gang_contract_invalid", {"error": str(exc)})
+                                continue
                         from . import _measurement_reservation as measurement_reservation
                         census_blocked = None
                         census_guard = measurement_reservation.admission_census(self, ledger, host_gate)
@@ -20686,6 +20728,40 @@ class PoolQueue:
                                     "withheld_for": census_blocked["action_key"],
                                     "selection": census_blocked, "candidate_release_bound": "UNKNOWN"})
                                 continue
+                            gang_blocked = (None if serves_incumbent else
+                                            measurement_reservation.gang_blocking(
+                                                census, item, host=socket.gethostname(),
+                                                group=gang["group"] if gang is not None else None))
+                            if gang_blocked is not None:
+                                self.record_denial(item, "deferred_for_gang_reservation", {
+                                    "withheld_for": gang_blocked["action_key"],
+                                    "gang_election": gang_blocked})
+                                continue
+                            if gang_record is not None:
+                                # Elect this host for the member under H: from
+                                # here on the census fences it (#1517). One
+                                # member per host; the no-clobber election
+                                # settles a race between matching hosts.
+                                here = socket.gethostname()
+                                standing = {election["index"]: election
+                                            for election in census["gang_elections"].values()
+                                            if election["group"] == gang["group"]}
+                                mine = standing.get(gang["index"])
+                                sibling_here = any(election["host"] == here
+                                                   for index, election in standing.items()
+                                                   if index != gang["index"])
+                                if mine is None and not sibling_here:
+                                    try:
+                                        mine = _gang.elect(self, gang_record, gang_entry, here, _now())
+                                    except (_gang.GangContractError, OSError, pb.PrismaBuildError) as exc:
+                                        self.record_denial(item, "gang_contract_invalid",
+                                                           {"error": str(exc)})
+                                        continue
+                                if mine is None or mine["host"] != here:
+                                    self.record_denial(item, "gang_member_elected_elsewhere", {
+                                        "group": gang["group"], "index": gang["index"],
+                                        "election": mine, "sibling_on_this_host": sibling_here})
+                                    continue
                             if scratch_boundary is not None:
                                 original, announced, generation, attempt = scratch_boundary
                                 scratch_changed = (
@@ -21115,6 +21191,37 @@ class PoolQueue:
                             self.record_denial(item, "container_class_" + str(class_verdict["reason"]),
                                                {"container_class_verdict": class_verdict,
                                                 "checked": "before_rename"})
+                            continue
+                    if item.get("gang") is not None and gang_record is None:
+                        # A gang row is never claimed outside the gang path.
+                        self._abandon_tier_acquire(tier_handles)
+                        tier_handles.clear()
+                        if ledger is not None and handle is not None:
+                            ledger.abandon_acquire(handle)
+                            self._return_borrow(controller, borrow)
+                            self._return_gpu_probe(controller, gpu_controller, gpu_probe)
+                        self.record_denial(item, "gang_contract_invalid",
+                                           {"error": "gang row reached commit without its group"})
+                        continue
+                    if gang_record is not None:
+                        # Every ordinary gate has passed: this member could
+                        # start here now. It commits only beside a complete
+                        # set; otherwise it says so and holds nothing (#1517).
+                        try:
+                            _gang.mark_ready(self, gang_record, gang_entry, socket.gethostname(), _now())
+                            readiness = _gang.sibling_readiness(
+                                self, gang_record, gang_entry, socket.gethostname(), _now())
+                        except (_gang.GangContractError, OSError, pb.PrismaBuildError) as exc:
+                            readiness = {"complete": False, "error": str(exc)}
+                        if not readiness["complete"]:
+                            self._abandon_tier_acquire(tier_handles)
+                            tier_handles.clear()
+                            if ledger is not None and handle is not None:
+                                ledger.abandon_acquire(handle)
+                                self._return_borrow(controller, borrow)
+                                self._return_gpu_probe(controller, gpu_controller, gpu_probe)
+                            self.record_denial(item, "gang_waiting_for_peers", {
+                                "group": gang["group"], "index": gang["index"], **readiness})
                             continue
                     self._write_claim_intent(key, owner=owner)
                     src = self.item_path(READY, key)
