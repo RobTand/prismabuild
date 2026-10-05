@@ -6313,6 +6313,7 @@ class PoolQueue:
         recompute: bool = False,
         refuse_withdrawn: bool = False,
         refuse_if_live: bool = False,
+        gang: Mapping[str, object] | None = None,
     ) -> Path:
         """Enqueue one sealed action.  The action itself already lives in the CAS.
 
@@ -6397,6 +6398,24 @@ class PoolQueue:
         # adoption on its way to refusing (#714 review, #708's cancellation
         # contract).
         normalized_tags = normalize_placement_tags(tags)
+        from . import _gang
+        try:
+            declared_gang = _gang.declaration(gang)
+        except _gang.GangContractError as exc:
+            raise PoolContractError(str(exc)) from exc
+        if declared_gang is not None:
+            # Default off (#1517): only a box offering the gang capability
+            # places a member, so an old or disabled worker never claims one.
+            normalized_tags = normalize_placement_tags([*normalized_tags, _gang.TAG])
+            # A retried or preempted member would start alone beside siblings
+            # already running: a gang member gets exactly one attempt, and an
+            # unsuccessful one ends the whole gang.
+            if max_attempts != 1 or retry_safe:
+                raise PoolContractError("a gang member must have max_attempts=1 and not be retry_safe")
+            if not any(int(value) > 0 for value in (resources or {}).values()):
+                raise PoolContractError("a gang member must declare a resource demand")
+        elif _gang.TAG in normalized_tags:
+            raise PoolContractError(f"{_gang.TAG} requires a gang declaration")
         if declared_interpreter is not None:
             # The capability tag rides the requirement (the #714 shape): a
             # loop from before the field does not offer it, so an old worker
@@ -6806,6 +6825,9 @@ class PoolQueue:
             if not cpu_admission._is_key(dependent_of):
                 raise PoolContractError("dependent_of must be a 64-hex action key")
             item["dependent_of"] = dependent_of
+        if declared_gang is not None:
+            # A hint checked against the sealed ``params.gang`` at claim.
+            item["gang"] = declared_gang
         if recompute:
             # A movement node.  Its key is a content hash and its receipt is
             # filed in the CAS like any other, so a republish of the same key
@@ -9310,6 +9332,67 @@ class PoolQueue:
             except (OSError, PoolContractError):
                 continue
             pruned.append(key)
+        return pruned
+
+    def sweep_gangs(self, *, limit: int = ORPHAN_PASSES_SWEEP_LIMIT) -> list[str]:
+        """Finish torn-down gangs and prune ended ones (#1517).
+
+        Runs on the orphan-passes schedule. A torn-down gang's members still
+        READY are withdrawn here (a claim pass that found the teardown could
+        not withdraw the row whose lock it held). A gang whose every member
+        has an exact ending -- none READY or CLAIMED -- loses its record and
+        state, so the census never reads a dead gang. A gang with a live or
+        unaccounted member is kept; failures are per gang.
+        """
+        from . import _gang
+        pruned: list[str] = []
+        try:
+            with os.scandir(_gang.root(self)) as entries:
+                names = sorted(entry.name for entry in entries
+                               if entry.name.endswith(".json") and not entry.name.startswith("."))
+        except OSError:
+            return pruned
+        for name in names[:limit]:
+            group = name[: -len(".json")]
+            try:
+                record = _gang.read_group(self, group)
+                if record is None:
+                    continue
+                keys = [str(member["action_key"]) for member in record["members"]]
+                torn = _gang.teardown(self, group)
+                if torn is None:
+                    # Every terminal path, including the reaper failing a
+                    # member whose lease was lost, ends the gang here: a
+                    # sibling already running is withdrawn (#1519 review).
+                    ended = {index: state for index, state in _gang.member_states(self, record).items()
+                             if state in _gang.UNSUCCESSFUL}
+                    if ended:
+                        index = min(ended)
+                        member = record["members"][index]
+                        self._gang_teardown(
+                            {"gang": {"group": group, "size": record["size"], "index": index}},
+                            by=str(member["action_key"]),
+                            reason=f"member {str(member['action_key'])[:12]} ended {ended[index]}")
+                        torn = _gang.teardown(self, group)
+                if torn is not None:
+                    for key in keys:
+                        if self.item_path(READY, key).exists():
+                            try:
+                                self.withdraw(key, reason=f"gang teardown: {torn.get('reason')}",
+                                              by=f"gang:{group}")
+                            except (PoolContractError, OSError, pb.PrismaBuildError):
+                                continue
+                if any(self.item_path(READY, key).exists() or self.item_path(CLAIMED, key).exists()
+                       for key in keys):
+                    continue
+                if not all(any(self.item_path(state, key).exists()
+                               for state in (DONE, FAILED, WITHDRAWN)) for key in keys):
+                    continue
+                shutil.rmtree(_gang.state_dir(self, group), ignore_errors=True)
+                _gang.group_path(self, group).unlink(missing_ok=True)
+            except (_gang.GangContractError, OSError, PoolContractError, pb.PrismaBuildError):
+                continue
+            pruned.append(group)
         return pruned
 
     def sweep_consumer_events(
@@ -20236,6 +20319,7 @@ class PoolQueue:
                 sealed_host_demand = dict(demand)
                 allowance = None
                 dependent_owner: object = cpu_admission._UNREAD
+                gang = gang_record = gang_entry = None  # #1517, read below
                 handle: str | None = None
                 tier_handles: dict[str, str] = {}
                 tier_funded: dict[str, dict[str, object]] = {}
@@ -20387,6 +20471,41 @@ class PoolQueue:
                             except (ValueError, OSError, KeyError, TypeError) as exc:
                                 self.record_denial(item, "local_scratch_io_profile_invalid", {"error": str(exc)})
                                 continue
+                        # Gang membership (#1517, default off: only a box
+                        # offering ``_gang.TAG`` places these rows). Read from
+                        # the sealed request and the immutable group record
+                        # before host admission, as the producer link is.
+                        gang = gang_record = gang_entry = None
+                        if item.get("gang") is not None:
+                            from . import _gang
+                            try:
+                                gang = _gang.sealed(item)
+                                gang_record = (_gang.read_group(self, gang["group"])
+                                               if gang is not None else None)
+                                if gang is not None and gang_record is None:
+                                    self.record_denial(item, "gang_group_incomplete",
+                                                       {"group": gang["group"]})
+                                    continue
+                                if gang_record is not None:
+                                    gang_entry = _gang.member(gang_record, item, gang)
+                                    ended = {index: state for index, state in
+                                             _gang.sibling_states(self, gang_record, gang_entry).items()
+                                             if state in _gang.UNSUCCESSFUL}
+                                    if ended:
+                                        # A sibling already ended badly: the
+                                        # gang can never start whole (#1517).
+                                        self._gang_teardown(
+                                            item, by=key, exclude={key},
+                                            reason=f"sibling ended before start: {ended}")
+                                    torn = _gang.teardown(self, gang["group"])
+                                    if torn is not None:
+                                        self.record_denial(item, "gang_torn_down",
+                                                           {"group": gang["group"], "teardown": torn})
+                                        continue
+                            except (_gang.GangContractError, OSError, pb.PrismaBuildError,
+                                    KeyError, TypeError, ValueError) as exc:
+                                self.record_denial(item, "gang_contract_invalid", {"error": str(exc)})
+                                continue
                         from . import _measurement_reservation as measurement_reservation
                         census_blocked = None
                         census_guard = measurement_reservation.admission_census(self, ledger, host_gate)
@@ -20415,6 +20534,56 @@ class PoolQueue:
                                     "withheld_for": census_blocked["action_key"],
                                     "selection": census_blocked, "candidate_release_bound": "UNKNOWN"})
                                 continue
+                            gang_blocked = (None if serves_incumbent else
+                                            measurement_reservation.gang_blocking(
+                                                census, item, host=socket.gethostname(),
+                                                group=gang["group"] if gang is not None else None))
+                            if gang_blocked is not None:
+                                self.record_denial(item, "deferred_for_gang_reservation", {
+                                    "withheld_for": gang_blocked["action_key"],
+                                    "gang_election": gang_blocked})
+                                continue
+                            if gang_record is not None:
+                                # Elect this host for the member under H: from
+                                # here on the census fences it (#1517). One
+                                # member per host; the no-clobber election
+                                # settles a race between matching hosts.
+                                here = socket.gethostname()
+                                standing = {election["index"]: election
+                                            for election in census["gang_elections"].values()
+                                            if election["group"] == gang["group"]}
+                                mine = standing.get(gang["index"])
+                                sibling_here = any(election["host"] == here
+                                                   for index, election in standing.items()
+                                                   if index != gang["index"])
+                                # Only the best-ranked gang on a shared host
+                                # set elects, readies or commits: two gangs
+                                # never each commit a member on a different
+                                # host and wait on each other (#1519 review).
+                                ours = {here, *(election["host"] for election in standing.values())}
+                                my_rank = list(_gang.rank(gang_record))
+                                ahead = sorted(
+                                    (election for election in census["gang_elections"].values()
+                                     if election["group"] != gang["group"] and election["host"] in ours
+                                     and election["rank"] < my_rank),
+                                    key=lambda election: election["rank"])
+                                if ahead:
+                                    self.record_denial(item, "deferred_for_gang_reservation", {
+                                        "withheld_for": ahead[0]["action_key"],
+                                        "gang_election": ahead[0], "ranked_behind": True})
+                                    continue
+                                if mine is None and not sibling_here:
+                                    try:
+                                        mine = _gang.elect(self, gang_record, gang_entry, here, _now())
+                                    except (_gang.GangContractError, OSError, pb.PrismaBuildError) as exc:
+                                        self.record_denial(item, "gang_contract_invalid",
+                                                           {"error": str(exc)})
+                                        continue
+                                if mine is None or mine["host"] != here:
+                                    self.record_denial(item, "gang_member_elected_elsewhere", {
+                                        "group": gang["group"], "index": gang["index"],
+                                        "election": mine, "sibling_on_this_host": sibling_here})
+                                    continue
                             if scratch_boundary is not None:
                                 original, announced, generation, attempt = scratch_boundary
                                 scratch_changed = (
@@ -20844,6 +21013,37 @@ class PoolQueue:
                             self.record_denial(item, "container_class_" + str(class_verdict["reason"]),
                                                {"container_class_verdict": class_verdict,
                                                 "checked": "before_rename"})
+                            continue
+                    if item.get("gang") is not None and gang_record is None:
+                        # A gang row is never claimed outside the gang path.
+                        self._abandon_tier_acquire(tier_handles)
+                        tier_handles.clear()
+                        if ledger is not None and handle is not None:
+                            ledger.abandon_acquire(handle)
+                            self._return_borrow(controller, borrow)
+                            self._return_gpu_probe(controller, gpu_controller, gpu_probe)
+                        self.record_denial(item, "gang_contract_invalid",
+                                           {"error": "gang row reached commit without its group"})
+                        continue
+                    if gang_record is not None:
+                        # Every ordinary gate has passed: this member could
+                        # start here now. It commits only beside a complete
+                        # set; otherwise it says so and holds nothing (#1517).
+                        try:
+                            _gang.mark_ready(self, gang_record, gang_entry, socket.gethostname(), _now())
+                            readiness = _gang.sibling_readiness(
+                                self, gang_record, gang_entry, socket.gethostname(), _now())
+                        except (_gang.GangContractError, OSError, pb.PrismaBuildError) as exc:
+                            readiness = {"complete": False, "error": str(exc)}
+                        if not readiness["complete"]:
+                            self._abandon_tier_acquire(tier_handles)
+                            tier_handles.clear()
+                            if ledger is not None and handle is not None:
+                                ledger.abandon_acquire(handle)
+                                self._return_borrow(controller, borrow)
+                                self._return_gpu_probe(controller, gpu_controller, gpu_probe)
+                            self.record_denial(item, "gang_waiting_for_peers", {
+                                "group": gang["group"], "index": gang["index"], **readiness})
                             continue
                     self._write_claim_intent(key, owner=owner)
                     src = self.item_path(READY, key)
@@ -23842,6 +24042,92 @@ class PoolQueue:
         return self.attempt_path(archived, attempt)
 
     @_serialized_key
+    def _gang_teardown(self, item: Mapping[str, object] | None, *, reason: str,
+                       by: str, exclude: Container[str] = ()) -> bool:
+        """End a member's whole gang once (#1517); ``True`` if this call did.
+
+        Any unsuccessful member ending, a withdrawal of any member, a start
+        barrier that expires or a sibling found failed all land here. The
+        winning writer withdraws every other live member through the ordinary
+        withdrawal path; a running member's worker stops at its withdrawal
+        checkpoints. ``exclude`` names keys whose transition lock the caller
+        holds: the sweep withdraws those once the caller lets go.
+        """
+        from . import _gang
+        gang = item.get("gang") if isinstance(item, Mapping) else None
+        if gang is None:
+            return False
+        try:
+            declared = _gang.declaration(gang)
+            record = _gang.read_group(self, declared["group"]) if declared else None
+            if record is None or not _gang.tear_down(
+                    self, record["group"], reason=reason, by=by, now=_now()):
+                return False
+        except (_gang.GangContractError, OSError, pb.PrismaBuildError) as exc:
+            print(f"pool gang teardown failed for {by[:12]}: {type(exc).__name__}: {exc}",
+                  file=sys.stderr)
+            return False
+        for member in record["members"]:
+            if member["action_key"] == by or member["action_key"] in exclude:
+                continue
+            try:
+                self.withdraw(member["action_key"], reason=f"gang teardown: {reason}",
+                              by=f"gang:{record['group']}")
+            except (PoolContractError, OSError, pb.PrismaBuildError):
+                continue  # already terminal, or the sweep finishes it
+        return True
+
+    def _gang_start_barrier(self, item: Mapping[str, object], *, owner: str,
+                            heartbeat_s: float) -> dict[str, object] | None:
+        """Hold a claimed gang member before launch until every sibling is claimed (#1517).
+
+        ``None`` releases the launch. Bounded by the group's ``skew_s``: past
+        it, or on a teardown marker, a sibling's unsuccessful ending or this
+        member's own withdrawal, the payload is never started and the member
+        ends with the reason, which tears the gang down. The lease is renewed
+        while it waits, so a bounded wait is never mistaken for a lost worker.
+        """
+        if item.get("gang") is None:
+            return None
+        from . import _gang
+        key = str(item["action_key"])
+        try:
+            gang = _gang.declaration(item.get("gang"))
+            record = _gang.read_group(self, gang["group"]) if gang else None
+            if record is None:
+                raise _gang.GangContractError("gang group record missing at launch")
+            entry = _gang.member(record, item, gang)
+        except (_gang.GangContractError, OSError, pb.PrismaBuildError) as exc:
+            return {"status": "failed", "termination_reason": "gang_contract_invalid",
+                    "gang": {"error": str(exc)}}
+        deadline = time.monotonic() + float(record["skew_s"])
+        renewed = time.monotonic()
+        while True:
+            if self.withdrawal_covers(item) is not None:
+                return {"status": "withdrawn", "termination_reason": "gang_torn_down",
+                        "gang": {"group": record["group"]}}
+            torn = _gang.teardown(self, record["group"])
+            if torn is not None:
+                return {"status": "failed", "termination_reason": "gang_torn_down",
+                        "gang": {"group": record["group"], "teardown": torn}}
+            states = _gang.sibling_states(self, record, entry)
+            if any(state in _gang.UNSUCCESSFUL for state in states.values()):
+                self._gang_teardown(item, by=key, exclude={key},
+                                    reason=f"sibling ended before start: {states}")
+                continue
+            if all(state in ("claimed", "done") for state in states.values()):
+                return None
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                self._gang_teardown(item, by=key, exclude={key},
+                                    reason=f"start skew {record['skew_s']}s exceeded: {states}")
+                return {"status": "failed", "termination_reason": "gang_start_skew_exceeded",
+                        "gang": {"group": record["group"], "siblings": states}}
+            if time.monotonic() - renewed >= heartbeat_s:
+                self.write_lease(key, owner=owner, claim_snapshot=item)
+                renewed = time.monotonic()
+            time.sleep(min(_gang.BARRIER_POLL_S, max(remaining, 0.0)))
+
     def finish(
         self,
         action_key: str,
@@ -23862,6 +24148,10 @@ class PoolQueue:
         succeeded = status in {"executed", "cache_hit"}
         src = self.item_path(CLAIMED, action_key)
         record = _read_json(src)
+        if not succeeded and (record or claim_snapshot or {}).get("gang") is not None:
+            # One member ending unsuccessfully ends the gang (#1517).
+            self._gang_teardown(record or claim_snapshot, by=action_key,
+                                reason=f"member {action_key[:12]} ended {status}")
         if record is None and claim_snapshot is not None:
             ready = _read_json(self.item_path(READY, action_key))
             if ready is not None:
@@ -25491,6 +25781,10 @@ class PoolQueue:
         # Admission's own preemption is excluded: it requeues its holder in
         # the same breath, and marking the plan would pause the window it just
         # put back.
+        if isinstance(record, Mapping) and record.get("gang") is not None:
+            # Withdrawing any member ends its gang and releases its fences (#1517).
+            self._gang_teardown(record, by=key,
+                                reason=f"member {key[:12]} withdrawn: {reason or 'withdrawn'}")
         plan_superseded = False
         if preempted_by is None and handoff_proof is None:
             plan_superseded = self.mark_residency_plan_superseded(
@@ -25785,6 +26079,11 @@ class PoolQueue:
                 "argv": argv,
                 "cpu_allocation": allocation,
             }
+        barrier = self._gang_start_barrier(item, owner=owner, heartbeat_s=heartbeat_s)
+        if barrier is not None:
+            return {"returncode": None, "stdout": "", "stderr": "",
+                    "elapsed_s": _now() - started, "argv": argv,
+                    "cpu_allocation": allocation, **barrier}
         from . import local_scratch
 
         selected = local_scratch._scratch_selections(
@@ -26513,6 +26812,7 @@ class PoolQueue:
         if self._sweep_due():
             self.reap_stale()
             self.sweep_orphan_passes()
+            self.sweep_gangs()
         item = self.claim(tags=tags, has_gpu=has_gpu, capacity=capacity,
                           cpu_tiers=cpu_tiers, adaptive_cpu=adaptive_cpu,
                           ready=ready, observed_images=observed_images,

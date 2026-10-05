@@ -5165,6 +5165,28 @@ def verify_retained_wrapper(prefix: str, *, where: str) -> Path:
 # --------------------------------------------------------------------------
 
 
+def gang_declaration(args) -> dict | None:
+    """``--gang-*`` as a sealed declaration, refusing what a gang cannot be (#1517)."""
+    fields = (args.gang_group, args.gang_size, args.gang_index)
+    if all(field is None for field in fields):
+        return None
+    if any(field is None for field in fields):
+        raise SystemExit("pbrun: --gang-group, --gang-size and --gang-index go together")
+    if args.transport != "pool":
+        raise SystemExit("pbrun: a gang member needs --transport pool")
+    if args.max_attempts != 1 or args.retry_safe:
+        raise SystemExit("pbrun: a gang member gets one attempt: an unsuccessful one "
+                         "ends the whole gang (drop --max-attempts/--retry-safe)")
+    if getattr(args, "after", None):
+        raise SystemExit("pbrun: a gang member cannot be deferred with --after")
+    from prismabuild import _gang
+    try:
+        return _gang.declaration({"group": args.gang_group, "size": args.gang_size,
+                                  "index": args.gang_index})
+    except _gang.GangContractError as exc:
+        raise SystemExit(f"pbrun: {exc}") from None
+
+
 def freeze_action_template(
     *,
     command: Sequence[str],
@@ -5190,6 +5212,7 @@ def freeze_action_template(
     profile: object | None,
     container_image_refs: Sequence[str] = (),
     wrapper_dir: Path | None = None,
+    gang: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """Read the tree and the environment once, and freeze what they say.
 
@@ -5464,6 +5487,10 @@ def freeze_action_template(
             params["gpu_memory_gb"] = gpu_memory_gb
     if execution_timeout_s is not None:
         params["execution_timeout_s"] = execution_timeout_s
+    if gang is not None:
+        # Sealed membership (#1517): the group, its size and this index are
+        # part of the action key. Absent, the key is byte-identical to before.
+        params["gang"] = dict(gang)
     if progress is not None:
         # Sealed, like the profiler mode and for the same reason: an action
         # admitted under the progress contract is a different action from its
@@ -6916,6 +6943,13 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     ap.add_argument("--deterministic", action="store_true",
                     help="declare byte-identical output; enables CAS reuse")
+    ap.add_argument("--gang-group", default=None,
+                    help="32-hex gang group this action is a member of (#1517); use "
+                         "pbgang.py, which seals every member and files the group")
+    ap.add_argument("--gang-size", type=int, default=None,
+                    help="members in the gang (with --gang-group)")
+    ap.add_argument("--gang-index", type=int, default=None,
+                    help="this member's index, 0..size-1 (with --gang-group)")
     ap.add_argument(
         "--retry-safe",
         action="store_true",
@@ -7099,6 +7133,7 @@ def prepare_submission(args: argparse.Namespace) -> dict[str, object]:
         )
     if args.detach and args.max_attempts > 1:
         raise SystemExit(detached_attempts_refusal(args.max_attempts))
+    gang = gang_declaration(args)
     retry_policy = {
         "max_attempts": args.max_attempts,
         "retry_safe": args.retry_safe,
@@ -7268,6 +7303,11 @@ def prepare_submission(args: argparse.Namespace) -> dict[str, object]:
         # ran on a box that could keep it.
         tags = pool.normalize_placement_tags(
             [*tags, *progress_required_tags(progress_policy)])
+    if gang is not None:
+        # Capability, not place (#1517): only a gang-enabled box offers it,
+        # so the live-offer check below refuses when none can claim a member.
+        from prismabuild import _gang
+        tags = pool.normalize_placement_tags([*tags, _gang.TAG])
     if images:
         # The same capability-not-place rule for declared images: the tag is
         # what keeps a loop from before the claim check (#714) from taking
@@ -7428,6 +7468,7 @@ def prepare_submission(args: argparse.Namespace) -> dict[str, object]:
         profile=args.profile,
         container_image_refs=images,
         wrapper_dir=wrapper_dir,
+        gang=gang,
     )
     return {
         "args": args,
@@ -7772,6 +7813,8 @@ def publication_row(
         row["container_images"] = list(params["container_images"])
     if params.get("interpreter"):
         row["interpreter"] = str(params["interpreter"])
+    if params.get("gang"):
+        row["gang"] = dict(params["gang"])
     # The repo checkout can advance just before the atomic runtime generation
     # rolls.  The previous PoolQueue already accepts the safety-critical bound,
     # so keep that mixed window usable; add the explanatory annotation once the
