@@ -359,8 +359,9 @@ def test_two_members_sharing_one_lead_go_resident_together(gang_fleet, monkeypat
 
     for key in (first, second):
         _compose_map(monkeypatch, queue, key, [lead])
-    assert gclaim("sparklina") == first, denial(first, "sparklina")
+    assert gclaim("sparklina") is None, denial(first, "sparklina")
     assert gclaim("sparky") == second, denial(second, "sparky")
+    assert gclaim("sparklina") == first, denial(first, "sparklina")
     for key in (first, second):
         claimed = pool._read_json(queue.item_path(pool.CLAIMED, key))
         assert claimed["residency_verdict"]["state"] == "resident"
