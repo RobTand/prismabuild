@@ -5957,6 +5957,15 @@ partial/evicting trees and active manual bind mounts. For canonical paths under
 `/mnt/shared`, Docker inspection must establish that no running container
 captured the old recursive shared mount. No live manual copy is touched by
 Phase 1 qualification.
+
+An adoption admitted under a live lease retains its local occupancy hold if
+byte verification, same-filesystem validation, or the unmounted-source check
+refuses it. The source is unchanged and the copy stays absent. This is the
+same conservative failure accounting as a copy: no exception releases a hold
+that might protect another resident or partial incarnation. The bounded lease
+pass or explicit release drives normal ordered eviction to return it. A lease
+refused before reservation takes no new tokens.
+
 `pbrun --resident-set SET_ID` is the single explicit lease-reference declaration.
 It is carried in ordinary action parameters and projected onto the queue row;
 it adds neither an admission gate nor a placement preference. Phase 1 does not
