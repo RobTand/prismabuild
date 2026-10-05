@@ -30,9 +30,9 @@ def absent_partner(gang_fleet, fleet, monkeypatch):
         for _ in range(int(seconds / 30)):
             clock[0] += 30
             assert local() is None
-    def job(name="bounded", timeout=900):
+    def job(name="bounded", timeout=900, *, gpu=1, mem_gb=24):
         return publish(name, priority=0, retry_safe=False, max_attempts=1,
-                       timeout_s=timeout, mem_gb=24, tags=["sparklina"])
+                       timeout_s=timeout, gpu=gpu, mem_gb=mem_gb, tags=["sparklina"])
     return queue, clock, group, keys, incumbent, offer, local, observe, job, finish
 
 
@@ -121,7 +121,7 @@ def test_an_observer_restart_cannot_advance_an_old_window(absent_partner):
     assert queue.item_path(pool.READY, key).exists()
 
 
-def test_partner_return_waits_for_one_bounded_job_and_resets_the_window(absent_partner):
+def test_partner_return_waits_for_one_bounded_job_and_resets_the_window(absent_partner, gang_fleet):
     queue, clock, group, keys, incumbent, offer, local, observe, job, finish = absent_partner
     observe(600)
     key = job()
@@ -134,18 +134,7 @@ def test_partner_return_waits_for_one_bounded_job_and_resets_the_window(absent_p
     assert not queue.withdrawal_decisions(key), "non-restartable bounded work was preempted"
     finish(key, "sparklina")
     assert local() is None  # actually ready; peer must make its pass too
-    monkeypatch_host = pool.socket.gethostname
-    pool.socket.gethostname = lambda: "sparky"
-    try:
-        # Refresh the fixture's sampler without changing the ordinary gates.
-        clock[0] += 0.01
-        # The existing gang fixture claim makes the real peer ready and commits it.
-        from test_gang_reservation_1517 import HOSTS
-        got = queue.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=False,
-                          has_gpu=True, tags=["gb10", HOSTS[1], _gang.TAG])
-        assert got["action_key"] == keys[1]
-    finally:
-        pool.socket.gethostname = monkeypatch_host
+    assert gang_fleet[4]("sparky") == keys[1]
     assert local() == keys[0]
     window = pool._read_json(_gang.state_dir(queue, group) / "absence-0-1.json")
     assert window["covered_s"] == 0
@@ -193,4 +182,16 @@ def test_estale_counts_only_after_retry_to_a_successful_offer_read(
     key = job()
     got = local()
     assert (got == key) is allowed, "ESTALE retry success/unknown was misclassified"
+
+
+
+def test_only_one_bounded_cpu_loan_can_occupy_a_fenced_host(absent_partner):
+    queue, clock, group, keys, incumbent, offer, local, observe, job, finish = absent_partner
+    observe(600)
+    first = job("small-cpu-first", gpu=0, mem_gb=1)
+    assert local() == first
+    second = job("small-cpu-second", gpu=0, mem_gb=1)
+    assert local() is None, "two otherwise-fitting bounded CPU loans overlapped"
+    assert queue.item_path(pool.READY, second).exists()
+    assert queue.ledger("sparklina").held_keys() == [first]
 
