@@ -22,6 +22,7 @@ State lives under ``pb-queue/gangs/``: ``<group>.json`` (immutable record),
 from __future__ import annotations
 
 from collections.abc import Mapping
+from contextlib import ExitStack
 import math
 import os
 from pathlib import Path
@@ -148,9 +149,18 @@ def publish_group(queue, group: str, members: list[Mapping[str, object]], *,
     record = {"schema": GROUP_SCHEMA, "group": group, "size": len(members),
               "skew_s": float(skew_s), "members": entries,
               "priority": max(entry["priority"] for entry in entries)}
-    if not _link_new(group_path(queue, group), record):
-        if read_group(queue, group) != record:
-            raise GangContractError("a different record already names this gang group")
+    with ExitStack() as held:
+        # Publication and orphan retirement share the existing member keys,
+        # in stable order. No separate registration lock/index is needed.
+        for entry in sorted(entries, key=lambda entry: entry["action_key"]):
+            if not held.enter_context(queue._transition_locked(entry["action_key"], blocking=False)):
+                raise GangContractError("gang group publication busy with a member transition")
+        if read_group(queue, group) is None and any(
+                state != "ready" for state in member_states(queue, record).values()):
+            raise GangContractError("gang member ended before group publication")
+        if not _link_new(group_path(queue, group), record):
+            if read_group(queue, group) != record:
+                raise GangContractError("a different record already names this gang group")
     return record
 
 

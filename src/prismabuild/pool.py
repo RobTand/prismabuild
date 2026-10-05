@@ -9586,6 +9586,36 @@ class PoolQueue:
                     os.close(descriptor)
         return pruned
 
+    def _sweep_unregistered_gang_members(self, *, limit: int) -> None:
+        """Withdraw only old READY members whose publisher never filed a group."""
+        from . import _gang
+        considered = 0
+        for path in sorted(self.dir(READY).glob("*.json")):
+            if considered >= limit:
+                break
+            try:
+                item = _read_json(path)
+                gang = _gang.declaration((item or {}).get("gang"))
+                if gang is None or _now() - float(item["published_unix"]) < LEASE_TIMEOUT_S:
+                    continue
+                if _gang.read_group(self, gang["group"]) is not None:
+                    continue
+                considered += 1
+                key = str(item["action_key"])
+                with self._transition_locked(key, blocking=False) as acquired:
+                    if not acquired:
+                        continue
+                    current = _read_json(self.item_path(READY, key))
+                    if (current is None or _gang.declaration(current.get("gang")) != gang
+                            or _now() - float(current["published_unix"]) < LEASE_TIMEOUT_S
+                            or _gang.read_group(self, gang["group"]) is not None):
+                        continue
+                    self.withdraw(key, reason="gang group not published within registration grace",
+                                  by=f"gang-registration:{gang['group']}")
+            except (_gang.GangContractError, PoolContractError, OSError, pb.PrismaBuildError,
+                    KeyError, TypeError, ValueError):
+                continue
+
     def sweep_gangs(self, *, limit: int = ORPHAN_PASSES_SWEEP_LIMIT) -> list[str]:
         """Finish torn-down gangs and prune ended ones (#1517).
 
@@ -9597,6 +9627,7 @@ class PoolQueue:
         unaccounted member is kept; failures are per gang.
         """
         from . import _gang
+        self._sweep_unregistered_gang_members(limit=limit)
         pruned: list[str] = []
         try:
             with os.scandir(_gang.root(self)) as entries:
@@ -9628,7 +9659,7 @@ class PoolQueue:
                         torn = _gang.teardown(self, group)
                 if torn is not None:
                     for key in keys:
-                        if self.item_path(READY, key).exists():
+                        if self.item_path(READY, key).exists() or self.item_path(CLAIMED, key).exists():
                             try:
                                 self.withdraw(key, reason=f"gang teardown: {torn.get('reason')}",
                                               by=f"gang:{group}")
@@ -21233,8 +21264,13 @@ class PoolQueue:
                         backfill_binding = None
                         backfill_eligible = None
                         if gang_record is not None:
-                            pending_backfill = self._preempt_gang_backfill(
-                                ledger, gang_record, gang_entry, controller=host_gate)
+                            try:
+                                pending_backfill = self._preempt_gang_backfill(
+                                    ledger, gang_record, gang_entry, controller=host_gate)
+                            except (_gang.GangContractError, OSError, pb.PrismaBuildError,
+                                    KeyError, TypeError, ValueError) as exc:
+                                self.record_denial(item, "gang_contract_invalid", {"error": str(exc)})
+                                continue
                             if pending_backfill:
                                 self.record_denial(item, "gang_waiting_for_backfill_release", {
                                     "group": gang["group"], "holders": pending_backfill,

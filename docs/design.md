@@ -4712,22 +4712,37 @@ Per member host, inside the ordinary claim pass:
    expired barrier, or a sibling found failed files `gangs/<group>/teardown.json`
    once. The writer withdraws the other members through the ordinary withdrawal
    path. The census stops fencing for a torn-down gang. `sweep_gangs`, on the
-   orphan-passes schedule, withdraws leftover READY members and prunes the
-   records of a gang whose every member has an exact ending.
+   orphan-passes schedule, retries withdrawals for both READY and CLAIMED
+   members until they end; a failed running-member withdrawal is not forgotten.
+   It prunes records only when every member has an exact ending.
 
 **Ranking between gangs.** Gangs are totally ordered by (higher priority,
 earliest member publication, group). Before electing or readying, a member is
 deferred (`deferred_for_gang_reservation`, `ranked_behind`) while a better-ranked
-live gang holds an election on any host its gang uses. Two gangs sharing hosts
-therefore never each commit one member and then wait on each other until both
-fail. Residual: a better-ranked gang that first appears after a lower gang has
-already committed one member costs that lower gang its run, bounded by `skew_s`.
+live gang holds an election on any host its gang uses. Once those elections
+are visible, rank prevents gangs sharing hosts from each committing one
+member and then waiting on the other. Residual: two hosts making simultaneous first elections can initially
+elect different gangs before either sees the other's election. If one commits
+against an earlier ready snapshot before it observes the better-ranked gang,
+that lower-ranked run is lost, bounded by `skew_s`. This is not limited to a
+better-ranked gang published late after a lower gang has committed.
 
 **Lost workers.** `sweep_gangs` runs beside `sweep_orphan_passes` in the claim-site
 sweep. It also tears down any gang with a member whose exact-generation ending is
 FAILED or WITHDRAWN, including a one-attempt member the reaper failed after a lost
 lease, so a sibling that is already running is withdrawn rather than left waiting
 in its collective.
+
+**Missing group publication.** An unregistered READY member becomes eligible
+for withdrawal after `LEASE_TIMEOUT_S` (currently 300 s), reusing the lost-
+worker grace rather than inventing another duration. Registration and orphan
+withdrawal serialize through the existing member transition keys. A publisher
+cannot file a new group containing already-ended members. Registered slow
+members do not expire by this grace. Malformed or unreadable group, election
+or teardown records refuse only their own gang, never the complete census;
+this is source isolation, not a claim that malformed records caused the
+live census incidents. The off switch cannot be bypassed by an extra
+`--tag gang-v1`; ordinary non-gang claim records are unchanged.
 
 **Priority rule.** A gang fences only against strictly lower priority. Equal or
 higher priority work can still take a fenced host; that is the existing priority

@@ -187,15 +187,31 @@ def _capture(queue: PoolQueue) -> dict:
             "gang_elections": _gang_elections(queue, rows, count)}
 
 
+def _gang_election_records(queue: PoolQueue, group: str, rows: dict[str, list[dict]]) -> dict:
+    """Capture one gang; callers decide how its record failures are isolated."""
+    from . import _gang
+    record = _gang.read_group(queue, group)
+    if record is None or _gang.teardown(queue, group) is not None:
+        return {}
+    live = [member for member in record["members"]
+            if any(float(row.get("published_unix", math.nan)) == member["published_unix"]
+                   for row in rows.get(member["action_key"], []))]
+    if not live:
+        return {}
+    ranking = list(_gang.rank(record))
+    return {election["action_key"]: {
+        "group": group, "index": index, "action_key": election["action_key"],
+        "host": election["host"], "priority": election["priority"], "rank": ranking}
+        for index, election in _gang.elections(queue, group, record["size"]).items()}
+
+
 def _gang_elections(queue: PoolQueue, rows: dict[str, list[dict]], count: int) -> dict:
     """Live gang host elections (#1517), read in the same bounded child.
 
     A gang election fences its host while any member row of a gang without a
-    teardown is still READY or CLAIMED. An unreadable or malformed gang
-    record fails the census closed, exactly as a malformed publication does.
-    Elections are written only by the elected host's own pass under its host
-    admission, which also serializes this host's readers, so no member key
-    joins the M lock set.
+    teardown is still READY or CLAIMED. Unreadable or malformed gang records
+    are isolated to that gang; its own claim reader refuses it by name.
+    Valid gangs and measurement elections still populate the census.
     """
     from . import _gang
     directory = _gang.root(queue)
@@ -204,30 +220,21 @@ def _gang_elections(queue: PoolQueue, rows: dict[str, list[dict]], count: int) -
     except FileNotFoundError:
         return {}  # gang admission was never used on this pool
     found: dict[str, dict] = {}
-    try:
-        with entries:
-            for entry in entries:
-                count += 1
-                if count > MAX_RECORDS:
-                    raise CensusUnavailable("measurement census record cap exceeded")
-                if not entry.name.endswith(".json") or entry.name.startswith("."):
-                    continue
-                group = entry.name[:-5]
-                record = _gang.read_group(queue, group)
-                if record is None or _gang.teardown(queue, group) is not None:
-                    continue
-                live = [member for member in record["members"]
-                        if any(float(row.get("published_unix", math.nan)) == member["published_unix"]
-                               for row in rows.get(member["action_key"], []))]
-                if not live:
-                    continue
-                rank = list(_gang.rank(record))
-                for index, election in _gang.elections(queue, group, record["size"]).items():
-                    found[election["action_key"]] = {
-                        "group": group, "index": index, "action_key": election["action_key"],
-                        "host": election["host"], "priority": election["priority"], "rank": rank}
-    except _gang.GangContractError as exc:
-        raise CensusUnavailable(str(exc)) from exc
+    with entries:
+        for entry in entries:
+            count += 1
+            if count > MAX_RECORDS:
+                raise CensusUnavailable("measurement census record cap exceeded")
+            if not entry.name.endswith(".json") or entry.name.startswith("."):
+                continue
+            group = entry.name[:-5]
+            try:
+                found.update(_gang_election_records(queue, group, rows))
+            except (_gang.GangContractError, OSError, core.PrismaBuildError,
+                    KeyError, TypeError, ValueError):
+                # Its own claim reads these records and refuses by name. A
+                # broken gang supplies no trusted election for other rows.
+                continue
     return found
 
 

@@ -1561,7 +1561,10 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
         change while this loop runs; see the re-read at the top of the poll.
         """
 
+        from prismabuild import _gang
         tags = [args.klass, name, *args.tag]
+        if not args.gang_admission:
+            tags = [tag for tag in tags if tag != _gang.TAG]
         if not gpu_capable:
             # A box with no GPU must say so, or an action demanding gpu=1
             # matches it on tags and then fails at run time instead of waiting
