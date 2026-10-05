@@ -191,15 +191,20 @@ def validate_sealed(sealed: object) -> dict:
             or any(not isinstance(t, str) or not t or "\x00" in t
                    for t in tags)):
         raise ValueError("sealed capability tags must be a list of names")
+    if (not isinstance(dependencies, list)
+            or any(not isinstance(entry, dict) for entry in dependencies)):
+        # The empty-union allowance below must not turn a malformed seal
+        # (a string, a mapping, or non-mapping entries) into "no fence".
+        raise ValueError("sealed capability dependencies must be a list of "
+                         "entries")
     file_entries = [entry for entry in dependencies
-                    if isinstance(entry, dict) and "kind" not in entry]
+                    if "kind" not in entry]
     # A tags-only fence seals an empty requirement union (#1495): the
     # nonempty rule belongs to the standalone --requires-files contract,
     # not to a seal.
     files = validate_requirements(file_entries) if file_entries else []
     observations = validate_observations(
-        [entry for entry in dependencies
-         if isinstance(entry, dict) and "kind" in entry],
+        [entry for entry in dependencies if "kind" in entry],
         files=files)
     return {"names": list(names), "tags": list(tags),
             "files": files, "observations": observations}

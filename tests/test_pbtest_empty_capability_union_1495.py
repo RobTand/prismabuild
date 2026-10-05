@@ -164,6 +164,26 @@ def test_a_seal_with_an_empty_union_verifies_to_nothing():
                     "files": [], "observations": []}
 
 
+_REAL_REQUIREMENT = {"path": "/mnt/shared/x.bin", "sha256": "a" * 64}
+
+
+@pytest.mark.parametrize("dependencies", [
+    "no fence",
+    {"path": "/mnt/shared/x.bin", "sha256": "a" * 64},
+    ["not a mapping"],
+    [_REAL_REQUIREMENT, "not a mapping"],
+    None,
+], ids=["string", "mapping-with-a-real-requirement", "non-mapping-entry",
+        "real-requirement-beside-a-non-mapping", "none"])
+def test_a_malformed_seal_is_refused_not_read_as_no_fence(dependencies):
+    """The empty-union allowance must not weaken the worker-side check."""
+
+    with pytest.raises(ValueError, match="list of entries"):
+        dependency_digest.validate_sealed(
+            {"names": ["x86_only"], "tags": ["x86"],
+             "dependencies": dependencies})
+
+
 # --------------------------------------------------------------------------
 # The nonempty union beside it
 # --------------------------------------------------------------------------
