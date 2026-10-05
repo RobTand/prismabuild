@@ -180,3 +180,30 @@ def test_retained_presplit_runtime_body_is_not_rewritten():
     value.pop("digest_primitives")
     value["runtime_sha256"] = core.canonical_sha256({key: item for key, item in value.items() if key != "runtime_sha256"})
     assert core._validate_worker_runtime(value) == value
+
+
+@pytest.fixture
+def worker_imported_digest_runtime(tmp_path, monkeypatch):
+    owner_path = tmp_path / "digest_primitives.py"
+    owner_path.write_bytes(Path(owner.__file__).read_bytes())
+    imported = core._identify_runtime_source(
+        owner_path, where="test imported worker digest primitives")
+    monkeypatch.setattr(core, "_LOADED_WORKER_DIGEST_IDENTITY", imported)
+    runtime = core._worker_runtime_identity(None)
+    assert runtime["digest_primitives"] == imported
+    return runtime, owner_path
+
+
+def test_worker_runtime_unchanged_accepts_unchanged_digest_owner(
+        worker_imported_digest_runtime):
+    runtime, _ = worker_imported_digest_runtime
+    assert core._verify_worker_runtime_unchanged(runtime) is None
+
+
+def test_worker_runtime_unchanged_refuses_digest_owner_changed_after_import(
+        worker_imported_digest_runtime):
+    runtime, owner_path = worker_imported_digest_runtime
+    owner_path.write_bytes(owner_path.read_bytes() + b"\n# changed after import\n")
+    with pytest.raises(core.LocalActionError,
+                       match="worker digest primitives changed after module import"):
+        core._verify_worker_runtime_unchanged(runtime)
