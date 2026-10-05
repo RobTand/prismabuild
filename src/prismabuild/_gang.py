@@ -340,13 +340,19 @@ def backfill_reclaiming(queue, record: Mapping[str, object]) -> bool:
                for election in elections(queue, str(record["group"]), int(record["size"])).values())
 
 
-def begin_backfill_reclaim(queue, election: Mapping[str, object]) -> None:
+def begin_backfill_reclaim(queue, election: Mapping[str, object]) -> bool:
+    """Close loans while sharing the member's update exclusion with observations."""
     from . import pool
-    path = state_dir(queue, str(election["group"])) / f"elect-{election['index']}.json"
-    standing = _read(path)
-    if standing is not None:
+    with queue._transition_locked(str(election["action_key"]), blocking=False) as acquired:
+        if not acquired:
+            return False
+        path = state_dir(queue, str(election["group"])) / f"elect-{election['index']}.json"
+        standing = _read(path)
+        if standing is None:
+            return False
         standing["backfill_reclaiming"] = True
         pool._write_json_atomic(path, standing)
+        return True
 
 
 def backfill_allowed(queue, election: Mapping[str, object], now: float) -> bool:
@@ -370,30 +376,49 @@ def backfill_allowed(queue, election: Mapping[str, object], now: float) -> bool:
                                  reclaimable=True)["complete"]
 
 
-def note_backfill_preemption(queue, election: Mapping[str, object], timing: Mapping[str, object]) -> None:
-    """Observations, never admission authority; caller holds the member transition."""
+def note_backfill_preemption(queue, election: Mapping[str, object], timing: Mapping[str, object]) -> bool:
+    """Take a nonblocking member transition; callers need not already hold it.
+
+    Observations never grant admission. A busy writer defers rather than
+    replacing another writer's state; delayed request copies cannot erase a
+    completed release or replace the original request timestamp.
+    """
     from . import pool
-    path = state_dir(queue, str(election["group"])) / f"elect-{election['index']}.json"
-    standing = _read(path)
-    if standing is None or any(standing.get(k) != election.get(k)
-                               for k in ("group", "index", "action_key", "host")):
-        return
-    observations = list(standing.get("backfill_preemptions", []))
-    for index, prior in enumerate(observations):
-        if (prior.get("holder") == timing["holder"]
-                and prior.get("published_unix") == timing["published_unix"]):
-            observations[index] = {**prior, **timing}
-            break
-    else:
-        observations.append(dict(timing))
-    standing["backfill_preemptions"] = observations
-    pool._write_json_atomic(path, standing)
+    with queue._transition_locked(str(election["action_key"]), blocking=False) as acquired:
+        if not acquired:
+            return False
+        path = state_dir(queue, str(election["group"])) / f"elect-{election['index']}.json"
+        standing = _read(path)
+        if standing is None or any(standing.get(k) != election.get(k)
+                                   for k in ("group", "index", "action_key", "host")):
+            return False
+        observations = list(standing.get("backfill_preemptions", []))
+        for index, prior in enumerate(observations):
+            if (prior.get("holder") == timing["holder"]
+                    and prior.get("published_unix") == timing["published_unix"]):
+                merged = {**prior, **timing, "requested_unix": prior["requested_unix"]}
+                if prior.get("tokens_returned_unix") is not None:
+                    merged["tokens_returned_unix"] = prior["tokens_returned_unix"]
+                observations[index] = merged
+                break
+        else:
+            observations.append(dict(timing))
+        standing["backfill_preemptions"] = observations
+        pool._write_json_atomic(path, standing)
+        return True
 
 
-def observe_backfill_releases(queue, election: Mapping[str, object]) -> None:
-    """Catch a release whose finisher could not take the member's transition."""
+
+def observe_backfill_releases(queue, election: Mapping[str, object]) -> bool:
+    """Snapshot under member exclusion; merge finished observations under it too."""
     from . import pool
-    standing = _read(state_dir(queue, str(election["group"])) / f"elect-{election['index']}.json")
+    with queue._transition_locked(str(election["action_key"]), blocking=False) as acquired:
+        if not acquired:
+            return False
+        standing = _read(state_dir(queue, str(election["group"])) / f"elect-{election['index']}.json")
+    # Withdrawal archives may be slow. They cannot occupy the member's lock;
+    # note_backfill_preemption re-reads and merges the current election.
+    complete = True
     for timing in (standing or {}).get("backfill_preemptions", []):
         if timing.get("tokens_returned_unix") is not None:
             continue
@@ -405,5 +430,6 @@ def observe_backfill_releases(queue, election: Mapping[str, object]) -> None:
         release = (finished or {}).get("gang_backfill_release")
         if (isinstance(release, Mapping) and release.get("generation") == timing["generation"]
                 and release.get("tokens_returned_unix") is not None):
-            note_backfill_preemption(queue, election, release)
+            complete = note_backfill_preemption(queue, election, release) and complete
+    return complete
 

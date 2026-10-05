@@ -302,3 +302,67 @@ def test_both_token_short_members_preempt_their_unmarked_incumbents(
         assert queue.item_path(pool.READY, holder).exists()
         assert queue.ledger(host).held_keys() == [holder]
 
+
+
+@pytest.mark.parametrize("writer", ["begin", "note", "observe"])
+def test_election_updates_defer_to_the_member_transition(gang_fleet, writer):
+    import threading
+    queue, clock, publish, finish, claim, denial, members = gang_fleet
+    group, keys, incumbent = waiting(gang_fleet)
+    election = _gang.elections(queue, group, 2)[0]
+    timing = {"election": election, "holder": "a" * 64, "generation": "b" * 64,
+              "published_unix": clock[0], "requested_unix": clock[0],
+              "tokens_returned_unix": None}
+    if writer == "observe":
+        _gang.note_backfill_preemption(queue, election, timing)
+        pool._write_json_atomic(queue.superseded_dir() /
+                               f"{timing['holder']}.{timing['generation']}.withdrawn-finish.json",
+                               {"gang_backfill_release": {**timing, "tokens_returned_unix": clock[0] + 1}})
+    path = _gang.state_dir(queue, group) / "elect-0.json"
+    before = pool._read_json(path)
+    entered, release = threading.Event(), threading.Event()
+    def hold_member():
+        with queue._transition_locked(keys[0]):
+            entered.set()
+            release.wait(10)
+    def update():
+        if writer == "begin":
+            _gang.begin_backfill_reclaim(queue, election)
+        elif writer == "note":
+            _gang.note_backfill_preemption(queue, election, timing)
+        else:
+            _gang.observe_backfill_releases(queue, election)
+    thread = threading.Thread(target=hold_member)
+    thread.start()
+    try:
+        assert entered.wait(10)
+        update()
+        assert pool._read_json(path) == before, "election writer bypassed the held member transition"
+    finally:
+        release.set()
+        thread.join(10)
+    assert not thread.is_alive()
+    update()
+    after = pool._read_json(path)
+    if writer == "begin":
+        assert after["backfill_reclaiming"] is True
+    elif writer == "note":
+        assert after["backfill_preemptions"][0]["requested_unix"] == timing["requested_unix"]
+    else:
+        assert after["backfill_preemptions"][0]["tokens_returned_unix"] == clock[0] + 1
+
+
+def test_a_late_request_observation_cannot_erase_the_token_return(gang_fleet):
+    queue, clock, publish, finish, claim, denial, members = gang_fleet
+    group, keys, incumbent = waiting(gang_fleet)
+    election = _gang.elections(queue, group, 2)[0]
+    timing = {"election": election, "holder": "a" * 64, "generation": "b" * 64,
+              "published_unix": clock[0], "requested_unix": clock[0],
+              "tokens_returned_unix": None}
+    _gang.note_backfill_preemption(queue, election, timing)
+    _gang.note_backfill_preemption(queue, election, {**timing, "tokens_returned_unix": clock[0] + 1})
+    _gang.note_backfill_preemption(queue, election, {**timing, "requested_unix": clock[0] + 2})
+    observed = _gang.elections(queue, group, 2)[0]["backfill_preemptions"][0]
+    assert observed["tokens_returned_unix"] == clock[0] + 1, "late request erased a completed release"
+    assert observed["requested_unix"] == clock[0]
+

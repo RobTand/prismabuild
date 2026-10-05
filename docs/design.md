@@ -4665,8 +4665,14 @@ Per member host, inside the ordinary claim pass:
    requeue) adds `gang_backfill_release.tokens_returned_unix`. The election's
    `backfill_preemptions` records the same request/release pair. The finisher
    updates the election nonblocking; the next member pass catches a missed
-   update from the exact withdrawal conclusion. These fields are observations,
-   never gates. Their difference measures request-to-token-return, including
+   update from the exact withdrawal conclusion. All election update paths
+   share the member's nonblocking transition exclusion; archive reads stay
+   outside it and a final merge re-reads the current election. A delayed
+   request cannot erase a recorded token return or replace its original
+   request time. Busy observation writers defer, never wait. The monotone
+   reclamation phase is persisted before requesting the holder's withdrawal.
+   Timing fields remain observations, never gates. Their difference measures
+   request-to-token-return, including
    stopping and cleanup, not just signal delivery.
 
    There is **no finite code-derived worst-case stop-to-release bound** on

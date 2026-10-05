@@ -19906,9 +19906,9 @@ class PoolQueue:
                         selected = key, holder
                         break
             if selected is not None:
-                _gang.begin_backfill_reclaim(self, mine)
-                self._preempt_selected_holder(*selected, action_key=entry["action_key"],
-                                              gang_election=mine)
+                if _gang.begin_backfill_reclaim(self, mine):
+                    self._preempt_selected_holder(*selected, action_key=entry["action_key"],
+                                                  gang_election=mine)
         return pending()
 
     def _preempt_background_holder(
