@@ -208,6 +208,33 @@ def test_a_cycle_without_the_flag_is_what_it_was(queue, stage, capsys) -> None:
     assert_ledger_matches_the_stage(queue)
 
 
+def test_a_plain_once_keeps_the_runtime_gate(queue, stage, capsys,
+                                             monkeypatch) -> None:
+    """Without the flag, a one-shot whose published runtime moved exits 75.
+
+    The suite runs with the fleet's runtime identity isolated, so the moved
+    state is constructed here: a published commit the checkout cannot match.
+    The gate-skip is the operator mode's alone; this is the behaviour the
+    skip must not leak into.
+    """
+
+    real_cycle = tier_loop.cycle
+
+    def cycle_here(queue_, **kwargs):
+        kwargs["discover"] = lambda **_kwargs: _tiers(stage)
+        return real_cycle(queue_, **kwargs)
+
+    monkeypatch.setattr(tier_loop, "cycle", cycle_here)
+    monkeypatch.setattr(tier_loop.runtime_gate, "published_commit",
+                        lambda: "f" * 64)
+    assert tier_loop.main(["--pool-root", str(queue.root), "--once"]) == 75
+    events = _events(capsys.readouterr().out)
+    moved = [one for one in events if one.get("event") == "tier-runtime-moved"]
+    assert len(moved) == 1
+    assert moved[0]["published"] == "ffffffffffff"
+    assert not [one for one in events if one.get("event") == "tier-cycle"]
+
+
 # ------------------------------------------------------- (b) the flag evicts
 
 
@@ -456,6 +483,10 @@ def test_the_one_shot_prints_one_summary_line(queue, stage, capsys,
                 "mountpoint": str(stage), "primarycache": "all"}
 
     monkeypatch.setattr(storage_tiers, "stage_dataset", fake_dataset)
+    # The published runtime moved under this checkout: with the flag the
+    # cycle runs anyway, and the line says so.
+    monkeypatch.setattr(tier_loop.runtime_gate, "published_commit",
+                        lambda: "f" * 64)
     code = tier_loop.main(["--pool-root", str(queue.root), "--once",
                            "--evict-gib", "8"])
     assert code == 0
@@ -473,6 +504,7 @@ def test_the_one_shot_prints_one_summary_line(queue, stage, capsys,
     assert summary["available_dataset"] == "storage_pool/prewarm"
     assert summary["beyond_horizon"].startswith("skipped")
     assert summary["runtime_gate"]["skipped"] is True
+    assert summary["runtime_gate"]["published_commit"] == "f" * 64
     assert "pbstatus.py --starvation" in summary["ledger_report"]
     assert summary["ledger_gib"]["held_gib"] == PHASE_GIB * 2
     assert len([one for one in summary["sweep_receipts"]
