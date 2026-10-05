@@ -103,8 +103,8 @@ def test_a_badly_typed_option_is_refused_by_name(tmp_path, member):
 
 def test_a_relative_data_manifest_is_refused_by_name(tmp_path):
     with pytest.raises(SystemExit, match="absolute path"):
-        pbgang.load(_manifest(tmp_path, {"data_manifest": "window4/manifest.json",
-                                         "residency": "stage"}))
+        pbgang._pbgang_load_manifest(_manifest(tmp_path, {"data_manifest": "window4/manifest.json",
+                                                          "residency": "stage"}))
 
 
 @pytest.mark.parametrize("member", [
@@ -113,7 +113,7 @@ def test_a_relative_data_manifest_is_refused_by_name(tmp_path):
 ])
 def test_a_member_declaring_a_manifest_must_declare_residency(tmp_path, member):
     with pytest.raises(SystemExit, match="without residency"):
-        pbgang.load(_manifest(tmp_path, member))
+        pbgang._pbgang_load_manifest(_manifest(tmp_path, member))
 
 
 @pytest.mark.parametrize("name", [
@@ -178,7 +178,7 @@ def test_the_residency_options_forward_in_table_order_after_the_window_options(t
 ])
 def test_a_badly_typed_residency_option_is_refused_by_name(tmp_path, member):
     with pytest.raises(SystemExit, match="field"):
-        pbgang.load(_manifest(tmp_path, member))
+        pbgang._pbgang_load_manifest(_manifest(tmp_path, member))
 
 
 @pytest.mark.parametrize("name", [
@@ -187,7 +187,7 @@ def test_a_badly_typed_residency_option_is_refused_by_name(tmp_path, member):
 ])
 def test_a_misspelled_residency_option_stays_an_unknown_field(tmp_path, name):
     with pytest.raises(SystemExit, match=f"'{name}'"):
-        pbgang.load(_manifest(tmp_path, {name: 1}))
+        pbgang._pbgang_load_manifest(_manifest(tmp_path, {name: 1}))
 
 
 def test_a_priority_reason_is_a_member_field_and_a_manifest_default(tmp_path):

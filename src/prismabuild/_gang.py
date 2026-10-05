@@ -327,7 +327,7 @@ def backfill_holders(queue, election: Mapping[str, object]) -> dict[str, dict]:
     from . import pool
     found = {}
     for key in queue.ledger(str(election["host"])).held_keys():
-        holder = _read(queue.item_path(pool.CLAIMED, key))
+        holder = _gang_read(queue.item_path(pool.CLAIMED, key))
         if (holder is not None and holder.get("claimed_host") == election["host"]
                 and backfill_matches(holder, election)):
             found[key] = holder
@@ -347,7 +347,7 @@ def begin_backfill_reclaim(queue, election: Mapping[str, object]) -> bool:
         if not acquired:
             return False
         path = state_dir(queue, str(election["group"])) / f"elect-{election['index']}.json"
-        standing = _read(path)
+        standing = _gang_read(path)
         if standing is None:
             return False
         standing["backfill_reclaiming"] = True
@@ -365,7 +365,7 @@ def backfill_allowed(queue, election: Mapping[str, object], now: float) -> bool:
     entry = record["members"][int(election["index"])]
     if entry["action_key"] != election["action_key"]:
         return False
-    ready = _read(state_dir(queue, str(record["group"])) / f"ready-{entry['index']}.json")
+    ready = _gang_read(state_dir(queue, str(record["group"])) / f"ready-{entry['index']}.json")
     if (ready is None or ready.get("schema") != READY_SCHEMA
             or ready.get("action_key") != entry["action_key"]
             or ready.get("host") != election["host"]
@@ -388,7 +388,7 @@ def note_backfill_preemption(queue, election: Mapping[str, object], timing: Mapp
         if not acquired:
             return False
         path = state_dir(queue, str(election["group"])) / f"elect-{election['index']}.json"
-        standing = _read(path)
+        standing = _gang_read(path)
         if standing is None or any(standing.get(k) != election.get(k)
                                    for k in ("group", "index", "action_key", "host")):
             return False
@@ -415,7 +415,7 @@ def observe_backfill_releases(queue, election: Mapping[str, object]) -> bool:
     with queue._transition_locked(str(election["action_key"]), blocking=False) as acquired:
         if not acquired:
             return False
-        standing = _read(state_dir(queue, str(election["group"])) / f"elect-{election['index']}.json")
+        standing = _gang_read(state_dir(queue, str(election["group"])) / f"elect-{election['index']}.json")
     # Withdrawal archives may be slow. They cannot occupy the member's lock;
     # note_backfill_preemption re-reads and merges the current election.
     complete = True
@@ -424,9 +424,9 @@ def observe_backfill_releases(queue, election: Mapping[str, object]) -> bool:
             continue
         archive = queue.superseded_dir() / (
             f"{timing['holder']}.{timing['generation']}.withdrawn-finish.json")
-        finished = _read(archive)
+        finished = _gang_read(archive)
         if finished is None:
-            finished = _read(queue.item_path(pool.WITHDRAWN, str(timing["holder"])))
+            finished = _gang_read(queue.item_path(pool.WITHDRAWN, str(timing["holder"])))
         release = (finished or {}).get("gang_backfill_release")
         if (isinstance(release, Mapping) and release.get("generation") == timing["generation"]
                 and release.get("tokens_returned_unix") is not None):
