@@ -169,16 +169,23 @@ def test_reservation_before_mover_lock_mutant_fails_the_same_oracle(tmp_path, mo
 def test_copy_refuses_an_expired_lease_before_any_byte(tmp_path):
     store, record, spec = world(tmp_path)
     store.release(record["set_id"], by="test")
+    ledger = pool.PoolQueue(store.queue_root).tier_ledger("local:test-host")
+    # Remove the publication hold for this absent, byte-less fixture. A
+    # refused new attempt must not create a fresh occupancy reservation.
+    ledger.release(record["set_id"])
     with pytest.raises(ValueError, match="resident lease expired"):
         local_resident.copy(store, record["set_id"], "test-host", spec)
     assert store.read_copy(record["set_id"], "test-host")["state"] == "absent"
     assert not Path(spec["root"]).joinpath(record["set_id"]).exists()
     assert not Path(spec["root"]).joinpath(record["set_id"] + ".partial").exists()
+    assert ledger.holder_tokens(record["set_id"]).get("local_gib", 0) == 0
 
 
 def test_adopt_refuses_an_expired_lease_and_keeps_the_source(tmp_path):
     store, record, spec = world(tmp_path)
     store.release(record["set_id"], by="test")
+    ledger = pool.PoolQueue(store.queue_root).tier_ledger("local:test-host")
+    ledger.release(record["set_id"])
     source = tmp_path / "manual"
     source.mkdir()
     (source / "weights").write_bytes(b"weights")
@@ -187,6 +194,7 @@ def test_adopt_refuses_an_expired_lease_and_keeps_the_source(tmp_path):
     assert (source / "weights").read_bytes() == b"weights"
     assert not Path(spec["root"]).joinpath(record["set_id"]).exists()
     assert store.read_copy(record["set_id"], "test-host")["state"] == "absent"
+    assert ledger.holder_tokens(record["set_id"]).get("local_gib", 0) == 0
 
 
 def _host_locked(root):
