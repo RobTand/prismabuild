@@ -48,7 +48,7 @@ _HEX64 = frozenset("0123456789abcdef")
 _READ_CHUNK = 1 << 20
 
 
-def _is_hex64(value: object) -> bool:
+def _dependency_digest_is_hex64(value: object) -> bool:
     return (isinstance(value, str) and len(value) == 64
             and set(value) <= _HEX64)
 
@@ -80,7 +80,7 @@ def validate_requirements(entries: object) -> list[dict]:
             raise ValueError(
                 f"requirement path must be absolute and nonempty, "
                 f"got {path!r}")
-        if not _is_hex64(sha256):
+        if not _dependency_digest_is_hex64(sha256):
             raise ValueError(
                 f"requirement sha256 for {path!r} must be 64 lowercase hex, "
                 f"got {sha256!r}")
@@ -149,10 +149,10 @@ def validate_observations(entries: object, *, files: list[dict]) -> list[dict]:
                 raise ValueError(
                     f"include_suffixes entries are filename suffixes like "
                     f"'.py', got {suffix!r}")
-        if not _is_hex64(entry["sha256"]):
+        if not _dependency_digest_is_hex64(entry["sha256"]):
             raise ValueError(
                 f"payload sha256 for {module!r} must be 64 lowercase hex")
-        if not _is_hex64(entry["module_sha256"]):
+        if not _dependency_digest_is_hex64(entry["module_sha256"]):
             raise ValueError(
                 f"module_sha256 for {module!r} must be 64 lowercase hex; the "
                 "imported module's actual bytes are compared to it")

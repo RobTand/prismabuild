@@ -37,7 +37,7 @@ def _manifest(tmp_path: Path, member: dict, *, other: dict | None = None) -> Pat
 
 
 def _command(tmp_path: Path, member: dict, index: int = 0) -> list[str]:
-    manifest = pbgang.load(_manifest(tmp_path, member))
+    manifest = pbgang._pbgang_load_manifest(_manifest(tmp_path, member))
     args = SimpleNamespace(cwd=tmp_path)
     return pbgang.member_command(args, manifest, manifest["members"][index],
                                  group=GROUP, index=index)
@@ -98,7 +98,7 @@ def test_a_repeated_field_repeats_its_flag(tmp_path):
         "reason-none"])
 def test_a_badly_typed_option_is_refused_by_name(tmp_path, member):
     with pytest.raises(SystemExit, match="field"):
-        pbgang.load(_manifest(tmp_path, member))
+        pbgang._pbgang_load_manifest(_manifest(tmp_path, member))
 
 
 def test_a_relative_data_manifest_is_refused_by_name(tmp_path):
@@ -123,13 +123,13 @@ def test_a_member_declaring_a_manifest_must_declare_residency(tmp_path, member):
 ])
 def test_a_driver_owned_or_undeclared_option_is_refused_by_name(tmp_path, name):
     with pytest.raises(SystemExit, match=f"'{name}'"):
-        pbgang.load(_manifest(tmp_path, {name: 1}))
+        pbgang._pbgang_load_manifest(_manifest(tmp_path, {name: 1}))
 
 
 def test_a_member_may_declare_one_attempt_and_no_more(tmp_path):
     assert "--max-attempts" in _command(tmp_path, {"max_attempts": 1})
     with pytest.raises(SystemExit, match="one attempt"):
-        pbgang.load(_manifest(tmp_path, {"max_attempts": 2}))
+        pbgang._pbgang_load_manifest(_manifest(tmp_path, {"max_attempts": 2}))
 
 
 def test_a_residency_member_reaches_pbruns_own_parser_with_every_option(tmp_path):
@@ -197,7 +197,7 @@ def test_a_priority_reason_is_a_member_field_and_a_manifest_default(tmp_path):
         "members": [{"tag": "sparky", "argv": ["/bin/true"]},
                     {"tag": "sparklina", "argv": ["/bin/true"],
                      "priority_reason": "member own"}]}))
-    manifest = pbgang.load(path)
+    manifest = pbgang._pbgang_load_manifest(path)
     args = SimpleNamespace(cwd=tmp_path)
     reasons = []
     for index, member in enumerate(manifest["members"]):
@@ -212,7 +212,7 @@ def test_a_manifest_priority_reason_must_be_text(tmp_path):
     path.write_text(json.dumps({"priority_reason": ["x"], "members": [
         {"tag": "a", "argv": ["x"]}, {"tag": "b", "argv": ["x"]}]}))
     with pytest.raises(SystemExit, match="priority_reason"):
-        pbgang.load(path)
+        pbgang._pbgang_load_manifest(path)
 
 
 # The prepared Window 4 pair, as the flat list its owner wrote: two members, each
@@ -243,7 +243,7 @@ def _window4_member(host: str, cpus: int) -> dict:
 def test_the_window4_pair_reaches_pbruns_argv_intact(tmp_path):
     path = tmp_path / "window4.json"
     path.write_text(json.dumps([_window4_member("sparklina", 8), _window4_member("sparky", 6)]))
-    manifest = pbgang.load(path)
+    manifest = pbgang._pbgang_load_manifest(path)
     args = SimpleNamespace(cwd=None)
     for index, (host, cpus) in enumerate([("sparklina", 8), ("sparky", 6)]):
         command = pbgang.member_command(args, manifest, manifest["members"][index],
@@ -279,7 +279,7 @@ def test_a_malformed_native_shape_is_refused_by_name(tmp_path, member):
     path = tmp_path / "gang.json"
     path.write_text(json.dumps([{**base, **member}, {"tag": "sparklina", "argv": ["/bin/true"]}]))
     with pytest.raises(SystemExit, match="member 0"):
-        pbgang.load(path)
+        pbgang._pbgang_load_manifest(path)
 
 
 def test_cwd_is_required_unless_every_member_names_one(tmp_path, capsys):

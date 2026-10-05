@@ -21332,7 +21332,7 @@ class PoolQueue:
                                     continue
                                 if mine is None and not sibling_here:
                                     try:
-                                        mine = _gang.elect(self, gang_record, gang_entry, here, _now())
+                                        mine = _gang.elect_gang_member(self, gang_record, gang_entry, here, _now())
                                     except (_gang.GangContractError, OSError, pb.PrismaBuildError) as exc:
                                         self.record_denial(item, "gang_contract_invalid",
                                                            {"error": str(exc)})

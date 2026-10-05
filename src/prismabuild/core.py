@@ -703,14 +703,14 @@ def _canonical_file_bytes(value: object) -> bytes:
     return _canonical_bytes(value) + b"\n"
 
 
-def _sorted_json_bytes(value: object) -> bytes:
+def _sorted_json_bytes(value: object, *, allow_nan: bool = True) -> bytes:
     """Sorted default JSON without a terminator, including list values (#1386).
 
-    Preserve the diagnostics' spacing, ASCII escaping and nonfinite-number
-    behavior. This byte profile is distinct from finite canonical JSON.
+    Preserve spacing and ASCII escaping. Callers that already reject nonfinite
+    numbers explicitly select ``allow_nan=False`` without changing other bytes.
     """
 
-    return json.dumps(value, sort_keys=True).encode("utf-8")
+    return json.dumps(value, sort_keys=True, allow_nan=allow_nan).encode("utf-8")
 
 
 def _sorted_lf_bytes(value: object) -> bytes:
@@ -747,6 +747,20 @@ def raw_sha256(data: bytes) -> str:
     """
 
     return hashlib.sha256(data).hexdigest()
+
+
+def chunks_sha256(chunks) -> str:
+    """SHA-256 of ordered byte chunks without joining or reopening a stream."""
+    digest = hashlib.sha256()
+    for chunk in chunks:
+        digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _compact_ascii_lf_bytes(value: object) -> bytes:
+    """Compact sorted ASCII JSON with default nonfinite handling and one LF."""
+    return (json.dumps(value, sort_keys=True, separators=(",", ":"),
+                       ensure_ascii=True) + "\n").encode("ascii")
 
 
 def stream_sha256(

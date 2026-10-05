@@ -16339,6 +16339,14 @@ their existing contracts. Exact reader facade/name distinctions are registered
 without growing the shrink-only maps; no runtime adoption or staged-read
 acceptance axis advances from this source repair.
 
+For the duplication-ratchet repair (#1547), `chunks_sha256` hashes ordered
+stream/manifest chunks without joining them or reopening the held stream.
+The recovery JSON diagnostics select `_sorted_json_bytes(..., allow_nan=False)`
+where their previous writer already refused nonfinite values; the default
+remains unchanged. Rollout qualification uses `_compact_ascii_lf_bytes` for
+its existing compact ASCII line spelling. Helper collision renames change no
+validation, identity or byte-integrity rule.
+
 
 Repeated failed merge candidates bind a separate negative identity (#1450):
 the complete candidate tree, current base tree, selected full runtime/config

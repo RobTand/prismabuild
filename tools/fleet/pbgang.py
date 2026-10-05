@@ -81,7 +81,7 @@ from runtime_paths import generation_root  # noqa: E402
 
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
-from prismabuild import _gang, pool  # noqa: E402
+from prismabuild import _gang, core, pool  # noqa: E402
 
 SH = Path("/mnt/shared/prismabuild-fleet")
 SCHEMA = "prismabuild.pbgang.v1"
@@ -181,7 +181,7 @@ def _shape_problem(member: dict) -> str | None:
         return ("declares data_manifest without residency; set residency: stage")
 
 
-def load(path: Path) -> dict:
+def _pbgang_load_manifest(path: Path) -> dict:
     manifest = json.loads(path.read_text())
     if isinstance(manifest, list):
         manifest = {"members": manifest}
@@ -264,7 +264,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--queue", type=Path, default=SH / "pb-queue",
                     help="queue root where pbgang reads the published member rows and files the group record; must be the queue pbrun publishes to")
     args = ap.parse_args(argv)
-    manifest = load(args.manifest)
+    manifest = _pbgang_load_manifest(args.manifest)
     if args.cwd is None and any("cwd" not in member for member in manifest["members"]):
         ap.error("--cwd is required unless every member names its own cwd")
     skew_s = float(manifest.get("skew_s", _gang.DEFAULT_SKEW_S))
@@ -297,9 +297,9 @@ def main(argv: list[str] | None = None) -> int:
         withdraw(keys, f"pbgang: group record refused: {exc}")
         print(f"pbgang: {exc}", file=sys.stderr)
         return 1
-    print(json.dumps({"schema": SCHEMA, "group": group, "members": keys,
-                      "skew_s": record["skew_s"], "priority": record["priority"]},
-                     sort_keys=True))
+    print(core._sorted_json_bytes(
+        {"schema": SCHEMA, "group": group, "members": keys,
+         "skew_s": record["skew_s"], "priority": record["priority"]}).decode("utf-8"))
     return 0
 
 
