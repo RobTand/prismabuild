@@ -31,15 +31,20 @@ def test_the_committed_policy_validates_and_says_what_the_direction_says() -> No
 
     assert policy is not None, "the policy is committed, not implied"
     assert policy["schema"] == storage_tiers.RAM_TIER_POLICY_SCHEMA_V1
-    # The ceiling Rob sanctioned.  The window was directed 96-128 GiB as a
-    # streaming window that would never hold a phase container -- but
+    # The ceiling Rob sanctioned.  The window's history: directed 96-128 GiB
+    # as a streaming window that would never hold a phase container -- but
     # promotion is phase-granular and the largest phase is 134.2 GiB, so on
     # 2026-09-19 a 112 GiB window minted a zero run-ahead budget
     # (capacity - step < 0) and nothing could ever promote: the GPU starved
-    # between layers by arithmetic.  The window now holds one whole phase
-    # plus margin, inside the worker-demand guard's bound (160.5 GiB).
+    # between layers by arithmetic, and the window was raised to 160 to hold
+    # one whole phase.  On 2026-10-05 that 160 GiB default refused at the
+    # live host-row load (rows 132 GiB, ARC c_max 22 GiB, reserve 16 GiB:
+    # allowed window 133,704,937,472 B), so the tier minted nothing at all,
+    # and dec-1005-140823-4934 (option D) lowered it to 96 -- which admits
+    # beside 132 GiB of rows and allows rows up to 160.5 GiB
+    # (294.5 - 96 - 22 - 16).
     assert policy["ceiling_gib_max"] == 256
-    assert 134 <= policy["window_gib_default"] <= 160
+    assert 96 <= policy["window_gib_default"] <= 160
     # The floor guard's declared constants, and the run-ahead default: None
     # is the #633 semantics the stage window already runs.
     assert policy["arc_floor_gib"] > 0

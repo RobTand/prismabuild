@@ -6,5 +6,5 @@
   "promotion_chunk_gib": null,
   "schema": "prismabuild.ram_tier_policy.v1",
   "system_reserve_gib": 16,
-  "window_gib_default": 160
+  "window_gib_default": 96
 }

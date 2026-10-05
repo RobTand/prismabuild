@@ -6343,11 +6343,19 @@ is its own `size=`, and the record announces `mountpoint`, `mount_options`,
 decide live in one versioned file, `tools/fleet/ram_tier_policy.json`,
 published with the runtime the way `fleet_boxes.json` is and read fresh by
 the tier loop every cycle: `ceiling_gib_max` (256), `window_gib_default`
-(160 — sized 2026-09-19 to hold one whole phase plus margin: promotion is
-phase-granular, the largest phase is 134.2 GiB, and a 112 GiB window made
-`capacity − step` negative, minting a zero run-ahead budget so nothing
-could ever promote — the GPU starved between layers by arithmetic. 160
-fits a phase and stays inside the worker-demand guard's 160.5 GiB bound), `arc_floor_gib`
+(96 — lowered from 160 on 2026-10-05 by dec-1005-140823-4934 option D: the
+tier loop's live readings that day refused the published default, since
+MemTotal 294.5 GiB, ARC c_max 22 GiB, reserve 16 GiB and rows holding
+132 GiB leave an allowed window of 133,704,937,472 B, so 160 refused
+`ram_window_exceeds_memtotal_floor` and the tier minted nothing at all —
+worse than any smaller window; 96 admits beside 132 GiB of rows and allows
+rows up to 160.5 GiB = 294.5 − 96 − 22 − 16 with the ARC at 22 GiB. It had
+been sized 160 on 2026-09-19 to hold one whole phase plus margin:
+promotion is phase-granular, the largest phase is 134.2 GiB, and a 112 GiB
+window made `capacity − step` negative, minting a zero run-ahead budget so
+nothing could ever promote — the GPU starved between layers by arithmetic
+— so the smaller window re-tightens run-ahead, and the promotion chunk
+derived as a window quarter follows it down to 24 GiB), `arc_floor_gib`
 (20), `system_reserve_gib` (16), `prefill_depth` (`null` — the #633
 run-ahead semantics; a positive GiB caps them), and `promotion_chunk_gib`
 (`null` — the submitter cuts each phase into window quarters at seal time;
@@ -6449,18 +6457,23 @@ fills and by rows, both of which return them deterministically, so there
 is no withdrawn-orphans deadlock to break (#901's shape) and eviction
 cannot return tokens a landing fill still writes — the relief is the
 release, not the eviction. The window is capped at the policy's
-`window_gib_default` (112 today), so under this design the rows always
-keep at least `roof − window` of the host pool (256.5 − 112 ≈ 144 GiB,
-more than today's static 96 reserved for them by subtraction); if
+`window_gib_default` (96 today, dec-1005-140823-4934), so under this
+design the rows always keep at least `roof − window` of the host pool
+(256.5 − 96 = 160.5 GiB, more than the 132 GiB the rows hold today — and
+the same 160.5 GiB is the worker-demand guard's maximum `rows_held` for
+this window: 294.5 − 96 − 22 − 16 with the ARC at 22 GiB); if
 `window_gib_default` is ever raised toward the roof, a window-pressure
 term on the host ledger becomes necessary again — that bound, and the
 fills' acquiring host tokens outside the pool's claim withholding (a
-withheld large row reserves nothing against fills, and the ≥144 GiB
+withheld large row reserves nothing against fills, and the ≥160.5 GiB
 bound means no sanctioned row size starves), is the accepted deviation
-from the review's full form. Tonight's box is
+from the review's full form. The box is
 the proof both halves hold together: the 240 GiB roof admits
-(240 ≤ 294.5 − 22 − 16), the 112 GiB window admits beside 88 GiB of rows
-held (worst case 112 + 88 + 22 + 16 = 238 ≤ 294.5), and a window
+(240 ≤ 294.5 − 22 − 16), and the 96 GiB window admits beside the 132 GiB
+of rows the tier loop measured on 2026-10-05 (worst case
+96 + 132 + 22 + 16 = 266 ≤ 294.5) where the old 160 GiB default refused
+(160 + 132 + 22 + 16 = 330 > 294.5, `ram_window_exceeds_memtotal_floor`),
+and a window
 publish toward the sanctioned 256 with rows holding 96 GiB refuses. **The tmpfs
 must be mounted `noswap`:** the options are announced, and a mount without
 it refuses the warm-path admission outright — a swappable tmpfs can page
