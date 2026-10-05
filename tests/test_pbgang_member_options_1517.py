@@ -2,9 +2,10 @@
 
 ``pbgang`` submits each member through ``pbrun``.  It used to forward only a
 tag, argv, demand, env, timeout, priority and cpus, so a member that needs a
-GPU subset, an exclusive measurement window, a container image or a data
-manifest could not be expressed.  Each such member field is now one ``pbrun``
-flag, and ``pbrun`` itself stays the judge of every value.
+GPU subset, an exclusive measurement window, a container image or one declared
+attempt could not be expressed.  Exactly those existing options are now member
+fields, one ``pbrun`` flag each, and ``pbrun`` itself stays the judge of every
+value.  Anything else is refused by name.
 
 The produced command line is fed to ``pbrun``'s real argument parser, so a
 flag the table names wrongly fails here and not on a live window.
@@ -43,12 +44,9 @@ def _command(tmp_path: Path, member: dict, index: int = 0) -> list[str]:
 
 
 WINDOW_MEMBER = {
-    "gpu": True, "gpu_memory_gb": 102, "exclusive": True, "measurement": True,
+    "gpu_memory_gb": 102, "exclusive": True, "measurement": True,
     "host_class": "gb10", "max_attempts": 1, "priority_reason": "Window 4 pair",
     "container_images": [IMAGE],
-    "data_manifest": "/mnt/shared/manifests/window.json", "residency": "stage",
-    "residency_mover_mem_gb": 2, "progress_phases": ["load=600", "run=1200"],
-    "progress_cycle": True, "deterministic": True,
 }
 
 
@@ -57,15 +55,11 @@ def test_a_full_member_reaches_pbruns_own_parser_with_every_option(tmp_path):
     assert command.count("--") == 1
     flags = command[:command.index("--")]
     args = pbrun.parse_args([*flags[2:], "--", "/bin/true"])
-    assert args.gpu is True and args.exclusive is True and args.measurement is True
+    assert args.exclusive is True and args.measurement is True
     assert args.gpu_memory_gb == 102.0
     assert args.host_class == "gb10"
     assert args.container_image == [IMAGE]
-    assert args.data_manifest == "/mnt/shared/manifests/window.json"
-    assert args.residency == "stage" and args.residency_mover_mem_gb == 2
-    assert args.progress_phase == ["load=600", "run=1200"]
     assert args.max_attempts == 1 and args.priority_reason == "Window 4 pair"
-    assert args.progress_cycle is True and args.deterministic is True
     assert (args.gang_group, args.gang_size, args.gang_index) == (GROUP, 2, 0)
     assert args.priority == 10 and args.tag == ["sparky"]
 
@@ -82,8 +76,8 @@ def test_a_member_with_only_the_old_fields_builds_the_same_command(tmp_path):
 
 
 def test_a_false_switch_adds_no_flag(tmp_path):
-    command = _command(tmp_path, {"gpu": False, "exclusive": False})
-    assert "--gpu" not in command and "--exclusive" not in command
+    command = _command(tmp_path, {"measurement": False, "exclusive": False})
+    assert "--measurement" not in command and "--exclusive" not in command
 
 
 def test_a_repeated_field_repeats_its_flag(tmp_path):
@@ -95,24 +89,25 @@ def test_a_repeated_field_repeats_its_flag(tmp_path):
 
 
 @pytest.mark.parametrize("member", [
-    {"gpu": "yes"}, {"exclusive": 1}, {"gpu_memory_gb": True},
-    {"gpu_memory_gb": [102]}, {"gpu_memory_gb": ""},
+    {"exclusive": 1}, {"measurement": "yes"}, {"gpu_memory_gb": True},
+    {"gpu_memory_gb": [102]}, {"gpu_memory_gb": ""}, {"host_class": ["gb10"]},
     {"container_images": IMAGE}, {"container_images": []}, {"container_images": [""]},
-    {"progress_phases": "load=600"}, {"data_manifest": None},
-], ids=["gpu-string", "exclusive-int", "memory-bool", "memory-list", "memory-empty",
-        "image-string", "image-empty-list", "image-empty-entry", "phase-string",
-        "manifest-none"])
+    {"priority_reason": None},
+], ids=["exclusive-int", "measurement-string", "memory-bool", "memory-list", "memory-empty",
+        "class-list", "image-string", "image-empty-list", "image-empty-entry",
+        "reason-none"])
 def test_a_badly_typed_option_is_refused_by_name(tmp_path, member):
     with pytest.raises(SystemExit, match="field"):
         pbgang.load(_manifest(tmp_path, member))
 
 
 @pytest.mark.parametrize("name", [
-    "gang_group", "gang_size", "gang_index", "detach", "cwd", "withdraw",
-    "retry_safe", "after",
+    "gang_group", "gang_size", "gang_index", "detach", "withdraw", "retry_safe",
+    "after", "gpu", "gpu_capacity", "data_manifest", "residency", "residency_tier",
+    "progress_phases", "progress_cycle", "deterministic", "profile", "transport",
 ])
-def test_a_driver_owned_flag_cannot_be_smuggled_in_as_a_member_field(tmp_path, name):
-    with pytest.raises(SystemExit, match="allowed fields"):
+def test_a_driver_owned_or_undeclared_option_is_refused_by_name(tmp_path, name):
+    with pytest.raises(SystemExit, match=f"'{name}'"):
         pbgang.load(_manifest(tmp_path, {name: 1}))
 
 

@@ -25,17 +25,15 @@ The manifest may also be a bare list of members. A member names its host with
 as a mapping, ``env`` as ``K=V`` strings or as a mapping, and its own ``cwd``
 (``--cwd`` is then optional).
 
-A member keeps the whole ``pbrun`` submission contract: ``gpu``,
-``gpu_memory_gb``, ``gpu_capacity``, ``exclusive``, ``measurement``,
-``host_class``, ``container_images`` (a list), ``data_manifest``, ``residency``
-and the ``residency_*`` options, ``progress_phases`` (a list), ``progress_cycle``,
-``deterministic``, ``profile``, ``priority_reason`` and ``max_attempts`` (only 1)
-each become the one ``pbrun`` flag of that name. A switch is true or false, a
-list repeats its flag, and ``pbrun`` judges every value exactly as it would for a
-plain submission. The gang flags, ``tag``, ``priority``, the checkout and
-``retry_safe`` are the driver's: a retry ends the gang, so a member gets one
-attempt. ``priority_reason`` may also be set once in the manifest, like
-``priority``.
+A member carries the existing ``pbrun`` options a measurement window needs, each
+as the one flag of that name: ``gpu_memory_gb``, ``exclusive`` and ``measurement``
+(true or false), ``host_class``, ``container_images`` (a list, one flag per image),
+``priority_reason`` and ``max_attempts`` (only 1). ``pbrun`` judges every value
+exactly as it would for a plain submission. Any other key is refused by name:
+the gang flags, ``tag``, ``priority``, the checkout and ``retry_safe`` are the
+driver's (a retry ends the gang, so a member gets one attempt), and options a
+window does not declare, such as a data manifest or residency, are not carried.
+``priority_reason`` may also be set once in the manifest, like ``priority``.
 
 Gang admission must be enabled on the target boxes (worker ``--gang-admission``);
 otherwise ``pbrun`` refuses because no box offers the capability.
@@ -65,35 +63,19 @@ SH = Path("/mnt/shared/prismabuild-fleet")
 SCHEMA = "prismabuild.pbgang.v1"
 MEMBER_FIELDS = {"tag", "tags", "cwd", "argv", "demand", "env", "timeout_s", "priority", "cpus"}
 
-#: Member fields that are one ``pbrun`` flag each, so a gang member keeps the
-#: whole submission contract of a plain ``pbrun`` row (#1517).  The kind says
+#: Member fields that are one ``pbrun`` flag each: exactly the existing options a
+#: measurement window declares (#1517).  The kind says
 #: how the JSON value becomes argv: ``switch`` is a boolean flag, ``value`` is
 #: one scalar, ``repeat`` is a list with the flag once per entry.  ``pbrun``
 #: stays the only judge of each value; this table forwards, it never reinterprets.
 #: The gang flags, ``--tag``, ``--priority``, ``--detach`` and ``--cwd`` are
 #: deliberately not here: the driver owns them.
 FLAG_FIELDS: dict[str, tuple[str, str]] = {
-    "gpu": ("--gpu", "switch"),
     "gpu_memory_gb": ("--gpu-memory-gb", "value"),
-    "gpu_capacity": ("--gpu-capacity", "value"),
     "exclusive": ("--exclusive", "switch"),
     "measurement": ("--measurement", "switch"),
     "host_class": ("--host-class", "value"),
     "container_images": ("--container-image", "repeat"),
-    "data_manifest": ("--data-manifest", "value"),
-    "residency": ("--residency", "value"),
-    "residency_tier": ("--residency-tier", "value"),
-    "residency_ram": ("--residency-ram", "value"),
-    "residency_share": ("--residency-share", "value"),
-    "residency_mover_mem_gb": ("--residency-mover-mem-gb", "value"),
-    "residency_mover_readers": ("--residency-mover-readers", "value"),
-    "residency_prefetch_depth_gib": ("--residency-prefetch-depth-gib", "value"),
-    "residency_read_mb_s": ("--residency-read-mb-s", "value"),
-    "residency_mover_max_attempts": ("--residency-mover-max-attempts", "value"),
-    "progress_phases": ("--progress-phase", "repeat"),
-    "progress_cycle": ("--progress-cycle", "switch"),
-    "deterministic": ("--deterministic", "switch"),
-    "profile": ("--profile", "value"),
     "priority_reason": ("--priority-reason", "value"),
     "max_attempts": ("--max-attempts", "value"),
 }
@@ -166,9 +148,11 @@ def load(path: Path) -> dict:
     if unknown:
         raise SystemExit(f"pbgang: unknown manifest fields {sorted(unknown)}")
     for index, member in enumerate(members):
-        if not isinstance(member, dict) or set(member) - MEMBER_FIELDS:
-            raise SystemExit(f"pbgang: member {index} has a field outside the allowed "
-                             f"fields {sorted(MEMBER_FIELDS)}")
+        if not isinstance(member, dict):
+            raise SystemExit(f"pbgang: member {index} must be an object")
+        if set(member) - MEMBER_FIELDS:
+            raise SystemExit(f"pbgang: member {index} has {sorted(set(member) - MEMBER_FIELDS)} "
+                             f"outside the allowed fields {sorted(MEMBER_FIELDS)}")
         problem = _shape_problem(member)
         if problem:
             raise SystemExit(f"pbgang: member {index} {problem}; allowed fields "
