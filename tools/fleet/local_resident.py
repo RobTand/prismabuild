@@ -17,13 +17,18 @@ def main(argv=None):
     parser.add_argument("--set-id", required=True)
     parser.add_argument("--host", required=True)
     parser.add_argument("--policy", required=True)
-    parser.add_argument("--operation", choices=("copy", "evict"), required=True)
+    parser.add_argument("--operation", choices=("copy", "evict", "adopt"), required=True)
+    parser.add_argument("--source")
     args = parser.parse_args(argv)
     store = resident_sets.ResidentSets(args.pool_root)
     spec = resident_sets.read_policy(args.policy)["hosts"][args.host]
     if args.operation == "copy":
         result = local_resident.copy(store, args.set_id, args.host, spec,
             reader_context=reader_lease.injected_context())
+    elif args.operation == "adopt":
+        if args.source is None:
+            parser.error("adoption requires --source")
+        result = local_resident.adopt(store, args.set_id, args.host, spec, args.source)
     else:
         result = local_resident.evict(store, args.set_id, args.host, spec)
     print(json.dumps(result, sort_keys=True))

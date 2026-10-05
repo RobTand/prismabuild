@@ -196,11 +196,15 @@ def copy(store, set_id, host, spec, *, reader_context=None):
         return store.read_copy(set_id, host)
 
 
-def movement_action(template, store, set_id, tier, *, policy_path, operation):
+def movement_action(template, store, set_id, tier, *, policy_path, operation, source=None):
     host = tier["host"]
     python, tool, _ = movement_actions.movement_tools(tier, mover="local_resident.py")
     command = [python, tool, "--pool-root", str(store.queue_root), "--set-id", set_id,
                "--host", host, "--policy", str(policy_path), "--operation", operation]
+    if operation == "adopt":
+        if source is None:
+            raise ValueError("adoption movement requires source")
+        command.extend(["--source", str(source)])
     return movement_actions.seal_movement_action(template, command=command,
         demand={"cpu": 1, "mem_gb": 1}, tags=[host], log_name=f"resident-{operation}-{set_id}-{host}.log")
 
@@ -218,12 +222,7 @@ def publish_actions(template, store, set_id, tiers, *, policy_path):
         for operation in ("copy", "evict"):
             action = movement_action(template, store, set_id, tier, policy_path=policy_path, operation=operation)
             cas.publish_action_request(action)
-            pair[operation] = {"action_key": action["action_key"], "cas_root": str(cas.root),
-                "worker_script": str(Path(tier["mover_tools_root"]) / "prismabuild_worker.py"),
-                "checkout_snapshot": action["params"].get("checkout_snapshot"), "tags": [host],
-                "resources": {"cpu": 1, "mem_gb": 1}, "max_attempts": 3, "retry_safe": True,
-                "container_owner": action["environment"]["variables"][pool.CONTAINER_OWNER_ENV],
-                "interpreter": tier["mover_python"]}
+            pair[operation] = movement_row(action, cas, tier)
         with store.lock(set_id):
             current = store.read_copy(set_id, host)
             store.write_copy(set_id, host, {**current, "movement_rows": pair})
@@ -401,4 +400,84 @@ def lease_pass(store, host, spec, *, now=None):
         if row["copies"][host]["state"] == "evicting" or not lease_active(store, set_id, now=now):
             results.append(evict(store, set_id, host, spec, now=now))
     return results
+
+
+
+def same_filesystem(source, destination_root):
+    return os.stat(source).st_dev == os.stat(destination_root).st_dev
+
+
+def require_adoption_unmounted(record, source):
+    """Do not move manual bytes still owned by a global mount/old container."""
+    def decode(value):
+        for escaped, character in (("\\040", " "), ("\\011", "\t"), ("\\012", "\n"), ("\\134", "\\")):
+            value = value.replace(escaped, character)
+        return value
+    for line in Path("/proc/self/mountinfo").read_text().splitlines():
+        fields = line.split()
+        if len(fields) >= 5 and decode(fields[4]) in {str(source), record["canonical_root"]}:
+            raise ValueError("adoption requires removing global bind mount units before moving bytes")
+    if Path(record["canonical_root"]).is_relative_to("/mnt/shared"):
+        import subprocess
+        census = subprocess.run(["docker", "ps", "--quiet", "--filter", "status=running"], capture_output=True, text=True)
+        if census.returncode:
+            raise ValueError("adoption cannot establish whether old shared-mount containers are running")
+        ids = census.stdout.split()
+        if ids:
+            inspected = subprocess.run(["docker", "inspect", *ids], capture_output=True, text=True)
+            if inspected.returncode:
+                raise ValueError("adoption cannot inspect running containers")
+            for container in json.loads(inspected.stdout):
+                for mount in container.get("Mounts", []):
+                    if mount.get("Source") == "/mnt/shared" and mount.get("Destination") == "/mnt/shared":
+                        raise ValueError("adoption requires stopping containers that captured the shared recursive bind")
+
+
+def adopt(store, set_id, host, spec, source):
+    record = store.read(set_id)
+    root, final, partial, evicting = _paths(set_id, spec)
+    source = Path(source).absolute()
+    if source == Path(record["canonical_root"]) or Path(record["canonical_root"]).is_relative_to(source):
+        raise ValueError("adoption must not move the authoritative canonical directory")
+    if root.is_relative_to(source) or source.is_relative_to(root):
+        raise ValueError("adoption source must be outside the local tier root")
+    with posix_lock.held(store.copy_path(set_id, host).with_suffix(".move.lock")):
+        current = store.read_copy(set_id, host)
+        if partial.exists() or evicting.exists() or current["state"] == "evicting":
+            raise ValueError("adoption conflicts with an unfinished copy or eviction")
+        if final.exists():
+            if source.exists():
+                raise ValueError("adoption destination already exists")
+            verification = _verify_tree(final, record)
+        else:
+            if not same_filesystem(source, root):
+                raise ValueError("adoption requires the same filesystem")
+            require_adoption_unmounted(record, source)
+            verification = _verify_tree(source, record)
+            local_tier.reserve(pool.PoolQueue(store.queue_root), set_id, [host], record["manifest"]["total_bytes"])
+            for entry in record["manifest"]["entries"]:
+                file = source / Path(entry["path"]).relative_to(record["canonical_root"])
+                with file.open("rb") as stream:
+                    os.fsync(stream.fileno())
+            for directory, _, _ in os.walk(source, topdown=False):
+                resident_sets.fsync_directory(directory)
+            with local_tier.host_lock(root):
+                store.write_copy(set_id, host, {**current, "state": "copying", "adoption_source": str(source), "local_root": str(final)})
+                os.rename(source, final)
+                resident_sets.fsync_directory(source.parent)
+                resident_sets.fsync_directory(root)
+        with local_tier.host_lock(root):
+            store.write_copy(set_id, host, {**current, "state": "resident", "adoption_source": str(source),
+                "local_root": str(final), "verification": verification,
+                "bytes": record["manifest"]["total_bytes"], "completed_unix": time.time()})
+        return store.read_copy(set_id, host)
+
+
+def movement_row(action, cas, tier):
+    return {"action_key": action["action_key"], "cas_root": str(cas.root),
+        "worker_script": str(Path(tier["mover_tools_root"]) / "prismabuild_worker.py"),
+        "checkout_snapshot": action["params"].get("checkout_snapshot"), "tags": [tier["host"]],
+        "resources": action["params"]["demand"], "max_attempts": 3, "retry_safe": True,
+        "container_owner": action["environment"]["variables"][pool.CONTAINER_OWNER_ENV],
+        "interpreter": tier["mover_python"]}
 

@@ -5949,6 +5949,15 @@ mover holds its separate move lock, so eviction defers instead of deleting an
 in-flight partial tree. Each localtier cycle finishes interrupted evictions
 before minting. Cross-host requests queue the retained host-pinned egress action
 rather than deleting another host's paths in the caller.
+Adoption is a host-pinned movement action, not coordinator-side hashing. It
+checks whole-directory coverage and every file SHA-256, fsyncs the existing
+files and directories, then renames on the same filesystem without recopying.
+It refuses cross-filesystem moves, the canonical directory itself, outstanding
+partial/evicting trees and active manual bind mounts. For canonical paths under
+`/mnt/shared`, Docker inspection must establish that no running container
+captured the old recursive shared mount. No live manual copy is touched by
+Phase 1 qualification.
+
 
 
 

@@ -32,6 +32,19 @@ container mounts or placement. Publication alone does not claim a copy is
 available. The versioned `local_tier_policy.json` declares host roots,
 maximum GiB, the free-space floor and Docker allowance; the shipped host
 map is empty and does not enable any Spark.
+`publish` also queues one ordinary host-pinned copy action per host, with
+a retained host-pinned egress row. It uses the current Git checkout by default;
+`--checkout PATH` selects the checkout that supplies the movement payload.
+The owning host must have announced its local tier tools and capacity.
+
+`pbresident.py --pool-root QUEUE adopt SET_ID --host HOST --source DIRECTORY`
+queues a verified same-filesystem adoption on the owning host; it does not
+hash or move bytes on the coordinator. `--checkout` and `--policy` have the
+same meaning as on publication. Remove manual global bind-mount units first
+and stop every container that captured the old `/mnt/shared` recursive bind.
+The payload refuses an active bind mount or running captured container. Read
+`status SET_ID` for completion and its per-file verification receipt.
+
 
 
 Both transports publish the same verifiable CAS results. Their placement and
