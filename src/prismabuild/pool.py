@@ -6478,6 +6478,7 @@ class PoolQueue:
         refuse_withdrawn: bool = False,
         refuse_if_live: bool = False,
         gang: Mapping[str, object] | None = None,
+        resident_set: str | None = None,
     ) -> Path:
         """Enqueue one sealed action.  The action itself already lives in the CAS.
 
@@ -7045,6 +7046,9 @@ class PoolQueue:
             item["container_images"] = image_refs
         if declared_interpreter is not None:
             item["interpreter"] = declared_interpreter
+        if resident_set is not None:
+            from . import resident_sets
+            item["resident_set"] = resident_sets._set_id(resident_set)
         if declared_requirements is not None:
             # The claim-relevant projection of the sealed params (#1495):
             # what a claim gate reads, no more -- the full capability
@@ -22043,6 +22047,7 @@ class PoolQueue:
                 claimed["claimed_by"] = owner
                 claimed["claimed_unix"] = _now()
                 claimed["claimed_host"] = socket.gethostname()
+                claimed["served_from"] = "canonical"
                 if ledger is not None and cpu_tiers is not None and demand.get("cpu", 0):
                     claimed["cpu_allocation"] = ledger.cpu_allocation(key, cpu_tiers)
                 if adaptive_gpu is not None:
@@ -23967,6 +23972,8 @@ class PoolQueue:
             "claimed_by": record.get("claimed_by"),
             "claimed_unix": record.get("claimed_unix"),
             "claimed_host": record.get("claimed_host"),
+            "served_from": "canonical",
+            "resident_set": record.get("resident_set"),
             "finished_unix": record.get("finished_unix"),
             "finished_host": record.get("finished_host"),
             "detail": details,
@@ -24095,6 +24102,8 @@ class PoolQueue:
             raise PoolContractError(
                 f"pool attempt outcome differs from its history link: {where}"
             )
+        if "served_from" in value and value["served_from"] != "canonical":
+            raise PoolContractError("Phase 1 attempt served_from must be canonical")
         if "preemption_context" in value:
             expected_context = {
                 field: record.get(field) for field in (
@@ -24559,6 +24568,8 @@ class PoolQueue:
             "output_retry_stopped": stopped,
             "finished_unix": finished_unix,
             "finished_host": finished_host,
+            **({"served_from": adopted["served_from"], "resident_set": adopted.get("resident_set")}
+               if "served_from" in adopted else {}),
             "detail": detail,
         }
 

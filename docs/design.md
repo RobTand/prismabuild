@@ -5957,6 +5957,20 @@ partial/evicting trees and active manual bind mounts. For canonical paths under
 `/mnt/shared`, Docker inspection must establish that no running container
 captured the old recursive shared mount. No live manual copy is touched by
 Phase 1 qualification.
+`pbrun --resident-set SET_ID` is the single explicit lease-reference declaration.
+It is carried in ordinary action parameters and projected onto the queue row;
+it adds neither an admission gate nor a placement preference. Phase 1 does not
+inject anything: every new claim and immutable attempt writes
+`served_from: "canonical"`, alongside its declared set (if any) and existing
+claiming host. Legacy attempts without this field stay unknown, not retroactively
+labelled canonical. Ending status exposes the recorded field.
+
+`pbstatus --resident-sets` reads the immutable bodies, copies, lease journals,
+current lease verdict and measured per-host capacity/held tokens through its
+existing bounded reader. Corrupt or unreadable records produce a partial view,
+never a complete empty census. No identity or provenance seal is added;
+whole-directory shape, byte digests, safe deletion and capacity remain refusals.
+
 
 
 
