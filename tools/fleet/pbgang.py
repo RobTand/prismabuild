@@ -140,6 +140,7 @@ def _field_problem(name: str, value: object) -> str | None:
         # directory -- the directory pbgang runs in -- so a relative name
         # would ingest a different file of the same name.
         return "must be an absolute path (~ and $VAR are not expanded)"
+    return "must not be empty" if value == "" else None
 
 
 def _shape_problem(member: dict) -> str | None:
