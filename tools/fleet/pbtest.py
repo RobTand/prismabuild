@@ -385,13 +385,18 @@ from worker_loop import DEFAULT_EXECUTION_CEILING_S  # noqa: E402
 class _OutcomesOwner:
     _module = None
     _lock = threading.Lock()
+    #: Bound at import, not at first use.  The published tools path is a link
+    #: that a publication repoints to the next generation, so resolving it late
+    #: would let generation A's pbtest read generation B's recorder.  The
+    #: directory is resolved here, once, to the generation this file was
+    #: imported from; retained generations are immutable.
+    _path = Path(__file__).parent.resolve() / "pbtest_outcomes.py"
 
     def _load(self):
         with _OutcomesOwner._lock:
             if _OutcomesOwner._module is None:
                 spec = importlib.util.spec_from_file_location(
-                    __name__ + "_outcomes",
-                    Path(__file__).with_name("pbtest_outcomes.py"))
+                    __name__ + "_outcomes", _OutcomesOwner._path)
                 module = importlib.util.module_from_spec(spec)
                 spec.loader.exec_module(module)
                 _OutcomesOwner._module = module
