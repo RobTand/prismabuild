@@ -1150,6 +1150,7 @@ def read_pool(queue_root: str | Path) -> dict:
                            priority=record.get('priority', 0),
                            priority_reason=pool.normalize_priority_reason(record.get('priority_reason')),
                            submitted_host=record.get('published_by'),
+                           tested_repository=pool.tested_repository_of(record),
                            unstarted_releases=_releases(record),
                            age_s=_age(record.get('claimed_unix') if state == pool.CLAIMED
                                       else record.get('published_unix'), now))
@@ -2667,6 +2668,9 @@ def ending_row(entry: os.DirEntry, queue_root: str | Path) -> dict:
     finished = record.get("finished_unix")
     return {
         "action_key": str(record.get("action_key") or entry.name[:-5]),
+        # Which repository this run tested (#1565): the row's own tag,
+        # backfilled to explicit unknown for records filed before it.
+        "tested_repository": pool.tested_repository_of(record),
         "status": str(record.get("status") or UNKNOWN),
         "transport": _transport(record),
         # The box the action was ON, not the box that filed its ending.
