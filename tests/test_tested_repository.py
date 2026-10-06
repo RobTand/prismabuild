@@ -66,17 +66,50 @@ def test_the_tag_stays_out_of_the_sealed_body(tmp_path, monkeypatch, capsys):
     assert "tested_repository" not in json.dumps(sealed)
 
 
-def test_same_key_with_and_without_the_tag(tmp_path, monkeypatch, capsys):
-    work, queue = _checkout(tmp_path), _queue(tmp_path)
-    assert _run_pbrun(tmp_path, monkeypatch, work, "--detach") == 0
-    key = _one_json_line(capsys.readouterr())["action_key"]
-    assert _row(queue, key)["tested_repository"] == "work"
-    untagged = json.loads(queue.publish(
-        action_key=key, cas_root=tmp_path / "cas",
-        worker_script="/worker.py", checkout_root=str(work)).read_text(
-            encoding="utf-8"))
-    assert "tested_repository" not in untagged
-    assert untagged["action_key"] == key
+def test_same_inputs_seal_one_key_whatever_the_tag_says(tmp_path, monkeypatch):
+    """Tagged, renamed and untagged publications of one freeze seal one action.
+
+    One frozen template, sealed three times independently; only the queue
+    row's tag varies (a name, omitted, another name).  The action keys match
+    and the CAS request bytes filed for each match: the tag never enters the
+    sealed body or its key.
+    """
+
+    work = _checkout(tmp_path)
+    monkeypatch.setattr(pbrun, "SH", tmp_path)
+    template = pbrun.freeze_action_template(
+        command=("/bin/bash", "-lc", "printf ok"), cwd=work, logical_cwd=".",
+        demand={"cpu": 1, "mem_gb": 1}, placement={"required_tags": []},
+        variables={"PATH": "/usr/bin:/bin"}, determinism="deterministic",
+        retry_policy={"max_attempts": 3, "retry_safe": True},
+        host_class=None, measurement=False, transport="pool",
+        pool_measurement_class=False, data_manifest_path=None,
+        checkout_snapshot_max_bytes=pbrun.CHECKOUT_SNAPSHOT_MAX_BYTES,
+        snapshot_refs=(), exclusive=False, gpu_memory_gb=None,
+        execution_timeout_s=None, progress=None, profile=None)
+    cas = template["cas"]
+    args = pbrun.parse_args(["--max-attempts", "1", "--", "/bin/true"])
+    queue = _queue(tmp_path)
+    seen = {}
+    for tag in ("atlas", None, "boreal"):
+        sealed = pbrun.seal_action_from_template(template)
+        cas.publish_action_request(sealed)
+        bodies = {
+            path.read_bytes()
+            for path in (tmp_path / "cas" / "requests").rglob("*.json")
+            if json.loads(path.read_text(encoding="utf-8"))["action_key"]
+            == sealed["action_key"]}
+        assert len(bodies) == 1, "one seal files one request body"
+        row = pbrun.publication_row(
+            sealed, args=args, queue=queue, tested_repository=tag)
+        filed = json.loads(queue.publish(**row).read_text(encoding="utf-8"))
+        seen[tag] = (sealed["action_key"], next(iter(bodies)), filed)
+    assert len({entry[0] for entry in seen.values()}) == 1
+    assert len({entry[1] for entry in seen.values()}) == 1
+    assert seen["atlas"][2]["tested_repository"] == "atlas"
+    assert "tested_repository" not in seen[None][2]
+    assert seen["boreal"][2]["tested_repository"] == "boreal"
+    assert seen["atlas"][2]["action_key"] == seen[None][2]["action_key"]
 
 
 def test_repository_naming_uses_the_sealed_root_or_unknown(tmp_path):
