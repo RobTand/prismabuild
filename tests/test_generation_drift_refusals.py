@@ -99,6 +99,11 @@ class _Ledger:
 class _Queue:
     """Records the claim a stale worker must not take."""
 
+    #: The loop sweeps its own dead offer temporaries under ``queue.root``
+    #: (#1040).  A path that cannot exist makes that sweep a skip, so a double
+    #: never reads or removes anything on a real queue.
+    root = Path("/nonexistent/prismabuild-test-queue")
+
     def __init__(self) -> None:
         self.claims: list[dict] = []
 
