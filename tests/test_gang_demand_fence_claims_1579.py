@@ -210,8 +210,6 @@ def test_a_look_alike_is_refused_a_role_part_by_part(gang_fleet, store, tmp_path
         "argv is not the capture wrapper": dict(argv=[sys.executable, "task.py"]),
         "wrapper runs other code": dict(argv=[ma.SEALED_ARGV0, "--noprofile", "--norc", "-c", "echo anything"]),
         "wrong movement task": dict(task_over={"determinism": "deterministic"}),
-        "wrong execution scope": dict(scope={"portability": "host_class_keyed", "platform_key": None,
-                                             "host_class": "gb10"}),
     }
     for name, spoil in cases.items():
         spoil = {"script": "stage_release.py", **spoil}
@@ -441,3 +439,25 @@ def test_a_measurement_class_gang_member_is_not_blocked_by_its_own_reservation(g
                 started.add(claimed)
     assert started == {first, second}, (started, denial(second, "sparky"), denial(other, "sparky"))
     assert queue.item_path(pool.READY, other).exists()
+
+
+def test_a_changed_scope_or_task_on_a_genuine_node_loses_the_role(gang_fleet, store, tmp_path):
+    """Checked on a mutated copy of a genuine sealed node, since the sealer refuses some scopes."""
+    import copy
+    from prismabuild import movement_actions as ma
+    queue, clock, *_ = gang_fleet
+    key, cas, checkout = _seal(queue, tmp_path, "genuine", script="stage_release.py", generation=store)
+    genuine = pool._sealed_action_request(str(cas.root), key)
+    small = {"cpu": 1, "mem_gb": 1}
+    assert ma.capacity_role(genuine, small, residency=None) == "returns_capacity"
+    for mutate in (
+            lambda a: a["execution_scope"].update(portability="host_class_keyed", host_class="gb10"),
+            lambda a: a["execution_scope"].update(platform_key="linux-x86_64"),
+            lambda a: a["task"].update(determinism="deterministic"),
+            lambda a: a["task"].update(artifact_kind="measurement"),
+            lambda a: a["task"].update(result_path="another.log"),
+            lambda a: a["task"]["argv"].__setitem__(4, a["task"]["argv"][4] + " "),
+            lambda a: a["params"]["command"].append("--extra")):
+        changed = copy.deepcopy(dict(genuine))
+        mutate(changed)
+        assert ma.capacity_role(changed, small, residency=None) is None
