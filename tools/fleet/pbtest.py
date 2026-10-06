@@ -1298,9 +1298,10 @@ def displayed(output: str) -> list[str]:
 # A closed vocabulary prevents resource controls, config indirection, and
 # extra file populations from hiding in forwarded arguments. Extend this list
 # deliberately for new plugins, after checking their execution semantics.
+#: The recorder's own trace switch joins this set where it is read, so naming it
+#: does not load the recorder at import (#1554).
 PYTEST_SWITCHES = {"--strict-cuda", "--strict-markers", "--strict-config",
-                   "--collect-only", "--co", "--disable-warnings", "-x",
-                   pbtest_outcomes.TRACE_OPTION}
+                   "--collect-only", "--co", "--disable-warnings", "-x"}
 PYTEST_VALUES = {"-k", "-m", "--dist", "--surface-json", "--durations",
                  "--durations-min", "--maxfail", "--tb"}
 
@@ -1317,7 +1318,8 @@ def parse_pytest_args(raw: str, *, gpu: bool, workers: int) -> list[str]:
     while index < len(values):
         option, equals, value = values[index].partition("=")
         index += 1
-        if option in PYTEST_SWITCHES and not equals:
+        if ((option in PYTEST_SWITCHES or option == pbtest_outcomes.TRACE_OPTION)
+                and not equals):
             if option == "--strict-cuda" and not gpu:
                 raise ValueError("--strict-cuda requires --gpu")
             result.append(option)
