@@ -47,10 +47,10 @@ def _fleet(tmp_path, monkeypatch, host, *, cpu_host: str):
             record["announced_unix"] = time.time() - 3600
             path.write_text(json.dumps(record))
 
-    def publish(key, *, gpu=False, tags, resources, priority=0):
+    def publish(key, *, gpu=False, tags, resources, priority=0, **fields):
         queue.publish(action_key=key, cas_root=str(tmp_path / "cas"), checkout_root=str(tmp_path),
                       worker_script="worker.py", tags=tags, needs_gpu=gpu, priority=priority,
-                      resources=resources)
+                      resources=resources, **fields)
 
     def claim():
         return queue.claim(tags=worker_tags, has_gpu=True, capacity=CAPACITY, cpu_tiers=TIERS)
@@ -76,7 +76,8 @@ def test_a_class_scoped_cpu_row_is_not_held_behind_a_ready_gpu_row(tmp_path, mon
 def test_portable_cpu_work_still_waits_for_the_ready_gpu_row(tmp_path, monkeypatch, host, cpu_host):
     """Every box carries these tags, so it is portable: x86 down for a while changes nothing."""
     queue, publish, claim = _fleet(tmp_path, monkeypatch, host, cpu_host=cpu_host)
-    publish(PORTABLE_KEY, tags=[pb.INTERPRETER_TAG], resources={"cpu": 2, "mem_gb": 4}, priority=1)
+    publish(PORTABLE_KEY, tags=[pb.INTERPRETER_TAG], resources={"cpu": 2, "mem_gb": 4}, priority=1,
+            interpreter=sys.executable)
     first = claim()
     assert first is not None and first["action_key"] == GPU_KEY, first
     queue.finish(GPU_KEY, status="executed")
