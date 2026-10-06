@@ -10,6 +10,7 @@ from prismabuild.digest_primitives import stream_digest
 import csv
 import importlib.metadata as metadata
 import importlib.util
+import io
 import json
 from pathlib import Path
 import re
@@ -26,10 +27,13 @@ def verify_record_bytes(module: str) -> dict:
     RECORD entry present on disk and matching the bytes there, the module
     Python actually imports owned by that RECORD, and no unrecorded file
     inside the package. RECORD rows are enumerated raw with the standard
-    library's CSV reader, because ``importlib.metadata`` hides entries
-    whose files are missing from ``Distribution.files``: without raw rows a
-    deleted file -- a package module or pip's relocated console script --
-    reads as an intact install (#1548). A missing hashed entry refuses here
+    library's CSV reader over a newline-preserving stream -- quoted
+    filenames keep their exact bytes, unlike ``Distribution.files`` (and its
+    own ``splitlines``-based reader), which hides entries whose files are
+    missing and mangles names carrying newlines (#1548, #1570 review).
+    Malformed grammar refuses: a hash-bearing row with no filename, extra
+    columns, a nonnumeric size, or a blank row (the size column is parsed,
+    never compared). A missing hashed entry refuses here
     exactly like a byte mismatch, under the strict policy and after
     tolerated identity drift alike; identity policies decide recorded
     identity, never byte integrity. Unhashed entries keep their previous
@@ -54,22 +58,34 @@ def verify_record_bytes(module: str) -> dict:
     if not record:
         raise ValueError(f"{identity}; installed RECORD is missing")
     recorded = {}
-    for row in csv.reader(record.splitlines()):
-        if not row or not row[0]:
+    for row in csv.reader(io.StringIO(record, newline="")):
+        if not row or len(row) > 3:
+            raise ValueError(f"{identity}; malformed RECORD row: {row}")
+        name = row[0]
+        hash_field = row[1] if len(row) > 1 else ""
+        size_field = row[2] if len(row) > 2 else ""
+        if size_field:
+            try:
+                int(size_field)  # Grammar only, like the base parser: never compared to bytes.
+            except ValueError:
+                raise ValueError(f"{identity}; malformed RECORD row: {row}") from None
+        if not name:
+            if hash_field:
+                raise ValueError(f"{identity}; malformed RECORD row: {row}")
             continue
-        path = Path(dist.locate_file(row[0])).resolve()
-        if len(row) > 1 and row[1]:
-            mode, _, value = row[1].partition("=")
+        path = Path(dist.locate_file(name)).resolve()
+        if hash_field:
+            mode, _, value = hash_field.partition("=")
             if mode not in {"sha256", "sha384", "sha512"}:
-                raise ValueError(f"{identity}; unsupported RECORD hash: {row[0]}")
+                raise ValueError(f"{identity}; unsupported RECORD hash: {name}")
             try:
                 digest = stream_digest(path, algorithm=mode)
             except FileNotFoundError as exc:
                 raise ValueError(
-                    f"{identity}; recorded file is missing: {row[0]}") from exc
+                    f"{identity}; recorded file is missing: {name}") from exc
             actual = base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
             if actual != value:
-                raise ValueError(f"{identity}; installed bytes differ from RECORD: {row[0]}")
+                raise ValueError(f"{identity}; installed bytes differ from RECORD: {name}")
             recorded[path] = actual
 
     # Distribution metadata alone does not say which module Python will load.

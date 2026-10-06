@@ -1856,8 +1856,10 @@ marks the run's evidence with `identity_drift_tolerated` and continues. The
 integrity phase is not optional and is not weakened by the policy:
 `verify_record_bytes(module)` is the one implementation of it (one owning
 distribution, RECORD present, every hashed RECORD entry present on disk and
-matching the bytes there — enumerated from the raw RECORD rows since #1548,
-because `importlib.metadata` hides entries whose files are missing, so a
+matching the bytes there — enumerated from the raw RECORD rows since #1548
+through a newline-preserving CSV stream that refuses malformed grammar,
+because `importlib.metadata` hides entries whose files are missing and
+reassembles quoted names onto the wrong alias, so a
 deleted console script or package file refuses exactly like corrupted bytes,
 in both policies — the imported module owned by that RECORD, and no
 unrecorded package file), and
