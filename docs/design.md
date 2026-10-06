@@ -4659,8 +4659,9 @@ ordinary one: the claim pass evaluates `residency_verdict` on a member row
 `residency_lead_not_resident` for that pass and never reaches its election --
 it does not ready, does not fence its own host, and lower-priority work can
 still take its host while its movers run. Its siblings, which pass every gate,
-do elect and ready, so their hosts fence lower-priority work, and later
-singles of their own priority, for as long as the wait lasts, and the wait is not bounded: `skew_s` bounds only the
+do elect and ready, so their hosts fence lower-priority work, and drain for
+new work of their own priority once the gang has waited ten minutes, for as long
+as the wait lasts, and the wait is not bounded: `skew_s` bounds only the
 post-claim start barrier, never the ready-wait. Nothing commits until the
 leads are executed and pinned and the map is composed (`resident`); the gang
 then starts whole, each member's claim record carries the verdict, and the
@@ -4689,8 +4690,9 @@ Per member host, inside the ordinary claim pass:
 
 1. **Elect (fence).** Under host admission H, the host writes a no-clobber
    election `gangs/<group>/elect-<i>.json`. The census reads live gang elections
-   in its bounded child, and `gang_blocking` denies lower-priority rows and later
-   same-priority singles on that host (`deferred_for_gang_reservation`), with the same rule and the same
+   in its bounded child, and `gang_blocking` denies lower-priority rows, and
+   same-priority rows once the gang has waited ten minutes (a drain), on that host
+   (`deferred_for_gang_reservation`), with the same rule and the same
    incumbent-dependent exemption as a #1419/#1504 measurement election. Running
    work drains; no token, CPU/GPU, isolation or foreign-load gate is waived.
    Fence checks consistently identify this host by its resource-ledger name.
@@ -4813,17 +4815,27 @@ FAILED or WITHDRAWN, including a one-attempt member the reaper failed after a lo
 lease, so a sibling that is already running is withdrawn rather than left waiting
 in its collective.
 
-**Priority rule.** A gang fences strictly lower priority work, and also the
-*singles* of its own priority that were published after its first member (a row
-without `params.gang`). Equal priority was not fenced before 2026-10-06: a
-whole-box gang waiting at -10 starved for fourteen minutes while smaller -10
-singles, scanned first, kept taking both Sparks. A single that arrived before
-the gang keeps its place; a gang member is never fenced by another gang's
-election at equal priority (two gangs of one priority are ordered by `rank`,
-`ranked_behind`, so neither can wait on the other); higher priority work can
-still take a fenced host; and the restartable-lending rule applies to a fenced
-equal-priority single exactly as it does to a lower-priority one. Run window
-gangs at a priority above routine work, with routine work at 0 or below.
+**Priority rule.** A gang fences strictly lower priority work from the moment
+a member's host elects. Work of the gang's own priority is not fenced while the
+gang is young; once the gang has waited longer than `GANG_DRAIN_AFTER_S` (ten
+minutes) since its first member was published, its elected hosts DRAIN for new
+admissions of that priority: nothing new is admitted, nothing is lent, running
+jobs are not touched and finish (each is capped), and the gang starts whole when
+its hosts are free. The drain exempts only the gang's own members, a verified
+publication canary slot, and the leads the gang's members wait on (named in a
+member's residency block or its filed plan, carried in the census election):
+a member that waits for a lead cannot start unless the lead can be admitted,
+which a drain would forbid, so those leads are the one cycle a "wait for the
+running jobs" rule would otherwise have. Every other row, GPU or CPU-only,
+waits. The longest a gang can wait is therefore ten minutes plus the longest
+running job on its hosts. A stage or RAM egress runs on the stage's file server,
+not on a gang's Spark hosts, so it is not drained; one pinned to a gang's member
+host would be drained like any other row (no per-row exemption), and if the gang
+were waiting on the capacity that egress frees, that would be a cycle -- keep
+egress off the gang's hosts. Before 2026-10-06 equal priority was never fenced:
+a whole-box -10 gang waited fourteen minutes while smaller -10 singles took both
+Sparks. Run window gangs at a priority above routine work, with routine work at
+0 or below.
 
 **Mixed generations.** An old worker offers no `gang-v1` and ignores `gangs/`, so
 it never claims a member. During a rolling publish it may not honour a gang
