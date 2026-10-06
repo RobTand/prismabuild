@@ -4677,11 +4677,15 @@ planned by the manifest planner (#1247) off its own sealed request and is
 then gated by its filed plan exactly like an explicit one, reaching its map at
 launch through the declared-manifest branch of `residency_map_environment`.
 Operational consequence: a window whose movers are slow drains its already-
-elected siblings' hosts for the whole mover time, and the wait does not end on
-its own if a lead ends terminally (`residency_lead_terminal`) or the plan is
-refused (`plan_unreadable`, `plan_superseded`): gang elections never expire,
-and the gang sweep tears a gang down only on an UNSUCCESSFUL member, which a
-READY member never is -- the wait lasts until the gang is withdrawn. Size
+elected siblings' hosts for the whole mover time. If a member's leads all end
+terminally (`residency_lead_terminal`: failed, withdrawn, dropped, unpinned or
+bound to another manifest) the claim pass that finds it tears the gang down
+(#1543): the siblings are withdrawn and their fences released, because nothing
+will repair that member and gang elections never expire. A lead re-queued after
+that point does not bring the gang back, so submit the movers before the gang.
+A refused plan (`plan_unreadable`, `plan_superseded`) is not covered: the gang
+sweep tears a gang down only on an UNSUCCESSFUL member, which a READY member
+never is, so that wait lasts until the gang is withdrawn. Size
 `--residency` windows with that fence in mind, submit the movers before the
 gang, and withdraw the gang when a member's residency can no longer land.
 

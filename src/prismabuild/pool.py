@@ -21059,6 +21059,19 @@ class PoolQueue:
                             # generation has not finished, whatever its old
                             # ending says (#1186).
                             reason = "residency_lead_terminal"
+                    if item.get("gang") is not None and reason == "residency_lead_terminal":
+                        # This member can never start, so its gang cannot: its
+                        # elected siblings would fence their hosts until
+                        # someone withdrew the gang, because elections never
+                        # expire and the sweep tears a gang down only on an
+                        # unsuccessful member (#1543).  The documented
+                        # remedy -- withdraw the gang when a member's
+                        # residency can no longer land -- is done here, once,
+                        # through the ordinary teardown; this row's lock is
+                        # held, so the sweep withdraws it.
+                        self._gang_teardown(
+                            item, by=key, exclude={key},
+                            reason=f"member {key[:12]} cannot start: residency_lead_terminal")
                     self.record_denial(item, reason, {"residency": residency})
                     continue
                 try:
