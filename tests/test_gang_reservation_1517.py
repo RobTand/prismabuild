@@ -15,7 +15,7 @@ import sys
 import pytest
 from test_measurement_drains_gpu_backfill import fleet as fleet_fixture
 
-from prismabuild import _gang, adaptive_gpu, core as pb, pool
+from prismabuild import _gang, _measurement_reservation as reservation, adaptive_gpu, core as pb, pool
 
 fleet = fleet_fixture
 CAPACITY = {"cpu": 20, "gpu": 1, "mem_gb": 120}
@@ -161,40 +161,48 @@ def test_both_hosts_busy_fences_each_host_and_starts_nothing(gang_fleet):
         assert not queue.item_path(pool.CLAIMED, key).exists()
 
 
-def test_a_gang_fences_later_equal_priority_gpu_singles_when_a_host_frees(gang_fleet):
-    """A waiting gang is not jumped by GPU singles of its own priority (the 2026-10-06 starvation).
+def test_a_gang_that_waited_ten_minutes_drains_its_hosts_and_then_starts(gang_fleet):
+    """The bounded drain (2026-10-06 starvation): no new admissions, then the gang starts.
 
-    A -10 gang whose members are whole-box wide waited 14 minutes on two Sparks
-    while -10 GPU singles, smaller and scanned first, took the hosts the moment
-    they freed.  The fence covered only strictly lower priority.  A GPU single
-    published after the gang's first member now waits behind it; a CPU-only row
-    (an egress, an export) takes nothing the gang needs and still runs.
+    A -10 gang waited 14 minutes while -10 singles kept taking its Sparks.  After
+    ``GANG_DRAIN_AFTER_S`` its elected hosts admit no NEW equal-priority work, GPU
+    or CPU-only; running work finishes, and the gang starts whole as soon as both
+    hosts are free.  Nothing waits on anything but a job that is already running.
     """
     queue, clock, publish, finish, gclaim, denial, members = gang_fleet
     incumbents = _busy_both(publish, gclaim)
-    group, keys = members("equal-priority", priority=-10)
+    group, (first, second) = members("drain", priority=-10)
+    for host in HOSTS:
+        assert gclaim(host) is None
+    clock[0] += reservation.GANG_DRAIN_AFTER_S + 1
+    late = {}
+    for host in HOSTS:
+        late[host, "gpu"] = publish(f"late-gpu-{host}", priority=-10, timeout_s=None,
+                                    cpu=1, gpu=1, mem_gb=8, tags=[host])
+        late[host, "cpu"] = publish(f"late-cpu-{host}", priority=-10, timeout_s=None,
+                                    cpu=1, gpu=0, mem_gb=1, tags=[host])
+    finish(incumbents["sparky"], "sparky")
+    assert gclaim("sparky") is None, "the draining host admitted new work"
+    for kind in ("gpu", "cpu"):
+        assert denial(late["sparky", kind], "sparky")["reason"] in (
+            "deferred_for_gang_reservation", "deferred_behind_withheld_row"), kind
+    finish(incumbents["sparklina"], "sparklina")
+    assert gclaim("sparklina") == first, denial(first, "sparklina")
+    assert gclaim("sparky") == second, denial(second, "sparky")
+    for key in late.values():
+        assert queue.item_path(pool.READY, key).exists()
+
+
+def test_a_young_gang_does_not_drain_equal_priority_work(gang_fleet):
+    queue, clock, publish, finish, gclaim, denial, members = gang_fleet
+    incumbents = _busy_both(publish, gclaim)
+    group, keys = members("young", priority=-10)
     for host in HOSTS:
         assert gclaim(host) is None
     finish(incumbents["sparky"], "sparky")
-    late = publish("late-gpu-single", priority=-10, timeout_s=None,
+    late = publish("late-single", priority=-10, timeout_s=None,
                    cpu=1, gpu=1, mem_gb=8, tags=["sparky"])
-    assert gclaim("sparky") is None, "a later same-priority GPU single took the freed host"
-    assert denial(late, "sparky")["reason"] in (
-        "deferred_for_gang_reservation", "deferred_behind_withheld_row"), denial(late, "sparky")
-    assert queue.item_path(pool.READY, late).exists()
-    cpu_only = publish("late-cpu-only", priority=-10, timeout_s=None,
-                       cpu=1, gpu=0, mem_gb=1, tags=["sparky"])
-    assert gclaim("sparky") == cpu_only, denial(cpu_only, "sparky")
-
-
-def test_a_single_published_before_the_gang_is_not_fenced_by_it(gang_fleet):
-    """Arrival order is kept: only singles that came after the gang wait."""
-    queue, clock, publish, finish, gclaim, denial, members = gang_fleet
-    incumbents = _busy_both(publish, gclaim)
-    earlier = publish("earlier-single", priority=-10, timeout_s=None,
-                      cpu=1, gpu=0, mem_gb=1, tags=["sparky"])
-    group, keys = members("later-gang", priority=-10)
-    assert gclaim("sparky") == earlier, denial(earlier, "sparky")
+    assert gclaim("sparky") == late, denial(late, "sparky")
 
 
 def test_a_higher_priority_single_is_not_fenced_by_a_lower_priority_gang(gang_fleet):

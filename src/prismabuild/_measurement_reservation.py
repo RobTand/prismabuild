@@ -213,6 +213,32 @@ def _scan_publications(queue: PoolQueue) -> dict:
             "gang_elections": _gang_elections(queue, rows, count)}
 
 
+def _member_leads(queue: PoolQueue, rows: dict[str, list[dict]], record: dict) -> list[str]:
+    """The action keys a gang's members wait on before they can start (#1579).
+
+    A member's residency block names its leads; a planner row carries none and
+    its leads are in the plan filed for it.  Best effort: a plan that does not
+    read contributes nothing, which can only make the drain apply to more rows.
+    """
+    from . import residency_plan
+    leads: set[str] = set()
+    for member in record["members"]:
+        for row in rows.get(member["action_key"], []):
+            if float(row.get("published_unix", math.nan)) != member["published_unix"]:
+                continue
+            block = row.get("residency")
+            if isinstance(block, dict) and isinstance(block.get("leads"), list):
+                leads.update(key for key in block["leads"] if isinstance(key, str))
+                continue
+            try:
+                plan = residency_plan.read(queue, member["action_key"])
+                if plan is not None:
+                    leads.update(residency_plan.leads_for(plan))
+            except (OSError, ValueError, KeyError, TypeError, residency_plan.ResidencyPlanError):
+                continue
+    return sorted(leads)
+
+
 def _gang_elections(queue: PoolQueue, rows: dict[str, list[dict]], count: int) -> dict:
     """Live gang host elections (#1517), read in the same bounded child.
 
@@ -248,10 +274,12 @@ def _gang_elections(queue: PoolQueue, rows: dict[str, list[dict]], count: int) -
                 if not live:
                     continue
                 rank = list(_gang.rank(record))
+                leads = _member_leads(queue, rows, record)
                 for index, election in _gang.elections(queue, group, record["size"]).items():
                     found[election["action_key"]] = {
                         "group": group, "index": index, "action_key": election["action_key"],
-                        "host": election["host"], "priority": election["priority"], "rank": rank}
+                        "host": election["host"], "priority": election["priority"], "rank": rank,
+                        "leads": leads}
     except _gang.GangContractError as exc:
         raise CensusUnavailable(str(exc)) from exc
     return found
@@ -480,61 +508,59 @@ def blocking_selection(census: dict, item: dict, *, host: str, funded_by: str | 
     return None
 
 
-def _single_behind_gang(item: dict, chosen: dict) -> bool:
-    """Whether ``item`` is a single of the gang's own priority that arrived after it.
+#: How long an elected gang may wait before its member hosts stop admitting new
+#: work of its own priority.  Strictly lower priority is fenced from the start;
+#: equal priority is drained only after this, so a gang that is merely a little
+#: slow to start does not stall its hosts, and a gang that has waited this long
+#: is bounded by the longest running job (each is capped).  See
+#: ``docs/design.md``, "Priority rule".
+GANG_DRAIN_AFTER_S = 600.0
 
-    The census election carries the gang's rank, whose second field is the
-    earliest member's publication time.  A gang member is never decided by
-    this: two gangs of one priority are ordered by their rank
-    (``ranked_behind``), and fencing a member by another gang's election could
-    leave each waiting on the other.
+
+def _drained_for_gang(item: dict, chosen: dict, now: float) -> bool:
+    """Whether ``item`` is held back because its host is draining for a waiting gang.
+
+    A gang that has waited longer than :data:`GANG_DRAIN_AFTER_S` since its first
+    member was published drains its elected hosts for NEW admissions of its own
+    priority.  Running work is never touched and nothing is lent.  Exempt: the
+    gang's own members (and any gang's -- two gangs of one priority are ordered
+    by ``rank``, ``ranked_behind``), a verified publication canary slot (its own
+    next-free-safe-boundary contract), and the leads the gang waits on: a member
+    that waits for a lead cannot start unless the lead can be admitted, which a
+    drain would forbid -- the one cycle a pure "wait for the running jobs" rule
+    has.  Every other row, GPU or not, waits.
     """
     if item.get("gang") is not None or int(item.get("priority", 0)) != chosen["priority"]:
         return False
-    # Only a row that competes for the device the gang is waiting on is held
-    # behind it: every member demands a GPU, and the singles that starved the
-    # 2026-10-06 gang were GPU rows.  A row that demands none -- a stage or RAM
-    # egress (it returns the capacity the gang's leads need), a spool export or
-    # any producer's dependent (its incumbent waits for it), a residency mover
-    # (the gang waits on it), CPU-only work -- takes nothing the gang needs and
-    # is not fenced at equal priority; fencing it could deadlock the drain the
-    # gang depends on.  A verified publication canary slot (a GPU row) has its
-    # own next-free-safe-boundary contract and is likewise not fenced.
-    resources = item.get("resources")
-    gpu = isinstance(resources, dict) and resources.get("gpu", 0)
-    if not (item.get("needs_gpu") is True or (type(gpu) is int and gpu > 0)):
+    if isinstance(item.get("publication_canary"), dict):
         return False
-    if (item.get("dependent_of") is not None
-            or isinstance(item.get("publication_canary"), dict)):
+    if item.get("action_key") in (chosen.get("leads") or ()):
         return False
-    residency = item.get("residency")
-    if isinstance(residency, dict) and "range_start_bytes" in residency:
-        return False
-    published = item.get("published_unix")
     rank = chosen.get("rank")
-    return (isinstance(published, (int, float)) and not isinstance(published, bool)
-            and isinstance(rank, list) and len(rank) == 3
-            and isinstance(rank[1], (int, float)) and published > rank[1])
+    return (isinstance(rank, list) and len(rank) == 3
+            and isinstance(rank[1], (int, float)) and not isinstance(rank[1], bool)
+            and now - rank[1] > GANG_DRAIN_AFTER_S)
 
 
-def gang_blocking(census: dict, item: dict, *, host: str, group: str | None) -> dict | None:
-    """A live gang election fences its host against lower priority, and against
-    singles of its own priority that arrived after it (#1517).
+def gang_blocking(census: dict, item: dict, *, host: str, group: str | None,
+                  now: float | None = None) -> dict | None:
+    """A live gang election fences its host against lower priority, and drains it
+    for new work of its own priority once the gang has waited too long (#1517).
 
-    The same rule as :func:`blocking_selection` for strictly lower priority.
-    Equal priority was not fenced, so a whole-box gang waiting at -10 was
-    starved by smaller -10 singles that kept taking its hosts (2026-10-06); a
-    single published after the gang's first member now waits behind it, while
-    one that arrived first keeps its place.  Running work still drains, and
-    the restartable-lending rule applies to the fenced single as it does to a
-    lower-priority one.  The gang's own members are never fenced by their
-    siblings' elections.
+    Strictly lower priority is fenced as in :func:`blocking_selection`.  Equal
+    priority is not fenced while the gang is young; past
+    :data:`GANG_DRAIN_AFTER_S` the host drains (the returned election carries
+    ``drain: True``, and nothing is lent to a drained row).  The gang's own
+    members are never fenced by their siblings' elections.
     """
+    now = time.time() if now is None else now
     for key, chosen in sorted(census.get("gang_elections", {}).items()):
-        if (chosen["host"] == host and key != item["action_key"] and chosen["group"] != group
-                and (int(item.get("priority", 0)) < chosen["priority"]
-                     or _single_behind_gang(item, chosen))):
+        if chosen["host"] != host or key == item["action_key"] or chosen["group"] == group:
+            continue
+        if int(item.get("priority", 0)) < chosen["priority"]:
             return chosen
+        if _drained_for_gang(item, chosen, now):
+            return {**chosen, "drain": True}
     return None
 
 

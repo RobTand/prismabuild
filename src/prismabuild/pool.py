@@ -21343,7 +21343,8 @@ class PoolQueue:
                             gang_blocked = (None if serves_incumbent else
                                             measurement_reservation.gang_blocking(
                                                 census, item, host=ledger.base.name,
-                                                group=gang["group"] if gang is not None else None))
+                                                group=gang["group"] if gang is not None else None,
+                                                now=_now()))
                             while gang_blocked is not None:
                                 from . import _gang
                                 try:
@@ -21356,6 +21357,7 @@ class PoolQueue:
                                             if backfill_eligible:
                                                 backfill_binding = self._preemption_proof_binding(item)
                                     allowed = (backfill_eligible
+                                               and not gang_blocked.get("drain")
                                                and _gang.backfill_allowed(self, gang_blocked, _now()))
                                 except (_gang.GangContractError, OSError, pb.PrismaBuildError,
                                         KeyError, TypeError, ValueError):
@@ -21367,7 +21369,8 @@ class PoolQueue:
                                     k: e for k, e in census["gang_elections"].items()
                                     if e not in gang_backfill})
                                 gang_blocked = measurement_reservation.gang_blocking(
-                                    remaining, item, host=ledger.base.name, group=None)
+                                    remaining, item, host=ledger.base.name, group=None,
+                                    now=_now())
                             if gang_blocked is not None:
                                 self.record_denial(item, "deferred_for_gang_reservation", {
                                     "withheld_for": gang_blocked["action_key"],

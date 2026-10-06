@@ -1,18 +1,23 @@
-"""Which equal-priority rows a waiting gang fences (#1517, 2026-10-06).
+"""When an elected gang drains its hosts for new equal-priority work (#1517, 2026-10-06).
 
-The census election carries the gang's rank, whose second field is its first
-member's publication time.  ``gang_blocking`` is a pure function of the census,
-the row and the host, so the rule is read directly.
+``gang_blocking`` is a pure function of the census, the row, the host and the
+time, so the rule is read directly.  The election in the census carries the
+gang's rank (whose second field is its first member's publication time) and the
+leads its members wait on.
 """
+import pytest
+
 from prismabuild import _measurement_reservation as reservation
 
 GANG_FIRST_PUBLISHED = 1000.0
+LEAD = "e" * 64
 
 
 def _census(priority=-10):
     return {"gang_elections": {"g" * 63 + "1": {
         "group": "g" * 32, "index": 0, "action_key": "g" * 63 + "1", "host": "sparky",
-        "priority": priority, "rank": [-priority, GANG_FIRST_PUBLISHED, "g" * 32]}}}
+        "priority": priority, "rank": [-priority, GANG_FIRST_PUBLISHED, "g" * 32],
+        "leads": [LEAD]}}}
 
 
 def _row(**over):
@@ -22,68 +27,62 @@ def _row(**over):
     return row
 
 
-def _blocked(row, **kw):
-    return reservation.gang_blocking(_census(**kw), row, host="sparky", group=None) is not None
+YOUNG = GANG_FIRST_PUBLISHED + reservation.GANG_DRAIN_AFTER_S - 1
+OLD = GANG_FIRST_PUBLISHED + reservation.GANG_DRAIN_AFTER_S + 1
 
 
-def test_a_later_single_of_the_gangs_priority_is_fenced():
-    assert _blocked(_row())
+def _blocked(row, *, now=OLD, **kw):
+    return reservation.gang_blocking(_census(**kw), row, host="sparky", group=None, now=now)
 
 
-def test_a_single_that_arrived_first_is_not_fenced():
-    assert not _blocked(_row(published_unix=GANG_FIRST_PUBLISHED - 1))
-    assert not _blocked(_row(published_unix=GANG_FIRST_PUBLISHED))
+def test_a_young_gang_does_not_drain_equal_priority_work():
+    assert _blocked(_row(), now=YOUNG) is None
 
 
-def test_strictly_lower_priority_is_fenced_whenever_it_was_published():
-    assert _blocked(_row(priority=-20, published_unix=GANG_FIRST_PUBLISHED - 100))
+def test_a_gang_that_has_waited_ten_minutes_drains_new_equal_priority_work():
+    blocked = _blocked(_row())
+    assert blocked is not None and blocked["drain"] is True
 
 
-def test_higher_priority_is_not_fenced():
-    assert not _blocked(_row(priority=0))
+@pytest.mark.parametrize("resources,needs_gpu", [
+    ({"cpu": 4, "gpu": 1, "mem_gb": 24}, True),   # a GPU single
+    ({"cpu": 1, "mem_gb": 1}, False),             # CPU-only, or egress-shaped: no per-row exemption
+    ({"cpu": 1, "mem_gb": 1, "stage_gib@t:h": 4}, False)])
+def test_no_per_row_exemption_for_unrelated_work(resources, needs_gpu):
+    assert _blocked(_row(resources=resources, needs_gpu=needs_gpu)) is not None
 
 
-def test_a_gang_member_is_not_fenced_by_another_gangs_election_at_equal_priority():
-    row = _row(gang={"group": "h" * 32, "size": 2, "index": 1})
-    assert reservation.gang_blocking(_census(), row, host="sparky", group="h" * 32) is None
+def test_published_before_or_after_the_gang_makes_no_difference_once_it_drains():
+    assert _blocked(_row(published_unix=GANG_FIRST_PUBLISHED - 100)) is not None
 
 
-def test_a_residency_mover_is_not_fenced_because_the_gang_waits_on_it():
-    assert not _blocked(_row(residency={"range_start_bytes": 0, "range_end_bytes": 1 << 30}))
+def test_strictly_lower_priority_is_fenced_from_the_start_and_is_not_marked_as_a_drain():
+    blocked = _blocked(_row(priority=-20), now=GANG_FIRST_PUBLISHED + 1)
+    assert blocked is not None and "drain" not in blocked
 
 
-def test_a_producers_dependent_is_not_fenced():
-    assert not _blocked(_row(dependent_of="p" * 64))
+def test_higher_priority_is_never_drained():
+    assert _blocked(_row(priority=0)) is None
 
 
-def test_a_row_without_a_publication_time_keeps_the_old_rule():
-    row = _row()
-    del row["published_unix"]
-    assert not _blocked(row)
+def test_the_leads_the_gang_waits_on_are_exempt():
+    """A member waiting for a lead cannot start if the drain forbids the lead."""
+    assert _blocked(_row(action_key=LEAD)) is None
 
 
-def test_another_host_is_not_fenced():
-    assert reservation.gang_blocking(_census(), _row(), host="sparklina", group=None) is None
-
-
-def test_a_later_cpu_only_single_is_not_fenced_at_equal_priority():
-    """It takes nothing the gang's GPU members need (stage/RAM egress, exports, CPU work)."""
-    row = _row(needs_gpu=False, resources={"cpu": 1, "mem_gb": 1})
-    assert not _blocked(row)
-
-
-def test_a_stage_or_ram_egress_shaped_row_is_not_fenced():
-    """An egress returns capacity: 1 CPU, 1 GiB, no tier demand, no residency block."""
-    assert not _blocked(_row(needs_gpu=False, resources={"cpu": 1, "mem_gb": 1},
-                             tags=["progress-egress-v1"]))
-
-
-def test_a_publication_canary_slot_is_not_fenced_behind_a_gang():
+def test_a_publication_canary_slot_is_exempt():
     row = _row(resources={"cpu": 1, "gpu": 1, "mem_gb": 16},
                publication_canary={"host": "sparky", "generation": "g", "run_id": "r"})
-    assert not _blocked(row)
+    assert _blocked(row) is None
 
 
-def test_a_later_gpu_row_is_fenced_however_the_gpu_is_declared():
-    assert _blocked(_row(needs_gpu=True, resources={"cpu": 1, "mem_gb": 1}))
-    assert _blocked(_row(needs_gpu=None, resources={"cpu": 1, "gpu": 1, "mem_gb": 1}))
+def test_a_gang_member_is_never_drained_by_another_gangs_election():
+    row = _row(gang={"group": "h" * 32, "size": 2, "index": 1})
+    assert reservation.gang_blocking(_census(), row, host="sparky", group="h" * 32, now=OLD) is None
+
+
+def test_another_host_and_a_missing_rank_are_not_drained():
+    assert reservation.gang_blocking(_census(), _row(), host="sparklina", group=None, now=OLD) is None
+    census = _census()
+    next(iter(census["gang_elections"].values()))["rank"] = None
+    assert reservation.gang_blocking(census, _row(), host="sparky", group=None, now=OLD) is None
