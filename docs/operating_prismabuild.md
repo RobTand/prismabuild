@@ -1855,8 +1855,17 @@ message and the observed facts, and returning normally — instead of raising �
 marks the run's evidence with `identity_drift_tolerated` and continues. The
 integrity phase is not optional and is not weakened by the policy:
 `verify_record_bytes(module)` is the one implementation of it (one owning
-distribution, RECORD present, every hashed entry matching the bytes on disk,
-the imported module owned by that RECORD, no unrecorded package file), and
+distribution, RECORD present, every hashed RECORD entry present on disk and
+matching the bytes there — raw RECORD metadata is read as UTF-8 bytes from the
+owning PathDistribution metadata path before newline-preserving CSV parsing.
+The public read_text API normalizes quoted carriage returns and
+carriage-return-line-feed characters; Distribution.files also hides missing
+entries and splits quoted lines. Missing or unreadable raw metadata refuses
+without a lossy fallback. Quoted filename characters are preserved, malformed
+grammar refuses, and a deleted console script or package file refuses exactly
+like corrupted bytes,
+in both policies — the imported module owned by that RECORD, and no
+unrecorded package file), and
 `verify_install` always routes through it. Ownership of the imported module is
 an integrity check, so an editable or shadowed import refuses even when
 identity drift is tolerated. A raising policy propagates unchanged.

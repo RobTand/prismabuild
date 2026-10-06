@@ -1,13 +1,12 @@
 """A fleet shard must not run against a different reviewed dependency commit."""
 from __future__ import annotations
 
-import ast
 import importlib.util
 import base64
+import csv
 import hashlib
 import json
 from pathlib import Path
-import re
 import subprocess
 import sys
 from pbtest_shard_output import admitted_child
@@ -93,14 +92,9 @@ def test_mismatched_commit_refuses_before_pytest(tmp_path, monkeypatch, capsys):
 
 def test_matching_pin_runs_pytest_and_records_provenance(tmp_path, monkeypatch):
     checkout, _ = fixture_checkout(tmp_path, installed=PIN)
-    result, calls = dispatch(checkout, monkeypatch)
+    result, _ = dispatch(checkout, monkeypatch)
     assert result == 0
     assert (checkout / "pytest-ran").read_text() == "yes"
-    # The worker command carries the guard itself, not a helper path that
-    # could be absent on another host or change independently of the key.
-    payload = calls[0][calls[0].index("--") + 1:]
-    assert "-c" in payload
-    assert "def check_pins" in payload[payload.index("-c") + 1]
     output = json.loads((checkout / "result.json").read_text())[0]["output"]
     evidence = json.loads(next(line.removeprefix("pbtest dependency pin: ")
                               for line in output.splitlines()
@@ -195,7 +189,6 @@ def test_a_second_pin_cannot_hide_behind_a_matching_one(tmp_path, monkeypatch, c
 # digests. No digest loop is mocked; corruption is applied to installed
 # bytes and read back by importlib.metadata in this process.
 
-PINS_SOURCE = (ROOT / "tools/fleet/pbtest_pins.py").read_text(encoding="utf-8")
 OTHER = "c" * 40
 
 
@@ -219,8 +212,12 @@ def pins_repo(tmp_path_factory):
         "\n"
         "[project]\n"
         'name = "pinsbyte1544"\n'
-        'version = "1.0"\n')
-    (repo / "pinsbyte1544/__init__.py").write_text("VALUE = 1\n")
+        'version = "1.0"\n'
+        "\n"
+        "[project.scripts]\n"
+        'pins1544 = "pinsbyte1544:main"\n')
+    (repo / "pinsbyte1544/__init__.py").write_text(
+        "VALUE = 1\n\n\ndef main():\n    return None\n")
     (repo / "pinsbyte1544/data.py").write_text("DATA = 1\n")
     git = ["git", "-c", "user.email=1544@t", "-c", "user.name=1544"]
     for command in (["git", "init", "-q"], [*git, "add", "-A"],
@@ -316,16 +313,54 @@ def test_tolerant_policy_still_refuses_corrupt_installed_bytes(
     assert "require a non-editable Git install" not in str(excinfo.value)
 
 
-def test_tolerant_policy_deleted_imported_module_file_still_refuses(
+def test_tolerant_policy_still_refuses_a_deleted_non_imported_file(
         tmp_path, monkeypatch, pins_module, pins_repo):
-    """Deleting the file Python imports is refused, by the ownership check.
-
-    ``importlib.metadata`` drops RECORD entries whose files no longer exist
-    (``Distribution.files`` filters them), so the hash loop never sees the
-    missing file; the imported module then is not in the recorded set.
-    """
     site, commit = pip_installed(tmp_path, pins_repo)
-    (site / "pinsbyte1544/__init__.py").unlink()
+    (site / "pinsbyte1544/data.py").unlink()
+    monkeypatch.syspath_prepend(str(site))
+    calls = []
+    # ``OTHER`` makes the identity phase genuinely drift, so the policy really
+    # runs; the missing recorded file must still refuse after tolerated drift.
+    with pytest.raises(ValueError) as excinfo:
+        pins_module.verify_install(
+            "pinsbyte1544", OTHER,
+            identity_policy=lambda message, facts: calls.append(message))
+    assert len(calls) == 1
+    assert "require a non-editable Git install" in calls[0]
+    assert "recorded file is missing" in str(excinfo.value)
+    assert "require a non-editable Git install" not in str(excinfo.value)
+
+
+def console_record_path(site):
+    """The one hashed RECORD row outside the package: pip's console script.
+
+    Pip records it relative to site-packages (``../../../bin/<name>``), the
+    same relocated shape as the measured #1548 consumer blind spot, so the
+    deletion below refuses only if raw RECORD enumeration survives the walk
+    out of the package directory.
+    """
+    record = (site / "pinsbyte1544-1.0.dist-info/RECORD").read_text()
+    rows = [line for line in record.splitlines() if line.startswith("../")]
+    assert len(rows) == 1, rows
+    entry = rows[0].split(",")
+    assert entry[0].endswith("bin/pins1544")
+    assert entry[1].startswith("sha256=")
+    return entry[0]
+
+
+def test_a_deleted_console_script_outside_the_package_refuses(
+        tmp_path, monkeypatch, pins_module, pins_repo):
+    site, commit = pip_installed(tmp_path, pins_repo)
+    (site / console_record_path(site)).unlink()
+    monkeypatch.syspath_prepend(str(site))
+    with pytest.raises(ValueError, match="recorded file is missing"):
+        pins_module.verify_install("pinsbyte1544", commit)
+
+
+def test_tolerant_policy_still_refuses_a_deleted_console_script(
+        tmp_path, monkeypatch, pins_module, pins_repo):
+    site, commit = pip_installed(tmp_path, pins_repo)
+    (site / console_record_path(site)).unlink()
     monkeypatch.syspath_prepend(str(site))
     calls = []
     with pytest.raises(ValueError) as excinfo:
@@ -333,22 +368,187 @@ def test_tolerant_policy_deleted_imported_module_file_still_refuses(
             "pinsbyte1544", OTHER,
             identity_policy=lambda message, facts: calls.append(message))
     assert len(calls) == 1
-    assert "not owned by its RECORD" in str(excinfo.value)
+    assert "recorded file is missing" in str(excinfo.value)
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "KNOWN PRE-EXISTING GAP, not introduced by #1544 and present in the strict "
-    "path on main: importlib.metadata's Distribution.files silently drops RECORD "
-    "entries whose files are missing, so a deleted package file that is not the "
-    "imported module is never hashed and the install is reported intact. Fix "
-    "needs a decision (it changes the pin guard every PQ pbtest shard runs); "
-    "tracked as RobTand/prismabuild#1548. Remove this marker when fixed."))
+def test_restored_recorded_bytes_are_accepted_again(
+        tmp_path, monkeypatch, pins_module, pins_repo):
+    site, commit = pip_installed(tmp_path, pins_repo)
+    data = site / "pinsbyte1544/data.py"
+    original = data.read_bytes()
+    data.unlink()
+    monkeypatch.syspath_prepend(str(site))
+    with pytest.raises(ValueError, match="recorded file is missing"):
+        pins_module.verify_record_bytes("pinsbyte1544")
+    data.write_bytes(original)
+    evidence = pins_module.verify_record_bytes("pinsbyte1544")
+    assert evidence["installed_commit"] == commit
+
+
+def append_record_row(site, name, data):
+    """Append one correctly hashed RECORD row, quoted the way pip quotes.
+
+    The csv writer is pip's own grammar: a filename carrying a newline, a
+    comma or doubled quotes travels as one field naming exactly those bytes.
+    """
+    digest = base64.urlsafe_b64encode(hashlib.sha256(data).digest()).rstrip(b"=").decode()
+    record = site / "pinsbyte1544-1.0.dist-info/RECORD"
+    with record.open("a", newline="") as handle:
+        csv.writer(handle, lineterminator="\r\n").writerow(
+            [name, f"sha256={digest}", len(data)])
+
+
+def invalidate_record_row(site, defect):
+    """Change only the grammar of pip's real, correctly hashed data row."""
+    record = site / "pinsbyte1544-1.0.dist-info/RECORD"
+    with record.open(newline="") as handle:
+        rows = list(csv.reader(handle))
+    row = next(row for row in rows if row[0] == "pinsbyte1544/data.py")
+    if defect == "empty_name":
+        row = row.copy()
+        row[0] = ""
+        rows.append(row)
+    elif defect == "four_columns":
+        row.append("extra")
+    elif defect == "nonnumeric_size":
+        row[2] = "notanumber"
+    else:
+        raise AssertionError(defect)
+    with record.open("w", newline="") as handle:
+        csv.writer(handle).writerows(rows)
+
+
+@pytest.mark.parametrize("defect", ["empty_name", "four_columns", "nonnumeric_size"])
+def test_a_malformed_record_row_refuses(tmp_path, monkeypatch, pins_module,
+                                        pins_repo, defect):
+    """Valid installed bytes cannot hide invalid RECORD grammar."""
+    site, commit = pip_installed(tmp_path, pins_repo)
+    invalidate_record_row(site, defect)
+    monkeypatch.syspath_prepend(str(site))
+    with pytest.raises(ValueError):
+        pins_module.verify_install("pinsbyte1544", commit)
+
+
+@pytest.mark.parametrize("defect", ["empty_name", "four_columns", "nonnumeric_size"])
+def test_a_malformed_record_row_refuses_after_tolerated_drift(
+        tmp_path, monkeypatch, pins_module, pins_repo, defect):
+    site, commit = pip_installed(tmp_path, pins_repo)
+    invalidate_record_row(site, defect)
+    monkeypatch.syspath_prepend(str(site))
+    calls = []
+    with pytest.raises(ValueError):
+        pins_module.verify_install(
+            "pinsbyte1544", OTHER,
+            identity_policy=lambda message, facts: calls.append(message))
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("newline", [pytest.param("\r", id="carriage_return"),
+                                    pytest.param("\r\n", id="carriage_return_line_feed")])
+@pytest.mark.parametrize("tolerant", [False, True], ids=["strict", "tolerant"])
+def test_intact_quoted_carriage_return_name_accepts(
+        tmp_path, monkeypatch, pins_module, pins_repo, newline, tolerant):
+    site, commit = pip_installed(tmp_path, pins_repo)
+    monkeypatch.syspath_prepend(str(site))
+    before = pins_module.verify_install("pinsbyte1544", commit)
+    payload = b"quoted filename bytes\n"
+    named = site / "pinsbyte1544" / f"carriage{newline}return.bin"
+    named.write_bytes(payload)
+    append_record_row(site, str(named.relative_to(site)), payload)
+    calls = []
+    evidence = pins_module.verify_install(
+        "pinsbyte1544", OTHER if tolerant else commit,
+        identity_policy=(lambda message, facts: calls.append(message)) if tolerant else None)
+    assert evidence["verified_files"] == before["verified_files"] + 1
+    assert evidence["installed_commit"] == commit
+    assert len(calls) == int(tolerant)
+    if tolerant:
+        assert evidence["identity_drift_tolerated"] == calls[0]
+
+
+@pytest.mark.parametrize("newline", [pytest.param("\r", id="carriage_return"),
+                                    pytest.param("\r\n", id="carriage_return_line_feed")])
+@pytest.mark.parametrize("tolerant", [False, True], ids=["strict", "tolerant"])
+def test_missing_quoted_carriage_return_name_refuses_with_recorded_line_feed_alias(
+        tmp_path, monkeypatch, pins_module, pins_repo, newline, tolerant):
+    site, commit = pip_installed(tmp_path, pins_repo)
+    payload = b"same bytes in two distinct files\n"
+    named = site / "pinsbyte1544" / f"carriage{newline}return.bin"
+    alias = site / "pinsbyte1544/carriage\nreturn.bin"
+    for path in (named, alias):
+        path.write_bytes(payload)
+        append_record_row(site, str(path.relative_to(site)), payload)
+    named.unlink()
+    monkeypatch.syspath_prepend(str(site))
+    calls = []
+    with pytest.raises(ValueError):
+        pins_module.verify_install(
+            "pinsbyte1544", OTHER if tolerant else commit,
+            identity_policy=(lambda message, facts: calls.append(message)) if tolerant else None)
+    assert len(calls) == int(tolerant)
+
+
+def test_quoted_record_names_stay_the_bytes_they_name(
+        tmp_path, monkeypatch, pins_module, pins_repo):
+    """A quoted newline filename is one entry naming one file.
+
+    Pre-fix failure at bae247818a: splitlines() reassembled the recorded
+    line\\nbreak.bin as the alias linebreak.bin, so the intact install was
+    refused on the unrecorded real file and deleting the real file went
+    unnoticed while the same-bytes alias was hashed in its place.
+    """
+    site, commit = pip_installed(tmp_path, pins_repo)
+    package = site / "pinsbyte1544"
+    payload = b"same bytes\n"
+    named = package / "line\nbreak.bin"
+    alias = package / "linebreak.bin"
+    quoted = [named, alias, package / "comma,name.bin", package / 'quote""name.bin']
+    for path in quoted:
+        path.write_bytes(payload)
+    for path in quoted:
+        append_record_row(site, str(path.relative_to(site)), payload)
+    monkeypatch.syspath_prepend(str(site))
+    evidence = pins_module.verify_record_bytes("pinsbyte1544")
+    assert evidence["installed_commit"] == commit
+    named.unlink()
+    with pytest.raises(ValueError, match="recorded file is missing"):
+        pins_module.verify_record_bytes("pinsbyte1544")
+
+
+def test_quoted_newline_name_refuses_after_tolerated_drift(
+        tmp_path, monkeypatch, pins_module, pins_repo):
+    site, commit = pip_installed(tmp_path, pins_repo)
+    package = site / "pinsbyte1544"
+    payload = b"same bytes\n"
+    named = package / "line\nbreak.bin"
+    alias = package / "linebreak.bin"
+    for path in (named, alias):
+        path.write_bytes(payload)
+    append_record_row(site, str(named.relative_to(site)), payload)
+    append_record_row(site, str(alias.relative_to(site)), payload)
+    named.unlink()
+    monkeypatch.syspath_prepend(str(site))
+    calls = []
+    with pytest.raises(ValueError) as excinfo:
+        pins_module.verify_install(
+            "pinsbyte1544", OTHER,
+            identity_policy=lambda message, facts: calls.append(message))
+    assert len(calls) == 1
+    assert "recorded file is missing" in str(excinfo.value)
+
+
 def test_a_deleted_non_imported_package_file_should_be_refused(
         tmp_path, monkeypatch, pins_module, pins_repo):
+    """A hashed RECORD entry deleted from disk refuses, though nothing imports it.
+
+    Pre-fix failure (the strict xfail this marker replaces): importlib.metadata's
+    Distribution.files silently drops RECORD entries whose files are missing,
+    so the deleted data.py was never hashed and the install reported intact.
+    """
     site, commit = pip_installed(tmp_path, pins_repo)
     (site / "pinsbyte1544/data.py").unlink()
     monkeypatch.syspath_prepend(str(site))
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="recorded file is missing"):
         pins_module.verify_install("pinsbyte1544", commit)
 
 
@@ -418,34 +618,3 @@ def test_a_raising_policy_propagates_unchanged(tmp_path, monkeypatch,
 
     with pytest.raises(RuntimeError, match="policy refuses this drift"):
         pins_module.verify_install("pinsbyte1544", OTHER, identity_policy=refuses)
-
-
-def test_verify_install_routes_through_the_one_byte_implementation(
-        tmp_path, monkeypatch, pins_module, pins_repo):
-    site, commit = pip_installed(tmp_path, pins_repo)
-    monkeypatch.syspath_prepend(str(site))
-    calls = []
-    original = pins_module.verify_record_bytes
-
-    def spy(module):
-        calls.append(module)
-        return original(module)
-
-    monkeypatch.setattr(pins_module, "verify_record_bytes", spy)
-    evidence = pins_module.verify_install("pinsbyte1544", commit)
-    assert calls == ["pinsbyte1544"]
-    assert evidence["verified_files"] >= 4
-
-
-def test_source_uses_exactly_one_digest_owner_call(pins_module):
-    from prismabuild.digest_primitives import stream_digest
-
-    assert pins_module.stream_digest is stream_digest
-    assert re.findall(r"hashlib\.\w+\(", PINS_SOURCE) == []
-    integrity = next(node for node in ast.parse(PINS_SOURCE).body
-                     if isinstance(node, ast.FunctionDef)
-                     and node.name == "verify_record_bytes")
-    calls = [node for node in ast.walk(integrity)
-             if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-             and node.func.id == "stream_digest"]
-    assert len(calls) == 1

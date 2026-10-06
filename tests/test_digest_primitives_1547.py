@@ -99,8 +99,16 @@ def test_installed_record_hash_and_result_match_main(tmp_path, monkeypatch, algo
     path.write_bytes(b"installed\x00bytes" * 100000)
     expected = base64.urlsafe_b64encode(hashlib.new(algorithm, path.read_bytes()).digest()).rstrip(b"=").decode()
     entry = SimpleNamespace(hash=SimpleNamespace(mode=algorithm, value=expected))
-    dist = SimpleNamespace(files=[entry], locate_file=lambda value: path,
-        read_text=lambda name: json.dumps({"vcs_info": {"vcs": "git", "commit_id": "a" * 40}}))
+    # Main hashes Distribution.files; the new guard reads the owning metadata
+    # path. Keep one real RECORD for both and preserve main's size-agnostic
+    # digest recipe and evidence under all three supported algorithms.
+    metadata_path = tmp_path / "fixture.dist-info"
+    metadata_path.mkdir()
+    record = f"module.py,{algorithm}={expected},100000\n"
+    (metadata_path / "RECORD").write_text(record)
+    dist = SimpleNamespace(files=[entry], _path=metadata_path, locate_file=lambda value: path,
+        read_text=lambda name: record if name == "RECORD" else
+        json.dumps({"vcs_info": {"vcs": "git", "commit_id": "a" * 40}}))
     monkeypatch.setattr(pins.metadata, "packages_distributions", lambda: {"fixture": ["fixture-dist"]})
     monkeypatch.setattr(pins.metadata, "distribution", lambda name: dist)
     monkeypatch.setattr(pins.importlib.util, "find_spec", lambda name:
