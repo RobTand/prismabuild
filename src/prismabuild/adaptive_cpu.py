@@ -22,7 +22,7 @@ import uuid
 
 from . import adaptive_snapshot
 from .storage_tiers import RAM_HOST_MEMORY_PREFIX
-from .control_cpu import attributed_ticks, control_plane_counters
+from .control_cpu import attributed_ticks, born_after_ticks, control_plane_counters
 
 #: A CPU is treated as idle for admission corroboration when it was busy for
 #: at most this fraction of the fresh sampling interval.  Small on purpose: a
@@ -1172,7 +1172,9 @@ class Controller:
                                                 in zip(current['cpus'], deltas)}}
                 raw_busy = {key: busy for key, (busy, _) in zip(current['cpus'], deltas)}
                 prior_threads = previous.get('control_threads', {})
-                control = attributed_ticks(prior_threads, control_before, raw_busy, kind='control')
+                born_after = born_after_ticks(previous.get('sampled_unix'))
+                control = attributed_ticks(prior_threads, control_before, raw_busy, kind='control',
+                                           born_after=born_after)
                 kernel = attributed_ticks(prior_threads, control_before, raw_busy, kind='kernel')
                 irq = _irq_ticks(previous.get('irq_cpus'), current.get('irq_cpus'), raw_busy)
                 # Thread and IRQ accounting need not be disjoint. Their max

@@ -5,6 +5,7 @@ work stays in the raw host reading. Control accounting is cooperative, not a
 security boundary against impersonation. Kernel identity uses Linux flags,
 never a process name, an empty cmdline or a low PID (#1399).
 """
+import os
 from pathlib import Path
 import socket
 
@@ -114,8 +115,35 @@ def control_plane_counters(cpus, *, proc_root=Path('/proc'), runtime_root=RUNTIM
     return result
 
 
-def attributed_ticks(previous, current, busy, *, kind=None):
+def born_after_ticks(previous_unix, *, proc_root=Path('/proc')):
+    """Boot-relative clock ticks after which a process certainly began after ``previous_unix``.
+
+    ``/proc/stat`` gives the boot time in whole seconds, so one second is added:
+    a process this late began after the previous host sample whatever the
+    rounding.  ``None`` when the boot time or the clock rate cannot be read.
+    """
+    try:
+        btime = next(int(line.split()[1])
+                     for line in (proc_root / 'stat').read_text().splitlines()
+                     if line.startswith('btime '))
+        rate = os.sysconf('SC_CLK_TCK')
+    except (OSError, ValueError, StopIteration, IndexError):
+        return None
+    if type(previous_unix) not in (int, float) or previous_unix <= btime or rate <= 0:
+        return None
+    return int((previous_unix - btime) * rate) + rate
+
+
+def attributed_ticks(previous, current, busy, *, kind=None, born_after=None):
     """Credit only stable, non-migrating work within the host interval.
+
+    ``born_after`` (boot-relative clock ticks of the previous host sample,
+    :func:`born_after_ticks`) also credits a control thread that is not in
+    ``previous`` because it was born after that sample: with zero migrations it
+    ran on one CPU for its whole life, all of it inside the interval, so its
+    ticks are control-plane work.  Without it a worker loop spawned between two
+    samples had every start-up tick counted as foreign (#1581).  Kernel threads
+    and anything else unproven stay uncredited.
 
     ``previous`` follows previous host counters; ``current`` precedes current
     host counters. Missing kind in historical records means control, the only
@@ -127,7 +155,16 @@ def attributed_ticks(previous, current, busy, *, kind=None):
         return excluded
     for tid, now in current.items():
         old = previous.get(tid)
-        if not isinstance(old, dict) or not isinstance(now, dict):
+        if not isinstance(now, dict):
+            continue
+        if not isinstance(old, dict):
+            if (born_after is not None and kind in (None, 'control')
+                    and now.get('attribution_kind', 'control') == 'control'
+                    and all(type(now.get(k)) is int and now[k] >= 0
+                            for k in ('start', 'cpu', 'migrations', 'ticks'))
+                    and now['start'] > born_after and now['migrations'] == 0
+                    and str(now['cpu']) in excluded):
+                excluded[str(now['cpu'])] += now['ticks']
             continue
         category = now.get('attribution_kind', 'control')
         if (category not in ('control', 'kernel')
