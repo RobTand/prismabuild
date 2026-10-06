@@ -26,11 +26,11 @@ def verify_record_bytes(module: str) -> dict:
     own: one distribution owning ``module``, a present RECORD, every hashed
     RECORD entry present on disk and matching the bytes there, the module
     Python actually imports owned by that RECORD, and no unrecorded file
-    inside the package. RECORD rows are enumerated raw with the standard
-    library's CSV reader over a newline-preserving stream -- quoted
-    filenames keep their exact bytes, unlike ``Distribution.files`` (and its
-    own ``splitlines``-based reader), which hides entries whose files are
-    missing and mangles names carrying newlines (#1548, #1570 review).
+    inside the package. RECORD is read as UTF-8 bytes from the owning
+    PathDistribution's metadata path, then parsed by the standard library's
+    CSV reader without newline conversion. Quoted filename characters stay
+    intact; Distribution.read_text normalizes carriage returns, and
+    Distribution.files also hides missing entries and splits quoted lines.
     Malformed grammar refuses: a hash-bearing row with no filename, extra
     columns, a nonnumeric size, or a blank row (the size column is parsed,
     never compared). A missing hashed entry refuses here
@@ -54,7 +54,14 @@ def verify_record_bytes(module: str) -> dict:
     observed = vcs.get("commit_id", "<unknown>")
     identity = f"distribution={owners[0]} installed commit={observed}"
 
-    record = dist.read_text("RECORD")
+    # The public read_text API normalizes CR and CRLF before CSV can see them.
+    # PathDistribution uses this metadata path on both Python 3.12 and 3.14;
+    # its pathlib/zipfile paths expose read_bytes without newline conversion.
+    # Do not fall back to lossy text or infer a different metadata directory.
+    try:
+        record = dist._path.joinpath("RECORD").read_bytes().decode("utf-8")
+    except (AttributeError, OSError, KeyError, UnicodeError) as exc:
+        raise ValueError(f"{identity}; installed RECORD is missing or unreadable") from exc
     if not record:
         raise ValueError(f"{identity}; installed RECORD is missing")
     recorded = {}

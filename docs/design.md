@@ -1966,13 +1966,15 @@ under the target interpreter inside the admitted, sealed checkout and must
 print one full lowercase Git commit. The module must have one owning installed
 distribution, non-editable PEP 610 Git provenance at that commit, and intact
 hashed RECORD files: every hashed RECORD entry is present on disk and
-byte-valid. RECORD rows are enumerated raw (#1548) through a
-newline-preserving CSV stream, because
-`importlib.metadata` hides entries whose files are missing from
-`Distribution.files` and reassembles quoted names onto the wrong alias;
-quoted filenames keep their exact bytes, malformed grammar refuses (a
-hash-bearing empty filename, extra columns, a nonnumeric size, a blank row;
-the size column is parsed, never compared), and a deleted package file or
+byte-valid. RECORD is read as UTF-8 bytes from the owning standard-library
+PathDistribution metadata path before newline-preserving CSV parsing (#1548).
+Distribution.read_text normalizes carriage returns and carriage-return-line-feed
+characters before parsing, while Distribution.files also drops missing entries
+and splits quoted lines. Reading or decoding raw RECORD metadata fails closed;
+there is no lossy text fallback or inferred metadata directory. Quoted filenames
+keep their exact characters; malformed grammar refuses (a hash-bearing empty
+filename, extra columns, a nonnumeric size, a blank row; the size column is
+parsed, never compared), and a deleted package file or
 pip's relocated console script
 therefore refuses exactly like corrupted bytes, under the strict
 policy and after tolerated identity drift alike. Python's selected module
@@ -16385,13 +16387,14 @@ File hashing and diagnostic encoding use that same shipped source; pin and
 capability identity checks retain their previous behavior. Composing with #1549
 keeps `pbtest_pins.verify_install` and `verify_record_bytes` separate: the latter
 hashes RECORD bytes through the owner's `stream_digest` with the recorded
-SHA-256, SHA-384 or SHA-512 algorithm. Since #1548 it enumerates the RECORD
-rows raw with the standard library's CSV reader over a newline-preserving
-stream -- quoted filenames keep their exact bytes, and malformed grammar (a
-hash-bearing empty filename, extra columns, a nonnumeric size, a blank row)
-refuses; the size column is parsed, never compared -- rather than the filtered
-`Distribution.files`, whose missing-file filter and `splitlines` reader let a
-deleted recorded file read as an intact install or verify a same-bytes alias:
+SHA-256, SHA-384 or SHA-512 algorithm. Since #1548 it reads UTF-8 bytes from the
+owning PathDistribution metadata path before parsing raw CSV rows without
+newline conversion. The public read_text API loses quoted carriage returns,
+and Distribution.files hides missing entries and splits quoted lines. Missing
+or unreadable raw metadata refuses without falling back to normalized text.
+Quoted filename characters stay intact; malformed grammar (a hash-bearing
+empty filename, extra columns, a nonnumeric size, a blank row) refuses, and
+the size column is parsed, never compared. Thus
 a missing hashed entry refuses the same way as a
 digest mismatch, in both identity policies, and unhashed entries keep their
 previous treatment. Its old primitive baseline site is
