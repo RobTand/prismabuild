@@ -65,8 +65,6 @@
   "hashlib:src/prismabuild/adaptive_cpu.py::record_completion",
   "hashlib:src/prismabuild/container_images.py::content_ref",
   "hashlib:src/prismabuild/decomposition.py::document_sha256",
-  "hashlib:src/prismabuild/local_resident.py::copy_file",
-  "hashlib:src/prismabuild/local_resident.py::hash_file",
   "hashlib:src/prismabuild/movement_actions.py::container_owner",
   "hashlib:src/prismabuild/pool.py::PoolQueue._archive_move_body",
   "hashlib:src/prismabuild/pool.py::PoolQueue._transition_locked",
@@ -101,8 +99,6 @@
   "hashlib:src/prismabuild/reader_lease.py::pin_id_for",
   "hashlib:src/prismabuild/reader_lease.py::ref_id_for",
   "hashlib:src/prismabuild/residency_plan.py::plan_sha256",
-  "hashlib:src/prismabuild/resident_sets.py::ResidentSets.publish",
-  "hashlib:src/prismabuild/resident_sets.py::ResidentSets.read",
   "hashlib:src/prismabuild/resource_scope.py::ResourceScope.recover_create",
   "hashlib:src/prismabuild/resource_scope.py::_sha256_file",
   "hashlib:src/prismabuild/slurm_lane.py::submit",
@@ -195,7 +191,6 @@
   "sorted-json:src/prismabuild/progress.py::_write",
   "sorted-json:src/prismabuild/reader_lease.py::_canonical_pin_body",
   "sorted-json:src/prismabuild/reader_lease.py::_file_release_failure",
-  "sorted-json:src/prismabuild/resident_sets.py::_json",
   "sorted-json:src/prismabuild/resource_scope.py::_atomic_json",
   "sorted-json:src/prismabuild/slurm_lane.py::LivenessMonitor._append",
   "sorted-json:tools/duplication_inventory.py::main",
@@ -204,7 +199,6 @@
   "sorted-json:tools/fleet/bench_tier_cycle_r13.py::main",
   "sorted-json:tools/fleet/deferred_release.py::_report_once",
   "sorted-json:tools/fleet/fleet_membership.py::main",
-  "sorted-json:tools/fleet/local_resident.py::main",
   "sorted-json:tools/fleet/mount_latency.py::append_record",
   "sorted-json:tools/fleet/mount_latency.py::main",
   "sorted-json:tools/fleet/pb_gc.py::write_queue_receipt",
@@ -213,7 +207,6 @@
   "sorted-json:tools/fleet/pbcanary_legs/common.py::canonical_json",
   "sorted-json:tools/fleet/pbmcp.py::_content",
   "sorted-json:tools/fleet/pbmetrics.py::_refusal_record",
-  "sorted-json:tools/fleet/pbresident.py::main",
   "sorted-json:tools/fleet/pbrun.py::_bounded_pool_read",
   "sorted-json:tools/fleet/pbrun.py::await_outcome",
   "sorted-json:tools/fleet/pbrun.py::bounded_offer_snapshot",
@@ -420,10 +413,6 @@
    "src/prismabuild/pool.py",
    "tools/fleet/tier_loop.py"
   ],
-  "_json": [
-   "src/prismabuild/checkout_recovery.py",
-   "src/prismabuild/resident_sets.py"
-  ],
   "_keepable_version": [
    "src/prismabuild/produced_output.py",
    "tools/fleet/stage_move.py"
@@ -439,10 +428,6 @@
    "src/prismabuild/residency_map.py",
    "tools/fleet/tier_loop.py"
   ],
-  "_live_rows": [
-   "src/prismabuild/local_resident.py",
-   "src/prismabuild/produced_spool.py"
-  ],
   "_matches": [
    "src/prismabuild/produced_spool.py",
    "tools/fleet/pbmcp.py"
@@ -453,8 +438,7 @@
   ],
   "_name": [
    "src/prismabuild/action_edges.py",
-   "src/prismabuild/produced_output.py",
-   "src/prismabuild/resident_sets.py"
+   "src/prismabuild/produced_output.py"
   ],
   "_nonnegative_integer": [
    "src/prismabuild/core.py",
@@ -573,10 +557,6 @@
    "src/prismabuild/produced_spool.py",
    "src/prismabuild/progress.py"
   ],
-  "adopt": [
-   "src/prismabuild/local_resident.py",
-   "tools/fleet/tier_loop.py"
-  ],
   "analyze": [
    "tools/fleet/bench_ram_promote_restart.py",
    "tools/fleet/bench_stage_adopt.py",
@@ -627,17 +607,12 @@
    "tools/fleet/pbrun.py"
   ],
   "cycle": [
-   "tools/fleet/local_tier_loop.py",
    "tools/fleet/prewarm_loop.py",
    "tools/fleet/tier_loop.py"
   ],
   "digest": [
    "tools/fleet/qualify_claim_recovery.py",
    "tools/fleet/upgrade_client.py"
-  ],
-  "evict": [
-   "src/prismabuild/local_resident.py",
-   "tools/fleet/stage_release.py"
   ],
   "load": [
    "src/prismabuild/publication_canary.py",
@@ -651,10 +626,6 @@
   "manifest_read_entries": [
    "src/prismabuild/storage_tiers.py",
    "tools/fleet/prewarm_loop.py"
-  ],
-  "mint": [
-   "src/prismabuild/local_tier.py",
-   "src/prismabuild/publication_canary.py"
   ],
   "mint_generation": [
    "src/prismabuild/produced_output.py",
@@ -743,10 +714,6 @@
    "src/prismabuild/slurm_lane.py",
    "tools/fleet/pb_gc.py",
    "tools/fleet/stage_release.py"
-  ],
-  "tier_id": [
-   "src/prismabuild/local_tier.py",
-   "src/prismabuild/storage_tiers.py"
   ],
   "validate_plan": [
    "src/prismabuild/decomposition.py",
