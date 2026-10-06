@@ -443,3 +443,35 @@ def test_a_planner_row_member_is_gated_like_an_explicit_one(gang_fleet,
     assert claimed["residency_verdict"]["state"] == "resident"
     environment = queue.launch_environment(claimed)
     assert environment[pb.RESIDENCY_MAP_ENV] == str(queue.residency_map_path(first))
+
+
+def test_a_drained_host_still_admits_the_lead_its_gang_waits_on(gang_fleet, monkeypatch, tmp_path):
+    """The one cycle a pure drain has: a member waits for a lead that the drain would forbid.
+
+    Real claims.  The gang has waited past ``GANG_DRAIN_AFTER_S``, so sparky
+    admits no new equal-priority work -- but the lead named in the waiting
+    member's residency block is a GPU row without a residency range, published
+    after the gang, and must still be admitted; an unrelated older GPU single
+    is drained.
+    """
+    from prismabuild import _measurement_reservation as reservation
+    queue, clock, publish, finish, gclaim, denial, members = gang_fleet
+    lead = _hexkey("gpu-lead")
+    group, (first, second) = members("lead-exempt", priority=-10,
+                                     residency=_consumer_block([lead]))
+    queue.mint_tier_capacity(TIER, {"stage_gib": 8})
+    assert gclaim("sparklina") is None
+    assert gclaim("sparky") is None
+    assert denial(second, "sparky")["reason"] == "gang_waiting_for_peers"
+    clock[0] += reservation.GANG_DRAIN_AFTER_S + 1
+    unrelated = publish("unrelated-gpu", priority=-10, timeout_s=None,
+                        cpu=1, gpu=1, mem_gb=8, tags=["sparky"])
+    clock[0] += 0.001
+    queue.publish(action_key=lead, cas_root=str(queue.root / "cas"),
+                  checkout_root=str(queue.root / "co"),
+                  worker_script=str(queue.root / "worker.py"),
+                  resources={"cpu": 1, "gpu": 1, "mem_gb": 8}, needs_gpu=True,
+                  priority=-10, max_attempts=1, retry_safe=False, tags=["sparky"])
+    assert gclaim("sparky") == lead, denial(lead, "sparky")
+    assert denial(unrelated, "sparky")["reason"] in (
+        "deferred_for_gang_reservation", "deferred_behind_withheld_row"), denial(unrelated, "sparky")
