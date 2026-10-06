@@ -63,7 +63,7 @@ def test_descriptor_write_cannot_resurrect_an_evicted_copy(tmp_path, monkeypatch
                          or "movement_rows" in value or "adoption_row" in value)
         if is_descriptor and not interleaved:
             interleaved.append(True)
-            assert local_resident.evict(store, set_id, "test-host", spec, now=201)["state"] == "absent"
+            assert local_resident.evict_resident_copy(store, set_id, "test-host", spec, now=201)["state"] == "absent"
         return original_write(path, value)
 
     monkeypatch.setattr(resident_sets, "write_record", evict_before_descriptor_write)
@@ -91,7 +91,7 @@ def test_eviction_state_write_cannot_drop_new_descriptors(tmp_path, monkeypatch,
         return original_write(path, value)
 
     monkeypatch.setattr(resident_sets, "write_record", publish_before_absent_write)
-    assert local_resident.evict(store, set_id, "test-host", spec, now=201)["state"] == "absent"
+    assert local_resident.evict_resident_copy(store, set_id, "test-host", spec, now=201)["state"] == "absent"
     assert publication
     assert publication[0]["action_key"] in _referenced_action_keys(store, set_id), "final state write must not drop concurrently published descriptors"
     assert store.read_copy(set_id, "test-host")["state"] == "absent"

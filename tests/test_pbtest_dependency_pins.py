@@ -1,6 +1,7 @@
 """A fleet shard must not run against a different reviewed dependency commit."""
 from __future__ import annotations
 
+import ast
 import importlib.util
 import base64
 import hashlib
@@ -436,5 +437,15 @@ def test_verify_install_routes_through_the_one_byte_implementation(
     assert evidence["verified_files"] >= 4
 
 
-def test_source_has_exactly_one_digest_construction():
-    assert re.findall(r"hashlib\.\w+\(", PINS_SOURCE) == ["hashlib.new("]
+def test_source_uses_exactly_one_digest_owner_call(pins_module):
+    from prismabuild.digest_primitives import stream_digest
+
+    assert pins_module.stream_digest is stream_digest
+    assert re.findall(r"hashlib\.\w+\(", PINS_SOURCE) == []
+    integrity = next(node for node in ast.parse(PINS_SOURCE).body
+                     if isinstance(node, ast.FunctionDef)
+                     and node.name == "verify_record_bytes")
+    calls = [node for node in ast.walk(integrity)
+             if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+             and node.func.id == "stream_digest"]
+    assert len(calls) == 1

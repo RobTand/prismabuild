@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
 """The admitted host-local resident movement payload (copy or egress)."""
 import argparse
-import json
 from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from runtime_paths import generation_root
 sys.path.insert(0, str(generation_root(__file__) / "src"))
-from prismabuild import local_resident, reader_lease, resident_sets
+from prismabuild import core, local_resident, reader_lease, resident_sets
 
 
 def main(argv=None):
@@ -29,10 +28,10 @@ def main(argv=None):
     elif args.operation == "adopt":
         if args.source is None:
             parser.error("adoption requires --source")
-        result = local_resident.adopt(store, args.set_id, args.host, spec, args.source)
+        result = local_resident.adopt_resident_copy(store, args.set_id, args.host, spec, args.source)
     else:
-        result = local_resident.evict(store, args.set_id, args.host, spec)
-    print(json.dumps(result, sort_keys=True))
+        result = local_resident.evict_resident_copy(store, args.set_id, args.host, spec)
+    print(core.sorted_json(result))
     return 0
 
 

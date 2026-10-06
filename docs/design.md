@@ -1521,6 +1521,10 @@ byte-for-byte over sealed non-symlink files
 (the `supervise._proven_roots` / `_published_generation` and
 `publish_runtime._barrier_generation` rule); anything else refuses
 rather than executing an untrusted proxy outside the contained slice.
+Post-split receipts also name `src/prismabuild/digest_primitives.py`; its bytes
+receive the same manifest-digest proof before the retained proxy is launched.
+The check is conditional on the receipt listing the member, so pre-split
+generations retain their existing verified import closure without that file.
 Dev stubs and missing shapes keep the current-runtime proxy.
 `run_local_action` forwards exactly
 these three from the launcher environment through the residency
@@ -2496,11 +2500,13 @@ miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
   NVIDIA workers additionally require the CUDA capability and driver fields.
 - The worker implementation is a separate closed
   `prismaquant.prismabuild.worker_runtime.v1` object. It binds the exact
-  `prismaquant/prismabuild.py` source snapshot taken once while that module
-  initializes. Canonical JSON and SHA-256 are implemented in that same file,
-  so the receipt-digest implementation does not escape into an unrecorded
-  repository import. The live core file must still match the load-time
-  snapshot at preflight, after task execution, and at publication. For the
+  `src/prismabuild/core.py` snapshot taken during module initialization and,
+  since #1547, its standard-library digest half `digest_primitives.py` in the
+  `digest_primitives` field. Canonical JSON and SHA-256 therefore live in the
+  two recorded owner files rather than an unrecorded repository import. Both
+  files must match their load-time snapshots at preflight, after task execution
+  and at publication. Retained pre-split v1 receipts keep their original body;
+  no new owner identity is invented for historical executions. For the
   SLURM path, `tools/prismabuild_worker.py` snapshots its own source at the
   earliest executed wrapper code, before importing the core, and passes that
   identity into preflight. The launcher is checked there and at the same two
@@ -6923,7 +6929,7 @@ within10% and an hour without pswpout growth remain owed; full #1032 is open.
 Related inventory repairs (Refs #1182/#1386) publish the existing nested scratch
 recorder and register exact, genuinely different helper contracts without growing
 shrink baselines. Scratch qualification still binds the exact
-`tools/fleet/local_scratch_profile.py` command and its three source files. The
+`tools/fleet/local_scratch_profile.py` command and its four source files. The
 publisher's flat copy supplies inventory bytes, not an executable recorder alias;
 no producer bytes, command identity or qualification rules change.
 
@@ -15943,9 +15949,10 @@ operator configuration and CAS boundary; it is not cryptographic CPython
 provenance or authentication of arbitrary Python-like binaries/hostile CAS.
 Legacy stdout-only records and missing inode/envelope facts refuse; no silent
 migration or manufactured defaults. It uses the existing CAS checkout materializer and
-closure verifier to prove the executed snapshot's three producer files
+closure verifier to prove the executed snapshot's four producer files
 (`tools/fleet/local_scratch_profile.py`, `src/prismabuild/local_scratch.py`,
-`src/prismabuild/core.py`) match the installed producer and verifies the derived
+`src/prismabuild/core.py`, `src/prismabuild/digest_primitives.py`) match the
+installed producer and verifies the derived
 owner/marker against original sealed checkout identity. The isolated -I -S
 producer depends only on stdlib and those verified files. Normal package mode
 imports Core's recipes; isolated mode loads only sibling `core.py` derived from
@@ -15955,7 +15962,7 @@ BODY+LF writer without loading Core again. Core owns raw source-byte SHA-256,
 the fixed SHAKE-256 block recipe (positive integer length only), and positive
 finite validation; the scratch predicate discards normalization so accepted
 int/float observations retain their original types. Core's self-source capture
-runs at startup, outside I/O timing. All three installed/materialized file
+runs at startup, outside I/O timing. All four installed/materialized file
 identities remain in verification and its cache key. This recipe Core identity
 is not the receipt's worker-launcher Core identity, and does not require
 producer/consumer interpreter-byte equality. Full-Core binding means even
@@ -16328,16 +16335,48 @@ partial log. This changes newly sealed capture argv identities; retained sealed
 requests and receipts remain immutable and can be recovered as sealed. No system
 tool, fleet runtime, active queue, placement or result-population policy changes.
 
-Core also owns the default sorted JSON byte profile used by retained-reader
-diagnostics and merge-queue duration hints (#1386). `_sorted_json_bytes` accepts
-the original JSON values, including list reports, with default spacing, ASCII
-escaping and nonfinite-number behavior and no trailing LF. `_sorted_lf_bytes`
+Core's attested `digest_primitives.py` half owns the default sorted JSON profile used by retained-reader
+diagnostics, resident command output and merge-queue duration hints (#1386, #1547).
+`sorted_json` returns the shared text spelling; `_sorted_json_bytes` encodes it with
+default spacing, ASCII escaping and the original nonfinite-number behavior,
+including list reports, and no trailing LF. `_sorted_lf_bytes`
 keeps its mapping conversion and appends one LF. The hint filename hashes those
 exact prior bytes through `raw_sha256`; canonical finite JSON is a different
 profile. Reader ownership, retained-child messages and scheduling hints keep
 their existing contracts. Exact reader facade/name distinctions are registered
 without growing the shrink-only maps; no runtime adoption or staged-read
 acceptance axis advances from this source repair.
+
+For the duplication-ratchet repair (#1547), `chunks_sha256` hashes ordered
+stream/manifest chunks without joining them or reopening the held stream.
+The recovery JSON diagnostics select `_sorted_json_bytes(..., allow_nan=False)`
+where their previous writer already refused nonfinite values; the default
+remains unchanged. Rollout qualification uses `_compact_ascii_lf_bytes` for
+its existing compact ASCII line spelling. Helper collision renames change no
+validation, identity or byte-integrity rule.
+Resident-set manifest IDs and durable records use `compact_ascii_json_bytes`:
+finite compact sorted JSON with ASCII escapes and no terminator, not the
+canonical UTF-8 profile. Record and lease writers append their original one LF.
+The same owner exposes `new_sha256` as the native SHA-256 constructor, not a
+wrapper. Local resident copying and hashing keep the held no-follow descriptors,
+regular-file checks, single 8 MiB read pass, byte counts and original fsync order.
+Purpose-specific resident helper names replace their colliding names at every
+caller; command flags, leases, capacity and atomic publication remain unchanged.
+The owner split is approved by CEO decisions `dec-1005-170450-5ec5` and
+`rep-1005-170658-9efc`: exactly two attested owner files, no third file or raw-site
+exemption. Core re-exports the identical helper and exception objects. pbtest's
+existing source loader binds the shipped half under the private shard-only
+`_prismabuild_pbtest_digest_primitives` name. Its helper-scoped import binding
+serves the target helpers without occupying `prismabuild.digest_primitives` in
+the package import table, so a later real package/core import loads and attests
+the on-disk owner. Package installation is not required by the target helpers.
+File hashing and diagnostic encoding use that same shipped source; pin and
+capability identity checks retain their previous behavior. Composing with #1549
+keeps `pbtest_pins.verify_install` and `verify_record_bytes` separate: the latter
+hashes RECORD bytes through the owner's `stream_digest` with the recorded
+SHA-256, SHA-384 or SHA-512 algorithm. Its old primitive baseline site is
+removed, not renamed. This is a source repair, not a claim that the new runtime
+has been deployed.
 
 
 Repeated failed merge candidates bind a separate negative identity (#1450):

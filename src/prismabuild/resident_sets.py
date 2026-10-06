@@ -6,7 +6,6 @@ copy records describe each host, never an action admission requirement.
 from __future__ import annotations
 
 from collections.abc import Mapping
-import hashlib
 import json
 import math
 import os
@@ -26,7 +25,7 @@ DEFAULT_RENEWAL_CEILING_S = 14 * 24 * 60 * 60
 COPY_STATES = frozenset({"absent", "copying", "resident", "evicting"})
 
 
-def _name(value, where):
+def _resident_name(value, where):
     if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", value):
         raise ValueError(f"{where} must be a safe nonempty name")
     return value
@@ -37,9 +36,6 @@ def _set_id(value):
         raise ValueError("set_id must be a sha256 digest")
     return value
 
-
-def _json(value):
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
 
 
 def fsync_directory(path):
@@ -57,7 +53,7 @@ def write_record(path, value):
     fd, tmp = tempfile.mkstemp(prefix="." + path.name, dir=path.parent)
     try:
         with os.fdopen(fd, "wb") as stream:
-            stream.write(_json(value) + b"\n")
+            stream.write(core.compact_ascii_json_bytes(value) + b"\n")
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(tmp, path)
@@ -78,7 +74,7 @@ def validate_lease(value, *, now):
         if type(until) not in (int, float) or not math.isfinite(until) or not now < until <= maximum:
             raise ValueError("lease until must be in the future and no later than hard_max")
     else:
-        _name(out["campaign"], "campaign")
+        _resident_name(out["campaign"], "campaign")
     return out
 
 
@@ -136,7 +132,7 @@ def read_policy(path):
         raise ValueError("invalid local_tier_policy")
     policy["renewal_ceiling_s"] = _renewal_ceiling(policy.get("renewal_ceiling_s", DEFAULT_RENEWAL_CEILING_S))
     for host, spec in policy["hosts"].items():
-        _name(host, "host")
+        _resident_name(host, "host")
         if not isinstance(spec, dict) or set(spec) != {"root", "maximum_gib", "floor_fraction", "docker_allowance_gib"}:
             raise ValueError("local tier host policy requires root, maximum, floor and docker allowance")
         if not isinstance(spec["root"], str) or not Path(spec["root"]).is_absolute() or Path(spec["root"]) == Path("/"):
@@ -158,10 +154,10 @@ class ResidentSets:
         return self.root / _set_id(set_id) / "body.json"
 
     def copy_path(self, set_id, host):
-        return self.set_path(set_id).parent / "copies" / (_name(host, "host") + ".json")
+        return self.set_path(set_id).parent / "copies" / (_resident_name(host, "host") + ".json")
 
     def movement_path(self, set_id, host):
-        return self.set_path(set_id).parent / "movements" / (_name(host, "host") + ".json")
+        return self.set_path(set_id).parent / "movements" / (_resident_name(host, "host") + ".json")
 
     def read_movements(self, set_id, host):
         try:
@@ -203,7 +199,7 @@ class ResidentSets:
         record = json.loads(self.set_path(set_id).read_text())
         if record.get("schema") != SET_SCHEMA or record.get("set_id") != set_id or record.get("immutable") is not True:
             raise ValueError("invalid resident set body")
-        if hashlib.sha256(_json(record["manifest"])).hexdigest() != set_id:
+        if core.raw_sha256(core.compact_ascii_json_bytes(record["manifest"])) != set_id:
             raise ValueError("resident set manifest digest mismatch")
         return record
 
@@ -211,7 +207,7 @@ class ResidentSets:
         row = {**row, "manifest_sha256": set_id}
         path = self.set_path(set_id).parent / "lease.jsonl"
         with path.open("ab") as stream:
-            stream.write(_json(row) + b"\n")
+            stream.write(core.compact_ascii_json_bytes(row) + b"\n")
             stream.flush()
             os.fsync(stream.fileno())
         fsync_directory(path.parent)
@@ -222,10 +218,10 @@ class ResidentSets:
         lease = validate_lease(lease, now=now)
         if not isinstance(hosts, list) or not hosts or len(set(hosts)) != len(hosts):
             raise ValueError("hosts must be a nonempty unique list")
-        hosts = sorted(_name(host, "host") for host in hosts)
+        hosts = sorted(_resident_name(host, "host") for host in hosts)
         if not isinstance(created_by, str) or not created_by.strip():
             raise ValueError("created_by is required")
-        set_id = hashlib.sha256(_json(manifest)).hexdigest()
+        set_id = core.raw_sha256(core.compact_ascii_json_bytes(manifest))
         record = {"schema": SET_SCHEMA, "set_id": set_id, "manifest": manifest,
                   "canonical_root": canonical_root, "hosts": hosts, "lease": lease,
                   "immutable": True, "created_by": created_by, "created_unix": now}
@@ -240,7 +236,7 @@ class ResidentSets:
             queue = pool.PoolQueue(self.queue_root)
             acquired = local_tier.reserve(queue, set_id, hosts, manifest["total_bytes"])
             try:
-                core._atomic_publish(path, _json(record) + b"\n")
+                core._atomic_publish(path, core.compact_ascii_json_bytes(record) + b"\n")
                 self._append_lease(set_id, {"event": "published", "lease": lease, "unix": now, "by": created_by})
                 for host in hosts:
                     self.write_copy(set_id, host, {"state": "absent", "local_root": None,

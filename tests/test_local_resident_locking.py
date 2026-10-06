@@ -28,7 +28,7 @@ with posix_lock.held(lock):
     print('held', flush=True)
     if sys.stdin.readline().strip() != 'go':
         raise SystemExit('caller did not enter its mover-lock acquire')
-    result = local_resident.evict(store, set_id, host, spec, now=201)
+    result = local_resident.evict_resident_copy(store, set_id, host, spec, now=201)
     print('evicted ' + result['state'], flush=True)
 """
 
@@ -114,7 +114,7 @@ def _live_lease_race(tmp_path, monkeypatch, operation, *, mutation=False,
         source.mkdir()
         (source / "weights").write_bytes(b"weights")
         source_inode = (source / "weights").stat().st_ino
-    function = getattr(local_resident, operation)
+    function = local_resident.copy if operation == "copy" else local_resident.adopt_resident_copy
     if mutation:
         function = _reserve_before_lock(function)
     if lease_mutation:
@@ -256,7 +256,7 @@ def test_adopt_refuses_an_expired_lease_and_keeps_the_source(tmp_path):
     source.mkdir()
     (source / "weights").write_bytes(b"weights")
     with pytest.raises(ValueError, match="resident lease expired"):
-        local_resident.adopt(store, record["set_id"], "test-host", spec, source)
+        local_resident.adopt_resident_copy(store, record["set_id"], "test-host", spec, source)
     assert (source / "weights").read_bytes() == b"weights"
     assert not Path(spec["root"]).joinpath(record["set_id"]).exists()
     assert store.read_copy(record["set_id"], "test-host")["state"] == "absent"
@@ -286,7 +286,7 @@ def _pin_protection(store, set_id, spec, monkeypatch):
 
     with monkeypatch.context() as patch:
         patch.setattr(local_resident, "_pinned", observe)
-        result = local_resident.evict(store, set_id, "test-host", spec, now=201)
+        result = local_resident.evict_resident_copy(store, set_id, "test-host", spec, now=201)
     assert result["reason"] == "pinned"
     assert checked
     assert store.read_copy(set_id, "test-host")["state"] == "resident", "pinned copy must stay resident"
@@ -320,7 +320,7 @@ def test_reordering_the_pin_check_fails_the_protection_test(tmp_path, monkeypatc
                 return {"state": "evicting", "reason": "pinned"}
 
     with monkeypatch.context() as patch:
-        patch.setattr(local_resident, "evict", mutant)
+        patch.setattr(local_resident, "evict_resident_copy", mutant)
         with pytest.raises(AssertionError, match="pinned copy must stay resident"):
             _pin_protection(store, set_id, spec, patch)
 

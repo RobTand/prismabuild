@@ -17,12 +17,6 @@ FLEET = Path(__file__).resolve().parents[1] / "tools/fleet"
 sys.path.insert(0, str(FLEET))
 import pbtest  # noqa: E402
 
-DRIVER = """\
-import sys
-sys.path.insert(0, {fleet!r})
-import pbtest_outcomes
-raise SystemExit(pbtest_outcomes.main({argv!r}))
-"""
 
 
 def test_shared_helper_skips_are_both_reconciled(tmp_path):
@@ -42,7 +36,7 @@ def test_shared_helper_skips_are_both_reconciled(tmp_path):
     argv = ["-q", "-p", "no:cacheprovider", "-n", "2",
             "--import-mode=prepend", *files]
     proc = subprocess.run(
-        [sys.executable, "-c", DRIVER.format(fleet=str(FLEET), argv=argv)],
+        [*pbtest.shard_entry(sys.executable, tmp_path), *argv],
         cwd=tmp_path, capture_output=True, text=True, timeout=180)
     lines = [ln for ln in proc.stdout.splitlines()
              if ln.startswith("pbtest-outcomes: ")]

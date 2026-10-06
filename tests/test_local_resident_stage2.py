@@ -91,15 +91,15 @@ def test_one_failing_set_does_not_block_the_others(tmp_path, monkeypatch, fault)
 
         monkeypatch.setattr(local_resident.shutil, "rmtree", fail_bad_delete)
     minted = []
-    original_mint = local_tier.mint
+    original_mint = local_tier.mint_local_tier_capacity
 
     def observe_mint(*args, **kwargs):
         minted.append(True)
         return original_mint(*args, **kwargs)
 
-    monkeypatch.setattr(local_tier, "mint", observe_mint)
+    monkeypatch.setattr(local_tier, "mint_local_tier_capacity", observe_mint)
     queue = pool.PoolQueue(store.queue_root)
-    result = local_tier_loop.cycle(queue, "test-host", {"hosts": {"test-host": spec}})
+    result = local_tier_loop.local_tier_cycle(queue, "test-host", {"hosts": {"test-host": spec}})
     rows = {row["set_id"]: row for row in result["lease_pass"]}
     assert rows[good["set_id"]]["state"] == "absent"
     assert rows[bad["set_id"]]["error"]
@@ -117,7 +117,7 @@ def test_one_failing_set_does_not_block_the_others(tmp_path, monkeypatch, fault)
         store.write_copy(bad["set_id"], "test-host", saved_bad)
     else:
         monkeypatch.setattr(local_resident.shutil, "rmtree", original_delete)
-    local_tier_loop.cycle(queue, "test-host", {"hosts": {"test-host": spec}})
+    local_tier_loop.local_tier_cycle(queue, "test-host", {"hosts": {"test-host": spec}})
     assert store.read_copy(bad["set_id"], "test-host")["state"] == "absent"
     assert ledger.holder_tokens(bad["set_id"]) == {}
     assert not error_path.exists()
@@ -146,7 +146,7 @@ def test_role_reports_a_cycle_error_instead_of_crashing(tmp_path, monkeypatch, c
         signal.raise_signal(signal.SIGTERM)  # Main's handler requests its own cooperative stop.
         return {"capacity": {}, "lease_pass": []}
 
-    monkeypatch.setattr(local_tier_loop, "cycle", cycle)
+    monkeypatch.setattr(local_tier_loop, "local_tier_cycle", cycle)
     options = ["--pool-root", str(tmp_path / "queue"), "--policy", str(policy), "--interval-s", "0.001"]
     if once:
         options += ["--once"]

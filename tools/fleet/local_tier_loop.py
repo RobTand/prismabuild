@@ -15,16 +15,16 @@ from prismabuild import local_tier, pool, resident_sets
 import worker_loop as runtime_gate
 
 
-def cycle(queue, host, policy):
+def local_tier_cycle(queue, host, policy):
     spec = policy["hosts"].get(host)
     if spec is None:
-        return queue.mint_tier_capacity(local_tier.tier_id(host), {local_tier.KIND: 0})
+        return queue.mint_tier_capacity(local_tier.local_resident_tier_id(host), {local_tier.KIND: 0})
     from prismabuild import local_resident
     lease_results = local_resident.lease_pass(resident_sets.ResidentSets(queue.root), host, spec)
     # Remaining trees and retained holders are still counted by the minter.
-    result = local_tier.mint(queue, host, spec)
+    result = local_tier.mint_local_tier_capacity(queue, host, spec)
     result["lease_pass"] = lease_results
-    queue.announce_tier({"tier_id": local_tier.tier_id(host), "tier": "local",
+    queue.announce_tier({"tier_id": local_tier.local_resident_tier_id(host), "tier": "local",
         "host": host, "mountpoint": spec["root"], "capacity_bytes": result["wanted_gib"] * local_tier.GIB,
         "mover_python": sys.executable, "mover_tools_root": str(Path(__file__).resolve().parent)})
     return result
@@ -58,7 +58,7 @@ def main(argv=None):
                     try:
                         queue = pool.PoolQueue(args.pool_root)
                         queue.ensure_layout()
-                        result = cycle(queue, socket.gethostname(), resident_sets.read_policy(args.policy))
+                        result = local_tier_cycle(queue, socket.gethostname(), resident_sets.read_policy(args.policy))
                     except Exception as error:
                         print(json.dumps({"event": "localtier-cycle-error",
                             "host": socket.gethostname(), "error": f"{type(error).__name__}: {error}"}), flush=True)

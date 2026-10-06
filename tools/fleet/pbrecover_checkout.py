@@ -7,7 +7,6 @@ install privileged source, or discover candidates. Keep the host quiescent.
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
 import sys
 
@@ -20,12 +19,12 @@ from prismabuild import core as pb, pool, checkout_recovery as recovery  # noqa:
 
 class _JSONParser(argparse.ArgumentParser):
     def error(self, message):
-        print(json.dumps(dict(schema=recovery.RESULT_SCHEMA, complete=False,
-                              status='refused', errors=[message], removed=[]), sort_keys=True))
+        print(pb._sorted_json_bytes(dict(schema=recovery.RESULT_SCHEMA, complete=False,
+                                        status="refused", errors=[message], removed=[])).decode("utf-8"))
         raise SystemExit(2)
 
 
-def _read(path: Path):
+def _pbrecover_checkout_read(path: Path):
     return pb._decode_strict_json(pb._read_regular_file_nofollow(
         path.absolute(), where='checkout recovery CLI JSON',
         max_bytes=recovery.MAX_JSON_BYTES), where='checkout recovery CLI JSON')
@@ -52,15 +51,15 @@ def main() -> int:
         parser.error('planning requires --candidates, without apply/plan/SHA flags')
     try:
         # This no-follow check precedes PoolQueue construction and all locks.
-        recovery._directory(recovery._path(args.queue_root, 'queue root'), 'existing queue root')
+        recovery._directory(recovery._checkout_recovery_path(args.queue_root, "queue root"), "existing queue root")
         queue = pool.PoolQueue(args.queue_root)
         if args.apply:
-            plan = _read(args.plan)
+            plan = _pbrecover_checkout_read(args.plan)
             result = recovery.apply_checkout_recovery(queue, plan,
                 expected_plan_sha256=args.plan_sha256, bank_root=args.bank_root,
                 maintenance_owner=args.maintenance_owner)
         else:
-            plan = recovery.prepare_checkout_recovery(queue, _read(args.candidates),
+            plan = recovery.prepare_checkout_recovery(queue, _pbrecover_checkout_read(args.candidates),
                 bank_root=args.bank_root, maintenance_owner=args.maintenance_owner)
             if plan.get('complete') is True:
                 result = dict(schema=recovery.RESULT_SCHEMA, complete=True, status='planned',
@@ -70,7 +69,7 @@ def main() -> int:
                 result = plan
     except Exception as exc:  # CLI emits refusal JSON even for unexpected read failures.
         result = recovery._failure(exc)
-    print(json.dumps(result, sort_keys=True, allow_nan=False))
+    print(pb._sorted_json_bytes(result, allow_nan=False).decode("utf-8"))
     return 0 if result.get('complete') is True else 2
 
 

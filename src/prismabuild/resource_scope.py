@@ -347,7 +347,9 @@ _PROXY_DEPENDENCIES = ("resource_broker.py", "runtime_paths.py")
 # resource_exec.main imports resource_scope through the package before it
 # asks the broker to enter containment. __init__ eagerly imports core,
 # progress and residency_map; the latter imports storage_tiers. Their bytes
-# therefore need the same publication proof as the executable proxy.
+# need the same publication proof as the executable proxy. Post-split core
+# also imports digest_primitives; verify it when the receipt lists it,
+# retaining the existing closure for pre-split generations without that file.
 _PROXY_PACKAGE_DEPENDENCIES = (
     "__init__.py", "resource_scope.py", "core.py", "progress.py",
     "residency_map.py", "storage_tiers.py",
@@ -566,6 +568,9 @@ class ResourceScope:
         for dependency in _PROXY_PACKAGE_DEPENDENCIES:
             self._verified_member(
                 root, f"src/prismabuild/{dependency}", files)
+        digest_owner_rel = "src/prismabuild/digest_primitives.py"
+        if digest_owner_rel in files:
+            self._verified_member(root, digest_owner_rel, files)
         for proxy_rel in _PROXY_CANDIDATES:
             if proxy_rel not in files:
                 continue  # this layout does not carry that spelling

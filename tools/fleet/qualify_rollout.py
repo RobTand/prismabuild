@@ -24,6 +24,11 @@ import sys
 import time
 import uuid
 
+sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
+from runtime_paths import generation_root  # noqa: E402
+sys.path.insert(0, str(generation_root(__file__) / "src"))
+from prismabuild import core as pb  # noqa: E402
+
 
 QUALIFICATION_ROOT = Path("/mnt/shared/pb-qualification")
 SCENARIOS = ("success", "missing", "rollback", "swap-crash")
@@ -31,9 +36,8 @@ THREAD_ENV = {"OMP_NUM_THREADS": "1", "MKL_NUM_THREADS": "1",
               "OPENBLAS_NUM_THREADS": "1"}
 
 
-def canonical(value):
-    return (json.dumps(value, sort_keys=True, separators=(",", ":"),
-                       ensure_ascii=True) + "\n").encode("ascii")
+def _qualify_rollout_canonical(value):
+    return pb._compact_ascii_lf_bytes(value)
 
 
 def sha256(data):
@@ -66,7 +70,7 @@ def write_once(path, data):
 def event(root, name, **value):
     record = {"schema": "prismabuild.rollout_qualification.event.v1",
               "name": name, "posted_unix": time.time(), **value}
-    write_once(Path(root) / "events" / (name + ".json"), canonical(record))
+    write_once(Path(root) / "events" / (name + ".json"), _qualify_rollout_canonical(record))
     return record
 
 
@@ -135,7 +139,7 @@ def build_generation(root, name, source, upgrade, hosts, *, changed_member=None)
         destination = generation / member
         destination.parent.mkdir(parents=True, exist_ok=True)
         if member == "tools/fleet/fleet_boxes.json":
-            data = canonical({"boxes": {host: {"roles": ["qualification"]}
+            data = _qualify_rollout_canonical({"boxes": {host: {"roles": ["qualification"]}
                                          for host in hosts}})
         else:
             source_member = source / member
@@ -151,7 +155,7 @@ def build_generation(root, name, source, upgrade, hosts, *, changed_member=None)
                "commit": "4" * 40, "dirty": True, "generation": name,
                "published_unix": time.time(), "published_by": socket.gethostname(),
                "rollout": "barrier", "files": files}
-    (generation / "RUNTIME_VERSION.json").write_bytes(canonical(receipt))
+    (generation / "RUNTIME_VERSION.json").write_bytes(_qualify_rollout_canonical(receipt))
     (generation / "RUNTIME_VERSION.json").chmod(0o444)
     readonly_tree(generation)
     return generation, receipt
@@ -176,7 +180,7 @@ class FakeBroker:
 
     def _write_gate(self):
         self.gate.parent.mkdir(parents=True, exist_ok=True)
-        self.gate.write_bytes(canonical({"draining": self.draining,
+        self.gate.write_bytes(_qualify_rollout_canonical({"draining": self.draining,
                                          "changed_unix": self.changed or time.time(),
                                          "owner": self.owner}))
         self._park_processes()
@@ -271,7 +275,7 @@ def actor_ready(root, role, cgroup):
     value = {"schema": "prismabuild.rollout_qualification.ready.v1", "role": role,
              "host": host, "container_owner": os.environ["PRISMABUILD_CONTAINER_OWNER"],
              "cgroup": cgroup, "source_sha256": sha256(Path(__file__).read_bytes())}
-    write_once(Path(root) / "ready" / (role + ".json"), canonical(value))
+    write_once(Path(root) / "ready" / (role + ".json"), _qualify_rollout_canonical(value))
     return value
 
 
@@ -289,7 +293,7 @@ def readiness(root):
 
 def initialise(root, source, upgrade, publisher, scenario, records):
     root = Path(root)
-    write_once(root / "run.json", canonical({
+    write_once(root / "run.json", _qualify_rollout_canonical({
         "schema": "prismabuild.rollout_qualification.run.v1", "scenario": scenario,
         "created_unix": time.time(), "boundary": {
             "real": "two independently admitted PB actors, distinct hosts, shared-NFS write-once markers and coordinator algorithm",
@@ -306,7 +310,7 @@ def initialise(root, source, upgrade, publisher, scenario, records):
     offers = root / "pb-queue" / "workers"
     offers.mkdir(parents=True)
     for host in hosts:
-        (offers / (host + ".json")).write_bytes(canonical({
+        (offers / (host + ".json")).write_bytes(_qualify_rollout_canonical({
             "schema": "prismaquant.prismabuild.pool_offer.v1", "host": host,
             "announced_unix": time.time()}))
     agent_sha = new_receipt["files"]["tools/upgrade_client.py"]
@@ -315,7 +319,7 @@ def initialise(root, source, upgrade, publisher, scenario, records):
         upgrade.post_marker(root / "rollout", "agents/" + upgrade.attestation_name(host, agent_sha),
                             upgrade.canonical_json(body))
     publisher.MIRROR, publisher.CHECKOUT = root / "repo", source
-    write_once(root / "generation-evidence.json", canonical({
+    write_once(root / "generation-evidence.json", _qualify_rollout_canonical({
         "schema": "prismabuild.rollout_qualification.generation.v1", "hosts": hosts,
         "old": old_receipt, "new": new_receipt,
         "modes": {"old": oct(stat.S_IMODE(old.stat().st_mode)),
@@ -373,7 +377,7 @@ def peer_actor(root, scenario, upgrade):
         time.sleep(.05)
     if terminal is None or terminal["state"] != "rollout_terminal":
         raise RuntimeError("peer did not reach terminal rollout state")
-    write_once(Path(root) / "actors" / "peer.json", canonical({"ready": ready, "terminal": terminal,
+    write_once(Path(root) / "actors" / "peer.json", _qualify_rollout_canonical({"ready": ready, "terminal": terminal,
                                                                      "broker_operations": broker.operations}))
 
 
@@ -468,8 +472,8 @@ def coordinator_actor(root, scenario, source, upgrade, publisher):
     result = {"schema": "prismabuild.rollout_qualification.result.v1", "scenario": scenario,
               "epoch": epoch, "outcome": expected, "wait_status": wait_status,
               "coordinator_host": host, "peer_host": peer, "source_binding": json.loads((root / "run.json").read_text())["source"]}
-    write_once(root / "result.json", canonical(result))
-    write_once(root / "actors" / "coordinator.json", canonical({"ready": ready, "terminal": terminal,
+    write_once(root / "result.json", _qualify_rollout_canonical(result))
+    write_once(root / "actors" / "coordinator.json", _qualify_rollout_canonical({"ready": ready, "terminal": terminal,
                                                                     "broker_operations": broker.operations}))
     print(json.dumps(result, sort_keys=True), flush=True)
 
@@ -500,7 +504,7 @@ def emit_manifest(path, root):
                          "cwd": str(Path(__file__).resolve().parents[2]),
                          "demand": {"cpu": 1, "mem_gb": 2}, "tags": [tag],
                          "env": THREAD_ENV, "priority": -10, "timeout_s": 240})
-    Path(path).write_bytes(canonical(rows))
+    Path(path).write_bytes(_qualify_rollout_canonical(rows))
     print(json.dumps({"manifest": str(path), "run_root": str(root), "rows": len(rows)}, sort_keys=True))
 
 

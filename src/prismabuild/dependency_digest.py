@@ -28,7 +28,7 @@ installed.
 """
 from __future__ import annotations
 
-import hashlib
+from prismabuild.digest_primitives import _sorted_json_bytes, stream_sha256
 import json
 import os
 import subprocess
@@ -45,10 +45,9 @@ DEPENDENCY_DIGEST_TAG = "dependency-digest-v1"
 EVIDENCE_PREFIX = "pbtest dependency digest: "
 
 _HEX64 = frozenset("0123456789abcdef")
-_READ_CHUNK = 1 << 20
 
 
-def _is_hex64(value: object) -> bool:
+def _dependency_digest_is_hex64(value: object) -> bool:
     return (isinstance(value, str) and len(value) == 64
             and set(value) <= _HEX64)
 
@@ -80,7 +79,7 @@ def validate_requirements(entries: object) -> list[dict]:
             raise ValueError(
                 f"requirement path must be absolute and nonempty, "
                 f"got {path!r}")
-        if not _is_hex64(sha256):
+        if not _dependency_digest_is_hex64(sha256):
             raise ValueError(
                 f"requirement sha256 for {path!r} must be 64 lowercase hex, "
                 f"got {sha256!r}")
@@ -149,10 +148,10 @@ def validate_observations(entries: object, *, files: list[dict]) -> list[dict]:
                 raise ValueError(
                     f"include_suffixes entries are filename suffixes like "
                     f"'.py', got {suffix!r}")
-        if not _is_hex64(entry["sha256"]):
+        if not _dependency_digest_is_hex64(entry["sha256"]):
             raise ValueError(
                 f"payload sha256 for {module!r} must be 64 lowercase hex")
-        if not _is_hex64(entry["module_sha256"]):
+        if not _dependency_digest_is_hex64(entry["module_sha256"]):
             raise ValueError(
                 f"module_sha256 for {module!r} must be 64 lowercase hex; the "
                 "imported module's actual bytes are compared to it")
@@ -213,14 +212,7 @@ def validate_sealed(sealed: object) -> dict:
 def digest_file(path: str) -> str:
     """The sha256 of one file's bytes, read in bounded chunks."""
 
-    digest = hashlib.sha256()
-    with open(path, "rb") as handle:
-        while True:
-            chunk = handle.read(_READ_CHUNK)
-            if not chunk:
-                break
-            digest.update(chunk)
-    return digest.hexdigest()
+    return stream_sha256(path)
 
 
 def presence(paths: list[str]) -> tuple[list[str], list[str]]:
@@ -399,5 +391,5 @@ def verify_sealed(selection: object) -> int:
     except (ValueError, OSError, subprocess.SubprocessError) as exc:
         sys.stderr.write(f"pbtest: capability refusal: {exc}\n")
         return 1
-    print(EVIDENCE_PREFIX + json.dumps(evidence, sort_keys=True), flush=True)
+    print(EVIDENCE_PREFIX + _sorted_json_bytes(evidence).decode("utf-8"), flush=True)
     return 0

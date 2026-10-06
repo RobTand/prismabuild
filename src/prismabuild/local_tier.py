@@ -11,8 +11,8 @@ GIB = 1 << 30
 KIND = "local_gib"
 
 
-def tier_id(host):
-    return "local:" + resident_sets._name(host, "host")
+def local_resident_tier_id(host):
+    return "local:" + resident_sets._resident_name(host, "host")
 
 
 @contextmanager
@@ -53,14 +53,14 @@ def occupied_bytes(root):
     return total
 
 
-def mint(queue, host, spec):
+def mint_local_tier_capacity(queue, host, spec):
     root = Path(spec["root"])
     root.mkdir(parents=True, exist_ok=True)
     with host_lock(root):
         held = occupied_bytes(root)
         sampled = os.statvfs(root)
         wanted = capacity_gib(spec, sampled, held_bytes=held)
-        result = queue.mint_tier_capacity(tier_id(host), {KIND: wanted})
+        result = queue.mint_tier_capacity(local_resident_tier_id(host), {KIND: wanted})
         result.update({"root": str(root), "available_bytes": sampled.f_bavail * sampled.f_frsize,
                        "occupied_bytes": held, "wanted_gib": wanted, "host": host})
         resident_sets.write_record(queue.root / "resident-capacity" / (host + ".json"), result)
@@ -73,8 +73,8 @@ def reserve(queue, set_id, hosts, size):
     count = math.ceil(size / GIB)
     try:
         for host in hosts:
-            ledger = queue.tier_ledger(tier_id(host))
-            with queue.tier_mint_lock(tier_id(host)):
+            ledger = queue.tier_ledger(local_resident_tier_id(host))
+            with queue.tier_mint_lock(local_resident_tier_id(host)):
                 prior = pool.held_names_visible(ledger, set_id)
                 if prior:
                     if len(prior) != count or any(not name.startswith(KIND + "-") for name in prior):

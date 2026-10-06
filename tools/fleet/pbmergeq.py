@@ -106,7 +106,7 @@ class Config:
         return self.repo.split("/", 1)[0]
 
 
-def load_config(path: str | Path) -> Config:
+def _pbmergeq_load_config(path: str | Path) -> Config:
     raw = json.loads(Path(path).read_text(encoding="utf-8"))
     fields = {f.name: f for f in dataclasses.fields(Config)}
     unknown = sorted(set(raw) - set(fields))
@@ -1466,7 +1466,7 @@ def main(argv: list[str] | None = None) -> int:
     resume.add_argument("batch", help="runtime-blocked batch ID from STATUS.txt")
     sub.add_parser("status", help="print the status file")
     args = parser.parse_args(argv)
-    cfg = load_config(args.config)
+    cfg = _pbmergeq_load_config(args.config)
 
     if args.command == "enqueue":
         store = Store(cfg.state_dir)

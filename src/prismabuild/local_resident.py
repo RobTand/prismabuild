@@ -1,6 +1,5 @@
 """Verified whole-tree copies and their ordinary host-pinned movement actions."""
 from contextlib import contextmanager
-import hashlib
 import os
 from pathlib import Path
 import stat
@@ -11,7 +10,7 @@ import socket
 import uuid
 from . import posix_lock
 
-from . import local_tier, movement_actions, pool, reader_lease, resident_sets, residency_map
+from . import core, local_tier, movement_actions, pool, reader_lease, resident_sets, residency_map
 
 BLOCK_BYTES = 8 * 1024 * 1024
 
@@ -21,7 +20,7 @@ def hash_file(path):
     with os.fdopen(fd, "rb") as stream:
         if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
             raise ValueError(f"not a regular file: {path}")
-        digest = hashlib.sha256()
+        digest = core.new_sha256()
         size = 0
         while block := stream.read(BLOCK_BYTES):
             digest.update(block)
@@ -39,7 +38,7 @@ def copy_file(source, destination, entry):
             raise ValueError(f"not a regular copy source: {source}")
         dest_fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
         with os.fdopen(source_fd, "rb", closefd=False) as src, os.fdopen(dest_fd, "wb", closefd=False) as dst:
-            digest = hashlib.sha256()
+            digest = core.new_sha256()
             size = 0
             while block := src.read(BLOCK_BYTES):
                 dst.write(block)
@@ -239,7 +238,7 @@ def publish_actions(template, store, set_id, tiers, *, policy_path):
     return rows
 
 
-def _live_rows(store, set_id):
+def _resident_live_rows(store, set_id):
     for state in (pool.READY, pool.CLAIMED):
         directory = store.queue_root / state
         if not directory.exists():
@@ -272,11 +271,11 @@ def lease_active(store, set_id, *, now=None):
         raise ValueError("resident set has no published lease journal")
     if released or now >= lease["hard_max"]:
         return False
-    return "campaign" in lease or now < lease["until"] or _live_rows(store, set_id)
+    return "campaign" in lease or now < lease["until"] or _resident_live_rows(store, set_id)
 
 
 def _pins_root(store, set_id, host):
-    return store.queue_root / "resident-pins" / resident_sets._name(host, "host") / resident_sets._set_id(set_id)
+    return store.queue_root / "resident-pins" / resident_sets._resident_name(host, "host") / resident_sets._set_id(set_id)
 
 
 def pin(store, set_id, host, spec, context, *, now=None):
@@ -345,7 +344,7 @@ def reclaim_pins(store, set_id, host, spec):
                 continue  # Unknown pins protect; clocks and absent PIDs do not release.
 
 
-def evict(store, set_id, host, spec, *, now=None):
+def evict_resident_copy(store, set_id, host, spec, *, now=None):
     root, final, partial, evicting = _paths(set_id, spec)
     with posix_lock.held(store.copy_path(set_id, host).with_suffix(".move.lock"), blocking=False) as acquired:
         if not acquired:
@@ -373,7 +372,7 @@ def evict(store, set_id, host, spec, *, now=None):
                 shutil.rmtree(tree)
                 resident_sets.fsync_directory(root)
         # Capacity is released only once ALL local bytes have been deleted.
-        pool.PoolQueue(store.queue_root).tier_ledger(local_tier.tier_id(host)).release(set_id)
+        pool.PoolQueue(store.queue_root).tier_ledger(local_tier.local_resident_tier_id(host)).release(set_id)
         with local_tier.host_lock(root):
             store.write_copy(set_id, host, {**current, "state": "absent", "bytes": 0,
                 "verification": [], "completed_unix": None, "local_root": None})
@@ -383,7 +382,7 @@ def evict(store, set_id, host, spec, *, now=None):
 def request_eviction(store, set_id, host, spec, *, caller_host=None, now=None):
     """The #801 shape: only the owner deletes; other hosts queue its egress."""
     if host == (socket.gethostname() if caller_host is None else caller_host):
-        return evict(store, set_id, host, spec, now=now)
+        return evict_resident_copy(store, set_id, host, spec, now=now)
     row = store.read_movements(set_id, host).get("evict")
     if row is None:
         raise ValueError("copy has no retained host-pinned egress action")
@@ -396,7 +395,7 @@ def request_eviction(store, set_id, host, spec, *, caller_host=None, now=None):
 
 
 def _lease_error_path(store, set_id, host):
-    return store.set_path(set_id).parent / "lease-errors" / (resident_sets._name(host, "host") + ".json")
+    return store.set_path(set_id).parent / "lease-errors" / (resident_sets._resident_name(host, "host") + ".json")
 
 
 def _lease_failure(store, set_id, host, error, now):
@@ -449,7 +448,7 @@ def lease_pass(store, host, spec, *, now=None):
         try:
             state = row["copies"][host]["state"]
             _, final, partial, evicting = _paths(set_id, spec)
-            held = pool.held_names_visible(queue.tier_ledger(local_tier.tier_id(host)), set_id)
+            held = pool.held_names_visible(queue.tier_ledger(local_tier.local_resident_tier_id(host)), set_id)
             if (state == "absent" and not final.exists() and not partial.exists()
                     and not evicting.exists() and not held):
                 _clear_lease_failure(store, set_id, host)
@@ -457,7 +456,7 @@ def lease_pass(store, host, spec, *, now=None):
             reclaim_pins(store, set_id, host, spec)
             result = None
             if state == "evicting" or not lease_active(store, set_id, now=now):
-                result = evict(store, set_id, host, spec, now=now)
+                result = evict_resident_copy(store, set_id, host, spec, now=now)
             _clear_lease_failure(store, set_id, host)
             if result is not None:
                 results.append(result)
@@ -503,7 +502,7 @@ def require_adoption_unmounted(record, source):
                         raise ValueError("adoption requires stopping containers that captured the shared recursive bind")
 
 
-def adopt(store, set_id, host, spec, source, *, now=None):
+def adopt_resident_copy(store, set_id, host, spec, source, *, now=None):
     record = store.read(set_id)
     root, final, partial, evicting = _paths(set_id, spec)
     source = Path(source).absolute()

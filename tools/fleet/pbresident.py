@@ -140,7 +140,7 @@ def main(argv=None):
     except (ValueError, OSError, core.ActionContractError) as exc:
         print(f"pbresident: {exc}", file=sys.stderr)
         return 2
-    print(json.dumps(result, sort_keys=True))
+    print(core.sorted_json(result))
     return 0
 
 
