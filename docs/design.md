@@ -5098,7 +5098,7 @@ for another tag or host class, a row without the required local capabilities,
 a malformed demand, or a demand this host cannot fit does not hold CPU work back.
 This rule crosses priority bands and has no timeout: aging or a higher CPU
 priority cannot spend the GPU host's CPUs or memory ahead of eligible GPU work.
-One class of CPU-only row passes it (#1589): work whose required tags name
+One class of CPU-only row can pass it (#1589): work whose required tags name
 something no host without a GPU offers (aarch64 work tagged `gb10`), because it
 has no CPU host to be left to and deferring it for good starved the arm64 smoke
 a GPU successor waited on. A row is excluded from the CPU hosts when one of its
@@ -5107,14 +5107,23 @@ without a GPU, read from every offer on file, stale ones included (what a class
 offers does not change while one of its boxes is briefly away, so portable work
 stays portable and keeps waiting for the x86 box); with no GPU host or no host
 without a GPU on file there is no evidence and the row is not excluded. Such a
-row passes only if it fits beside the eligible GPU row's own reservation in this
-host's TOTAL capacity (`_fits_beside_ready_gpu`: the GPU row's reservation is
-held out first, so the CPU row can never be what keeps it from starting); an
-unreadable demand does not fit. Ordinary CPU admission still decides whether it
-can claim now, priority order is untouched, and portable rows, rows with a
-host tag and rows that do not fit are unchanged. Limit: a class-scoped row is
-recognised by tags only; arm64-only work that names no class tag but only an
-image or interpreter is still held by the rule.
+row is only a CANDIDATE (`_class_scoped_candidate`), and only if its sealed host
+demand is plain and bounded: an explicit `cpu` and `mem_gb`, nothing else (no
+GPU, no tier or fill kind, no other kind). It is decided at the token boundary,
+under host admission, with its own demand known (`_class_scoped_beside_ready_gpu`),
+against the room the eligible GPU row keeps (`_ready_gpu_row_room`: its
+reservation under the facts its own claim reads first, the producer's export
+allowance included) and the FREE tokens at that moment: it passes only if, after
+it takes its own, that room still fits. Incumbents hold tokens and every earlier
+admission has taken its share, so the GPU row is never what a class-scoped row
+delays, however many such rows there are. Held back as well: a measurement row
+(its exclusivity contracts are its own), a progress-governed row with no total
+run bound, a room that cannot be established, free tokens that do not read.
+Ordinary CPU admission (adaptive CPU, measurement elections, gang reservations)
+still applies to the row afterwards, priority order is untouched, and portable
+rows, rows with a host tag and rows that do not fit are unchanged. Limit: a
+class-scoped row is recognised by tags only; arm64-only work that names no class
+tag but only an image or interpreter is still held by the rule.
 Once no such GPU row is READY, ordinary CPU placement resumes.
 
 An eligible-fit GPU row stops holding CPU work back when this host's latest
@@ -5154,7 +5163,7 @@ no such host remains. CPU-only work still overflows onto GPU hosts when the CPU
 host is full or refuses, but portable rows must also pass the eligible-READY-GPU
 rule above. A host without a GPU never yields, so no two hosts wait on each
 other. Tags excluding every host without a GPU bypass this CPU-host
-deferral, and (when the row fits beside the eligible GPU row's reservation, #1589)
+deferral, and (when the row is let past by the eligible GPU row's own room, #1589)
 the READY-GPU rule as well. Remote reads are made once per host per claim
 pass and each yield
 charges that view, so a pass never leaves a host more rows than it fits.
