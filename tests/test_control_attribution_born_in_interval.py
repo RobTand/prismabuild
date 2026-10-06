@@ -13,7 +13,7 @@ import pytest
 from prismabuild import adaptive_cpu, pool
 from prismabuild.control_cpu import attributed_ticks
 
-BORN_AFTER = 1000  # boot-relative clock ticks of the previous host sample
+BORN_AFTER = 1000  # boot-relative clock ticks read after the previous host sample's counters
 
 
 def _newborn(**over):
@@ -57,21 +57,69 @@ def test_credit_never_exceeds_the_cpu_that_was_actually_busy():
                             kind='control', born_after=BORN_AFTER) == {'11': 0, '12': 0}
 
 
-def test_the_sampler_does_not_report_a_fresh_loops_startup_as_foreign(tmp_path, monkeypatch):
-    """Through the real sampler: previous sample has no loop, the next one has a newborn."""
+def _uptime(tmp_path, seconds):
+    if seconds is None:  # an unreadable boot clock
+        return tmp_path / 'absent'
+    proc = tmp_path / 'proc'
+    proc.mkdir(exist_ok=True)
+    (proc / 'uptime').write_text(f'{seconds:.2f} 12345.67\n')
+    return proc
+
+
+def _sampler(tmp_path, monkeypatch, uptimes, newborn):
+    """The real sampler and the real ``boot_ticks`` over a scripted /proc/uptime.
+
+    Nothing about the boundary is mocked: each host sample reads the boot clock
+    through ``control_cpu.boot_ticks`` and the next one consumes what the
+    previous one persisted.
+    """
+    from prismabuild import control_cpu
     ledger = pool.ResourceLedger(tmp_path / 'ledger')
     controller = adaptive_cpu.Controller(ledger, {'preferred': [11, 12], 'fallback': []})
     hosts = iter([
         {'sampled_unix': 100., 'cpus': {'11': [20, 100], '12': [0, 100]}, 'psi_total': 0},
         {'sampled_unix': 102., 'cpus': {'11': [54, 300], '12': [0, 300]}, 'psi_total': 1260000},
     ])
-    tasks = iter([{}, {}, {'7': _newborn(ticks=30)}, {'7': _newborn(ticks=30)}])
+    tasks = iter([{}, {}, {'7': newborn}, {'7': newborn}])
+    clock = iter(uptimes)
     monkeypatch.setattr(adaptive_cpu, 'counters', lambda _: next(hosts))
     monkeypatch.setattr(adaptive_cpu, 'control_plane_counters', lambda _: next(tasks), raising=False)
-    # The previous sample (t=100) is at boot-relative tick 1000.
-    monkeypatch.setattr(adaptive_cpu, 'born_after_ticks', lambda unix: 1000, raising=False)
+    monkeypatch.setattr(adaptive_cpu, 'boot_ticks',
+                        lambda: control_cpu.boot_ticks(proc_root=_uptime(tmp_path, next(clock))))
     assert controller.sample() == {}
-    observed = controller.sample()
+    return controller.sample()
+
+
+def test_the_sampler_does_not_report_a_fresh_loops_startup_as_foreign(tmp_path, monkeypatch):
+    """Previous sample at boot tick 1000 (uptime 10.00 s); a loop born at tick 1500."""
+    observed = _sampler(tmp_path, monkeypatch, [10.0, 12.0], _newborn(start=1500, ticks=30))
     assert observed['per_cpu_busy']['11'] == pytest.approx(.17)  # raw load retained
     assert observed['control_plane_busy']['11'] == pytest.approx(.15)
     assert observed['foreign_per_cpu_busy']['11'] == pytest.approx(.02)
+
+
+def test_a_process_born_before_the_previous_sample_is_foreign_whatever_the_wall_clock_says(
+        tmp_path, monkeypatch):
+    """The wall-clock stamps in the samples (100 and 102) are scripted and never consulted.
+
+    A process that started at tick 900 predates the previous sample (tick 1000);
+    a boundary derived from wall-clock time and a later ``btime`` could place it
+    inside the interval after a clock step.  The boot-clock boundary cannot.
+    """
+    observed = _sampler(tmp_path, monkeypatch, [10.0, 12.0], _newborn(start=900, ticks=30))
+    assert observed['control_plane_busy']['11'] == pytest.approx(0.0)
+    assert observed['foreign_per_cpu_busy']['11'] == pytest.approx(.17)
+
+
+def test_without_a_persisted_boundary_nothing_is_credited(tmp_path, monkeypatch):
+    """A previous sample written before this change carries no boot_ticks."""
+    observed = _sampler(tmp_path, monkeypatch, [None, 12.0], _newborn(start=1500, ticks=30))
+    assert observed['control_plane_busy']['11'] == pytest.approx(0.0)
+
+
+def test_boot_ticks_reads_the_boot_clock_and_refuses_what_it_cannot_read(tmp_path):
+    from prismabuild.control_cpu import boot_ticks
+    assert boot_ticks(proc_root=_uptime(tmp_path, 10.0)) == 10 * __import__('os').sysconf('SC_CLK_TCK')
+    assert boot_ticks(proc_root=tmp_path / 'absent') is None
+    (tmp_path / 'proc' / 'uptime').write_text('not-a-number\n')
+    assert boot_ticks(proc_root=tmp_path / 'proc') is None

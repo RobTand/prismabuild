@@ -115,30 +115,29 @@ def control_plane_counters(cpus, *, proc_root=Path('/proc'), runtime_root=RUNTIM
     return result
 
 
-def born_after_ticks(previous_unix, *, proc_root=Path('/proc')):
-    """Boot-relative clock ticks after which a process certainly began after ``previous_unix``.
+def boot_ticks(*, proc_root=Path('/proc')):
+    """Boot-relative clock ticks now, from ``/proc/uptime`` (CLOCK_BOOTTIME).
 
-    ``/proc/stat`` gives the boot time in whole seconds, so one second is added:
-    a process this late began after the previous host sample whatever the
-    rounding.  ``None`` when the boot time or the clock rate cannot be read.
+    The same clock a process's ``start`` (``/proc/<pid>/stat`` field 22) counts
+    in.  Unlike wall-clock time minus ``btime`` it does not move when the realtime
+    clock is stepped, so a boundary taken from it stays true across a step.
+    ``None`` when it or the clock rate cannot be read.
     """
     try:
-        btime = next(int(line.split()[1])
-                     for line in (proc_root / 'stat').read_text().splitlines()
-                     if line.startswith('btime '))
+        seconds = float((proc_root / 'uptime').read_text().split()[0])
         rate = os.sysconf('SC_CLK_TCK')
-    except (OSError, ValueError, StopIteration, IndexError):
+    except (OSError, ValueError, IndexError):
         return None
-    if type(previous_unix) not in (int, float) or previous_unix <= btime or rate <= 0:
+    if not seconds >= 0 or rate <= 0:
         return None
-    return int((previous_unix - btime) * rate) + rate
+    return int(seconds * rate)
 
 
 def attributed_ticks(previous, current, busy, *, kind=None, born_after=None):
     """Credit only stable, non-migrating work within the host interval.
 
-    ``born_after`` (boot-relative clock ticks of the previous host sample,
-    :func:`born_after_ticks`) also credits a control thread that is not in
+    ``born_after`` (the boot-relative clock ticks :func:`boot_ticks` read just
+    after the previous host sample's counters, persisted with that sample) also credits a control thread that is not in
     ``previous`` because it was born after that sample: with zero migrations it
     ran on one CPU for its whole life, all of it inside the interval, so its
     ticks are control-plane work.  Without it a worker loop spawned between two
