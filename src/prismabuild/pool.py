@@ -6726,9 +6726,9 @@ class PoolQueue:
             sealed_params = sealed_request["params"] if sealed_request is not None else {}
             assert isinstance(sealed_params, Mapping)
             sealed_batch_raw = sealed_params.get("produced_output_batch")
-            if sealed_params.get("returns_capacity") not in (None, True):
-                raise PoolContractError("action.params.returns_capacity must be true when present")
             returns_capacity = sealed_params.get("returns_capacity") is True
+            if "returns_capacity" in sealed_params and not returns_capacity:
+                raise PoolContractError("action.params.returns_capacity must be true when present")
             if ("produced_output_batch" in sealed_params
                     and not isinstance(sealed_batch_raw, Mapping)):
                 raise PoolContractError(

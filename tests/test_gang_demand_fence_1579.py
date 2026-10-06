@@ -14,8 +14,9 @@ from prismabuild import _measurement_reservation as reservation
 FIRST = 1000.0
 CAPACITY = {"cpu": 20, "gpu": 1, "mem_gb": 120}
 MEMBER = {"cpu": 2, "gpu": 1, "mem_gb": 100}
-YOUNG = FIRST + reservation.GANG_RESERVE_AFTER_S - 1
-OLD = FIRST + reservation.GANG_RESERVE_AFTER_S + 1
+BOUND = getattr(reservation, "GANG_RESERVE_AFTER_S", 600.0)  # absent before #1579
+YOUNG = FIRST + BOUND - 1
+OLD = FIRST + BOUND + 1
 
 
 def _census(priority=-10, demand=MEMBER, host="sparky", other=None):
@@ -91,7 +92,8 @@ def test_a_row_without_a_gpu_key_demands_no_gpu_but_a_gpu_row_without_one_is_unk
 def test_an_unknown_member_demand_reserves_the_whole_host():
     for demand in (None, "x", {"cpu": "2"}, {"cpu": -1}):
         held = _blocked(_row(), demand=demand)
-        assert held is not None and set(held["reservation"]) == {"cpu", "gpu", "mem_gb"}, demand
+        # the whole host is reserved, so a 1 cpu / 1 GB row overruns cpu and memory
+        assert held is not None and set(held["reservation"]) == {"cpu", "mem_gb"}, demand
 
 
 def test_a_member_that_demands_nothing_on_this_host_reserves_nothing():
