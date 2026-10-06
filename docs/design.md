@@ -4679,10 +4679,20 @@ launch through the declared-manifest branch of `residency_map_environment`.
 Operational consequence: a window whose movers are slow drains its already-
 elected siblings' hosts for the whole mover time. If a member's leads all end
 terminally (`residency_lead_terminal`: failed, withdrawn, dropped, unpinned or
-bound to another manifest) the claim pass that finds it tears the gang down
+bound to another manifest) the claim pass that confirms it tears the gang down
 (#1543): the siblings are withdrawn and their fences released, because nothing
-will repair that member and gang elections never expire. A lead re-queued after
-that point does not bring the gang back, so submit the movers before the gang.
+will repair that member and gang elections never expire. One terminal reading
+is not enough, since a lead mid-requeue (READY to CLAIMED) reads as ended for a
+moment and teardown is permanent. The first reading writes a durable mark,
+`gangs/<group>/terminal-<member>.json`, holding a signature of every pending
+lead's state records and generations; any pass that reads the member live
+again clears it. The gang is torn down by a pass that finds the mark at least
+`TERMINAL_CONFIRM_S` (120 s) old with the same signature and whose own fresh
+re-read of the verdict is terminal with that same signature; a changed
+signature, a failed read or a mark stamped in the future restarts the wait. No
+pass blocks, and the one-shot `teardown.json` is the gang-level arbiter. A
+lead re-queued after teardown does not bring the gang back, so submit the
+movers before the gang.
 A refused plan (`plan_unreadable`, `plan_superseded`) is not covered: the gang
 sweep tears a gang down only on an UNSUCCESSFUL member, which a READY member
 never is, so that wait lasts until the gang is withdrawn. Size

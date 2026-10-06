@@ -21059,21 +21059,29 @@ class PoolQueue:
                             # generation has not finished, whatever its old
                             # ending says (#1186).
                             reason = "residency_lead_terminal"
-                    if item.get("gang") is not None and reason == "residency_lead_terminal":
-                        # This member can never start, so its gang cannot: its
-                        # elected siblings would fence their hosts until
-                        # someone withdrew the gang, because elections never
-                        # expire and the sweep tears a gang down only on an
-                        # unsuccessful member (#1543).  The documented
-                        # remedy -- withdraw the gang when a member's
-                        # residency can no longer land -- is done here, once,
-                        # through the ordinary teardown; this row's lock is
-                        # held, so the sweep withdraws it.
-                        self._gang_teardown(
-                            item, by=key, exclude={key},
-                            reason=f"member {key[:12]} cannot start: residency_lead_terminal")
+                    if item.get("gang") is not None:
+                        if reason != "residency_lead_terminal":
+                            self._gang_clear_terminal(item, key)
+                        elif self._gang_terminal_confirmed(item, key, residency):
+                            # This member can never start, so its gang cannot:
+                            # its elected siblings would fence their hosts
+                            # until someone withdrew the gang, because
+                            # elections never expire and the sweep tears a
+                            # gang down only on an unsuccessful member
+                            # (#1543).  The documented remedy -- withdraw the
+                            # gang when a member's residency can no longer
+                            # land -- is done here, once, through the ordinary
+                            # teardown; this row's lock is held, so the sweep
+                            # withdraws it.  Only a reading that has stood
+                            # for the confirmation window and still holds on
+                            # a fresh read gets here (``_gang_terminal_confirmed``).
+                            self._gang_teardown(
+                                item, by=key, exclude={key},
+                                reason=f"member {key[:12]} cannot start: residency_lead_terminal")
                     self.record_denial(item, reason, {"residency": residency})
                     continue
+                if item.get("gang") is not None:
+                    self._gang_clear_terminal(item, key)
                 try:
                     sealed_demand = self.demand_of(item)
                 except (TypeError, ValueError) as exc:
@@ -24922,6 +24930,79 @@ class PoolQueue:
             },
         )
         return self.attempt_path(archived, attempt)
+
+    def _gang_member_group(self, item: Mapping[str, object]) -> str | None:
+        from . import _gang
+        gang = item.get("gang")
+        declared = _gang.declaration(gang) if gang is not None else None
+        return str(declared["group"]) if declared else None
+
+    def _gang_clear_terminal(self, item: Mapping[str, object], key: str) -> None:
+        """Member ``key`` reads live: forget any terminal reading of it (#1543)."""
+        from . import _gang
+        try:
+            group = self._gang_member_group(item)
+            if group is not None:
+                _gang.clear_terminal(self, group, key)
+        except (_gang.GangContractError, OSError, pb.PrismaBuildError):
+            pass  # a mark that stays is only ever reset by the next reading
+
+    def _terminal_signature(self, residency: Mapping[str, object]) -> str | None:
+        """The leads' endings and generations behind a terminal reading.
+
+        Every state record of every pending lead is read, with its
+        ``published_unix`` and ending stamps, so a lead that was requeued and
+        ended again between two readings is a different signature, not the
+        old reading confirmed.  ``None`` when the reading is not terminal.
+        """
+        pending = residency.get("pending")
+        if not (isinstance(pending, list) and pending and all(
+                isinstance(entry, Mapping) and entry.get("status") is not None
+                and entry.get("status") not in RESIDENCY_LEAD_UNFINISHED
+                for entry in pending)):
+            return None
+        rows = []
+        for entry in sorted(pending, key=lambda e: str(e.get("lead"))):
+            lead = str(entry.get("lead"))
+            seen = []
+            for state in (READY, CLAIMED, DONE, FAILED, WITHDRAWN):
+                record = _read_json(self.item_path(state, lead))
+                if isinstance(record, Mapping):
+                    seen.append([state, record.get("published_unix"),
+                                 record.get("finished_unix"),
+                                 record.get("withdrawn_unix"), record.get("status")])
+            rows.append([lead, entry.get("status"), seen])
+        return hashlib.sha256(json.dumps(rows, sort_keys=True, default=str)
+                              .encode()).hexdigest()
+
+    def _gang_terminal_confirmed(self, item: Mapping[str, object], key: str,
+                                 residency: Mapping[str, object]) -> bool:
+        """Whether a member's terminal reading has stood and still holds (#1543).
+
+        One reading is not enough: a lead mid-requeue (READY -> CLAIMED) reads
+        as ended for a moment, and tearing a gang down is permanent.  The
+        first reading leaves a durable mark (``_gang.note_terminal``); the
+        teardown waits for the mark to age past the confirmation window with
+        an unchanged signature, then reads the verdict once more -- fresh
+        generations, fresh pins -- and requires the same terminal signature.
+        A read that fails, or any change, is no confirmation: the gang waits
+        another pass.  Never blocks and never sleeps.
+        """
+        from . import _gang
+        try:
+            group = self._gang_member_group(item)
+            signature = self._terminal_signature(residency)
+            if group is None or signature is None:
+                return False
+            if not _gang.note_terminal(self, group, key, signature, now=_now()):
+                return False
+            fresh = self.residency_verdict(item)
+            if self._terminal_signature(fresh) != signature:
+                _gang.clear_terminal(self, group, key)
+                return False
+            return True
+        except (_gang.GangContractError, OSError, PoolContractError, pb.PrismaBuildError):
+            return False
 
     @_serialized_key
     def _gang_teardown(self, item: Mapping[str, object] | None, *, reason: str,
