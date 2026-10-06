@@ -19586,6 +19586,58 @@ class PoolQueue:
                 continue  # an unplaceable or malformed GPU row cannot starve CPU work
         return None
 
+    @staticmethod
+    def _excluded_from_cpu_hosts(
+        item: Mapping[str, object], records: Sequence[Mapping[str, object]],
+    ) -> bool:
+        """Whether ``item``'s tags name something no host without a GPU offers (#1589).
+
+        The class-scoped case of #1262: CPU-only work tagged for the GPU hosts'
+        class (aarch64 work tagged ``gb10``) has no CPU host to be left to.  It is
+        read from the offers every box has filed, stale ones included, because
+        what a class offers does not change when one of its boxes is briefly
+        away: portable work (tags every box carries) stays portable while the
+        x86 box is down, and keeps waiting for it.  It needs evidence on both
+        sides -- some host without a GPU on file that carries none of the
+        row's required tags... and a GPU host that does -- and with none on
+        file there is no evidence, so the row is not excluded.
+        """
+        required = {str(tag) for tag in (item.get("tags") or []) if isinstance(tag, str)}
+        if not required:
+            return False
+        without_gpu = [{str(tag) for tag in (record.get("tags") or [])}
+                       for record in records if not record.get("has_gpu")]
+        with_gpu = [{str(tag) for tag in (record.get("tags") or [])}
+                    for record in records if record.get("has_gpu")]
+        if not without_gpu or not with_gpu:
+            return False
+        return any(all(tag not in offered for offered in without_gpu)
+                   and any(tag in offered for offered in with_gpu)
+                   for tag in required)
+
+    def _fits_beside_ready_gpu(
+        self, item: Mapping[str, object], ready_gpu: Mapping[str, object], *,
+        total: Mapping[str, int], gpu_controller: object | None,
+    ) -> bool:
+        """Whether ``item`` fits in this host's capacity beside ``ready_gpu``'s reservation (#1589).
+
+        What keeps GPU safety when a class-scoped CPU row is let past #1526's
+        rule: the eligible GPU row's own reservation is held out of the host's
+        TOTAL capacity first, so the CPU row can never be what keeps it from
+        starting.  An unreadable demand does not fit.  Ordinary CPU admission
+        still decides whether the row can claim now.
+        """
+        try:
+            gpu_demand, _tiers = storage_tiers.split_demand(self.demand_of(ready_gpu))
+            reservation = self._reservation_demand(gpu_demand, gpu_controller=gpu_controller)
+            cpu_demand, _tiers = storage_tiers.split_demand(self.demand_of(item))
+        except (TypeError, ValueError, PoolContractError):
+            return False
+        if not cpu_demand:
+            return False
+        return all(int(total.get(kind, 0)) - int(reservation.get(kind, 0)) >= int(need)
+                   for kind, need in cpu_demand.items())
+
     def claim(
         self, *, tags: Iterable[str] = (), has_gpu: bool = False,
         owner: str | None = None, capacity: Mapping[str, int] | None = None,
@@ -20446,6 +20498,16 @@ class PoolQueue:
                 placement_offers = self.offers()
             return placement_offers
 
+        #: Every offer on file, stale ones too, read only if a CPU-only row meets
+        #: the READY-GPU rule (#1589, :meth:`_excluded_from_cpu_hosts`).
+        retained_offers: list[dict[str, object]] | None = None
+
+        def offer_records() -> list[dict[str, object]]:
+            nonlocal retained_offers
+            if retained_offers is None:
+                retained_offers = self._offer_records()
+            return retained_offers
+
         #: Hosts without a GPU as this pass read them, for the CPU-only rows a
         #: GPU host leaves to them (#1262, :meth:`_cpu_host_view`).
         cpu_host_views: dict[str, dict[str, object] | None] = {}
@@ -20679,10 +20741,18 @@ class PoolQueue:
             if (ready_gpu is not None and key not in released
                     and host not in (item.get("tags") or [])
                     and not item.get("needs_gpu")
-                    and not self._demands_withheld_kind(item, frozenset({"gpu"}))):
+                    and not self._demands_withheld_kind(item, frozenset({"gpu"}))
+                    and not (self._excluded_from_cpu_hosts(item, offer_records())
+                             and self._fits_beside_ready_gpu(
+                                 item, ready_gpu, total=total,
+                                 gpu_controller=gpu_controller))):
                 # Before this row's transition lock: no new locks, passes,
                 # reservations or timeout escape. Hostname tags also encode
                 # --here, so explicitly pinned CPU work keeps its priority.
+                # Not CPU-only work whose tags exclude every host without a
+                # GPU and that fits beside the GPU row's reservation: it has
+                # no CPU host to be left to, and deferring it for good starved
+                # the arm64 smoke a GPU successor waited on (#1589).
                 self.record_denial(item, "deferred_for_ready_gpu", {
                     "gpu_row": ready_gpu.get("action_key"),
                     "gpu_published_unix": ready_gpu.get("published_unix"),
