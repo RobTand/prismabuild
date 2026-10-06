@@ -169,52 +169,118 @@ def _bare(tmp_path, monkeypatch):
     return pool.PoolQueue(tmp_path / "queue")
 
 
-def _decide(queue, *, identity=None, demand=None):
-    gpu_row = {"action_key": GPU_KEY}
-    return queue._class_scoped_beside_ready_gpu(
-        {"action_key": CLASS_KEY, "cas_root": "/nowhere"}, gpu_row, ledger=None, total=CAPACITY,
-        controller=None, gpu_controller=None, observed_images=None, container_class_policy=None,
-        container_inventory=None, identity=identity, demand=demand or {"cpu": 2, "mem_gb": 4})
+ROOM = {"action_key": GPU_KEY, "room": {"cpu": 2, "gpu": 1, "mem_gb": 8}}
 
 
-def test_a_measurement_row_is_not_let_past_the_guard(tmp_path, monkeypatch):
+class _Tokens:
+    def __init__(self, **tokens):
+        self.tokens = tokens
+
+    def available(self):
+        if self.tokens.get("unreadable"):
+            raise OSError("estale")
+        return dict(self.tokens)
+
+
+def test_a_measurement_row_is_not_let_past_the_guard():
     """Its exclusivity contracts are its own: the identity's measurement flag holds it."""
-    queue = _bare(tmp_path, monkeypatch)
-    assert _decide(queue, identity=("identity", True)) == {"class_scoped": "measurement_row"}
+    result = pool.PoolQueue._class_scoped_beside_room(
+        ROOM, ledger=_Tokens(cpu=8, gpu=1, mem_gb=32), identity=("identity", True), demand={"cpu": 2, "mem_gb": 4})
+    assert result == {"class_scoped": "measurement_row"}
 
 
-def test_a_progress_governed_row_without_a_total_bound_is_not_let_past_the_guard(tmp_path, monkeypatch):
+def test_the_boundary_reads_only_the_free_tokens_and_leaves_the_gpu_room(tmp_path, monkeypatch):
+    """No sealed request, no record, no shared read: arithmetic on the free tokens, after the row's own."""
+    decide = pool.PoolQueue._class_scoped_beside_room
+    demand = {"cpu": 2, "mem_gb": 4}
+    assert decide(ROOM, ledger=_Tokens(cpu=4, gpu=1, mem_gb=12), identity=None, demand=demand) is None   # 2, 8 left
+    held = decide(ROOM, ledger=_Tokens(cpu=4, gpu=1, mem_gb=11), identity=None, demand=demand)        # 7 < 8
+    assert held["kept_for"] == "class_scoped_cpu_beside_ready_gpu" and held["gpu_row"] == GPU_KEY[:12]
+    assert decide(ROOM, ledger=_Tokens(cpu=8, gpu=0, mem_gb=32), identity=None, demand=demand)["room"]["gpu"] == 1
+    assert decide(ROOM, ledger=_Tokens(unreadable=True), identity=None, demand=demand) == {
+        "class_scoped": "free_tokens_unreadable"}
+
+
+def _room(queue, gpu_row, **kw):
+    return queue._class_scoped_room(
+        gpu_row, ledger=_Tokens(cpu=8, gpu=1, mem_gb=32), total=CAPACITY, controller=None, gpu_controller=None,
+        observed_images=None, container_class_policy=None, container_inventory=None, **kw)
+
+
+def _plain_gpu_row(**over):
+    return {"action_key": GPU_KEY, "cas_root": "/nowhere", "needs_gpu": True,
+            "resources": {"cpu": 2, "gpu": 1, "mem_gb": 8}, **over}
+
+
+def test_the_gpu_row_must_be_one_a_running_cpu_holder_cannot_keep_from_starting(tmp_path, monkeypatch):
+    """Review 2: a measurement row needs an idle host; an unbounded row is refused when the box holds anything;
+    a gang member's election fences the host."""
     queue = _bare(tmp_path, monkeypatch)
-    monkeypatch.setattr(pool, "_declared_run_bound", lambda item, **kw: ("progress", None))
-    assert _decide(queue) == {"class_scoped": "no_total_run_bound"}
-    monkeypatch.setattr(pool, "_declared_run_bound",
-                        lambda item, **kw: (_ for _ in ()).throw(pool.PoolContractError("unreadable")))
-    assert _decide(queue) == {"class_scoped": "run_bound_unreadable"}
+    monkeypatch.setattr(pool.gpu_admission, "action_contract", lambda item, demand: (None, False, False, 0))
+    monkeypatch.setattr(queue, "_ready_gpu_row_room", lambda *args, **kw: dict(ROOM))
+    assert _room(queue, _plain_gpu_row()) == (ROOM, None)
+    assert _room(queue, _plain_gpu_row(gang={"group": "g" * 32, "size": 2, "index": 0})) == (
+        None, "gpu_row_is_gang_member")
+    assert _room(queue, _plain_gpu_row(resources={"gpu": 1, "mem_gb": 8})) == (None, "gpu_row_cpu_unbounded")
+    assert _room(queue, _plain_gpu_row(resources={"cpu": 2, "gpu": 1})) == (None, "gpu_row_cpu_unbounded")
+    monkeypatch.setattr(pool.gpu_admission, "action_contract", lambda item, demand: (None, True, True, 0))
+    assert _room(queue, _plain_gpu_row()) == (None, "gpu_row_is_measurement")
+    monkeypatch.setattr(pool.gpu_admission, "action_contract",
+                        lambda item, demand: (_ for _ in ()).throw(ValueError("unreadable request")))
+    assert _room(queue, _plain_gpu_row()) == (None, "gpu_row_contract_unreadable")
 
 
 def test_a_gpu_room_that_cannot_be_established_holds_the_row(tmp_path, monkeypatch):
     """The GPU row's own claim facts (a clean fresh sample, its images, its residency) are not met."""
     queue = _bare(tmp_path, monkeypatch)
-    monkeypatch.setattr(pool, "_declared_run_bound", lambda item, **kw: ("deadline", 600.0))
+    monkeypatch.setattr(pool.gpu_admission, "action_contract", lambda item, demand: (None, False, False, 0))
     monkeypatch.setattr(queue, "_ready_gpu_row_room", lambda *args, **kw: None)
-    assert _decide(queue) == {"class_scoped": "gpu_room_unknown"}
+    assert _room(queue, _plain_gpu_row()) == (None, "gpu_room_unknown")
 
 
-def test_unreadable_free_tokens_hold_the_row(tmp_path, monkeypatch):
+def test_a_measurement_gpu_row_keeps_the_class_scoped_row_waiting_for_the_whole_claim(tmp_path, monkeypatch, host):
+    """End to end: the eligible GPU row is a measurement, so no CPU holder may run beside it."""
+    queue, publish, claim = _fleet(tmp_path, monkeypatch, host, cpu_host="fresh")
+    monkeypatch.setattr(pool.gpu_admission, "action_contract", lambda item, demand: (None, True, True, 0))
+    publish(CLASS_KEY, tags=["gb10"], resources={"cpu": 2, "mem_gb": 4}, priority=1)
+    claimed = claim()
+    assert claimed is not None and claimed["action_key"] == GPU_KEY, claimed
+    assert queue.item_path(pool.READY, CLASS_KEY).exists()
+
+
+def test_a_gpu_row_with_no_explicit_cpu_keeps_the_class_scoped_row_waiting(tmp_path, monkeypatch, host):
+    queue, publish, claim = _fleet(tmp_path, monkeypatch, host, cpu_host="fresh")
+    queue.withdraw(GPU_KEY, reason="republish unbounded", by="test")
+    publish(GPU_KEY, gpu=True, tags=["gb10"], resources={"gpu": 1, "mem_gb": 8})
+    publish(CLASS_KEY, tags=["gb10"], resources={"cpu": 2, "mem_gb": 4}, priority=1)
+    claimed = claim()
+    assert claimed is not None and claimed["action_key"] == GPU_KEY, claimed
+
+
+def test_the_gpu_rows_room_is_read_once_per_pass_before_any_admission(tmp_path, monkeypatch, host):
+    """Review 2: nothing that reads the shared filesystem runs inside host admission, once per pass."""
+    queue, publish, claim = _fleet(tmp_path, monkeypatch, host, cpu_host="fresh")
+    calls = []
+    real = queue._class_scoped_room
+
+    def counted(*args, **kw):
+        calls.append(1)
+        return real(*args, **kw)
+
+    monkeypatch.setattr(queue, "_class_scoped_room", counted)
+    publish(CLASS_KEY, tags=["gb10"], resources={"cpu": 3, "mem_gb": 4}, priority=1)
+    publish(CLASS_KEY_B, tags=["gb10"], resources={"cpu": 4, "mem_gb": 4}, priority=1)
+    assert claim()["action_key"] == CLASS_KEY
+    assert calls == [1], "two candidates in one pass read the GPU row's room once"
+
+
+def test_a_gang_member_is_never_a_candidate(tmp_path, monkeypatch):
+    """Review 2: a gang election is written before any later check and outlives a refusal."""
     queue = _bare(tmp_path, monkeypatch)
-    monkeypatch.setattr(pool, "_declared_run_bound", lambda item, **kw: ("deadline", 600.0))
-    monkeypatch.setattr(queue, "_ready_gpu_row_room",
-                        lambda *args, **kw: {"action_key": GPU_KEY, "room": {"cpu": 2, "gpu": 1, "mem_gb": 8}})
-
-    class Ledger:
-        def available(self):
-            raise OSError("estale")
-
-    result = queue._class_scoped_beside_ready_gpu(
-        {"action_key": CLASS_KEY, "cas_root": "/nowhere"}, {"action_key": GPU_KEY}, ledger=Ledger(),
-        total=CAPACITY, controller=None, gpu_controller=None, observed_images=None,
-        container_class_policy=None, container_inventory=None, identity=None, demand={"cpu": 2, "mem_gb": 4})
-    assert result == {"class_scoped": "free_tokens_unreadable"}
+    offers = [{"host": "sparky", "has_gpu": True, "tags": ["gb10"]}, {"host": "dl", "has_gpu": False, "tags": ["x86"]}]
+    item = {"action_key": CLASS_KEY, "tags": ["gb10"], "resources": {"cpu": 2, "mem_gb": 4}}
+    assert queue._class_scoped_candidate(item, offers) is True
+    assert queue._class_scoped_candidate({**item, "gang": {"group": "g" * 32, "size": 2, "index": 0}}, offers) is False
 
 
 @pytest.mark.parametrize("resources,candidate", [

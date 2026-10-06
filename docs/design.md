@@ -5107,19 +5107,26 @@ without a GPU, read from every offer on file, stale ones included (what a class
 offers does not change while one of its boxes is briefly away, so portable work
 stays portable and keeps waiting for the x86 box); with no GPU host or no host
 without a GPU on file there is no evidence and the row is not excluded. Such a
-row is only a CANDIDATE (`_class_scoped_candidate`), and only if its sealed host
-demand is plain and bounded: an explicit `cpu` and `mem_gb`, nothing else (no
-GPU, no tier or fill kind, no other kind). It is decided at the token boundary,
-under host admission, with its own demand known (`_class_scoped_beside_ready_gpu`),
-against the room the eligible GPU row keeps (`_ready_gpu_row_room`: its
-reservation under the facts its own claim reads first, the producer's export
-allowance included) and the FREE tokens at that moment: it passes only if, after
-it takes its own, that room still fits. Incumbents hold tokens and every earlier
-admission has taken its share, so the GPU row is never what a class-scoped row
-delays, however many such rows there are. Held back as well: a measurement row
-(its exclusivity contracts are its own), a progress-governed row with no total
-run bound, a room that cannot be established, free tokens that do not read.
-Ordinary CPU admission (adaptive CPU, measurement elections, gang reservations)
+row is only a CANDIDATE (`_class_scoped_candidate`): it is no gang member (a gang
+election is written before any later check and outlives a refusal, so it could
+fence the GPU row out with every token free), and its sealed host demand is plain
+and bounded: an explicit `cpu` and `mem_gb`, nothing else (no GPU, no tier or fill
+kind, no other kind). Before any admission lock, once per pass and under no lock
+(the reads can stall on the shared filesystem and must not do so inside the gate
+every claimant waits on), the eligible GPU row's room is read
+(`_class_scoped_room`): the GPU row must be one a running CPU holder cannot keep
+from starting beyond the tokens it takes, so not a measurement row (it needs an
+idle host), with an explicit `cpu` and `mem_gb` (an unbounded row is refused
+whenever the box holds anything) and not a gang member; the room is then the
+reservation its own claim charges (`_ready_gpu_row_room`: under the facts its claim
+reads first, the producer's export allowance included). Without such a room the row
+stays deferred and the denial names why. At the token boundary, under host
+admission, `_class_scoped_beside_room` reads only the free tokens: the row passes
+only if, after it takes its own, that room still fits them. Incumbents hold tokens
+and every earlier admission has taken its share, so the GPU row is never what a
+class-scoped row delays, however many such rows there are. A measurement row is
+held (its exclusivity contracts are its own), and free tokens that do not read hold
+the row. Ordinary CPU admission (adaptive CPU, measurement elections, gang reservations)
 still applies to the row afterwards, priority order is untouched, and portable
 rows, rows with a host tag and rows that do not fit are unchanged. Limit: a
 class-scoped row is recognised by tags only; arm64-only work that names no class

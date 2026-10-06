@@ -19620,13 +19620,15 @@ class PoolQueue:
     ) -> bool:
         """Whether ``item`` may be considered for #1589's exemption from the READY-GPU rule.
 
-        Its tags name something no host without a GPU offers, and its sealed host
-        demand is plain and bounded: an explicit ``cpu`` and ``mem_gb``, no GPU, and
-        no tier or fill kind (a tier demand takes what a GPU row's own claim
-        needs).  This only makes the row a candidate; whether it passes is decided
-        at the token boundary (:meth:`_class_scoped_beside_ready_gpu`).
+        Its tags name something no host without a GPU offers, it is no gang member
+        (a gang election is written before any later check and outlives a refusal,
+        so it could fence the GPU row out with every token free), and its sealed
+        host demand is plain and bounded: an explicit ``cpu`` and ``mem_gb``, no
+        GPU, no tier or fill kind (a tier demand takes what a GPU row's own claim
+        may need).  This only makes the row a candidate; whether it passes is
+        decided at the token boundary (:meth:`_class_scoped_beside_room`).
         """
-        if not self._excluded_from_cpu_hosts(item, records):
+        if item.get("gang") is not None or not self._excluded_from_cpu_hosts(item, records):
             return False
         try:
             host, tiers = storage_tiers.split_demand(self.demand_of(item))
@@ -19635,42 +19637,63 @@ class PoolQueue:
         return (not tiers and not host.get("gpu") and set(host) <= {"cpu", "mem_gb"}
                 and int(host.get("cpu", 0)) > 0 and int(host.get("mem_gb", 0)) > 0)
 
-    def _class_scoped_beside_ready_gpu(
-        self, item: Mapping[str, object], ready_gpu: Mapping[str, object], *,
-        ledger: "ResourceLedger", total: Mapping[str, int], controller: object | None,
+    def _class_scoped_room(
+        self, ready_gpu: Mapping[str, object], *, ledger: "ResourceLedger",
+        total: Mapping[str, int], controller: object | None,
         gpu_controller: object | None, observed_images: Container[str] | None,
         container_class_policy: image_inventory.ClassImagePolicy | None,
         container_inventory: Mapping[str, object] | None,
-        identity: object, demand: Mapping[str, int],
-    ) -> dict[str, object] | None:
-        """``None`` when a class-scoped CPU row may take its tokens now; else why not (#1589).
+    ) -> tuple[dict[str, object] | None, str | None]:
+        """The room a class-scoped CPU row must leave the eligible GPU row, or why there is none (#1589).
 
-        Called under host admission, with the row's own demand known, just before
-        it takes its tokens.  GPU safety is the room the eligible GPU row keeps
-        (:meth:`_ready_gpu_row_room`: its reservation under the facts its own
-        claim reads first, the producer's export allowance included) against the
-        FREE tokens at this moment: the row passes only if, after it takes its own,
-        that room still fits.  Incumbents hold tokens, and every earlier admission
-        has taken its share, so the GPU row is never what a class-scoped row
-        delays.  Held back as well: a measurement row (its exclusivity contracts
-        are its own), a progress-governed row with no total bound, a room that
-        cannot be established, and any ledger that does not read.
+        Read once per pass, BEFORE host admission and under no lock: it reads the
+        sealed requests and records a stalled shared filesystem can hold up, and
+        nothing here may do that inside the gate every claimant waits on.  The GPU
+        row must be one a running CPU holder cannot keep from starting beyond the
+        tokens it takes: not a measurement row (it needs an idle host), with an
+        explicit ``cpu`` and ``mem_gb`` (an unbounded row is refused whenever the
+        box holds anything), not a gang member (its election fences the host).
+        Then the room is the reservation its own claim charges
+        (:meth:`_ready_gpu_row_room`: under the facts its claim reads first, the
+        producer's export allowance included).
         """
-        if isinstance(identity, tuple) and len(identity) > 1 and identity[1]:
-            return {"class_scoped": "measurement_row"}
+        if ready_gpu.get("gang") is not None:
+            return None, "gpu_row_is_gang_member"
         try:
-            governed, _requested = _declared_run_bound(item)
-        except (OSError, ValueError, PoolContractError, pb.PrismaBuildError):
-            return {"class_scoped": "run_bound_unreadable"}
-        if governed != "deadline":
-            return {"class_scoped": "no_total_run_bound"}
+            host, _tiers = storage_tiers.split_demand(self.demand_of(ready_gpu))
+            if int(host.get("cpu", 0)) <= 0 or int(host.get("mem_gb", 0)) <= 0:
+                return None, "gpu_row_cpu_unbounded"
+            _shape, measurement, _exclusive, _budget = gpu_admission.action_contract(
+                ready_gpu, host)
+        except (OSError, TypeError, ValueError, PoolContractError, pb.PrismaBuildError):
+            return None, "gpu_row_contract_unreadable"
+        if measurement:
+            return None, "gpu_row_is_measurement"
         room = self._ready_gpu_row_room(
             ready_gpu, ledger=ledger, total=total, controller=controller,
             gpu_controller=gpu_controller, observed_images=observed_images,
             container_class_policy=container_class_policy,
             container_inventory=container_inventory)
         if room is None:
-            return {"class_scoped": "gpu_room_unknown"}
+            return None, "gpu_room_unknown"
+        return room, None
+
+    @staticmethod
+    def _class_scoped_beside_room(
+        room: Mapping[str, object], *, ledger: "ResourceLedger", identity: object,
+        demand: Mapping[str, int],
+    ) -> dict[str, object] | None:
+        """``None`` when a class-scoped CPU row may take its tokens now; else why not (#1589).
+
+        Called under host admission, with the row's own demand known, just before
+        it takes its tokens; it reads nothing but the free tokens.  The row passes
+        only if, after it takes its own, ``room`` (:meth:`_class_scoped_room`) still
+        fits them.  Incumbents hold tokens and every earlier admission has taken
+        its share, so the GPU row is never what a class-scoped row delays.  A
+        measurement row is held (its exclusivity contracts are its own).
+        """
+        if isinstance(identity, tuple) and len(identity) > 1 and identity[1]:
+            return {"class_scoped": "measurement_row"}
         try:
             available = ledger.available()
         except OSError:
@@ -20545,6 +20568,9 @@ class PoolQueue:
         #: Every offer on file, stale ones too, read only if a CPU-only row meets
         #: the READY-GPU rule (#1589, :meth:`_excluded_from_cpu_hosts`).
         retained_offers: list[dict[str, object]] | None = None
+        #: The room each eligible GPU row asks of a class-scoped CPU row, read once
+        #: per pass and before any admission lock (#1589).
+        class_rooms: dict[str, tuple[dict[str, object] | None, str | None]] = {}
 
         def offer_records() -> list[dict[str, object]]:
             nonlocal retained_offers
@@ -20758,6 +20784,8 @@ class PoolQueue:
         for item in ready:
             key = str(item.get("action_key", ""))
             class_scoped = False
+            class_room: dict[str, object] | None = None
+            class_why: str | None = None
             held_back = withheld_for is not None and (
                 withheld_kinds is None
                 or self._demands_withheld_kind(item, withheld_kinds))
@@ -20795,13 +20823,22 @@ class PoolQueue:
                 # starved the arm64 smoke a GPU successor waited on (#1589):
                 # it is a candidate, and is decided at the token boundary,
                 # beside the eligible GPU row's own room.
-                class_scoped = (ledger is not None
-                                and self._class_scoped_candidate(item, offer_records()))
+                if ledger is not None and self._class_scoped_candidate(item, offer_records()):
+                    gpu_key = str(ready_gpu.get("action_key"))
+                    if gpu_key not in class_rooms:
+                        class_rooms[gpu_key] = self._class_scoped_room(
+                            ready_gpu, ledger=ledger, total=total, controller=controller,
+                            gpu_controller=gpu_controller, observed_images=observed_images,
+                            container_class_policy=container_class_policy,
+                            container_inventory=container_inventory)
+                    class_room, class_why = class_rooms[gpu_key]
+                    class_scoped = class_room is not None
                 if not class_scoped:
                     self.record_denial(item, "deferred_for_ready_gpu", {
                         "gpu_row": ready_gpu.get("action_key"),
                         "gpu_published_unix": ready_gpu.get("published_unix"),
                         "capacity_total": total,
+                        **({"class_scoped": class_why} if class_why else {}),
                     })
                     continue
             if held_back and not producer:
@@ -21583,13 +21620,9 @@ class PoolQueue:
                                 adaptive = None
                             if not refused and class_scoped:
                                 # #1589: beside the eligible GPU row's own room, now.
-                                why = self._class_scoped_beside_ready_gpu(
-                                    item, ready_gpu, ledger=ledger, total=total,
-                                    controller=controller, gpu_controller=gpu_controller,
-                                    observed_images=observed_images,
-                                    container_class_policy=container_class_policy,
-                                    container_inventory=container_inventory,
-                                    identity=identity, demand=reservation_demand)
+                                why = self._class_scoped_beside_room(
+                                    class_room, ledger=ledger, identity=identity,
+                                    demand=reservation_demand)
                                 if why is not None:
                                     refused = True
                                     refusal_source = "deferred_for_ready_gpu_row"
