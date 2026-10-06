@@ -108,10 +108,11 @@ def describe_absent(key: str, detail: Mapping[str, object]) -> str:
 
 
 def class_members(roster: object, klass: str) -> dict[str, tuple[str, ...]]:
-    """Active members of a declared class, including each box's explicit alias."""
+    """Distinct active class members; canonical names and aliases cannot overlap."""
     if not isinstance(roster, Mapping) or not isinstance(roster.get("boxes"), Mapping):
         raise RosterPresenceError("fleet roster must declare boxes")
     members = {}
+    owners = {}
     for key, entry in roster["boxes"].items():
         if not isinstance(entry, Mapping):
             raise RosterPresenceError(f"invalid roster box {key!r}")
@@ -127,6 +128,13 @@ def class_members(roster: object, klass: str) -> dict[str, tuple[str, ...]]:
             alias = entry.get("_alias", key)
             if not isinstance(alias, str) or not alias:
                 raise RosterPresenceError(f"roster box {key!r} has an invalid alias")
-            members[alias] = tuple(dict.fromkeys((key, alias)))
+            names = tuple(dict.fromkeys((key, alias)))
+            for name in names:
+                if name in owners:
+                    raise RosterPresenceError(
+                        f"roster class {klass!r} name {name!r} overlaps "
+                        f"distinct boxes {owners[name]!r} and {key!r}")
+                owners[name] = key
+            members[key] = names
     return members
 

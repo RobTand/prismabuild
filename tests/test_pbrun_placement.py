@@ -2277,9 +2277,15 @@ def test_class_default_native_cli_smoke(tmp_path, monkeypatch):
     monkeypatch.setattr(pbrun, "SH", fleet)
     monkeypatch.setattr(pbrun, "RUNTIME_ROOT", PUBLISHED_RUNTIME)
     monkeypatch.setattr(socket, "gethostname", lambda: "spark-a")
-    monkeypatch.setattr(sys, "argv", ["pbrun.py", "--cwd", str(work), "--detach", "--",
+    earlier = tmp_path / "earlier-path"
+    monkeypatch.setattr(sys, "argv", ["pbrun.py", "--cwd", str(work), "--detach",
+                                     "--env", f"PATH={earlier}:/usr/bin:/bin", "--",
                                      "bash", "-c", "printf placement-native-ok"])
     assert pbrun.main() == 0
+    earlier.mkdir()
+    shadow = earlier / "bash"
+    shadow.write_text("#!/bin/sh\nprintf redirected-wrong-command\n")
+    shadow.chmod(0o755)
     rows = queue.ready_items()
     assert len(rows) == 1
     row = rows[0]
@@ -2298,11 +2304,138 @@ def test_class_default_native_cli_smoke(tmp_path, monkeypatch):
     cas = core_module.PrismaBuildCAS(fleet / "cas")
     action = cas.read_action_request(row["action_key"])
     assert action is not None
+    assert action["params"]["command"][0] == bash
     receipt = cas.lookup(action)
     assert receipt is not None
     payload = cas.result_path(receipt, action).read_text()
     assert "placement-native-ok" in payload
+    assert "redirected-wrong-command" not in payload
     print(json.dumps({"native_cli_smoke": {"key": row["action_key"], "tags": row["tags"],
         "execution": "CPU-only on the admitted host; synthetic class offers", "python": sys.executable,
         "receipt": receipt, "payload": payload, "terminal": outcome}}, sort_keys=True))
 
+
+@pytest.mark.parametrize("source", ["argv", "environment"])
+@pytest.mark.parametrize("target", ["missing", "dangling", "file", "directory", "executable"])
+def test_default_cli_requires_real_external_targets(class_submission, source, target):
+    submit, root = class_submission
+    dependency = root / "external-input"
+    actual = root / "target"
+    if target == "file":
+        actual.write_text("input")
+    elif target == "directory":
+        actual.mkdir()
+    elif target == "executable":
+        actual.symlink_to(sys.executable)
+    if target != "missing":
+        dependency.symlink_to(actual)
+    command = ["bash", "-c", "true", *([str(dependency)] if source == "argv" else [])]
+    flags = ["--env", "INPUT=" + str(dependency)] if source == "environment" else []
+    from prismabuild import local_dependencies
+    bash = str(Path("/bin/bash").resolve())
+    answers = local_dependencies.observe({bash: "executable", str(dependency): "path"})
+    if target in ("missing", "dangling"):
+        with pytest.raises(SystemExit) as refused:
+            submit(command, flags=flags)
+        assert str(dependency) in str(refused.value)
+        assert answers[str(dependency)] == "absent"
+    else:
+        action = submit(command, flags=flags, answers={m: answers for m in ("spark-a", "spark-b")})
+        assert action["params"]["local_dependencies"][str(dependency)] == "path"
+        assert action["params"]["placement"]["required_tags"] == ["gb10", "local-dependency-v1"]
+
+
+@pytest.mark.parametrize("population", ["healthy", "missing", "reused"])
+def test_class_proof_needs_a_distinct_real_offer_per_member(tmp_path, population):
+    from prismabuild import local_dependencies
+    queue = pool_module.PoolQueue(tmp_path / "queue")
+    dependency = tmp_path / "input"
+    dependency.write_text("present")
+    requirements = {str(dependency): "path"}
+    members = {"box-a": ("box-a",), "box-b": ("box-b",)}
+    if population == "reused":
+        members = {"box-a": ("box-a", "box-b"), "box-b": ("box-b",)}
+    hosts = ["box-a", "box-b"] if population == "healthy" else ["box-b"]
+    for host in hosts:
+        queue.announce(host=host, tags=["gb10", local_dependencies.TAG], has_gpu=False,
+                       capacity={"cpu": 1}, local_dependency_answers=local_dependencies.observe(requirements))
+    reason = queue.class_dependency_gap("gb10", members, requirements)
+    if population == "healthy":
+        assert reason is None
+    elif population == "missing":
+        assert "box-a" in reason
+    else:
+        assert "box-b" in reason and "another member" in reason
+
+
+def test_default_cli_captured_execution_cannot_rebind_a_bare_executable(class_submission):
+    submit, root = class_submission
+    earlier = root / "earlier"
+    selected = root / "selected"
+    selected.mkdir()
+    executable = selected / "selected-tool"
+    executable.write_text('#!/bin/sh\nprintf "%s\\n" "$0"\n')
+    executable.chmod(0o755)
+    action = submit([executable.name], flags=["--env", f"PATH={earlier}:{selected}:/usr/bin:/bin"],
+                    answers={m: {str(executable): "executable"} for m in ("spark-a", "spark-b")})
+    assert action["params"]["command"] == [str(executable)]
+    assert action["params"]["local_dependencies"] == {str(executable): "executable"}
+    earlier.mkdir()
+    shadow = earlier / executable.name
+    shadow.write_text('#!/bin/sh\nprintf "%s\\n" "$0"\n')
+    shadow.chmod(0o755)
+    result = subprocess.run(action["task"]["argv"], cwd=root, text=True, capture_output=True,
+                            env=action["environment"]["variables"])
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == str(executable)
+    assert (root / action["task"]["result_path"]).read_text().strip() == str(executable)
+
+
+def test_default_cli_binds_venv_invocation_not_the_system_target(class_submission):
+    submit, root = class_submission
+    venv = root / "venv"
+    made = subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(venv)],
+                          text=True, capture_output=True)
+    assert made.returncode == 0, made.stderr
+    python = venv / "bin" / "python"
+    action = submit(["python", "-c", "import sys; print(sys.prefix)"],
+                    flags=["--env", f"PATH={python.parent}:/usr/bin:/bin"],
+                    answers={m: {str(python): "executable"} for m in ("spark-a", "spark-b")})
+    assert action["params"]["command"][0] == str(python)
+    assert action["params"]["local_dependencies"] == {str(python): "executable"}
+    result = subprocess.run(action["task"]["argv"], cwd=root, text=True, capture_output=True,
+                            env=action["environment"]["variables"])
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == str(venv)
+
+
+def test_bound_checkout_executable_remains_relative_when_snapshot_relocates(tmp_path):
+    checkout = _git_checkout(tmp_path)
+    executable = checkout / "task"
+    executable.write_text('#!/bin/sh\npwd\n')
+    executable.chmod(0o755)
+    command, requirements = pbrun.command_dependency_contract(
+        checkout, ["task"], repository_root=checkout,
+        environment={"PATH": ".:/usr/bin:/bin"}, caller_environment={})
+    assert command == ["./task"] and requirements == {}
+    relocated = tmp_path / "relocated"
+    relocated.mkdir()
+    (relocated / "task").write_bytes(executable.read_bytes())
+    (relocated / "task").chmod(0o755)
+    from prismabuild import movement_actions
+    result = subprocess.run(movement_actions.standard_capture_argv(command, "captured.txt", path_prefix="/usr/bin"),
+                            cwd=relocated, text=True, capture_output=True)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == str(relocated)
+
+
+def test_default_cli_resolves_nominal_docker_through_capture_shim(class_submission, monkeypatch):
+    submit, _ = class_submission
+    wrapper = Path(__file__).resolve().parents[1] / "tools" / "fleet"
+    monkeypatch.setattr(pbrun, "CONTAINER_WRAPPER_DIR", wrapper)
+    action = submit(["docker", "--version"], answers={
+        m: {str(wrapper / "docker"): "executable"} for m in ("spark-a", "spark-b")})
+    assert action["params"]["command"] == [str(wrapper / "docker"), "--version"]
+    from prismabuild import movement_actions
+    assert action["task"]["argv"] == movement_actions.standard_capture_argv(
+        action["params"]["command"], action["task"]["result_path"], path_prefix=str(wrapper))

@@ -28,7 +28,7 @@ def observe(requirements: Mapping[str, str]) -> dict[str, str]:
         try:
             if candidate.is_file() and os.access(candidate, os.X_OK):
                 answers[path] = "executable"
-            elif candidate.exists() or candidate.is_symlink():
+            elif candidate.exists():
                 answers[path] = "path"
             else:
                 answers[path] = "absent"

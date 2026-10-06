@@ -6162,6 +6162,7 @@ class PoolQueue:
         if not members:
             return f"no active {klass} class members declared"
         live = self.offers()
+        used_hosts = set()
         known = {alias for aliases in members.values() for alias in aliases}
         for offer in live:
             if klass in (offer.get("tags") or []) and offer.get("host") not in known:
@@ -6172,6 +6173,10 @@ class PoolQueue:
             if len(offers) != 1:
                 return f"{member}: missing or ambiguous fresh {klass} offer"
             offer = offers[0]
+            host = offer.get("host")
+            if host in used_hosts:
+                return f"{member}: fresh {klass} offer {host} already supplies another member"
+            used_hosts.add(host)
             if requirements and local_dependencies.TAG not in (offer.get("tags") or []):
                 return f"{member}: dependency capability unknown"
             missing = local_dependencies.missing(requirements, offer.get("local_dependencies"))

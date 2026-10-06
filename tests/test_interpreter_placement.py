@@ -390,13 +390,22 @@ def test_one_present_answer_beats_every_absent_one(tmp_path):
     assert kind is None
 
 
-@pytest.mark.parametrize("missing", [False, True])
-def test_local_dependency_requirement_guards_claim_before_attempt(tmp_path, missing):
+@pytest.mark.parametrize("target", ["file", "directory", "executable", "missing", "dangling"])
+def test_local_dependency_requirement_guards_claim_before_attempt(tmp_path, target):
     from prismabuild import local_dependencies
     q = _queue_at(tmp_path)
     dependency = tmp_path / "input.bin"
-    if not missing:
+    if target == "file":
         dependency.write_text("input")
+    elif target == "directory":
+        dependency.mkdir()
+    elif target == "executable":
+        dependency.symlink_to(sys.executable)
+    elif target == "dangling":
+        dependency.symlink_to(tmp_path / "missing-target")
+    missing = target in ("missing", "dangling")
+    assert local_dependencies.observe({str(dependency): "path"}) == {
+        str(dependency): "absent" if missing else "executable" if target == "executable" else "path"}
     key = "d" * 64
     _publish(q, key, resources={"cpu": 1},
              local_dependencies={str(dependency): "path"})

@@ -2680,10 +2680,15 @@ miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
   names such as `repo-results` remain external paths. It also checks embedded
   `--out=<path>`, quoted command strings, and colon-separated path lists. New
   submissions from non-Git directories refuse: there is no mutable-path
-  override. The command executable is resolved exactly from argv[0] and the
-  declared PATH. Pool defaults from a declared gb10 member, or GPU work from
-  celestia, use gb10 only when every active class member in the fleet roster
-  has a fresh offer positively answering every local dependency (#1511).
+  override. Default portable placement resolves argv[0] against the same
+  shim-prefixed PATH as capture and binds that invocation into params.command
+  and task.argv; a later same-name PATH entry cannot redirect execution.
+  Checkout executables use relative invocation paths so snapshots relocate,
+  and nominal Docker still runs through the existing shim. Pool defaults from
+  a declared gb10 member, or GPU work from celestia, use gb10 only when every
+  distinct active canonical member has its own fresh offer positively answering
+  every local dependency (#1511). Alias/canonical overlap refuses roster proof;
+  a physical offer cannot supply multiple declared members.
   An absent executable still refuses. The full direct argv and caller-environment
   screen runs before class selection; repository/shared paths remain portable.
   Missing, stale, incomplete or old-generation dependency evidence retains the
@@ -2694,7 +2699,8 @@ miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
   PB's default bash and configured worker Python, then answers the ready rows'
   sealed `dependency_queries` on every box. Queries from a conservative host
   pin are advisory, not homogeneity proof. Claim rechecks required paths before
-  spending an attempt. This proves presence, not byte/toolchain equivalence or
+  spending an attempt. A dangling link is absent; real file/directory targets
+  preserve presence. This proves presence, not byte/toolchain equivalence or
   protection against deletion after the check. Venv invocation paths are not
   collapsed to their system-Python symlink targets. The screen cannot parse
   shell/application indirection: `--tag` assigns those dependencies to a

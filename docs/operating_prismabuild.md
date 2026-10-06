@@ -284,8 +284,9 @@ Without `--tag`, `--here` or `--anywhere`, pool submissions from a
 declared Spark and GPU submissions from celestia default to `gb10` only
 when **every active class member** has fresh, positive worker-offer evidence
 for the command's executable and every direct local argv/environment path.
-The fleet roster supplies membership and aliases; the existing queue still
-chooses the worker by load, not a submitter scheduler.
+The fleet roster retains every distinct canonical member and rejects overlapping
+canonical names or aliases. Each member needs its own fresh offer: one host
+cannot supply two members. The existing queue still chooses by load.
 
 A host-only dependency, an unanswered path, a missing/stale member offer,
 or a worker without `local-dependency-v1` keeps the conservative host pin
@@ -294,14 +295,19 @@ questions from ready rows, plus local checks of PB's default bash and their
 configured worker interpreter. A first-use path may be unknown; neither the
 submitter's copy nor a busy/missing member proves homogeneity. Name
 `--tag gb10` explicitly when you own that dependency assertion. An executable
-or direct external input absent on the submitter still refuses by default.
+or direct external input absent on the submitter still refuses by default; a
+dangling symlink is absent, while links to real files or directories are valid.
 Repository/shared paths remain portable under the snapshot contract; indirect
 shell/application dependencies remain yours to declare.
 
 Sealed local requirements and the capability fence class-default rows during
 rolling adoption. Claim rechecks presence before an attempt; this does not
-attest equal bytes or prevent later deletion. A venv Python names the venv
-path, not just its resolved system interpreter. Explicit `--here` and tags
+attest equal bytes or prevent later deletion. Default portable placement binds
+the resolved invocation into the captured command, so later PATH entries cannot
+redirect it. Resolution includes the normal Docker shim prefix; Docker still
+uses that shim. Checkout executables retain relocatable relative paths. A venv
+Python keeps its invocation path, not its dereferenced system interpreter.
+Explicit `--here` and tags
 remain authoritative; `--anywhere --tag` remains invalid. Use a class tag
 alone, or `--anywhere` alone only if every eligible worker can run the command.
 Measurements keep their submitting-host pin by default. Existing

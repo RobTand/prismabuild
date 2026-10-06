@@ -1633,11 +1633,11 @@ def keep_droppings_out_of_git(cwd: Path) -> Path | None:
         ) from exc
 
 
-def command_local_dependencies(
+def command_dependency_contract(
     cwd: Path, command: list[str], *, repository_root: Path,
     environment: dict[str, str] | None, caller_environment: dict[str, str] | None,
-) -> dict[str, str]:
-    """Resolve argv[0] exactly, then screen every direct argv/environment path."""
+) -> tuple[list[str], dict[str, str]]:
+    """Bind the invocation and its direct path requirements in one resolution."""
     root = repository_root.resolve()
 
     def external(candidate: Path) -> bool:
@@ -1693,14 +1693,18 @@ def command_local_dependencies(
         path = Path(os.path.abspath(cwd / candidate))
         if not external(path):
             continue
-        if not path.exists() and not path.is_symlink():
+        if not path.exists():
             raise SystemExit(
                 "pbrun: direct argv or caller environment names an "
                 "external path absent from the submitting box: "
                 f"{candidate}. Pass --tag for the worker class that owns "
                 "it, or --anywhere to assert its portability.")
         requirements.setdefault(str(path), "path")
-    return local_dependencies.normalize(requirements)
+    invocation = (os.path.relpath(executable, cwd)
+                  if executable.is_relative_to(root) else str(executable))
+    if not os.path.isabs(invocation) and os.sep not in invocation:
+        invocation = "./" + invocation
+    return [invocation, *command[1:]], local_dependencies.normalize(requirements)
 
 
 def placement_contract(
@@ -1709,20 +1713,20 @@ def placement_contract(
     repository_root: Path | None = None, environment: dict[str, str] | None = None,
     caller_environment: dict[str, str] | None = None, anywhere: bool = False,
     needs_gpu: bool = False, offer_queue=None,
-) -> tuple[list[str], dict[str, str]]:
-    """Placement and its dependency questions; the queue still chooses the worker."""
+) -> tuple[list[str], dict[str, str], list[str] | None]:
+    """Placement, dependency questions and the exact command they prove."""
     if explicit:
-        return ([*dict.fromkeys(t for t in explicit if t != hostname), hostname]
-                if here else list(explicit)), {}
+        return (([*dict.fromkeys(t for t in explicit if t != hostname), hostname]
+                 if here else list(explicit)), {}, command)
     if here:
-        return [hostname], {}
+        return [hostname], {}, command
     if anywhere:
-        return [], {}
+        return [], {}, command
     if not portable_checkout:
-        return ([hostname] if is_box_local(cwd) else []), {}
+        return ([hostname] if is_box_local(cwd) else []), {}, command
     if command is None:
-        return [], {}
-    requirements = command_local_dependencies(
+        return [], {}, command
+    command, requirements = command_dependency_contract(
         cwd, command, repository_root=repository_root or cwd,
         environment=environment, caller_environment=caller_environment)
     if offer_queue is not None:
@@ -1737,10 +1741,10 @@ def placement_contract(
         if hostname in aliases or (hostname == "celestia" and needs_gpu):
             reason = offer_queue().class_dependency_gap("gb10", members, requirements)
             if reason is None:
-                return ["gb10", *([local_dependencies.TAG] if requirements else [])], requirements
+                return ["gb10", *([local_dependencies.TAG] if requirements else [])], requirements, command
             print(f"pbrun: keeping host pin {hostname}: gb10 dependencies not proven: {reason}",
                   file=sys.stderr, flush=True)
-    return ([hostname] if requirements else []), requirements
+    return ([hostname] if requirements else []), requirements, command
 
 
 def placement_tags(
@@ -7387,13 +7391,16 @@ def prepare_submission(args: argparse.Namespace) -> dict[str, object]:
             offer_snapshot = bounded_offer_snapshot(q)
         return offer_snapshot
 
-    tags, dependency_queries = placement_contract(
+    # Resolve against the same shim-prefixed PATH the captured action receives.
+    invocation_environment = {
+        **variables, "PATH": f"{wrapper_dir}:{variables.get('PATH') or '/usr/local/bin:/usr/bin:/bin'}"}
+    tags, dependency_queries, command = placement_contract(
         cwd,
         explicit=[*args.tag, *([args.host_class] if pool_measurement_class else [])],
         here=args.here or (pool_measurement and not pool_measurement_class),
         hostname=socket.gethostname(), portable_checkout=portable_checkout,
         command=command, repository_root=repository_root,
-        environment=variables, caller_environment=caller_variables,
+        environment=invocation_environment, caller_environment=caller_variables,
         anywhere=args.anywhere, needs_gpu=bool(demand.get("gpu")),
         offer_queue=offer_queue if args.transport == "pool" else None,
     )
