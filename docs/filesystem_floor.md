@@ -173,6 +173,19 @@ call, so it holds no growth allowance (its used paths are still checked).
 6. `mode enforce`.  Rollback is `mode off` (or `PRISMABUILD_FILESYSTEM_FLOOR=off`
    for one process); no restart is needed either way.
 
+**Upgrade every owner host before step 6 (#1542, item 5).** A sample carries
+the inode counters (`size_inodes`, `free_inodes`, `floor_inodes`,
+`inode_refusal`) only when its owner host's loop runs a generation containing
+the inode floor (#1540).  `published_verdict` refuses a sample without them as
+`inode_sample_missing`, so under `enforce`, while any binding's owner host
+(`owner_host` in `fs/<digest(key)>/binding.json`, shown as `owner` by
+`status`) still runs an older generation, every byte acquisition on that
+filesystem is refused until that host upgrades; under `observe` it only prints
+`would refuse`.  Before `mode enforce`, run `status` and confirm that no
+binding's `verdict` reads `inode_sample_missing`.  If one does, upgrade that
+owner host (or stay in `observe`); do not switch `mode` for the whole fleet to
+`off` to get past it.
+
 ## End-to-end CPU proof (gate for `enforce`)
 
 All through PrismaBuild CPU actions on the real fleet:
