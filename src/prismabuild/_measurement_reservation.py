@@ -35,10 +35,17 @@ MAX_FENCE_BYTES = 4096
 #: nothing a holder needs; a holder never waits on a waiter.
 FENCE_WAIT_S = 2.0
 FENCE_POLL_S = 0.02
+#: How many times one census rescans when a listed publication vanishes under it
+#: (#1570); the census child's own deadline still bounds the total.
+CAPTURE_RESCANS = 3
 
 
 class CensusUnavailable(RuntimeError):
     """An incomplete census cannot authorize lower-priority acquisition."""
+
+
+class PublicationDisappeared(CensusUnavailable):
+    """A listed publication was gone when the census read it (#1570)."""
 
 
 def _read(path: Path, *, optional: bool = False, limit: int = MAX_RECORD_BYTES) -> dict | None:
@@ -48,7 +55,7 @@ def _read(path: Path, *, optional: bool = False, limit: int = MAX_RECORD_BYTES) 
     except FileNotFoundError:
         if optional:
             return None
-        raise CensusUnavailable(f"publication disappeared during census: {path}") from None
+        raise PublicationDisappeared(f"publication disappeared during census: {path}") from None
     value = core._decode_strict_json(raw, where=READ_SECTION)
     if not isinstance(value, dict):
         raise CensusUnavailable(f"non-object census record: {path}")
@@ -86,6 +93,25 @@ def selection(record: dict) -> dict | None:
 
 
 def _capture(queue: PoolQueue) -> dict:
+    """One strict census, rescanned when a listed publication vanishes (#1570).
+
+    A publication is claimed, finished or withdrawn at any moment, so the
+    directory listing can name a file that is gone by the time it is read. That
+    is a race with the queue, not an unreadable census: refusing it denied the
+    whole pass ('publication disappeared during census') on a queue whose
+    rows were moving. Rescan a bounded number of times; a queue that keeps
+    changing under every scan, or any other unreadable record, still refuses.
+    """
+    for attempt in range(CAPTURE_RESCANS):
+        try:
+            return _scan(queue)
+        except PublicationDisappeared:
+            if attempt + 1 == CAPTURE_RESCANS:
+                raise
+    raise AssertionError("unreachable")  # pragma: no cover
+
+
+def _scan(queue: PoolQueue) -> dict:
     """Strict full-publication discovery; called only by the read-only child.
 
     Include finish marks and elected sidecars even when neither live directory
