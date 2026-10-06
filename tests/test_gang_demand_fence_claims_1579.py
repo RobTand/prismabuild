@@ -104,7 +104,8 @@ def test_publish_assigns_the_roles_to_prismabuilds_own_movement_nodes_only(gang_
         ("ordinary", None, small, True, None, (), None),
         ("copy", "local_resident.py", small, True, None, ("--operation", "copy"), None),
         ("mover-without-range", "stage_move.py", {"cpu": 4, "mem_gb": 8}, True, None, (), None),
-        ("gpu-mover", "stage_move.py", {"cpu": 4, "mem_gb": 8, "gpu": 1}, True, RANGE, (), None),
+        ("gpu-mover", "stage_move.py", {"cpu": 4, "mem_gb": 8, "gpu": 1, STAGE_KIND: 2}, True, RANGE, (),
+         None),
     ]
     for name, script, resources, recompute, residency, extra, role in cases:
         key = _publish_sealed(queue, tmp_path, clock, name, script=script, resources=resources,
