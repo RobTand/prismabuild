@@ -15,7 +15,7 @@ import json
 import os
 from pathlib import Path
 import sys
-
+import subprocess
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -205,3 +205,55 @@ def test_repository_visible_in_status_reads(tmp_path):
     assert len(entries) == 1
     assert pbstatus.ending_row(entries[0], queue.root)[
         "tested_repository"] == "atlas"
+
+
+def test_linked_worktree_reports_its_main_repository(tmp_path):
+    main = tmp_path / "main"
+    main.mkdir()
+    (main / "seed.txt").write_text("sealed\n", encoding="utf-8")
+    for args in (
+        ("init", "-q", "-b", "main"),
+        ("config", "user.email", "test@example.invalid"),
+        ("config", "user.name", "PrismaBuild test"),
+        ("add", "seed.txt"),
+        ("commit", "-qm", "sealed tree"),
+    ):
+        done = subprocess.run(
+            ["git", "-C", str(main), *args],
+            capture_output=True, text=True)
+        assert done.returncode == 0, done.stderr
+    linked = tmp_path / "linked"
+    done = subprocess.run(
+        ["git", "-C", str(main), "worktree", "add", str(linked)],
+        capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    assert pbrun.tested_repository_name(linked) == "main"
+    assert pbrun.tested_repository_name(main) == "main"
+
+
+def test_worktree_of_a_bare_origin_names_the_bare_stem(tmp_path):
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "seed.txt").write_text("sealed\n", encoding="utf-8")
+    for args in (
+        ("init", "-q", "-b", "main"),
+        ("config", "user.email", "test@example.invalid"),
+        ("config", "user.name", "PrismaBuild test"),
+        ("add", "seed.txt"),
+        ("commit", "-qm", "sealed tree"),
+    ):
+        done = subprocess.run(
+            ["git", "-C", str(src), *args],
+            capture_output=True, text=True)
+        assert done.returncode == 0, done.stderr
+    done = subprocess.run(
+        ["git", "clone", "-q", "--bare", str(src), str(tmp_path / "blue.git")],
+        capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    wt = tmp_path / "wt-blue"
+    done = subprocess.run(
+        ["git", "--git-dir", str(tmp_path / "blue.git"),
+         "worktree", "add", str(wt), "main"],
+        capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    assert pbrun.tested_repository_name(wt) == "blue"

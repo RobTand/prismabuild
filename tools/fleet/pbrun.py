@@ -258,16 +258,44 @@ def git_repository_root(cwd: Path) -> Path | None:
 def tested_repository_name(cwd: Path) -> str:
     """The repository a sealed checkout belongs to, or ``"unknown"`` (#1565).
 
-    The sealed tree's own root names it: the directory basename of what
-    :func:`git_repository_root` places, which is the mechanism ``pbtest``
-    already submits through.  A checkout Git cannot place -- a plain
+    A linked worktree names its main repository, not its own directory: the
+    checkout's Git common dir places the repository the tree belongs to, in
+    the same ``rev-parse`` style :func:`git_repository_root` already uses --
+    no new mechanism.  A normal ``.git`` common dir names the working tree
+    that owns it (the checkout itself for a plain clone); a bare common dir
+    named ``X.git`` names ``X``; an exotic gitdir layout falls back to the
+    sealed root's own basename.  A checkout Git cannot place -- a plain
     directory, an unreadable ``.git`` -- is ``"unknown"`` explicitly: never
     blank, and never guessed from host, interpreter or parent process.
     """
     root = git_repository_root(cwd)
-    if root is None or not root.name.strip():
+    if root is None:
         return pool.TESTED_REPOSITORY_UNKNOWN
-    return root.name.strip()
+    try:
+        completed = pb._git_run(
+            root, "rev-parse", "--git-common-dir", timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return pool.TESTED_REPOSITORY_UNKNOWN
+    if completed.returncode != 0:
+        return pool.TESTED_REPOSITORY_UNKNOWN
+    text = completed.stdout.strip()
+    if not text:
+        return pool.TESTED_REPOSITORY_UNKNOWN
+    common = Path(text)
+    if not common.is_absolute():
+        # Git spells a co-located common dir relative (".git").
+        common = root / common
+    name = common.name
+    if name == ".git":
+        candidate = common.parent.name
+    elif name.endswith(".git"):
+        candidate = name[: -len(".git")]
+    else:
+        candidate = root.name
+    candidate = candidate.strip()
+    if not candidate:
+        return pool.TESTED_REPOSITORY_UNKNOWN
+    return candidate
 
 
 def _snapshot_fail(

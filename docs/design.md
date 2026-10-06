@@ -414,9 +414,12 @@ publication metadata; older deferred records without it still read. SLURM
 stores it with the submission, not in the action or `sbatch` priority flags.
 
 `tested_repository` names the repository a submission sealed, for test-cost
-accounting (#1565). `pbrun` freezes it from the checkout it seals -- the
-directory name of the repository root, `unknown` when Git cannot place it --
-and it rides the queue row beside the action the way `priority_reason` does:
+accounting (#1565). `pbrun` freezes it from the checkout it seals: the Git
+common dir places the repository the tree belongs to, so a linked worktree
+names its main repository rather than its own directory (a bare origin named
+`X.git` names `X`); a plain checkout names its root, and `unknown` -- never
+blank, never guessed -- when Git cannot place the checkout at all. It rides
+the queue row beside the action the way `priority_reason` does:
 outside the sealed body and its cache key, so tagging an action never re-keys
 it. The worker side copies the row's tag into each attempt record, the end
 record keeps the row's own copy (a requeue carries it forward as a new
