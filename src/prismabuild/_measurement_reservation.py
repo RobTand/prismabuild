@@ -208,35 +208,101 @@ def _scan_publications(queue: PoolQueue) -> dict:
         if versions and all(float(row["published_unix"]) > chosen["published_unix"] for row in versions):
             continue
         elections[key] = chosen  # missing authority stays fenced, indefinitely
+    gang_elections = _gang_elections(queue, rows, count)
     return {"measurements": measurements, "elections": elections, "selections": selected,
             "opportunities": opportunities, "keys": sorted(set(measurements) | set(selected)),
-            "gang_elections": _gang_elections(queue, rows, count)}
+            "gang_elections": gang_elections,
+            "capacity_returners": _capacity_returners(queue, rows, gang_elections)}
+
+
+def _prerequisites_of(queue: PoolQueue, rows: dict[str, list[dict]], key: str,
+                      published: float | None = None) -> set[str]:
+    """The action keys one live row waits on: its residency leads, or its plan's.
+
+    A residency block names the leads; a planner row carries none and its
+    leads are in the plan filed for it.  Best effort: a plan that does not
+    read contributes nothing.
+    """
+    from . import residency_plan
+    found: set[str] = set()
+    for row in rows.get(key, []):
+        if published is not None and float(row.get("published_unix", math.nan)) != published:
+            continue
+        block = row.get("residency")
+        if isinstance(block, dict) and isinstance(block.get("leads"), list):
+            found.update(lead for lead in block["leads"] if isinstance(lead, str))
+            continue
+        try:
+            plan = residency_plan.read(queue, key)
+            if plan is not None:
+                found.update(residency_plan.leads_for(plan))
+        except (OSError, ValueError, KeyError, TypeError, residency_plan.ResidencyPlanError):
+            continue
+    return found
 
 
 def _member_leads(queue: PoolQueue, rows: dict[str, list[dict]], record: dict) -> list[str]:
-    """The action keys a gang's members wait on before they can start (#1579).
+    """The gang's closure: every action key its members wait on, transitively (#1579).
 
-    A member's residency block names its leads; a planner row carries none and
-    its leads are in the plan filed for it.  Best effort: a plan that does not
-    read contributes nothing, which can only make the drain apply to more rows.
+    The members' own prerequisites, then the prerequisites of each of those
+    (a promotion waits on the mover that staged its bytes, and so on), until
+    no new key appears.  The closure is the set of rows the drain must never
+    hold: a member cannot start unless each one can be admitted.  The walk
+    visits each key once, so a cycle in the records ends it.
+    """
+    closure: set[str] = set()
+    frontier = [(member["action_key"], member["published_unix"]) for member in record["members"]]
+    while frontier:
+        key, published = frontier.pop()
+        for lead in _prerequisites_of(queue, rows, key, published):
+            if lead not in closure:
+                closure.add(lead)
+                frontier.append((lead, None))
+                if len(closure) > MAX_RECORDS:
+                    raise CensusUnavailable("gang prerequisite closure cap exceeded")
+    return sorted(closure)
+
+
+def _egress_keys(plan: dict) -> set[str]:
+    """The action keys of the rows a residency plan files to take capacity back."""
+    found: set[str] = set()
+    for phase in plan.get("phases") or []:
+        if not isinstance(phase, dict):
+            continue
+        for role, table in (("egress_row", "stage_chunks"), ("ram_egress_row", "ram_chunks")):
+            legs = phase.get(table)
+            for leg in legs if isinstance(legs, list) else [phase]:
+                row = leg.get(role) if isinstance(leg, dict) else None
+                if isinstance(row, dict) and isinstance(row.get("action_key"), str):
+                    found.add(row["action_key"])
+    return found
+
+
+def _capacity_returners(queue: PoolQueue, rows: dict[str, list[dict]], elections: dict) -> list[str]:
+    """Live rows whose whole job is to give capacity back (#1579).
+
+    A stage or RAM egress (named by the frozen plan of the consumer it
+    serves) and a produced-output export (``dependent_of``) return tier or
+    spool capacity that a running action, and through it a waiting gang, is
+    held up by.  Read only while some election is old enough to drain: the
+    plan reads are not free and nothing else needs them.  A plan that does
+    not read contributes nothing.
     """
     from . import residency_plan
-    leads: set[str] = set()
-    for member in record["members"]:
-        for row in rows.get(member["action_key"], []):
-            if float(row.get("published_unix", math.nan)) != member["published_unix"]:
-                continue
-            block = row.get("residency")
-            if isinstance(block, dict) and isinstance(block.get("leads"), list):
-                leads.update(key for key in block["leads"] if isinstance(key, str))
-                continue
-            try:
-                plan = residency_plan.read(queue, member["action_key"])
-                if plan is not None:
-                    leads.update(residency_plan.leads_for(plan))
-            except (OSError, ValueError, KeyError, TypeError, residency_plan.ResidencyPlanError):
-                continue
-    return sorted(leads)
+    now = time.time()
+    if not any(_gang_has_waited(chosen, now) for chosen in elections.values()):
+        return []
+    found: set[str] = set()
+    for key, versions in rows.items():
+        if any(row.get("dependent_of") is not None for row in versions):
+            found.add(key)
+        try:
+            plan = residency_plan.read(queue, key)
+        except (OSError, ValueError, KeyError, TypeError, residency_plan.ResidencyPlanError):
+            continue
+        if plan is not None:
+            found |= _egress_keys(plan)
+    return sorted(found)
 
 
 def _gang_elections(queue: PoolQueue, rows: dict[str, list[dict]], count: int) -> dict:
@@ -418,11 +484,12 @@ class CensusReader:
             value = reply.get("value")
             if (not isinstance(value, dict)
                     or set(value) != {"measurements", "elections", "selections", "opportunities", "keys",
-                                      "gang_elections"}
+                                      "gang_elections", "capacity_returners"}
                     or not all(isinstance(value[field], dict)
                                for field in ("measurements", "elections", "selections", "opportunities",
                                              "gang_elections"))
                     or not isinstance(value["keys"], list)
+                    or not isinstance(value["capacity_returners"], list)
                     or len(value["keys"]) > MAX_RECORDS
                     or any(not isinstance(key, str) or len(key) != 64
                            or any(c not in "0123456789abcdef" for c in key) for key in value["keys"])
@@ -517,29 +584,60 @@ def blocking_selection(census: dict, item: dict, *, host: str, funded_by: str | 
 GANG_DRAIN_AFTER_S = 600.0
 
 
-def _drained_for_gang(item: dict, chosen: dict, now: float) -> bool:
+def _gang_has_waited(chosen: dict, now: float) -> bool:
+    """Whether the gang behind election ``chosen`` has waited past the drain bound."""
+    rank = chosen.get("rank")
+    return (isinstance(rank, list) and len(rank) == 3
+            and isinstance(rank[1], (int, float)) and not isinstance(rank[1], bool)
+            and now - rank[1] > GANG_DRAIN_AFTER_S)
+
+
+def returns_capacity(item: dict, census: dict) -> bool:
+    """Whether ``item`` gives capacity back rather than taking it (#1579).
+
+    The first principle of the drain: it holds work that would TAKE capacity
+    or tokens on a gang member's host, and never work that RETURNS it -- a
+    stage or RAM egress, a produced-output export, the cleanup of either.
+    Such a row is what a running action, and through it the waiting gang, is
+    held up by, so holding it is a cycle.  The census names these rows
+    (``capacity_returners``) from the frozen plans and ``dependent_of`` links
+    of the live rows, so no row *type* is listed here.
+    """
+    return (item.get("dependent_of") is not None
+            or item.get("action_key") in census.get("capacity_returners", ()))
+
+
+def in_gang_closure(item: dict, chosen: dict) -> bool:
+    """Whether ``item`` is one the gang waits on, directly or transitively (#1579).
+
+    The second principle: the election carries the closure of the members'
+    prerequisites (``_member_leads``), a member cannot start unless every one
+    can be admitted, so the drain never holds one.
+    """
+    return item.get("action_key") in (chosen.get("leads") or ())
+
+
+def _drained_for_gang(item: dict, chosen: dict, now: float, census: dict) -> bool:
     """Whether ``item`` is held back because its host is draining for a waiting gang.
 
     A gang that has waited longer than :data:`GANG_DRAIN_AFTER_S` since its first
     member was published drains its elected hosts for NEW admissions of its own
-    priority.  Running work is never touched and nothing is lent.  Exempt: the
-    gang's own members (and any gang's -- two gangs of one priority are ordered
-    by ``rank``, ``ranked_behind``), a verified publication canary slot (its own
-    next-free-safe-boundary contract), and the leads the gang waits on: a member
-    that waits for a lead cannot start unless the lead can be admitted, which a
-    drain would forbid -- the one cycle a pure "wait for the running jobs" rule
-    has.  Every other row, GPU or not, waits.
+    priority.  Running work is never touched and nothing is lent.  Never held:
+    the gang's own members (and any gang's -- two gangs of one priority are
+    ordered by ``rank``, ``ranked_behind``), a verified publication canary slot
+    (its own next-free-safe-boundary contract), work that returns capacity
+    (:func:`returns_capacity`) and the gang's prerequisite closure
+    (:func:`in_gang_closure`).  Those are the only rows the gang itself waits on, so
+    the wait-for graph has no edge into a held row: the gang starts once the
+    running jobs end.  Every other row, GPU or not, waits.
     """
     if item.get("gang") is not None or int(item.get("priority", 0)) != chosen["priority"]:
         return False
     if isinstance(item.get("publication_canary"), dict):
         return False
-    if item.get("action_key") in (chosen.get("leads") or ()):
+    if returns_capacity(item, census) or in_gang_closure(item, chosen):
         return False
-    rank = chosen.get("rank")
-    return (isinstance(rank, list) and len(rank) == 3
-            and isinstance(rank[1], (int, float)) and not isinstance(rank[1], bool)
-            and now - rank[1] > GANG_DRAIN_AFTER_S)
+    return _gang_has_waited(chosen, now)
 
 
 def gang_blocking(census: dict, item: dict, *, host: str, group: str | None,
@@ -559,7 +657,7 @@ def gang_blocking(census: dict, item: dict, *, host: str, group: str | None,
             continue
         if int(item.get("priority", 0)) < chosen["priority"]:
             return chosen
-        if _drained_for_gang(item, chosen, now):
+        if _drained_for_gang(item, chosen, now, census):
             return {**chosen, "drain": True}
     return None
 

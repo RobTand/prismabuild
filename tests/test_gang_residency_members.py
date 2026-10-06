@@ -475,3 +475,69 @@ def test_a_drained_host_still_admits_the_lead_its_gang_waits_on(gang_fleet, monk
     assert gclaim("sparky") == lead, denial(lead, "sparky")
     assert denial(unrelated, "sparky")["reason"] in (
         "deferred_for_gang_reservation", "deferred_behind_withheld_row"), denial(unrelated, "sparky")
+
+
+def test_a_drained_host_still_admits_the_egress_a_running_action_waits_on(
+        gang_fleet, monkeypatch, tmp_path):
+    """Principle 1, real claims: the drain never holds work that returns capacity.
+
+    The egress named by a live consumer's frozen plan is a CPU-only row at the
+    gang's priority published after the drain starts.  It returns the tier
+    capacity the gang waits on, so sparky admits it; an unrelated GPU single
+    published beside it is drained.
+    """
+    from prismabuild import _measurement_reservation as reservation
+    queue, clock, publish, finish, gclaim, denial, members = gang_fleet
+    lead = _hexkey("egress-lead")
+    group, (first, second) = members("egress-exempt", priority=-10,
+                                     residency=_consumer_block([lead]))
+    queue.mint_tier_capacity(TIER, {"stage_gib": 8})
+    _frozen_plan(queue, first, lead)
+    egress = _hexkey(f"{first[:8]}-egress")
+    assert gclaim("sparklina") is None
+    assert gclaim("sparky") is None
+    assert denial(second, "sparky")["reason"] == "gang_waiting_for_peers"
+    clock[0] += reservation.GANG_DRAIN_AFTER_S + 1
+    unrelated = publish("unrelated-gpu-2", priority=-10, timeout_s=None,
+                        cpu=1, gpu=1, mem_gb=8, tags=["sparky"])
+    clock[0] += 0.001
+    queue.publish(action_key=egress, cas_root=str(queue.root / "cas"),
+                  checkout_root=str(queue.root / "co"),
+                  worker_script=str(queue.root / "worker.py"),
+                  resources={"cpu": 1, "mem_gb": 1}, priority=-10, max_attempts=1,
+                  retry_safe=True, tags=["sparky"])
+    assert gclaim("sparky") == egress, denial(egress, "sparky")
+    assert denial(unrelated, "sparky")["reason"] in (
+        "deferred_for_gang_reservation", "deferred_behind_withheld_row"), denial(unrelated, "sparky")
+
+
+def test_a_drained_host_still_admits_a_leads_own_prerequisite(gang_fleet, monkeypatch, tmp_path):
+    """Principle 2, real claims: the exemption is the transitive closure.
+
+    The member waits on ``lead``, and ``lead`` itself waits on ``deep`` (its
+    residency block names it).  Both are GPU rows at the gang's priority
+    published after the drain starts; ``deep`` is admitted too.
+    """
+    from prismabuild import _measurement_reservation as reservation
+    queue, clock, publish, finish, gclaim, denial, members = gang_fleet
+    lead = _hexkey("closure-lead")
+    deep = _hexkey("closure-deep")
+    group, (first, second) = members("closure-exempt", priority=-10,
+                                     residency=_consumer_block([lead]))
+    queue.mint_tier_capacity(TIER, {"stage_gib": 8})
+    assert gclaim("sparklina") is None
+    assert gclaim("sparky") is None
+    clock[0] += reservation.GANG_DRAIN_AFTER_S + 1
+    unrelated = publish("unrelated-gpu-3", priority=-10, timeout_s=None,
+                        cpu=1, gpu=1, mem_gb=8, tags=["sparky"])
+    for key, block in ((lead, _consumer_block([deep])), (deep, None)):
+        clock[0] += 0.001
+        extra = {} if block is None else {"residency": block}
+        queue.publish(action_key=key, cas_root=str(queue.root / "cas"),
+                      checkout_root=str(queue.root / "co"),
+                      worker_script=str(queue.root / "worker.py"),
+                      resources={"cpu": 1, "gpu": 1, "mem_gb": 8}, needs_gpu=True,
+                      priority=-10, max_attempts=1, retry_safe=False, tags=["sparky"], **extra)
+    assert gclaim("sparky") == deep, (denial(deep, "sparky"), denial(lead, "sparky"))
+    assert denial(unrelated, "sparky")["reason"] in (
+        "deferred_for_gang_reservation", "deferred_behind_withheld_row"), denial(unrelated, "sparky")
