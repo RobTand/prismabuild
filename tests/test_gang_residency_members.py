@@ -545,18 +545,19 @@ def test_a_lead_that_reads_live_again_clears_the_mark_and_the_gang_survives(
     queue, clock, gclaim, denial, group, first, second, lead = _fail_lead_and_mark(
         gang_fleet, monkeypatch, tmp_path, "requeue-gang")
     ended = pool._read_json(queue.item_path(pool.FAILED, lead))
-    # The lead is live again: a READY record under a later generation.
+    # The lead is live again: a CLAIMED record under a later generation (a READY
+    # one would be claimed by the very pass under test).
     live = dict(pool._read_json(queue.item_path(pool.DONE, lead))
                 or pool._read_json(queue.item_path(pool.FAILED, lead)))
     live["published_unix"] = float(ended["published_unix"]) + 5
     live.pop("status", None)
-    pool._write_json_atomic(queue.item_path(pool.READY, lead), live)
+    pool._write_json_atomic(queue.item_path(pool.CLAIMED, lead), live)
     assert gclaim("sparklina") is None
     assert denial(first, "sparklina")["reason"] == "residency_lead_not_resident"
     assert not _gang.terminal_mark_path(queue, group, first).exists()
 
     # It ends again long after: a terminal reading that is new, not confirmed.
-    queue.item_path(pool.READY, lead).unlink()
+    queue.item_path(pool.CLAIMED, lead).unlink()
     clock[0] += 10 * _gang.TERMINAL_CONFIRM_S
     assert gclaim("sparklina") is None
     assert denial(first, "sparklina")["reason"] == "residency_lead_terminal"
