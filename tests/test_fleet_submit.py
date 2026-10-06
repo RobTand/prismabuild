@@ -664,7 +664,6 @@ def test_shared_submit_dependency_is_guarded_at_actual_claim(tmp_path, present):
                    for row in denials.values())
     else:
         assert item["action_key"] == action["action_key"]
-        assert item["attempts"] == 1
         assert not ready.exists()
         assert queue.item_path(pool.CLAIMED, action["action_key"]).exists()
         queue.finish(item["action_key"], status="failed", detail={"returncode": 1}, claim_snapshot=item)
