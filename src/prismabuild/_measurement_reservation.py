@@ -491,6 +491,14 @@ def _single_behind_gang(item: dict, chosen: dict) -> bool:
     """
     if item.get("gang") is not None or int(item.get("priority", 0)) != chosen["priority"]:
         return False
+    # Rows that serve running or waiting work are not competitors for the
+    # host: a residency mover is published after the gang whose leads it makes
+    # resident (the gang waits on it), and a producer's dependent is what its
+    # incumbent waits for.  Fencing them behind the gang would deadlock.
+    residency = item.get("residency")
+    if item.get("dependent_of") is not None or (
+            isinstance(residency, dict) and "range_start_bytes" in residency):
+        return False
     published = item.get("published_unix")
     rank = chosen.get("rank")
     return (isinstance(published, (int, float)) and not isinstance(published, bool)
