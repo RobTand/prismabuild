@@ -101,9 +101,24 @@ def test_a_badly_typed_option_is_refused_by_name(tmp_path, member):
         pbgang.load(_manifest(tmp_path, member))
 
 
+def test_a_relative_data_manifest_is_refused_by_name(tmp_path):
+    with pytest.raises(SystemExit, match="absolute path"):
+        pbgang.load(_manifest(tmp_path, {"data_manifest": "window4/manifest.json",
+                                         "residency": "stage"}))
+
+
+@pytest.mark.parametrize("member", [
+    {"data_manifest": "/data/manifest.json"},
+    {"data_manifest": "/data/m.json", "residency": "none"},
+])
+def test_a_member_declaring_a_manifest_must_declare_residency(tmp_path, member):
+    with pytest.raises(SystemExit, match="without residency"):
+        pbgang.load(_manifest(tmp_path, member))
+
+
 @pytest.mark.parametrize("name", [
     "gang_group", "gang_size", "gang_index", "detach", "withdraw", "retry_safe",
-    "after", "gpu", "gpu_capacity", "data_manifest", "residency", "residency_tier",
+    "after", "gpu", "gpu_capacity",
     "progress_phases", "progress_cycle", "deterministic", "profile", "transport",
 ])
 def test_a_driver_owned_or_undeclared_option_is_refused_by_name(tmp_path, name):
@@ -115,6 +130,64 @@ def test_a_member_may_declare_one_attempt_and_no_more(tmp_path):
     assert "--max-attempts" in _command(tmp_path, {"max_attempts": 1})
     with pytest.raises(SystemExit, match="one attempt"):
         pbgang.load(_manifest(tmp_path, {"max_attempts": 2}))
+
+
+def test_a_residency_member_reaches_pbruns_own_parser_with_every_option(tmp_path):
+    member = {"data_manifest": "/data/window4/manifest.json", "residency": "stage",
+              "residency_tier": "prismabuild-stage:dl380g10", "residency_ram": "auto",
+              "residency_share": "auto", "residency_mover_mem_gb": 2,
+              "residency_mover_readers": 4, "residency_prefetch_depth_gib": 40,
+              "residency_read_mb_s": 800, "residency_mover_max_attempts": 3}
+    command = _command(tmp_path, member)
+    assert command.count("--") == 1
+    flags = command[:command.index("--")]
+    assert flags[-20:] == [
+        "--data-manifest", "/data/window4/manifest.json",
+        "--residency", "stage",
+        "--residency-tier", "prismabuild-stage:dl380g10",
+        "--residency-ram", "auto",
+        "--residency-share", "auto",
+        "--residency-mover-mem-gb", "2",
+        "--residency-mover-readers", "4",
+        "--residency-prefetch-depth-gib", "40",
+        "--residency-read-mb-s", "800",
+        "--residency-mover-max-attempts", "3"]
+    args = pbrun.parse_args([*flags[2:], "--", "/bin/true"])
+    assert args.data_manifest == "/data/window4/manifest.json"
+    assert args.residency == "stage"
+    assert args.residency_tier == "prismabuild-stage:dl380g10"
+    assert args.residency_ram == "auto" and args.residency_share == "auto"
+    assert args.residency_mover_mem_gb == 2.0 and args.residency_mover_readers == 4
+    assert args.residency_prefetch_depth_gib == 40.0 and args.residency_read_mb_s == 800.0
+    assert args.residency_mover_max_attempts == 3
+
+
+def test_the_residency_options_forward_in_table_order_after_the_window_options(tmp_path):
+    command = _command(tmp_path, {"measurement": True, "residency": "stage",
+                                  "data_manifest": "/m.json"})
+    flags = command[:command.index("--")]
+    assert flags.index("--measurement") < flags.index("--data-manifest") \
+        < flags.index("--residency") < len(flags)
+
+
+@pytest.mark.parametrize("member", [
+    {"data_manifest": ""}, {"data_manifest": True}, {"data_manifest": ["m"]},
+    {"residency": ""}, {"residency": True}, {"residency": ["stage"]},
+    {"residency_ram": {}}, {"residency_mover_readers": None},
+    {"residency_read_mb_s": False},
+])
+def test_a_badly_typed_residency_option_is_refused_by_name(tmp_path, member):
+    with pytest.raises(SystemExit, match="field"):
+        pbgang.load(_manifest(tmp_path, member))
+
+
+@pytest.mark.parametrize("name", [
+    "data_manifests", "residency_other", "residency_mover",
+    "residency_mover_mem", "residency_prefetch_depth",
+])
+def test_a_misspelled_residency_option_stays_an_unknown_field(tmp_path, name):
+    with pytest.raises(SystemExit, match=f"'{name}'"):
+        pbgang.load(_manifest(tmp_path, {name: 1}))
 
 
 def test_a_priority_reason_is_a_member_field_and_a_manifest_default(tmp_path):

@@ -7,6 +7,7 @@ group record is filed by ``_gang.publish_group`` after both rows exist.
 """
 from __future__ import annotations
 
+import json
 import platform
 import secrets
 import sys
@@ -39,8 +40,18 @@ def gang_fleet(fleet, tmp_path, monkeypatch):
                              has_gpu=True, tags=["gb10", host, _gang.TAG])
         return None if result is None else result["action_key"]
 
-    def members(name, *, priority=0, mem_gb=100, skew_s=_gang.DEFAULT_SKEW_S, file_group=True):
-        """Seal and publish a two-member gang, one member pinned per host."""
+    def members(name, *, priority=0, mem_gb=100, skew_s=_gang.DEFAULT_SKEW_S, file_group=True,
+                residency=None, residency_all=False, declares_manifest=False, inputs=None):
+        """Seal and publish a two-member gang, one member pinned per host.
+
+        ``residency`` is published as a row residency block (the
+        ``--residency stage`` submitter's row) -- member 0 only, or every
+        member with ``residency_all``; ``declares_manifest`` seals
+        member 0 with a ``pbcampaign.data-manifest`` input and
+        ``params.data_manifest`` instead (the #1247 planner's row, no
+        residency block).  ``inputs`` are extra CAS input entries for both
+        members.
+        """
         group = secrets.token_hex(16)
         cas = pb.PrismaBuildCAS(tmp_path / "cas")
         checkout = tmp_path / "checkout"
@@ -48,6 +59,44 @@ def gang_fleet(fleet, tmp_path, monkeypatch):
         for index, host in enumerate(HOSTS):
             clock[0] += 0.001
             gang = {"group": group, "size": len(HOSTS), "index": index}
+            member_inputs = list(inputs or [])
+            params: dict = {"gpu_exclusive": False, "execution_timeout_s": 3600, "gang": gang}
+            if declares_manifest and index == 0:
+                manifest = {
+                    "schema": pb.DATA_MANIFEST_SCHEMA_V1,
+                    "produced_by": {"tool": "tests"},
+                    "annotations": {"phases": [
+                        {"name": "phase-0", "bytes": 2 << 30, "cumulative_bytes": 2 << 30},
+                        {"name": "phase-1", "bytes": 2 << 30, "cumulative_bytes": 4 << 30},
+                        {"name": "phase-2", "bytes": 2 << 30, "cumulative_bytes": 6 << 30}]},
+                    "mount_prefix": "/data",
+                    "entries": [
+                        {"path": "/data/blob-0", "offset": 0, "bytes": 2 << 30, "sha256": None},
+                        {"path": "/data/blob-1", "offset": 0, "bytes": 2 << 30, "sha256": None},
+                        {"path": "/data/blob-2", "offset": 0, "bytes": 2 << 30, "sha256": None}],
+                    "entry_count": 3, "total_bytes": 6 << 30,
+                }
+                manifest = pb.validate_data_manifest(manifest)
+                blob = tmp_path / f"{name}-manifest.json"
+                blob.write_text(json.dumps(manifest))
+                entry, _ = cas.ingest_input(blob, input_id=pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID)
+                snap_blob = tmp_path / f"{name}-snapshot.json"
+                snap_blob.write_text("{}")
+                snap_entry, _ = cas.ingest_input(snap_blob, input_id="pbrun.checkout-snapshot")
+                member_inputs += [entry, snap_entry]
+                params.update({
+                    "command": [sys.executable, "task.py"], "cwd": str(checkout),
+                    "demand": {"cpu": 2, "gpu": 1, "mem_gb": mem_gb},
+                    "placement": {"required_tags": [host]},
+                    "retry_policy": {"max_attempts": 1},
+                    "data_manifest": {
+                        "input": entry, "mount_prefix": manifest["mount_prefix"],
+                        "entry_count": manifest["entry_count"],
+                        "total_bytes": manifest["total_bytes"]},
+                    "checkout_snapshot": {
+                        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+                        "commit": "0" * 40, "input": snap_entry, "parent": "0" * 40,
+                        "refs": {}, "subdirectory": "."}})
             action = pb.seal_action({
                 "schema": pb.ACTION_SCHEMA_V2,
                 "task": {"definition_id": "tests/gang-member", "definition_version": "v1",
@@ -55,8 +104,8 @@ def gang_fleet(fleet, tmp_path, monkeypatch):
                          "artifact_family": "generic", "artifact_kind": "generic",
                          "argv": [sys.executable, "task.py"], "working_directory": ".",
                          "result_path": f"{name}-{index}"},
-                "inputs": [], "code_closure": pb.build_code_closure(checkout, ["task.py"]),
-                "params": {"gpu_exclusive": False, "execution_timeout_s": 3600, "gang": gang},
+                "inputs": member_inputs, "code_closure": pb.build_code_closure(checkout, ["task.py"]),
+                "params": params,
                 "environment": {"variables": {}, "toolchain": {}},
                 "execution_scope": {"portability": "portable", "platform_key": None,
                                     "host_class": None},
@@ -67,7 +116,9 @@ def gang_fleet(fleet, tmp_path, monkeypatch):
                           worker_script="worker.py",
                           resources={"cpu": 2, "gpu": 1, "mem_gb": mem_gb},
                           needs_gpu=True, tags=[host], priority=priority, gang=gang,
-                          max_attempts=1)
+                          max_attempts=1,
+                          **({} if residency is None or (index and not residency_all)
+                             else {"residency": residency}))
             rows.append(pool._read_json(queue.item_path(pool.READY, key)))
         if file_group:
             _gang.publish_group(queue, group, rows, skew_s=skew_s)
