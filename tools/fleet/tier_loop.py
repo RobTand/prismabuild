@@ -9381,7 +9381,11 @@ def _supply_reader_for(record: Mapping[str, object], tier_id: str, *,
         def read_ram(mountpoint=mountpoint):
             room = filesystem_capacity.local_disk_room(mountpoint, 0)
             if room["inode_refusal"] is not None:
-                raise OSError(28, room["inode_refusal"], mountpoint)
+                # No writable room, not an unreadable sample: an OSError here
+                # sends the mint to its discovery fallback, which would mint
+                # the whole window on a mount that has bytes and no inodes
+                # (#1542).
+                return 0
             return max(0, room["free_bytes"]) // storage_tiers.GIB
 
         return read_ram
