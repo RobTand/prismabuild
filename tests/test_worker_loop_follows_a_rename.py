@@ -69,6 +69,11 @@ def _announced(module, names: list[str]) -> list[dict]:
     calls: list[dict] = []
 
     class _Queue:
+        #: The loop sweeps its own dead offer temporaries under ``queue.root``
+        #: (#1040).  A path that cannot exist makes that sweep a skip, so a double
+        #: never reads or removes anything on a real queue.
+        root = Path("/nonexistent/prismabuild-test-queue")
+
         def __init__(self, _root) -> None:
             pass
 
@@ -137,11 +142,21 @@ def test_a_box_that_was_not_renamed_announces_exactly_what_it_did() -> None:
 
     offer = calls[-1]
     assert offer["host"] == "sparky"
-    # Current advertised capability: the declared-image claim check (#714)
-    # rides the same subset rule, so this loop offers container-image-v1 and
-    # a pre-check loop cannot claim image-pinned work and die inside it.
-    assert offer["tags"] == ["gb10", "sparky", "cpu", "progress-v1",
-                             "progress-helper-v1", "progress-cycle-v1",
-                             "progress-pool-contention-v1",
-                             "progress-egress-v1",
-                             "container-image-v1"], offer["tags"]
+    # Current advertised capability, in the order the loop appends it: the
+    # declared-image claim check (#714) rides the same subset rule, so this
+    # loop offers container-image-v1 and a pre-check loop cannot claim
+    # image-pinned work and die inside it; the named-interpreter (#1263),
+    # digest-pinned dependency (#1495), scratch-I/O and scratch-lifetime
+    # capabilities fence their own rolling publications the same way.  The
+    # later capabilities are read from their owners, so adding one is a
+    # reviewed edit of this list rather than a silent stale literal (#1040
+    # review of the doubles).
+    assert offer["tags"] == [
+        "gb10", "sparky", "cpu", "progress-v1", "progress-helper-v1",
+        "progress-cycle-v1", "progress-pool-contention-v1",
+        "progress-egress-v1", "container-image-v1",
+        module.pb.INTERPRETER_TAG,
+        module.dependency_digest.DEPENDENCY_DIGEST_TAG,
+        module.local_scratch.IO_CAPABILITY,
+        module.local_scratch.SCRATCH_LIFETIME_TAG,
+    ], offer["tags"]
