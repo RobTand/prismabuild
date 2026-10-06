@@ -219,8 +219,12 @@ def pins_repo(tmp_path_factory):
         "\n"
         "[project]\n"
         'name = "pinsbyte1544"\n'
-        'version = "1.0"\n')
-    (repo / "pinsbyte1544/__init__.py").write_text("VALUE = 1\n")
+        'version = "1.0"\n'
+        "\n"
+        "[project.scripts]\n"
+        'pins1544 = "pinsbyte1544:main"\n')
+    (repo / "pinsbyte1544/__init__.py").write_text(
+        "VALUE = 1\n\n\ndef main():\n    return None\n")
     (repo / "pinsbyte1544/data.py").write_text("DATA = 1\n")
     git = ["git", "-c", "user.email=1544@t", "-c", "user.name=1544"]
     for command in (["git", "init", "-q"], [*git, "add", "-A"],
@@ -316,16 +320,54 @@ def test_tolerant_policy_still_refuses_corrupt_installed_bytes(
     assert "require a non-editable Git install" not in str(excinfo.value)
 
 
-def test_tolerant_policy_deleted_imported_module_file_still_refuses(
+def test_tolerant_policy_still_refuses_a_deleted_non_imported_file(
         tmp_path, monkeypatch, pins_module, pins_repo):
-    """Deleting the file Python imports is refused, by the ownership check.
-
-    ``importlib.metadata`` drops RECORD entries whose files no longer exist
-    (``Distribution.files`` filters them), so the hash loop never sees the
-    missing file; the imported module then is not in the recorded set.
-    """
     site, commit = pip_installed(tmp_path, pins_repo)
-    (site / "pinsbyte1544/__init__.py").unlink()
+    (site / "pinsbyte1544/data.py").unlink()
+    monkeypatch.syspath_prepend(str(site))
+    calls = []
+    # ``OTHER`` makes the identity phase genuinely drift, so the policy really
+    # runs; the missing recorded file must still refuse after tolerated drift.
+    with pytest.raises(ValueError) as excinfo:
+        pins_module.verify_install(
+            "pinsbyte1544", OTHER,
+            identity_policy=lambda message, facts: calls.append(message))
+    assert len(calls) == 1
+    assert "require a non-editable Git install" in calls[0]
+    assert "recorded file is missing" in str(excinfo.value)
+    assert "require a non-editable Git install" not in str(excinfo.value)
+
+
+def console_record_path(site):
+    """The one hashed RECORD row outside the package: pip's console script.
+
+    Pip records it relative to site-packages (``../../../bin/<name>``), the
+    same relocated shape as the measured #1548 consumer blind spot, so the
+    deletion below refuses only if raw RECORD enumeration survives the walk
+    out of the package directory.
+    """
+    record = (site / "pinsbyte1544-1.0.dist-info/RECORD").read_text()
+    rows = [line for line in record.splitlines() if line.startswith("../")]
+    assert len(rows) == 1, rows
+    entry = rows[0].split(",")
+    assert entry[0].endswith("bin/pins1544")
+    assert entry[1].startswith("sha256=")
+    return entry[0]
+
+
+def test_a_deleted_console_script_outside_the_package_refuses(
+        tmp_path, monkeypatch, pins_module, pins_repo):
+    site, commit = pip_installed(tmp_path, pins_repo)
+    (site / console_record_path(site)).unlink()
+    monkeypatch.syspath_prepend(str(site))
+    with pytest.raises(ValueError, match="recorded file is missing"):
+        pins_module.verify_install("pinsbyte1544", commit)
+
+
+def test_tolerant_policy_still_refuses_a_deleted_console_script(
+        tmp_path, monkeypatch, pins_module, pins_repo):
+    site, commit = pip_installed(tmp_path, pins_repo)
+    (site / console_record_path(site)).unlink()
     monkeypatch.syspath_prepend(str(site))
     calls = []
     with pytest.raises(ValueError) as excinfo:
@@ -333,22 +375,35 @@ def test_tolerant_policy_deleted_imported_module_file_still_refuses(
             "pinsbyte1544", OTHER,
             identity_policy=lambda message, facts: calls.append(message))
     assert len(calls) == 1
-    assert "not owned by its RECORD" in str(excinfo.value)
+    assert "recorded file is missing" in str(excinfo.value)
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "KNOWN PRE-EXISTING GAP, not introduced by #1544 and present in the strict "
-    "path on main: importlib.metadata's Distribution.files silently drops RECORD "
-    "entries whose files are missing, so a deleted package file that is not the "
-    "imported module is never hashed and the install is reported intact. Fix "
-    "needs a decision (it changes the pin guard every PQ pbtest shard runs); "
-    "tracked as RobTand/prismabuild#1548. Remove this marker when fixed."))
+def test_restored_recorded_bytes_are_accepted_again(
+        tmp_path, monkeypatch, pins_module, pins_repo):
+    site, commit = pip_installed(tmp_path, pins_repo)
+    data = site / "pinsbyte1544/data.py"
+    original = data.read_bytes()
+    data.unlink()
+    monkeypatch.syspath_prepend(str(site))
+    with pytest.raises(ValueError, match="recorded file is missing"):
+        pins_module.verify_record_bytes("pinsbyte1544")
+    data.write_bytes(original)
+    evidence = pins_module.verify_record_bytes("pinsbyte1544")
+    assert evidence["installed_commit"] == commit
+
+
 def test_a_deleted_non_imported_package_file_should_be_refused(
         tmp_path, monkeypatch, pins_module, pins_repo):
+    """A hashed RECORD entry deleted from disk refuses, though nothing imports it.
+
+    Pre-fix failure (the strict xfail this marker replaces): importlib.metadata's
+    Distribution.files silently drops RECORD entries whose files are missing,
+    so the deleted data.py was never hashed and the install reported intact.
+    """
     site, commit = pip_installed(tmp_path, pins_repo)
     (site / "pinsbyte1544/data.py").unlink()
     monkeypatch.syspath_prepend(str(site))
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="recorded file is missing"):
         pins_module.verify_install("pinsbyte1544", commit)
 
 
