@@ -119,18 +119,18 @@ def test_a_publication_that_vanishes_during_the_scan_is_rescanned(
     gone_path = queue.item_path(pool.READY, gone)
 
     real_read = reservation._read
-    state = {"removed": False}
 
     def racing_read(path, *args, **kwargs):
-        if str(path) == str(gone_path) and not state["removed"]:
-            # The row was claimed and finished after the scan listed it.
-            state["removed"] = True
+        # The census reads in a forked child, so the race is recorded on disk,
+        # not in this process.  The row was claimed and finished after the
+        # scan listed it: gone on first read, absent on every rescan.
+        if str(path) == str(gone_path) and gone_path.exists():
             os.unlink(gone_path)
         return real_read(path, *args, **kwargs)
 
     monkeypatch.setattr(reservation, "_read", racing_read)
     census = reservation.CensusReader(queue, queue.ledger()).capture()
-    assert state["removed"], "the race was not exercised"
+    assert not gone_path.exists(), "the race was not exercised"
     assert keep in census["keys"]
     assert gone not in census["keys"], "a vanished row is simply gone"
 
