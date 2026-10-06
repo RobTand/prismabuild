@@ -104,7 +104,7 @@ def _capture(queue: PoolQueue) -> dict:
     """
     for attempt in range(CAPTURE_RESCANS):
         try:
-            return _scan(queue)
+            return _scan_publications(queue)
         except PublicationDisappeared:
             if attempt + 1 == CAPTURE_RESCANS:
                 raise
