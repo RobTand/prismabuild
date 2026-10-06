@@ -31,8 +31,14 @@ from prismabuild import adaptive_cpu, adaptive_snapshot, pool, residency_plan, s
 import test_progress_keeps_a_working_action_alive as progress_fx  # noqa: E402
 import tier_loop  # noqa: E402
 
-#: A four-CPU box, so the adaptive path has a CPU map to decide against.
-CAPACITY = {"cpu": 4, "mem_gb": 8}
+#: Up to four CPUs, so the adaptive path has a CPU map to decide against, but
+#: never more than this process inherited (#1506).  The claim refuses a CPU
+#: capacity larger than the inherited CPU map ('CPU capacity exceeds the
+#: inherited CPU map'), and the consumer these tests claim is really executed
+#: (``queue.execute``, under ``taskset``), so the CPU ids must be the process's
+#: own: a synthetic 0-3 would be refused by ``taskset`` on any shard whose
+#: mask excludes them.  A shard needs at least two CPUs.
+CAPACITY = {"cpu": min(4, len(os.sched_getaffinity(0))), "mem_gb": 8}
 CPU_TIERS = {"preferred": [0, 1], "fallback": [2, 3]}
 #: What a spool export demands (``adaptive_cpu.EXPORT_DEMAND``).
 EXPORT_DEMAND = {"cpu": 1, "mem_gb": 1}
