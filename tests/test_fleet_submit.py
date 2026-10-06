@@ -659,7 +659,8 @@ def test_shared_submit_dependency_is_guarded_at_actual_claim(tmp_path, present):
         denials = adaptive_cpu.read_json(
             adaptive_cpu.local_state_base(queue.ledger().base) / pool.CLAIM_DENIALS).get("records", {})
         assert any(row.get("reason") == "local_dependency_not_present"
-                   and row.get("detail", {}).get("paths") == [str(dependency)]
+                   and row.get("evidence", {}).get("paths") == [str(dependency)]
+                   and row.get("attempts") == 0
                    for row in denials.values())
     else:
         assert item["action_key"] == action["action_key"]
