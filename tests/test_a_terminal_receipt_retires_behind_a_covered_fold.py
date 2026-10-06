@@ -779,7 +779,10 @@ def test_an_unlistable_archive_directory_refuses_to_reset_history(
     real_scandir = os.scandir
 
     def denied(path):  # type: ignore[no-untyped-def]
-        if Path(path) == queue.mover_archive_dir():
+        # An integer is a directory descriptor: ``shutil.rmtree`` walks by
+        # descriptor on current Pythons, and pytest's tmp_path cleanup does it
+        # while this wrapper is still installed (#1506, as #1588).
+        if isinstance(path, (str, os.PathLike)) and Path(path) == queue.mover_archive_dir():
             raise PermissionError("denied")
         return real_scandir(path)
 
