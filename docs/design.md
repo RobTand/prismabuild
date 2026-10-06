@@ -1938,8 +1938,12 @@ report, using schema `prismabuild.pbtest_trace.v1`. Each phase report carries
 before/after samples from its actual test process, including an xdist worker,
 through pytest's existing report channel. The sealer includes the standalone
 `resource_scope.py` owner in the child program; its exact-process I/O reader
-supplies the counters and identity. RSS is an instantaneous `/proc/self/status`
-sample; `max_rss_watermark_bytes` is the process-lifetime high-water mark,
+supplies the counters and identity. The tracer binds its procfs reader (`os.open`,
+`os.read`, `os.close`) when its plugin loads and passes it to `read_process_io(pid,
+read_text=...)`, so a test that patches `Path.read_text` or a stat reader cannot
+redirect the sampling and abort the shard with an INTERNALERROR (#1550); the
+default reader, used by the scope sampler, still goes through `Path.read_text`.
+RSS is an instantaneous `/proc/self/status` sample; `max_rss_watermark_bytes` is the process-lifetime high-water mark,
 not a per-test peak. I/O deltas cover that process and children it has reaped;
 live children, daemon-created containers, delayed writeback and later reaping
 prevent complete causal per-test attribution. Unavailable/regressing counters
