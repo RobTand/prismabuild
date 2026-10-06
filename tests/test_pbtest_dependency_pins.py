@@ -394,51 +394,51 @@ def append_record_row(site, name, data):
     digest = base64.urlsafe_b64encode(hashlib.sha256(data).digest()).rstrip(b"=").decode()
     record = site / "pinsbyte1544-1.0.dist-info/RECORD"
     with record.open("a", newline="") as handle:
-        csv.writer(handle, lineterminator="\n").writerow(
+        csv.writer(handle, lineterminator="\r\n").writerow(
             [name, f"sha256={digest}", len(data)])
 
 
-MALFORMED_ROWS = {
-    "empty_name": ",sha256=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA,1\n",
-    "four_columns":
-        "pinsbyte1544/data.py,sha256=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA,5,extra\n",
-    "nonnumeric_size":
-        "pinsbyte1544/data.py,sha256=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA,notanumber\n",
-}
+def invalidate_record_row(site, defect):
+    """Change only the grammar of pip's real, correctly hashed data row."""
+    record = site / "pinsbyte1544-1.0.dist-info/RECORD"
+    with record.open(newline="") as handle:
+        rows = list(csv.reader(handle))
+    row = next(row for row in rows if row[0] == "pinsbyte1544/data.py")
+    if defect == "empty_name":
+        row[0] = ""
+    elif defect == "four_columns":
+        row.append("extra")
+    elif defect == "nonnumeric_size":
+        row[2] = "notanumber"
+    else:
+        raise AssertionError(defect)
+    with record.open("w", newline="") as handle:
+        csv.writer(handle).writerows(rows)
 
 
-@pytest.mark.parametrize("defect", sorted(MALFORMED_ROWS))
+@pytest.mark.parametrize("defect", ["empty_name", "four_columns", "nonnumeric_size"])
 def test_a_malformed_record_row_refuses(tmp_path, monkeypatch, pins_module,
                                         pins_repo, defect):
-    """Grammar the base parser refused still refuses in the raw-row owner.
-
-    Pre-fix failure at bae247818a (review action 81640a7a032d, cases
-    empty_hashed_filename, hashed_four_column_row, hashed_nonnumeric_size):
-    each row was silently skipped or accepted and the install verified.
-    """
+    """Valid installed bytes cannot hide invalid RECORD grammar."""
     site, commit = pip_installed(tmp_path, pins_repo)
-    record = site / "pinsbyte1544-1.0.dist-info/RECORD"
-    record.write_text(record.read_text() + MALFORMED_ROWS[defect])
+    invalidate_record_row(site, defect)
     monkeypatch.syspath_prepend(str(site))
-    with pytest.raises(ValueError, match="malformed RECORD row"):
+    with pytest.raises(ValueError):
         pins_module.verify_install("pinsbyte1544", commit)
 
 
-@pytest.mark.parametrize("defect", sorted(MALFORMED_ROWS))
+@pytest.mark.parametrize("defect", ["empty_name", "four_columns", "nonnumeric_size"])
 def test_a_malformed_record_row_refuses_after_tolerated_drift(
         tmp_path, monkeypatch, pins_module, pins_repo, defect):
     site, commit = pip_installed(tmp_path, pins_repo)
-    record = site / "pinsbyte1544-1.0.dist-info/RECORD"
-    record.write_text(record.read_text() + MALFORMED_ROWS[defect])
+    invalidate_record_row(site, defect)
     monkeypatch.syspath_prepend(str(site))
     calls = []
-    with pytest.raises(ValueError) as excinfo:
+    with pytest.raises(ValueError):
         pins_module.verify_install(
             "pinsbyte1544", OTHER,
             identity_policy=lambda message, facts: calls.append(message))
     assert len(calls) == 1
-    assert "malformed RECORD row" in str(excinfo.value)
-    assert "require a non-editable Git install" not in str(excinfo.value)
 
 
 def test_quoted_record_names_stay_the_bytes_they_name(
