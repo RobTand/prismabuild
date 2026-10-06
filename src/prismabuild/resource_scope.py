@@ -333,6 +333,68 @@ def _sha256_file(path: Path) -> str:
 RETAINED_GENERATION_STORE = Path(
     "/mnt/shared/prismabuild-fleet/runtime-generations")
 
+#: Parsed receipts of generations already seen, by ``(root, mtime_ns)``, and the
+#: members already hash-verified, by ``(path, mtime_ns, size)``.  A published
+#: generation is immutable, so both only ever answer the same thing again; the
+#: keys make a replaced file a different entry (#1579).
+_RECEIPT_CACHE: dict[tuple[str, int], dict[str, Any] | None] = {}
+_MEMBER_CACHE: dict[tuple[str, int, int], bool] = {}
+
+
+def published_generation_member(path: str | Path) -> bool:
+    """Whether ``path`` is a tool of a runtime generation this fleet published.
+
+    The test a gang reservation uses before it trusts a movement script (#1579),
+    with the rules ``_sealed_generation_proxy`` applies before a worker is
+    launched from a retained generation, and no new configuration: the store is
+    :data:`RETAINED_GENERATION_STORE`.  ``path`` is resolved through symlinks (the
+    live ``repo`` link names a generation), must be a regular file in a direct,
+    non-staging child of the store whose directory is sealed (no write bits) and
+    whose ``RUNTIME_VERSION.json`` names that generation with a 40-hex commit and
+    a manifest, must sit at ``tools/<name>`` or ``tools/fleet/<name>``, and must
+    hash to the digest the manifest records for it.  Anything unreadable,
+    unsealed, unlisted or mismatched is ``False``: unknown is not published.
+    """
+    try:
+        store = RETAINED_GENERATION_STORE.resolve(strict=True)
+        resolved = Path(path).resolve(strict=True)
+        relative = resolved.relative_to(store).parts
+        if not resolved.is_file() or len(relative) not in (3, 4) or relative[1] != "tools":
+            return False
+        if len(relative) == 4 and relative[2] != "fleet":
+            return False
+        generation = relative[0]
+        root = store / generation
+        if (generation.startswith(".") or root.resolve(strict=True) != root
+                or not root.is_dir() or root.stat().st_mode & 0o222):
+            return False
+        receipt_path = root / "RUNTIME_VERSION.json"
+        stamp = receipt_path.stat().st_mtime_ns
+        key = (str(root), stamp)
+        if key not in _RECEIPT_CACHE:
+            value = json.loads(receipt_path.read_text(encoding="utf-8"))
+            _RECEIPT_CACHE[key] = value if isinstance(value, dict) else None
+        receipt = _RECEIPT_CACHE[key]
+        if (receipt is None or receipt.get("schema") != RUNTIME_RECEIPT_SCHEMA
+                or receipt.get("generation") != generation
+                or re.fullmatch(r"[0-9a-f]{40}", str(receipt.get("commit", ""))) is None
+                or not isinstance(receipt.get("files"), dict)):
+            return False
+        member = "/".join(relative[1:])
+        expected = receipt["files"].get(member)
+        if (not isinstance(expected, str)
+                or re.fullmatch(r"[0-9a-f]{64}", expected) is None
+                or resolved.stat().st_mode & 0o222):
+            return False
+        status = resolved.stat()
+        seen = (str(resolved), status.st_mtime_ns, status.st_size)
+        if seen not in _MEMBER_CACHE:
+            _MEMBER_CACHE[seen] = _sha256_file(resolved) == expected
+        return _MEMBER_CACHE[seen]
+    except (OSError, ValueError):
+        return False
+
+
 #: The receipt every published generation carries. ``publish_runtime``,
 #: ``supervise`` and ``upgrade_client`` all enforce this schema; the checks
 #: below mirror ``supervise._published_generation`` (store child, receipt

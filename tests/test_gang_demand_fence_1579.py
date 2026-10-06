@@ -224,50 +224,17 @@ def test_the_gang_is_admissible_within_the_bound_plus_the_longest_running_job(se
     assert admissible_at - OLD <= longest + 120 + 20, (seed, admissible_at - OLD, longest)
 
 
-# --- the roles PrismaBuild assigns, from a sealed definition -----------------------------
+# --- malformed sealed actions are nothing (the role cases themselves are in the claims file) ---
 
-TIER = "prismabuild-stage:sparklina"
-RANGE = {"range_start_bytes": 0, "range_end_bytes": 1 << 31}
-
-
-def _role(script, demand, *, recompute=True, residency=None, extra=()):
-    params = {"command": ["/usr/bin/python3", f"/x/tools/{script}", *extra]}
-    return movement_actions.capacity_role(params, demand, recompute=recompute, residency=residency)
-
-
-@pytest.mark.parametrize("script,demand,role", [
-    ("stage_release.py", {"cpu": 1, "mem_gb": 1}, "returns_capacity"),
-    ("produced_export.py", {"cpu": 1, "mem_gb": 1, f"fill_mb_s@{TIER}": 50}, "returns_capacity"),
-    ("produced_export.py", {"cpu": 1, "mem_gb": 1, "scratch_gib": 4}, None),   # a kind that is not a tier's
-    ("stage_release.py", {"cpu": 2, "mem_gb": 1}, None),
-    ("stage_release.py", {"cpu": 1, "mem_gb": 2}, None),
-    ("stage_release.py", {"cpu": 1, "mem_gb": 1, "gpu": 1}, None),
-    ("stage_release.py", {"cpu": True, "mem_gb": 1}, None),
-    ("stage_release.py", {"cpu": 1, "mem_gb": -1}, None),
-    ("not_a_tool.py", {"cpu": 1, "mem_gb": 1}, None)])
-def test_a_returner_is_a_small_sealed_release_or_export(script, demand, role):
-    assert _role(script, demand) == role
-    assert _role(script, demand, recompute=False) is None
-
-
-def test_a_mover_serves_residency_only_with_its_range_and_no_gpu():
-    need = {"cpu": 4, "mem_gb": 8, f"stage_gib@{TIER}": 2}
-    assert _role("stage_move.py", need, residency=RANGE) == "serves_residency"
-    assert _role("ram_promote.py", need, residency=RANGE) == "serves_residency"
-    assert _role("stage_move.py", need) is None
-    assert _role("stage_move.py", need, residency={"leads": []}) is None
-    assert _role("stage_move.py", {**need, "gpu": 1}, residency=RANGE) is None
-    assert _role("stage_move.py", need, residency=RANGE, recompute=False) is None
-
-
-def test_a_resident_evict_returns_capacity_and_a_copy_does_not():
+def test_a_malformed_sealed_action_has_no_role():
     small = {"cpu": 1, "mem_gb": 1}
-    assert _role("local_resident.py", small, extra=("--operation", "evict")) == "returns_capacity"
-    assert _role("local_resident.py", small, extra=("--operation", "copy")) is None
-    assert _role("local_resident.py", small) is None
-
-
-def test_a_malformed_command_is_nothing():
-    for command in (None, [], ["/usr/bin/python3"], ["/usr/bin/python3", 5], "stage_release.py"):
-        assert movement_actions.capacity_role({"command": command}, {"cpu": 1, "mem_gb": 1},
-                                              recompute=True, residency=None) is None
+    for action in ({}, {"params": {}}, {"params": {"command": ["/usr/bin/python3", "x.py"]}},
+                   {"params": {"command": None}, "task": {}},
+                   {"params": {"command": ["/usr/bin/python3", 5]}, "task": {"argv": []}},
+                   {"params": {"command": "stage_release.py"}, "task": {"result_path": "r"}},
+                   None, "stage_release.py"):
+        assert movement_actions.capacity_role(action if isinstance(action, dict) else {}, small,
+                                              residency=None) is None
+    assert movement_actions.capacity_role({"params": {"command": ["/p/python3", "/x/stage_release.py"]},
+                                           "task": {"result_path": "r", "argv": []}},
+                                          {"cpu": 1, "mem_gb": 1, "gpu": 1}, residency=None) is None

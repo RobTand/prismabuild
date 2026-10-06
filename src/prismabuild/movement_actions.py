@@ -107,39 +107,64 @@ MOVEMENT_EXECUTION_SCOPE = {"portability": "portable", "platform_key": None,
 #: reservation never holds either, because the running action, and through it
 #: the gang, waits on them.  Nothing here is a flag a submitter can declare:
 #: ``PoolQueue.publish`` refuses both names in a sealed action and derives the
-#: role from the sealed definition (:func:`capacity_role`).
+#: role from the node's executed identity (:func:`capacity_role`).
 CAPACITY_ROLE_FIELDS = ("returns_capacity", "serves_residency")
 PRODUCED_EXPORT_SCRIPT = "produced_export.py"
 LOCAL_RESIDENT_SCRIPT = "local_resident.py"
 
 
-def capacity_role(params: Mapping[str, object], demand: Mapping[str, object], *,
-                  recompute: bool, residency: Mapping[str, object] | None) -> str | None:
-    """The role PrismaBuild's own movement nodes have, from their sealed definition.
+def capacity_role(action: Mapping[str, object], demand: Mapping[str, object], *,
+                  residency: Mapping[str, object] | None) -> str | None:
+    """The role PrismaBuild's own movement nodes have, from their executed identity.
 
     ``None`` for everything else, which a reservation then holds by its demand:
-    unknown is consuming.  Every PrismaBuild publisher of a movement node
-    (``tier_loop``, ``pbresident``, ``local_resident``, ``produced_output``)
-    publishes it with ``recompute``; the sealed command's script is the node's
-    identity; and the node's declared demand is the small one the node is
-    sealed with.  A submitted action that merely names one of these scripts
-    gets nothing unless it also matches all three, and by then it is that tool.
+    unknown is consuming.  The role is read from what the node EXECUTES, never
+    from a sidecar field a submitter sets:
 
-    * ``returns_capacity``: ``stage_release.py``, ``produced_export.py`` or a
-      ``local_resident.py --operation evict``, demanding at most one CPU and one
-      GiB, no GPU, and no kind but a tier's (``kind@tier``).
-    * ``serves_residency``: ``stage_move.py`` or ``ram_promote.py`` carrying a
-      residency range, with no GPU.
+    * ``task.argv`` equals exactly the bash capture wrapper
+      :func:`seal_movement_action` builds around ``params.command`` and
+      ``task.result_path`` (:func:`captured_command`), so ``params.command`` is
+      what runs;
+    * the task carries the :data:`MOVEMENT_TASK` fields and the execution scope
+      is :data:`MOVEMENT_EXECUTION_SCOPE`;
+    * the command is an absolute python running one of the movement scripts, and
+      that script is a file of a runtime generation this fleet published
+      (``resource_scope.published_generation_member``: a sealed direct child of
+      the retained store, receipt and manifest hash), not a file-name match and
+      not a host-announced directory;
+    * the declared demand is the small one the node is sealed with.
+
+    ``returns_capacity``: ``stage_release.py``, ``produced_export.py`` or a
+    ``local_resident.py --operation evict``, demanding at most one CPU and one GiB,
+    no GPU, and no kind but a tier's (``kind@tier``).  ``serves_residency``:
+    ``stage_move.py`` or ``ram_promote.py`` carrying a residency range, no GPU.
+    Residual: a genuine published movement script run with submitter-chosen
+    arguments still gets the role, bounded by that tool's own demand; the role
+    never reaches arbitrary code.  ``recompute`` is not a condition.
     """
-    if recompute is not True:
+    from . import resource_scope
+    params = action.get("params")
+    task = action.get("task")
+    if not isinstance(params, Mapping) or not isinstance(task, Mapping):
         return None
     command = params.get("command")
     if (not isinstance(command, list) or len(command) < 2
-            or not all(isinstance(part, str) for part in command)):
+            or not all(isinstance(part, str) for part in command)
+            or not isinstance(demand, Mapping) or demand.get("gpu")):
         return None
-    script = Path(command[1]).name
-    if not isinstance(demand, Mapping) or demand.get("gpu"):
+    result_path = task.get("result_path")
+    if (not isinstance(result_path, str)
+            or task.get("argv") != [SEALED_ARGV0, "--noprofile", "--norc", "-c",
+                                    captured_command(command, result_path)]
+            or any(task.get(name) != value for name, value in MOVEMENT_TASK.items())
+            or action.get("execution_scope") != MOVEMENT_EXECUTION_SCOPE):
         return None
+    python, script_path = Path(command[0]), Path(command[1])
+    if (not python.is_absolute() or not python.name.startswith("python")
+            or not script_path.is_absolute()
+            or not resource_scope.published_generation_member(script_path)):
+        return None
+    script = script_path.name
     if script in (STAGE_MOVER_SCRIPT, RAM_PROMOTE_SCRIPT):
         if isinstance(residency, Mapping) and "range_start_bytes" in residency:
             return "serves_residency"

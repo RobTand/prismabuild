@@ -7112,12 +7112,13 @@ class PoolQueue:
             from . import resident_sets
             item["resident_set"] = resident_sets._set_id(resident_set)
         if sealed_request_present:
-            # Assigned here, from the sealed definition, never declared (#1579):
-            # a movement node PrismaBuild publishes (``recompute``, its own
-            # script, its small sealed demand) and nothing else.
+            # Assigned here, from the node's executed identity, never declared
+            # (#1579): the exact capture wrapper around one of PrismaBuild's
+            # movement scripts, a file of a generation it published, and its
+            # small sealed demand.  ``recompute`` is no part of it.
             from . import movement_actions
             role = movement_actions.capacity_role(
-                sealed_params, demand, recompute=recompute is True, residency=residency_block)
+                sealed_request, demand, residency=residency_block)
             if role is not None:
                 item[role] = True
         if declared_requirements is not None:
