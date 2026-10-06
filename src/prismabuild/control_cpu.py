@@ -5,6 +5,8 @@ work stays in the raw host reading. Control accounting is cooperative, not a
 security boundary against impersonation. Kernel identity uses Linux flags,
 never a process name, an empty cmdline or a low PID (#1399).
 """
+from decimal import Decimal, InvalidOperation, ROUND_CEILING
+import os
 from pathlib import Path
 import socket
 
@@ -114,8 +116,37 @@ def control_plane_counters(cpus, *, proc_root=Path('/proc'), runtime_root=RUNTIM
     return result
 
 
-def attributed_ticks(previous, current, busy, *, kind=None):
+def boot_ticks(*, proc_root=Path('/proc')):
+    """Boot-relative clock ticks now, from ``/proc/uptime`` (CLOCK_BOOTTIME).
+
+    The same clock a process's ``start`` (``/proc/<pid>/stat`` field 22) counts
+    in.  Unlike wall-clock time minus ``btime`` it does not move when the realtime
+    clock is stepped, so a boundary taken from it stays true across a step.
+    ``None`` when it or the clock rate cannot be read.
+    """
+    try:
+        seconds = Decimal((proc_root / 'uptime').read_text().split()[0])
+        rate = os.sysconf('SC_CLK_TCK')
+    except (OSError, ValueError, IndexError, InvalidOperation):
+        return None
+    if not seconds.is_finite() or seconds < 0 or rate <= 0:
+        return None
+    # Decimal and rounded UP: a binary float turns 10.12 s into 1011.999... ticks,
+    # and truncating that lets a process that started at tick 1012, before the
+    # sample, count as born after it.  A larger boundary only credits less.
+    return int((seconds * rate).to_integral_value(ROUND_CEILING))
+
+
+def attributed_ticks(previous, current, busy, *, kind=None, born_after=None):
     """Credit only stable, non-migrating work within the host interval.
+
+    ``born_after`` (the boot-relative clock ticks :func:`boot_ticks` read just
+    after the previous host sample's counters, persisted with that sample) also credits a control thread that is not in
+    ``previous`` because it was born after that sample: with zero migrations it
+    ran on one CPU for its whole life, all of it inside the interval, so its
+    ticks are control-plane work.  Without it a worker loop spawned between two
+    samples had every start-up tick counted as foreign (#1581).  Kernel threads
+    and anything else unproven stay uncredited.
 
     ``previous`` follows previous host counters; ``current`` precedes current
     host counters. Missing kind in historical records means control, the only
@@ -127,7 +158,16 @@ def attributed_ticks(previous, current, busy, *, kind=None):
         return excluded
     for tid, now in current.items():
         old = previous.get(tid)
-        if not isinstance(old, dict) or not isinstance(now, dict):
+        if not isinstance(now, dict):
+            continue
+        if not isinstance(old, dict):
+            if (born_after is not None and kind in (None, 'control')
+                    and now.get('attribution_kind', 'control') == 'control'
+                    and all(type(now.get(k)) is int and now[k] >= 0
+                            for k in ('start', 'cpu', 'migrations', 'ticks'))
+                    and now['start'] > born_after and now['migrations'] == 0
+                    and str(now['cpu']) in excluded):
+                excluded[str(now['cpu'])] += now['ticks']
             continue
         category = now.get('attribution_kind', 'control')
         if (category not in ('control', 'kernel')
