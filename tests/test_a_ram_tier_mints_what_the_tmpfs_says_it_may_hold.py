@@ -120,9 +120,34 @@ def _ram_tier(tmp_path: Path, *, mount: Path | None = None,
     return tiers.get(storage_tiers.tier_id("ram", HOST))
 
 
+#: 1_500_000 free 4 KiB blocks: about 5.7 GiB, so the byte floor alone would
+#: leave writable room and only the inode floor can explain a zero.
+_FREE_BLOCKS = 1_500_000
+
+
+def _statvfs_with_free_inodes(free_inodes: int) -> os.statvfs_result:
+    return os.statvfs_result((4096, 4096, 2_000_000, _FREE_BLOCKS, _FREE_BLOCKS,
+                              1000, free_inodes, free_inodes, 0, 255))
+
+
 def _inode_exhausted(monkeypatch) -> None:
-    sampled = os.statvfs_result((4096, 4096, 1000, 900, 900, 1000, 0, 0, 0, 255))
+    sampled = _statvfs_with_free_inodes(0)
     monkeypatch.setattr(os, "statvfs", lambda path: sampled)
+
+
+def test_the_exhausted_mount_has_room_in_bytes_so_only_the_inode_floor_refuses(
+        tmp_path, monkeypatch):
+    """Control for the two tests below: deleting the inode check must fail them.
+
+    With the same free bytes and plenty of free inodes the resample reports
+    real room, so a zero in the tests below comes from the inode floor and
+    cannot be satisfied by the byte count (#1542 review note).
+    """
+    sampled = _statvfs_with_free_inodes(500_000)
+    monkeypatch.setattr(os, "statvfs", lambda path: sampled)
+    read = tier_loop._supply_reader_for(
+        {"tier": "ram", "mountpoint": str(tmp_path)}, "ram:test", fallback_tokens=1)
+    assert read() >= 1
 
 
 def test_ram_mint_resample_refuses_inode_exhaustion_with_free_bytes(tmp_path, monkeypatch):

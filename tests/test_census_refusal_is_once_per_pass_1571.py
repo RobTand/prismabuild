@@ -135,17 +135,27 @@ def test_a_publication_that_vanishes_during_the_scan_is_rescanned(
     assert gone not in census["keys"], "a vanished row is simply gone"
 
 
-@pytest.mark.parametrize("persistent", [False])
-def test_a_publication_that_keeps_vanishing_still_refuses(
-        fleet, tmpfs_state, monkeypatch, persistent):
-    """Rescanning is bounded: an unreadable queue is still a refused census."""
+def test_a_publication_that_keeps_vanishing_still_refuses_after_bounded_rescans(
+        fleet, tmpfs_state, monkeypatch, tmp_path):
+    """Rescanning is bounded: a queue that keeps changing is still a refused census.
+
+    The retryable exception is the one the census raises for a vanished
+    publication, so every attempt is retried; the count is recorded on disk
+    because the census reads in a forked child (#1571 review note).
+    """
     queue, clock, readings, sample, publish, tick, claim, denial = fleet
     monkeypatch.setattr(adaptive_cpu, "BOX_STATE_ROOT", tmpfs_state / "box-state")
     publish("census-always-gone", priority=-10)
+    attempts = tmp_path / "attempts"
 
     def always_missing(path, *args, **kwargs):
-        raise reservation.CensusUnavailable(f"publication disappeared during census: {path}")
+        with attempts.open("a", encoding="utf-8") as handle:
+            handle.write("x")
+        raise reservation.PublicationDisappeared(
+            f"publication disappeared during census: {path}")
 
     monkeypatch.setattr(reservation, "_read", always_missing)
     with pytest.raises(reservation.CensusUnavailable):
         reservation.CensusReader(queue, queue.ledger()).capture()
+    # One read per scan reaches the first listed publication before it raises.
+    assert len(attempts.read_text(encoding="utf-8")) == reservation.CAPTURE_RESCANS
