@@ -8052,6 +8052,20 @@ _DEFERRED_PUBLICATION_ARGS = (
 )
 
 
+def check_supersession_or_exit(q, old: str, *, new: str, new_kind: str) -> None:
+    """Refuse now what :func:`file_supersession_or_exit` would refuse, writing nothing (#1585).
+
+    For a submission that still has fallible work to do before its row can
+    publish: the record is immutable, so one filed for a replacement that then
+    refuses strands the old key at a successor that never existed.
+    """
+
+    try:
+        action_edges.check_supersession(q, old, new=new, new_kind=new_kind)
+    except action_edges.ActionEdgeError as exc:
+        raise SystemExit(f"pbrun: --supersedes: {exc}") from None
+
+
 def file_supersession_or_exit(q, old: str, *, new: str, new_kind: str) -> None:
     """File that ``new`` replaces ``old``, or refuse the submission (#913)."""
 
@@ -8467,7 +8481,8 @@ def release_deferred(q, pending_id: str, record: Mapping[str, object], *,
 def publish_consumer_row(q, action: Mapping[str, object],
                          template: Mapping[str, object], *, key: str,
                          args: argparse.Namespace, cas,
-                         attach: bool = False) -> tuple[object, float | None]:
+                         attach: bool = False,
+                         before_publish=None) -> tuple[object, float | None]:
     """Publish one sealed action's row, with its window when it stages.
 
     Returns ``(queued_path, generation)``; ``queued_path`` is ``None`` when
@@ -8481,6 +8496,13 @@ def publish_consumer_row(q, action: Mapping[str, object],
     Everything the window will ever publish is sealed and written down before
     the consumer's own row goes in, so a crash between the two leaves a
     frozen plan and no queue rows rather than a half-published window.
+
+    ``before_publish`` is called, with nothing fallible left but the publish
+    itself, immediately before the row goes in.  A submission that supersedes
+    an ended key files its immutable record there (#1585): every refusal the
+    window's preparation can raise -- the stage tier, the phase table, the
+    seal, the row's own checks -- comes first, so none can strand a record at
+    a replacement that never published.
     """
 
     staged = None
@@ -8529,6 +8551,8 @@ def publish_consumer_row(q, action: Mapping[str, object],
             if template.get("produced_output_template") is not None:
                 publication["produced_output_template"] = template[
                     "produced_output_template"]
+            if before_publish is not None:
+                before_publish()
             if attach:
                 # A release resuming after a crash (#913) finds its own row:
                 # the plan above was first-writer and reused, and the row is
@@ -8563,6 +8587,8 @@ def publish_consumer_row(q, action: Mapping[str, object],
         if template.get("produced_output_template") is not None:
             publication["produced_output_template"] = template[
                 "produced_output_template"]
+        if before_publish is not None:
+            before_publish()
         queued_path, generation = publish_or_attach(q, publication, key=key)
     return queued_path, generation
 
@@ -8821,13 +8847,25 @@ def submit_and_publish(args, *, publication_canary_intent=None,
         if origin_refs:
             declare_origin_consumers(q, origin_refs, consumer_action_key=key)
         # Filed before the row, so an edge that names the replaced key
-        # follows this one from the moment it can run (#913).
+        # follows this one from the moment it can run (#913), but only once
+        # everything that can still refuse has had its say (#1585): the
+        # record is immutable, and one filed for a replacement that then
+        # refused named a key that never published, which the corrected
+        # submission (another key) could not replace and a reader following
+        # it could not find.  What can be refused now is refused now, with
+        # nothing written; the record itself goes in right before the row.
+        supersede = None
         if args.supersedes is not None:
-            file_supersession_or_exit(q, args.supersedes, new=key,
-                                      new_kind=action_edges.PRODUCER_KEY)
+            check_supersession_or_exit(q, args.supersedes, new=key,
+                                       new_kind=action_edges.PRODUCER_KEY)
+
+            def supersede() -> None:
+                file_supersession_or_exit(q, args.supersedes, new=key,
+                                          new_kind=action_edges.PRODUCER_KEY)
 
         queued_path, generation = publish_consumer_row(
-            q, action, template, key=key, args=args, cas=cas)
+            q, action, template, key=key, args=args, cas=cas,
+            before_publish=supersede)
     # Say that the slot has no device, every time.  The mask is correct and it
     # is also a silent narrowing: a suite that used to run its CUDA tests now
     # skips them, and a skip that nobody announced reads as the same green.
