@@ -6065,6 +6065,18 @@ def residency_stage_rows(
             "pbrun: --residency stage needs a manifest that declares its read "
             "order in phases; this one declares none, so there is no boundary "
             "to stage up to that is not invented here")
+    # Read the declared prelaunch-resident prefix (#1594).  Mark its phases
+    # on the sealed plan.  Refuse its peak when it exceeds the tier.  A v1
+    # manifest reaches this reader unchecked by ``core``.  Refuse a
+    # non-boolean or a non-prefix declaration here.
+    try:
+        prelaunch = storage_tiers.manifest_prelaunch_phases(manifest)
+    except ValueError as exc:
+        raise SystemExit(
+            f"pbrun: data manifest {str(entry['sha256'])[:12]} declares an "
+            f"unusable prelaunch prefix: {exc}; nothing was sealed or "
+            f"published.") from None
+    prelaunch_names = frozenset(prelaunch)
     tier_id = str(tier["tier_id"])
     # A consumer that is already staged keeps the window it was frozen with.
     # Receipts price a *new* window; they must never repartition a frozen one.
@@ -6200,6 +6212,32 @@ def residency_stage_rows(
     ram_cuts = (None if ram_tier is None else
                 residency_leg_cuts(ram_tier, leg="ram", ranges=ranges,
                                    read_entries=read_entries))
+    if prelaunch:
+        # Fit the declared prefix peak to the minted tier capacity (#1594).
+        # The sizes are the same chunk demands the sealed legs will carry,
+        # cut at the same boundaries.  This refuses what the plan demands.
+        # Headroom is not checked: a fit prefix with no free room waits.
+        # Unknown capacity never refuses.
+        prefix_cuts = stage_cuts[:len(prelaunch)]
+        suffix_cuts = stage_cuts[len(prelaunch):]
+
+        def _cut_gib(cuts: list[list[tuple[int, int]]]) -> list[int]:
+            return [sum(storage_tiers.stage_tokens_for_bytes(cend - cstart)
+                        for cstart, cend in chunks) for chunks in cuts]
+
+        bound = residency_plan.prelaunch_peak_gib(
+            _cut_gib(prefix_cuts), _cut_gib(suffix_cuts))
+        minted = storage_tiers.tier_tokens(tier).get(
+            storage_tiers.capacity_kind_of(tier_id))
+        if minted is not None and bound["peak_gib"] > minted:
+            raise SystemExit(
+                f"pbrun: prelaunch prefix {prelaunch} of "
+                f"{str(entry['sha256'])[:12]} needs peak "
+                f"{bound['peak_gib']} GiB (retained "
+                f"{bound['retained_gib']} GiB + suffix "
+                f"{bound['suffix_gib']} GiB) on stage tier {tier_id}, "
+                f"above the tier's minted capacity of {minted} GiB.  "
+                f"Nothing was sealed or published.")
 
     # One read of the live receipts for the whole window: every mover in it has
     # the same structure and reads the same pool, so they price alike, and a
@@ -6721,6 +6759,12 @@ def residency_stage_rows(
             phase_record["ram_egress_row"] = ram_egress_row
         if ram_chunks is not None:
             phase_record["ram_chunks"] = ram_chunks
+        # Carry the declared prefix on the frozen plan (#1594).  Discovery,
+        # admission and reuse derive leads from ``leads_for(plan)`` with no
+        # manifest in hand.  Only declared phases carry the key.  Undeclared
+        # plans stay byte-identical.
+        if str(span["name"]) in prelaunch_names:
+            phase_record["resident_before_launch"] = True
         phases.append(phase_record)
     plan = residency_plan.build_plan(
         consumer_action_key=consumer_action_key, tier_id=tier_id,

@@ -4822,6 +4822,43 @@ with routine work at 0 or below.
 it never claims a member. During a rolling publish it may not honour a gang
 fence on its host; the start barrier still prevents a lone start.
 
+## Prelaunch-resident manifest phases (#1594)
+
+A consumer that opens its whole artifact before its servers start declares
+that fact per phase in the manifest.  The declaration is part of the
+content hash.  A phase declares with a literal `resident_before_launch:
+true`: on a v1 `annotations.phases[i]` entry, on a v2 `read_plan.phases[i]`
+entry.  An older `core` refuses the unknown v2 key, which fails closed.
+Only a literal boolean `true` declares.  Other values refuse at submission.
+The declared phases form a contiguous prefix from the first phase.
+`storage_tiers.manifest_prelaunch_phases` and `residency_plan.validate_plan`
+enforce the prefix.  The frozen plan carries the declaration per phase.  A
+plan with no declaration omits the key.  Its bytes, `plan_sha256` and rows
+stay byte-identical.
+
+With no declaration, `residency_plan.leads_for(plan)` gives the single
+first-mover lead, as today.  With one, it gives all stage-leg chunk movers
+of all declared phases, in read order, chunked or whole.  `lead_mover_row`
+is untouched.  `prelaunch_phase_names(plan)` reads the declared names.
+`prelaunch_bound(plan, owned_by_others)` gives `{retained_gib: T,
+suffix_gib: S, peak_gib: B}` with `B = T + max over i of (size(pi) +
+size(p(i+1)))` and `size(p(n+1)) = 0`.  Sizes come from the sealed
+`stage_gib` of the legs, minus legs that others own.  It gives `None` with
+no declaration.  `prelaunch_peak_gib` serves submission, `pbgang` and the
+gate.  The three never disagree.
+
+Submission refuses before it seals or publishes.  The refusal names the
+tier, the retained and suffix terms, and the capacity.
+`pbrun.residency_stage_rows` (also reached by `pbcampaign`) refuses when
+the declared peak exceeds the minted stage tier capacity.
+`storage_tiers.tier_tokens` of the announced tier record gives that
+capacity.  The tier loop mints the same mapping.  Unknown capacity never
+refuses.  `pbgang` refuses when the member distinct movers per stage tier
+jointly exceed it, with shared ranges counted once by `share_namespace`.
+The pure `residency_plan.gang_prelaunch_demand` computes that sum.
+Headroom below capacity waits, never refuses.  A peak equal to capacity
+passes.
+
 ## Physical and adaptive GPU admission
 
 Both current GB10 workers have one physical GPU. Their fleet shape uses the
