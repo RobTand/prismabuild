@@ -30,7 +30,7 @@ def _run(tmp_path: Path, tests: str, arguments: list[str], *, trace=True,
         entry[-1] = program.replace(
             'pins = load("pbtest_pins")',
             'SOURCES["pbtest_resource_scope"] += '
-            '"\\ndef read_process_io(pid):\\n    return None\\n"\n'
+            '"\\ndef read_process_io(pid, **kwargs):\\n    return None\\n"\n'
             'pins = load("pbtest_pins")')
     command = [*entry, *([] if "no:terminal" in arguments else ["-q"]),
                "-p", "no:cacheprovider", *arguments,
