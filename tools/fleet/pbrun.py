@@ -5352,10 +5352,11 @@ def freeze_action_template(
     variables["PATH"] = (local_scratch.PROFILE_PATH if recorder is not None
                          else f"{wrapper_dir}:{prior_path}")
     identity = _git_identity(cwd)
-    # Which repository this template's tree belongs to (#1565): the directory
-    # name of the root ``cwd`` seals, ``"unknown"`` when Git cannot place it.
-    # A submitter's handle, never sealed -- the queue row carries it, so the
-    # action key is byte-identical with and without it.
+    # Which repository this template's tree belongs to (#1565): the owning
+    # repository's name -- a linked worktree resolves to its main repo --
+    # ``"unknown"`` when Git cannot place the checkout.  A submitter's
+    # handle, never sealed -- the queue row carries it, so the action key
+    # is byte-identical with and without it.
     tested_repository = tested_repository_name(cwd)
     marker_root = SH / "pb-queue" / pool.CONTAINER_OWNERS
     # This owner belongs to the template's own command, and its only job here
@@ -7938,7 +7939,7 @@ def publication_row(
     max_attempts: int | None = None,
     retry_safe: bool | None = None,
     tested_repository: str | None = None,
- ) -> dict[str, object]:
+) -> dict[str, object]:
     """The queue row that submits one sealed action.
 
     A queue row and the action it points at are two spellings of one
