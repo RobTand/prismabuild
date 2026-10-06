@@ -405,7 +405,9 @@ def invalidate_record_row(site, defect):
         rows = list(csv.reader(handle))
     row = next(row for row in rows if row[0] == "pinsbyte1544/data.py")
     if defect == "empty_name":
+        row = row.copy()
         row[0] = ""
+        rows.append(row)
     elif defect == "four_columns":
         row.append("extra")
     elif defect == "nonnumeric_size":
@@ -439,6 +441,51 @@ def test_a_malformed_record_row_refuses_after_tolerated_drift(
             "pinsbyte1544", OTHER,
             identity_policy=lambda message, facts: calls.append(message))
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize("newline", [pytest.param("\r", id="carriage_return"),
+                                    pytest.param("\r\n", id="carriage_return_line_feed")])
+@pytest.mark.parametrize("tolerant", [False, True], ids=["strict", "tolerant"])
+def test_intact_quoted_carriage_return_name_accepts(
+        tmp_path, monkeypatch, pins_module, pins_repo, newline, tolerant):
+    site, commit = pip_installed(tmp_path, pins_repo)
+    monkeypatch.syspath_prepend(str(site))
+    before = pins_module.verify_install("pinsbyte1544", commit)
+    payload = b"quoted filename bytes\n"
+    named = site / "pinsbyte1544" / f"carriage{newline}return.bin"
+    named.write_bytes(payload)
+    append_record_row(site, str(named.relative_to(site)), payload)
+    calls = []
+    evidence = pins_module.verify_install(
+        "pinsbyte1544", OTHER if tolerant else commit,
+        identity_policy=(lambda message, facts: calls.append(message)) if tolerant else None)
+    assert evidence["verified_files"] == before["verified_files"] + 1
+    assert evidence["installed_commit"] == commit
+    assert len(calls) == int(tolerant)
+    if tolerant:
+        assert evidence["identity_drift_tolerated"] == calls[0]
+
+
+@pytest.mark.parametrize("newline", [pytest.param("\r", id="carriage_return"),
+                                    pytest.param("\r\n", id="carriage_return_line_feed")])
+@pytest.mark.parametrize("tolerant", [False, True], ids=["strict", "tolerant"])
+def test_missing_quoted_carriage_return_name_refuses_with_recorded_line_feed_alias(
+        tmp_path, monkeypatch, pins_module, pins_repo, newline, tolerant):
+    site, commit = pip_installed(tmp_path, pins_repo)
+    payload = b"same bytes in two distinct files\n"
+    named = site / "pinsbyte1544" / f"carriage{newline}return.bin"
+    alias = site / "pinsbyte1544/carriage\nreturn.bin"
+    for path in (named, alias):
+        path.write_bytes(payload)
+        append_record_row(site, str(path.relative_to(site)), payload)
+    named.unlink()
+    monkeypatch.syspath_prepend(str(site))
+    calls = []
+    with pytest.raises(ValueError):
+        pins_module.verify_install(
+            "pinsbyte1544", OTHER if tolerant else commit,
+            identity_policy=(lambda message, facts: calls.append(message)) if tolerant else None)
+    assert len(calls) == int(tolerant)
 
 
 def test_quoted_record_names_stay_the_bytes_they_name(
