@@ -148,14 +148,24 @@ def test_a_publication_that_keeps_vanishing_still_refuses_after_bounded_rescans(
     publish("census-always-gone", priority=-10)
     attempts = tmp_path / "attempts"
 
+    real_read = reservation._read
+    ready = str(queue.root / pool.READY)
+
     def always_missing(path, *args, **kwargs):
+        # Only the queue's publications vanish; the reader's own ownership
+        # marker (read through the same helper) stays readable.
+        if not str(path).startswith(ready):
+            return real_read(path, *args, **kwargs)
         with attempts.open("a", encoding="utf-8") as handle:
             handle.write("x")
         raise reservation.PublicationDisappeared(
             f"publication disappeared during census: {path}")
 
     monkeypatch.setattr(reservation, "_read", always_missing)
-    with pytest.raises(reservation.CensusUnavailable):
+    with pytest.raises(reservation.CensusUnavailable) as refused:
         reservation.CensusReader(queue, queue.ledger()).capture()
-    # One read per scan reaches the first listed publication before it raises.
-    assert len(attempts.read_text(encoding="utf-8")) == reservation.CAPTURE_RESCANS
+    assert "disappeared" in str(refused.value)
+    # One read per scan reaches the first listed publication before it raises:
+    # three scans, not one, and not unbounded.  A literal, so lowering the
+    # constant cannot make the assertion follow it.
+    assert len(attempts.read_text(encoding="utf-8")) == 3
