@@ -131,7 +131,11 @@ _PHASE_KEYS = frozenset({
     # leg chunks independently of the other: a phase may carry
     # ``stage_chunks`` and/or ``ram_chunks``, and validation tiles each
     # against the phase on its own.
-    "stage_chunks"})
+    "stage_chunks",
+    # A declared prelaunch-resident phase (#1594).  Admission waits on all
+    # chunks of all declared phases (see ``leads_for``).  The key is present
+    # only when declared.  A plan with no declaration stays byte-identical.
+    "resident_before_launch"})
 #: What one chunk of a chunked ram leg says, and nothing else.
 _CHUNK_KEYS = frozenset({
     "chunk_index", "start_bytes", "end_bytes", "stage_gib",
@@ -239,6 +243,12 @@ def build_plan(*, consumer_action_key: str, tier_id: str, stage_root: str,
         if phase.get("stage_chunks") is not None:
             entry["stage_chunks"] = [  # type: ignore[arg-type]
                 {**chunk} for chunk in phase["stage_chunks"]]
+        # Copy the prelaunch declaration (#1594) only when the submitter
+        # phase carries it.  A plan with no declaration omits the key and
+        # stays byte-identical.  ``validate_plan`` refuses a non-true value
+        # and a non-prefix set.
+        if "resident_before_launch" in phase:
+            entry["resident_before_launch"] = phase["resident_before_launch"]
         built.append(entry)
     body: dict[str, object] = {
         "schema": RESIDENCY_PLAN_SCHEMA_V1,
@@ -650,6 +660,24 @@ def validate_plan(value: object) -> dict[str, object]:
             keys.add(ram_egress_key)
             rows["ram_egress_row"] = dict(ram_egress)
         checked.append({**dict(phase), **rows})
+    # Check the prelaunch declaration (#1594).  Only a literal true
+    # declares.  The declared phases form a contiguous prefix from the
+    # first phase.  A prelaunch phase behind an unread phase has no staging
+    # order.  Refuse it here, where nothing is queued, not at admission.
+    for phase in checked:
+        if ("resident_before_launch" in phase
+                and phase["resident_before_launch"] is not True):
+            raise ResidencyPlanError(
+                f"plan phase {str(phase.get('name'))!r} resident_before_launch "
+                f"must be true when present, got "
+                f"{phase['resident_before_launch']!r}")
+    declared = [str(phase["name"]) for phase in checked
+                if phase.get("resident_before_launch") is True]
+    ordered = [str(phase["name"]) for phase in checked]
+    if declared != ordered[:len(declared)]:
+        raise ResidencyPlanError(
+            f"prelaunch phases {declared} are not a contiguous prefix of "
+            f"the plan order {ordered}")
     return {**{key: value[key] for key in _PLAN_KEYS if key in value},
             "phases": checked}
 
@@ -1684,15 +1712,220 @@ def lead_mover_row(plan: Mapping[str, object]) -> dict[str, object]:
     return dict(first["mover_row"])
 
 
-def leads_for(plan: Mapping[str, object]) -> list[str]:
-    """The movers the consumer's admission depends on: its first phase, only.
+def prelaunch_phase_names(plan: Mapping[str, object]) -> list[str]:
+    """The declared prelaunch-resident phases of the plan, in order, or ``[]``.
 
-    Depending on more than the first phase is what would let the consumer wait
-    on a mover the window has not published yet, while the window waits on the
-    consumer's progress to publish it.
+    A phase declares with a literal ``resident_before_launch: true``
+    (#1594).  ``validate_plan`` refuses other values and non-prefix sets.
+    A frozen plan always declares a prefix from the first phase.
     """
 
-    return [str(lead_mover_row(plan)["action_key"])]
+    phases = plan["phases"]
+    assert isinstance(phases, list)
+    return [str(phase["name"]) for phase in phases
+            if isinstance(phase, Mapping)
+            and phase.get("resident_before_launch") is True]
+
+
+def leads_for(plan: Mapping[str, object]) -> list[str]:
+    """The movers on which consumer admission waits.
+
+    With no declaration, only the first-phase mover.  A wait on a later
+    mover can deadlock the window.  With a declaration (#1594), all
+    stage-leg chunk movers of all declared phases, in read order, chunked
+    or whole.  The declared prefix stages whole before launch.  The rest
+    stays lazy.
+    """
+
+    phases = plan["phases"]
+    assert isinstance(phases, list)
+    declared = [phase for phase in phases
+                if isinstance(phase, Mapping)
+                and phase.get("resident_before_launch") is True]
+    if not declared:
+        return [str(lead_mover_row(plan)["action_key"])]
+    leads: list[str] = []
+    for phase in declared:
+        assert isinstance(phase, Mapping)
+        chunks = phase.get("stage_chunks")
+        if isinstance(chunks, list):
+            for chunk in chunks:
+                assert isinstance(chunk, Mapping)
+                mover = chunk["mover_row"]
+                assert isinstance(mover, Mapping)
+                leads.append(str(mover["action_key"]))
+        else:
+            mover = phase["mover_row"]
+            assert isinstance(mover, Mapping)
+            leads.append(str(mover["action_key"]))
+    return leads
+
+
+def _prelaunch_stage_legs(
+        phase: Mapping[str, object]) -> list[dict[str, object]]:
+    """One row per stage leg of a plan phase: chunked or whole (#1594).
+
+    Each row gives the mover key, the ledger demand (``stage_gib``) and
+    the range.  The peak bound and the gang demand read one shape.
+    """
+
+    chunks = phase.get("stage_chunks")
+    if isinstance(chunks, list):
+        legs = []
+        for chunk in chunks:
+            assert isinstance(chunk, Mapping)
+            mover = chunk["mover_row"]
+            assert isinstance(mover, Mapping)
+            legs.append({"mover_key": str(mover["action_key"]),
+                         "stage_gib": int(chunk["stage_gib"]),  # type: ignore[arg-type]
+                         "start_bytes": int(chunk["start_bytes"]),  # type: ignore[arg-type]
+                         "end_bytes": int(chunk["end_bytes"])})  # type: ignore[arg-type]
+        return legs
+    mover = phase["mover_row"]
+    assert isinstance(mover, Mapping)
+    return [{"mover_key": str(mover["action_key"]),
+             "stage_gib": int(phase["stage_gib"]),  # type: ignore[arg-type]
+             "start_bytes": int(phase["start_bytes"]),  # type: ignore[arg-type]
+             "end_bytes": int(phase["end_bytes"])}]  # type: ignore[arg-type]
+
+
+def prelaunch_peak_gib(prefix_sizes: Sequence[int],
+                       suffix_sizes: Sequence[int]) -> dict[str, int]:
+    """The retained-plus-overlap peak of a declared prefix (#1594).
+
+    ``B = T + max over i of (size(pi) + size(p(i+1)))``, with
+    ``size(p(n+1)) = 0``.  Submission, ``pbgang`` and the gate share this
+    function.  They never disagree.
+    """
+
+    retained = sum(prefix_sizes)
+    sizes = list(suffix_sizes)
+    step = max([first + second
+                for first, second in zip(sizes, [*sizes[1:], 0])],
+               default=0)
+    return {"retained_gib": retained, "suffix_gib": step,
+            "peak_gib": retained + step}
+
+
+def prelaunch_bound(plan: Mapping[str, object],
+                    owned_by_others=frozenset()) -> dict[str, int] | None:
+    """A declared plan peak tier demand, or ``None`` with no declaration (#1594).
+
+    ``T`` sums the declared prefix ledger demands.  The suffix term covers
+    the largest two adjacent suffix phases.  A phase size sums the
+    ``stage_gib`` of its stage legs.  Legs in ``owned_by_others`` do not
+    count.  Submission counts all legs, so the runtime peak never exceeds
+    the submission peak.
+    """
+
+    phases = plan["phases"]
+    assert isinstance(phases, list)
+    owned = set(owned_by_others)
+    prefix = [phase for phase in phases
+              if isinstance(phase, Mapping)
+              and phase.get("resident_before_launch") is True]
+    if not prefix:
+        return None
+    suffix = [phase for phase in phases
+              if not (isinstance(phase, Mapping)
+                      and phase.get("resident_before_launch") is True)]
+
+    def size(phase: Mapping[str, object]) -> int:
+        return sum(leg["stage_gib"] for leg in _prelaunch_stage_legs(phase)
+                   if leg["mover_key"] not in owned)
+
+    return prelaunch_peak_gib(
+        [size(phase) for phase in prefix],
+        [size(phase) for phase in suffix])
+
+
+def gang_prelaunch_demand(members: Sequence[Mapping[str, object]],
+                          tier_capacity: Mapping[str, int]
+                          ) -> dict[str, dict[str, object]]:
+    """A gang joint prelaunch demand per stage tier (#1594).
+
+    ``members`` holds the member frozen plans.  ``tier_capacity`` maps each
+    tier to minted GiB.  Each tier sums distinct movers.  Shared ranges
+    count once through ``share_namespace``.  Members with no declaration
+    add nothing.  Unknown capacity never refuses.
+    """
+
+    demand: dict[str, dict[str, object]] = {}
+
+    def tier_entry(tier_id: str) -> dict[str, object]:
+        entry = demand.get(tier_id)
+        if entry is None:
+            entry = {"tier_id": tier_id, "retained_gib": 0,
+                     "suffix_gib": 0, "peak_gib": 0,
+                     "members": [], "namespaces": set()}
+            demand[tier_id] = entry
+        return entry
+
+    for member in members:
+        if not isinstance(member, Mapping):
+            continue
+        phases = member.get("phases")
+        if not isinstance(phases, list):
+            continue
+        names = [str(phase["name"]) for phase in phases
+                 if isinstance(phase, Mapping)
+                 and phase.get("resident_before_launch") is True]
+        if not names:
+            continue
+        tier_id = str(member.get("tier_id"))
+        digest = str(member.get("manifest_sha256"))
+        entry = tier_entry(tier_id)
+        seen = entry["namespaces"]
+        assert isinstance(seen, set)
+        key = member.get("consumer_action_key")
+        if isinstance(key, str) and key not in entry["members"]:
+            entry["members"].append(key)  # type: ignore[attr-defined]
+        for phase in phases:
+            if not isinstance(phase, Mapping):
+                continue
+            if phase.get("resident_before_launch") is not True:
+                continue
+            for leg in _prelaunch_stage_legs(phase):
+                namespace = share_namespace(
+                    digest, tier_id, int(leg["start_bytes"]),
+                    int(leg["end_bytes"]))
+                if namespace in seen:
+                    continue
+                seen.add(namespace)
+                entry["retained_gib"] = int(entry["retained_gib"]) + int(leg["stage_gib"])
+        suffix_sizes: list[int] = []
+        for phase in phases:
+            if not isinstance(phase, Mapping):
+                continue
+            if phase.get("resident_before_launch") is True:
+                continue
+            size = 0
+            for leg in _prelaunch_stage_legs(phase):
+                namespace = share_namespace(
+                    digest, tier_id, int(leg["start_bytes"]),
+                    int(leg["end_bytes"]))
+                if namespace in seen:
+                    continue
+                seen.add(namespace)
+                size += int(leg["stage_gib"])
+            suffix_sizes.append(size)
+        step = prelaunch_peak_gib([], suffix_sizes)["suffix_gib"]
+        entry["suffix_gib"] = int(entry["suffix_gib"]) + step
+
+    out: dict[str, dict[str, object]] = {}
+    for tier_id, entry in demand.items():
+        capacity = tier_capacity.get(tier_id)
+        peak = int(entry["retained_gib"]) + int(entry["suffix_gib"])
+        out[tier_id] = {
+            "tier_id": tier_id,
+            "retained_gib": int(entry["retained_gib"]),
+            "suffix_gib": int(entry["suffix_gib"]),
+            "peak_gib": peak,
+            "members": sorted(entry["members"]),  # type: ignore[arg-type]
+            "capacity_gib": capacity,
+            "over_capacity": (capacity is not None and peak > int(capacity)),
+        }
+    return out
 
 
 #: One live row's filed plan, reduced to what discovery needs (#1332), keyed
@@ -3489,6 +3722,7 @@ __all__ = [
     "expected_landings",
     "find_mover_leg",
     "freeze",
+    "gang_prelaunch_demand",
     "landing_seconds",
     "lead_mover_row",
     "leads_for",
@@ -3496,6 +3730,9 @@ __all__ = [
     "mover_announcement",
     "mover_keys",
     "plan_phase",
+    "prelaunch_bound",
+    "prelaunch_peak_gib",
+    "prelaunch_phase_names",
     "progress_contract",
     "ram_mover_keys",
     "read",
