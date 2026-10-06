@@ -36,7 +36,7 @@ MAX_FENCE_BYTES = 4096
 FENCE_WAIT_S = 2.0
 FENCE_POLL_S = 0.02
 #: How many times one census rescans when a listed publication vanishes under it
-#: (#1570); the census child's own deadline still bounds the total.
+#: (#1571); the census child's own deadline still bounds the total.
 CAPTURE_RESCANS = 3
 
 
@@ -45,7 +45,7 @@ class CensusUnavailable(RuntimeError):
 
 
 class PublicationDisappeared(CensusUnavailable):
-    """A listed publication was gone when the census read it (#1570)."""
+    """A listed publication was gone when the census read it (#1571)."""
 
 
 def _read(path: Path, *, optional: bool = False, limit: int = MAX_RECORD_BYTES) -> dict | None:
@@ -93,7 +93,7 @@ def selection(record: dict) -> dict | None:
 
 
 def _capture(queue: PoolQueue) -> dict:
-    """One strict census, rescanned when a listed publication vanishes (#1570).
+    """One strict census, rescanned when a listed publication vanishes (#1571).
 
     A publication is claimed, finished or withdrawn at any moment, so the
     directory listing can name a file that is gone by the time it is read. That

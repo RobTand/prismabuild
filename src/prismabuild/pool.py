@@ -20643,7 +20643,7 @@ class PoolQueue:
         requirement_digest_cache: dict[str, str | None] = {}
         #: The census is not read about a candidate, so a refusal of it
         #: (the reader fence busy, a record unreadable) is the same answer for
-        #: every later candidate of this pass: take it once (#1570).  Each
+        #: every later candidate of this pass: take it once (#1571).  Each
         #: candidate otherwise waited out ``FENCE_WAIT_S`` for the fence again,
         #: ten loops hammered the one fence, and 80 dependents of a running
         #: measurement stayed READY behind 'reader busy'.  Refusing never

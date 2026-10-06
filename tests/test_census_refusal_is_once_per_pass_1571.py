@@ -1,4 +1,4 @@
-"""A census refusal is item-independent, so a pass takes it once (#1570).
+"""A census refusal is item-independent, so a pass takes it once (#1571).
 
 The census reads the whole queue and asks nothing about the candidate.  When
 the reader fence is busy, every candidate in the same pass met the same
