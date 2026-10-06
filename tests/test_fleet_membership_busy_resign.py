@@ -127,6 +127,10 @@ def _incarnation(monkeypatch) -> str:
 
 
 def _publish_claim(queue: pool.PoolQueue, key: str, **kw) -> dict:
+    # ``publish`` takes any 64-character key but ``claim`` needs a hex digest
+    # (#1498 and the census checks), so a non-hex key published fine and was
+    # then never claimable: state it here instead of as an opaque ``None``.
+    assert pool._is_hex64(key), f"test key {key!r} is not a hex digest"
     queue.publish(
         action_key=key, cas_root=queue.root / "cas",
         checkout_root=queue.root / "co", worker_script=queue.root / "worker.py",
@@ -660,7 +664,7 @@ def test_resign_resumes_withdrawn_row_after_crash(
     linked successor, and reports resigned."""
     import threading
 
-    key = "r" * 64
+    key = "a" * 64
     host = socket.gethostname()
     old_owner = f"{host}:supervisor-4194304:1"
     snapshot = _publish_claim(queue, key, max_attempts=3)
@@ -717,7 +721,7 @@ def test_resign_preserves_newer_unrelated_publication(
     no adoption without exact lineage, no overwrite, fence retained."""
     import threading
 
-    key = "s" * 64
+    key = "a" * 64
     host = socket.gethostname()
     old_owner = f"{host}:supervisor-4194304:1"
     snapshot = _publish_claim(queue, key, max_attempts=3)
