@@ -120,18 +120,43 @@ def _ram_tier(tmp_path: Path, *, mount: Path | None = None,
     return tiers.get(storage_tiers.tier_id("ram", HOST))
 
 
-def test_ram_mint_resample_refuses_inode_exhaustion_with_free_bytes(tmp_path, monkeypatch):
+def _inode_exhausted(monkeypatch) -> None:
     sampled = os.statvfs_result((4096, 4096, 1000, 900, 900, 1000, 0, 0, 0, 255))
     monkeypatch.setattr(os, "statvfs", lambda path: sampled)
+
+
+def test_ram_mint_resample_refuses_inode_exhaustion_with_free_bytes(tmp_path, monkeypatch):
+    _inode_exhausted(monkeypatch)
     read = tier_loop._supply_reader_for(
         {"tier": "ram", "mountpoint": str(tmp_path)}, "ram:test", fallback_tokens=1)
-    try:
-        read()
-    except OSError as exc:
-        assert exc.errno == 28
-        assert "inodes" in str(exc)
-    else:
-        raise AssertionError("RAM mint ignored exhausted inode headroom")
+    assert read() == 0, "no writable room when the inode floor refuses (#1542)"
+
+
+def test_the_minted_supply_is_zero_when_the_resample_hits_the_inode_floor(
+        tmp_path, monkeypatch):
+    """The refusal must reach the ledger, not the discovery fallback.
+
+    The resample raising ``OSError`` let ``mint_stage_supply`` fall back to the
+    discovery byte count, so a mount with free bytes and no inodes still
+    minted its whole window.  Assert what was minted, not only the sample.
+    """
+    from prismabuild import pool
+
+    _inode_exhausted(monkeypatch)
+    queue = pool.PoolQueue(tmp_path / "pb-queue")
+    queue.ensure_layout()
+    tier_id = storage_tiers.tier_id("ram", HOST)
+    kind = storage_tiers.RAM_CAPACITY_KIND
+    discovery_window = 160
+    read = tier_loop._supply_reader_for(
+        {"tier": "ram", "mountpoint": str(tmp_path)}, tier_id,
+        fallback_tokens=discovery_window)
+    minted = tier_loop.mint_stage_supply(
+        queue, tier_id=tier_id, kind=kind, writable_tokens=discovery_window,
+        writable_reader=read, cap=discovery_window)
+    assert minted["writable"] == 0, minted
+    assert minted["supply"] == 0, minted
+    assert int(queue.tier_ledger(tier_id).available().get(kind, 0)) == 0
 
 
 def test_ram_tier_refuses_inode_exhaustion_with_free_bytes(tmp_path):
