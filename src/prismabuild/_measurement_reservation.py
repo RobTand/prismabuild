@@ -480,15 +480,41 @@ def blocking_selection(census: dict, item: dict, *, host: str, funded_by: str | 
     return None
 
 
-def gang_blocking(census: dict, item: dict, *, host: str, group: str | None) -> dict | None:
-    """A live gang election fences its host against strictly lower priority (#1517).
+def _single_behind_gang(item: dict, chosen: dict) -> bool:
+    """Whether ``item`` is a single of the gang's own priority that arrived after it.
 
-    The same rule as :func:`blocking_selection`; the gang's own members are
-    never fenced by their siblings' elections.
+    The census election carries the gang's rank, whose second field is the
+    earliest member's publication time.  A gang member is never decided by
+    this: two gangs of one priority are ordered by their rank
+    (``ranked_behind``), and fencing a member by another gang's election could
+    leave each waiting on the other.
+    """
+    if item.get("gang") is not None or int(item.get("priority", 0)) != chosen["priority"]:
+        return False
+    published = item.get("published_unix")
+    rank = chosen.get("rank")
+    return (isinstance(published, (int, float)) and not isinstance(published, bool)
+            and isinstance(rank, list) and len(rank) == 3
+            and isinstance(rank[1], (int, float)) and published > rank[1])
+
+
+def gang_blocking(census: dict, item: dict, *, host: str, group: str | None) -> dict | None:
+    """A live gang election fences its host against lower priority, and against
+    singles of its own priority that arrived after it (#1517).
+
+    The same rule as :func:`blocking_selection` for strictly lower priority.
+    Equal priority was not fenced, so a whole-box gang waiting at -10 was
+    starved by smaller -10 singles that kept taking its hosts (2026-10-06); a
+    single published after the gang's first member now waits behind it, while
+    one that arrived first keeps its place.  Running work still drains, and
+    the restartable-lending rule applies to the fenced single as it does to a
+    lower-priority one.  The gang's own members are never fenced by their
+    siblings' elections.
     """
     for key, chosen in sorted(census.get("gang_elections", {}).items()):
         if (chosen["host"] == host and key != item["action_key"] and chosen["group"] != group
-                and int(item.get("priority", 0)) < chosen["priority"]):
+                and (int(item.get("priority", 0)) < chosen["priority"]
+                     or _single_behind_gang(item, chosen))):
             return chosen
     return None
 
