@@ -41,7 +41,8 @@ def gang_fleet(fleet, tmp_path, monkeypatch):
         return None if result is None else result["action_key"]
 
     def members(name, *, priority=0, mem_gb=100, skew_s=_gang.DEFAULT_SKEW_S, file_group=True,
-                residency=None, residency_all=False, declares_manifest=False, inputs=None):
+                residency=None, residency_all=False, declares_manifest=False, inputs=None,
+                measurement_member=None):
         """Seal and publish a two-member gang, one member pinned per host.
 
         ``residency`` is published as a row residency block (the
@@ -100,15 +101,22 @@ def gang_fleet(fleet, tmp_path, monkeypatch):
             action = pb.seal_action({
                 "schema": pb.ACTION_SCHEMA_V2,
                 "task": {"definition_id": "tests/gang-member", "definition_version": "v1",
-                         "task_class": "generation", "determinism": "deterministic",
+                         "task_class": "measurement" if index == measurement_member else "generation",
+                         "determinism": "deterministic",
                          "artifact_family": "generic", "artifact_kind": "generic",
                          "argv": [sys.executable, "task.py"], "working_directory": ".",
                          "result_path": f"{name}-{index}"},
                 "inputs": member_inputs, "code_closure": pb.build_code_closure(checkout, ["task.py"]),
                 "params": params,
-                "environment": {"variables": {}, "toolchain": {}},
-                "execution_scope": {"portability": "portable", "platform_key": None,
-                                    "host_class": None},
+                "environment": {"variables": {}, "toolchain": {
+                    **pb.executable_toolchain_contract(sys.executable),
+                    "system": platform.system(), "machine": platform.machine(),
+                    "libc": "-".join(platform.libc_ver()),
+                } if index == measurement_member else {}},
+                "execution_scope": ({"portability": "host_class_keyed", "platform_key": None,
+                                     "host_class": "gb10"} if index == measurement_member else
+                                    {"portability": "portable", "platform_key": None,
+                                     "host_class": None}),
             })
             cas.publish_action_request(action)
             key = action["action_key"]

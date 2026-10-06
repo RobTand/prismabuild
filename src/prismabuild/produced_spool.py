@@ -665,7 +665,8 @@ class ProducedSpool:
                 demand=demand, tags=[self.host],
                 log_name=f"produced-export-{batch_id}.log",
                 retry_policy={"max_attempts": 3, "retry_safe": True},
-                extra_params={"produced_spool": {"manifest_sha256": manifest_input["sha256"],
+                extra_params={**movement_actions.RETURNS_CAPACITY_PARAMS,
+                              "produced_spool": {"manifest_sha256": manifest_input["sha256"],
                                                  "owner": self.owner, "batch_id": batch_id}})
             self.cas.publish_action_request(action)
             record = {"export_key": action["action_key"], "manifest_sha256": manifest_input["sha256"],

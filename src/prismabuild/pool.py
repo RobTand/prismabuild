@@ -6726,6 +6726,9 @@ class PoolQueue:
             sealed_params = sealed_request["params"] if sealed_request is not None else {}
             assert isinstance(sealed_params, Mapping)
             sealed_batch_raw = sealed_params.get("produced_output_batch")
+            if sealed_params.get("returns_capacity") not in (None, True):
+                raise PoolContractError("action.params.returns_capacity must be true when present")
+            returns_capacity = sealed_params.get("returns_capacity") is True
             if ("produced_output_batch" in sealed_params
                     and not isinstance(sealed_batch_raw, Mapping)):
                 raise PoolContractError(
@@ -7105,6 +7108,10 @@ class PoolQueue:
         if resident_set is not None:
             from . import resident_sets
             item["resident_set"] = resident_sets._set_id(resident_set)
+        if returns_capacity:
+            # Derived from the sealed params, never passed in (#1579): a row
+            # cannot declare what its action does not.
+            item["returns_capacity"] = True
         if declared_requirements is not None:
             # The claim-relevant projection of the sealed params (#1495):
             # what a claim gate reads, no more -- the full capability
@@ -20651,9 +20658,18 @@ class PoolQueue:
         census_refusal: dict[str, object] | None = None
         for item in ready:
             key = str(item.get("action_key", ""))
+            measurement_suspended = False
             held_back = withheld_for is not None and (
                 withheld_kinds is None
                 or self._demands_withheld_kind(item, withheld_kinds))
+            if (held_back and withheld_for in measurement_withholds
+                    and self._gang_member_past_reservation_bound(item)):
+                # The reservation wins over a measurement withhold (#1579): a
+                # gang member whose gang has waited past the bound is not held
+                # back behind a waiting measurement, or the gang could not even
+                # elect the host it reserves.  The measurement row stays READY
+                # and withholds again once the gang has started.
+                held_back = False
             producer = held_back and self._may_serve_a_producer(item)
             if held_back and withheld_kinds is None and not producer:
                 # Held back unevaluated behind the whole-box withhold.
@@ -21319,8 +21335,26 @@ class PoolQueue:
                                 census_refusal = census
                                 self.record_denial(item, "measurement_census_unavailable", census)
                                 continue
-                            census_blocked = measurement_reservation.blocking_selection(
-                                census, item, host=ledger.base.name, funded_by=None)
+                            # A gang that has waited past the bound RESERVES this
+                            # host, and the reservation wins: the measurement
+                            # fence and any measurement withhold are suspended
+                            # here, so a host is never both withheld for a
+                            # waiting measurement and reserved for a gang.  The
+                            # suspended row stays READY and withholds again once
+                            # the gang has started and no election waits (#1579).
+                            reservation_now = _now()
+                            measurement_suspended = measurement_reservation.reservation_active_on(
+                                census, host=ledger.base.name, now=reservation_now)
+                            reservation_held = reservation_capacity = None
+                            if measurement_suspended:
+                                try:
+                                    reservation_held = ledger.held()
+                                    reservation_capacity = ledger.capacity()
+                                except (OSError, ValueError, PoolContractError):
+                                    reservation_held = reservation_capacity = None  # fail safe
+                            census_blocked = (None if measurement_suspended else
+                                              measurement_reservation.blocking_selection(
+                                                  census, item, host=ledger.base.name, funded_by=None))
                             # A dependent of a current incumbent on this host
                             # (its sealed producer holds tokens here) only
                             # shortens that incumbent's life, which is what the
@@ -21343,7 +21377,9 @@ class PoolQueue:
                             gang_blocked = (None if serves_incumbent else
                                             measurement_reservation.gang_blocking(
                                                 census, item, host=ledger.base.name,
-                                                group=gang["group"] if gang is not None else None))
+                                                group=gang["group"] if gang is not None else None,
+                                                now=reservation_now, held=reservation_held,
+                                                capacity=reservation_capacity))
                             while gang_blocked is not None:
                                 from . import _gang
                                 try:
@@ -21367,7 +21403,9 @@ class PoolQueue:
                                     k: e for k, e in census["gang_elections"].items()
                                     if e not in gang_backfill})
                                 gang_blocked = measurement_reservation.gang_blocking(
-                                    remaining, item, host=ledger.base.name, group=None)
+                                    remaining, item, host=ledger.base.name, group=None,
+                                    now=reservation_now, held=reservation_held,
+                                    capacity=reservation_capacity)
                             if gang_blocked is not None:
                                 self.record_denial(item, "deferred_for_gang_reservation", {
                                     "withheld_for": gang_blocked["action_key"],
@@ -21644,9 +21682,10 @@ class PoolQueue:
                                     if drain_resolves:
                                         keep_refused_room(key, reservation_demand, reason, evidence, free_at_refusal)
                                     self.record_denial(item, reason, evidence)
-                                    withhold(key, kinds)
-                                    if identity and identity[1]:
-                                        measurement_withholds.add(key)
+                                    if not (measurement_suspended and identity and identity[1]):
+                                        withhold(key, kinds)
+                                        if identity and identity[1]:
+                                            measurement_withholds.add(key)
                                     continue
                                 reason = f"{reason}{_starved_suffix(verdict)}"
                                 evidence["starved"] = {"why": verdict["why"],
@@ -21700,9 +21739,10 @@ class PoolQueue:
                                     free_at_refusal)
                                 self.record_denial(
                                     item, "reservation_unavailable_withholding", evidence)
-                                withhold(key, None)
-                                if identity and identity[1]:
-                                    measurement_withholds.add(key)
+                                if not (measurement_suspended and identity and identity[1]):
+                                    withhold(key, None)
+                                    if identity and identity[1]:
+                                        measurement_withholds.add(key)
                                 continue
                             if withholding:
                                 # Keep its passes, and so its place, but let the
@@ -24909,6 +24949,20 @@ class PoolQueue:
             },
         )
         return self.attempt_path(archived, attempt)
+
+    def _gang_member_past_reservation_bound(self, item: Mapping[str, object]) -> bool:
+        """Whether ``item`` is a gang member whose gang has waited past the reservation bound."""
+        from . import _gang, _measurement_reservation as measurement_reservation
+        if not isinstance(item.get("gang"), Mapping):
+            return False
+        try:
+            declared = _gang.declaration(item["gang"])
+            record = _gang.read_group(self, declared["group"]) if declared else None
+            if record is None:
+                return False
+            return _now() - _gang.rank(record)[1] > measurement_reservation.GANG_RESERVE_AFTER_S
+        except (_gang.GangContractError, OSError, pb.PrismaBuildError, KeyError, TypeError, ValueError):
+            return False
 
     @_serialized_key
     def _gang_teardown(self, item: Mapping[str, object] | None, *, reason: str,

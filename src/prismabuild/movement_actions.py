@@ -101,6 +101,15 @@ MOVEMENT_TASK = {"task_class": "generation", "determinism": "stochastic",
 MOVEMENT_EXECUTION_SCOPE = {"portability": "portable", "platform_key": None,
                             "host_class": None}
 
+#: Sealed into the params of every node whose whole job is to give capacity back
+#: (a stage or RAM egress, a produced-output egress or export, a resident evict).
+#: It is part of the action's content-addressed definition, and ``publish``
+#: copies it onto the queue row as ``returns_capacity``, where a gang's
+#: reservation reads it (#1579): such a row is never held behind a waiting gang,
+#: because a running action, and through it the gang, waits on it.  A row
+#: without it is held by its declared demand.
+RETURNS_CAPACITY_PARAMS = {"returns_capacity": True}
+
 #: The retry policy a movement node gets when its caller names none (#950).
 #: Its own, never its consumer's: a mover copies into a temporary, verifies
 #: and renames, and an egress unlinks what its fragment names and counts a
