@@ -4832,26 +4832,48 @@ whose demand does not read, counts as the whole host in that dimension (an omitt
 reserves the whole host; a host ledger that does not read denies the row for the
 pass. Never held: the gang's own members and any gang's (two gangs of one priority
 are ordered by `rank`), higher priority, a verified publication canary slot (its
-own next-free-safe-boundary contract) and a row whose sealed action declares
-`returns_capacity` (`movement_actions.RETURNS_CAPACITY_PARAMS`: a stage or RAM
-egress, a produced-output egress, a produced spool export, a resident evict). A
-returner is DECLARED in the row's content-addressed definition, copied onto the
-queue row by `publish` and refused unless it is the literal `true`, so it cannot
-be lost when its consumer goes terminal and nothing infers it; a row without the
-declaration is held by its demand. A prerequisite mover is a CPU and tier-token
-row, so it fits in the slack the member leaves and needs no exemption list.
+own next-free-safe-boundary contract) and the two roles PrismaBuild itself assigns.
+`returns_capacity` marks a node whose whole job is to give capacity back: a stage or
+RAM egress (`stage_release.py`), a produced export (`produced_export.py`) or a
+resident evict. `serves_residency` marks a stage mover or RAM promotion a residency
+consumer waits on (`stage_move.py`, `ram_promote.py`, carrying its residency range).
+Neither is a declaration: `PoolQueue.publish` refuses `returns_capacity` and
+`serves_residency` in a sealed action, and derives the role from the sealed
+definition (`movement_actions.capacity_role`) only when the node was published with
+`recompute` (every PrismaBuild publisher of a movement node does), runs one of those
+scripts, has no GPU, and, for a returner, demands at most one CPU and one GiB and no
+kind but a tier's; a mover must carry its range. A submitted action that merely names
+one of the scripts gets no role unless it also matches all of that, and is then the
+tool. A node with a role skips the reservation arithmetic and still needs its real
+ledger fit (tier tokens, CPU, memory), so it cannot take what is not free. This is
+what lets a gang member that takes every CPU on its host progress: the movers it waits
+for are admitted although no CPU slack remains. Every other row is held by its demand.
 
 A host is never both withheld for a waiting measurement and reserved for a gang:
-once the gang's ten minutes elapse the reservation wins on that host. The
-measurement fence and any measurement withhold are suspended there, a measurement
-single does not elect on it, and a gang member past the bound is not held back
-behind a measurement withhold, so it can elect. The suspended measurement row stays
-READY and withholds again once the gang has started and no waiting gang reserves
-the host. The gang therefore starts within ten minutes plus the longest running
-job on its hosts (each capped), plus one run of the returners it waits on. Before
-2026-10-06 equal priority was never fenced: a whole-box -10 gang waited fourteen
-minutes while smaller -10 singles took both Sparks. Gang jobs may also run at a
-priority above routine work, with routine work at 0 or below.
+once the gang's ten minutes elapse the reservation wins on that host over a
+measurement of the gang's priority or lower. That measurement's fence and withhold,
+including a carried withhold (one that snapshots a drain deadline), are suspended
+there, it does not elect on the host, and a gang member past the bound is not held
+back behind it, so the member can elect. A strictly HIGHER-priority measurement keeps
+its place ahead of the gang and still elects and withholds: that is the priority
+order, not a reservation exception (gangs may run at a priority above routine work,
+and under D45 at 0, so only a ship-window measurement outranks them). A suspended
+measurement row stays READY and withholds again once the gang has started and no
+waiting gang reserves the host. The gang therefore starts within ten minutes plus the
+longest running job on its hosts (each capped), plus the runs of the roles it waits
+on.
+
+Known limit: the roles are exempt from the arithmetic but not unbounded in effect.
+A stream of unrelated movers or releases on a member host can each delay the gang by
+one run, and token-bounded movers do not prove that the gang progresses in every
+configuration: the tier ledger can still refuse a mover whose tokens are held by work
+that waits on the gang. The reservation bounds what new ordinary work can take; it
+does not make the tier's own accounting live. A returner or mover published by an
+older generation has the same role only if its sealed definition matches; a row
+published before this change carries no role and is held by its demand, never
+indefinitely, only while running work uses the slack. Before 2026-10-06 equal
+priority was never fenced: a whole-box -10 gang waited fourteen minutes while smaller
+-10 singles took both Sparks.
 
 **Mixed generations.** An old worker offers no `gang-v1` and ignores `gangs/`, so
 it never claims a member. During a rolling publish it may not honour a gang
