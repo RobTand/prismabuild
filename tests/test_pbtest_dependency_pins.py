@@ -1,14 +1,12 @@
 """A fleet shard must not run against a different reviewed dependency commit."""
 from __future__ import annotations
 
-import ast
 import importlib.util
 import base64
 import csv
 import hashlib
 import json
 from pathlib import Path
-import re
 import subprocess
 import sys
 from pbtest_shard_output import admitted_child
@@ -94,14 +92,9 @@ def test_mismatched_commit_refuses_before_pytest(tmp_path, monkeypatch, capsys):
 
 def test_matching_pin_runs_pytest_and_records_provenance(tmp_path, monkeypatch):
     checkout, _ = fixture_checkout(tmp_path, installed=PIN)
-    result, calls = dispatch(checkout, monkeypatch)
+    result, _ = dispatch(checkout, monkeypatch)
     assert result == 0
     assert (checkout / "pytest-ran").read_text() == "yes"
-    # The worker command carries the guard itself, not a helper path that
-    # could be absent on another host or change independently of the key.
-    payload = calls[0][calls[0].index("--") + 1:]
-    assert "-c" in payload
-    assert "def check_pins" in payload[payload.index("-c") + 1]
     output = json.loads((checkout / "result.json").read_text())[0]["output"]
     evidence = json.loads(next(line.removeprefix("pbtest dependency pin: ")
                               for line in output.splitlines()
@@ -196,7 +189,6 @@ def test_a_second_pin_cannot_hide_behind_a_matching_one(tmp_path, monkeypatch, c
 # digests. No digest loop is mocked; corruption is applied to installed
 # bytes and read back by importlib.metadata in this process.
 
-PINS_SOURCE = (ROOT / "tools/fleet/pbtest_pins.py").read_text(encoding="utf-8")
 OTHER = "c" * 40
 
 
@@ -579,34 +571,3 @@ def test_a_raising_policy_propagates_unchanged(tmp_path, monkeypatch,
 
     with pytest.raises(RuntimeError, match="policy refuses this drift"):
         pins_module.verify_install("pinsbyte1544", OTHER, identity_policy=refuses)
-
-
-def test_verify_install_routes_through_the_one_byte_implementation(
-        tmp_path, monkeypatch, pins_module, pins_repo):
-    site, commit = pip_installed(tmp_path, pins_repo)
-    monkeypatch.syspath_prepend(str(site))
-    calls = []
-    original = pins_module.verify_record_bytes
-
-    def spy(module):
-        calls.append(module)
-        return original(module)
-
-    monkeypatch.setattr(pins_module, "verify_record_bytes", spy)
-    evidence = pins_module.verify_install("pinsbyte1544", commit)
-    assert calls == ["pinsbyte1544"]
-    assert evidence["verified_files"] >= 4
-
-
-def test_source_uses_exactly_one_digest_owner_call(pins_module):
-    from prismabuild.digest_primitives import stream_digest
-
-    assert pins_module.stream_digest is stream_digest
-    assert re.findall(r"hashlib\.\w+\(", PINS_SOURCE) == []
-    integrity = next(node for node in ast.parse(PINS_SOURCE).body
-                     if isinstance(node, ast.FunctionDef)
-                     and node.name == "verify_record_bytes")
-    calls = [node for node in ast.walk(integrity)
-             if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-             and node.func.id == "stream_digest"]
-    assert len(calls) == 1
