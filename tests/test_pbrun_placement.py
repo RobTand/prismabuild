@@ -2143,7 +2143,7 @@ def class_submission(tmp_path, monkeypatch):
 
     monkeypatch.setattr(pbrun.pb, "seal_action", capture)
 
-    def submit(command, *, host="spark-a", flags=(), answers=None, omit=()):
+    def submit(command, *, host="spark-a", flags=(), answers=None, omit=(), stale=()):
         for member in ("spark-a", "spark-b"):
             if member in omit:
                 continue
@@ -2154,6 +2154,8 @@ def class_submission(tmp_path, monkeypatch):
             record = queue.root / "workers" / f"{member}.json"
             value = json.loads(record.read_text())
             value["local_dependencies"] = (answers or {}).get(member, {})
+            if member in stale:
+                value["announced_unix"] = time.time() - pool_module.OFFER_TIMEOUT_S - 1
             record.write_text(json.dumps(value))
         monkeypatch.setattr(socket, "gethostname", lambda: host)
         monkeypatch.setattr(sys, "argv", ["pbrun.py", "--cwd", str(checkout),
@@ -2438,3 +2440,27 @@ def test_default_cli_resolves_nominal_docker_through_capture_shim(class_submissi
     from prismabuild import movement_actions
     assert action["task"]["argv"] == movement_actions.standard_capture_argv(
         action["params"]["command"], action["task"]["result_path"], path_prefix=str(wrapper))
+
+
+@pytest.mark.parametrize("proof", ["missing", "stale", "invalid", "healthy", "non-class",
+                                   "here", "tag", "anywhere"])
+def test_zero_external_dependencies_cannot_widen_failed_class_default(class_submission, proof):
+    submit, root = class_submission
+    executable = root / "checkout" / "task"
+    executable.write_text("#!/bin/sh\nprintf checkout-command\n")
+    executable.chmod(0o755)
+    if proof == "invalid":
+        (root / "fleet_boxes.json").write_text(json.dumps({"boxes": {
+            "spark-a": {"_alias": "shared", "args": ["--class", "gb10"]},
+            "spark-b": {"_alias": "shared", "args": ["--class", "gb10"]},
+        }}))
+    flags = (["--gpu"] if proof == "invalid" else ["--here"] if proof == "here"
+             else ["--tag", "x86"] if proof == "tag" else ["--anywhere"] if proof == "anywhere" else [])
+    host = "celestia" if proof in ("invalid", "non-class") else "spark-a"
+    action = submit(["./task"], host=host, flags=flags,
+                    omit=["spark-b"] if proof == "missing" else [],
+                    stale=["spark-b"] if proof == "stale" else [])
+    assert action["params"].get("dependency_queries", {}) == {}
+    expected = ([host] if proof in ("missing", "stale", "invalid", "here") else ["x86"] if proof == "tag"
+                else [] if proof in ("non-class", "anywhere") else ["gb10"])
+    assert action["params"]["placement"]["required_tags"] == expected
