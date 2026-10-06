@@ -443,3 +443,64 @@ def test_a_planner_row_member_is_gated_like_an_explicit_one(gang_fleet,
     assert claimed["residency_verdict"]["state"] == "resident"
     environment = queue.launch_environment(claimed)
     assert environment[pb.RESIDENCY_MAP_ENV] == str(queue.residency_map_path(first))
+
+
+def test_a_member_whose_leads_all_ended_terminally_tears_the_gang_down(
+        gang_fleet, monkeypatch, tmp_path):
+    """#1543: a gang that can never start must not fence its hosts forever.
+
+    Member 0's only lead fails, so its verdict is ``residency_lead_terminal``
+    and nothing will repair it.  Gang elections never expire and the sweep
+    tears a gang down only on an UNSUCCESSFUL member, which a READY member
+    never is, so the sibling kept fencing sparky until someone withdrew the
+    gang.  The claim pass that finds the terminal verdict now tears the gang
+    down: the siblings are withdrawn, the fence is released.
+    """
+    queue, clock, publish, finish, gclaim, denial, members = gang_fleet
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    lead = _hexkey("dead-lead")
+    group, (first, second) = members("dead-gang", residency=_consumer_block([lead]))
+    queue.mint_tier_capacity(TIER, {"stage_gib": 8})
+    _publish_lead(queue, clock, lead, stage)
+    monkeypatch.setattr(pool.socket, "gethostname", lambda: "sparklina")
+    claimed = queue.claim(capacity={"cpu": 8, "mem_gb": 16}, tags=["sparklina"])
+    assert claimed is not None and claimed["action_key"] == lead, claimed
+    queue.finish(lead, status="failed")
+
+    # The sibling elects and fences sparky while the gang waits.
+    assert gclaim("sparky") is None
+    assert denial(second, "sparky")["reason"] == "gang_waiting_for_peers"
+    drained = publish("drained-by-the-dead-gang", priority=-10, timeout_s=None,
+                      cpu=1, gpu=0, mem_gb=1, tags=["sparky"])
+    assert gclaim("sparky") is None, "the live gang should fence sparky first"
+    assert denial(drained, "sparky")["reason"] in (
+        "deferred_for_gang_reservation", "deferred_behind_withheld_row")
+
+    # The member's own pass finds every lead ended: the gang cannot start.
+    assert gclaim("sparklina") is None
+    assert denial(first, "sparklina")["reason"] == "residency_lead_terminal"
+    torn = _gang.teardown(queue, group)
+    assert torn is not None and "residency_lead_terminal" in str(torn.get("reason")), torn
+
+    # The sweep withdraws the READY members and the fence is gone.
+    queue.sweep_gangs()
+    for key in (first, second):
+        assert queue.item_path(pool.WITHDRAWN, key).exists(), key
+        assert not queue.item_path(pool.READY, key).exists(), key
+    assert gclaim("sparky") == drained, denial(drained, "sparky")
+
+
+def test_a_member_whose_leads_are_merely_pending_does_not_tear_the_gang_down(
+        gang_fleet, monkeypatch, tmp_path):
+    """The control: a lead that has not run yet is a wait, not a terminal state."""
+    queue, clock, publish, finish, gclaim, denial, members = gang_fleet
+    lead = _hexkey("slow-lead")
+    group, (first, second) = members("slow-gang", residency=_consumer_block([lead]))
+    queue.mint_tier_capacity(TIER, {"stage_gib": 8})
+    assert gclaim("sparklina") is None
+    assert denial(first, "sparklina")["reason"] == "residency_lead_not_resident"
+    assert _gang.teardown(queue, group) is None
+    queue.sweep_gangs()
+    assert queue.item_path(pool.READY, first).exists()
+    assert queue.item_path(pool.READY, second).exists()
