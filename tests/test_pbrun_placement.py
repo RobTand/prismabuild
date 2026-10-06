@@ -2245,7 +2245,14 @@ def test_class_default_native_cli_smoke(tmp_path, monkeypatch):
     roster.write_text(json.dumps({"boxes": {
         name: {"args": ["--class", "gb10"]} for name in ("spark-a", "spark-b")}}))
     queue = pool_module.PoolQueue(fleet / "pb-queue")
-    bash = str(Path("/bin/bash").resolve())
+    selected = tmp_path / "selected"
+    (selected / "child").mkdir(parents=True)
+    (tmp_path / "path-link").symlink_to(selected / "child", target_is_directory=True)
+    (selected / "bash").symlink_to(Path("/bin/bash").resolve())
+    decoy = tmp_path / "bash"
+    decoy.write_text("#!/bin/sh\nprintf lexically-wrong-command\n")
+    decoy.chmod(0o755)
+    bash = str(selected / "bash")
     for member in ("spark-a", "spark-b"):
         queue.announce(host=member, tags=["gb10", member, "local-dependency-v1"],
                        has_gpu=False, capacity={"cpu": 1, "mem_gb": 4})
@@ -2259,7 +2266,7 @@ def test_class_default_native_cli_smoke(tmp_path, monkeypatch):
     monkeypatch.setattr(socket, "gethostname", lambda: "spark-a")
     earlier = tmp_path / "earlier-path"
     monkeypatch.setattr(sys, "argv", ["pbrun.py", "--cwd", str(work), "--detach",
-                                     "--env", f"PATH={earlier}:/usr/bin:/bin", "--",
+                                     "--env", f"PATH={earlier}:{tmp_path}/path-link/..:/usr/bin:/bin", "--",
                                      "bash", "-c", "printf placement-native-ok"])
     assert pbrun.main() == 0
     earlier.mkdir()
@@ -2290,6 +2297,7 @@ def test_class_default_native_cli_smoke(tmp_path, monkeypatch):
     payload = cas.result_path(receipt, action).read_text()
     assert "placement-native-ok" in payload
     assert "redirected-wrong-command" not in payload
+    assert "lexically-wrong-command" not in payload
     print(json.dumps({"native_cli_smoke": {"key": row["action_key"], "tags": row["tags"],
         "execution": "CPU-only on the admitted host; synthetic class offers", "python": sys.executable,
         "receipt": receipt, "payload": payload, "terminal": outcome}}, sort_keys=True))
@@ -2461,3 +2469,109 @@ def test_zero_external_dependencies_cannot_widen_failed_class_default(class_subm
     expected = ([host] if proof in ("missing", "stale", "invalid", "here") else ["x86"] if proof == "tag"
                 else [] if proof in ("non-class", "anywhere") else ["gb10"])
     assert action["params"]["placement"]["required_tags"] == expected
+
+
+@pytest.mark.parametrize("form", ["relative", "absolute", "path"])
+def test_symlink_parent_traversal_preserves_requested_executable(class_submission, form):
+    submit, root = class_submission
+    checkout = root / "checkout"
+    actual = checkout / "actual"
+    (actual / "child").mkdir(parents=True)
+    (checkout / "link").symlink_to("actual/child", target_is_directory=True)
+    selected = actual / "tool"
+    selected.write_text("#!/bin/sh\nprintf requested-executable\n")
+    selected.chmod(0o755)
+    decoy = checkout / "tool"
+    decoy.write_text("#!/bin/sh\nprintf lexically-wrong-executable\n")
+    decoy.chmod(0o755)
+    requested = "link/../tool"
+    flags = []
+    if form == "absolute":
+        requested = str(checkout / requested)
+    elif form == "path":
+        requested = "tool"
+        flags = ["--env", "PATH=link/..:/usr/bin:/bin"]
+    action = submit([requested], flags=flags)
+    result = subprocess.run(action["task"]["argv"], cwd=checkout, text=True,
+                            capture_output=True, env=action["environment"]["variables"])
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "requested-executable"
+    assert (checkout / action["task"]["result_path"]).read_text().strip() == "requested-executable"
+
+
+def test_relocated_capture_preserves_symlink_parent_traversal(tmp_path):
+    checkout = _git_checkout(tmp_path)
+    actual = checkout / "actual"
+    (actual / "child").mkdir(parents=True)
+    (checkout / "link").symlink_to("actual/child", target_is_directory=True)
+    for target, payload in ((actual / "tool", "requested-executable"),
+                            (checkout / "tool", "lexically-wrong-executable")):
+        target.write_text("#!/bin/sh\nprintf " + payload + "\n")
+        target.chmod(0o755)
+    command, _ = pbrun.command_dependency_contract(
+        checkout, ["link/../tool"], repository_root=checkout,
+        environment={"PATH": "/usr/bin:/bin"}, caller_environment={})
+    relocated = tmp_path / "relocated"
+    (relocated / "actual" / "child").mkdir(parents=True)
+    (relocated / "link").symlink_to("actual/child", target_is_directory=True)
+    for relative in ("actual/tool", "tool"):
+        (relocated / relative).write_bytes((checkout / relative).read_bytes())
+        (relocated / relative).chmod(0o755)
+    from prismabuild import movement_actions
+    result = subprocess.run(
+        movement_actions.standard_capture_argv(command, "captured.txt", path_prefix="/usr/bin"),
+        cwd=relocated, text=True, capture_output=True)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "requested-executable"
+    assert (relocated / "captured.txt").read_text().strip() == "requested-executable"
+
+
+@pytest.fixture
+def symlink_parent_input(tmp_path):
+    checkout = _git_checkout(tmp_path)
+    links = tmp_path / "external-links"
+    actual = tmp_path / "actual-input"
+    links.mkdir()
+    (actual / "child").mkdir(parents=True)
+    (links / "link").symlink_to(actual / "child", target_is_directory=True)
+    (links / "input.bin").write_text("lexically-wrong-input")
+    return checkout, links, actual
+
+
+@pytest.mark.parametrize("source", ["argv", "environment"])
+def test_symlink_parent_traversal_refuses_actual_missing_input(symlink_parent_input, source):
+    checkout, links, _ = symlink_parent_input
+    requested = (str(links / "link" / ".." / "input.bin") if source == "argv"
+                 else "../external-links/link/../input.bin")
+    command = ["/usr/bin/cat", requested] if source == "argv" else ["/usr/bin/cat"]
+    caller = {"INPUT": requested} if source == "environment" else {}
+    with pytest.raises(SystemExit):
+        pbrun.command_dependency_contract(
+            checkout, command, repository_root=checkout,
+            environment={"PATH": "/usr/bin:/bin"}, caller_environment=caller)
+
+
+@pytest.mark.parametrize("source", ["argv", "environment"])
+def test_symlink_parent_traversal_guards_the_requested_input(symlink_parent_input, source):
+    from prismabuild import local_dependencies
+    checkout, links, actual = symlink_parent_input
+    target = actual / "input.bin"
+    target.write_text("requested-input")
+    requested = (str(links / "link" / ".." / "input.bin") if source == "argv"
+                 else "../external-links/link/../input.bin")
+    command = ["/usr/bin/cat", requested] if source == "argv" else ["/usr/bin/cat"]
+    caller = {"INPUT": requested} if source == "environment" else {}
+    _, requirements = pbrun.command_dependency_contract(
+        checkout, command, repository_root=checkout,
+        environment={"PATH": "/usr/bin:/bin"}, caller_environment=caller)
+    queue = pool_module.PoolQueue(checkout.parent / "input-queue")
+    probe = {"tags": [local_dependencies.TAG], "resources": {"cpu": 1},
+             "local_dependencies": requirements}
+    def announce():
+        queue.announce(host="input-worker", tags=[local_dependencies.TAG], has_gpu=False,
+                       capacity={"cpu": 1}, local_dependency_answers=local_dependencies.observe(requirements))
+    announce()
+    assert queue.placeable(probe) is True
+    target.unlink()
+    announce()
+    assert queue.placeable(probe) is False

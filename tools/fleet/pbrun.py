@@ -1638,13 +1638,17 @@ def command_dependency_contract(
     environment: dict[str, str] | None, caller_environment: dict[str, str] | None,
 ) -> tuple[list[str], dict[str, str]]:
     """Bind the invocation and its direct path requirements in one resolution."""
+    cwd = cwd.resolve()
     root = repository_root.resolve()
 
-    def external(candidate: Path) -> bool:
+    def resolved_path(candidate: Path) -> Path:
         try:
-            resolved = candidate.resolve(strict=False)
+            return candidate.resolve(strict=False)
         except (OSError, RuntimeError) as exc:
             raise SystemExit(f"pbrun: cannot resolve declared path {candidate}: {exc}") from exc
+
+    def external(candidate: Path) -> bool:
+        resolved = resolved_path(candidate)
         return not (resolved.is_relative_to(root)
                     or resolved.is_relative_to(SHARED_ROOT.resolve()))
 
@@ -1652,7 +1656,7 @@ def command_dependency_contract(
         raise SystemExit("pbrun: portable placement requires argv[0]")
     raw = command[0]
     if os.sep in raw:
-        executable = Path(os.path.abspath(cwd / raw))
+        executable = cwd / raw
         if not executable.is_file() or not os.access(executable, os.X_OK):
             raise SystemExit(
                 "pbrun: command executable is absent or not executable "
@@ -1661,8 +1665,7 @@ def command_dependency_contract(
                 "identical executable contract on every eligible worker.")
     else:
         declared_path = (environment or {}).get("PATH") or os.defpath
-        search = [str(Path(os.path.abspath(cwd / entry)))
-                  for entry in declared_path.split(os.pathsep)]
+        search = [str(cwd / entry) for entry in declared_path.split(os.pathsep)]
         found = shutil.which(raw, path=os.pathsep.join(search))
         if found is None:
             raise SystemExit(
@@ -1671,8 +1674,10 @@ def command_dependency_contract(
                 "that owns it, or --anywhere to assert an identical "
                 "executable contract on every eligible worker.")
         executable = Path(found)
-    # Keep the invocation path: resolving a venv symlink would incorrectly
-    # prove the system Python instead of the venv the worker will execute.
+    # Traverse directory symlinks and .. before making a relocatable command.
+    # relpath/abspath would cancel .. lexically and could select another file.
+    # Keep the leaf: dereferencing a venv Python loses the venv invocation.
+    executable = resolved_path(executable.parent) / executable.name
     requirements = {str(executable): "executable"} if external(executable) else {}
     candidates = []
     for token in command[1:]:
@@ -1690,7 +1695,9 @@ def command_dependency_contract(
             if candidate.is_absolute() or os.sep in raw or (cwd / candidate).exists():
                 candidates.append(candidate)
     for candidate in dict.fromkeys(candidates):
-        path = Path(os.path.abspath(cwd / candidate))
+        # Observe the requested pathname, including symlink-sensitive ..,
+        # rather than a lexical alias that might name an unrelated input.
+        path = cwd / candidate
         if not external(path):
             continue
         if not path.exists():

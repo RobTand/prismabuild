@@ -2683,6 +2683,11 @@ miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
   override. Default portable placement resolves argv[0] against the same
   shim-prefixed PATH as capture and binds that invocation into params.command
   and task.argv; a later same-name PATH entry cannot redirect execution.
+  Explicit executable paths, relative PATH entries and direct input paths
+  follow filesystem traversal: `link/..` is not cancelled lexically. The
+  selected executable directory is resolved before checkout relativization,
+  while its leaf is retained so a venv Python remains a venv invocation.
+  Input requirements retain the requested pathname for offer and claim checks.
   Checkout executables use relative invocation paths so snapshots relocate,
   and nominal Docker still runs through the existing shim. Pool defaults from
   a declared gb10 member, or GPU work from celestia, use gb10 only when every

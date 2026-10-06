@@ -311,6 +311,11 @@ the resolved invocation into the captured command, so later PATH entries cannot
 redirect it. Resolution includes the normal Docker shim prefix; Docker still
 uses that shim. Checkout executables retain relocatable relative paths. A venv
 Python keeps its invocation path, not its dereferenced system interpreter.
+Executable paths and relative PATH entries follow directory symlinks before
+`..`; they are not simplified lexically. The selected directory is resolved
+before a checkout command is made relative, without dereferencing its leaf.
+Direct argv and caller-environment inputs keep the requested pathname, so
+presence and claim checks inspect the same target the command names.
 Explicit `--here` and tags
 remain authoritative; `--anywhere --tag` remains invalid. Use a class tag
 alone, or `--anywhere` alone only if every eligible worker can run the command.
