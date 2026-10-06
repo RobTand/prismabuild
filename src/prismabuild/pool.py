@@ -19615,28 +19615,72 @@ class PoolQueue:
                    and any(tag in offered for offered in with_gpu)
                    for tag in required)
 
-    def _fits_beside_ready_gpu(
-        self, item: Mapping[str, object], ready_gpu: Mapping[str, object], *,
-        total: Mapping[str, int], gpu_controller: object | None,
+    def _class_scoped_candidate(
+        self, item: Mapping[str, object], records: Sequence[Mapping[str, object]],
     ) -> bool:
-        """Whether ``item`` fits in this host's capacity beside ``ready_gpu``'s reservation (#1589).
+        """Whether ``item`` may be considered for #1589's exemption from the READY-GPU rule.
 
-        What keeps GPU safety when a class-scoped CPU row is let past #1526's
-        rule: the eligible GPU row's own reservation is held out of the host's
-        TOTAL capacity first, so the CPU row can never be what keeps it from
-        starting.  An unreadable demand does not fit.  Ordinary CPU admission
-        still decides whether the row can claim now.
+        Its tags name something no host without a GPU offers, and its sealed host
+        demand is plain and bounded: an explicit ``cpu`` and ``mem_gb``, no GPU, and
+        no tier or fill kind (a tier demand takes what a GPU row's own claim
+        needs).  This only makes the row a candidate; whether it passes is decided
+        at the token boundary (:meth:`_class_scoped_beside_ready_gpu`).
         """
+        if not self._excluded_from_cpu_hosts(item, records):
+            return False
         try:
-            gpu_demand, _tiers = storage_tiers.split_demand(self.demand_of(ready_gpu))
-            reservation = self._reservation_demand(gpu_demand, gpu_controller=gpu_controller)
-            cpu_demand, _tiers = storage_tiers.split_demand(self.demand_of(item))
+            host, tiers = storage_tiers.split_demand(self.demand_of(item))
         except (TypeError, ValueError, PoolContractError):
             return False
-        if not cpu_demand:
-            return False
-        return all(int(total.get(kind, 0)) - int(reservation.get(kind, 0)) >= int(need)
-                   for kind, need in cpu_demand.items())
+        return (not tiers and not host.get("gpu") and set(host) <= {"cpu", "mem_gb"}
+                and int(host.get("cpu", 0)) > 0 and int(host.get("mem_gb", 0)) > 0)
+
+    def _class_scoped_beside_ready_gpu(
+        self, item: Mapping[str, object], ready_gpu: Mapping[str, object], *,
+        ledger: "ResourceLedger", total: Mapping[str, int], controller: object | None,
+        gpu_controller: object | None, observed_images: Container[str] | None,
+        container_class_policy: image_inventory.ClassImagePolicy | None,
+        container_inventory: Mapping[str, object] | None,
+        identity: object, demand: Mapping[str, int],
+    ) -> dict[str, object] | None:
+        """``None`` when a class-scoped CPU row may take its tokens now; else why not (#1589).
+
+        Called under host admission, with the row's own demand known, just before
+        it takes its tokens.  GPU safety is the room the eligible GPU row keeps
+        (:meth:`_ready_gpu_row_room`: its reservation under the facts its own
+        claim reads first, the producer's export allowance included) against the
+        FREE tokens at this moment: the row passes only if, after it takes its own,
+        that room still fits.  Incumbents hold tokens, and every earlier admission
+        has taken its share, so the GPU row is never what a class-scoped row
+        delays.  Held back as well: a measurement row (its exclusivity contracts
+        are its own), a progress-governed row with no total bound, a room that
+        cannot be established, and any ledger that does not read.
+        """
+        if isinstance(identity, tuple) and len(identity) > 1 and identity[1]:
+            return {"class_scoped": "measurement_row"}
+        try:
+            governed, _requested = _declared_run_bound(item)
+        except (OSError, ValueError, PoolContractError, pb.PrismaBuildError):
+            return {"class_scoped": "run_bound_unreadable"}
+        if governed != "deadline":
+            return {"class_scoped": "no_total_run_bound"}
+        room = self._ready_gpu_row_room(
+            ready_gpu, ledger=ledger, total=total, controller=controller,
+            gpu_controller=gpu_controller, observed_images=observed_images,
+            container_class_policy=container_class_policy,
+            container_inventory=container_inventory)
+        if room is None:
+            return {"class_scoped": "gpu_room_unknown"}
+        try:
+            available = ledger.available()
+        except OSError:
+            return {"class_scoped": "free_tokens_unreadable"}
+        if all(int(available.get(kind, 0)) - int(demand.get(kind, 0)) >= int(need)
+               for kind, need in room["room"].items()):          # type: ignore[union-attr]
+            return None
+        return {"gpu_row": str(room["action_key"])[:12], "room": dict(room["room"]),  # type: ignore[call-overload]
+                "kept_for": "class_scoped_cpu_beside_ready_gpu",
+                "available": dict(available), "demand": dict(demand)}
 
     def claim(
         self, *, tags: Iterable[str] = (), has_gpu: bool = False,
@@ -20713,6 +20757,7 @@ class PoolQueue:
         census_refusal: dict[str, object] | None = None
         for item in ready:
             key = str(item.get("action_key", ""))
+            class_scoped = False
             held_back = withheld_for is not None and (
                 withheld_kinds is None
                 or self._demands_withheld_kind(item, withheld_kinds))
@@ -20741,24 +20786,24 @@ class PoolQueue:
             if (ready_gpu is not None and key not in released
                     and host not in (item.get("tags") or [])
                     and not item.get("needs_gpu")
-                    and not self._demands_withheld_kind(item, frozenset({"gpu"}))
-                    and not (self._excluded_from_cpu_hosts(item, offer_records())
-                             and self._fits_beside_ready_gpu(
-                                 item, ready_gpu, total=total,
-                                 gpu_controller=gpu_controller))):
+                    and not self._demands_withheld_kind(item, frozenset({"gpu"}))):
                 # Before this row's transition lock: no new locks, passes,
                 # reservations or timeout escape. Hostname tags also encode
                 # --here, so explicitly pinned CPU work keeps its priority.
-                # Not CPU-only work whose tags exclude every host without a
-                # GPU and that fits beside the GPU row's reservation: it has
-                # no CPU host to be left to, and deferring it for good starved
-                # the arm64 smoke a GPU successor waited on (#1589).
-                self.record_denial(item, "deferred_for_ready_gpu", {
-                    "gpu_row": ready_gpu.get("action_key"),
-                    "gpu_published_unix": ready_gpu.get("published_unix"),
-                    "capacity_total": total,
-                })
-                continue
+                # CPU-only work whose tags exclude every host without a GPU
+                # has no CPU host to be left to, and deferring it for good
+                # starved the arm64 smoke a GPU successor waited on (#1589):
+                # it is a candidate, and is decided at the token boundary,
+                # beside the eligible GPU row's own room.
+                class_scoped = (ledger is not None
+                                and self._class_scoped_candidate(item, offer_records()))
+                if not class_scoped:
+                    self.record_denial(item, "deferred_for_ready_gpu", {
+                        "gpu_row": ready_gpu.get("action_key"),
+                        "gpu_published_unix": ready_gpu.get("published_unix"),
+                        "capacity_total": total,
+                    })
+                    continue
             if held_back and not producer:
                 # Behind an earlier row's GPU-kind withhold, and demanding a
                 # GPU: held back unevaluated, with no pass, as the whole-box
@@ -21536,6 +21581,20 @@ class PoolQueue:
                                 refused = True
                                 refusal_source = "deferred_behind_withholding"
                                 adaptive = None
+                            if not refused and class_scoped:
+                                # #1589: beside the eligible GPU row's own room, now.
+                                why = self._class_scoped_beside_ready_gpu(
+                                    item, ready_gpu, ledger=ledger, total=total,
+                                    controller=controller, gpu_controller=gpu_controller,
+                                    observed_images=observed_images,
+                                    container_class_policy=container_class_policy,
+                                    container_inventory=container_inventory,
+                                    identity=identity, demand=reservation_demand)
+                                if why is not None:
+                                    refused = True
+                                    refusal_source = "deferred_for_ready_gpu_row"
+                                    adaptive = None
+                                    room_taken = why
                             if (not refused and gpu_rooms and ledger is not None
                                     and (not int(reservation_demand.get("gpu", 0) or 0)
                                          or any(kept.get("binds") == "all" for kept in gpu_rooms))):
