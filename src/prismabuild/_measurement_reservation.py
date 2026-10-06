@@ -111,7 +111,7 @@ def _capture(queue: PoolQueue) -> dict:
     raise AssertionError("unreachable")  # pragma: no cover
 
 
-def _scan(queue: PoolQueue) -> dict:
+def _scan_publications(queue: PoolQueue) -> dict:
     """Strict full-publication discovery; called only by the read-only child.
 
     Include finish marks and elected sidecars even when neither live directory

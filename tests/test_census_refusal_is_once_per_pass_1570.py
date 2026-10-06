@@ -114,8 +114,8 @@ def test_a_publication_that_vanishes_during_the_scan_is_rescanned(
     """A row claimed or finished between listing and reading is not an outage."""
     queue, clock, readings, sample, publish, tick, claim, denial = fleet
     monkeypatch.setattr(adaptive_cpu, "BOX_STATE_ROOT", tmpfs_state / "box-state")
-    keep = publish("census-kept", priority=-10)
-    gone = publish("census-vanishing", priority=-10)
+    keep = publish("census-kept", measurement=True, priority=-100)
+    gone = publish("census-vanishing", measurement=True, priority=-100)
     gone_path = queue.item_path(pool.READY, gone)
 
     real_read = reservation._read
