@@ -4821,18 +4821,24 @@ gang is young; once the gang has waited longer than `GANG_DRAIN_AFTER_S` (ten
 minutes) since its first member was published, its elected hosts DRAIN for new
 admissions of that priority: nothing new is admitted, nothing is lent, running
 jobs are not touched and finish (each is capped), and the gang starts whole when
-its hosts are free. The drain exempts only the gang's own members, a verified
-publication canary slot, and the leads the gang's members wait on (named in a
-member's residency block or its filed plan, carried in the census election):
-a member that waits for a lead cannot start unless the lead can be admitted,
-which a drain would forbid, so those leads are the one cycle a "wait for the
-running jobs" rule would otherwise have. Every other row, GPU or CPU-only,
-waits. The longest a gang can wait is therefore ten minutes plus the longest
-running job on its hosts. A stage or RAM egress runs on the stage's file server,
-not on a gang's Spark hosts, so it is not drained; one pinned to a gang's member
-host would be drained like any other row (no per-row exemption), and if the gang
-were waiting on the capacity that egress frees, that would be a cycle -- keep
-egress off the gang's hosts. Before 2026-10-06 equal priority was never fenced:
+its hosts are free. The drain rests on two principles, coded as predicates
+rather than lists of row types. (1) It holds work that would TAKE capacity or
+tokens on a member host, never work that RETURNS it: `returns_capacity` is true
+for a stage or RAM egress (the census names them from the frozen plans of the
+live consumers, read only while some election is old enough to drain) and for a
+produced-output export (`dependent_of`). A running action, and through it the
+waiting gang, is held up by exactly those rows, so holding them is a cycle,
+whichever host they are pinned to. (2) The gang's exemption is the full
+TRANSITIVE closure of its members' prerequisites (`in_gang_closure`, carried in
+the census election): the leads named in a member's residency block or filed
+plan, then the leads of each of those, and so on; a member cannot start unless
+each can be admitted. Besides those two, the drain exempts only the gang's own
+members and a verified publication canary slot. Every other row, GPU or
+CPU-only, waits. No edge of the gang's wait-for graph points at a held row, so
+the longest a gang can wait is ten minutes plus the longest chain of running
+jobs and closure rows on its hosts (each capped). An egress whose plan does not
+read is not recognised and is drained like any other row; the plan read is
+best-effort. Before 2026-10-06 equal priority was never fenced:
 a whole-box -10 gang waited fourteen minutes while smaller -10 singles took both
 Sparks. Run window gangs at a priority above routine work, with routine work at
 0 or below.
