@@ -20641,6 +20641,14 @@ class PoolQueue:
         #: claim gate reads the actual bytes once, whatever passes over it.
         requirement_present_cache: dict[str, bool] = {}
         requirement_digest_cache: dict[str, str | None] = {}
+        #: The census is not read about a candidate, so a refusal of it
+        #: (the reader fence busy, a record unreadable) is the same answer for
+        #: every later candidate of this pass: take it once (#1571).  Each
+        #: candidate otherwise waited out ``FENCE_WAIT_S`` for the fence again,
+        #: ten loops hammered the one fence, and 80 dependents of a running
+        #: measurement stayed READY behind 'reader busy'.  Refusing never
+        #: authorizes anything; the next pass takes the fence afresh.
+        census_refusal: dict[str, object] | None = None
         for item in ready:
             key = str(item.get("action_key", ""))
             held_back = withheld_for is not None and (
@@ -21302,9 +21310,13 @@ class PoolQueue:
                                 continue
                         from . import _measurement_reservation as measurement_reservation
                         census_blocked = None
+                        if census_refusal is not None:
+                            self.record_denial(item, "measurement_census_unavailable", census_refusal)
+                            continue
                         census_guard = measurement_reservation.admission_census(self, ledger, host_gate)
                         with census_guard as census:
                             if "unavailable" in census:
+                                census_refusal = census
                                 self.record_denial(item, "measurement_census_unavailable", census)
                                 continue
                             census_blocked = measurement_reservation.blocking_selection(
