@@ -16,7 +16,8 @@ def _census(priority=-10):
 
 
 def _row(**over):
-    row = {"action_key": "a" * 64, "priority": -10, "published_unix": GANG_FIRST_PUBLISHED + 5}
+    row = {"action_key": "a" * 64, "priority": -10, "published_unix": GANG_FIRST_PUBLISHED + 5,
+           "needs_gpu": True, "resources": {"cpu": 4, "gpu": 1, "mem_gb": 24}}
     row.update(over)
     return row
 
@@ -63,3 +64,26 @@ def test_a_row_without_a_publication_time_keeps_the_old_rule():
 
 def test_another_host_is_not_fenced():
     assert reservation.gang_blocking(_census(), _row(), host="sparklina", group=None) is None
+
+
+def test_a_later_cpu_only_single_is_not_fenced_at_equal_priority():
+    """It takes nothing the gang's GPU members need (stage/RAM egress, exports, CPU work)."""
+    row = _row(needs_gpu=False, resources={"cpu": 1, "mem_gb": 1})
+    assert not _blocked(row)
+
+
+def test_a_stage_or_ram_egress_shaped_row_is_not_fenced():
+    """An egress returns capacity: 1 CPU, 1 GiB, no tier demand, no residency block."""
+    assert not _blocked(_row(needs_gpu=False, resources={"cpu": 1, "mem_gb": 1},
+                             tags=["progress-egress-v1"]))
+
+
+def test_a_publication_canary_slot_is_not_fenced_behind_a_gang():
+    row = _row(resources={"cpu": 1, "gpu": 1, "mem_gb": 16},
+               publication_canary={"host": "sparky", "generation": "g", "run_id": "r"})
+    assert not _blocked(row)
+
+
+def test_a_later_gpu_row_is_fenced_however_the_gpu_is_declared():
+    assert _blocked(_row(needs_gpu=True, resources={"cpu": 1, "mem_gb": 1}))
+    assert _blocked(_row(needs_gpu=None, resources={"cpu": 1, "gpu": 1, "mem_gb": 1}))

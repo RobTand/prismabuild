@@ -491,13 +491,24 @@ def _single_behind_gang(item: dict, chosen: dict) -> bool:
     """
     if item.get("gang") is not None or int(item.get("priority", 0)) != chosen["priority"]:
         return False
-    # Rows that serve running or waiting work are not competitors for the
-    # host: a residency mover is published after the gang whose leads it makes
-    # resident (the gang waits on it), and a producer's dependent is what its
-    # incumbent waits for.  Fencing them behind the gang would deadlock.
+    # Only a row that competes for the device the gang is waiting on is held
+    # behind it: every member demands a GPU, and the singles that starved the
+    # 2026-10-06 gang were GPU rows.  A row that demands none -- a stage or RAM
+    # egress (it returns the capacity the gang's leads need), a spool export or
+    # any producer's dependent (its incumbent waits for it), a residency mover
+    # (the gang waits on it), CPU-only work -- takes nothing the gang needs and
+    # is not fenced at equal priority; fencing it could deadlock the drain the
+    # gang depends on.  A verified publication canary slot (a GPU row) has its
+    # own next-free-safe-boundary contract and is likewise not fenced.
+    resources = item.get("resources")
+    gpu = isinstance(resources, dict) and resources.get("gpu", 0)
+    if not (item.get("needs_gpu") is True or (type(gpu) is int and gpu > 0)):
+        return False
+    if (item.get("dependent_of") is not None
+            or isinstance(item.get("publication_canary"), dict)):
+        return False
     residency = item.get("residency")
-    if item.get("dependent_of") is not None or (
-            isinstance(residency, dict) and "range_start_bytes" in residency):
+    if isinstance(residency, dict) and "range_start_bytes" in residency:
         return False
     published = item.get("published_unix")
     rank = chosen.get("rank")
