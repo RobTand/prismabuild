@@ -3879,6 +3879,37 @@ def _acquisition_claimant(name: str) -> tuple[str, int] | None:
     except ValueError:
         return None
 
+def _acquisition_handle_of(name: str, holder: str) -> tuple[int, str, int] | None:
+    """(usec, host, pid) when ``name`` is exactly ``holder``'s private handle.
+
+    The exact parse the prelaunch group census reads its in-flight
+    acquisitions by (#1594 R1'''): ``claiming.<usec>.<holder>.<host>.<pid>.
+    <nonce>``, where the host may itself contain dots, so the host is the
+    middle re-joined -- ``".".join(parts[3:-2])`` -- and not the third field.
+    The holder matches by exact equality, which is unambiguous because group
+    holders are dot-free by construction, so a holder never matches a prefix
+    of another.  The clock field is the same one :func:`_acquisition_clock`
+    reads; the host and pid are NOT read the :func:`_acquisition_claimant`
+    way (fields 3 and 4), because that spelling is exact only for a dot-free
+    host and misreads every dotted one.  Neither helper changes: this is the
+    spelling that stays exact when the hostname has dots.  ``None`` for
+    anything else -- another holder's handle, or a name no claimant wrote.
+    """
+
+    parts = name.split(".")
+    if len(parts) < 6 or parts[0] != "claiming" or parts[2] != holder:
+        return None
+    usec, pid, nonce = parts[1], parts[-2], parts[-1]
+    if (not usec or any(c not in "0123456789" for c in usec)
+            or not pid or any(c not in "0123456789" for c in pid)
+            or len(nonce) != 8
+            or any(c not in "0123456789abcdef" for c in nonce)):
+        return None
+    host = ".".join(parts[3:-2])
+    if not host:
+        return None
+    return int(usec), host, int(pid)
+
 
 def _guarded_mutation(*, blocking: bool):
     """Run a ``ResourceLedger`` mutator under its mutation exclusion.
@@ -5052,6 +5083,80 @@ class ResourceLedger:
         return moved
 
     @_guarded_mutation(blocking=True)
+    def transfer_count(self, from_key: str, to_key: str, count: int) -> int:
+        """Move up to ``count`` of one holder's tokens to another key.
+
+        The ledger operation behind splitting a prelaunch group across its
+        chunk movers (#1594 R1'): the group's whole demand sits under one
+        holder, and each chunk's tokens change owner **without ever being
+        free**, exactly as :meth:`transfer` moves a whole reservation.  The
+        same no-free-interval rule therefore holds at every instant of the
+        loop -- :meth:`capacity`, :meth:`held` and :meth:`available` read the
+        same number before, during and after -- and a crash part-way leaves
+        the reservation split across the two holders with the sum unchanged:
+        calling again with the remaining count finishes the move.
+
+        Tokens go in deterministic sorted-name order, so a re-call after a
+        partial move continues where the last one stopped rather than
+        re-moving (a name already present under the destination is left in
+        place, for the reason ``commit_acquire`` gives) or skipping.  Moves
+        at most ``count`` tokens and never more than the source holds; a
+        non-positive count moves nothing.
+
+        One deliberate difference from :meth:`transfer`: adaptive CPU/GPU
+        metadata (``cpu_admission.METADATA``, ``gpu_admission.METADATA``) is
+        neither moved nor counted here -- only tier tokens change owner.
+        ``transfer`` carries the metadata along because the whole reservation,
+        seat and all, changes owner; a partial split must not duplicate or
+        strand the seat description, so the metadata stays with the source
+        and the funding record (which names the token set) stays the
+        authority for what moved.
+
+        The refusals are :meth:`transfer`'s: empty or equal keys move nothing
+        (``0``), and a claimant-private acquisition on either end raises
+        ``PoolContractError`` -- those are named for a claimant whose action
+        is not decided yet.
+        """
+
+        if not from_key or not to_key or from_key == to_key:
+            return 0
+        if _is_acquisition(str(from_key)) or _is_acquisition(str(to_key)):
+            raise PoolContractError(
+                "a reservation transfer names two action keys, never a "
+                "claimant-private acquisition")
+        try:
+            count = int(count)
+        except (TypeError, ValueError):
+            raise PoolContractError(
+                f"transfer_count needs a whole-number count, got {count!r}")
+        if count <= 0:
+            return 0
+        source = self.held_dir / str(from_key)
+        destination = self.held_dir / str(to_key)
+        if not source.is_dir():
+            return 0
+        moved = 0
+        destination.mkdir(parents=True, exist_ok=True)
+        for token in sorted(_scan(source), key=lambda entry: entry.name):
+            if moved >= count:
+                break
+            if token.name in (cpu_admission.METADATA, gpu_admission.METADATA):
+                continue
+            landing = destination / token.name
+            if landing.exists():
+                continue
+            try:
+                os.rename(token, landing)
+            except OSError:
+                continue
+            moved += 1
+        try:
+            source.rmdir()
+        except OSError:
+            pass
+        return moved
+
+    @_guarded_mutation(blocking=True)
     def transfer_tokens(self, from_key: str, to_key: str,
                         names: Sequence[str]) -> int:
         """Move an exact token subset between holders, never via free.
@@ -5137,6 +5242,72 @@ class ResourceLedger:
         except OSError:
             pass
         return done
+
+    def acquisitions_of(
+            self, holder: str) -> list[tuple[str, int, str, int, int]]:
+        """Private acquisition handles this holder still owns (#1594 R1''').
+
+        The prelaunch group census reads its in-flight acquisitions through
+        this: after a crash between ``begin_acquire`` and ``commit_acquire``
+        the tokens sit under the private ``claiming.<usec>.<holder>.<host>.
+        <pid>.<nonce>`` handle rather than under the holder, and only the
+        exact parse -- see :func:`_acquisition_handle_of` -- may attribute
+        them.  One entry per handle, ``(handle, usec, host, pid,
+        token_count)``, in sorted-handle order: ``usec`` is the claimant's
+        microsecond stamp, ``host`` re-joins the dotted hostname, ``pid``
+        the claimant's process id, and ``token_count`` counts the real
+        tokens in the handle's directory the way :meth:`commit_acquire`
+        counts them -- one per token file, not counting adaptive CPU/GPU
+        admission metadata.  Directories that do not satisfy every clause
+        of the parse are not counted here; the tier loop names those
+        through :meth:`unparsed_acquisitions_of` instead of guessing.
+        A reader: takes no mutation guard.
+        """
+
+        found: list[tuple[str, int, str, int, int]] = []
+        for entry in self._scan_names(self.held_dir):
+            if not entry.is_dir():
+                continue
+            parsed = _acquisition_handle_of(entry.name, str(holder))
+            if parsed is None:
+                continue
+            usec, host, pid = parsed
+            tokens = sum(
+                1 for token in _scan(entry)
+                if token.name not in (cpu_admission.METADATA,
+                                      gpu_admission.METADATA))
+            found.append((entry.name, usec, host, pid, tokens))
+        return sorted(found)
+
+    def unparsed_acquisitions_of(self, holder: str) -> list[str]:
+        """``claiming.*`` names of this holder no exact parse owns (#1594).
+
+        The other half of :meth:`acquisitions_of`: a directory under
+        ``held/`` that starts with the claimant prefix and names this holder
+        in the holder field, yet fails the exact parse -- a malformed stamp,
+        pid or nonce, or too few fields -- is not counted as anyone's
+        acquisition, and it must not be silently ignored either.  The tier
+        loop reports these names as ``prelaunch-handle-unparsed`` and never
+        guesses their tokens.  Names that name another holder belong to that
+        holder's own census (valid) or its own unparsed set (malformed); a
+        ``claiming.*`` name too short to name any holder belongs to none and
+        is left to the stale sweep.  Sorted, so the event is deterministic.
+        A reader: takes no mutation guard.
+        """
+
+        holder = str(holder)
+        names: list[str] = []
+        for entry in self._scan_names(self.held_dir):
+            if not entry.is_dir():
+                continue
+            if not entry.name.startswith(ACQUIRING_PREFIX):
+                continue
+            if _acquisition_handle_of(entry.name, holder) is not None:
+                continue
+            parts = entry.name.split(".")
+            if len(parts) >= 3 and parts[2] == holder:
+                names.append(entry.name)
+        return sorted(names)
 
     @_guarded_mutation(blocking=True)
     def abandon_acquire(self, handle: str) -> int:
@@ -12609,6 +12780,55 @@ class PoolQueue:
                 self.ledger(host).transfer(
                     self.RAM_HOST_MEMORY_PREFIX + str(from_key),
                     self.RAM_HOST_MEMORY_PREFIX + str(to_key))
+            except (OSError, PoolContractError, ValueError) as exc:
+                # The tier half moved and the host half did not: named, not
+                # swallowed, and healed by name when the two-way sync next
+                # runs (#1245 review r2).
+                if faults is not None:
+                    faults.append({"reason": "ram_host_transfer_failed",
+                                   "tier_id": str(tier_id),
+                                   "from": str(from_key), "to": str(to_key),
+                                   "error": repr(exc)})
+        return moved
+
+    def transfer_tier_reservation_count(self, tier_id: str, from_key: str,
+                                        to_key: str, count: int, *,
+                                        faults: list | None = None) -> int:
+        """Hand up to ``count`` of one tier's reservation to another key (#1594).
+
+        The per-chunk half of splitting a prelaunch group: the group's whole
+        demand sits under one holder, and each chunk mover takes only its own
+        tokens through :meth:`ResourceLedger.transfer_count` -- never free in
+        between, so the tier's occupancy is the same number at every instant,
+        and a re-call with the remaining count finishes an interrupted move.
+        Returns the count moved this call.
+
+        On the RAM tier the host ``mem_gb`` hold moves with it, under the
+        same new name (#1245 review B1), exactly as
+        :meth:`transfer_tier_reservation` pairs the two halves: tier first,
+        then host, so a crash between the two leaves the host half under the
+        old name -- the shape :meth:`reconcile_ram_host_holds` heals by name
+        next cycle.  The host half moves exactly the tier-moved count, never
+        the requested one: a short tier move (a source that holds fewer than
+        ``count``) must not strand host tokens under the new name with no
+        tier tokens behind them.  The host hold is count-aligned with the
+        tier reservation by construction (the sync makes each live tier
+        holder's host hold equal to its occupancy tokens), so moving the
+        same number on both sides keeps the two halves attributable and the
+        sums unchanged; a partial split is therefore consistent on RAM tiers
+        too, with the same named-fault-and-heal shape when the host half
+        cannot land.
+        """
+
+        moved = self.tier_ledger(tier_id).transfer_count(
+            str(from_key), str(to_key), count)
+        if storage_tiers.tier_kind_of(str(tier_id)) == "ram":
+            host = self._ram_tier_host(str(tier_id))
+            try:
+                self.ledger(host).transfer_count(
+                    self.RAM_HOST_MEMORY_PREFIX + str(from_key),
+                    self.RAM_HOST_MEMORY_PREFIX + str(to_key),
+                    moved)
             except (OSError, PoolContractError, ValueError) as exc:
                 # The tier half moved and the host half did not: named, not
                 # swallowed, and healed by name when the two-way sync next
