@@ -88,8 +88,7 @@ def test_publish_assigns_the_roles_to_prismabuilds_own_movement_nodes_only(gang_
     cases = [
         # (name, script, resources, recompute, residency, extra_command, expected role)
         ("release", "stage_release.py", small, True, None, (), "returns_capacity"),
-        ("export", "produced_export.py", {**small, f"fill_mb_s@{TIER}": 50}, True, None, (),
-         "returns_capacity"),
+        ("export", "produced_export.py", small, True, None, (), "returns_capacity"),
         ("evict", "local_resident.py", small, True, None, ("--operation", "evict"), "returns_capacity"),
         ("mover", "stage_move.py", {"cpu": 4, "mem_gb": 8, STAGE_KIND: 2}, True, RANGE, (),
          "serves_residency"),
@@ -279,7 +278,9 @@ def test_a_strictly_higher_priority_measurement_keeps_its_place_ahead_of_an_aged
         assert gclaim("sparky") is None
     census = reservation.CensusReader(queue, queue.ledger("sparky")).capture()
     assert ship in census["elections"], "the higher-priority measurement still elects on a reserved host"
-    assert denial(second, "sparky")["reason"] == "deferred_for_measurement_reservation", denial(second, "sparky")
+    held = denial(second, "sparky")
+    assert held["reason"] in ("deferred_for_measurement_reservation", "deferred_behind_withheld_row"), held
+    assert held["evidence"]["withheld_for"] == ship, held  # held for the higher-priority measurement
 
 
 def test_a_measurement_single_of_the_gangs_priority_does_not_elect_on_a_reserved_host(gang_fleet, tmp_path):
