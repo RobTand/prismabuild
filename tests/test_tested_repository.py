@@ -67,12 +67,14 @@ def test_the_tag_stays_out_of_the_sealed_body(tmp_path, monkeypatch, capsys):
 
 
 def test_same_inputs_seal_one_key_whatever_the_tag_says(tmp_path, monkeypatch):
-    """Tagged, renamed and untagged publications of one freeze seal one action.
+    """Each seal sees a different template tag, yet all seals agree.
 
-    One frozen template, sealed three times independently; only the queue
-    row's tag varies (a name, omitted, another name).  The action keys match
-    and the CAS request bytes filed for each match: the tag never enters the
-    sealed body or its key.
+    One frozen checkout; three independent seals whose templates differ ONLY
+    in the tag (a name, absent, another name), published with matching row
+    tags.  The action keys match and the CAS request bytes filed for each
+    match.  A regression leaking the template's tag into the sealed params
+    would seal three different actions here, and the key comparison would
+    fail -- so this test is sensitive to exactly the defect it guards.
     """
 
     work = _checkout(tmp_path)
@@ -92,7 +94,15 @@ def test_same_inputs_seal_one_key_whatever_the_tag_says(tmp_path, monkeypatch):
     queue = _queue(tmp_path)
     seen = {}
     for tag in ("atlas", None, "boreal"):
-        sealed = pbrun.seal_action_from_template(template)
+        # The seal under test sees a different template tag each time: the
+        # tag is a submitter handle the body must not read, whatever value
+        # -- or absence -- the template carries.
+        variant = dict(template)
+        if tag is None:
+            variant.pop("tested_repository", None)
+        else:
+            variant["tested_repository"] = tag
+        sealed = pbrun.seal_action_from_template(variant)
         cas.publish_action_request(sealed)
         bodies = {
             path.read_bytes()
