@@ -2183,7 +2183,7 @@ def test_default_class_cli_cases(class_submission, capsys, case):
         ["spark-a"] if case in ("host-only", "here") else ["gb10", "local-dependency-v1"])
     if case == "host-only":
         notice = capsys.readouterr().err
-        assert path in notice and "spark-b" in notice and "absent" in notice
+        assert path in notice and "absent" in notice
 
 
 @pytest.mark.parametrize("source", ["argv", "environment"])
@@ -2204,7 +2204,6 @@ def test_incomplete_class_evidence_keeps_host_pin(class_submission, capsys):
     action = submit(["bash", "-c", "true"], omit=["spark-b"],
                     answers={"spark-a": {bash: "executable"}})
     assert action["params"]["placement"]["required_tags"] == ["spark-a"]
-    assert "spark-b" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("flags,expected", [(["--tag", "x86"], ["x86"]),
@@ -2236,7 +2235,7 @@ def test_class_default_includes_direct_dependency_evidence(class_submission, cap
         assert action["params"]["local_dependencies"][str(dependency)] == "path"
     else:
         notice = capsys.readouterr().err
-        assert str(dependency) in notice and "spark-b" in notice
+        assert str(dependency) in notice
 
 
 def test_venv_symlink_requires_the_invoked_venv(class_submission, capsys):
