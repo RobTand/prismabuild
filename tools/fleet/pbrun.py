@@ -52,6 +52,7 @@ import getpass
 import hashlib
 import inspect
 import json
+import functools
 import os
 import posixpath
 import re
@@ -86,8 +87,8 @@ RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from prismabuild import (  # noqa: E402
     action_edges, adaptive_gpu, container_images, core as pb,
-    decomposition as dc, materialize, movement_actions, pool, residency_plan, slurm_lane,
-    storage_tiers,
+    decomposition as dc, dependency_digest, filesystem_floor, materialize,
+    movement_actions, pool, residency_plan, slurm_lane, storage_tiers,
 )
 import pbstatus  # noqa: E402
 import fleet_roster  # noqa: E402
@@ -256,6 +257,49 @@ def git_repository_root(cwd: Path) -> Path | None:
     except ValueError:
         return None
     return root
+
+
+def tested_repository_name(cwd: Path) -> str:
+    """The repository a sealed checkout belongs to, or ``"unknown"`` (#1565).
+
+    A linked worktree names its main repository, not its own directory: the
+    checkout's Git common dir places the repository the tree belongs to, in
+    the same ``rev-parse`` style :func:`git_repository_root` already uses --
+    no new mechanism.  A normal ``.git`` common dir names the working tree
+    that owns it (the checkout itself for a plain clone); a bare common dir
+    named ``X.git`` names ``X``; an exotic gitdir layout falls back to the
+    sealed root's own basename.  A checkout Git cannot place -- a plain
+    directory, an unreadable ``.git`` -- is ``"unknown"`` explicitly: never
+    blank, and never guessed from host, interpreter or parent process.
+    """
+    root = git_repository_root(cwd)
+    if root is None:
+        return pool.TESTED_REPOSITORY_UNKNOWN
+    try:
+        completed = pb._git_run(
+            root, "rev-parse", "--git-common-dir", timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return pool.TESTED_REPOSITORY_UNKNOWN
+    if completed.returncode != 0:
+        return pool.TESTED_REPOSITORY_UNKNOWN
+    text = completed.stdout.strip()
+    if not text:
+        return pool.TESTED_REPOSITORY_UNKNOWN
+    common = Path(text)
+    if not common.is_absolute():
+        # Git spells a co-located common dir relative (".git").
+        common = root / common
+    name = common.name
+    if name == ".git":
+        candidate = common.parent.name
+    elif name.endswith(".git"):
+        candidate = name[: -len(".git")]
+    else:
+        candidate = root.name
+    candidate = candidate.strip()
+    if not candidate:
+        return pool.TESTED_REPOSITORY_UNKNOWN
+    return candidate
 
 
 def _snapshot_fail(
@@ -3316,11 +3360,30 @@ def outcome_summary(q, outcome_path, outcome) -> dict:
                 if isinstance(candidate, str) and candidate:
                     claimed_host = candidate
                     break
+    withdrawn_attempt = None
+    if "withdrawn_attempt" in outcome:
+        retained = outcome["withdrawn_attempt"]
+        if (not isinstance(retained, dict) or status != pool.WITHDRAWN
+                or any(retained.get(field) != outcome.get(field) for field in
+                       ("action_key", "published_unix", "max_attempts", "retry_safe"))):
+            raise pool.PoolContractError("withdrawn attempt differs from its decision identity")
+        stopped = q.adopted_attempt_summary(retained)
+        if stopped["status"] != pool.WITHDRAWN or stopped["disposition"] != pool.WITHDRAWN:
+            raise pool.PoolContractError("withdrawn attempt is not a concluded cancellation")
+        for field in ("resource_scope_cleanup", "container_cleanup"):
+            if stopped["detail"].get(field) != outcome.get(field):
+                raise pool.PoolContractError("withdrawn cleanup differs from its immutable attempt")
+        withdrawn_attempt = {field: stopped[field] for field in
+                             ("attempt", "status", "disposition", "finished_unix", "finished_host")}
+        withdrawn_attempt["outcome"] = retained["attempt_history"][-1]["outcome"]
     return {
         "action_key": str(outcome.get("action_key") or ""),
         "status": status,
         "detail": detail,
         "adopted": adopted,
+        "withdrawn_attempt": withdrawn_attempt,
+        "resource_scope_cleanup": outcome.get("resource_scope_cleanup"),
+        "container_cleanup": outcome.get("container_cleanup"),
         # ``executed`` and ``cache_hit`` both mean the work is done; that is
         # the pull queue's own rule, in ``adopted_attempt_summary``, which
         # routes both to ``done/``.
@@ -5147,6 +5210,28 @@ def verify_retained_wrapper(prefix: str, *, where: str) -> Path:
 # --------------------------------------------------------------------------
 
 
+def gang_declaration(args) -> dict | None:
+    """``--gang-*`` as a sealed declaration, refusing what a gang cannot be (#1517)."""
+    fields = (args.gang_group, args.gang_size, args.gang_index)
+    if all(field is None for field in fields):
+        return None
+    if any(field is None for field in fields):
+        raise SystemExit("pbrun: --gang-group, --gang-size and --gang-index go together")
+    if args.transport != "pool":
+        raise SystemExit("pbrun: a gang member needs --transport pool")
+    if args.max_attempts != 1 or args.retry_safe:
+        raise SystemExit("pbrun: a gang member gets one attempt: an unsuccessful one "
+                         "ends the whole gang (drop --max-attempts/--retry-safe)")
+    if getattr(args, "after", None):
+        raise SystemExit("pbrun: a gang member cannot be deferred with --after")
+    from prismabuild import _gang
+    try:
+        return _gang.declaration({"group": args.gang_group, "size": args.gang_size,
+                                  "index": args.gang_index})
+    except _gang.GangContractError as exc:
+        raise SystemExit(f"pbrun: {exc}") from None
+
+
 def freeze_action_template(
     *,
     command: Sequence[str],
@@ -5173,6 +5258,9 @@ def freeze_action_template(
     container_image_refs: Sequence[str] = (),
     wrapper_dir: Path | None = None,
     dependency_queries: Mapping[str, str] | None = None,
+    gang: Mapping[str, object] | None = None,
+    requires_files: list[dict] | None = None,
+    resident_set: str | None = None,
 ) -> dict[str, object]:
     """Read the tree and the environment once, and freeze what they say.
 
@@ -5230,6 +5318,12 @@ def freeze_action_template(
     variables["PATH"] = (local_scratch.PROFILE_PATH if recorder is not None
                          else f"{wrapper_dir}:{prior_path}")
     identity = _git_identity(cwd)
+    # Which repository this template's tree belongs to (#1565): the owning
+    # repository's name -- a linked worktree resolves to its main repo --
+    # ``"unknown"`` when Git cannot place the checkout.  A submitter's
+    # handle, never sealed -- the queue row carries it, so the action key
+    # is byte-identical with and without it.
+    tested_repository = tested_repository_name(cwd)
     marker_root = SH / "pb-queue" / pool.CONTAINER_OWNERS
     # This owner belongs to the template's own command, and its only job here
     # is to be part of what the stamp name is fingerprinted over.  Ownership
@@ -5425,6 +5519,9 @@ def freeze_action_template(
         params["dependency_queries"] = dict(dependency_queries)
         if local_dependencies.TAG in placement["required_tags"]:
             params["local_dependencies"] = dict(dependency_queries)
+    if resident_set is not None:
+        from prismabuild import resident_sets
+        params["resident_set"] = resident_sets._set_id(resident_set)
     if recorder is not None:
         params["local_scratch_profile"] = recorder
     declared_interpreter = interpreter_of(command)
@@ -5433,6 +5530,11 @@ def freeze_action_template(
         # the row, the matcher and the claim all read one authority: the
         # exact path this action will exec.
         params["interpreter"] = declared_interpreter
+    if requires_files is not None:
+        # Sealed like the interpreter (#1495): the row carries the claim-
+        # relevant projection, and the requirement is part of the action's
+        # own identity, so a changed digest re-keys the action.
+        params["requires_files"] = requires_files
     if data_manifest_summary is not None:
         # A summary, not the list: the prewarm budget and the ARC check read
         # these two numbers every poll, and making them fetch and parse a
@@ -5451,6 +5553,10 @@ def freeze_action_template(
             params["gpu_memory_gb"] = gpu_memory_gb
     if execution_timeout_s is not None:
         params["execution_timeout_s"] = execution_timeout_s
+    if gang is not None:
+        # Sealed membership (#1517): the group, its size and this index are
+        # part of the action key. Absent, the key is byte-identical to before.
+        params["gang"] = dict(gang)
     if progress is not None:
         # Sealed, like the profiler mode and for the same reason: an action
         # admitted under the progress contract is a different action from its
@@ -5476,6 +5582,7 @@ def freeze_action_template(
         "cas": cas,
         "marker_root": marker_root,
         "checkout_identity": identity,
+        "tested_repository": tested_repository,
         "log_name": log_name,
         "stamp_name": stamp_name,
         "produced_output_template": produced_validated,
@@ -5529,8 +5636,12 @@ def freeze_action_template(
 #: ``produced_output_batches`` is a handle too: the refs are the sealed data
 #: manifest's own annotation, so the key already covers them.  The entry is
 #: present only when the manifest declares batches (#914).
+#: ``tested_repository`` is a handle too: the name of the tree the template
+#: froze, carried by the queue row rather than the sealed body, so no action
+#: sealed from the template varies with it (#1565).
 _TEMPLATE_SUBMITTER_KEYS = frozenset(
-    {"cas", "marker_root", "checkout_identity", "log_name", "stamp_name",
+    {"cas", "marker_root", "checkout_identity", "tested_repository",
+     "log_name", "stamp_name",
      "produced_output_template", "produced_output_batches"}
 )
 
@@ -6722,6 +6833,13 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--tag", action="append", default=[],
                     help="require a box offering this tag (e.g. a hardware class)")
     ap.add_argument(
+        "--requires-files", default=None, metavar="JSON",
+        help="a JSON array of {path, sha256} entries this action's bytes "
+             "depend on; the row requires the dependency-digest capability "
+             "tag, the claim hashes the actual bytes before spending an "
+             "attempt, and a missing or drifted digest is a named denial, "
+             "never a run (#1495)")
+    ap.add_argument(
         "--container-image", action="append", default=[], metavar="REF",
         help="require the claiming box's local Docker to positively hold this "
              "image before the action is claimed (repeatable). Accepts "
@@ -6756,6 +6874,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
                          "the snapshot are identical on every eligible worker")
     ap.add_argument("--here", action="store_true",
                     help="pin the materialized checkout to this box")
+    ap.add_argument("--resident-set", help="explicit resident set declaration for bounded lease renewal; Phase 1 serves canonical paths")
     ap.add_argument(
         "--data-manifest",
         help="path to a plain JSON or gzip data manifest (64 MiB stored; "
@@ -6903,6 +7022,13 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     ap.add_argument("--deterministic", action="store_true",
                     help="declare byte-identical output; enables CAS reuse")
+    ap.add_argument("--gang-group", default=None,
+                    help="32-hex gang group this action is a member of (#1517); use "
+                         "pbgang.py, which seals every member and files the group")
+    ap.add_argument("--gang-size", type=int, default=None,
+                    help="members in the gang (with --gang-group)")
+    ap.add_argument("--gang-index", type=int, default=None,
+                    help="this member's index, 0..size-1 (with --gang-group)")
     ap.add_argument(
         "--retry-safe",
         action="store_true",
@@ -6942,6 +7068,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--wait-s", type=float, default=86400.0,
                     help="give up waiting for a worker to pick this up")
     ap.add_argument(
+        "--filesystem-growth-gib", type=int, default=1, metavar="GIB",
+        help="the GiB this submission may write to the shared store (snapshot, "
+             "CAS objects, queue record), reserved from its filesystem_gib "
+             "ledger while it is written when the used-filesystem floor is "
+             "observed or enforced (#1483); ignored while the floor is off")
+    ap.add_argument(
         "--detach", action="store_true",
         help="seal and submit exactly as usual, print one JSON line naming the "
              "action key, the transport, the job id or queue record and the "
@@ -6976,8 +7108,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
                          "never answered from an unprofiled receipt and never "
                          "an A/B arm against one. 'sample' is py-spy at "
                          f"{pb.PROFILE_SAMPLE_RATE_HZ} Hz over the whole "
-                         "process tree; 'nsys' is Nsight Systems over CUDA and "
-                         "NVTX, and takes a window in seconds ('nsys:600' "
+                         "process tree, or 'sample:HZ' seals a positive "
+                         "whole rate in samples per second ('sample:10' "
+                         "samples ten times a second); 'nsys' is Nsight "
+                         "Systems over CUDA and NVTX, and takes a window in "
+                         "seconds ('nsys:600' "
                          "traces the first ten minutes and lets the action run "
                          "on); 'torch' is a contract the action opts into, "
                          "exporting its own Chrome trace to the path in "
@@ -7086,6 +7221,7 @@ def prepare_submission(args: argparse.Namespace) -> dict[str, object]:
         )
     if args.detach and args.max_attempts > 1:
         raise SystemExit(detached_attempts_refusal(args.max_attempts))
+    gang = gang_declaration(args)
     retry_policy = {
         "max_attempts": args.max_attempts,
         "retry_safe": args.retry_safe,
@@ -7102,6 +7238,19 @@ def prepare_submission(args: argparse.Namespace) -> dict[str, object]:
         require_container_image_scope(images=images, transport=args.transport)
     except ValueError as exc:
         args.refuse_argument(str(exc))
+    # The digest requirements are sealed into the action's identity, so a
+    # malformed entry is an argument error here, before any checkout work,
+    # exactly like a malformed image reference (#1495).
+    requirements = None
+    if args.requires_files is not None:
+        try:
+            parsed = json.loads(args.requires_files)
+        except ValueError as exc:
+            args.refuse_argument(f"--requires-files is not JSON: {exc}")
+        try:
+            requirements = dependency_digest.validate_requirements(parsed)
+        except ValueError as exc:
+            args.refuse_argument(f"--requires-files: {exc}")
 
     cwd = Path(args.cwd).resolve()
     if not cwd.is_dir():
@@ -7265,6 +7414,11 @@ def prepare_submission(args: argparse.Namespace) -> dict[str, object]:
         # ran on a box that could keep it.
         tags = pool.normalize_placement_tags(
             [*tags, *progress_required_tags(progress_policy)])
+    if gang is not None:
+        # Capability, not place (#1517): only a gang-enabled box offers it,
+        # so the live-offer check below refuses when none can claim a member.
+        from prismabuild import _gang
+        tags = pool.normalize_placement_tags([*tags, _gang.TAG])
     if images:
         # The same capability-not-place rule for declared images: the tag is
         # what keeps a loop from before the claim check (#714) from taking
@@ -7277,6 +7431,12 @@ def prepare_submission(args: argparse.Namespace) -> dict[str, object]:
     if scratch_io_intent(variables, transport=args.transport) is not None:
         from prismabuild import local_scratch
         tags = pool.normalize_placement_tags([*tags, local_scratch.IO_CAPABILITY])
+    if requirements:
+        # The capability rides the tags, not the bytes (#714 shape, #1495):
+        # a loop that cannot hash the row's requirements must not be able to
+        # claim the row at all.
+        tags = pool.normalize_placement_tags(
+            [*tags, dependency_digest.DEPENDENCY_DIGEST_TAG])
     require_reachable_runtime(
         tags, hostname=socket.gethostname(), runtime_root=RUNTIME_ROOT)
     # Other paths retain lazy discovery until submission advice needs it.
@@ -7415,6 +7575,9 @@ def prepare_submission(args: argparse.Namespace) -> dict[str, object]:
         container_image_refs=images,
         wrapper_dir=wrapper_dir,
         dependency_queries=dependency_queries,
+        gang=gang,
+        resident_set=getattr(args, "resident_set", None),
+        requires_files=requirements,
     )
     return {
         "args": args,
@@ -7465,6 +7628,15 @@ def announce_placement(
         intent["tags"] = [*tags, pb.INTERPRETER_TAG]
     if params.get("local_dependencies"):
         intent["local_dependencies"] = dict(params["local_dependencies"])
+    if params.get("requires_files"):
+        # Same authority for the digest requirements (#1495): the probe
+        # carries the sealed paths and the capability tag publish adds, so
+        # placeable answers for the row it is about to write.
+        intent["requires_files"] = [
+            {"path": str(entry["path"])}
+            for entry in params["requires_files"]]
+        intent["tags"] = pool.normalize_placement_tags(
+            [*tags, dependency_digest.DEPENDENCY_DIGEST_TAG])
     # Say how wide this action is before saying it was queued.  A pin is a
     # consequence of the checkout path, and nothing used to report it, so a
     # submitter narrowed the fleet to one box without being told.
@@ -7553,6 +7725,39 @@ def announce_placement(
             probe_intent["tags"] = [
                 tag for tag in probe_intent.get("tags") or []
                 if tag != pb.INTERPRETER_TAG]
+    # The digest requirements' verdict (#1495), asked where the caller is
+    # still watching, in the interpreter's shape (#1266): a fleet that offers
+    # no dependency-digest capability is refused -- nothing can ever claim
+    # the row, and unlike a first path there is no first use that must
+    # publish; a unanimous absent is refused naming the paths; a capable box
+    # that has not answered for a path yet publishes with a notice, because
+    # the claim gate hashes the bytes on every box and the fleet's next poll
+    # answers for them.
+    if intent.get("requires_files"):
+        verdict = queue.dependency_placement_verdict(probe_intent)
+        paths = ", ".join(sorted(
+            str(entry["path"]) for entry in intent["requires_files"]))
+        if verdict == "unknown_capability":
+            raise SystemExit(
+                "pbrun: no recorded worker offers the "
+                f"{dependency_digest.DEPENDENCY_DIGEST_TAG} capability, so "
+                f"nothing can ever claim this action's pinned dependencies "
+                f"({paths}); run a worker generation that carries the "
+                "contract before submitting it (#1495)")
+        if verdict == "absent":
+            raise SystemExit(
+                "pbrun: every recorded worker that could claim this action "
+                f"names its required dependencies absent: {paths} (#1495)")
+        if verdict == "unknown_paths":
+            print(
+                "pbrun: no worker has answered for the required "
+                f"dependencies ({paths}) yet; the action publishes, the "
+                "claim-time digest check guards every box, and the fleet's "
+                "next poll places it where the bytes live.",
+                file=sys.stderr, flush=True)
+            probe_intent = {
+                name: value for name, value in probe_intent.items()
+                if name != "requires_files"}
     live_verdict = queue.placeable(probe_intent)
     capability_verdict = queue.placeable(
         probe_intent, max_age_s=RECORDED_OFFER_MAX_AGE_S)
@@ -7705,6 +7910,7 @@ def publication_row(
     queue,
     max_attempts: int | None = None,
     retry_safe: bool | None = None,
+    tested_repository: str | None = None,
 ) -> dict[str, object]:
     """The queue row that submits one sealed action.
 
@@ -7720,6 +7926,10 @@ def publication_row(
     Only the submitter's own handles -- priority, the attempt ceiling, retry
     safety -- come from ``args``, and they are exactly the fields no action
     body carries, because they say how hard to try rather than what to run.
+    The tested-repository tag (#1565) is the one caller-supplied field that
+    names the work: it arrives as an argument because it is frozen in the
+    template, which the sealed body must not carry, and a caller that cannot
+    name the tree it froze passes nothing.
 
     ``pbcampaign`` publishes decomposed children through this too.  The
     alternative is a second copy of the literal, which is how a row and a body
@@ -7755,6 +7965,19 @@ def publication_row(
                 "loaded queue runtime does not support priority_reason; "
                 "use a matching runtime or omit --priority-reason")
         row["priority_reason"] = pool.normalize_priority_reason(priority_reason)
+    if tested_repository is not None:
+        # The template's frozen answer for the tree this action seals (#1565).
+        # Guarded like the annotation above: a loaded runtime that cannot
+        # carry the tag refuses rather than silently untagging the submission.
+        parameters = inspect.signature(queue.publish).parameters
+        if ("tested_repository" not in parameters
+                and not any(p.kind is inspect.Parameter.VAR_KEYWORD
+                            for p in parameters.values())):
+            raise pool.PoolContractError(
+                "loaded queue runtime does not support tested_repository; "
+                "use a matching runtime")
+        row["tested_repository"] = pool.normalize_tested_repository(
+            tested_repository)
     if params.get("container_images"):
         # Derived from the sealed body, never re-read from the caller: the row
         # describes the action, so the action's own params are the authority.
@@ -7764,6 +7987,17 @@ def publication_row(
     for field in ("local_dependencies", "dependency_queries"):
         if params.get(field):
             row[field] = dict(params[field])
+    if params.get("gang"):
+        row["gang"] = dict(params["gang"])
+    if params.get("requires_files") and "requires_files" in (
+            inspect.signature(queue.publish).parameters):
+        # Derived from the sealed body like the interpreter (#1495), and
+        # guarded like retry_safe: in a mixed runtime window the row simply
+        # omits the field and the capability tag in the row's tags alone
+        # still fences every worker that cannot read the requirement.
+        row["requires_files"] = [
+            {"path": str(entry["path"]), "sha256": str(entry["sha256"])}
+            for entry in params["requires_files"]]
     # The repo checkout can advance just before the atomic runtime generation
     # rolls.  The previous PoolQueue already accepts the safety-critical bound,
     # so keep that mixed window usable; add the explanatory annotation once the
@@ -7772,6 +8006,8 @@ def publication_row(
     if "retry_safe" in inspect.signature(queue.publish).parameters:
         row["retry_safe"] = (args.retry_safe if retry_safe is None
                              else bool(retry_safe))
+    if params.get("resident_set") is not None:
+        row["resident_set"] = params["resident_set"]
     return row
 
 
@@ -7789,6 +8025,20 @@ _DEFERRED_PUBLICATION_ARGS = (
     # carry exactly as a direct submission's does.
     "residency_prefetch_depth_gib", "residency_read_mb_s",
 )
+
+
+def check_supersession_or_exit(q, old: str, *, new: str, new_kind: str) -> None:
+    """Refuse now what :func:`file_supersession_or_exit` would refuse, writing nothing (#1585).
+
+    For a submission that still has fallible work to do before its row can
+    publish: the record is immutable, so one filed for a replacement that then
+    refuses strands the old key at a successor that never existed.
+    """
+
+    try:
+        action_edges.check_supersession(q, old, new=new, new_kind=new_kind)
+    except action_edges.ActionEdgeError as exc:
+        raise SystemExit(f"pbrun: --supersedes: {exc}") from None
 
 
 def file_supersession_or_exit(q, old: str, *, new: str, new_kind: str) -> None:
@@ -7871,7 +8121,7 @@ def resolve_after_edges(q, cas_root: Path,
 
 
 def submit_deferred(prepared: Mapping[str, object],
-                    args: argparse.Namespace) -> int:
+                    args: argparse.Namespace):
     """File this submission for release once its producers succeed (#913).
 
     Everything ``prepare_submission`` checks has been checked: the checkout,
@@ -7943,7 +8193,9 @@ def submit_deferred(prepared: Mapping[str, object],
             "release": str(action_edges.published_path(q.root, pending_id)),
         }, sort_keys=True), flush=True)
         return 0
-    return await_release(q, pending_id, wait_s=args.wait_s)
+    # Returned, not run: ``main`` waits after the submission's used-
+    # filesystem growth allowance is released (#1483).
+    return functools.partial(await_release, q, pending_id, wait_s=args.wait_s)
 
 
 def require_deferred_read_plan(static: Mapping[str, object],
@@ -8204,7 +8456,8 @@ def release_deferred(q, pending_id: str, record: Mapping[str, object], *,
 def publish_consumer_row(q, action: Mapping[str, object],
                          template: Mapping[str, object], *, key: str,
                          args: argparse.Namespace, cas,
-                         attach: bool = False) -> tuple[object, float | None]:
+                         attach: bool = False,
+                         before_publish=None) -> tuple[object, float | None]:
     """Publish one sealed action's row, with its window when it stages.
 
     Returns ``(queued_path, generation)``; ``queued_path`` is ``None`` when
@@ -8218,6 +8471,13 @@ def publish_consumer_row(q, action: Mapping[str, object],
     Everything the window will ever publish is sealed and written down before
     the consumer's own row goes in, so a crash between the two leaves a
     frozen plan and no queue rows rather than a half-published window.
+
+    ``before_publish`` is called, with nothing fallible left but the publish
+    itself, immediately before the row goes in.  A submission that supersedes
+    an ended key files its immutable record there (#1585): every refusal the
+    window's preparation can raise -- the stage tier, the phase table, the
+    seal, the row's own checks -- comes first, so none can strand a record at
+    a replacement that never published.
     """
 
     staged = None
@@ -8259,11 +8519,15 @@ def publish_consumer_row(q, action: Mapping[str, object],
                     f"{len(renewal['retired'])} predecessor cancellation "
                     f"marker(s); their decisions stay under "
                     f"{q.superseded_dir()}", file=sys.stderr, flush=True)
-            publication = publication_row(action, args=args, queue=q)
+            publication = publication_row(
+                action, args=args, queue=q,
+                tested_repository=template.get("tested_repository"))
             publication["residency"] = staged["residency"]
             if template.get("produced_output_template") is not None:
                 publication["produced_output_template"] = template[
                     "produced_output_template"]
+            if before_publish is not None:
+                before_publish()
             if attach:
                 # A release resuming after a crash (#913) finds its own row:
                 # the plan above was first-writer and reused, and the row is
@@ -8292,10 +8556,14 @@ def publish_consumer_row(q, action: Mapping[str, object],
                   f"adopt or publish",
                   file=sys.stderr, flush=True)
     else:
-        publication = publication_row(action, args=args, queue=q)
+        publication = publication_row(
+            action, args=args, queue=q,
+            tested_repository=template.get("tested_repository"))
         if template.get("produced_output_template") is not None:
             publication["produced_output_template"] = template[
                 "produced_output_template"]
+        if before_publish is not None:
+            before_publish()
         queued_path, generation = publish_or_attach(q, publication, key=key)
     return queued_path, generation
 
@@ -8373,6 +8641,33 @@ def main(*, publication_canary_intent=None, authorize_canary=None) -> int:
         return release_origin_consumer_cli(
             *args.release_origin_consumer, reason=args.reason,
             by=f"{who}@{socket.gethostname()}")
+    # The used-filesystem floor (#1483): check what this submission writes,
+    # and hold its growth allowance on the shared store while the snapshot,
+    # CAS objects and queue record are written.  Released, whatever ends the
+    # submission, before an attached pool or ``--after`` wait begins.  The
+    # SLURM lane submits and waits in one call, so it holds no growth (its
+    # used paths are still checked).  ``off`` (the default) reads only the
+    # mode.
+    try:
+        with filesystem_floor.operation(
+                SH / "pb-queue", label="pbrun",
+                used_paths=[getattr(args, "cwd", None) or os.getcwd(), SH / "cas",
+                            SH / "pb-queue", tempfile.gettempdir()],
+                growth_gib=({SH / "cas": args.filesystem_growth_gib}
+                            if args.transport == "pool" else {})):
+            submitted = submit_and_publish(
+                args, publication_canary_intent=publication_canary_intent,
+                authorize_canary=authorize_canary)
+    except filesystem_floor.FloorRefused as exc:
+        raise SystemExit(f"pbrun: a used filesystem is below its floor; nothing "
+                         f"submitted: {exc}") from None
+    return submitted() if callable(submitted) else submitted
+
+
+def submit_and_publish(args, *, publication_canary_intent=None,
+                       authorize_canary=None):
+    """Seal, publish and submit; an attached wait is returned, not run."""
+
     prepared = prepare_submission(args)
     if args.after:
         return submit_deferred(prepared, args)
@@ -8527,13 +8822,25 @@ def main(*, publication_canary_intent=None, authorize_canary=None) -> int:
         if origin_refs:
             declare_origin_consumers(q, origin_refs, consumer_action_key=key)
         # Filed before the row, so an edge that names the replaced key
-        # follows this one from the moment it can run (#913).
+        # follows this one from the moment it can run (#913), but only once
+        # everything that can still refuse has had its say (#1585): the
+        # record is immutable, and one filed for a replacement that then
+        # refused named a key that never published, which the corrected
+        # submission (another key) could not replace and a reader following
+        # it could not find.  What can be refused now is refused now, with
+        # nothing written; the record itself goes in right before the row.
+        supersede = None
         if args.supersedes is not None:
-            file_supersession_or_exit(q, args.supersedes, new=key,
-                                      new_kind=action_edges.PRODUCER_KEY)
+            check_supersession_or_exit(q, args.supersedes, new=key,
+                                       new_kind=action_edges.PRODUCER_KEY)
+
+            def supersede() -> None:
+                file_supersession_or_exit(q, args.supersedes, new=key,
+                                          new_kind=action_edges.PRODUCER_KEY)
 
         queued_path, generation = publish_consumer_row(
-            q, action, template, key=key, args=args, cas=cas)
+            q, action, template, key=key, args=args, cas=cas,
+            before_publish=supersede)
     # Say that the slot has no device, every time.  The mask is correct and it
     # is also a silent narrowing: a suite that used to run its CUDA tests now
     # skips them, and a skip that nobody announced reads as the same green.
@@ -8580,7 +8887,8 @@ def main(*, publication_canary_intent=None, authorize_canary=None) -> int:
         ), flush=True)
         return 0
 
-    return await_outcome(q, key, wait_s=args.wait_s, generation=generation)
+    return functools.partial(await_outcome, q, key, wait_s=args.wait_s,
+                             generation=generation)
 
 
 if __name__ == "__main__":

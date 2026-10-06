@@ -24,6 +24,9 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import prismabuild.storage_tiers as storage_tiers  # noqa: E402
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
+import tier_loop  # noqa: E402
+
 GIB = storage_tiers.GIB
 HOST = "dl380g10"
 #: 294 GiB, as /proc/meminfo reports it on the storage box.
@@ -115,6 +118,81 @@ def _ram_tier(tmp_path: Path, *, mount: Path | None = None,
         memory_numa_root=str(tmp_path / "memory_nodes"),
         rows_held_gib=rows_held_gib)
     return tiers.get(storage_tiers.tier_id("ram", HOST))
+
+
+#: 1_500_000 free 4 KiB blocks: about 5.7 GiB, so the byte floor alone would
+#: leave writable room and only the inode floor can explain a zero.
+_FREE_BLOCKS = 1_500_000
+
+
+def _statvfs_with_free_inodes(free_inodes: int) -> os.statvfs_result:
+    return os.statvfs_result((4096, 4096, 2_000_000, _FREE_BLOCKS, _FREE_BLOCKS,
+                              1000, free_inodes, free_inodes, 0, 255))
+
+
+def _inode_exhausted(monkeypatch) -> None:
+    sampled = _statvfs_with_free_inodes(0)
+    monkeypatch.setattr(os, "statvfs", lambda path: sampled)
+
+
+def test_the_exhausted_mount_has_room_in_bytes_so_only_the_inode_floor_refuses(
+        tmp_path, monkeypatch):
+    """Control for the two tests below: deleting the inode check must fail them.
+
+    With the same free bytes and plenty of free inodes the resample reports
+    real room, so a zero in the tests below comes from the inode floor and
+    cannot be satisfied by the byte count (#1542 review note).
+    """
+    sampled = _statvfs_with_free_inodes(500_000)
+    monkeypatch.setattr(os, "statvfs", lambda path: sampled)
+    read = tier_loop._supply_reader_for(
+        {"tier": "ram", "mountpoint": str(tmp_path)}, "ram:test", fallback_tokens=1)
+    assert read() >= 1
+
+
+def test_ram_mint_resample_refuses_inode_exhaustion_with_free_bytes(tmp_path, monkeypatch):
+    _inode_exhausted(monkeypatch)
+    read = tier_loop._supply_reader_for(
+        {"tier": "ram", "mountpoint": str(tmp_path)}, "ram:test", fallback_tokens=1)
+    assert read() == 0, "no writable room when the inode floor refuses (#1542)"
+
+
+def test_the_minted_supply_is_zero_when_the_resample_hits_the_inode_floor(
+        tmp_path, monkeypatch):
+    """The refusal must reach the ledger, not the discovery fallback.
+
+    The resample raising ``OSError`` let ``mint_stage_supply`` fall back to the
+    discovery byte count, so a mount with free bytes and no inodes still
+    minted its whole window.  Assert what was minted, not only the sample.
+    """
+    from prismabuild import pool
+
+    _inode_exhausted(monkeypatch)
+    queue = pool.PoolQueue(tmp_path / "pb-queue")
+    queue.ensure_layout()
+    tier_id = storage_tiers.tier_id("ram", HOST)
+    kind = storage_tiers.RAM_CAPACITY_KIND
+    discovery_window = 160
+    read = tier_loop._supply_reader_for(
+        {"tier": "ram", "mountpoint": str(tmp_path)}, tier_id,
+        fallback_tokens=discovery_window)
+    minted = tier_loop.mint_stage_supply(
+        queue, tier_id=tier_id, kind=kind, writable_tokens=discovery_window,
+        writable_reader=read, cap=discovery_window)
+    assert minted["writable"] == 0, minted
+    assert minted["supply"] == 0, minted
+    assert int(queue.tier_ledger(tier_id).available().get(kind, 0)) == 0
+
+
+def test_ram_tier_refuses_inode_exhaustion_with_free_bytes(tmp_path):
+    mount = _mount(tmp_path)
+    sampled = os.statvfs_result((4096, 4096, 256 * GIB // 4096,
+                                200 * GIB // 4096, 200 * GIB // 4096,
+                                1000, 0, 0, 0, 255))
+    tier = _ram_tier(tmp_path, mount=mount, statvfs=lambda path: sampled)
+    assert tier["ram_admission"]["admissible"] is False
+    assert tier["ram_admission"]["reason"] == "below_inode_floor"
+    assert storage_tiers.tier_tokens(tier) == {}
 
 
 def test_capacity_is_what_the_mount_may_still_hold(tmp_path: Path) -> None:

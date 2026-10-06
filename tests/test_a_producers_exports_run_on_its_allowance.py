@@ -331,7 +331,9 @@ def test_an_export_published_without_the_hint_is_funded_from_its_sealed_owner(
     way, so the export is funded from the allowance all the same."""
 
     spool, cas = _producer(tmp_path, monkeypatch)
-    publish = spool.queue.publish
+    # Fault injection forwards through AdmittedQueueFixture.__setattr__;
+    # capture the underlying owner, not the wrapper that calls it (#1435).
+    publish = spool.queue.queue.publish
 
     def as_older_generation(**kwargs):
         kwargs.pop("dependent_of", None)

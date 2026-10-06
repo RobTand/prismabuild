@@ -31,8 +31,14 @@ from prismabuild import adaptive_cpu, adaptive_snapshot, pool, residency_plan, s
 import test_progress_keeps_a_working_action_alive as progress_fx  # noqa: E402
 import tier_loop  # noqa: E402
 
-#: A four-CPU box, so the adaptive path has a CPU map to decide against.
-CAPACITY = {"cpu": 4, "mem_gb": 8}
+#: Up to four CPUs, so the adaptive path has a CPU map to decide against, but
+#: never more than this process inherited (#1506).  The claim refuses a CPU
+#: capacity larger than the inherited CPU map ('CPU capacity exceeds the
+#: inherited CPU map'), and the consumer these tests claim is really executed
+#: (``queue.execute``, under ``taskset``), so the CPU ids must be the process's
+#: own: a synthetic 0-3 would be refused by ``taskset`` on any shard whose
+#: mask excludes them.  A shard needs at least two CPUs.
+CAPACITY = {"cpu": min(4, len(os.sched_getaffinity(0))), "mem_gb": 8}
 CPU_TIERS = {"preferred": [0, 1], "fallback": [2, 3]}
 #: What a spool export demands (``adaptive_cpu.EXPORT_DEMAND``).
 EXPORT_DEMAND = {"cpu": 1, "mem_gb": 1}
@@ -78,8 +84,11 @@ def _publish_export(queue: pool.PoolQueue, owner: str, seed: str) -> dict:
 
 
 def _claim_pass(queue: pool.PoolQueue) -> dict | None:
+    # Reuse the holder's immutable map when this fixture really executes.
+    tiers = pool._read_json(queue.ledger().base / "cpu-map.json")
     return queue.claim(capacity=CAPACITY, tags=[socket.gethostname()],
-                       cpu_tiers=CPU_TIERS, adaptive_cpu=True)
+                       cpu_tiers=CPU_TIERS if tiers is None else tiers,
+                       adaptive_cpu=True)
 
 
 # -- #990: the ending record names the rows the action waited on ----------
@@ -90,7 +99,10 @@ def test_a_stall_kill_names_its_refused_export_its_ready_age_and_the_reason(
 
     queue, consumer = progress_fx._claimed(
         tmp_path, mode="silent", seconds=60,
-        policy=progress_fx._policy(5.0, 5.0, 5.0))
+        policy=progress_fx._policy(5.0, 5.0, 5.0),
+        capacity=CAPACITY, cpu_tiers={
+            "preferred": sorted(os.sched_getaffinity(0))[:CAPACITY["cpu"]],
+            "fallback": []})
     assert consumer is not None
     owner = str(consumer["action_key"])
     export = _publish_export(queue, owner, "export-0")
@@ -287,7 +299,10 @@ def test_pbstatus_starvation_reads_a_starved_producer_in_one_place(tmp_path, mon
     import pbstatus
 
     queue, consumer = progress_fx._claimed(tmp_path, mode="silent", seconds=1,
-                                           policy=None)
+                                           policy=None, capacity=CAPACITY,
+                                           cpu_tiers={
+                                               "preferred": sorted(os.sched_getaffinity(0))[:CAPACITY["cpu"]],
+                                               "fallback": []})
     owner = str(consumer["action_key"])
     export = _publish_export(queue, owner, "export-status")
     _refuse_with(monkeypatch, ["measurement_holder", "host_pressure"])

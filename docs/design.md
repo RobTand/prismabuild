@@ -413,6 +413,25 @@ the existing submission's annotation. Deferred release retains it in optional
 publication metadata; older deferred records without it still read. SLURM
 stores it with the submission, not in the action or `sbatch` priority flags.
 
+`tested_repository` names the repository a submission sealed, for test-cost
+accounting (#1565). `pbrun` freezes it from the checkout it seals: the Git
+common dir places the repository the tree belongs to, so a linked worktree
+names its main repository rather than its own directory (a bare origin named
+`X.git` names `X`); a plain checkout names its root, and `unknown` -- never
+blank, never guessed -- when Git cannot place the checkout at all. It rides
+the queue row beside the action the way `priority_reason` does:
+outside the sealed body and its cache key, so tagging an action never re-keys
+it. The worker side copies the row's tag into each attempt record, the end
+record keeps the row's own copy (a requeue carries it forward as a new
+generation of the same tree), and each run's `resource_profile` names it too,
+so the attempt, end and resource metadata all answer which repository was
+tested. Rows filed before the tag, and rows from producers that stage or move
+bytes rather than test a checkout, carry no field; every reader reports those
+as `unknown` through one definition rather than testing for absence. The name
+is never guessed from host, interpreter or parent process, and a name that is
+not nonblank single-line printable text of at most 256 characters is refused
+at publication. `pbstatus` projects it on live rows and endings.
+
 A ready record that states any of those three fields in a way the queue cannot
 read is **skipped from the listing and filed by the sweep**. `publish` refuses a
 non-integer `priority` and writes `published_unix` itself, so such a record was
@@ -475,12 +494,15 @@ priority ordering is unchanged.
 
 **Canonical UNKNOWN-first reservation slice (#1419, source accepted; worker generation adopted).** Bounded
 legacy attention above is distinct from a host election. On affirmative fresh
-CPU/GPU attribution and a readable finite sealed incumbent deadline, exactly one
-host is selected for this measurement publication under its transition key and
+CPU/GPU attribution and a host whose every holder is a claimed action on it
+(a RAM-tier fill hold, #1222, or a raw holder with no readable claim elects
+nothing: no action lifetime bounds that wait, and the bounded episode lapses
+as before), exactly one host is selected for this measurement publication under its transition key and
 host admission. `passes/<key>.json.measurement_reservation` names the schema,
 action key, publication generation, host, priority, election epoch and original
 `opportunity_unix`. The original incumbent `claimed_unix + requested_timeout_s`
-is ONLY selector-opportunity metadata, never proof that preparation, checkpoint
+(the latest declared one, or the election epoch when no incumbent declared a
+finite deadline) is ONLY selector-opportunity metadata, never proof that preparation, checkpoint
 credits, cleanup or physical resources finish by then. All prospective timed
 backfill candidates remain UNKNOWN, including five-second payloads (#1429).
 Submit notices and ``pbtest.shard_ceiling`` describe a **payload execution
@@ -492,9 +514,21 @@ an explicitly requested
 payload budget without promising when preparation or settlement finishes.
 
 Discover potential measurement generations and elected sidecars outside H;
-acquire sorted measurement transition keys M **nonblocking before H**, using the
-existing candidate/reentrant lock contract, then refresh strict READY, CLAIMED,
-finish-mark, sidecar and relevant exact terminal/withdrawal authority under H.
+acquire the sorted transition keys of the measurements **elected for this host**
+(M) **nonblocking before H**, using the existing candidate/reentrant lock
+contract, then refresh strict READY, CLAIMED, finish-mark, sidecar and relevant
+exact terminal/withdrawal authority under H. Only an election on this host can
+fence this host's admission (`blocking_selection` is host-filtered). An elected
+key that another loop holds mid-transition is kept as a live election for the
+pass (the conservative reading), not a refusal. Locking every READY/CLAIMED
+measurement key instead livelocked admission on 2026-10-05: with 38-49 READY
+PACT measurement rows and six loops per Spark, each loop held one of those keys
+as its candidate, nearly every census met a busy key, and both Sparks denied
+every row `measurement transition busy`. Unlocked reads only err toward
+fencing: a missing row is not retirement, and retirement needs an exact ending
+or a strictly newer publication, both durable. Election writes stay serialized
+by the electing measurement's own transition key and the elected host's H, and
+this refresh runs under this host's H.
 The host-local reader fence is acquired once for the whole two-pass census and
 released after the refresh (#1498): releasing it between the phases let a
 concurrent observer take it and deny the under-H refresh -- after the caller
@@ -513,15 +547,43 @@ unlinks at most 256 `passes/` sidecars per call whose key has a done, failed
 or withdrawn record, is neither READY nor CLAIMED under its non-blocking
 transition lock, and whose record carries no `measurement_reservation` field
 (valid, retired or malformed elections, unreadable and foreign records stay).
+The same host-local `<box-identity>.sweep` marker owns the fair-start cursor
+(#1503): its bytes hold the last inspected concluded sidecar name, while its
+mtime retains the existing heartbeat schedule. Each call resumes strictly
+after that name in sorted order and wraps at most once, even if the cursor
+name has been deleted. Retained elections, foreign/unreadable rows and busy
+transition locks consume the inspection budget and advance the cursor rather
+than pinning a permanent prefix. There is no second ledger or process cache.
+The marker remains deliberately unlocked: racing loops may perform a redundant
+pass, as before. Missing/legacy/malformed cursor bytes start at the beginning;
+unavailable host-local state retains the existing best-effort cleanup fallback.
 Withdrawal never removed a sidecar, so ~2,900 concluded ones made a Spark NFS
 census take 3-5 s of its 5 s budget (#1498). Every census still reads every
 remaining sidecar.
-New unlocked M keys, unreadable/incomplete records, unsupported ownership and
+Unreadable/incomplete records, unsupported ownership and
 caps (4096 directory entries, 4 MiB per record, five seconds per read) defer the
 pass, never become an empty census. Parent retains M/H only through the actual
 `begin_acquire`; materialization/commit/rename/execute stay outside H. An arbitrary
 publication after the last refresh is not instantaneously fenced: the guarantee
 begins at canonical host election, with no hidden publisher participation.
+
+An incumbent with no declared finite deadline (`pbrun` without `--timeout-s`,
+or a progress-governed action) does not void the election: requiring one left
+most live hosts unelected, so once the bounded attention above lapsed a
+continuous lower-priority stream refilled the host indefinitely (#1419 residual,
+2026-10-04). With the election in place the measurement's wait is bounded by
+the actual remaining lifetime of the incumbents present at election, whatever
+they declared; it may wait behind a long incumbent on the elected host while
+other matching hosts keep their ordinary admission. That bound holds only if the
+incumbents can finish without new admissions, so a row whose sealed
+`params.produced_spool.owner` (`adaptive_cpu.dependent_owner`, never the row's
+`dependent_of` hint) currently holds tokens on this host is not held back by the
+measurement's wait: neither by `blocking_selection` at either census check nor
+by the measurement's whole-box withhold. An elected measurement that is itself
+running is not such an incumbent; its dependents keep the `funded_by` rule. Admitting an incumbent's own dependent
+(a producer's spool export, pinned to its host at its priority) only shortens
+the incumbent's life; holding it back deadlocked an undeclared producer against
+its exports (#1504 review). Every other row and every other withhold is unchanged.
 
 On the selected host, a lower-priority capacity claim without a verified funded
 measurement dependency cannot refill. The selector survives record_pass, claim,
@@ -1290,6 +1352,42 @@ process scan. Deployment requires draining and upgrading workers to readers of
 immutable decisions before relying on asynchronous cancellation across a
 re-submission; there is no unsafe legacy fallback.
 
+When that worker concludes a withdrawn running attempt, `finish` adds its
+scope identity and nonce, `resource_scope_cleanup` (including the broker's
+export stop verdict), `container_cleanup`, `finished_unix` and
+`finished_host` to the visible withdrawal. It also retains an immutable
+attempt with status and disposition `withdrawn`. The `withdrawn_attempt`
+object links that attempt through the existing canonical `attempt_history`
+contract and carries its verified summary; its detail retains the scope and
+cleanup evidence and its logs retain the worker's output. This nested history
+leaves every original decision field, including its attempt count, unchanged.
+It does not promote an inherited requeued attempt or the worker's return code
+into the cancellation's outcome. `attempt_history_before_withdrawal` remains
+historical evidence, and the immutable decision file is never rewritten.
+Inherited finish timestamps are kept as `finished_unix_before_withdrawal` and
+`finished_host_before_withdrawal` when the decision is first filed, so a later
+worker conclusion can add its own timestamps without rewriting that decision.
+
+Retention and claim release take the same per-key transition lock as withdrawal
+and publication. If publication already superseded the visible marker, the
+old worker's completed cancellation is filed under `withdrawn/superseded/`,
+never over a successor's marker. Repeated finish preserves the first immutable
+attempt and adds no second ending. No `done/`, `failed/` or retry is filed.
+The superseded conclusion has a stable action-generation filename and is
+published first-writer-wins, so replay after an interrupted claim move retains
+one proof and the original container-cleanup result.
+A READY withdrawal that never ran adds no worker evidence. This changes future
+worker conclusions only; previously concluded withdrawals are not repaired.
+
+`pbwait --json`, `pbstatus` ending rows, `pb_action` and `pb_receipts` expose
+the retained `withdrawn_attempt` alongside the existing scope cleanup structure.
+`pb_action` and `pb_log` read the nested canonical history without adopting it
+as the operator's ending. A deterministic consumer can recognise a stopped
+cancellation by `status: withdrawn`, the retained withdrawn attempt, its scope
+nonce and the export's `stopped`, `empty`, `released`, `settled` and
+`tickets_pending: false` predicates; no successful CAS receipt is invented.
+An unstarted READY cancellation has no retained attempt or scope cleanup.
+
 READY-record examinations use `ready-transitions/` as their recoverable
 intermediate namespace. Withdrawal and orphan cleanup move the original bytes
 there under the key's POSIX transition lock, then either restore them with a
@@ -1442,6 +1540,10 @@ byte-for-byte over sealed non-symlink files
 (the `supervise._proven_roots` / `_published_generation` and
 `publish_runtime._barrier_generation` rule); anything else refuses
 rather than executing an untrusted proxy outside the contained slice.
+Post-split receipts also name `src/prismabuild/digest_primitives.py`; its bytes
+receive the same manifest-digest proof before the retained proxy is launched.
+The check is conditional on the receipt listing the member, so pre-split
+generations retain their existing verified import closure without that file.
 Dev stubs and missing shapes keep the current-runtime proxy.
 `run_local_action` forwards exactly
 these three from the launcher environment through the residency
@@ -1779,6 +1881,45 @@ Marker text inside strings or comments does not declare a fleet read. If the
 coordinator cannot parse the target's syntax, the conservative text scan remains
 the fallback; parsing never masks genuine pytest collection errors.
 
+A test file whose secondary dependencies exceed the primary interpreter
+declares it with `@pytest.mark.pbtest_capability("name")` (or a module
+`pytestmark`), and the population names what a capability *is* in a versioned
+config — `--capabilities PATH`, default `tests/pbtest_capabilities.json`,
+schema `prismabuild.pbtest_capabilities.v1` (#1495). Each capability carries
+the placement tags a claiming worker must offer and, optionally, exact
+dependency requirements: `{path, sha256}` entries for individual pinned
+bytes, and an `installed_distribution` entry whose `module_sha256` the
+observed *imported* module must match — the probe imports through the pinned
+interpreter inside the shard, so a correct-looking module shadowed onto the
+import path refuses rather than runs. One owner module
+(`src/prismabuild/dependency_digest.py`, standard library only, embedded into
+the shard program like `resource_scope.py`) writes the validation rules, the
+digest, and the observation; the config, the queue row and the preflight all
+read it.
+
+Cohorts are exact declared-name sets over the discovered files. Files with
+the same declared set pack together with the existing duration-balanced
+packer; a portable file is never packed into a fenced shard, because a shard
+requires the union of its files' capabilities and the union would pin the
+portable file to hosts it does not need. More cohorts than `--shards` refuses
+with exit 2 naming every cohort before any submission — no file is dropped
+and no cohort is merged. A fenced shard's command carries its capability tags
+and `--requires-files` (the exact-file entries), the row requires the
+`dependency-digest-v1` capability tag (a worker loop from before the contract
+offers neither the tag nor the claim check, so it can never claim the row),
+and the claim gate stats and hashes the actual bytes — a missing, unreadable
+or drifted dependency is a named denial on the box about to spend the
+attempt. A cohort whose capability union pins no bytes — a tags-only fence —
+forwards neither flag: `--requires-files` refuses an empty list by contract,
+so the shard is submitted as an ordinary tagged row, while an explicit
+`--requires-files` on a standalone submission must still name at least one
+entry. The shard's own preflight re-verifies every sealed requirement
+before pytest from the same owner module, so a refusal is a failed shard and
+a red run, never a skipped test. The sealed selection rides in the shard's
+selection JSON, which is action identity: a changed declaration re-keys every
+shard it fences. A population with no declarations dispatches byte-identically
+to before.
+
 A `--gpu` run must declare its per-test bound (#975): `--test-timeout-s`, or
 `--timeout-s`, from which the bound is derived one heartbeat inside the sealed
 deadline. With neither, `pbtest` refuses with exit 2 before any shard is
@@ -1820,8 +1961,12 @@ report, using schema `prismabuild.pbtest_trace.v1`. Each phase report carries
 before/after samples from its actual test process, including an xdist worker,
 through pytest's existing report channel. The sealer includes the standalone
 `resource_scope.py` owner in the child program; its exact-process I/O reader
-supplies the counters and identity. RSS is an instantaneous `/proc/self/status`
-sample; `max_rss_watermark_bytes` is the process-lifetime high-water mark,
+supplies the counters and identity. The tracer binds its procfs reader (`os.open`,
+`os.read`, `os.close`) when its plugin loads and passes it to `read_process_io(pid,
+read_text=...)`, so a test that patches `Path.read_text` or a stat reader cannot
+redirect the sampling and abort the shard with an INTERNALERROR (#1550); the
+default reader, used by the scope sampler, still goes through `Path.read_text`.
+RSS is an instantaneous `/proc/self/status` sample; `max_rss_watermark_bytes` is the process-lifetime high-water mark,
 not a per-test peak. I/O deltas cover that process and children it has reaped;
 live children, daemon-created containers, delayed writeback and later reaping
 prevent complete causal per-test attribution. Unavailable/regressing counters
@@ -1843,7 +1988,20 @@ Python dependency verification for every `pbtest` shard. The resolver runs
 under the target interpreter inside the admitted, sealed checkout and must
 print one full lowercase Git commit. The module must have one owning installed
 distribution, non-editable PEP 610 Git provenance at that commit, and intact
-hashed RECORD files. Python's selected module must be recorded by that
+hashed RECORD files: every hashed RECORD entry is present on disk and
+byte-valid. RECORD is read as UTF-8 bytes from the owning standard-library
+PathDistribution metadata path before newline-preserving CSV parsing (#1548).
+Distribution.read_text normalizes carriage returns and carriage-return-line-feed
+characters before parsing, while Distribution.files also drops missing entries
+and splits quoted lines. Reading or decoding raw RECORD metadata fails closed;
+there is no lossy text fallback or inferred metadata directory. Quoted filenames
+keep their exact characters; malformed grammar refuses (a hash-bearing empty
+filename, extra columns, a nonnumeric size, a blank row; the size column is
+parsed, never compared), and a deleted package file or
+pip's relocated console script
+therefore refuses exactly like corrupted bytes, under the strict
+policy and after tolerated identity drift alike. Python's selected module
+must be recorded by that
 distribution; unrecorded package files refuse. Missing/ambiguous provenance,
 local-directory installs without Git metadata, resolver errors, drift and
 import shadows refuse before pytest. Nothing installs into a shared venv.
@@ -2155,7 +2313,11 @@ matters). Rules:
   profiled arm with an unprofiled one would compare two different executions.
   `--priority` is the contrast and stays out of the key, being a hint about
   *when* the same work runs. Omitting `--profile` leaves the key what it was
-  before the flag existed. The blob itself is content-addressed like any
+  before the flag existed. `--profile sample:HZ` (whole samples per second,
+  1 to 99999) seals the rate into the action key through the mode string, so
+  two rates are two actions, while bare `sample` keeps the 100 Hz default
+  and the key it has always had. The ending reports `rate_hz` as the rate
+  the action ran at. The blob itself is content-addressed like any
   payload and referenced from the pool's ending, never from the CAS receipt,
   whose v3 key set is an immutable interpretation domain.
 - **Native Nsys does not trace Docker daemon children** — `nsys` and its
@@ -2374,11 +2536,13 @@ miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
   NVIDIA workers additionally require the CUDA capability and driver fields.
 - The worker implementation is a separate closed
   `prismaquant.prismabuild.worker_runtime.v1` object. It binds the exact
-  `prismaquant/prismabuild.py` source snapshot taken once while that module
-  initializes. Canonical JSON and SHA-256 are implemented in that same file,
-  so the receipt-digest implementation does not escape into an unrecorded
-  repository import. The live core file must still match the load-time
-  snapshot at preflight, after task execution, and at publication. For the
+  `src/prismabuild/core.py` snapshot taken during module initialization and,
+  since #1547, its standard-library digest half `digest_primitives.py` in the
+  `digest_primitives` field. Canonical JSON and SHA-256 therefore live in the
+  two recorded owner files rather than an unrecorded repository import. Both
+  files must match their load-time snapshots at preflight, after task execution
+  and at publication. Retained pre-split v1 receipts keep their original body;
+  no new owner identity is invented for historical executions. For the
   SLURM path, `tools/prismabuild_worker.py` snapshots its own source at the
   earliest executed wrapper code, before importing the core, and passes that
   identity into preflight. The launcher is checked there and at the same two
@@ -4472,6 +4636,207 @@ the ordinary suite on a small shape of the same kind.  One of them puts the
 pre-#965 byte-cut splitter back into the driver and requires the gate to
 fail with `movement_refused` and `residency_overran_reservation`.
 
+## Gang reservation (#1517, default off)
+
+A gang is N sealed actions (2..16), one per target host or host class, admitted
+together or not at all. Each member seals `params.gang = {group, size, index}`.
+Its row requires the worker tag `gang-v1`, which a worker offers only with
+`--gang-admission` (or `PRISMABUILD_GANG_ADMISSION=1`). A member has exactly one
+attempt and is never `retry_safe`: a retried or preempted member could start
+beside siblings that are already running. `pbgang.py` seals and publishes every
+member (`pbrun --detach --gang-*`) and only then files the immutable group record
+`pb-queue/gangs/<group>.json`. A member is never claimable without that record.
+A member carries the existing `pbrun` options a measurement window declares (GPU
+memory subset, exclusive and measurement class, host class, container images,
+priority reason, and a declared single attempt) plus the data-manifest and
+residency options (`data_manifest`, `residency`, `residency_tier`,
+`residency_ram`, `residency_share`, `residency_mover_mem_gb`,
+`residency_mover_readers`, `residency_prefetch_depth_gib`, `residency_read_mb_s`,
+`residency_mover_max_attempts`): each manifest member field is one
+`pbrun` flag, forwarded as given, and `pbrun` judges every value as it does for a
+plain submission. Any other key is refused by name. The driver's own flags, the tag
+and the priority and `retry_safe` are not member fields;
+`max_attempts` may be declared only as 1. Two things `pbgang` refuses itself,
+because the submission process decides them: a member's `data_manifest` must be
+an absolute path (`pbrun` reads a relative one against `pbgang`'s own working
+directory, so a different file of the same name would be ingested), and every
+gang member that declares a manifest must also declare `residency` (`stage`) --
+the #1247 planner files one row's plan per tier-loop cycle, so a member left to
+it would fence its elected siblings' hosts while reading the pool unplanned. A
+manifest may be a bare list of members; a member names its host
+with `tag` or `tags` and may give `demand` and `env` as mappings. `--cwd` is the
+default checkout every member snapshots; a member's own `cwd` overrides it, and
+`--cwd` is then optional when every member names one.
+
+**Gang members with residency (#583, #1247).** The admission order is the
+ordinary one: the claim pass evaluates `residency_verdict` on a member row
+*before* the gang code, so a member whose leads are not yet resident is denied
+`residency_lead_not_resident` for that pass and never reaches its election --
+it does not ready, does not fence its own host, and lower-priority work can
+still take its host while its movers run. Its siblings, which pass every gate,
+do elect and ready, so their hosts fence strictly lower-priority work for as
+long as the wait lasts, and the wait is not bounded: `skew_s` bounds only the
+post-claim start barrier, never the ready-wait. Nothing commits until the
+leads are executed and pinned and the map is composed (`resident`); the gang
+then starts whole, each member's claim record carries the verdict, and the
+launcher passes `PRISMABUILD_RESIDENCY_MAP` to the members that declared
+residency. A teardown (member failure or member withdrawal) withdraws the
+members through the ordinary path, which marks a consumer's frozen plan
+superseded; the leads are separate actions the gang never withdraws, and
+their stage pins are released by the tier loop's orphan sweep (`stage_release`)
+once no live item names them -- for a claimed member, after its covered row
+ends at the worker's withdrawal checkpoint -- not by the gang. A row that
+carries a manifest and no `--residency` (a member submitted by `pbrun`
+directly -- `pbgang` refuses this shape -- or any other submitter's row) is
+planned by the manifest planner (#1247) off its own sealed request and is
+then gated by its filed plan exactly like an explicit one, reaching its map at
+launch through the declared-manifest branch of `residency_map_environment`.
+Operational consequence: a window whose movers are slow drains its already-
+elected siblings' hosts for the whole mover time, and the wait does not end on
+its own if a lead ends terminally (`residency_lead_terminal`) or the plan is
+refused (`plan_unreadable`, `plan_superseded`): gang elections never expire,
+and the gang sweep tears a gang down only on an UNSUCCESSFUL member, which a
+READY member never is -- the wait lasts until the gang is withdrawn. Size
+`--residency` windows with that fence in mind, submit the movers before the
+gang, and withdraw the gang when a member's residency can no longer land.
+
+Per member host, inside the ordinary claim pass:
+
+1. **Elect (fence).** Under host admission H, the host writes a no-clobber
+   election `gangs/<group>/elect-<i>.json`. The census reads live gang elections
+   in its bounded child, and `gang_blocking` denies strictly lower-priority rows
+   on that host (`deferred_for_gang_reservation`), with the same rule and the same
+   incumbent-dependent exemption as a #1419/#1504 measurement election. Running
+   work drains; no token, CPU/GPU, isolation or foreign-load gate is waived.
+   Fence checks consistently identify this host by its resource-ledger name.
+   One member per host; the no-clobber election settles a race between matching hosts.
+   A fresh-ready member may lend its elected host while another member waits:
+   only priority -10 generation rows satisfying the existing restartability
+   proof (explicit retry-safe permission, valid interruption lineage, and an
+   unused launch after interruption) bypass this gang fence. They still pass
+   every ordinary gate. Priority 0 and above, other negative priorities,
+   measurements and rows without that proof remain fenced when strictly below
+   the gang. The claimed row records the elections it borrowed as
+   `gang_backfill`; the metadata is claim-scoped and is removed on retry.
+   Restartability is evaluated lazily, once per candidate, only when a live
+   gang fence applies and the backfill policy is enabled. Unfenced ordinary
+   priority -10 admission does not need a preemption proof read.
+
+   `PRISMABUILD_GANG_BACKFILL=0` in the worker environment restores the strict
+   fence on that host; set it on all workers for a fleet-wide rollback. The
+   policy is on by default (any value other than exactly 0). Turning it off
+   prevents new loans; already admitted backfill is still reclaimed safely.
+
+   Reclamation runs **before the member's CPU, GPU and token gates**. When
+   siblings are fresh-ready or claimed on distinct hosts, the member requests
+   ordinary exact-attempt withdrawal/requeue of its marked backfill, one holder
+   per pass. For gangs with backfill on several hosts, a sibling's marked
+   backfill also triggers reclamation: this is advisory permission to stop
+   restartable work, NOT readiness or permission to commit. It prevents a
+   cycle in which all ready marks expire while backfill holds the tokens.
+   The first reclamation sets the election's monotone
+   `backfill_reclaiming: true` phase. Any such election closes new loans for
+   the whole gang and continues reclamation even if ready marks later expire.
+   Returned capacity cannot be re-lent to the just-requeued background row
+   while the peer gets to its next claim pass. This is scheduler state,
+   separate from the timing observations below; neither grants capacity or
+   changes commit readiness.
+   Restartability and the exact live claim are rechecked by the existing
+   preemption mechanism. No projected capacity is spent: tokens remain held
+   until the owner proves scope/container cleanup and returns them. All
+   ordinary gates then run again, and only actual ready marks permit commit.
+   While a requested holder retains tokens, the member reports the distinct
+   denial `gang_waiting_for_backfill_release`, even if peer readiness has
+   since expired. A torn-down gang continues to release its fence normally.
+
+   **Ordinary background preemption still applies to gang members.** A
+   foreground member refused by its token gate may stop an existing
+   restartable negative-priority holder whose actual token return closes the
+   gap, including work admitted before the election with no `gang_backfill`
+   mark. This does not wait for sibling readiness; two hosts each blocked by
+   unmarked work can therefore drain independently. Before the reclamation
+   phase, selection excludes only live holders marked as loans from THIS
+   member's election. It does not disable ordinary preemption for the whole
+   gang. Once reclamation starts, that exclusion ends. Restartability,
+   remaining attempts, pending-release accounting and real cleanup retain
+   their existing authority.
+
+   **Release telemetry and its limit.** The holder's immutable withdrawal
+   records `gang_backfill_preemption.requested_unix` and
+   `tokens_returned_unix: null` (not yet). After actual token return, the
+   worker's withdrawal conclusion (including `withdrawn/superseded/` for a
+   requeue) adds `gang_backfill_release.tokens_returned_unix`. The election's
+   `backfill_preemptions` records the same request/release pair. The finisher
+   updates the election nonblocking; the next member pass catches a missed
+   update from the exact withdrawal conclusion. All election update paths
+   share the member's nonblocking transition exclusion; archive reads stay
+   outside it and a final merge re-reads the current election. A delayed
+   request cannot erase a recorded token return or replace its original
+   request time. Busy observation writers defer, never wait. The monotone
+   reclamation phase is persisted before requesting the holder's withdrawal.
+   Timing fields remain observations, never gates. Their difference measures
+   request-to-token-return, including
+   stopping and cleanup, not just signal delivery.
+
+   There is **no finite code-derived worst-case stop-to-release bound** on
+   GB10: failed or unproved Docker/GPU/scope cleanup retains tokens indefinitely
+   (the existing cleanup contract), and a shared-filesystem syscall can stall.
+   The process-group ladder spends up to `WITHDRAW_GRACE_S` (5 s) on its two
+   signal waits; the broker socket has a 10 s client timeout and writes
+   `cgroup.freeze`/`cgroup.kill`. Neither proves GPU memory or container
+   settlement. These are not a release bound and cannot be added together to
+   certify one. Fresh-ready expires after 30 s; it is refreshed only after
+   real gates pass. Once a peer commits, the unchanged default 120 s start
+   barrier tears down rather than launching an incomplete gang if release
+   cannot complete in time. Before any commit, waiting can be indefinite.
+   A live GB10 qualification must measure the new request/release pairs with
+   representative container/CUDA holders, observe broker scope emptiness,
+   Docker settlement and returned GPU/host-memory capacity, and include claim
+   polling and delayed/failed cleanup. Private-queue tests establish the
+   pre-gate trigger and recovery after an explicit release, not that live
+   120 s latency claim.
+
+2. **Ready.** When the member passes every ordinary gate, it writes
+   `ready-<i>.json`. Unless every sibling is fresh-ready (`READY_FRESH_S`) or
+   claimed on a distinct host, it abandons the acquisition and is denied
+   `gang_waiting_for_peers`. A ready member holds no tokens, so no cross-host
+   hold can deadlock two gangs.
+3. **Commit** is the ordinary rename once the set is complete. The peer's next
+   pass sees it and commits too.
+4. **Start barrier.** Before launch, a claimed member waits, renewing its lease,
+   until every sibling is claimed, bounded by `skew_s` (default 120 s). Past the
+   bound, or on a teardown or sibling ending, it never launches
+   (`gang_start_skew_exceeded` / `gang_torn_down`). A member never runs alone.
+5. **Teardown.** Any unsuccessful member ending, any member withdrawal, an
+   expired barrier, or a sibling found failed files `gangs/<group>/teardown.json`
+   once. The writer withdraws the other members through the ordinary withdrawal
+   path. The census stops fencing for a torn-down gang. `sweep_gangs`, on the
+   orphan-passes schedule, withdraws leftover READY members and prunes the
+   records of a gang whose every member has an exact ending.
+
+**Ranking between gangs.** Gangs are totally ordered by (higher priority,
+earliest member publication, group). Before electing or readying, a member is
+deferred (`deferred_for_gang_reservation`, `ranked_behind`) while a better-ranked
+live gang holds an election on any host its gang uses. Two gangs sharing hosts
+therefore never each commit one member and then wait on each other until both
+fail. Residual: a better-ranked gang that first appears after a lower gang has
+already committed one member costs that lower gang its run, bounded by `skew_s`.
+
+**Lost workers.** `sweep_gangs` runs beside `sweep_orphan_passes` in the claim-site
+sweep. It also tears down any gang with a member whose exact-generation ending is
+FAILED or WITHDRAWN, including a one-attempt member the reaper failed after a lost
+lease, so a sibling that is already running is withdrawn rather than left waiting
+in its collective.
+
+**Priority rule.** A gang fences only against strictly lower priority. Equal or
+higher priority work can still take a fenced host; that is the existing priority
+semantics. Run window gangs (Goal 1 EXL3/PACT, Goal 2 served A/Bs) at priority 10,
+with routine work at 0 or below.
+
+**Mixed generations.** An old worker offers no `gang-v1` and ignores `gangs/`, so
+it never claims a member. During a rolling publish it may not honour a gang
+fence on its host; the start barrier still prevents a lone start.
+
 ## Physical and adaptive GPU admission
 
 Both current GB10 workers have one physical GPU. Their fleet shape uses the
@@ -4737,6 +5102,40 @@ could not run; the only effect is a bounded wait that a better placement may
 or may not win. With no alternative, a stale reading on either side, or no
 GPU-power evidence, there is no preference at all.
 
+Ahead of both placement preferences, a GPU host leaves portable CPU-only rows
+READY while any READY GPU row is eligible for that host (#1526). Eligibility
+uses the existing placement matcher (tags, interpreter, image and dependency
+capabilities) and the GPU row's host reservation demand against this host's
+total capacity, using the same demand split and physical GPU normalization as
+claim admission. The local offer's capability evidence and the claimant's image
+inventory are reused; this check probes no paths and reserves nothing. A row
+for another tag or host class, a row without the required local capabilities,
+a malformed demand, or a demand this host cannot fit does not hold CPU work back.
+This rule crosses priority bands and has no timeout: aging or a higher CPU
+priority cannot spend the GPU host's CPUs or memory ahead of eligible GPU work.
+Once no such GPU row is READY, ordinary CPU placement resumes.
+
+An eligible-fit GPU row stops holding CPU work back when this host's latest
+verdict for that exact publication and attempt says pool jobs draining will
+not make it runnable here. The refusal path's existing drain classifier
+records `drain_resolves: false` in the denial evidence; foreign GPU processes
+(including exempt vLLM serving), invalid/stale GPU samples and device-state
+refusals therefore do not starve CPU work. A gang member elected elsewhere
+or a measurement reserved on another host likewise has no CPU veto here.
+Missing or unrelated verdicts leave the original protection in place, and a
+pool-holder drain still protects the GPU row. This exception shares the
+existing lock-free host-denial snapshot used for carried withholds, adds no
+lock or timeout, and grants no GPU or CPU admission credit.
+
+A CPU row whose sealed tags include this host's hostname is pinned, whether
+by `--tag sparky`, `--tag sparklina`, or `--here`, and is exempt. Hosts without
+a GPU are also unchanged. The rule is evaluated once from the existing READY
+snapshot before candidate transition locks, and a deferred CPU row records
+`deferred_for_ready_gpu` without a pass or reservation. It adds no census,
+transition, or host-admission lock and does not change GPU admission, GPU row
+order, measurement election, or running claims. The READY snapshot remains
+advisory; the existing per-key transition and claim rename still decide ownership.
+
 CPU-only work on a GPU host is governed by a placement rule ahead of that
 preference, and the rule has no timer (#1262). A GPU host's CPUs and memory
 feed its GPU; CPU-only rows it admits leave GPU rows arriving behind them to be
@@ -4748,11 +5147,13 @@ that host already evaluated the row and did not take it: its published latest
 denial for the generation (`reservations/<host>/adaptive/claim-denials.json`),
 any reason but `transition_busy`, or, when that file is at its record cap, an
 entry of that host in the row's reason ring. The GPU host records
-`deferred_for_cpu_only_host`, ages nothing, and claims the row as before once
-no such host remains, so CPU-only work still overflows onto GPU hosts when the
-CPU host is full or refuses. A host without a GPU never yields, so no two hosts
-wait on each other, and a row whose tags exclude every host without a GPU is
-unaffected. Remote reads are made once per host per claim pass and each yield
+`deferred_for_cpu_only_host`, ages nothing, and this CPU-host deferral ends once
+no such host remains. CPU-only work still overflows onto GPU hosts when the CPU
+host is full or refuses, but portable rows must also pass the eligible-READY-GPU
+rule above. A host without a GPU never yields, so no two hosts wait on each
+other. Tags excluding every host without a GPU bypass only this CPU-host
+deferral, not the READY-GPU rule. Remote reads are made once per host per claim
+pass and each yield
 charges that view, so a pass never leaves a host more rows than it fits.
 
 It is not a thermal control and nothing here measures temperature or
@@ -5677,6 +6078,133 @@ a logical request's common half carries a nonblank `data_manifest`, so a
 producer whose reads are not visible in the declaration can still require them
 to be declared.
 
+## Whole-directory local resident sets (#1545)
+
+Resident sets are optional accelerators, not rolling residency windows or
+admission gates. Phase 1 does not inject container mounts or alter placement.
+`resident_sets.ResidentSets` stores `resident-sets/<manifest sha256>/body.json`
+under the queue root. The body is immutable: the normalized data manifest,
+canonical directory, hosts, initial lease and creator. Every manifest entry
+is a whole regular file with a real SHA-256 digest; publication lists the
+canonical directory and requires exact whole-directory name and size coverage.
+Symlinks and special files are refused. Source metadata is not an identity gate.
+
+The separate append-only `lease.jsonl` journal records publication and explicit
+release, each naming the manifest digest. A lease requires either an until
+timestamp or a campaign name, and an explicit hard maximum; no forever default.
+Per-host `copies/<host>.json` records use `prismabuild.resident_copy.v1` and
+`absent`, `copying`, `resident` or `evicting` states, a local root, verification
+receipt, byte count and completion time. `pbresident publish|status|release|adopt|dispatch|renew`
+operates these records. `local_tier_policy.json` is published with the runtime;
+its host map is empty by default, so this change activates no local tier.
+
+Operator descriptors live separately in
+`resident-sets/<id>/movements/<host>.json` (`prismabuild.resident_movements.v1`).
+Their `rows` map holds the copy, egress and adoption queue specifications.
+`update_movements` merges under the existing set-record lock; operator
+publication never rewrites `copies/<host>.json`. It may read copy state to
+avoid a redundant dispatch. State remains owned by the host mover under its
+mover lock and host flock. This separation
+prevents a stale operator write from resurrecting an evicted copy or a final
+state write from dropping newly published descriptors. Status exposes the
+descriptor map separately, and lease policy reads only the body and lease
+journal, not operator descriptors.
+
+`pbresident dispatch SET_ID` retries action publication for an already-filed
+immutable body. It never republishes the set or acquires a second publication
+hold. Repeated dispatch attaches to a live copy generation; a resident host
+gets its descriptors refreshed without another copy action. An absent or
+interrupted copy can be re-driven through the existing movement retry policy.
+`pbresident renew SET_ID` appends an explicit until-date or campaign lease with
+a required hard maximum, bounded by the configured renewal ceiling. Neither
+command changes the immutable body or adds a seal/authority requirement.
+
+Capacity uses `local_gib@local:<host>` in the ordinary tier ledger. Publication
+reserves ceil(bytes / GiB) on every host or rolls back the new empty holds.
+The separate supervised `localtier` role re-mints from unprivileged
+`f_bavail - filesystem floor - Docker allowance + occupied tier bytes`, capped
+by the policy maximum. Held tokens are never revoked by a falling budget.
+The mover also enforces both D1 limits before copying and checks the floor
+before each file. This is cooperative accounting, not a filesystem quota.
+A separate role is needed: `tiers` discovers file-server ZFS, ARC and tmpfs
+windows and sweeps their rolling fragments; neither it nor `storage` runs
+on each local-disk owner. No fleet host is enabled in this phase.
+
+Resident movers reuse `movement_actions.seal_movement_action`, one CPU and
+one GiB of host memory, pinned to the disk owner. Occupancy belongs to the
+set rather than the action, so finishing a mover does not free its local
+tokens. Copies prefer complete staged coverage protected by an ordinary
+`reader_lease` pin for the whole copy, otherwise read the canonical files.
+Every file is SHA-256 checked against the manifest and fsynced; nested
+directories are fsynced before the whole `.partial` tree is renamed.
+Retries rehash and reuse completed partial files, and replace corrupt partial
+files. Only the final verified tree can be recorded as resident. Source
+size and modification time are diagnostics, not refusals.
+Lease renewal uses only explicit queue-row `resident_set` declarations, not
+manifest-subset inference (the design note section 3.3 supersedes its older
+lifecycle wording). Until leases may be extended by ready or claimed rows,
+but never past their hard maximum. Campaign leases end on release or maximum.
+An explicit `ResidentSets.renew` appends a new bounded lease without changing
+the body. Explicit Phase 1 readers take `local_resident.pin` and release that
+token only after their last read; a crashed reader pin stays until the existing
+broker scope attestation proves stop. Phase 2 will integrate container pins.
+Explicit renewals are capped at `now + renewal_ceiling_s`, a positive finite
+policy value published in `local_tier_policy.json` (default: 14 days). The
+effective ceiling is recorded in the renewal journal; it does not replace
+the lease's required hard maximum or allow automatic renewal past it.
+
+Eviction takes the per-host flock, checks pins, durably records `evicting`,
+then renames to `.evicting` under that lock. It releases the lock before
+deleting, and releases ledger tokens only after every tree is gone. An active
+mover holds its separate move lock, so eviction defers instead of deleting an
+in-flight partial tree. Each localtier cycle attempts interrupted evictions
+before minting. Failed deletes retain their bytes and occupancy holders; the
+minter still counts the remaining trees and held tokens. Cross-host requests
+queue the retained host-pinned egress action rather than deleting another
+host's paths in the caller.
+
+An absent copy is idle only when no final, partial, or evicting tree exists
+and it holds no local tokens; the lease pass then rewrites no copy record.
+A corrupt record or failed deletion is isolated to that set, with its latest
+failure at `resident-sets/<id>/lease-errors/<host>.json`. A later successful
+pass clears that error. No exception releases occupancy. The serving role
+reports cycle failures and retries at its existing interval instead of
+crashing; `--once` reports failure with a nonzero exit.
+
+Adoption is a host-pinned movement action, not coordinator-side hashing. It
+checks whole-directory coverage and every file SHA-256, fsyncs the existing
+files and directories, then renames on the same filesystem without recopying.
+It refuses cross-filesystem moves, the canonical directory itself, outstanding
+partial/evicting trees and active manual bind mounts. For canonical paths under
+`/mnt/shared`, Docker inspection must establish that no running container
+captured the old recursive shared mount. No live manual copy is touched by
+Phase 1 qualification.
+
+An adoption admitted under a live lease retains its local occupancy hold if
+byte verification, same-filesystem validation, or the unmounted-source check
+refuses it. The source is unchanged and the copy stays absent. This is the
+same conservative failure accounting as a copy: no exception releases a hold
+that might protect another resident or partial incarnation. The bounded lease
+pass or explicit release drives normal ordered eviction to return it. A lease
+refused before reservation takes no new tokens.
+
+`pbrun --resident-set SET_ID` is the single explicit lease-reference declaration.
+It is carried in ordinary action parameters and projected onto the queue row;
+it adds neither an admission gate nor a placement preference. Phase 1 does not
+inject anything: every new claim and immutable attempt writes
+`served_from: "canonical"`, alongside its declared set (if any) and existing
+claiming host. Legacy attempts without this field stay unknown, not retroactively
+labelled canonical. Ending status exposes the recorded field. Readers already
+accept both `canonical` and `local` so a later Phase 2 producer cannot break an
+older reader; only the Phase 2 shim writes `local`. Phase 1 still writes only
+`canonical` and injects no local mount.
+
+`pbstatus --resident-sets` reads the immutable bodies, copies, lease journals,
+current lease verdict and measured per-host capacity/held tokens through its
+existing bounded reader. Corrupt or unreadable records produce a partial view,
+never a complete empty census. No identity or provenance seal is added;
+whole-directory shape, byte digests, safe deletion and capacity remain refusals.
+
 ## Cluster-scoped storage tiers (#583)
 
 Off by default. Nothing the fleet publishes today carries tier demand or a
@@ -5766,21 +6294,54 @@ path is canonicalized once, at ledger construction: taking the exclusion
 never resolves the shared ledger base, so a stalled lookup cannot run
 inside a host admission section.
 
-The #1483 validator holds `ledger._mutation_locked(blocking=False)`
-continuously across its fresh authoritative capacity census, decision and
-physical reservation begin/commit or rollback. Two equal snapshots are not
-an exclusion or an ABA proof. When CPU `AdmissionGate` applies, it is outer;
-no mutation section acquires that gate, a transition/ownership parent, or
-another ledger owner. The exclusion does not span payload I/O. Private
+A capacity check-and-reserve caller holds `ledger._mutation_locked`
+continuously across its fresh census, decision and physical reservation
+begin/commit or rollback. Two equal snapshots are not an exclusion or an
+ABA proof. When CPU `AdmissionGate` applies, it is outer; no mutation
+section acquires that gate, a transition/ownership parent, or another
+ledger owner. The exclusion does not span payload I/O. Private
 acquisitions stay charged throughout their separate begin/commit lifecycle.
+
+**The used-filesystem floor (#1483, default-off).** `begin_acquire` asks
+`filesystem_floor.ledger_gate` before taking byte-kind tokens (`spool_gb`,
+`stage_gib`, `filesystem_gib`). Inside the ledger's mutation section the
+gate takes the floor lock of each filesystem the demand is bound to --
+sorted, each with a bounded wait -- and admits only when the owner's
+published sample satisfies `free >= ceil(size/20) + census +
+grants-since-sample + demand`. Floor locks are innermost: a floor section
+acquires nothing else, and the owner's refresh holds only the floor lock,
+so the order `[AdmissionGate] -> ledger lock -> floor locks` has no cycle.
+Under the ledger lock the gate reads only the floor lock, the published
+sample and the grant counter; the mode and bindings come from a
+per-process cache the loop tick refreshes outside every lock, and no name
+resolution, `statvfs` or subprocess runs there. A refusal is the ledger's
+ordinary shortage (`None`, `last_token_shortage.resource ==
+"filesystem_floor"`), so every caller's existing shortage handling applies.
+Release, commit, abandon, transfer and sweep are unchanged and take no
+floor lock: they only lower the charge. With the mode `off` (the default)
+`begin_acquire` reads one cached mode value and is otherwise the old
+locked acquisition. Bindings, stable identity, refresh, used-path checks,
+coordinator growth and the bootstrap order are in
+[filesystem_floor.md](filesystem_floor.md).
+
+The inode term (#1535) also requires `f_favail >= ceil(f_files / 20)`,
+with no fixed inode floor when the filesystem reports `f_files == 0`.
+The existing disk-room helper now lives in `filesystem_capacity.py` and
+supplies this same five percent predicate to the floor sampler, supervisor
+spool offers, output reservations, RAM-tier admission and worker-side
+`pbtest` scratch preflight. Published floor samples include both inode
+counters and the refusal; a byte-only sample refuses until refreshed.
+The floor's `off`/`observe`/`enforce` modes are unchanged. Explicit
+`pbtest --tmpdir` and `--basetemp` roots refuse low inode headroom before
+creating their files, independently of the optional floor mode.
 
 Locking is separate from census/cache purpose: only the explicit
 `tier_census=True` factory selects tier grow/reclaim refusal and the existing
 tier directory-name cache. Host legacy readers stay fresh with their prior
 error/report semantics; they are not complete filesystem-capacity proof.
-The sole validator supplies that fresh error-visible proof separately.
-This source contract is necessary, not all-used-filesystem qualification,
-a positive DL offer, a materialization credit, or deployment authority.
+The floor's own census (above) supplies that separately. This source
+contract is necessary, not all-used-filesystem qualification, a positive
+DL offer, a materialization credit, or deployment authority.
 Mixed generations not sharing the host mutation exclusion remain unqualified.
 
 **Bandwidth figures name their side.** The token, the demand key and the tier
@@ -6419,7 +6980,7 @@ within10% and an hour without pswpout growth remain owed; full #1032 is open.
 Related inventory repairs (Refs #1182/#1386) publish the existing nested scratch
 recorder and register exact, genuinely different helper contracts without growing
 shrink baselines. Scratch qualification still binds the exact
-`tools/fleet/local_scratch_profile.py` command and its three source files. The
+`tools/fleet/local_scratch_profile.py` command and its four source files. The
 publisher's flat copy supplies inventory bytes, not an executable recorder alias;
 no producer bytes, command identity or qualification rules change.
 
@@ -6706,6 +7267,35 @@ transition locks are held. This is needed because a resubmitted consumer's
 mover can adopt the old bytes under a name this run has not reached yet.
 Content-keyed stage paths would remove the collision by construction, but
 they are a layout migration; this settles it on the current layout.
+
+The publication gate's range-directory hint (#1028): the in-flight-partial
+census a re-decision passes lists its range directory once per
+`_trusted_directory_stamp` -- the stamp taken before the scan, the listing
+remembered only while a fresh directory version (`_current_directory_version`,
+the #1004/#1208 fence) still equals it -- and every name revalidates with
+that one directory version, re-listing only a directory that moved. A
+version the directory's own clock tick refuses, and a scan the directory
+moved, are returned once and never remembered, so a partial created in the
+same tick or during a scan cannot hide behind a remembered listing; on a
+filesystem whose directory times are not this kernel's, no stamp is ever
+trusted and every name lists, as before. The publisher's own temporary and
+rename move the range directory every entry, so a range of replacements
+lists it once an entry, as before; the hint's win is every decision that
+runs while the directory holds still -- the polls of a waiting entry, an
+adoption pass over an already-correct range. The check filters the
+remembered listing by the same prefix rule and re-stats only the names
+that pass it; a candidate that cannot be stat'ed -- one removed since
+the listing among them -- fails the name closed exactly as the per-name
+listing's stat did. The claim census and the pin census stay per name,
+exactly as main and #1089 left them: the claim listing and each claim
+record are read on every check through #1089's path-derivation memo, and
+the pins are listed, opened and parsed on every check with no memo -- a
+pin rewritten twice in one clock tick would hide a new ref behind one.
+A review round also reverted an earlier stamp-fenced claim hint for the
+same per-record freshness. The verdicts and the fail-closed answers
+are the per-name censuses'. The forest census a re-decision runs under the
+lock keeps its stamp fence (#1004), and `ownership_lock_held` accounting
+is untouched.
 
 The egress holds the lock for its act, not its census (#988). Before this
 change `stage_release.evict` took the stage root's ownership lock and then
@@ -7768,6 +8358,10 @@ raises leaves nothing behind.
 - An unchanged queue costs one `lstat` per directory the census reads (the
   state directories, each decision directory, each consumer's fragment
   directory and each tier ledger directory), and no listing and no file read.
+  The worker and metrics censuses read admission sidecar, telemetry and
+  unreadable-holder report paths without constructing mutating host
+  ledgers: lock canonicalization belongs to mutation, not to every
+  diagnostic lookup (#1528).
 - A changed directory costs one listing and one `stat` per entry in it, and a
   read of each entry whose #761 version changed. Every entry is `stat`-ed for
   the reason the tier loop's are: records are replaced under their own names,
@@ -12754,8 +13348,11 @@ checks. Fresh live-state checks exclude a republication that won discovery.
 The consumer must have exactly one terminal record, and it must be proven. A
 failed consumer needs the queue's verified immutable failed-attempt summary.
 A withdrawn consumer needs its visible withdrawal to agree with its immutable
-decision for that exact action and generation (#892): until 2026-09-22 only
-failure counted, and three withdrawn consumers' owners were cleared by hand
+decision for that exact action and generation (#892).
+Worker conclusion fields are permitted only as the verified immutable withdrawn
+attempt's projection. All original decision fields remain exact; a changed
+decision value or an arbitrary extra field still retains ownership.
+Until 2026-09-22, only failure counted, and three withdrawn consumers' owners were cleared by hand
 that day. A consumer that is live again, done, or both failed and withdrawn
 retains. For the withdrawn mover form, the mover's visible withdrawal must agree with
 its immutable decision for that exact action and generation, and no move
@@ -14374,8 +14971,14 @@ changes. A missing or malformed snapshot never matches a requested Git field.
 withdrawal preserved under `attempt_history_before_withdrawal` exactly as it
 reads a record's own links: `attempts_history` names the source,
 `adopted_attempt` stays null, and `outcome_before_withdrawal` reports the
-preserved ending's returncode. Preserved execution is evidence, never the
-record's ending. The record's attempt count is untrusted input:
+preserved ending's returncode. Preserved execution is evidence, never the record's ending.
+A concluded running withdrawal additionally exposes the worker's nested
+`withdrawn_attempt.attempt_history` through `attempts_detail` and `pb_log`,
+with `attempts_history.source` naming that nested history. Its status remains
+withdrawn and `adopted_attempt` remains null. The normal action and receipt
+views carry its exact scope cleanup; absence of a CAS success receipt remains
+absence, not success inferred from a clean broker stop.
+The record's attempt count is untrusted input:
 `unretained_attempts` is capped at `UNRETAINED_ATTEMPT_LIST_CAP`, with
 `unretained_attempt_count` and `unretained_attempts_truncated` beside it, so a
 forged count cannot expand the reader's work. Every retained link is checked
@@ -15397,9 +16000,10 @@ operator configuration and CAS boundary; it is not cryptographic CPython
 provenance or authentication of arbitrary Python-like binaries/hostile CAS.
 Legacy stdout-only records and missing inode/envelope facts refuse; no silent
 migration or manufactured defaults. It uses the existing CAS checkout materializer and
-closure verifier to prove the executed snapshot's three producer files
+closure verifier to prove the executed snapshot's four producer files
 (`tools/fleet/local_scratch_profile.py`, `src/prismabuild/local_scratch.py`,
-`src/prismabuild/core.py`) match the installed producer and verifies the derived
+`src/prismabuild/core.py`, `src/prismabuild/digest_primitives.py`) match the
+installed producer and verifies the derived
 owner/marker against original sealed checkout identity. The isolated -I -S
 producer depends only on stdlib and those verified files. Normal package mode
 imports Core's recipes; isolated mode loads only sibling `core.py` derived from
@@ -15409,7 +16013,7 @@ BODY+LF writer without loading Core again. Core owns raw source-byte SHA-256,
 the fixed SHAKE-256 block recipe (positive integer length only), and positive
 finite validation; the scratch predicate discards normalization so accepted
 int/float observations retain their original types. Core's self-source capture
-runs at startup, outside I/O timing. All three installed/materialized file
+runs at startup, outside I/O timing. All four installed/materialized file
 identities remain in verification and its cache key. This recipe Core identity
 is not the receipt's worker-launcher Core identity, and does not require
 producer/consumer interpreter-byte equality. Full-Core binding means even
@@ -15782,16 +16386,58 @@ partial log. This changes newly sealed capture argv identities; retained sealed
 requests and receipts remain immutable and can be recovered as sealed. No system
 tool, fleet runtime, active queue, placement or result-population policy changes.
 
-Core also owns the default sorted JSON byte profile used by retained-reader
-diagnostics and merge-queue duration hints (#1386). `_sorted_json_bytes` accepts
-the original JSON values, including list reports, with default spacing, ASCII
-escaping and nonfinite-number behavior and no trailing LF. `_sorted_lf_bytes`
+Core's attested `digest_primitives.py` half owns the default sorted JSON profile used by retained-reader
+diagnostics, resident command output and merge-queue duration hints (#1386, #1547).
+`sorted_json` returns the shared text spelling; `_sorted_json_bytes` encodes it with
+default spacing, ASCII escaping and the original nonfinite-number behavior,
+including list reports, and no trailing LF. `_sorted_lf_bytes`
 keeps its mapping conversion and appends one LF. The hint filename hashes those
 exact prior bytes through `raw_sha256`; canonical finite JSON is a different
 profile. Reader ownership, retained-child messages and scheduling hints keep
 their existing contracts. Exact reader facade/name distinctions are registered
 without growing the shrink-only maps; no runtime adoption or staged-read
 acceptance axis advances from this source repair.
+
+For the duplication-ratchet repair (#1547), `chunks_sha256` hashes ordered
+stream/manifest chunks without joining them or reopening the held stream.
+The recovery JSON diagnostics select `_sorted_json_bytes(..., allow_nan=False)`
+where their previous writer already refused nonfinite values; the default
+remains unchanged. Rollout qualification uses `_compact_ascii_lf_bytes` for
+its existing compact ASCII line spelling. Helper collision renames change no
+validation, identity or byte-integrity rule.
+Resident-set manifest IDs and durable records use `compact_ascii_json_bytes`:
+finite compact sorted JSON with ASCII escapes and no terminator, not the
+canonical UTF-8 profile. Record and lease writers append their original one LF.
+The same owner exposes `new_sha256` as the native SHA-256 constructor, not a
+wrapper. Local resident copying and hashing keep the held no-follow descriptors,
+regular-file checks, single 8 MiB read pass, byte counts and original fsync order.
+Purpose-specific resident helper names replace their colliding names at every
+caller; command flags, leases, capacity and atomic publication remain unchanged.
+The owner split is approved by CEO decisions `dec-1005-170450-5ec5` and
+`rep-1005-170658-9efc`: exactly two attested owner files, no third file or raw-site
+exemption. Core re-exports the identical helper and exception objects. pbtest's
+existing source loader binds the shipped half under the private shard-only
+`_prismabuild_pbtest_digest_primitives` name. Its helper-scoped import binding
+serves the target helpers without occupying `prismabuild.digest_primitives` in
+the package import table, so a later real package/core import loads and attests
+the on-disk owner. Package installation is not required by the target helpers.
+File hashing and diagnostic encoding use that same shipped source; pin and
+capability identity checks retain their previous behavior. Composing with #1549
+keeps `pbtest_pins.verify_install` and `verify_record_bytes` separate: the latter
+hashes RECORD bytes through the owner's `stream_digest` with the recorded
+SHA-256, SHA-384 or SHA-512 algorithm. Since #1548 it reads UTF-8 bytes from the
+owning PathDistribution metadata path before parsing raw CSV rows without
+newline conversion. The public read_text API loses quoted carriage returns,
+and Distribution.files hides missing entries and splits quoted lines. Missing
+or unreadable raw metadata refuses without falling back to normalized text.
+Quoted filename characters stay intact; malformed grammar (a hash-bearing
+empty filename, extra columns, a nonnumeric size, a blank row) refuses, and
+the size column is parsed, never compared. Thus
+a missing hashed entry refuses the same way as a
+digest mismatch, in both identity policies, and unhashed entries keep their
+previous treatment. Its old primitive baseline site is
+removed, not renamed. This is a source repair, not a claim that the new runtime
+has been deployed.
 
 
 Repeated failed merge candidates bind a separate negative identity (#1450):

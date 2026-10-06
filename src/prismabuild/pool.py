@@ -109,6 +109,7 @@ immediately. Execution deadlines and progress watches use local monotonic time.
 
 from __future__ import annotations
 
+from bisect import bisect_right
 from collections.abc import Callable, Container, Iterable, Iterator, Mapping, Sequence
 from typing import Any, NamedTuple, cast
 from contextlib import contextmanager, nullcontext, suppress
@@ -122,6 +123,7 @@ import hashlib
 import json
 import math
 import os
+import re
 from pathlib import Path
 import resource
 import select
@@ -148,6 +150,7 @@ from . import adaptive_cpu as cpu_admission
 from . import adaptive_gpu as gpu_admission
 from . import container_images as image_inventory
 from . import local_dependencies
+from . import dependency_digest
 from . import residency_map
 from . import storage_tiers
 from . import box_capacity
@@ -157,6 +160,7 @@ from . import posix_lock
 from . import window_credit
 from . import publication_canary
 from . import local_scratch
+from . import filesystem_floor
 
 POOL_ITEM_SCHEMA_V1 = "prismaquant.prismabuild.pool_item.v1"
 POOL_CLAIM_INTENT_SCHEMA_V1 = "prismaquant.prismabuild.pool_claim_intent.v1"
@@ -372,9 +376,11 @@ EXPORT_WAIT_LIVE_EVIDENCE = frozenset({
 #: written before #1085 may still carry it, which ``_mover_refusal`` reads as
 #: neutral.  ``deferred_behind_withheld_row`` is a row held back, unevaluated,
 #: behind an earlier row's GPU-kind withhold (#1085); it says why the row
-#: waited and is neither a refusal nor a withhold of its own.
+#: waited and is neither a refusal nor a withhold of its own. Likewise,
+#: ``deferred_for_ready_gpu`` leaves portable CPU work unevaluated (#1526).
 DENIAL_RING_EXEMPT_REASONS = frozenset({
-    "transition_busy", "placement_mismatch", "deferred_behind_withheld_row"})
+    "transition_busy", "placement_mismatch", "deferred_behind_withheld_row",
+    "deferred_for_ready_gpu"})
 
 #: Denials a claim pass files for a row it could not evaluate, for a
 #: transient reason that says nothing about whether this box can run the row
@@ -1271,6 +1277,51 @@ def normalize_priority_reason(value: object) -> str | None:
             "priority_reason must be nonblank, single-line printable text "
             "of at most 1024 characters")
     return value.strip()
+
+#: What a record says when no submission named the repository it tested: a
+#: row filed before the tag existed, or a row from a producer that stages or
+#: moves bytes rather than testing a checkout.  Explicit, never blank.
+TESTED_REPOSITORY_UNKNOWN = "unknown"
+#: A repository name is a directory basename, never prose: the bound is a
+#: name's, not an annotation's.
+TESTED_REPOSITORY_MAX_CHARS = 256
+
+
+def normalize_tested_repository(value: object) -> str | None:
+    """Validate an optional tested-repository tag, never an action parameter.
+
+    The tag rides the queue row beside the sealed action the way
+    ``priority_reason`` rides beside ``priority``: publication metadata with
+    no key, order or enforcement change.  ``None`` means the producer did not
+    name one and the row omits the field, which is how every row filed
+    before the tag stays byte-identical.
+    """
+    if value is None:
+        return None
+    if (not isinstance(value, str) or not value.strip()
+            or len(value.strip()) > TESTED_REPOSITORY_MAX_CHARS
+            or not value.strip().isprintable()):
+        raise PoolContractError(
+            "tested_repository must be nonblank, single-line printable text "
+            f"of at most {TESTED_REPOSITORY_MAX_CHARS} characters")
+    return value.strip()
+
+
+def tested_repository_of(record: object) -> str:
+    """The repository a queue row names itself testing, or ``"unknown"``.
+
+    Readers call this instead of reading the field, so a row that predates
+    the tag and a row whose producer tests no checkout both answer the same
+    explicit unknown rather than a blank.  Never raises: a status or record
+    reader must not fail closed over an annotation.
+    """
+    if isinstance(record, Mapping):
+        value = record.get("tested_repository")
+        if (isinstance(value, str) and value.strip()
+                and len(value.strip()) <= TESTED_REPOSITORY_MAX_CHARS
+                and value.strip().isprintable()):
+            return value.strip()
+    return TESTED_REPOSITORY_UNKNOWN
 
 
 class StaleAbsenceError(FileNotFoundError):
@@ -3466,8 +3517,20 @@ def _docker_owned_container_ids(owner: str) -> list[str]:
     return _docker_containers_with_label(CONTAINER_OWNER_LABEL, owner)
 
 
+_DOCKER_REMOVAL_IN_PROGRESS = re.compile(
+    r"Error response from daemon: removal of container ([0-9a-f]{12,64}) is already in progress")
+
+
 def _docker_remove_containers(container_ids: list[str]) -> list[str]:
-    """Force-remove exactly the container ids the ownership query returned."""
+    """Force-remove exactly the container ids the ownership query returned.
+
+    A daemon already removing one of those ids answers ``removal of container
+    <id> is already in progress`` and exits 1.  That is not a failure: the
+    caller's follow-up ownership query still lists the container, so cleanup
+    stays incomplete and the next sweep proves its absence (#1403, #1500).
+    Every other error line, or one naming an id this call did not ask for,
+    still raises.
+    """
 
     if not container_ids:
         return []
@@ -3479,9 +3542,16 @@ def _docker_remove_containers(container_ids: list[str]) -> list[str]:
         check=False,
     )
     if result.returncode != 0:
-        detail = (result.stderr or result.stdout).strip()
-        raise PoolContractError(
-            f"docker cleanup failed ({result.returncode}): {detail}")
+        errors = [line.strip() for line in result.stderr.splitlines() if line.strip()]
+        busy = [_DOCKER_REMOVAL_IN_PROGRESS.fullmatch(line) for line in errors]
+        if not errors or not all(
+                match is not None and any(
+                    cid and (match[1].startswith(cid) or cid.startswith(match[1]))
+                    for cid in container_ids)
+                for match in busy):
+            detail = (result.stderr or result.stdout).strip()
+            raise PoolContractError(
+                f"docker cleanup failed ({result.returncode}): {detail}")
     return sorted({line.strip() for line in result.stdout.splitlines() if line.strip()})
 
 
@@ -4657,8 +4727,50 @@ class ResourceLedger:
             counts[kind] = counts.get(kind, 0) + 1
         return counts
 
-    @_guarded_mutation(blocking=False)
     def begin_acquire(
+        self, action_key: str, demand: Mapping[str, int], *,
+        adaptive: dict | None = None, cpu_tiers: Mapping | None = None,
+        adaptive_gpu: dict | None = None,
+    ) -> str | None:
+        """Take the whole demand, after the used-filesystem floor allows it.
+
+        Byte kinds (``filesystem_floor.BYTE_KINDS``) bound to a filesystem
+        are checked against its floor (#1483).  The gate's mode and bindings
+        come from a per-process cache the loop tick refreshes outside every
+        lock; its floor locks are taken inside the mutation lock and are
+        innermost.  A refusal is a shortage: ``None``, with
+        ``last_token_shortage`` naming ``filesystem_floor``.  With the floor
+        mode ``off`` (the default) this is exactly the locked acquisition.
+        """
+
+        kwargs = {"adaptive": adaptive, "cpu_tiers": cpu_tiers,
+                  "adaptive_gpu": adaptive_gpu}
+        try:
+            gate = filesystem_floor.ledger_gate(self, demand)
+        except Exception as exc:                                 # noqa: BLE001
+            if filesystem_floor.mode(self.root.parent) != "enforce":
+                gate = None
+            else:
+                self.last_token_shortage = {
+                    "resource": "filesystem_floor", "requested": 0, "available": 0,
+                    "reason": "gate_unreadable", "detail": repr(exc)}
+                return None
+        if gate is None:
+            return self._begin_acquire_locked(action_key, demand, **kwargs)
+        with self._mutation_locked(blocking=False) as acquired:
+            if not acquired:
+                return None
+            with gate.admitted() as allowed:
+                if not allowed:
+                    self.last_token_shortage = gate.shortage()
+                    return None
+                handle = self._begin_acquire_locked(action_key, demand, **kwargs)
+                if handle is not None:
+                    gate.granted()
+                return handle
+
+    @_guarded_mutation(blocking=False)
+    def _begin_acquire_locked(
         self, action_key: str, demand: Mapping[str, int], *,
         adaptive: dict | None = None, cpu_tiers: Mapping | None = None,
         adaptive_gpu: dict | None = None,
@@ -5697,6 +5809,8 @@ class PoolQueue:
         interpreters: Sequence[str] | None = None,
         interpreters_absent: Sequence[str] | None = None,
         local_dependency_answers: Mapping[str, str] | None = None,
+        dependency_files: Sequence[str] | None = None,
+        dependency_files_absent: Sequence[str] | None = None,
         state: str | None = None,
         drain_owner: str | None = None,
         drain_reason: str | None = None,
@@ -5857,6 +5971,16 @@ class PoolQueue:
                 {str(p) for p in interpreters_absent})
         if local_dependency_answers is not None:
             record["local_dependencies"] = dict(local_dependency_answers)
+        if dependency_files is not None:
+            # The digest-contract answers (#1495): the requirement paths this
+            # poll's ready rows name, statted on this box.  Present-and-empty
+            # is an answer; a field absent entirely is an older loop, which
+            # is unknown and therefore not capable.
+            record["dependency_files"] = sorted(
+                {str(p) for p in dependency_files})
+        if dependency_files_absent is not None:
+            record["dependency_files_absent"] = sorted(
+                {str(p) for p in dependency_files_absent})
         if state is not None:
             record["state"] = str(state)
         if drain_owner is not None:
@@ -5955,6 +6079,15 @@ class PoolQueue:
             dependencies = local_dependencies.normalize(item.get("local_dependencies", {}))
         except ValueError as exc:
             raise PoolContractError(str(exc)) from exc
+        declared_requirements = item.get("requires_files")
+        if declared_requirements is not None and (
+                not isinstance(declared_requirements, list) or any(
+                    not isinstance(entry, dict)
+                    or not isinstance(entry.get("path"), str)
+                    for entry in declared_requirements)):
+            raise PoolContractError(
+                "pool item requires_files must be a list of entries "
+                "naming a path")
         demand = self.demand_of(item)
         needs_gpu = bool(item.get("needs_gpu")) or demand.get("gpu", 0) > 0
         matches: list[Mapping[str, object]] = []
@@ -5989,6 +6122,16 @@ class PoolQueue:
                     continue
             if local_dependencies.missing(dependencies, offer.get("local_dependencies")):
                 continue
+            if declared_requirements:
+                # The same positive-evidence rule for digest-pinned
+                # dependencies (#1495): an offer that has not answered for a
+                # required path is unknown, and unknown is not capable.
+                answered = offer.get("dependency_files")
+                if not isinstance(answered, list) or any(
+                        str(entry.get("path")) not in {
+                            str(path) for path in answered}
+                        for entry in declared_requirements):
+                    continue
             capacity = offer.get("capacity") or {}
             # A kind the offer does not MENTION is unknown, not zero.  The
             # difference is what a publish looks like from the queue: capacity
@@ -6079,6 +6222,49 @@ class PoolQueue:
                 # absent beside a silent box is unknown (#1266 review r2).
                 unanimous_absent = False
         return "absent" if unanimous_absent else "unknown"
+
+    def dependency_placement_verdict(
+            self, item: Mapping[str, object], *,
+            max_age_s: float = OFFER_TIMEOUT_S,
+    ) -> str:
+        """Whether a row's digest-pinned dependencies are answered anywhere.
+
+        The requirement shape of ``interpreter_placement_verdict`` for
+        digest-pinned dependencies (#1495): asked over the offers that could
+        run ``item`` otherwise (tags, GPU, images, demand, interpreter) and
+        carry ``DEPENDENCY_DIGEST_TAG``.  ``"unknown_capability"`` -- no
+        recorded offer carries the tag at all, which for this contract is a
+        refusal, not a notice: a fleet that cannot see the requirement will
+        never claim the row, and unlike a first *path* submission there is no
+        first use that has to publish.  ``"present"`` wins anywhere;
+        ``"absent"`` is a unanimous answer naming the paths missing; anything
+        else is ``"unknown_paths"`` -- a capable box has not answered for the
+        path yet, the first-submission case the claim gate guards (#1266).
+        """
+
+        eligible = self._matching_offers(
+            {name: value for name, value in item.items()
+             if name != "requires_files"},
+            live=self.offers(max_age_s=max_age_s))
+        capable = [
+            offer for offer in eligible
+            if dependency_digest.DEPENDENCY_DIGEST_TAG in {
+                str(t) for t in (offer.get("tags") or [])}]
+        if not capable:
+            return "unknown_capability"
+        requirements = item.get("requires_files") or []
+        paths = {str(entry.get("path")) for entry in requirements}
+        unanimous_absent = True
+        for offer in capable:
+            answers = offer.get("dependency_files")
+            if isinstance(answers, list) and paths <= {
+                    str(entry) for entry in answers}:
+                return "present"
+            missing = offer.get("dependency_files_absent")
+            if not (isinstance(missing, list) and paths <= {
+                    str(entry) for entry in missing}):
+                unanimous_absent = False
+        return "absent" if unanimous_absent else "unknown_paths"
 
     def placeable(
         self, item: Mapping[str, object], *, max_age_s: float = OFFER_TIMEOUT_S
@@ -6366,6 +6552,7 @@ class PoolQueue:
         interpreter: str | None = None,
         local_dependencies: Mapping[str, str] | None = None,
         dependency_queries: Mapping[str, str] | None = None,
+        requires_files: Sequence[Mapping[str, object]] | None = None,
         preempted_claim: Mapping[str, object] | None = None,
         handoff_by: str | None = None,
         residency: Mapping[str, object] | None = None,
@@ -6375,6 +6562,9 @@ class PoolQueue:
         recompute: bool = False,
         refuse_withdrawn: bool = False,
         refuse_if_live: bool = False,
+        gang: Mapping[str, object] | None = None,
+        resident_set: str | None = None,
+        tested_repository: str | None = None,
     ) -> Path:
         """Enqueue one sealed action.  The action itself already lives in the CAS.
 
@@ -6420,10 +6610,17 @@ class PoolQueue:
         atomic (#810).  A live cancellation still wins: the marker means the
         submission was asked for as a replacement, so the check is skipped and
         the ordinary supersession runs.
+
+        ``tested_repository`` names the repository the submission sealed,
+        for test-cost accounting (#1565).  Optional publication metadata
+        beside the action, like ``priority_reason`` beside ``priority``:
+        no key, order or enforcement change, and absent the item is
+        byte-identical to what it was before the field existed.
         """
 
         self._refuse_if_fenced()
         reason = normalize_priority_reason(priority_reason)
+        repository = normalize_tested_repository(tested_repository)
         if not isinstance(action_key, str) or len(action_key) != 64:
             raise PoolContractError("action_key must be a 64-character digest")
         image_refs: list[str] = []
@@ -6461,12 +6658,41 @@ class PoolQueue:
             queries = dependency_contract.normalize(dependency_queries or {})
         except ValueError as exc:
             raise PoolContractError(str(exc)) from exc
+        declared_requirements: list[dict] | None = None
+        if requires_files is not None:
+            # Validated here for the same reason the interpreter is: the row
+            # projection must already be the shape the claim gate reads, so a
+            # direct producer cannot publish a requirement the claim would
+            # have to treat as malformed (#1495).
+            try:
+                declared_requirements = (
+                    dependency_digest.validate_requirements(requires_files))
+            except ValueError as exc:
+                raise PoolContractError(f"requires_files: {exc}") from exc
         # Every declaration check is a precondition, ahead of the first side
         # effect below: a publication this method refuses must not have
         # retired a live withdrawal, created a directory or answered an
         # adoption on its way to refusing (#714 review, #708's cancellation
         # contract).
         normalized_tags = normalize_placement_tags(tags)
+        from . import _gang
+        try:
+            declared_gang = _gang.declaration(gang)
+        except _gang.GangContractError as exc:
+            raise PoolContractError(str(exc)) from exc
+        if declared_gang is not None:
+            # Default off (#1517): only a box offering the gang capability
+            # places a member, so an old or disabled worker never claims one.
+            normalized_tags = normalize_placement_tags([*normalized_tags, _gang.TAG])
+            # A retried or preempted member would start alone beside siblings
+            # already running: a gang member gets exactly one attempt, and an
+            # unsuccessful one ends the whole gang.
+            if max_attempts != 1 or retry_safe:
+                raise PoolContractError("a gang member must have max_attempts=1 and not be retry_safe")
+            if not any(int(value) > 0 for value in (resources or {}).values()):
+                raise PoolContractError("a gang member must declare a resource demand")
+        elif _gang.TAG in normalized_tags:
+            raise PoolContractError(f"{_gang.TAG} requires a gang declaration")
         if declared_interpreter is not None:
             # The capability tag rides the requirement (the #714 shape): a
             # loop from before the field does not offer it, so an old worker
@@ -6483,6 +6709,18 @@ class PoolQueue:
                 [*normalized_tags, dependency_contract.TAG])
         elif dependency_contract.TAG in normalized_tags:
             raise PoolContractError(f"{dependency_contract.TAG} requires local_dependencies")
+        if declared_requirements is not None:
+            # The same ride (#714 shape): a loop from before this contract
+            # offers neither the tag nor the claim check, so a row whose
+            # dependencies it cannot see must be unclaimable by it, not
+            # merely risky to hand it (#1495).
+            normalized_tags = normalize_placement_tags(
+                [*normalized_tags, dependency_digest.DEPENDENCY_DIGEST_TAG])
+        elif dependency_digest.DEPENDENCY_DIGEST_TAG in normalized_tags:
+            raise PoolContractError(
+                f"{dependency_digest.DEPENDENCY_DIGEST_TAG} requires "
+                "requires_files; an item may not require the "
+                "dependency-digest capability without naming any")
         if image_refs:
             # The capability the claim check rides must travel with the
             # requirement, never be forgotten by a producer: a box that does
@@ -6874,6 +7112,9 @@ class PoolQueue:
         if reason is not None:
             # Optional publication metadata: no key, order or enforcement change.
             item["priority_reason"] = reason
+        if repository is not None:
+            # Optional publication metadata: no key, order or enforcement change.
+            item["tested_repository"] = repository
         if canary_ref is not None:
             item["publication_canary"] = canary_ref
         if residency_block is not None:
@@ -6891,6 +7132,9 @@ class PoolQueue:
             if not cpu_admission._is_key(dependent_of):
                 raise PoolContractError("dependent_of must be a 64-hex action key")
             item["dependent_of"] = dependent_of
+        if declared_gang is not None:
+            # A hint checked against the sealed ``params.gang`` at claim.
+            item["gang"] = declared_gang
         if recompute:
             # A movement node.  Its key is a content hash and its receipt is
             # filed in the CAS like any other, so a republish of the same key
@@ -6915,6 +7159,14 @@ class PoolQueue:
             item["local_dependencies"] = dependencies
         if queries:
             item["dependency_queries"] = queries
+        if resident_set is not None:
+            from . import resident_sets
+            item["resident_set"] = resident_sets._set_id(resident_set)
+        if declared_requirements is not None:
+            # The claim-relevant projection of the sealed params (#1495):
+            # what a claim gate reads, no more -- the full capability
+            # selection travels in the action's own command.
+            item["requires_files"] = declared_requirements
         if superseded is not None:
             item["supersedes_withdrawal"] = {
                 "published_unix": superseded.get("published_unix"),
@@ -6954,6 +7206,7 @@ class PoolQueue:
     #: is claimed by nobody and holds no tokens, so none of it may survive a
     #: requeue.  ``passes`` belongs to the aging sidecar, not to the item.
     _CLAIM_SCOPED_FIELDS = (
+        "gang_backfill", "gang_backfill_release", "gang_backfill_preemption",
         "claimed_by", "claimed_unix", "claimed_host", "reserved_on", "passes", "gpu_admission",
         "cpu_allocation", "tier_reservations", "tier_funding", "residency_verdict",
         "container_cleanup_pending", "container_cleanup_checked_unix",
@@ -9360,7 +9613,10 @@ class PoolQueue:
         retired or malformed, an election is kept. Unreadable or foreign
         records are kept. Losing a counter only restarts that key's aging,
         exactly as a successful claim already does. At most ``limit``
-        concluded sidecars are inspected per call; failures are per row.
+        concluded sidecars are inspected per call; failures are per row. The
+        existing host-local sweep marker retains the last inspected name, so
+        each call resumes strictly after it and wraps once. Kept and busy rows
+        advance the cursor too; no unknown authority is skipped by the census.
         """
 
         from . import _measurement_reservation as measurement_reservation
@@ -9370,36 +9626,138 @@ class PoolQueue:
                 names = sorted(entry.name for entry in entries)
         except OSError:
             return pruned
+        if not names or limit <= 0:
+            return pruned
+
+        # The existing host-local sweep marker owns both the heartbeat and
+        # this cursor. Its bytes survive loop/process replacement; no second
+        # ledger or per-process cache decides which prefix to revisit.
+        descriptor = None
+        cursor = ""
+        cursor_bytes = 64 + len(".json")
+        try:
+            descriptor = os.open(self._sweep_marker(),
+                                 os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW
+                                 | os.O_NONBLOCK | os.O_CLOEXEC, 0o600)
+            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                raise OSError("sweep marker is not a regular file")
+            cursor = os.pread(descriptor, cursor_bytes + 1, 0).decode("ascii", errors="replace")
+            if not cursor.endswith(".json") or not _is_hex64(cursor[:-len(".json")]):
+                cursor = ""  # absent/legacy/malformed bookkeeping is no authority
+        except Exception:                                        # noqa: BLE001
+            # Like _sweep_due, unavailable local state never disables cleanup.
+            if descriptor is not None:
+                os.close(descriptor)
+                descriptor = None
+        start = bisect_right(names, cursor)
         inspected = 0
-        for name in names:
-            if inspected >= limit:
-                break
-            key = name[: -len(".json")]
-            if not name.endswith(".json") or not _is_hex64(key):
-                continue
-            path = self.passes_path(key)
-            try:
-                if (self.item_path(READY, key).exists()
-                        or self.item_path(CLAIMED, key).exists()):
+        after = None
+        try:
+            for offset in range(len(names)):
+                if inspected >= limit:
+                    break
+                name = names[(start + offset) % len(names)]
+                key = name[: -len(".json")]
+                if not name.endswith(".json") or not _is_hex64(key):
                     continue
-                if not any(self.item_path(state, key).exists()
-                           for state in (DONE, FAILED, WITHDRAWN)):
-                    continue
-                inspected += 1
-                with self._transition_locked(key, blocking=False) as acquired:
-                    if not acquired:
-                        continue
+                path = self.passes_path(key)
+                try:
                     if (self.item_path(READY, key).exists()
                             or self.item_path(CLAIMED, key).exists()):
                         continue
-                    record = _read_json(path)
-                    if (record is None or record.get("action_key") != key
-                            or measurement_reservation.FIELD in record):
+                    if not any(self.item_path(state, key).exists()
+                               for state in (DONE, FAILED, WITHDRAWN)):
                         continue
-                    path.unlink()
-            except (OSError, PoolContractError):
+                    inspected += 1
+                    after = name  # kept, unreadable and busy rows still advance
+                    with self._transition_locked(key, blocking=False) as acquired:
+                        if not acquired:
+                            continue
+                        if (self.item_path(READY, key).exists()
+                                or self.item_path(CLAIMED, key).exists()):
+                            continue
+                        record = _read_json(path)
+                        if (record is None or record.get("action_key") != key
+                                or measurement_reservation.FIELD in record):
+                            continue
+                        path.unlink()
+                except (OSError, PoolContractError):
+                    continue
+                pruned.append(key)
+        finally:
+            if descriptor is not None:
+                try:
+                    if after is not None:
+                        # Cursor progress must not postpone/expire the heartbeat.
+                        stamp = os.fstat(descriptor)
+                        os.pwrite(descriptor, after.encode("ascii"), 0)
+                        os.ftruncate(descriptor, cursor_bytes)
+                        os.utime(descriptor, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+                except OSError:
+                    pass
+                finally:
+                    os.close(descriptor)
+        return pruned
+
+    def sweep_gangs(self, *, limit: int = ORPHAN_PASSES_SWEEP_LIMIT) -> list[str]:
+        """Finish torn-down gangs and prune ended ones (#1517).
+
+        Runs on the orphan-passes schedule. A torn-down gang's members still
+        READY are withdrawn here (a claim pass that found the teardown could
+        not withdraw the row whose lock it held). A gang whose every member
+        has an exact ending -- none READY or CLAIMED -- loses its record and
+        state, so the census never reads a dead gang. A gang with a live or
+        unaccounted member is kept; failures are per gang.
+        """
+        from . import _gang
+        pruned: list[str] = []
+        try:
+            with os.scandir(_gang.root(self)) as entries:
+                names = sorted(entry.name for entry in entries
+                               if entry.name.endswith(".json") and not entry.name.startswith("."))
+        except OSError:
+            return pruned
+        for name in names[:limit]:
+            group = name[: -len(".json")]
+            try:
+                record = _gang.read_group(self, group)
+                if record is None:
+                    continue
+                keys = [str(member["action_key"]) for member in record["members"]]
+                torn = _gang.teardown(self, group)
+                if torn is None:
+                    # Every terminal path, including the reaper failing a
+                    # member whose lease was lost, ends the gang here: a
+                    # sibling already running is withdrawn (#1519 review).
+                    ended = {index: state for index, state in _gang.member_states(self, record).items()
+                             if state in _gang.UNSUCCESSFUL}
+                    if ended:
+                        index = min(ended)
+                        member = record["members"][index]
+                        self._gang_teardown(
+                            {"gang": {"group": group, "size": record["size"], "index": index}},
+                            by=str(member["action_key"]),
+                            reason=f"member {str(member['action_key'])[:12]} ended {ended[index]}")
+                        torn = _gang.teardown(self, group)
+                if torn is not None:
+                    for key in keys:
+                        if self.item_path(READY, key).exists():
+                            try:
+                                self.withdraw(key, reason=f"gang teardown: {torn.get('reason')}",
+                                              by=f"gang:{group}")
+                            except (PoolContractError, OSError, pb.PrismaBuildError):
+                                continue
+                if any(self.item_path(READY, key).exists() or self.item_path(CLAIMED, key).exists()
+                       for key in keys):
+                    continue
+                if not all(any(self.item_path(state, key).exists()
+                               for state in (DONE, FAILED, WITHDRAWN)) for key in keys):
+                    continue
+                shutil.rmtree(_gang.state_dir(self, group), ignore_errors=True)
+                _gang.group_path(self, group).unlink(missing_ok=True)
+            except (_gang.GangContractError, OSError, PoolContractError, pb.PrismaBuildError):
                 continue
-            pruned.append(key)
+            pruned.append(group)
         return pruned
 
     def sweep_consumer_events(
@@ -19152,11 +19510,12 @@ class PoolQueue:
         This is a placement rule, not the bounded preference above, and it
         has no timer: it ends on evidence.  The row is claimed here as before
         once every such host has refused it, filled up, gone stale or
-        disappeared, so CPU-only work still overflows onto the GPU hosts when
-        the CPU host cannot take it.  A host without a GPU never yields, so
-        two hosts cannot wait on each other.  A row whose tags exclude every
-        host without a GPU (aarch64-only work tagged ``gb10``) has no such
-        host to wait for and is claimed here, spread across the GPU hosts by
+        disappeared. CPU-only work still overflows onto GPU hosts when the CPU
+        host cannot take it, subject to #1526's eligible-READY-GPU rule above
+        this preference. A host without a GPU never yields, so two hosts cannot
+        wait on each other. A row whose tags exclude every host without a GPU
+        (aarch64-only work tagged ``gb10``) has no CPU host to wait for and is
+        spread across GPU hosts, subject to the same READY-GPU rule, by
         their own claims.
         """
 
@@ -19192,6 +19551,96 @@ class PoolQueue:
                     observed[kind] = int(observed[kind]) - int(need)         # type: ignore[index]
             view["free_preferred"] = int(view["free_preferred"]) - int(demand.get("cpu", 0))  # type: ignore[call-overload]
             return evidence
+        return None
+
+    @staticmethod
+    def _ready_gpu_refused_here(
+        item: Mapping[str, object], records: Mapping[str, object], *, host: str,
+    ) -> bool:
+        """This publication/attempt's latest refusal no pool drain clears (#1526)."""
+        published = item.get("published_unix")
+        if type(published) not in (int, float) or not math.isfinite(published):
+            return False
+        key = str(item.get("action_key", ""))
+        record = records.get(f"{key}:{float(published)!r}")
+        if (not isinstance(record, Mapping) or record.get("host") != host
+                or record.get("action_key") != key
+                or record.get("published_unix") != published
+                or record.get("attempts", 0) != item.get("attempts", 0)):
+            return False
+        reason, evidence = record.get("reason"), record.get("evidence")
+        if not isinstance(evidence, Mapping):
+            return False
+        if reason == "gang_member_elected_elsewhere":
+            return True
+        for name in ("withhold", "starved"):
+            verdict = evidence.get(name)
+            if (isinstance(verdict, Mapping)
+                    and verdict.get("why") == "measurement_reserved_on_other_host"):
+                return True
+        source = next((base for base in ("adaptive_gpu_refused", "adaptive_cpu_refused")
+                       if reason in (base, base + "_withholding",
+                                     base + "_starved", base + "_past_ceiling")), None)
+        decision = evidence.get("decision")
+        if (source is None or not isinstance(decision, Mapping)
+                or not isinstance(decision.get("reason"), str)
+                or not decision["reason"]):
+            return False
+        # The refusal path owns the drain classification; do not restate it.
+        if evidence.get("drain_resolves") is False:
+            return True
+        # These existing verdicts also remain usable before the first pass
+        # publishes the explicit drain fact. Unknown verdicts keep protection.
+        return source == "adaptive_gpu_refused" and (
+            bool(decision.get("foreign_processes"))
+            or decision["reason"] in ("sample_invalid_or_stale",
+                                       "gpu_memory_sample_invalid"))
+
+    def _ready_gpu_for_host(
+        self, ready: Sequence[Mapping[str, object]], *, tags: frozenset[str],
+        has_gpu: bool, total: Mapping[str, int], gpu_controller: object | None,
+        offers: Callable[[], Sequence[Mapping[str, object]]],
+        observed_images: Container[str] | None,
+        verdicts: Callable[[], Mapping[str, object]],
+    ) -> Mapping[str, object] | None:
+        """The first READY GPU row eligible for this host's capacity (#1526).
+
+        Read the existing snapshot, never census or transition locks. Eligibility
+        is placement and total host reservation capacity, not free tokens: CPU
+        overflow must not keep refilling a host while eligible GPU work waits.
+        Ordinary GPU admission still decides whether the row can claim now.
+        """
+        if not has_gpu or total.get("gpu", 0) < 1:
+            return None
+        local: Mapping[str, object] | None = None
+        for item in ready:
+            try:
+                if not self._placement_matches(item, tags=tags, has_gpu=has_gpu):
+                    continue
+                host_demand, _tiers = storage_tiers.split_demand(self.demand_of(item))
+                if not host_demand.get("gpu"):
+                    continue
+                reservation = self._reservation_demand(
+                    host_demand, gpu_controller=gpu_controller)
+                if not self._room_fits(total, reservation):
+                    continue
+                if local is None:
+                    host = socket.gethostname()
+                    local = {
+                        **next((offer for offer in offers()
+                                if offer.get("host") == host), {}),
+                        "tags": tags, "has_gpu": has_gpu, "capacity": total,
+                        "container_images": (list(observed_images)
+                                             if observed_images is not None else None),
+                    }
+                # Reuse the placement owner's interpreter, image and dependency
+                # capability checks; a GPU row this host cannot run is no veto.
+                if (self._matching_offers({**item, "resources": reservation}, live=[local])
+                        and not self._ready_gpu_refused_here(
+                            item, verdicts(), host=socket.gethostname())):
+                    return item
+            except (TypeError, ValueError):
+                continue  # an unplaceable or malformed GPU row cannot starve CPU work
         return None
 
     def claim(
@@ -19487,7 +19936,12 @@ class PoolQueue:
             **addressing,
         }
         for field in ("max_attempts", "retry_safe", "container_owner",
-                      "container_images", "interpreter", "local_dependencies", "dependency_queries"):
+                      "container_images", "interpreter", "local_dependencies",
+                      "dependency_queries", "tested_repository"):
+            # ``tested_repository`` rides along because a requeue tests the
+            # same sealed tree again: a new generation, not a new repository.
+            # Absent stays absent, so rows from producers that never named one
+            # re-enter exactly as they published.
             if record.get(field) is not None:
                 arguments[field] = record[field]
         residency = record.get("residency")
@@ -19536,6 +19990,45 @@ class PoolQueue:
         arguments.pop("preempted_claim", None)
         return {"arguments": arguments, "snapshot": snapshot}
 
+    def _preempt_gang_backfill(self, ledger, record, entry, *, controller=None):
+        """Request reclamation BEFORE capacity gates; never credit future releases."""
+        from . import _gang
+        here = ledger.base.name
+        mine = _gang.elections(self, record["group"], record["size"]).get(entry["index"])
+        if mine is None or mine["host"] != here:
+            return []
+        # Timing observation must not become a correctness or identity gate.
+        with suppress(OSError, ValueError, pb.PrismaBuildError):
+            _gang.observe_backfill_releases(self, mine)
+        holders = _gang.backfill_holders(self, mine)
+        def pending():
+            return [key for key, holder in _gang.backfill_holders(self, mine).items()
+                    if self.withdrawal_covers(holder, action_key=key) is not None]
+        if not holders or not (_gang.backfill_reclaiming(self, record)
+                or _gang.sibling_readiness(
+                    self, record, entry, here, _now(), reclaimable=True)["complete"]):
+            return pending()
+        with self._preemption_locked(ledger) as acquired:
+            if not acquired:
+                return pending()
+            proofs = self._preemption_eligibility_proofs(ledger, action_key=entry["action_key"])
+            selected = None
+            with self._admission_lock(controller):
+                for key, holder in sorted(_gang.backfill_holders(self, mine).items()):
+                    proof = proofs.get(key)
+                    if (proof is not None and proof[2] and _same_claim(holder, proof[0])
+                            and self._preemption_proof_binding(holder) == proof[1]
+                            and self.withdrawal_covers(holder, action_key=key) is None
+                            and holder.get("finish_pending") is None
+                            and holder.get("container_cleanup_pending") is None):
+                        selected = key, holder
+                        break
+            if selected is not None:
+                if _gang.begin_backfill_reclaim(self, mine):
+                    self._preempt_selected_holder(*selected, action_key=entry["action_key"],
+                                                  gang_election=mine)
+        return pending()
+
     def _preempt_background_holder(
         self,
         ledger: ResourceLedger,
@@ -19544,6 +20037,7 @@ class PoolQueue:
         demand: Mapping[str, int],
         priority: int,
         controller: cpu_admission.Controller | None = None,
+        exclude_gang_election: Mapping[str, object] | None = None,
     ) -> str | None:
         """Take the box back for a denied foreground item.  Name who yielded.
 
@@ -19610,7 +20104,8 @@ class PoolQueue:
                 ledger, action_key=action_key)
             with self._admission_lock(controller):
                 selected = self._select_background_holder(
-                    ledger, action_key=action_key, wanted=wanted, proofs=proofs)
+                    ledger, action_key=action_key, wanted=wanted, proofs=proofs,
+                    exclude_gang_election=exclude_gang_election)
             if selected is None:
                 return None
             holder, record = selected
@@ -19717,6 +20212,7 @@ class PoolQueue:
         self, ledger: ResourceLedger, *, action_key: str,
         wanted: Mapping[str, int],
         proofs: Mapping[str, tuple[Mapping[str, object], bytes, bool]] | None = None,
+        exclude_gang_election: Mapping[str, object] | None = None,
     ) -> tuple[str, dict[str, object]] | None:
         """Read the current gap and pending releases under host admission.
 
@@ -19759,6 +20255,10 @@ class PoolQueue:
                 for kind, count in tokens.items():
                     pending[kind] = pending.get(kind, 0) + count
                 continue
+            if exclude_gang_election is not None:
+                from . import _gang
+                if _gang.backfill_matches(record, exclude_gang_election):
+                    continue
             try:
                 holder_priority = int(record.get("priority", 0))
                 claimed_unix = float(record.get("claimed_unix") or 0.0)
@@ -19794,6 +20294,7 @@ class PoolQueue:
 
     def _preempt_selected_holder(
         self, holder: str, record: Mapping[str, object], *, action_key: str,
+        gang_election: Mapping[str, object] | None = None,
     ) -> str | None:
         """Complete one handoff outside admission, rechecking exact ownership."""
         # Keep cancellation and replacement publication in one transition.
@@ -19816,6 +20317,12 @@ class PoolQueue:
                     by=f"prismabuild admission on {socket.gethostname()}",
                     preempted_by=action_key,
                     expected_claim=record,
+                    **({"gang_backfill_preemption": {
+                        "election": dict(gang_election), "holder": holder,
+                        "published_unix": record["published_unix"],
+                        "generation": self.attempt_generation(record),
+                        "requested_unix": _now(), "tokens_returned_unix": None,
+                    }} if gang_election is not None else {}),
                 )
             except PoolContractError:
                 # The holder concluded, or its reservations contradict each other,
@@ -19940,8 +20447,10 @@ class PoolQueue:
         could never fit is skipped, because withholding a box for work that
         will never run there is the deadlock, not the fix.  An item refused
         because the pool's own GPU holders are on the device withholds only
-        the rows behind it that demand a GPU, and CPU-only rows still fill the
-        box (#1085, :data:`DRAIN_GPU_HOLDERS`).  A row this pass cannot
+        the rows behind it that demand a GPU (#1085, :data:`DRAIN_GPU_HOLDERS`).
+        CPU-only rows still require placement admission: on a GPU host #1526
+        leaves portable rows READY while eligible GPU work waits; hostname-pinned
+        rows remain exempt. A row this pass cannot
         evaluate for a transient reason -- its transition lock held by another
         loop, an unknown image inventory, an unreadable residency lead record
         (:data:`WITHHOLD_CARRYING_REASONS`, #1143) -- keeps the withhold this
@@ -20055,6 +20564,23 @@ class PoolQueue:
         ready = publication_canary.promote(
             self.root, ready, eligible=lambda item: self._placement_matches(
                 item, tags=tagset, has_gpu=has_gpu))
+        # Shared with carried-withhold reads below: one existing, lock-free
+        # host denial snapshot per pass, taken only when a reader needs it.
+        host_verdicts: Mapping[str, object] | None = None
+
+        def verdict_snapshot() -> Mapping[str, object]:
+            nonlocal host_verdicts
+            if host_verdicts is None:
+                host_verdicts = self._host_denial_records()
+            return host_verdicts
+
+        # Protect GPU capacity even across priority bands and when a CPU row
+        # fits beside it. This is a placement rule, not #1169's scan ordering.
+        ready_gpu = self._ready_gpu_for_host(
+            ready, tags=tagset, has_gpu=has_gpu, total=total,
+            gpu_controller=gpu_controller, offers=offer_snapshot,
+            observed_images=observed_images, verdicts=verdict_snapshot)
+        host = socket.gethostname()
         #: The rooms of those rows this pass could not evaluate because another
         #: loop held their transition lock (#1169, :meth:`_ready_gpu_row_room`).
         #: A row behind one that demands no GPU is admitted only beside them.
@@ -20071,9 +20597,10 @@ class PoolQueue:
         #: ``None`` for every row, which is what every withhold but a GPU
         #: refusal's does.
         withheld_kinds: frozenset[str] | None = None
-        #: This host's latest verdicts, read once, at the pass's first row it
-        #: could not evaluate (#1085, #1143).
-        host_verdicts: Mapping[str, object] | None = None
+        #: The rows among them withholding as a waiting measurement (#1419).
+        #: Their wait ends when this host's incumbents finish, so it never
+        #: holds back work an incumbent itself depends on.
+        measurement_withholds: set[str] = set()
         #: Whether a row this pass already withheld the whole box for (#1230
         #: review): ``carry_withhold``'s None then means "held elsewhere in
         #: this pass", not "no live carry", and the busy-row room must not
@@ -20097,14 +20624,12 @@ class PoolQueue:
             # as ``withhold_carried`` in its denial, so the next such pass
             # reads the same start.  Read before that denial overwrites the
             # host's record.
-            nonlocal host_verdicts, whole_box_held
+            nonlocal whole_box_held
             if withheld_for is not None and withheld_kinds is None:
                 whole_box_held = True
                 return None                 # the whole box is held already
-            if host_verdicts is None:
-                host_verdicts = self._host_denial_records()
             carried = self._carried_withhold(
-                host_verdicts, item, host=socket.gethostname(), now=_now())
+                verdict_snapshot(), item, host=socket.gethostname(), now=_now())
             if carried is not None:
                 withhold(key, WITHHOLD_KINDS.get(str(carried["mode"])))
             return carried
@@ -20169,6 +20694,19 @@ class PoolQueue:
         #: a dead hint still pays for the full proof under the key's lock.
         dead_input_hints: dict[str, tuple[str, dict[str, object] | None]] = {}
         interpreter_cache: dict[str, bool] = {}
+        #: Digest-pinned dependency answers, one stat and one hash per
+        #: distinct path per pass (#1495), the interpreter_cache shape: the
+        #: claim gate reads the actual bytes once, whatever passes over it.
+        requirement_present_cache: dict[str, bool] = {}
+        requirement_digest_cache: dict[str, str | None] = {}
+        #: The census is not read about a candidate, so a refusal of it
+        #: (the reader fence busy, a record unreadable) is the same answer for
+        #: every later candidate of this pass: take it once (#1571).  Each
+        #: candidate otherwise waited out ``FENCE_WAIT_S`` for the fence again,
+        #: ten loops hammered the one fence, and 80 dependents of a running
+        #: measurement stayed READY behind 'reader busy'.  Refusing never
+        #: authorizes anything; the next pass takes the fence afresh.
+        census_refusal: dict[str, object] | None = None
         for item in ready:
             key = str(item.get("action_key", ""))
             held_back = withheld_for is not None and (
@@ -20194,6 +20732,19 @@ class PoolQueue:
                 self.record_denial(item, "placement_mismatch", {
                     "worker_tags": sorted(tagset), "worker_has_gpu": has_gpu,
                     "required_tags": item.get("tags"), "needs_gpu": item.get("needs_gpu"),
+                })
+                continue
+            if (ready_gpu is not None and key not in released
+                    and host not in (item.get("tags") or [])
+                    and not item.get("needs_gpu")
+                    and not self._demands_withheld_kind(item, frozenset({"gpu"}))):
+                # Before this row's transition lock: no new locks, passes,
+                # reservations or timeout escape. Hostname tags also encode
+                # --here, so explicitly pinned CPU work keeps its priority.
+                self.record_denial(item, "deferred_for_ready_gpu", {
+                    "gpu_row": ready_gpu.get("action_key"),
+                    "gpu_published_unix": ready_gpu.get("published_unix"),
+                    "capacity_total": total,
                 })
                 continue
             if held_back and not producer:
@@ -20367,8 +20918,65 @@ class PoolQueue:
                     self.record_denial(item, "local_dependency_not_present",
                                        {"paths": missing_dependencies})
                     continue
-                declared_images = item.get("container_images")
+                declared_requirements = item.get("requires_files")
                 item_tags = item.get("tags")
+                if (not declared_requirements and isinstance(item_tags, list)
+                        and dependency_digest.DEPENDENCY_DIGEST_TAG
+                        in item_tags):
+                    # A record this pool did not write (publish refuses the
+                    # pair) that requires the capability but states no
+                    # requirement.  Fail closed: an unstated requirement is
+                    # not an absent one.
+                    self.record_denial(item, "dependency_requirement_missing", {
+                        "tags": item_tags,
+                    })
+                    continue
+                if declared_requirements is not None:
+                    # The claim gate for digest-pinned dependencies (#1495):
+                    # one stat then one hash per distinct path per pass, so
+                    # the bytes a row pins are read before the attempt is
+                    # spent, on the box about to spend it.  The observation
+                    # is the owner module's, the same one the shard's own
+                    # preflight runs -- the claim and the preflight cannot
+                    # disagree about what a drift is.  Nothing here imports
+                    # or executes the pinned bytes.
+                    try:
+                        dependency_digest.validate_requirements(
+                            declared_requirements)
+                    except ValueError as exc:
+                        self.record_denial(item, "malformed_requires_files", {
+                            "error": str(exc)})
+                        continue
+                    paths = [str(entry["path"])
+                             for entry in declared_requirements]
+                    missing = [path for path in paths if not
+                               requirement_present_cache.setdefault(
+                                   path, os.path.isfile(path))]
+                    if missing:
+                        self.record_denial(item, "dependency_not_present", {
+                            "paths": missing})
+                        continue
+                    denial: tuple[str, dict] | None = None
+                    for entry in declared_requirements:
+                        path = str(entry["path"])
+                        if path not in requirement_digest_cache:
+                            requirement_digest_cache[path] = (
+                                dependency_digest.claim_digest(path))
+                        observed = requirement_digest_cache[path]
+                        if observed is None:
+                            denial = ("dependency_unreadable",
+                                      {"path": path})
+                            break
+                        if observed != entry["sha256"]:
+                            denial = ("dependency_digest_mismatch",
+                                      {"path": path,
+                                       "expected": entry["sha256"],
+                                       "observed": observed})
+                            break
+                    if denial is not None:
+                        self.record_denial(item, denial[0], denial[1])
+                        continue
+                declared_images = item.get("container_images")
                 if (not declared_images and isinstance(item_tags, list)
                         and pb.CONTAINER_IMAGE_TAG in item_tags):
                     # A record this pool did not write (publish refuses the
@@ -20573,6 +21181,7 @@ class PoolQueue:
                 sealed_host_demand = dict(demand)
                 allowance = None
                 dependent_owner: object = cpu_admission._UNREAD
+                gang = gang_record = gang_entry = None  # #1517, read below
                 handle: str | None = None
                 tier_handles: dict[str, str] = {}
                 tier_funded: dict[str, dict[str, object]] = {}
@@ -20724,20 +21333,158 @@ class PoolQueue:
                             except (ValueError, OSError, KeyError, TypeError) as exc:
                                 self.record_denial(item, "local_scratch_io_profile_invalid", {"error": str(exc)})
                                 continue
+                        # Gang membership (#1517, default off: only a box
+                        # offering ``_gang.TAG`` places these rows). Read from
+                        # the sealed request and the immutable group record
+                        # before host admission, as the producer link is.
+                        gang = gang_record = gang_entry = None
+                        if item.get("gang") is not None:
+                            from . import _gang
+                            try:
+                                gang = _gang.sealed(item)
+                                gang_record = (_gang.read_group(self, gang["group"])
+                                               if gang is not None else None)
+                                if gang is not None and gang_record is None:
+                                    self.record_denial(item, "gang_group_incomplete",
+                                                       {"group": gang["group"]})
+                                    continue
+                                if gang_record is not None:
+                                    gang_entry = _gang.member(gang_record, item, gang)
+                                    ended = {index: state for index, state in
+                                             _gang.sibling_states(self, gang_record, gang_entry).items()
+                                             if state in _gang.UNSUCCESSFUL}
+                                    if ended:
+                                        # A sibling already ended badly: the
+                                        # gang can never start whole (#1517).
+                                        self._gang_teardown(
+                                            item, by=key, exclude={key},
+                                            reason=f"sibling ended before start: {ended}")
+                                    torn = _gang.teardown(self, gang["group"])
+                                    if torn is not None:
+                                        self.record_denial(item, "gang_torn_down",
+                                                           {"group": gang["group"], "teardown": torn})
+                                        continue
+                            except (_gang.GangContractError, OSError, pb.PrismaBuildError,
+                                    KeyError, TypeError, ValueError) as exc:
+                                self.record_denial(item, "gang_contract_invalid", {"error": str(exc)})
+                                continue
+                        gang_backfill = []
+                        backfill_binding = None
+                        backfill_eligible = None
+                        if gang_record is not None:
+                            pending_backfill = self._preempt_gang_backfill(
+                                ledger, gang_record, gang_entry, controller=host_gate)
+                            if pending_backfill:
+                                self.record_denial(item, "gang_waiting_for_backfill_release", {
+                                    "group": gang["group"], "holders": pending_backfill,
+                                    "tokens_returned_unix": None})
+                                continue
                         from . import _measurement_reservation as measurement_reservation
                         census_blocked = None
+                        if census_refusal is not None:
+                            self.record_denial(item, "measurement_census_unavailable", census_refusal)
+                            continue
                         census_guard = measurement_reservation.admission_census(self, ledger, host_gate)
                         with census_guard as census:
                             if "unavailable" in census:
+                                census_refusal = census
                                 self.record_denial(item, "measurement_census_unavailable", census)
                                 continue
                             census_blocked = measurement_reservation.blocking_selection(
                                 census, item, host=ledger.base.name, funded_by=None)
+                            # A dependent of a current incumbent on this host
+                            # (its sealed producer holds tokens here) only
+                            # shortens that incumbent's life, which is what the
+                            # measurement waits for. Holding it back would let
+                            # a producer with no declared deadline wait on its
+                            # own spool exports forever (#1419 review).
+                            # A running elected measurement is not such an
+                            # incumbent: its own dependents keep the existing
+                            # ``funded_by`` rule below (#982).
+                            serves_incumbent = (isinstance(dependent_owner, str)
+                                                and dependent_owner in ledger.held_keys()
+                                                and dependent_owner not in census["elections"])
+                            if serves_incumbent:
+                                census_blocked = None
                             if census_blocked is not None and dependent_owner != census_blocked["action_key"]:
                                 self.record_denial(item, "deferred_for_measurement_reservation", {
                                     "withheld_for": census_blocked["action_key"],
                                     "selection": census_blocked, "candidate_release_bound": "UNKNOWN"})
                                 continue
+                            gang_blocked = (None if serves_incumbent else
+                                            measurement_reservation.gang_blocking(
+                                                census, item, host=ledger.base.name,
+                                                group=gang["group"] if gang is not None else None))
+                            while gang_blocked is not None:
+                                from . import _gang
+                                try:
+                                    if backfill_eligible is None:
+                                        backfill_eligible = (item.get("priority") == -10
+                                                             and item.get("gang") is None
+                                                             and _gang.backfill_enabled())
+                                        if backfill_eligible:
+                                            backfill_eligible = self._preemption_eligible(item)
+                                            if backfill_eligible:
+                                                backfill_binding = self._preemption_proof_binding(item)
+                                    allowed = (backfill_eligible
+                                               and _gang.backfill_allowed(self, gang_blocked, _now()))
+                                except (_gang.GangContractError, OSError, pb.PrismaBuildError,
+                                        KeyError, TypeError, ValueError):
+                                    allowed = False
+                                if not allowed:
+                                    break
+                                gang_backfill.append(gang_blocked)
+                                remaining = dict(census, gang_elections={
+                                    k: e for k, e in census["gang_elections"].items()
+                                    if e not in gang_backfill})
+                                gang_blocked = measurement_reservation.gang_blocking(
+                                    remaining, item, host=ledger.base.name, group=None)
+                            if gang_blocked is not None:
+                                self.record_denial(item, "deferred_for_gang_reservation", {
+                                    "withheld_for": gang_blocked["action_key"],
+                                    "gang_election": gang_blocked})
+                                continue
+                            if gang_record is not None:
+                                # Elect this host for the member under H: from
+                                # here on the census fences it (#1517). One
+                                # member per host; the no-clobber election
+                                # settles a race between matching hosts.
+                                here = socket.gethostname()
+                                standing = {election["index"]: election
+                                            for election in census["gang_elections"].values()
+                                            if election["group"] == gang["group"]}
+                                mine = standing.get(gang["index"])
+                                sibling_here = any(election["host"] == here
+                                                   for index, election in standing.items()
+                                                   if index != gang["index"])
+                                # Only the best-ranked gang on a shared host
+                                # set elects, readies or commits: two gangs
+                                # never each commit a member on a different
+                                # host and wait on each other (#1519 review).
+                                ours = {here, *(election["host"] for election in standing.values())}
+                                my_rank = list(_gang.rank(gang_record))
+                                ahead = sorted(
+                                    (election for election in census["gang_elections"].values()
+                                     if election["group"] != gang["group"] and election["host"] in ours
+                                     and election["rank"] < my_rank),
+                                    key=lambda election: election["rank"])
+                                if ahead:
+                                    self.record_denial(item, "deferred_for_gang_reservation", {
+                                        "withheld_for": ahead[0]["action_key"],
+                                        "gang_election": ahead[0], "ranked_behind": True})
+                                    continue
+                                if mine is None and not sibling_here:
+                                    try:
+                                        mine = _gang.elect_gang_member(self, gang_record, gang_entry, here, _now())
+                                    except (_gang.GangContractError, OSError, pb.PrismaBuildError) as exc:
+                                        self.record_denial(item, "gang_contract_invalid",
+                                                           {"error": str(exc)})
+                                        continue
+                                if mine is None or mine["host"] != here:
+                                    self.record_denial(item, "gang_member_elected_elsewhere", {
+                                        "group": gang["group"], "index": gang["index"],
+                                        "election": mine, "sibling_on_this_host": sibling_here})
+                                    continue
                             if scratch_boundary is not None:
                                 original, announced, generation, attempt = scratch_boundary
                                 scratch_changed = (
@@ -20777,9 +21524,12 @@ class PoolQueue:
                                           for kind, need in demand.items()
                                           if int(need) - covered.get(kind, 0) > 0}
                                 reservation_demand = dict(demand)
-                            elif held_back:
+                            elif held_back and not (serves_incumbent
+                                                    and withheld_for in measurement_withholds):
                                 # An earlier item is withholding what this row
-                                # takes.  Only a dependent on its producer's
+                                # takes.  A measurement's wait does not hold
+                                # back its host's incumbents' own dependents
+                                # (#1419 review); every other withhold does.  Only a dependent on its producer's
                                 # allowance takes nothing that item waits for
                                 # (#985); any other row is left as the withhold
                                 # always left it, unevaluated: no pass, no
@@ -20944,6 +21694,10 @@ class PoolQueue:
                             drain_resolves = (mode is not None and not foreign
                                               and (verdict is None
                                                    or verdict.get("drain_resolves") is not False))
+                            if (demand.get("gpu") and isinstance(decision, Mapping)
+                                    and isinstance(decision.get("reason"), str)
+                                    and decision["reason"]):
+                                evidence["drain_resolves"] = drain_resolves
                             if verdict is not None and verdict["eligible"]:
                                 # #924: an occupied-box refusal holds the box
                                 # shut while its holders drain soon, exactly as
@@ -20962,6 +21716,8 @@ class PoolQueue:
                                         keep_refused_room(key, reservation_demand, reason, evidence, free_at_refusal)
                                     self.record_denial(item, reason, evidence)
                                     withhold(key, kinds)
+                                    if identity and identity[1]:
+                                        measurement_withholds.add(key)
                                     continue
                                 reason = f"{reason}{_starved_suffix(verdict)}"
                                 evidence["starved"] = {"why": verdict["why"],
@@ -20988,10 +21744,16 @@ class PoolQueue:
                                 # Selection reacquires admission, while the separate
                                 # handoff lock spans withdrawal/requeue as well. A
                                 # stalled handoff cannot stop ordinary fitting work.
+                                exclusion = None
+                                if gang_record is not None and not _gang.backfill_reclaiming(self, gang_record):
+                                    exclusion = _gang.elections(
+                                        self, gang["group"], gang["size"]).get(gang["index"])
                                 preempted = self._preempt_background_holder(
                                     ledger, action_key=key, demand=asked,
                                     priority=int(item.get("priority", 0)),
-                                    controller=controller) is not None
+                                    controller=controller,
+                                    **({"exclude_gang_election": exclusion}
+                                       if exclusion is not None else {})) is not None
                             withholding = bool(verdict["eligible"])
                             age = self.withhold_age(key) if withholding else None
                             evidence = {
@@ -21010,6 +21772,8 @@ class PoolQueue:
                                 self.record_denial(
                                     item, "reservation_unavailable_withholding", evidence)
                                 withhold(key, None)
+                                if identity and identity[1]:
+                                    measurement_withholds.add(key)
                                 continue
                             if withholding:
                                 # Keep its passes, and so its place, but let the
@@ -21161,6 +21925,37 @@ class PoolQueue:
                                                {"container_class_verdict": class_verdict,
                                                 "checked": "before_rename"})
                             continue
+                    if item.get("gang") is not None and gang_record is None:
+                        # A gang row is never claimed outside the gang path.
+                        self._abandon_tier_acquire(tier_handles)
+                        tier_handles.clear()
+                        if ledger is not None and handle is not None:
+                            ledger.abandon_acquire(handle)
+                            self._return_borrow(controller, borrow)
+                            self._return_gpu_probe(controller, gpu_controller, gpu_probe)
+                        self.record_denial(item, "gang_contract_invalid",
+                                           {"error": "gang row reached commit without its group"})
+                        continue
+                    if gang_record is not None:
+                        # Every ordinary gate has passed: this member could
+                        # start here now. It commits only beside a complete
+                        # set; otherwise it says so and holds nothing (#1517).
+                        try:
+                            _gang.mark_ready(self, gang_record, gang_entry, socket.gethostname(), _now())
+                            readiness = _gang.sibling_readiness(
+                                self, gang_record, gang_entry, socket.gethostname(), _now())
+                        except (_gang.GangContractError, OSError, pb.PrismaBuildError) as exc:
+                            readiness = {"complete": False, "error": str(exc)}
+                        if not readiness["complete"]:
+                            self._abandon_tier_acquire(tier_handles)
+                            tier_handles.clear()
+                            if ledger is not None and handle is not None:
+                                ledger.abandon_acquire(handle)
+                                self._return_borrow(controller, borrow)
+                                self._return_gpu_probe(controller, gpu_controller, gpu_probe)
+                            self.record_denial(item, "gang_waiting_for_peers", {
+                                "group": gang["group"], "index": gang["index"], **readiness})
+                            continue
                     self._write_claim_intent(key, owner=owner)
                     src = self.item_path(READY, key)
                     dst = self.item_path(CLAIMED, key)
@@ -21210,6 +22005,8 @@ class PoolQueue:
                             if moved.get("container_images") else None)
                     class_refused = class_verdict is not None and not class_verdict["container_work_eligible"]
                     if (class_refused
+                            or (gang_backfill and (moved.get("priority") != -10
+                                or self._preemption_proof_binding(moved) != backfill_binding))
                             or not self._placement_matches(moved, tags=tagset, has_gpu=has_gpu)
                             or self.demand_of(moved) != sealed_demand
                             or (scratch_intent is not None and (
@@ -21456,6 +22253,9 @@ class PoolQueue:
                 # reason; the record this method returns is the last place that
                 # still did not.
                 claimed = dict(moved)
+                claimed.pop("gang_backfill", None)
+                if gang_backfill:
+                    claimed["gang_backfill"] = gang_backfill
                 claimed.pop("container_class_verdict", None)
                 if class_verdict is not None:
                     claimed["container_class_verdict"] = class_verdict
@@ -21490,6 +22290,7 @@ class PoolQueue:
                 claimed["claimed_by"] = owner
                 claimed["claimed_unix"] = _now()
                 claimed["claimed_host"] = socket.gethostname()
+                claimed["served_from"] = "canonical"
                 if ledger is not None and cpu_tiers is not None and demand.get("cpu", 0):
                     claimed["cpu_allocation"] = ledger.cpu_allocation(key, cpu_tiers)
                 if adaptive_gpu is not None:
@@ -21953,6 +22754,12 @@ class PoolQueue:
                 pids.add(pid)
         return pids
 
+    def _sweep_marker(self) -> Path:
+        """The single host-local owner of sweep timing and cursor progress."""
+
+        directory, digest = cpu_admission.box_state(self.ledger().base)
+        return directory / f"{digest}.sweep"
+
     def _sweep_due(self, *, interval_s: float = HEARTBEAT_S) -> bool:
         """Claim this box's turn to run the reaper, or decline it.
 
@@ -22009,12 +22816,11 @@ class PoolQueue:
         """
 
         try:
-            directory, digest = cpu_admission.box_state(self.ledger().base)
+            marker = self._sweep_marker()
         except Exception:                                        # noqa: BLE001
             # No host-local rendezvous (a read-only or absent ``/tmp``, an
             # unresolvable ledger): sweep, as this method's caller always did.
             return True
-        marker = directory / f"{digest}.sweep"
         now = _now()
         try:
             if 0 <= now - marker.stat().st_mtime < interval_s:
@@ -23390,7 +24196,7 @@ class PoolQueue:
         # not a retryable reservation. File the positive binding alongside
         # the original failure; never rewrite the request's attempt budget.
         retry_stop = (self._spent_output_retry_stop(record)
-                      if status not in {"executed", "cache_hit"} else None)
+                      if status not in {"executed", "cache_hit", WITHDRAWN} else None)
         if retry_stop is not None:
             disposition = FAILED
         outcome = {
@@ -23398,6 +24204,10 @@ class PoolQueue:
             "action_key": str(record.get("action_key") or ""),
             "published_unix": record.get("published_unix"),
             "published_by": record.get("published_by"),
+            # The submission's own answer, backfilled to explicit unknown for
+            # rows filed before the tag existed (#1565): every attempt record
+            # names a repository, so a consumer never tests for absence.
+            "tested_repository": tested_repository_of(record),
             "attempt": attempt,
             "max_attempts": max_attempts,
             # ``None`` is honest legacy evidence: lower-level pool producers
@@ -23409,6 +24219,8 @@ class PoolQueue:
             "claimed_by": record.get("claimed_by"),
             "claimed_unix": record.get("claimed_unix"),
             "claimed_host": record.get("claimed_host"),
+            "served_from": "canonical",
+            "resident_set": record.get("resident_set"),
             "finished_unix": record.get("finished_unix"),
             "finished_host": record.get("finished_host"),
             "detail": details,
@@ -23537,6 +24349,8 @@ class PoolQueue:
             raise PoolContractError(
                 f"pool attempt outcome differs from its history link: {where}"
             )
+        if "served_from" in value and value["served_from"] not in ("canonical", "local"):
+            raise PoolContractError("pool attempt served_from must be canonical or local")
         if "preemption_context" in value:
             expected_context = {
                 field: record.get(field) for field in (
@@ -23959,6 +24773,7 @@ class PoolQueue:
                 raise PoolContractError("successful attempt cannot stop an output retry")
             self._validate_output_retry_stop(adopted["output_retry_stop"], adopted)
         expected = (
+            WITHDRAWN if status == WITHDRAWN else
             DONE if succeeded else FAILED if stopped or attempt >= max_attempts else "requeued"
         )
         if disposition != expected:
@@ -24000,6 +24815,8 @@ class PoolQueue:
             "output_retry_stopped": stopped,
             "finished_unix": finished_unix,
             "finished_host": finished_host,
+            **({"served_from": adopted["served_from"], "resident_set": adopted.get("resident_set")}
+               if "served_from" in adopted else {}),
             "detail": detail,
         }
 
@@ -24135,8 +24952,11 @@ class PoolQueue:
         succeeded = status in {"executed", "cache_hit"}
         limit = int(snapshot.get("max_attempts", DEFAULT_MAX_ATTEMPTS))
         # The same rule ``adopted_attempt_summary`` applies, so this outcome can
-        # never be the one that makes a reader refuse the record.
+        # never be the one that makes a reader refuse the record. A withdrawn
+        # status requires the withdrawn disposition: a cancelled attempt is
+        # not a failure and must not descend the retry ladder.
         disposition = (
+            WITHDRAWN if status == WITHDRAWN else
             DONE if succeeded else FAILED if attempt >= limit else "requeued"
         )
         self.archive_attempt(
@@ -24162,6 +24982,92 @@ class PoolQueue:
         return self.attempt_path(archived, attempt)
 
     @_serialized_key
+    def _gang_teardown(self, item: Mapping[str, object] | None, *, reason: str,
+                       by: str, exclude: Container[str] = ()) -> bool:
+        """End a member's whole gang once (#1517); ``True`` if this call did.
+
+        Any unsuccessful member ending, a withdrawal of any member, a start
+        barrier that expires or a sibling found failed all land here. The
+        winning writer withdraws every other live member through the ordinary
+        withdrawal path; a running member's worker stops at its withdrawal
+        checkpoints. ``exclude`` names keys whose transition lock the caller
+        holds: the sweep withdraws those once the caller lets go.
+        """
+        from . import _gang
+        gang = item.get("gang") if isinstance(item, Mapping) else None
+        if gang is None:
+            return False
+        try:
+            declared = _gang.declaration(gang)
+            record = _gang.read_group(self, declared["group"]) if declared else None
+            if record is None or not _gang.tear_down(
+                    self, record["group"], reason=reason, by=by, now=_now()):
+                return False
+        except (_gang.GangContractError, OSError, pb.PrismaBuildError) as exc:
+            print(f"pool gang teardown failed for {by[:12]}: {type(exc).__name__}: {exc}",
+                  file=sys.stderr)
+            return False
+        for member in record["members"]:
+            if member["action_key"] == by or member["action_key"] in exclude:
+                continue
+            try:
+                self.withdraw(member["action_key"], reason=f"gang teardown: {reason}",
+                              by=f"gang:{record['group']}")
+            except (PoolContractError, OSError, pb.PrismaBuildError):
+                continue  # already terminal, or the sweep finishes it
+        return True
+
+    def _gang_start_barrier(self, item: Mapping[str, object], *, owner: str,
+                            heartbeat_s: float) -> dict[str, object] | None:
+        """Hold a claimed gang member before launch until every sibling is claimed (#1517).
+
+        ``None`` releases the launch. Bounded by the group's ``skew_s``: past
+        it, or on a teardown marker, a sibling's unsuccessful ending or this
+        member's own withdrawal, the payload is never started and the member
+        ends with the reason, which tears the gang down. The lease is renewed
+        while it waits, so a bounded wait is never mistaken for a lost worker.
+        """
+        if item.get("gang") is None:
+            return None
+        from . import _gang
+        key = str(item["action_key"])
+        try:
+            gang = _gang.declaration(item.get("gang"))
+            record = _gang.read_group(self, gang["group"]) if gang else None
+            if record is None:
+                raise _gang.GangContractError("gang group record missing at launch")
+            entry = _gang.member(record, item, gang)
+        except (_gang.GangContractError, OSError, pb.PrismaBuildError) as exc:
+            return {"status": "failed", "termination_reason": "gang_contract_invalid",
+                    "gang": {"error": str(exc)}}
+        deadline = time.monotonic() + float(record["skew_s"])
+        renewed = time.monotonic()
+        while True:
+            if self.withdrawal_covers(item) is not None:
+                return {"status": "withdrawn", "termination_reason": "gang_torn_down",
+                        "gang": {"group": record["group"]}}
+            torn = _gang.teardown(self, record["group"])
+            if torn is not None:
+                return {"status": "failed", "termination_reason": "gang_torn_down",
+                        "gang": {"group": record["group"], "teardown": torn}}
+            states = _gang.sibling_states(self, record, entry)
+            if any(state in _gang.UNSUCCESSFUL for state in states.values()):
+                self._gang_teardown(item, by=key, exclude={key},
+                                    reason=f"sibling ended before start: {states}")
+                continue
+            if all(state in ("claimed", "done") for state in states.values()):
+                return None
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                self._gang_teardown(item, by=key, exclude={key},
+                                    reason=f"start skew {record['skew_s']}s exceeded: {states}")
+                return {"status": "failed", "termination_reason": "gang_start_skew_exceeded",
+                        "gang": {"group": record["group"], "siblings": states}}
+            if time.monotonic() - renewed >= heartbeat_s:
+                self.write_lease(key, owner=owner, claim_snapshot=item)
+                renewed = time.monotonic()
+            time.sleep(min(_gang.BARRIER_POLL_S, max(remaining, 0.0)))
+
     def finish(
         self,
         action_key: str,
@@ -24182,6 +25088,10 @@ class PoolQueue:
         succeeded = status in {"executed", "cache_hit"}
         src = self.item_path(CLAIMED, action_key)
         record = _read_json(src)
+        if not succeeded and (record or claim_snapshot or {}).get("gang") is not None:
+            # One member ending unsuccessfully ends the gang (#1517).
+            self._gang_teardown(record or claim_snapshot, by=action_key,
+                                reason=f"member {action_key[:12]} ended {status}")
         if record is None and claim_snapshot is not None:
             ready = _read_json(self.item_path(READY, action_key))
             if ready is not None:
@@ -24257,38 +25167,86 @@ class PoolQueue:
             with suppress(Exception):
                 self.note_fill_borrow_end(effective_record)
         if self.withdrawal_covers(record, action_key=action_key) is not None:
-            # An operator cancelled this while it was running.  Filing it under
-            # ``done`` or ``failed`` would put the pool's opinion of the work on
-            # top of a decision about it, and routing it back to ``ready`` --
-            # the retry branch below -- would restart exactly what was
-            # cancelled.  That restart is the race a hand-edited
-            # ``max_attempts`` was trying to lose.  The withdrawal record is
-            # already filed; all that is left here is the cleanup ``finish``
-            # would otherwise do on its way past.
-            #
-            # Read AFTER the record, not before it: a withdrawal that lands
-            # between the read and the write must still be seen, and this is
-            # the last moment at which it can be.
-            #
-            # Generation-scoped like every other guard: a marker left over from
-            # a cancellation the operator has since re-submitted past must not
-            # swallow the NEW run's outcome, which would file it nowhere at
-            # all.  ``record is None`` is the one case with no generation to
-            # compare, and is treated as covered -- the claim was concluded by
-            # somebody else, so there is nothing here to file either way.
+            # Cancellation remains the ending, but the worker owns the proof
+            # that its exact attempt stopped. Preserve that proof before giving
+            # up the claim; never overwrite an operator's decision or a newer
+            # generation's visible marker.
+            dst = self.item_path(WITHDRAWN, action_key)
             if read_claim is None:
-                return self.item_path(WITHDRAWN, action_key)
-            if ("scratch_declaration_record" in record
-                    or local_scratch.SCRATCH_LIFETIME_FIELD in record):
-                self._file_superseded(record, key=action_key,
-                                      kind="scratch-declarations-after-withdrawal")
-            tombstone, mine = self._entomb_claim(action_key, expect=read_claim)
-            if not mine or tombstone is None:
-                return self.item_path(WITHDRAWN, action_key)
-            self.lease_path(action_key).unlink(missing_ok=True)
-            self._release_reservation(action_key, host=holder)
-            tombstone.unlink(missing_ok=True)
-            return self.item_path(WITHDRAWN, action_key)
+                return dst
+            with self._transition_locked(action_key):
+                live = _read_json(src)
+                if live is None or not _same_claim(live, read_claim):
+                    return dst
+                decision = self.withdrawal_covers(record, action_key=action_key)
+                marker = _read_json(dst)
+                current = (marker is not None and
+                           marker.get("published_unix") == record.get("published_unix"))
+                archive = (None if current else self.superseded_dir() /
+                           f"{action_key}.{self.attempt_generation(record)}.withdrawn-finish.json")
+                filed = dict(marker if current else _read_json(archive) or decision)
+                if "withdrawn_attempt" not in filed:
+                    retained = dict(record)
+                    retained.pop("finish_pending", None)
+                    retained.pop("container_cleanup_pending", None)
+                    prior_attempts = int(retained.get("attempts", 0))
+                    if (prior_attempts and "attempt_history" not in retained
+                            and "attempt_history_missing_before" not in retained):
+                        retained["attempt_history_missing_before"] = prior_attempts
+                    finished_detail = dict(detail or {})
+                    for field in ("resource_scope", "resource_scope_intent", "resource_scope_cleanup"):
+                        if field in record:
+                            finished_detail[field] = record[field]
+                    finished_detail["container_cleanup"] = container_cleanup
+                    retained.update(status=WITHDRAWN, attempts=prior_attempts + 1,
+                                    finished_unix=_now(), finished_host=socket.gethostname(),
+                                    detail=finished_detail)
+                    retained["attempt_history"] = self.archive_attempt(
+                        retained, attempt=retained["attempts"], status=WITHDRAWN,
+                        disposition=WITHDRAWN, detail=finished_detail)
+                    adopted = self.adopted_attempt_summary(retained)
+                    if adopted["status"] != WITHDRAWN:
+                        raise PoolContractError("withdrawn finish conflicts with an archived attempt")
+                    for field in ("status", "finished_unix", "finished_host", "detail"):
+                        retained[field] = adopted[field]
+                    # Nested history keeps the decision's attempt count and
+                    # inherited evidence unchanged. Readers never adopt an
+                    # execution result in place of the cancellation.
+                    filed["withdrawn_attempt"] = retained
+                    for field in ("resource_scope", "resource_scope_intent", "resource_scope_cleanup"):
+                        if field in record:
+                            filed.setdefault(field, record[field])
+                    filed.setdefault("container_cleanup", adopted["detail"]["container_cleanup"])
+                    filed.setdefault("finished_unix", adopted["finished_unix"])
+                    filed.setdefault("finished_host", adopted["finished_host"])
+                    if current:
+                        _write_json_atomic(dst, filed)
+                    else:
+                        pb._atomic_publish(archive, pb._canonical_bytes(filed))
+                if ("scratch_declaration_record" in record
+                        or local_scratch.SCRATCH_LIFETIME_FIELD in record):
+                    self._file_superseded(record, key=action_key,
+                                          kind="scratch-declarations-after-withdrawal")
+                tombstone, mine = self._entomb_claim(action_key, expect=read_claim)
+                if not mine or tombstone is None:
+                    return dst
+                self.lease_path(action_key).unlink(missing_ok=True)
+                self._release_reservation(action_key, host=holder)
+                if isinstance(decision.get("gang_backfill_preemption"), Mapping):
+                    from . import _gang
+                    timing = {**decision["gang_backfill_preemption"], "tokens_returned_unix": _now()}
+                    filed["gang_backfill_release"] = timing
+                    # The decision stays immutable; the worker's conclusion
+                    # records when its exact released reservation came back.
+                    with suppress(OSError, ValueError, pb.PrismaBuildError):
+                        _write_json_atomic(dst if current else archive, filed)
+                    election = timing["election"]
+                    with self._transition_locked(election["action_key"], blocking=False) as acquired:
+                        if acquired:
+                            with suppress(OSError, ValueError, pb.PrismaBuildError):
+                                _gang.note_backfill_preemption(self, election, timing)
+                tombstone.unlink(missing_ok=True)
+                return dst
         if record is None:
             # A reaper concluded this claim while the work was still running,
             # so the claim file is gone and the item has already been filed
@@ -24374,6 +25332,9 @@ class PoolQueue:
                               "retry_safe"):
                     if field in snapshot:
                         filed[field] = snapshot[field]
+                # Every end record names a repository (#1565): the
+                # submission's own tag, backfilled to explicit unknown.
+                filed["tested_repository"] = tested_repository_of(snapshot)
                 _write_json_atomic(lost, filed)
             return lost
         record.pop("finish_pending", None)
@@ -25469,6 +26430,7 @@ class PoolQueue:
         preempted_by: str | None = None,
         expected_claim: Mapping[str, object] | None = None,
         membership_handoff: Mapping[str, object] | None = None,
+        gang_backfill_preemption: Mapping[str, object] | None = None,
         signal_child: bool = True,
     ) -> dict[str, object]:
         """Cancel one generation; its owner concludes any claimed attempt.
@@ -25740,6 +26702,8 @@ class PoolQueue:
                 ("attempt_history_missing_before",
                  "attempt_history_missing_before_withdrawal"),
                 ("detail", "detail_before_withdrawal"),
+                ("finished_unix", "finished_unix_before_withdrawal"),
+                ("finished_host", "finished_host_before_withdrawal"),
             ):
                 if field in filed:
                     filed[kept] = filed.pop(field)
@@ -25757,6 +26721,12 @@ class PoolQueue:
             )
             if preempted_by is not None:
                 filed["preempted_by"] = str(preempted_by)
+            if gang_backfill_preemption is not None:
+                from . import _gang
+                filed["gang_backfill_preemption"] = dict(gang_backfill_preemption)
+                with suppress(OSError, ValueError, pb.PrismaBuildError):
+                    _gang.note_backfill_preemption(
+                        self, gang_backfill_preemption["election"], gang_backfill_preemption)
             if handoff_proof is not None:
                 # Explicit durable handoff identity: persisted only after
                 # the proof above, read back by the tier-loop window
@@ -25812,6 +26782,10 @@ class PoolQueue:
         # Admission's own preemption is excluded: it requeues its holder in
         # the same breath, and marking the plan would pause the window it just
         # put back.
+        if isinstance(record, Mapping) and record.get("gang") is not None:
+            # Withdrawing any member ends its gang and releases its fences (#1517).
+            self._gang_teardown(record, by=key,
+                                reason=f"member {key[:12]} withdrawn: {reason or 'withdrawn'}")
         plan_superseded = False
         if preempted_by is None and handoff_proof is None:
             plan_superseded = self.mark_residency_plan_superseded(
@@ -25906,6 +26880,7 @@ class PoolQueue:
         except Exception as exc:                                 # noqa: BLE001
             outcome["resource_profile"] = {
                 "schema": RESOURCE_PROFILE_SCHEMA_V1,
+                "tested_repository": tested_repository_of(item),
                 "error": f"{type(exc).__name__}: {exc}",
             }
         return outcome
@@ -25931,6 +26906,10 @@ class PoolQueue:
         finished_unix = _now()
         profile: dict[str, object] = {
             "schema": RESOURCE_PROFILE_SCHEMA_V1,
+            # Which repository this run tested (#1565): the submission's own
+            # tag, backfilled to explicit unknown, so cost accounting can join
+            # a run's cost to its repository without reopening the queue row.
+            "tested_repository": tested_repository_of(item),
             "host": socket.gethostname(),
             "finished_unix": finished_unix,
         }
@@ -26105,6 +27084,11 @@ class PoolQueue:
                 "argv": argv,
                 "cpu_allocation": allocation,
             }
+        barrier = self._gang_start_barrier(item, owner=owner, heartbeat_s=heartbeat_s)
+        if barrier is not None:
+            return {"returncode": None, "stdout": "", "stderr": "",
+                    "elapsed_s": _now() - started, "argv": argv,
+                    "cpu_allocation": allocation, **barrier}
         from . import local_scratch
 
         variables = local_scratch._sealed_scratch_variables(item, allow_missing=True)
@@ -26841,6 +27825,7 @@ class PoolQueue:
         if self._sweep_due():
             self.reap_stale()
             self.sweep_orphan_passes()
+            self.sweep_gangs()
         item = self.claim(tags=tags, has_gpu=has_gpu, capacity=capacity,
                           cpu_tiers=cpu_tiers, adaptive_cpu=adaptive_cpu,
                           ready=ready, observed_images=observed_images,

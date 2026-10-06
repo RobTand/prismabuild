@@ -91,7 +91,10 @@ class StaleName:
             return real_open(path, flags, mode, dir_fd=dir_fd)
 
         def note(path) -> None:
-            if path is not None and os.fspath(path) == self.attempts:
+            # An integer is a directory descriptor: ``shutil.rmtree`` walks by
+            # descriptor on current Pythons, and pytest's tmp_path cleanup does
+            # it while these wrappers are still installed (#1506).
+            if isinstance(path, (str, os.PathLike)) and os.fspath(path) == self.attempts:
                 self.listed += 1
 
         def fake_listdir(path="."):

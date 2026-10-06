@@ -42,6 +42,28 @@ from typing import NoReturn
 import uuid
 import zlib
 
+try:
+    from . import digest_primitives
+    from .digest_primitives import (
+        ActionContractError, PrismaBuildError, _canonical_bytes,
+        _sorted_json_bytes, _sorted_lf_bytes, canonical_sha256, raw_sha256,
+        compact_ascii_json_bytes, new_sha256, sorted_json, stream_sha256,
+    )
+except ImportError:  # Isolated -I -S execution binds the sibling owner directly.
+    import importlib.util as _digest_util
+    _spec = _digest_util.spec_from_file_location(
+        "digest_primitives",
+        str(Path(__file__).resolve().with_name("digest_primitives.py")))
+    digest_primitives = _digest_util.module_from_spec(_spec)
+    sys.modules["digest_primitives"] = digest_primitives
+    _spec.loader.exec_module(digest_primitives)
+    from digest_primitives import (  # noqa: F401
+        ActionContractError, PrismaBuildError, _canonical_bytes,
+        _sorted_json_bytes, _sorted_lf_bytes, canonical_sha256, raw_sha256,
+        compact_ascii_json_bytes, new_sha256, sorted_json, stream_sha256,
+    )
+    del _digest_util, _spec
+
 ACTION_SCHEMA_V1 = "prismaquant.prismabuild.action.v1"
 ACTION_SCHEMA_V2 = "prismaquant.prismabuild.action.v2"
 CODE_CLOSURE_SCHEMA_V1 = "prismaquant.prismabuild.code_closure.v1"
@@ -517,12 +539,6 @@ def _declared_distributions(toolchain: Mapping[str, object]) -> list[str]:
     return sorted(set(toolchain) - _PLATFORM_TOOLCHAIN_KEYS)
 
 
-class PrismaBuildError(RuntimeError):
-    """Base class for PrismaBuild core failures."""
-
-
-class ActionContractError(PrismaBuildError, ValueError):
-    """An action, closure, receipt, or worker identity is not exact."""
 
 
 class CASTamperError(PrismaBuildError):
@@ -686,37 +702,8 @@ def _sha256(
     return _text(value, where=where, pattern=_SHA256_RE, fail=fail)
 
 
-def _canonical_bytes(value: object) -> bytes:
-    try:
-        return json.dumps(
-            value,
-            sort_keys=True,
-            separators=(",", ":"),
-            ensure_ascii=False,
-            allow_nan=False,
-        ).encode("utf-8")
-    except (TypeError, ValueError) as exc:
-        raise ActionContractError("value is not finite canonical JSON data") from exc
-
-
 def _canonical_file_bytes(value: object) -> bytes:
     return _canonical_bytes(value) + b"\n"
-
-
-def _sorted_json_bytes(value: object) -> bytes:
-    """Sorted default JSON without a terminator, including list values (#1386).
-
-    Preserve the diagnostics' spacing, ASCII escaping and nonfinite-number
-    behavior. This byte profile is distinct from finite canonical JSON.
-    """
-
-    return json.dumps(value, sort_keys=True).encode("utf-8")
-
-
-def _sorted_lf_bytes(value: object) -> bytes:
-    """The hand-rolled mapping writers' spelling, owned here (#1331)."""
-
-    return _sorted_json_bytes(dict(value)) + b"\n"
 
 
 def _indented_lf_bytes(value: object) -> bytes:
@@ -731,50 +718,18 @@ def _indented_lf_bytes(value: object) -> bytes:
             + "\n").encode("utf-8")
 
 
-def canonical_sha256(value: object) -> str:
-    """Hash canonical JSON without importing another repository module."""
-
-    return hashlib.sha256(_canonical_bytes(value)).hexdigest()
-
-
-def raw_sha256(data: bytes) -> str:
-    """The raw-bytes digest: sha256 of the bytes themselves (#1386).
-
-    The canonical profiles hash the JSON encoding of a value; a caller whose
-    contract is the digest of bytes as read -- a host configuration file, a
-    command's output -- uses this so no tool spells its own ``hashlib``
-    recipe.
-    """
-
-    return hashlib.sha256(data).hexdigest()
-
-
-def stream_sha256(
-    path: str | Path, *, offset: int = 0, length: int | None = None
-) -> str:
-    """Chunked sha256 over a byte range of a file (#1386).
-
-    ``offset`` seeks before the first read and ``length`` bounds how many
-    bytes are hashed; a short file hashes what it has.  No size cap and no
-    mmap: the caller this exists for hashes multi-gigabyte Git pack sections.
-    """
-
+def chunks_sha256(chunks) -> str:
+    """SHA-256 of ordered byte chunks without joining or reopening a stream."""
     digest = hashlib.sha256()
-    remaining = length
-    with open(path, "rb") as handle:
-        if offset:
-            handle.seek(offset)
-        while True:
-            want = 1 << 20 if remaining is None else min(1 << 20, remaining)
-            if want <= 0:
-                break
-            chunk = handle.read(want)
-            if not chunk:
-                break
-            digest.update(chunk)
-            if remaining is not None:
-                remaining -= len(chunk)
+    for chunk in chunks:
+        digest.update(chunk)
     return digest.hexdigest()
+
+
+def _compact_ascii_lf_bytes(value: object) -> bytes:
+    """Compact sorted ASCII JSON with default nonfinite handling and one LF."""
+    return (json.dumps(value, sort_keys=True, separators=(",", ":"),
+                       ensure_ascii=True) + "\n").encode("ascii")
 
 
 def _normalize_relative_path(value: object, *, where: str, dot_ok: bool) -> str:
@@ -1080,6 +1035,9 @@ def _identify_runtime_source(path: str | Path, *, where: str) -> dict[str, objec
 _LOADED_WORKER_CORE_IDENTITY = _identify_runtime_source(
     Path(__file__).resolve(), where="PrismaBuild worker core"
 )
+_LOADED_WORKER_DIGEST_IDENTITY = _identify_runtime_source(
+    Path(digest_primitives.__file__).resolve(), where="PrismaBuild worker digest primitives"
+)
 
 
 def _normalize_runtime_source(value: object, *, where: str) -> dict[str, object]:
@@ -1123,6 +1081,11 @@ def _worker_runtime_identity(
         where="PrismaBuild worker core",
         changed_message="PrismaBuild worker core changed after module import",
     )
+    digest_owner = _normalize_runtime_source(
+        _LOADED_WORKER_DIGEST_IDENTITY, where="loaded PrismaBuild worker digest primitives")
+    _verify_runtime_source_unchanged(
+        digest_owner, where="PrismaBuild worker digest primitives",
+        changed_message="PrismaBuild worker digest primitives changed after module import")
     launcher = (
         None
         if worker_launcher_identity is None
@@ -1143,15 +1106,16 @@ def _worker_runtime_identity(
         "schema": WORKER_RUNTIME_SCHEMA_V1,
         "launch_kind": "in_process" if launcher is None else "script",
         "core": core,
+        "digest_primitives": digest_owner,
         "launcher": launcher,
     }
     return {**body, "runtime_sha256": canonical_sha256(body)}
 
 
 def _validate_worker_runtime(value: object) -> dict[str, object]:
-    raw = _exact_mapping(
-        value, keys=_RUNTIME_KEYS, where="worker attestation.runtime"
-    )
+    # Retained v1 receipts predate the split and keep their exact recorded body.
+    keys = _RUNTIME_KEYS | {"digest_primitives"} if isinstance(value, Mapping) and "digest_primitives" in value else _RUNTIME_KEYS
+    raw = _exact_mapping(value, keys=keys, where="worker attestation.runtime")
     if raw["schema"] != WORKER_RUNTIME_SCHEMA_V1:
         _fail(
             "worker attestation.runtime.schema must be "
@@ -1181,6 +1145,9 @@ def _validate_worker_runtime(value: object) -> dict[str, object]:
         "core": core,
         "launcher": launcher,
     }
+    if "digest_primitives" in raw:
+        body["digest_primitives"] = _normalize_runtime_source(
+            raw["digest_primitives"], where="worker attestation.runtime.digest_primitives")
     recorded = _sha256(
         raw["runtime_sha256"],
         where="worker attestation.runtime.runtime_sha256",
@@ -1207,6 +1174,16 @@ def _verify_worker_runtime_unchanged(runtime: object) -> None:
         where="PrismaBuild worker core",
         changed_message="PrismaBuild worker core changed after module import",
     )
+    if "digest_primitives" in expected:
+        digest_owner = expected["digest_primitives"]
+        loaded_digest = _normalize_runtime_source(
+            _LOADED_WORKER_DIGEST_IDENTITY, where="loaded PrismaBuild worker digest primitives")
+        if digest_owner != loaded_digest:
+            raise LocalActionError(
+                "attested PrismaBuild worker digest primitives differs from module import identity")
+        _verify_runtime_source_unchanged(
+            digest_owner, where="PrismaBuild worker digest primitives",
+            changed_message="PrismaBuild worker digest primitives changed after module import")
     launcher = expected["launcher"]
     if isinstance(launcher, Mapping):
         _verify_runtime_source_unchanged(
@@ -5808,8 +5785,11 @@ PROFILE_SPEEDSCOPE_SCHEMA = "https://www.speedscope.app/file-format-schema.json"
 #: interval 1.2-7.0 % (n = 5), on a box that other work had at loadavg
 #: 1.4-3.4.  The tier's ~5 % budget is met as a point estimate, not
 #: established.  ``docs/operating_prismabuild.md`` carries the table and the
-#: paired deltas.  The rate is a property of the mode, not of the
-#: submission, so it is reported in the ending and never sealed into the key.
+#: paired deltas.  This is the *default* rate of the bare ``sample`` mode: it
+#: is reported in the ending and sealed nowhere.  An action that asks for
+#: ``sample:HZ`` (#1494) seals that rate through the mode string -- two rates
+#: are two actions -- and the ending reports the rate the action actually
+#: ran at.
 PROFILE_SAMPLE_RATE_HZ = 100
 
 #: Where a profile is written while the action runs.  Under the action's own
@@ -6001,6 +5981,9 @@ class PySpyProfileBackend:
     flush_signal = signal.SIGINT
     flush_seconds = 3.0
     name = "py-spy"
+    #: The rate bare ``sample`` runs at.  ``sample:HZ`` binds a per-action
+    #: copy whose own ``rate_hz`` is the sealed one; this class attribute is
+    #: then the default the bare mode keeps (#1494).
     rate_hz = PROFILE_SAMPLE_RATE_HZ
     profile_suffix = "speedscope.json"
     #: py-spy samples the action's descendants, and the Docker daemon's
@@ -6014,11 +5997,31 @@ class PySpyProfileBackend:
         self._version: str | None = None
 
     def bind(self, option: str | None) -> "PySpyProfileBackend":
-        if option is not None:
+        """A per-action copy carrying the sealed rate, if one was given.
+
+        ``sample`` stays the 100 Hz default this mode has always run at.
+        ``sample:HZ`` (#1494) names a positive whole rate in samples per
+        second and must not reconfigure the registry's instance for the next
+        action, so -- exactly as ``NsysProfileBackend.bind`` does for the
+        window -- the option makes a copy.  The bound rate is what
+        ``launch_argv`` passes to py-spy and what ``_ProfileSession.identity``
+        reports as ``rate_hz``; malformed and nonpositive input is refused
+        here, at the client's parse and again at the worker's action
+        validation, before anything is sealed or launched.
+        """
+
+        if option is None:
+            return self
+        if not re.fullmatch(r"[1-9][0-9]{0,4}", option):
             raise ProfileBackendUnavailable(
-                f"the sample mode takes no option, and was given {option!r}"
+                f"the sample rate must be whole samples per second, 1 to "
+                f"99999, not {option!r}: --profile sample:10 samples ten "
+                "times a second"
             )
-        return self
+        bound = PySpyProfileBackend()
+        bound.rate_hz = int(option)
+        bound._path, bound._version = self._path, self._version
+        return bound
 
     def environment(self, *, profile_path: Path) -> dict[str, str]:
         """The guard and marker path the action's Docker shim reads.
@@ -6518,8 +6521,9 @@ PROFILE_BACKENDS: dict[str, object] = {
 #: What ``--profile`` accepts, in the order a help message should list it.
 PROFILE_MODES: tuple[str, ...] = tuple(sorted(PROFILE_BACKENDS))
 
-#: How a mode carries its one option.  ``nsys:600`` is the whole vocabulary:
-#: a mode name, and a number the backend knows how to read.
+#: How a mode carries its one option.  A mode name, and one number the
+#: backend knows how to read: ``nsys:600`` is a window in seconds,
+#: ``sample:10`` a sampling rate in samples per second (#1494).
 PROFILE_MODE_SEPARATOR = ":"
 
 

@@ -1037,7 +1037,10 @@ PROFILE_OBSERVATION_ENV = "PRISMABUILD_PROFILE_OBSERVATION_ID"
 PROFILE_PATH = "/usr/bin:/bin"
 PROFILE_OWNER_ENV = "PRISMABUILD_CONTAINER_OWNER"
 PROFILE_MARKER_ENV = "PRISMABUILD_CONTAINER_MARKER"
-PRODUCER_FILES = (RECORDER, "src/prismabuild/local_scratch.py", "src/prismabuild/core.py")
+# The digest owner half travels with core: the isolated -I -S producer loads
+# it as core's sibling, and qualification binds its exact bytes (#1547).
+PRODUCER_FILES = (RECORDER, "src/prismabuild/local_scratch.py", "src/prismabuild/core.py",
+                  "src/prismabuild/digest_primitives.py")
 LOCAL_FILESYSTEM_TYPES = frozenset({"ext4", "xfs", "btrfs", "zfs"})
 #: Host-local *state* -- admission fences and the measurement census -- is a
 #: small-file rendezvous, not an I/O-qualified scratch profile, so its closed

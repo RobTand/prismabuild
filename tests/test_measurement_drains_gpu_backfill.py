@@ -57,7 +57,7 @@ def fleet(tmp_path, monkeypatch):
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
 
     def publish(name, *, measurement=False, pinned=False, priority=-10, timeout_s=4200,
-                cpu=2, gpu=1, mem_gb=8):
+                cpu=2, gpu=1, mem_gb=8, tags=None, retry_safe=None, max_attempts=3):
         clock[0] += 0.001
         action = pb.seal_action({
             "schema": pb.ACTION_SCHEMA_V2,
@@ -80,7 +80,9 @@ def fleet(tmp_path, monkeypatch):
         key = action["action_key"]
         queue.publish(action_key=key, cas_root=str(cas.root), checkout_root=str(checkout),
                       worker_script="worker.py", resources={"cpu": cpu, "gpu": gpu, "mem_gb": mem_gb},
-                      needs_gpu=bool(gpu), tags=["sparklina"] if pinned else [], priority=priority)
+                      needs_gpu=bool(gpu),
+                      tags=(["sparklina"] if pinned else []) if tags is None else tags,
+                      priority=priority, retry_safe=retry_safe, max_attempts=max_attempts)
         return key
 
     def tick(seconds=2.0):
@@ -314,7 +316,10 @@ def test_an_unbounded_incumbent_has_only_one_bounded_measurement_episode(fleet):
     tick(pool.WITHHOLD_CEILING_S / 4 + 1)
     assert claim() is None
     verdict = denial(measurement)["evidence"]["withhold"]
-    assert verdict["why"] == "measurement_drain_expired" and verdict["withhold"] is False
+    # The bounded attention episode ends, but the host election made during
+    # it does not: an undeclared incumbent no longer reopens refill (#1419).
+    assert verdict["why"] == "measurement_reservation_waiting" and verdict["withhold"] is True
+    assert verdict["selection"]["host"] == "sparklina"
     assert verdict["drain_until_unix"] == initial["drain_until_unix"]
 
 
@@ -363,8 +368,12 @@ def test_an_expired_measurement_does_not_withhold_for_a_holder_tail(fleet):
     queue.finish(holder, status="executed")
     assert claim() is None, "a holder tail still fails the measurement idle gate"
     verdict = denial(measurement)["evidence"]["withhold"]
-    assert verdict["why"] == "measurement_drain_expired" and verdict["withhold"] is False
+    # The tail is not renewed into a new episode; the host election keeps
+    # lower-priority refill out until the measurement itself runs (#1419).
+    assert verdict["why"] == "measurement_reservation_waiting" and verdict["withhold"] is True
     assert verdict["drain_until_unix"] == until
+    tick(adaptive_gpu.PSI_AVG10_S + 1)
+    assert claim() == measurement, denial(measurement)
 
 
 def test_measurement_deadlines_survive_transient_carry_without_renewal(fleet):

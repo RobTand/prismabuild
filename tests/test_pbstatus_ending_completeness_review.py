@@ -20,7 +20,7 @@ def test_unreadable_endings_do_not_certify_a_complete_census(
     else:
         scandir = pbstatus.os.scandir
         def refuse_done(path):
-            if Path(path) == q.dir(pool.DONE):
+            if not isinstance(path, int) and Path(path) == q.dir(pool.DONE):
                 raise PermissionError('done directory unavailable')
             return scandir(path)
         monkeypatch.setattr(pbstatus.os, 'scandir', refuse_done)

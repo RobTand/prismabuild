@@ -111,8 +111,8 @@ RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from prismabuild import (adaptive_cpu, adaptive_gpu as gpu_admission,  # noqa: E402
                          box_capacity, container_images,
-                         local_dependencies,
-                         core as pb, cpu_topology, local_scratch, pool,
+                         core as pb, cpu_topology, dependency_digest,
+                         filesystem_floor, local_dependencies, local_scratch, pool,
                          publication_canary, storage_tiers)
 from pbstatus import Deadline, bounded  # noqa: E402
 
@@ -1024,6 +1024,23 @@ def local_dependency_lookup(items, *, python: str) -> dict[str, str]:
                 if kind == "executable" or path not in requirements:
                     requirements[path] = kind
     return local_dependencies.observe(requirements)
+def dependency_lookup(items) -> tuple[list[str], list[str]]:
+    """The requirement paths READY items name, as this box's ``(present, absent)``.
+
+    The interpreter lookup's shape (#1263), one stat per distinct path per
+    poll (#1495): the offer answers exactly what the queue asks about, never
+    scans, and never hashes here -- the claim gate reads the bytes.
+    """
+
+    paths = sorted({
+        str(entry.get("path"))
+        for item in items if isinstance(item, dict)
+        for entry in (item.get("requires_files") or ())
+        if isinstance(entry, dict) and isinstance(entry.get("path"), str)})
+    present, absent = [], []
+    for path in paths:
+        (present if os.path.isfile(path) else absent).append(path)
+    return present, absent
 
 
 def discover_ready_snapshot(queue, *, budget_s: float,
@@ -1205,6 +1222,10 @@ def build_parser() -> argparse.ArgumentParser:
                          "inputs keep --mem-gb (#1222)")
     ap.add_argument("--tag", action="append", default=[],
                     help="extra placement tag this box offers")
+    ap.add_argument("--gang-admission", action="store_true",
+                    default=os.environ.get("PRISMABUILD_GANG_ADMISSION") == "1",
+                    help="offer the gang-v1 capability and admit gang members "
+                         "(#1517; default off, or PRISMABUILD_GANG_ADMISSION=1)")
     ap.add_argument("--assume-idle", action="store_true",
                     help="offer declared CPU and host memory without observing "
                          "them (debug); GPU evidence remains mandatory")
@@ -1584,12 +1605,24 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
         # for a box that can run it instead of dying with 127 there.
         tags.append(pb.INTERPRETER_TAG)
         tags.append(local_dependencies.TAG)
+        # And for digest-pinned dependencies (#1495): this loop's claim
+        # hashes the row's required bytes on this box before it spends an
+        # attempt, and its offer answers for the paths READY items name.  A
+        # loop from before the contract offers neither, so a row whose
+        # dependencies it would silently ignore waits for a box that can
+        # read the requirement instead of dying inside it.
+        tags.append(dependency_digest.DEPENDENCY_DIGEST_TAG)
         # Code capability only; configured executed profiles and current root
         # observations separately decide admission. Old workers cannot ignore
         # opted-in sealed traffic during a rolling publication.
         tags.append(local_scratch.IO_CAPABILITY)
         # Versioned lifetime actions cannot run on declaration-only workers.
         tags.append(local_scratch.SCRATCH_LIFETIME_TAG)
+        if args.gang_admission:
+            # Default off (#1517): without this no box offers the tag, so no
+            # gang member is ever claimed and no gang code runs in a pass.
+            from prismabuild import _gang
+            tags.append(_gang.TAG)
         if loaded_generation:
             tags.extend((publication_canary.CAPABILITY,
                          f"runtime-generation:{loaded_generation}"))
@@ -1949,6 +1982,10 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
         offered_interpreters, absent_interpreters = interpreter_lookup(
             discovery.snapshot or [])
         dependency_answers = local_dependency_lookup(discovery.snapshot or [], python=args.python)
+        # And the digest-contract answers (#1495): the requirement paths this
+        # poll's ready snapshot asks about, statted on this box.
+        offered_dependencies, absent_dependencies = dependency_lookup(
+            discovery.snapshot or [])
 
         # Immutable producer/source verification is cached; small CAS proof
         # inputs and independent current device identity refresh outside the
@@ -1964,6 +2001,8 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
                            interpreters=offered_interpreters,
                            interpreters_absent=absent_interpreters,
                            dependency_answers=dependency_answers,
+                           dependency_files=offered_dependencies,
+                           dependency_files_absent=absent_dependencies,
                            observed_detail=observed_detail):
             # (``interpreters`` binds the poll's lookup; the announce call
             # below receives it under that closure-local name.)
@@ -2009,6 +2048,8 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
                 interpreters=interpreters,
                 interpreters_absent=interpreters_absent,
                 local_dependency_answers=dependency_answers,
+                dependency_files=dependency_files,
+                dependency_files_absent=dependency_files_absent,
             )
 
         publication = publish_offer(
@@ -2081,6 +2122,37 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
         except Exception as exc:                                 # noqa: BLE001
             print(f"[{host}] spool retirement skipped this poll: "
                   f"{type(exc).__name__}: {exc}", flush=True)
+        # The used-filesystem floor (#1483).  The tick refreshes the bindings
+        # this box owns and reaps dead growth holders, in every mode, so a
+        # binding is freshly sampled before anyone enforces it.  The check
+        # then covers what this box writes without an allowance of its own
+        # -- the queue, the CAS, its checkouts and logs -- and under
+        # ``enforce`` a filesystem below its floor skips this poll's
+        # admission, like an unpublished offer: nothing is claimed, nothing
+        # fails.  Under ``off`` (the default) the check reads only the mode;
+        # the tick still refreshes any binding this box owns, so ``status``
+        # is real before anyone enforces.  Before the claim-time handshake,
+        # so a refresh never widens its window, and exception-isolated like
+        # the ticks above.
+        floor_open = True
+        try:
+            floor_root = getattr(queue, "root", None)
+            if floor_root is not None:
+                filesystem_floor.loop_tick(floor_root, label=f"worker_loop {host}")
+                floor_open = filesystem_floor.host_admission(
+                    floor_root, [floor_root, SH / "cas", pool.LOCAL_CHECKOUT_ROOT],
+                    label=f"worker_loop {host}")
+        except Exception as exc:                                 # noqa: BLE001
+            print(f"[{host}] filesystem floor skipped this poll: "
+                  f"{type(exc).__name__}: {exc}", flush=True)
+        if not floor_open:
+            print(f"[{host}] used filesystem below its floor; skipping admission "
+                  f"this poll", flush=True)
+            idle += 1
+            if args.once:
+                return 1
+            time.sleep(args.poll_s)
+            continue
 
         # The claim-time handshake.  Everything above -- offer publication,
         # queue discovery -- may have taken seconds, and a publisher can

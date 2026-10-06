@@ -33,6 +33,8 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "src"), str(ROOT / "tools" / "fleet")]
 from prismabuild import adaptive_cpu, pool  # noqa: E402
+from prismabuild.adaptive_cpu import action_identity as real_action_identity
+from test_measurement_drains_gpu_backfill import fleet  # noqa: F401
 
 T0 = 2_000_000.0
 
@@ -179,18 +181,18 @@ def test_foreign_busy_with_no_holders_names_the_foreign_cpus(
 
 
 def test_holder_busy_keeps_the_withhold_then_admits(
-    queue: pool.PoolQueue, clock, monkeypatch,
+    fleet, monkeypatch,
 ) -> None:
     """No regression on #924: a drain that is really pending still holds.
 
     The attribution shows the busy on the holder's own held CPU: the
-    measurement_host_not_idle withhold stands while the holder drains, and
+    measurement_holder withhold stands while the holder drains, and
     the measurement is admitted once the host reads idle.  The row behind
     it waits exactly as it did before #1231.
     """
 
-    capacity = {"cpu": 20, "mem_gb": 120}
-    tiers = {"preferred": list(range(20)), "fallback": []}
+    queue, clock, _readings, _gpu, publish, _tick, claim, _fleet_denial = fleet
+    monkeypatch.setattr(adaptive_cpu, "action_identity", real_action_identity)
     state = {"busy": True}
     per_cpu = {str(cpu): 0. for cpu in range(20)}
 
@@ -205,23 +207,18 @@ def test_holder_busy_keeps_the_withhold_then_admits(
         }
 
     monkeypatch.setattr(adaptive_cpu.Controller, "sample", lambda self: sample())
-    measurement = _key("measurement")
-    monkeypatch.setattr(adaptive_cpu, "action_identity",
-                        lambda item: ("shape", item["action_key"] == measurement))
-
-    def claim():
-        return _claim(queue, capacity, tiers=tiers)
-
-    holder = _publish(queue, clock, _key("holder"), {"cpu": 2, "mem_gb": 1})
+    holder = publish("holder", cpu=2, gpu=0, mem_gb=1)
     assert claim() == holder
-    _publish(queue, clock, measurement, {"cpu": 4, "mem_gb": 40})
+    measurement = publish("measurement", measurement=True, cpu=4, gpu=0, mem_gb=40)
     for _ in range(pool.STARVATION_FLOOR - 1):
         queue.record_pass(measurement)
-    behind = _publish(queue, clock, _key("behind"), {"cpu": 4, "mem_gb": 40})
+    behind = publish("behind", cpu=4, gpu=0, mem_gb=40)
     assert claim() is None, "the holder's own busy load must still withhold"
     denial = _denial(queue, measurement)
     assert denial["reason"] == "adaptive_cpu_refused_withholding", denial
-    assert denial["evidence"]["decision"]["reason"] == "measurement_host_not_idle"
+    # Complete predicted-CPU clearance reaches real holder isolation (#1426).
+    assert denial["evidence"]["decision"]["reason"] == "measurement_holder"
+    assert denial["evidence"]["decision"]["holder"] == holder
     assert denial["evidence"]["withhold"]["why"] == "draining_for_measurement"
     # The drain completes and the host reads idle: the measurement runs.
     queue.finish(holder, status="executed")

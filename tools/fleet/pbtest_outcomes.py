@@ -30,7 +30,7 @@ delivers every worker's reports.
 from __future__ import annotations
 
 import json
-import hashlib
+from prismabuild.digest_primitives import raw_sha256
 import os
 import posixpath
 from contextlib import nullcontext
@@ -80,11 +80,31 @@ def pytest_sessionfinish(session, exitstatus):
 # travel over pytest/xdist's existing channel to the controller's trace writer.
 RESOURCE_TRACE_PLUGIN = '''\
 import os
-from pathlib import Path
 import resource
 import time
 import pytest
 from pbtest_resource_scope import read_process_io
+
+# A test may legitimately patch Path.read_text or a stat reader and assert it
+# only ever sees its own fake pid. This plugin samples the real worker inside
+# pytest's report hooks while such a patch is live, so its procfs reads must
+# not dispatch through any global a test can patch (#1550): bind the os calls
+# here, at plugin load, before any test code runs.
+_OPEN, _READ, _CLOSE = os.open, os.read, os.close
+_FLAGS = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+
+def pinned_read_text(path):
+    fd = _OPEN(path, _FLAGS)
+    try:
+        chunks = []
+        while True:
+            chunk = _READ(fd, 65536)
+            if not chunk:
+                break
+            chunks.append(chunk)
+    finally:
+        _CLOSE(fd)
+    return b"".join(chunks).decode("utf-8", "replace")
 
 def pytest_addoption(parser):
     parser.addoption("--pbtest-trace", action="store_true", default=False,
@@ -96,14 +116,14 @@ def sample():
               "process_io": None, "rss_bytes": None,
               "max_rss_watermark_bytes": None, "errors": []}
     try:
-        row = read_process_io(os.getpid())
+        row = read_process_io(os.getpid(), read_text=pinned_read_text)
         if row is None or row[2] is None:
             raise ValueError("process I/O unavailable")
         result["identity"], _, result["process_io"] = row
     except (OSError, ValueError) as exc:
         result["errors"].append(str(exc))
     try:
-        status = Path("/proc/self/status").read_text()
+        status = pinned_read_text("/proc/self/status")
         rss = next(line.split()[1:] for line in status.splitlines()
                    if line.startswith("VmRSS:"))
         if len(rss) != 2 or rss[1] != "kB":
@@ -350,7 +370,7 @@ def main(argv: list[str] | None = None, *, preflight=None,
             encoded = nodeid.encode("utf-8", errors="replace")
             if len(encoded) > TRACE_NODEID_MAX_BYTES:
                 fields.update(nodeid_truncated=True,
-                              nodeid_sha256=hashlib.sha256(encoded).hexdigest())
+                              nodeid_sha256=raw_sha256(encoded))
                 nodeid = encoded[:TRACE_NODEID_MAX_BYTES].decode("utf-8", errors="ignore")
             line = TRACE_PREFIX + json.dumps({
                 "schema": TRACE_SCHEMA, "event": event, "nodeid": nodeid,

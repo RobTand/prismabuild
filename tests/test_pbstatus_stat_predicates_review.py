@@ -50,12 +50,12 @@ def test_missing_terminal_directory_recheck_does_not_hide_a_second_error(
     scandir, stat = os.scandir, os.stat
 
     def vanished(path):
-        if Path(path) == directory:
+        if not isinstance(path, int) and Path(path) == directory:
             raise FileNotFoundError(errno.ENOENT, 'directory changed during lookup', str(path))
         return scandir(path)
 
     def unreadable(path, *args, **kwargs):
-        if Path(path) == directory:
+        if not isinstance(path, int) and Path(path) == directory:
             raise PermissionError(errno.EACCES, 'directory became inaccessible', str(path))
         return stat(path, *args, **kwargs)
 

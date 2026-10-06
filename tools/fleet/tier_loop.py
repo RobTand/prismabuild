@@ -51,6 +51,7 @@ from runtime_paths import generation_root  # noqa: E402
 sys.path.insert(0, str(generation_root(__file__) / "src"))
 
 from prismabuild import core as pb  # noqa: E402
+from prismabuild import filesystem_capacity, filesystem_floor  # noqa: E402
 from prismabuild import movement_actions  # noqa: E402
 from prismabuild import pool  # noqa: E402
 from prismabuild import produced_output  # noqa: E402
@@ -9378,9 +9379,14 @@ def _supply_reader_for(record: Mapping[str, object], tier_id: str, *,
             return None
 
         def read_ram(mountpoint=mountpoint):
-            sampled = os.statvfs(mountpoint)
-            return (max(0, int(sampled.f_bavail))
-                    * max(0, int(sampled.f_frsize))) // storage_tiers.GIB
+            room = filesystem_capacity.local_disk_room(mountpoint, 0)
+            if room["inode_refusal"] is not None:
+                # No writable room, not an unreadable sample: an OSError here
+                # sends the mint to its discovery fallback, which would mint
+                # the whole window on a mount that has bytes and no inodes
+                # (#1542).
+                return 0
+            return max(0, room["free_bytes"]) // storage_tiers.GIB
 
         return read_ram
     return None
@@ -10675,6 +10681,11 @@ def _serve_cycles(args, stop_requested) -> int:
         else:
             print(json.dumps(tier_cycle_line(host, records, LAST_CYCLE)), flush=True)
             cycle_failed = False
+        # The used-filesystem floor's owner work (#1483): refresh the bindings
+        # this box owns (a stage pool is sampled only here) and reap dead
+        # growth holders.  Throttled and exception-isolated; every mode.
+        if getattr(queue, "root", None) is not None:
+            filesystem_floor.loop_tick(queue.root, label=f"tier_loop {host}")
         if args.once:
             print(json.dumps(records, indent=1, default=str))
             if stop_requested() or runtime_gate.read_maintenance_gate() is not None:

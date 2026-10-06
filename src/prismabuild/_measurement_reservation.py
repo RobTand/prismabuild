@@ -17,7 +17,7 @@ import stat
 import time
 from typing import TYPE_CHECKING
 
-from . import adaptive_cpu, core, local_scratch
+from . import adaptive_cpu, core, local_scratch, storage_tiers
 from . import _bounded_reader as reader
 
 if TYPE_CHECKING:
@@ -35,10 +35,17 @@ MAX_FENCE_BYTES = 4096
 #: nothing a holder needs; a holder never waits on a waiter.
 FENCE_WAIT_S = 2.0
 FENCE_POLL_S = 0.02
+#: How many times one census rescans when a listed publication vanishes under it
+#: (#1571); the census child's own deadline still bounds the total.
+CAPTURE_RESCANS = 3
 
 
 class CensusUnavailable(RuntimeError):
     """An incomplete census cannot authorize lower-priority acquisition."""
+
+
+class PublicationDisappeared(CensusUnavailable):
+    """A listed publication was gone when the census read it (#1571)."""
 
 
 def _read(path: Path, *, optional: bool = False, limit: int = MAX_RECORD_BYTES) -> dict | None:
@@ -48,7 +55,7 @@ def _read(path: Path, *, optional: bool = False, limit: int = MAX_RECORD_BYTES) 
     except FileNotFoundError:
         if optional:
             return None
-        raise CensusUnavailable(f"publication disappeared during census: {path}") from None
+        raise PublicationDisappeared(f"publication disappeared during census: {path}") from None
     value = core._decode_strict_json(raw, where=READ_SECTION)
     if not isinstance(value, dict):
         raise CensusUnavailable(f"non-object census record: {path}")
@@ -86,6 +93,25 @@ def selection(record: dict) -> dict | None:
 
 
 def _capture(queue: PoolQueue) -> dict:
+    """One strict census, rescanned when a listed publication vanishes (#1571).
+
+    A publication is claimed, finished or withdrawn at any moment, so the
+    directory listing can name a file that is gone by the time it is read. That
+    is a race with the queue, not an unreadable census: refusing it denied the
+    whole pass ('publication disappeared during census') on a queue whose
+    rows were moving. Rescan a bounded number of times; a queue that keeps
+    changing under every scan, or any other unreadable record, still refuses.
+    """
+    for attempt in range(CAPTURE_RESCANS):
+        try:
+            return _scan_publications(queue)
+        except PublicationDisappeared:
+            if attempt + 1 == CAPTURE_RESCANS:
+                raise
+    raise AssertionError("unreachable")  # pragma: no cover
+
+
+def _scan_publications(queue: PoolQueue) -> dict:
     """Strict full-publication discovery; called only by the read-only child.
 
     Include finish marks and elected sidecars even when neither live directory
@@ -134,12 +160,14 @@ def _capture(queue: PoolQueue) -> dict:
                         raise CensusUnavailable("unreadable publication priority")
                     rows.setdefault(key, []).append(record)
                     if state == pool.CLAIMED and not is_mark:
+                        # Every claimed action is an incumbent; only a sealed
+                        # deadline contributes a finite opportunity (#1419).
                         governed, requested = pool._declared_run_bound(record, max_bytes=MAX_RECORD_BYTES)
-                        if governed == "deadline" and requested is not None:
-                            opportunities[key] = {
-                                "host": record.get("claimed_host"), "requested": requested,
-                                "claimed_unix": record.get("claimed_unix"),
-                                "generation": queue.attempt_generation(record)}
+                        opportunities[key] = {
+                            "host": record.get("claimed_host"),
+                            "requested": requested if governed == "deadline" else None,
+                            "claimed_unix": record.get("claimed_unix"),
+                            "generation": queue.attempt_generation(record)}
     measurements: dict[str, list[dict]] = {}
     for key, versions in rows.items():
         for record in versions:
@@ -181,7 +209,52 @@ def _capture(queue: PoolQueue) -> dict:
             continue
         elections[key] = chosen  # missing authority stays fenced, indefinitely
     return {"measurements": measurements, "elections": elections, "selections": selected,
-            "opportunities": opportunities, "keys": sorted(set(measurements) | set(selected))}
+            "opportunities": opportunities, "keys": sorted(set(measurements) | set(selected)),
+            "gang_elections": _gang_elections(queue, rows, count)}
+
+
+def _gang_elections(queue: PoolQueue, rows: dict[str, list[dict]], count: int) -> dict:
+    """Live gang host elections (#1517), read in the same bounded child.
+
+    A gang election fences its host while any member row of a gang without a
+    teardown is still READY or CLAIMED. An unreadable or malformed gang
+    record fails the census closed, exactly as a malformed publication does.
+    Elections are written only by the elected host's own pass under its host
+    admission, which also serializes this host's readers, so no member key
+    joins the M lock set.
+    """
+    from . import _gang
+    directory = _gang.root(queue)
+    try:
+        entries = os.scandir(directory)
+    except FileNotFoundError:
+        return {}  # gang admission was never used on this pool
+    found: dict[str, dict] = {}
+    try:
+        with entries:
+            for entry in entries:
+                count += 1
+                if count > MAX_RECORDS:
+                    raise CensusUnavailable("measurement census record cap exceeded")
+                if not entry.name.endswith(".json") or entry.name.startswith("."):
+                    continue
+                group = entry.name[:-5]
+                record = _gang.read_group(queue, group)
+                if record is None or _gang.teardown(queue, group) is not None:
+                    continue
+                live = [member for member in record["members"]
+                        if any(float(row.get("published_unix", math.nan)) == member["published_unix"]
+                               for row in rows.get(member["action_key"], []))]
+                if not live:
+                    continue
+                rank = list(_gang.rank(record))
+                for index, election in _gang.elections(queue, group, record["size"]).items():
+                    found[election["action_key"]] = {
+                        "group": group, "index": index, "action_key": election["action_key"],
+                        "host": election["host"], "priority": election["priority"], "rank": rank}
+    except _gang.GangContractError as exc:
+        raise CensusUnavailable(str(exc)) from exc
+    return found
 
 
 class CensusReader:
@@ -224,51 +297,56 @@ class CensusReader:
         directory = os.open(self.directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         lock = None
         try:
-            info = os.fstat(directory)
-            if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
-                    or info.st_mode & 0o077):
-                raise CensusUnavailable("unsafe local census directory")
-            # Reuse the exact open-descriptor local mount observer under the
-            # host-local state policy: a path named BOX_STATE_ROOT is not
-            # itself evidence of local storage, and this small-file rendezvous
-            # supports tmpfs while shared storage still refuses (#1451).
-            local_scratch._descriptor_state_identity(directory)
-            lock = os.open(self.name + ".guard", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC,
-                           0o600, dir_fd=directory)
-            info = os.fstat(lock)
-            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
-                    or info.st_nlink != 1 or info.st_mode & 0o077):
-                raise CensusUnavailable("unsafe local census fence lock")
-            # Bounded wait, not an instant refusal (#1498): every loop on a
-            # box censuses each candidate, so a nonblocking fence turned one
-            # sibling's census into this candidate's denial. The waiter holds
-            # only its own candidate key, never M or H, and still refuses once
-            # FENCE_WAIT_S passes; nothing is read without the fence.
-            waited = reader.Deadline(FENCE_WAIT_S)
-            while True:
-                try:
-                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    break
-                except BlockingIOError:
-                    remaining = waited.remaining()
-                    if remaining is None or remaining <= 0:
-                        raise CensusUnavailable("measurement census reader busy") from None
-                    time.sleep(min(FENCE_POLL_S, remaining))
-            marker = self.directory / self.name
-            previous = _read(marker, optional=True, limit=MAX_FENCE_BYTES)
-            if previous is not None:
-                ownership = reader.ReaderOwnership.from_record(previous)
-                if reader.reader_liveness(ownership, pool_identity=self.pool_identity,
-                                          section=READ_SECTION) != "settled":
-                    raise CensusUnavailable("retained measurement census reader unresolved")
+            # Only acquiring the fence is a census failure. The caller's body
+            # runs outside this translation: a body exception (a GPU sample
+            # write in ``reserve_probe``, a claim error) keeps its own type
+            # instead of becoming CensusUnavailable (#1506).
+            try:
+                info = os.fstat(directory)
+                if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
+                        or info.st_mode & 0o077):
+                    raise CensusUnavailable("unsafe local census directory")
+                # Reuse the exact open-descriptor local mount observer under the
+                # host-local state policy: a path named BOX_STATE_ROOT is not
+                # itself evidence of local storage, and this small-file rendezvous
+                # supports tmpfs while shared storage still refuses (#1451).
+                local_scratch._descriptor_state_identity(directory)
+                lock = os.open(self.name + ".guard", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC,
+                               0o600, dir_fd=directory)
+                info = os.fstat(lock)
+                if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                        or info.st_nlink != 1 or info.st_mode & 0o077):
+                    raise CensusUnavailable("unsafe local census fence lock")
+                # Bounded wait, not an instant refusal (#1498): every loop on a
+                # box censuses each candidate, so a nonblocking fence turned one
+                # sibling's census into this candidate's denial. The waiter holds
+                # only its own candidate key, never M or H, and still refuses once
+                # FENCE_WAIT_S passes; nothing is read without the fence.
+                waited = reader.Deadline(FENCE_WAIT_S)
+                while True:
+                    try:
+                        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        break
+                    except BlockingIOError:
+                        remaining = waited.remaining()
+                        if remaining is None or remaining <= 0:
+                            raise CensusUnavailable("measurement census reader busy") from None
+                        time.sleep(min(FENCE_POLL_S, remaining))
+                marker = self.directory / self.name
+                previous = _read(marker, optional=True, limit=MAX_FENCE_BYTES)
+                if previous is not None:
+                    ownership = reader.ReaderOwnership.from_record(previous)
+                    if reader.reader_liveness(ownership, pool_identity=self.pool_identity,
+                                              section=READ_SECTION) != "settled":
+                        raise CensusUnavailable("retained measurement census reader unresolved")
+            except (OSError, ValueError, core.PrismaBuildError, reader.ReaderOwnershipUnavailable,
+                    local_scratch.LocalScratchError) as exc:
+                raise CensusUnavailable(str(exc)) from exc
             self._held = (directory, lock)
             try:
                 yield
             finally:
                 self._held = None
-        except (OSError, ValueError, core.PrismaBuildError, reader.ReaderOwnershipUnavailable,
-                local_scratch.LocalScratchError) as exc:
-            raise CensusUnavailable(str(exc)) from exc
         finally:
             if lock is not None:
                 os.close(lock)
@@ -311,9 +389,11 @@ class CensusReader:
                 raise CensusUnavailable(f"measurement census unavailable: {reply}")
             value = reply.get("value")
             if (not isinstance(value, dict)
-                    or set(value) != {"measurements", "elections", "selections", "opportunities", "keys"}
+                    or set(value) != {"measurements", "elections", "selections", "opportunities", "keys",
+                                      "gang_elections"}
                     or not all(isinstance(value[field], dict)
-                               for field in ("measurements", "elections", "selections", "opportunities"))
+                               for field in ("measurements", "elections", "selections", "opportunities",
+                                             "gang_elections"))
                     or not isinstance(value["keys"], list)
                     or len(value["keys"]) > MAX_RECORDS
                     or any(not isinstance(key, str) or len(key) != 64
@@ -332,33 +412,49 @@ class CensusReader:
 
 @contextmanager
 def locked_census(queue: PoolQueue, ledger: ResourceLedger, controller):
-    """M transition keys (sorted/nonblocking) BEFORE H; refresh through acquire.
+    """Elections on this host (sorted/nonblocking) BEFORE H; refresh through acquire.
 
-    The candidate key may already be owned: the existing reentrant transition
-    contract is intentional. No cross-key wait or publisher host-gate protocol
-    is added. The guarantee starts at canonical election, not at arbitrary
-    future publication. An unlocked newly discovered M denies this pass.
-    The reader fence is acquired once for both phases and released after the
-    refresh (#1498): a concurrent observer cannot consume it between them, and
-    a fence, transition or admission refusal releases what was taken.
+    Only a measurement elected for *this* host can fence its admission
+    (``blocking_selection`` is host-filtered), so only those keys are locked.
+    Locking every READY/CLAIMED measurement key instead turned a large
+    measurement batch into a fleet-wide livelock: each of a box's worker loops
+    holds its own candidate's transition lock through its pass, so almost
+    every census met one busy key and denied every row on every host
+    (2026-10-05, 38-49 READY PACT rows, 6 loops per Spark).
+
+    An elected key another loop holds mid-transition is not a refusal: it is
+    kept as a live election for this pass, the conservative reading, so lower
+    priority work stays fenced and the pass still decides everything else.
+    Unlocked reads only ever err toward fencing: a missing row is not
+    retirement, and retirement needs an exact ending or a strictly newer
+    publication, both durable. Election writes stay serialized as before: a
+    measurement elects only in its own claim pass, under its own transition
+    key and the elected host's H, and this refresh runs under this host's H.
+    The candidate key may already be owned by the caller (the reentrant
+    transition contract). The reader fence is acquired once for both phases
+    (#1498); a fence or admission refusal releases what was taken.
     """
     census_reader = CensusReader(queue, ledger)
+    here = ledger.base.name
     with census_reader.held():
         discovered = census_reader.capture()
         with ExitStack() as held:
-            keys = set(discovered["keys"])
-            for key in sorted(keys):
+            busy: set[str] = set()
+            for key in sorted(key for key, chosen in discovered["selections"].items()
+                              if chosen["host"] == here):
                 if not held.enter_context(queue._transition_locked(key, blocking=False)):
-                    raise CensusUnavailable(f"measurement transition busy: {key}")
+                    busy.add(key)
             held.enter_context(queue._admission_lock(controller))
             current = census_reader.capture()
-            if not set(current["keys"]).issubset(keys):
-                raise CensusUnavailable("new unlocked measurement generation; restart census")
+            for key in busy:
+                # Mid-transition under another loop: fenced for this pass.
+                chosen = current["selections"].get(key, discovered["selections"][key])
+                current["elections"][key] = chosen
             # A success/cancellation slot is not physical ownership settlement.
             # Under H, retained tokens on this elected host still prevent refill.
             for key in ledger.held_keys():
                 chosen = current["selections"].get(key)
-                if chosen is not None and chosen["host"] == ledger.base.name:
+                if chosen is not None and chosen["host"] == here:
                     current["elections"][key] = chosen
             yield current
 
@@ -384,9 +480,22 @@ def blocking_selection(census: dict, item: dict, *, host: str, funded_by: str | 
     return None
 
 
+def gang_blocking(census: dict, item: dict, *, host: str, group: str | None) -> dict | None:
+    """A live gang election fences its host against strictly lower priority (#1517).
+
+    The same rule as :func:`blocking_selection`; the gang's own members are
+    never fenced by their siblings' elections.
+    """
+    for key, chosen in sorted(census.get("gang_elections", {}).items()):
+        if (chosen["host"] == host and key != item["action_key"] and chosen["group"] != group
+                and int(item.get("priority", 0)) < chosen["priority"]):
+            return chosen
+    return None
+
+
 def elect(queue: PoolQueue, ledger: ResourceLedger, controller, item: dict,
           verdict: dict, *, sampled_unix: object, gpu_sample: Mapping | None) -> dict | None:
-    """Choose a host once, using a finite incumbent *opportunity*, not a bound."""
+    """Choose a host once; a finite incumbent *opportunity* is metadata, not a bound."""
     from . import pool
     generation = queue.attempt_generation(item)
     with locked_census(queue, ledger, controller) as census:
@@ -416,24 +525,34 @@ def elect(queue: PoolQueue, ledger: ResourceLedger, controller, item: dict,
             raise CensusUnavailable("measurement publication changed before election")
         # Re-read sealed incumbent opportunities while H serializes admission.
         # No optimistic timeout-derived safe-fit/backfill permission follows.
+        # Every incumbent must be a claimed action on this host, whose own
+        # lifetime bounds the wait. A claimed action that declared no finite
+        # deadline (``pbrun`` without ``--timeout-s``, a progress-governed
+        # action) still elects: refusing left the host open to refill once
+        # the bounded attention lapsed, and a continuous lower-priority stream
+        # starved the measurement (#1419). A RAM-tier fill hold (#1222) or a
+        # raw holder with no readable claim is not an action lifetime: no
+        # election, exactly as before, so the bounded episode still lapses.
+        holders = [key for key in ledger.held_keys()
+                   if not key.startswith(storage_tiers.RAM_HOST_MEMORY_PREFIX)]
+        if not holders or len(holders) != len(ledger.held_keys()):
+            return None
         ends = []
-        for key in ledger.held_keys():
-            opportunity = census["opportunities"].get(key, {})
-            requested, claimed = opportunity.get("requested"), opportunity.get("claimed_unix")
-            if (opportunity.get("host") != ledger.base.name
-                    or not isinstance(requested, (int, float)) or isinstance(requested, bool)
+        for key in holders:
+            opportunity = census["opportunities"].get(key)
+            claimed = opportunity.get("claimed_unix") if isinstance(opportunity, dict) else None
+            if (opportunity is None or opportunity.get("host") != ledger.base.name
                     or not isinstance(claimed, (int, float)) or isinstance(claimed, bool)):
                 return None
-            end = float(claimed) + float(requested)
-            if not math.isfinite(end):
-                return None
-            ends.append(end)
-        if not ends:
-            return None
+            requested = opportunity.get("requested")
+            if isinstance(requested, (int, float)) and not isinstance(requested, bool):
+                end = float(claimed) + float(requested)
+                if math.isfinite(end):
+                    ends.append(end)
         chosen = {"schema": SCHEMA, "action_key": item["action_key"], "generation": generation,
                   "host": ledger.base.name, "published_unix": float(item["published_unix"]),
                   "priority": int(item.get("priority", 0)), "epoch_unix": pool._now(),
-                  "opportunity_unix": max(pool._now(), max(ends))}
+                  "opportunity_unix": max([pool._now(), *ends])}
         prior[FIELD] = chosen
         prior["action_key"] = item["action_key"]
         pool._write_json_atomic(queue.passes_path(item["action_key"]), prior)

@@ -18,7 +18,7 @@ holder's boundary away: the refused row keeps the room its claim would take,
 and that room binds every row behind it once the free tokens fit it -- the
 rows that demand a GPU with the rest.  While the holder holds, the room does
 not fit, so it binds nothing and the box fills as #924 and #1085 allow.
-CPU-only rows that fit beside the room still run (#1169).  The busy path has
+Host-pinned CPU-only rows that fit beside the room still run (#1169, #1526). The busy path has
 the same boundary: a room read while the holder still held the GPU token must
 not be dropped for not fitting yet (#1230 kept it only when it fit then).
 
@@ -102,6 +102,7 @@ def box(tmp_path: Path, monkeypatch):
     """
 
     clock = [T0]
+    monkeypatch.setattr(pool.socket, "gethostname", lambda: HOST)
     monkeypatch.setattr(time, "time", lambda: clock[0])
     monkeypatch.setattr(adaptive_cpu, "action_identity", lambda item: ("shape", False))
     contracts: dict[str, tuple[object, bool]] = {}
@@ -185,7 +186,7 @@ def test_the_refused_exclusive_row_keeps_the_boundary_its_holder_releases(
     for _ in range(pool.STARVATION_FLOOR - 1):
         queue.record_pass(ldlq)
     g2 = publish("c026-next-g2", G2, priority=-10, tags=["gb10"])
-    shard = publish("cpu-shard", SHARD, priority=-10)
+    shard = publish("cpu-shard", SHARD, priority=-10, tags=[HOST])
 
     clock[0] = holder_claimed + holder_age
     tick()
@@ -196,7 +197,7 @@ def test_the_refused_exclusive_row_keeps_the_boundary_its_holder_releases(
     assert claimed != g2, (
         "a priority -10 GPU row took the boundary of the GPU the refused +1 "
         "row waits for (#1240)")
-    assert claimed == shard, "CPU-only work that fits beside the room stopped filling"
+    assert claimed == shard, "Pinned CPU-only work that fits beside the room stopped filling"
     refused = _denial(queue, ldlq)
     assert refused["reason"] == verdict
     assert refused["evidence"]["decision"]["reason"] == "exclusive_holder"
@@ -305,7 +306,7 @@ def test_a_refused_room_binds_nothing_while_its_holder_still_holds(box) -> None:
     """#924 and #1085 kept: behind a long holder the box still fills.
 
     The refused row's room does not fit the free tokens while the holder
-    holds the GPU, so a CPU row claims beside the holder as before.
+    holds the GPU, so a host-pinned CPU row claims beside the holder as before.
     """
 
     queue, clock, contracts, publish, tick, claim = box
@@ -316,7 +317,8 @@ def test_a_refused_room_binds_nothing_while_its_holder_still_holds(box) -> None:
     contracts[ldlq] = ("shape", True)
     for _ in range(pool.STARVATION_FLOOR - 1):
         queue.record_pass(ldlq)
-    shard = publish("big-cpu-shard", {"cpu": 10, "mem_gb": 40}, priority=-10)
+    shard = publish("big-cpu-shard", {"cpu": 10, "mem_gb": 40},
+                    priority=-10, tags=[HOST])
     clock[0] = holder_claimed + pool.WITHHOLD_CEILING_S + 1.0
     tick()
     assert claim() == shard, "a room that does not fit yet held CPU work back"

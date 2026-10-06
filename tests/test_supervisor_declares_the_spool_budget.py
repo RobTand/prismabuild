@@ -33,7 +33,7 @@ import sys
 
 import pytest
 
-from prismabuild import box_capacity, pool
+from prismabuild import box_capacity, filesystem_capacity, pool
 from prismabuild import produced_spool as ps
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
@@ -54,6 +54,8 @@ class _Statvfs:
         self.f_frsize = 4096
         self.f_blocks = size_gib * GIB // 4096
         self.f_bavail = free_gib * GIB // 4096
+        self.f_files = 1000
+        self.f_favail = 1000
         self.calls: list[str] = []
 
     def __call__(self, path):
@@ -102,6 +104,15 @@ def _stat(monkeypatch, size_gib, free_gib):
     stat = _Statvfs(size_gib, free_gib)
     monkeypatch.setattr(supervise.os, "statvfs", stat)
     return stat
+
+
+def test_spool_offer_refuses_inode_exhaustion_with_free_bytes(roster, monkeypatch, capsys):
+    roster(args=[*BASE_ARGS, "--spool-gb", "auto"])
+    sampled = _stat(monkeypatch, 1000, 100)
+    sampled.f_favail = 0
+    _, args = supervise.declared_shape("boxa", 0)
+    assert "--spool-gb" not in args
+    assert "inodes" in capsys.readouterr().out
 
 
 def _worker_offer(args, ledger=None):
@@ -372,7 +383,7 @@ def test_a_holder_freezes_the_live_offer_until_it_is_released(
     queue = _holder_queue(tmp_path, monkeypatch)
     stat = _stat(monkeypatch, 1000, 250)            # 200 GiB of room
     shape = supervise.declared_shape("boxa", 0)
-    first, second = "h" * 64, "i" * 64
+    first, second = "a" * 64, "b" * 64
     _scratch_holder(queue, first, 150)
     assert queue.claim(owner="w1", capacity=_worker_offer(
         shape[1], queue.ledger()))["action_key"] == first
@@ -533,12 +544,14 @@ def test_an_owner_whose_first_tick_waits_removes_an_earlier_offer(
 
 def test_room_is_f_bavail_minus_a_rounded_up_floor():
     stat = _Statvfs(1000, 100)
-    room = supervise.local_disk_room("/x", 5, statvfs=stat)
+    room = filesystem_capacity.local_disk_room("/x", 5, statvfs=stat)
     assert room == {"size_bytes": 1000 * GIB, "free_bytes": 100 * GIB,
-                    "floor_bytes": 50 * GIB, "room_bytes": 50 * GIB}
+                    "floor_bytes": 50 * GIB, "room_bytes": 50 * GIB,
+                    "size_inodes": 1000, "free_inodes": 1000,
+                    "floor_inodes": 50, "inode_refusal": None}
     odd = _Statvfs(1, 1)
     odd.f_blocks, odd.f_frsize = 3, 1               # 5% of 3 B rounds up to 1 B
-    assert supervise.local_disk_room("/x", 5, statvfs=odd)["floor_bytes"] == 1
+    assert filesystem_capacity.local_disk_room("/x", 5, statvfs=odd)["floor_bytes"] == 1
 
 
 # -- the checked-in roster ---------------------------------------------------

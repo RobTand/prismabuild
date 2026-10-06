@@ -1676,11 +1676,11 @@ class _StagedPublisher:
         # this publisher runs, not just for one call.  What is *not*
         # memoized, by the memo's own contract, is the claim listing and
         # each claim record: ``_claimed_paths`` reads both fresh on every
-        # call, so a claim that appears, ends or changes since the last
-        # check is still seen at once -- the memo only skips re-deriving
-        # paths for a claim it has already seen unchanged.  Imported here,
-        # not at module scope, because ``stage_release`` imports from this
-        # module (see :meth:`_live_claim_cover`'s own deferred import).
+        # call, so a claim that appears, ends or changes is still seen at
+        # once -- the memo only skips re-deriving paths for a claim it has
+        # already seen unchanged.  Imported here, not at module scope,
+        # because ``stage_release`` imports from this module (see
+        # :meth:`_live_claim_cover`'s own deferred import).
         # Every copy worker thread shares one publisher and can reach
         # ``_live_claim_cover`` concurrently.  No lock is taken around the
         # census: ``_claimed_paths`` touches this memo only through single
@@ -1690,6 +1690,18 @@ class _StagedPublisher:
         # would serialize every worker's check behind them.
         from stage_release import _CensusMemo
         self._claim_memo = _CensusMemo()
+        #: The range decision's partial-temporaries hint (#1028): each
+        #: range directory is listed once under
+        #: :func:`_trusted_directory_stamp` and a name revalidates the
+        #: hint with one directory version, re-listing only what moved.
+        #: The claim census and the pin census are main's, per name.
+        #: Guarded by ``_range_lock`` because every copy worker thread
+        #: shares one publisher.
+        self._range_lock = threading.Lock()
+        #: Each range directory's ``(stamp, partial names)``, listed once
+        #: per :func:`_trusted_directory_stamp`; only a fenced listing is
+        #: remembered.
+        self._range_partials: dict[str, tuple[tuple, tuple[str, ...]]] = {}
 
     @contextmanager
     def _ownership(self):
@@ -2589,6 +2601,43 @@ class _StagedPublisher:
                 f"shared staged name unattributed, deferring: {destination}",
                 PUBLISH_WAIT_UNATTRIBUTED)
 
+    def _range_partial_census(self, directory: Path) -> tuple[str, ...] | None:
+        """One range directory's partial temporaries, as a fenced hint (#1028).
+
+        Listed once per :func:`_trusted_directory_stamp` of the directory
+        and remembered -- the stamp taken before the scan, kept only while
+        a fresh directory version still equals it, the same fence the
+        forest census's listings are kept under (#1004, #992) --
+        :meth:`_inflight_partials` revalidates with one directory version
+        per name and the directory is listed again only when it moved.  A
+        version the directory's own clock tick refuses, and a scan the
+        directory moved, are returned once and never remembered: the next
+        name lists again, so a partial created in the same tick or during
+        a scan cannot hide behind a remembered listing.  On a filesystem
+        whose directory times are not this kernel's, no stamp is ever
+        trusted and every name lists, as before.  ``None`` for a directory
+        that could not be read, never remembered: every name fails closed
+        on its own, as the per-name listing did.  The reads run without
+        :attr:`_range_lock`; only a fenced listing is stored under it.
+        """
+
+        key = os.path.normpath(str(directory))
+        remembered = self._range_partials.get(key)
+        if (remembered is not None
+                and _current_directory_version(directory) == remembered[0]):
+            return remembered[1]
+        stamp = _trusted_directory_stamp(directory)
+        try:
+            names = tuple(sorted(
+                entry.name for entry in os.scandir(directory)
+                if entry.name.endswith(".partial")))
+        except OSError:
+            return None
+        if stamp is not None and _current_directory_version(directory) == stamp:
+            with self._range_lock:
+                self._range_partials[key] = (stamp, names)
+        return names
+
     def _live_pins(self, norm: str) -> list[str] | None:
         """Pin ids live on one staged path, or None when unknowable."""
 
@@ -2649,37 +2698,50 @@ class _StagedPublisher:
         case the sweep reaps it and a later retry proceeds.  ``None``
         means the directory could not be read (fail closed).
 
-        One deliberate narrowing: only a dirent whose *name* could be a
-        partial for this destination is stat'ed, so a stat that fails on an
-        unrelated sibling no longer fails the whole census closed.  Such a
-        name is not in the answer either way -- it cannot be a partial for
-        this destination -- and an unreadable *directory* still returns
-        ``None``, as does a failure reading a name that does match.
+        The range directory is listed once per
+        :func:`_trusted_directory_stamp` and remembered
+        (#1028, :meth:`_range_partial_census`); each name revalidates the
+        listing with one directory version
+        (:func:`_current_directory_version`) and the directory is listed
+        again only when it moved.  Each name's check filters the
+        remembered listing by the same prefix rule and re-stats only the
+        names that pass it; a candidate that cannot be stat'ed -- one
+        removed since the listing among them -- fails the name closed
+        exactly as the per-name listing's stat did.
+        A partial filed after the listing moves the directory, so the next
+        name of the same range sees it; the publisher's own temporary and
+        rename move it every entry too, so a range of replacements lists
+        it once an entry, as the per-name listing did -- the hoist's win
+        is every decision that runs while the directory holds still, and
+        on a filesystem whose directory times are not this kernel's the
+        fence never holds and every name lists, as before.  A copy in
+        flight is still attributed first by its sealed claim
+        (:meth:`_live_claim_cover`).
         """
 
         own = f".{destination.name}.{str(self.mover)[:16]}.partial"
         # The name decides membership; the stat only confirms what a matching
         # name already is.  Asking them in that order spends one string
         # compare on a sibling that cannot be a partial, instead of a stat on
-        # every dirent.  This runs once per publish poll -- 120 per entry --
-        # and a staged tree can put every entry of a manifest in one
-        # directory, so the stats it no longer does are the cost.  The legacy
-        # shared ``.<name>.partial`` needs no arm of its own: it carries the
-        # same prefix and the same suffix, so the general test names it.
+        # every dirent of the remembered listing.
         prefix = f".{destination.name}."
-        out = []
-        try:
-            for entry in os.scandir(destination.parent):
-                name = entry.name
-                if name == own or not name.startswith(prefix):
-                    continue
-                if not name.endswith(".partial"):
-                    continue
-                if entry.is_file(follow_symlinks=False):
-                    out.append(name)
-        except OSError:
+        remembered = self._range_partial_census(destination.parent)
+        if remembered is None:
             return None
-        return sorted(out)[:5]
+        parent = os.path.normpath(str(destination.parent))
+        out = []
+        for name in remembered:
+            if name == own or not name.startswith(prefix):
+                continue
+            try:
+                info = os.stat(os.path.join(parent, name),
+                               follow_symlinks=False)
+            except OSError:
+                return None
+            if statmod.S_ISREG(info.st_mode):
+                out.append(name)
+        # ``remembered`` is sorted, so ``out`` already is.
+        return out[:5]
 
     def _index_bytes(self) -> int:
         """What the reuse index currently costs, in retained bytes.

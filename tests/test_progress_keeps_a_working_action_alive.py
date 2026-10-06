@@ -77,7 +77,8 @@ def _policy(*graces):
                        for name, grace in zip(PHASES, graces)]}
 
 
-def _claimed(tmp_path, *, mode, seconds, policy, timeout_s=None, source=REPORTER):
+def _claimed(tmp_path, *, mode, seconds, policy, timeout_s=None, source=REPORTER,
+             capacity=None, cpu_tiers=None):
     """Claim one action whose ``task.py`` is ``source``, run as ``mode``.
 
     ``source`` is a parameter so a fixture that reaches the contract another
@@ -109,13 +110,14 @@ def _claimed(tmp_path, *, mode, seconds, policy, timeout_s=None, source=REPORTER
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
     cas.publish_action_request(action)
     queue = AdmittedQueueFixture(
-        pool.PoolQueue(tmp_path / "queue"), capacity={"cpu": 8, "mem_gb": 16},
+        pool.PoolQueue(tmp_path / "queue"),
+        capacity=capacity if capacity is not None else {"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
     queue.publish(action_key=action["action_key"], cas_root=cas.root,
                   checkout_root=checkout,
                   worker_script=Path(__file__).resolve().parents[1]
                   / "tools" / "prismabuild_worker.py")
-    return queue, queue.claim()
+    return queue, queue.claim(cpu_tiers=cpu_tiers)
 
 
 def _run(tmp_path, **kwargs):

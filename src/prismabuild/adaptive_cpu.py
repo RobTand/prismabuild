@@ -22,7 +22,7 @@ import uuid
 
 from . import adaptive_snapshot
 from .storage_tiers import RAM_HOST_MEMORY_PREFIX
-from .control_cpu import attributed_ticks, control_plane_counters
+from .control_cpu import attributed_ticks, boot_ticks, control_plane_counters
 
 #: A CPU is treated as idle for admission corroboration when it was busy for
 #: at most this fraction of the fresh sampling interval.  Small on purpose: a
@@ -1155,6 +1155,11 @@ class Controller:
         if current is None:
             return {}
         current['control_threads'] = control_plane_counters(set(self.cpus))
+        # Read after the host counters, on the boot clock a process's start is
+        # measured in, and kept with the sample: the next interval's newborn
+        # control processes are exactly those that start after it.  Not derived
+        # from wall-clock stamps, which a clock step would misalign (#1581).
+        current['boot_ticks'] = boot_ticks()
         elapsed = current['sampled_unix'] - previous.get('sampled_unix', 0)
         if 0 <= elapsed < MIN_INTERVAL_S:
             return previous.get('observation', {})
@@ -1172,7 +1177,11 @@ class Controller:
                                                 in zip(current['cpus'], deltas)}}
                 raw_busy = {key: busy for key, (busy, _) in zip(current['cpus'], deltas)}
                 prior_threads = previous.get('control_threads', {})
-                control = attributed_ticks(prior_threads, control_before, raw_busy, kind='control')
+                born_after = previous.get('boot_ticks')
+                if type(born_after) is not int or born_after < 0:
+                    born_after = None
+                control = attributed_ticks(prior_threads, control_before, raw_busy, kind='control',
+                                           born_after=born_after)
                 kernel = attributed_ticks(prior_threads, control_before, raw_busy, kind='kernel')
                 irq = _irq_ticks(previous.get('irq_cpus'), current.get('irq_cpus'), raw_busy)
                 # Thread and IRQ accounting need not be disjoint. Their max

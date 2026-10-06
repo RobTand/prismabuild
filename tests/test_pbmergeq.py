@@ -84,7 +84,7 @@ def config(tmp_path, **extra):
            "pbtest_args": ["--priority", "-10", "--timeout-s", "60"], **extra}
     path = tmp_path / "config.json"
     path.write_text(json.dumps(raw))
-    return mq.load_config(path)
+    return mq._pbmergeq_load_config(path)
 
 
 def test_config_refuses_runs_without_a_deadline_or_with_queue_owned_flags(tmp_path):

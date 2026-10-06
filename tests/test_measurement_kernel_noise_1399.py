@@ -126,7 +126,12 @@ def kernel_rig(fleet, tmp_path, monkeypatch):
         if isinstance(path, (str, os.PathLike)):
             candidate = Path(path)
             if candidate.is_relative_to("/proc"):
-                return proc.root / candidate.relative_to("/proc")
+                relative = candidate.relative_to("/proc")
+                # Only sampler inputs are fake. The owned census reader
+                # needs real process identity and /proc/self/fd (#1435).
+                if (not relative.parts or relative.parts[0] in {"stat", "pressure"}
+                        or relative.parts[0] in {str(pid) for pid in proc.tasks}):
+                    return proc.root / relative
         return path
 
     monkeypatch.setattr(Path, "read_text", lambda path, *a, **kw:
@@ -161,7 +166,7 @@ def incident(rig):
     queue, proc, cpu, publish, step, claim, denial = rig
     step()
     holder = publish("incumbent", cpu=8)
-    assert claim() == holder
+    assert claim() == holder, denial(holder)
     assert queue.ledger().cpu_allocation(holder, TIERS)["preferred"] == HELD
     # Reconstruct the retained unmeasured state of an already running holder,
     # not the measured quiet baseline introduced by fixture startup.

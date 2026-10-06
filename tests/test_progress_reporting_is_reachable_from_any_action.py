@@ -11,7 +11,6 @@ copy of a versioned schema is how the two drift.
 These tests hold every documented way of reporting to one standard: the bytes
 the worker's own ``ProgressWatch`` accepts (#488).
 """
-import ast
 import json
 import os
 import subprocess
@@ -160,12 +159,11 @@ def test_core_reporter_remains_a_no_op_without_channel(monkeypatch):
 def test_one_definition_of_the_schema_and_the_channel():
     """``core`` mirrors these rather than importing them, so check the mirror.
 
-    It cannot import: the worker attestation hashes the launcher and
-    ``core.py``, so a repository import there would be code the worker runs
-    and the attestation does not cover
-    (``test_worker_core_has_no_unattested_repository_imports``).  The action
-    cannot import ``core`` either, which is why the writer lives in the leaf.
-    Two files state these strings; this is what stops them disagreeing.
+    The action cannot import ``core``, which is why the writer lives in the
+    leaf; the worker core's one repository import is the attested digest
+    owner, and unattested repository closure there is owned by
+    ``test_worker_core_has_no_unattested_repository_imports``.  Two files
+    state these strings; this is what stops them disagreeing.
     """
 
     assert pb.PROGRESS_RECORD_SCHEMA_V1 == progress.PROGRESS_RECORD_SCHEMA_V1
@@ -175,9 +173,6 @@ def test_one_definition_of_the_schema_and_the_channel():
         pb.ACTION_PROGRESS_PATH_ENV, pb.ACTION_PROGRESS_TOKEN_ENV,
         pb.ACTION_PROGRESS_PHASES_ENV, pb.ACTION_PROGRESS_ALLOWANCES_ENV,
         pb.ACTION_PROGRESS_HELPER_ENV)
-    relative = [node for node in ast.walk(ast.parse(Path(pb.__file__).read_text()))
-                if isinstance(node, ast.ImportFrom) and node.level > 0]
-    assert relative == []
 
 
 def test_no_channel_is_a_no_op_rather_than_an_error(monkeypatch):

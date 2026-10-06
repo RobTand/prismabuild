@@ -69,7 +69,7 @@ _PUBLISH_LOCK_DEPTH = 0
 _PUBLISH_LOCK_PID: int | None = None
 #: Published as ``tools/<name>`` *and* ``tools/fleet/<name>``.
 FLEET_SCRIPTS = (
-    "docker", "pbrun.py", "pbtest.py", "pbtest_outcomes.py", "pbtest_collection.py", "pbtest_pins.py", "require_pool.py", "worker_loop.py", "worker.py",
+    "docker", "pbrun.py", "pbtest.py", "pbtest_outcomes.py", "pbtest_collection.py", "pbtest_pins.py", "pbtest_capabilities.py", "require_pool.py", "worker_loop.py", "worker.py",
     "seal_and_publish.py",
     "publish_runtime.py", "pool_reset.py", "runtime_paths.py", "supervise.py",
     "role_log_identity.py", "migrate_role_logs.py",
@@ -80,7 +80,7 @@ FLEET_SCRIPTS = (
     # ...and tier_loop.py on a box declaring the tiers role (#583): it
     # mints and announces the box's discovered storage tiers, and a role
     # script that does not travel cannot be spawned.
-    "tier_loop.py",
+    "tier_loop.py", "pbresident.py", "local_tier_loop.py", "local_resident.py",
     # ...and stage_move.py, which is not a role script at all: it is the
     # movement node itself, exec'd by an admitted action on the storage box
     # (#583).  A generation without it publishes movers nothing can run.
@@ -159,6 +159,10 @@ FLEET_SCRIPTS = (
     # holding the mount, and it reads /proc on the box it runs on to find out
     # what is still live there.
     "pb_gc.py",
+    # pbgang.py submits a gang (#1517) from a box that has no checkout; a tool
+    # missing from this list is a tool no box can run, so the gang canary could
+    # not start from a published generation.
+    "pbgang.py",
     # Explicit plan-first banked-checkout recovery runs on the owning host.
     "pbrecover_checkout.py",
     # The reconcile, for the same reason: the endings it files are the ones
@@ -191,6 +195,11 @@ FLEET_SCRIPTS = (
 #: The tuple exists so that leaving one out is a decision
 #: somebody wrote down rather than an omission nobody noticed.
 EXCLUDED: tuple[tuple[str, str], ...] = (
+    ("filesystem_floor_proof.py",
+     "the #1483 two-host floor proof, run from a checkout through pbrun "
+     "against a private registry; a record of one qualification, not an "
+     "operator command (the operator CLI is python -m "
+     "prismabuild.filesystem_floor)"),
     ("profile_finish_census.py",
      "a read-only profile of the census a finish pays, run from a checkout "
      "through pbrun against a view of a queue's funding directory; it is a "
@@ -327,7 +336,7 @@ CANARY_RECORD_SCHEMA = "prismaquant.prismabuild.canary_status.v1"
 #: reads ``50-prismabuild-resource-broker.conf`` beside itself and provisions
 #: it as needrestart's exact-service restart exclusion (#1378), so a
 #: generation published without it would install an unprotected broker.
-FLEET_DATA = ("fleet_boxes.json", "ram_tier_policy.json",
+FLEET_DATA = ("fleet_boxes.json", "ram_tier_policy.json", "local_tier_policy.json",
               "50-prismabuild-resource-broker.conf")
 
 # These originate at tools/, without a second tools/fleet/ spelling. The

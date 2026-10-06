@@ -104,6 +104,15 @@ DID_NOT_RUN = [
         1, id="traceback-mentioning-error"),
 ]
 
+def test_a_shard_that_exhausts_storage_names_the_cause(tmp_path, monkeypatch):
+    output = "OSError: [Errno 28] No space left on device: /tmp/shard\n"
+    record = _one_shard(tmp_path, monkeypatch, output, 1)
+    assert record["ran"] is False
+    assert "ENOSPC" in record["summary"]
+    assert "No space left on device" in record["summary"]
+    assert "execution/coverage unknown" in record["summary"]
+
+
 #: Endings that are a terminal summary, in the undecorated form ``-q`` prints
 #: and the ``=``-wrapped form above ``-q``.
 DID_RUN = [

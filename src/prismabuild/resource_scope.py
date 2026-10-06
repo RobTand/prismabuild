@@ -220,7 +220,9 @@ def _process_in_scope(pid: int, path: Path | None) -> bool:
     raise ValueError(f'cannot parse process {pid} cgroup membership')
 
 
-def read_process_io(pid: int) -> tuple[str, int, dict[str, int] | None] | None:
+def read_process_io(
+    pid: int, *, read_text=None,
+) -> tuple[str, int, dict[str, int] | None] | None:
     """A process's identity, its parent, and its counters when readable.
 
     ``starttime`` from ``/proc/<pid>/stat`` is what makes the key exact: pids
@@ -240,9 +242,19 @@ def read_process_io(pid: int) -> tuple[str, int, dict[str, int] | None] | None:
     means "here, but not readable"; ``None`` for the whole result means gone.
     An unreadable initial identity raises OSError or ValueError: the sampler
     must retain its prior reading rather than infer departure from an outage.
+
+    ``read_text`` takes a ``/proc`` path string and returns its text. Left
+    ``None`` the reads go through ``Path.read_text``, so a caller's patch of
+    that reader is honoured. The pytest resource tracer instead passes a reader
+    it bound at import (#1550): it samples the real worker while a legitimate
+    test may hold a patch of the global reader that asserts it only sees its
+    own fake pid, and a read dispatched through that patch aborts the shard.
     """
+    def read(path: str) -> str:
+        return Path(path).read_text() if read_text is None else read_text(path)
+
     try:
-        stat = Path(f'/proc/{pid}/stat').read_text()
+        stat = read(f'/proc/{pid}/stat')
     except FileNotFoundError:
         return None
     try:
@@ -255,7 +267,7 @@ def read_process_io(pid: int) -> tuple[str, int, dict[str, int] | None] | None:
     identity = f'{pid}:{starttime}'
     try:
         counters = dict(line.split(':', 1) for line in
-                        Path(f'/proc/{pid}/io').read_text().splitlines() if ':' in line)
+                        read(f'/proc/{pid}/io').splitlines() if ':' in line)
     except (OSError, ValueError):
         return identity, parent, None
     values: dict[str, int] = {}
@@ -271,7 +283,7 @@ def read_process_io(pid: int) -> tuple[str, int, dict[str, int] | None] | None:
     # the refreshed parent too: orphaning during these reads can turn a child
     # into a scope root whose counters must be retired when it disappears.
     try:
-        after = Path(f'/proc/{pid}/stat').read_text()
+        after = read(f'/proc/{pid}/stat')
         after_fields = after[after.rindex(')') + 1:].split()
         after_parent, after_starttime = int(after_fields[1]), after_fields[19]
     except FileNotFoundError:
@@ -347,7 +359,9 @@ _PROXY_DEPENDENCIES = ("resource_broker.py", "runtime_paths.py")
 # resource_exec.main imports resource_scope through the package before it
 # asks the broker to enter containment. __init__ eagerly imports core,
 # progress and residency_map; the latter imports storage_tiers. Their bytes
-# therefore need the same publication proof as the executable proxy.
+# need the same publication proof as the executable proxy. Post-split core
+# also imports digest_primitives; verify it when the receipt lists it,
+# retaining the existing closure for pre-split generations without that file.
 _PROXY_PACKAGE_DEPENDENCIES = (
     "__init__.py", "resource_scope.py", "core.py", "progress.py",
     "residency_map.py", "storage_tiers.py",
@@ -566,6 +580,9 @@ class ResourceScope:
         for dependency in _PROXY_PACKAGE_DEPENDENCIES:
             self._verified_member(
                 root, f"src/prismabuild/{dependency}", files)
+        digest_owner_rel = "src/prismabuild/digest_primitives.py"
+        if digest_owner_rel in files:
+            self._verified_member(root, digest_owner_rel, files)
         for proxy_rel in _PROXY_CANDIDATES:
             if proxy_rel not in files:
                 continue  # this layout does not carry that spelling

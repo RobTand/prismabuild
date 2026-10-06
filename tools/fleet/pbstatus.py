@@ -1034,7 +1034,9 @@ def read_pool(queue_root: str | Path) -> dict:
     admission = {}
     for host, offer in workers.items():
         if _valid_pool_offer(host, offer):
-            base = queue.ledger(host).base / 'adaptive'
+            # This observation needs a path, not a mutating ledger: building
+            # one canonicalizes its lock and probes every ancestor (#1528).
+            base = queue.root / pool.RESERVATIONS / host / "adaptive"
             admission[host] = {
                 'cpu': _pool_sidecar(base / 'cpu-sample.json'),
                 'gpu': _pool_sidecar(base / 'gpu-state.json') if offer.get('has_gpu') else None,
@@ -1148,6 +1150,7 @@ def read_pool(queue_root: str | Path) -> dict:
                            priority=record.get('priority', 0),
                            priority_reason=pool.normalize_priority_reason(record.get('priority_reason')),
                            submitted_host=record.get('published_by'),
+                           tested_repository=pool.tested_repository_of(record),
                            unstarted_releases=_releases(record),
                            age_s=_age(record.get('claimed_unix') if state == pool.CLAIMED
                                       else record.get('published_unix'), now))
@@ -2075,7 +2078,7 @@ def _starvation_census_unreadable(queue: pool.PoolQueue, *, notes: list[str],
     an exact census removes it.
     """
 
-    ledgers: list[tuple[str, str, pool.ResourceLedger]] = []
+    report_paths: list[tuple[str, str, Path]] = []
     try:
         with os.scandir(queue.root / pool.RESERVATIONS) as entries:
             hosts = sorted(entry.name for entry in entries if entry.is_dir())
@@ -2085,17 +2088,19 @@ def _starvation_census_unreadable(queue: pool.PoolQueue, *, notes: list[str],
         notes.append(f"starvation host ledgers: {exc}")
         unreadable.append(f"starvation host ledgers: {exc}")
         hosts = []
-    ledgers.extend(("host", host, queue.ledger(host)) for host in hosts)
+    report_paths.extend(("host", host, queue.root / pool.RESERVATIONS / host /
+                         pool.CENSUS_UNREADABLE) for host in hosts)
     try:
-        ledgers.extend(("tier", tier_id, queue.tier_ledger(tier_id))
-                       for tier_id in queue.tier_ids())
+        report_paths.extend(("tier", tier_id, queue.root / pool.TIER_RESERVATIONS /
+                             queue._check_tier_id(tier_id) / pool.CENSUS_UNREADABLE)
+                            for tier_id in queue.tier_ids())
     except (OSError, ValueError, pool.PoolContractError) as exc:
         notes.append(f"starvation tier census reports: {exc}")
         unreadable.append(f"starvation tier census reports: {exc}")
     reports: list[dict] = []
-    for kind, name, ledger in ledgers:
+    for kind, name, report_path in report_paths:
         try:
-            report = pool._read_json(ledger.census_report_path)
+            report = pool._read_json(report_path)
         except (OSError, pool.PoolContractError) as exc:
             notes.append(f"starvation {kind} ledger {name} census report: {exc}")
             unreadable.append(f"starvation {kind} ledger {name} census report: {exc}")
@@ -2663,6 +2668,9 @@ def ending_row(entry: os.DirEntry, queue_root: str | Path) -> dict:
     finished = record.get("finished_unix")
     return {
         "action_key": str(record.get("action_key") or entry.name[:-5]),
+        # Which repository this run tested (#1565): the row's own tag,
+        # backfilled to explicit unknown for records filed before it.
+        "tested_repository": pool.tested_repository_of(record),
         "status": str(record.get("status") or UNKNOWN),
         "transport": _transport(record),
         # The box the action was ON, not the box that filed its ending.
@@ -2679,6 +2687,8 @@ def ending_row(entry: os.DirEntry, queue_root: str | Path) -> dict:
         # names at all -- a cache hit, or a SLURM record filed by the
         # waiter (#227, #262).
         "host": record.get("claimed_host") or record.get("finished_host"),
+        "served_from": record.get("served_from"),
+        "resident_set": record.get("resident_set"),
         "elapsed_s": detail.get("elapsed_s"),
         "returncode": detail.get("returncode"),
         # The action's own ending, on the records that carry one: the
@@ -2701,6 +2711,9 @@ def ending_row(entry: os.DirEntry, queue_root: str | Path) -> dict:
         # Where a profiled run left its profile (#372 Tier 1).  ``None``
         # on every other row, which is most of them.
         "profile": detail.get("profile"),
+        "withdrawn_attempt": record.get("withdrawn_attempt"),
+        "resource_scope_cleanup": record.get("resource_scope_cleanup"),
+        "container_cleanup": record.get("container_cleanup"),
         # Present on every row so a reader of the JSON can test one field
         # rather than the absence of one.
         "unreadable": None,
@@ -3175,6 +3188,53 @@ _bounded_reader = _reader._bounded_reader
 _starttime_ticks = _reader._starttime_ticks
 
 
+def read_resident_sets(queue_root, *, now=None):
+    """Read declarations, copy states, lease decisions and measured capacity."""
+    from prismabuild import local_resident, resident_sets
+    store = resident_sets.ResidentSets(queue_root)
+    sets, capacity, unreadable = [], [], []
+    try:
+        directories = list(store.root.iterdir())
+    except FileNotFoundError:
+        directories = []
+    except OSError as exc:
+        directories = []
+        unreadable.append(f"{store.root}: {exc}")
+    for directory in sorted(directories):
+        try:
+            if not directory.is_dir():
+                continue
+            try:
+                (directory / "body.json").stat()
+            except FileNotFoundError:
+                continue  # A refused publication may leave only its lock.
+            row = store.status(directory.name)
+            row["lease_active"] = local_resident.lease_active(store, directory.name, now=now)
+            sets.append(row)
+        except (ValueError, OSError) as exc:
+            unreadable.append(f"{directory}: {exc}")
+    root = Path(queue_root) / "resident-capacity"
+    try:
+        paths = list(root.iterdir())
+    except FileNotFoundError:
+        paths = []
+    except OSError as exc:
+        paths = []
+        unreadable.append(f"{root}: {exc}")
+    for path in sorted(paths):
+        try:
+            row = json.loads(path.read_text())
+            if not isinstance(row, dict) or not isinstance(row.get("host"), str):
+                raise ValueError("invalid resident capacity record")
+            ledger = pool.PoolQueue(queue_root).tier_ledger("local:" + row["host"])
+            row["held"] = ledger.held()
+            capacity.append(row)
+        except (ValueError, OSError) as exc:
+            unreadable.append(f"{path}: {exc}")
+    return {"sets": sets, "capacity": capacity, "complete": not unreadable, "unreadable": unreadable}
+
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Show the fleet's nodes, its jobs, and how work ended.",
@@ -3189,6 +3249,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--json", action="store_true",
         help="print one JSON object with the three lists and any scheduler "
              "notes, and nothing else")
+    parser.add_argument("--resident-sets", action="store_true",
+                        help="print resident sets, host copy states, leases and capacity as JSON")
     parser.add_argument(
         "--blocked-origins", action="store_true",
         help="print one JSON blob listing every consumed origin batch whose "
@@ -3259,6 +3321,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     # have in common is only that neither read the fleet.
     unavailable: list[dict] = []
     pool_partial = False
+    if args.resident_sets:
+        read = bounded("resident-sets", lambda: read_resident_sets(args.queue_root),
+                       deadline=deadline, abandoned=abandoned)
+        if read["status"] == "ok":
+            print(json.dumps(read["value"], sort_keys=True, indent=1))
+            return 0 if read["value"]["complete"] else EXIT_INCOMPLETE
+        print("pbstatus: resident-sets read " + read["status"], file=sys.stderr)
+        return EXIT_INCOMPLETE
 
     if args.deferred:
         # Pool-only, like --starvation: deferred submissions are pull-queue

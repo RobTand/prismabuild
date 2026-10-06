@@ -164,6 +164,12 @@ identity mapping, safe DL diagnostic route or five-percent-floor positive.
 Actual parent/security review and admitted PB controls remain required;
 mixed-version writers outside the exclusion remain unqualified.
 
+The #1483 floor gate ([filesystem_floor.md](filesystem_floor.md)) runs
+inside this exclusion and keeps its contract: its floor locks are taken
+inside the host (or tier) lock and acquire nothing further, it reads no
+shared record there beyond the floor's sample and grant counter, and the
+non-byte kinds (`cpu`, `mem_gb`, `gpu`, `disk_metadata`) are never gated.
+
 CPU action identity and the GPU action contract (`adaptive_gpu.action_contract`)
 still read the sealed request from the CAS on the mount. The pool now resolves
 these immutable facts before candidate admission, retaining per-key exclusion,

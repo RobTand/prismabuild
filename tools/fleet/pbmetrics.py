@@ -799,7 +799,7 @@ def _attempt_telemetry(
             scope = claim.get("resource_scope") if isinstance(claim, dict) else None
             nonce = scope.get("nonce") if isinstance(scope, dict) else None
             record = reader.sidecar(
-                queue.ledger(host).base / "telemetry" / f"{key}.json")
+                queue.root / pool.RESERVATIONS / host / "telemetry" / f"{key}.json")
             record = None if isinstance(record, Exception) else record
             sampled = _number(record.get("sampled_unix")) if isinstance(record, dict) else None
             cpu_seconds = _number(record.get("cpu_seconds")) if isinstance(record, dict) else None

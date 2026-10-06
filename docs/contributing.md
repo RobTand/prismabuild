@@ -50,6 +50,23 @@ contain risk at the highest displayed tier. Do not retrospectively reprioritize
 historical issues, including solely to adopt this taxonomy, and do not mass relabel
 them.
 
+## Pool regression fixtures
+
+Keep fixture inputs valid for the reviewed admission contract. Executable
+fixtures declare their host capacity and CPU map before taking a reservation;
+fixtures that execute subprocesses use CPU IDs within their admitted affinity.
+Measurement drain tests publish real sealed measurement identities rather than
+only replacing the adaptive controller's classification. Simulated proc input
+must not intercept the census reader's real process identity or descriptor list.
+Canonical publication fixtures retain valid hex keys and publication generations.
+With a composed queue fixture, fault injection captures the underlying owner's
+method rather than the wrapper that forwards back to that owner.
+
+Separate test drift from product regressions using the introducing commit, its
+reviewed design, unchanged-main failure and targeted PrismaBuild receipt. Do not
+widen a progress grace to hide a load-sensitive failure. Spool tests need a
+basetemp on a supported local disk; dl380g10's tmpfs-backed /tmp is not one.
+
 Install the local direct-push guard with:
 
 ```bash

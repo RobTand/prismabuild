@@ -130,9 +130,10 @@ def _episode(queue, key):
     return record, episode
 
 
-@pytest.mark.parametrize("bad", [None, "later", True, float("nan"), 10**500],
+@pytest.mark.parametrize("bad,valid_json", [(None, True), ("later", True),
+                         (True, True), (float("nan"), False), (10**500, True)],
                          ids=["null", "text", "boolean", "nan", "oversized"])
-def test_bad_deadline_cannot_be_erased_into_a_new_allowance(fleet, bad):
+def test_bad_deadline_cannot_be_erased_into_a_new_allowance(fleet, bad, valid_json):
     queue, clock, readings, sample, publish, tick, claim, denial = fleet
     holder, measurement, first, started = _unmeasured(fleet)
     record, episode = _episode(queue, measurement)
@@ -140,8 +141,22 @@ def test_bad_deadline_cannot_be_erased_into_a_new_allowance(fleet, bad):
     episode["unmeasured_until_unix"] = bad
     # Corrupted on-disk metadata, including a nonstandard nonfinite scalar;
     # the canonical production writer rightly cannot manufacture NaN.
-    queue.passes_path(measurement).write_text(json.dumps(record))
+    corrupt = json.dumps(record)
+    queue.passes_path(measurement).write_text(corrupt)
     assert claim(q=pool.PoolQueue(queue.root)) is None
+    if not valid_json:
+        # Nonfinite JSON is refused by the canonical census before the
+        # permissive legacy reader can repair deadline fields (#1435).
+        assert denial(measurement)["reason"] == "measurement_census_unavailable"
+        assert queue.passes_path(measurement).read_text() == corrupt
+        backfill = publish("backfill")
+        assert claim(q=pool.PoolQueue(queue.root)) is None
+        assert denial(backfill)["reason"] == "measurement_census_unavailable"
+        assert queue.passes_path(measurement).read_text() == corrupt
+        assert set(queue.ledger().held_keys()) == {holder}
+        assert queue.item_path(pool.READY, measurement).exists()
+        assert queue.item_path(pool.READY, backfill).exists()
+        return
     waiting = denial(measurement)["evidence"]["withhold"]
     assert waiting["withhold"] is False and waiting["drain_resolves"] is False
     record, episode = _episode(queue, measurement)

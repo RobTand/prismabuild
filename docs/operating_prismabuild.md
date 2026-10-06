@@ -15,6 +15,59 @@ adaptive CPU and GPU admission. SLURM (`slurm`) is an optional transport; its
 [scheduler decision](scheduler_decision_2026-09-04.md) describe that deployment
 path. See [the design document](design.md) for the current system contracts.
 
+## Resident set records (Phase 1)
+
+`pbresident.py --pool-root QUEUE publish --manifest MANIFEST` accepts
+`--canonical-root DIRECTORY --hosts HOST[,HOST] --lease-until DATE` and
+`--hard-max DATE`. Dates include a timezone, for example
+`2026-10-10T00:00:00Z`. Use `--campaign NAME` instead of `--lease-until`
+for a campaign lease; the hard maximum is still required. Every entry needs
+a real SHA-256 and must cover a complete regular file. Unlisted files,
+symlinks, ranges and mismatched sizes are refused.
+
+`pbresident.py --pool-root QUEUE status [SET_ID]` returns set bodies, lease
+journals, host copy states and separately stored movement descriptors as JSON.
+`release SET_ID` appends a release
+without rewriting the declaration. Phase 1 does not change job paths,
+container mounts or placement. Publication alone does not claim a copy is
+available. The versioned `local_tier_policy.json` declares host roots,
+maximum GiB, the free-space floor and Docker allowance; the shipped host
+map is empty and does not enable any Spark.
+The renewal policy has `renewal_ceiling_s` (default 1209600 seconds, 14 days).
+An explicit renewal cannot set its hard maximum beyond that interval from
+the renewal time; the hard maximum remains required.
+`publish` also queues one ordinary host-pinned copy action per host, with
+a retained host-pinned egress row. It uses the current Git checkout by default;
+`--checkout PATH` selects the checkout that supplies the movement payload.
+The owning host must have announced its local tier tools and capacity.
+
+If publication files its body but action dispatch fails, do not republish the
+same manifest: `pbresident.py --pool-root QUEUE dispatch SET_ID --checkout
+CHECKOUT --policy POLICY` retries dispatch using that existing set. The
+command returns movement rows as JSON, attaches to already-live copy actions,
+and queues no new copy for a host whose copy is resident. Use a bounded Git
+checkout explicitly when the current directory is too large to snapshot.
+
+`pbresident.py --pool-root QUEUE renew SET_ID --lease-until DATE --hard-max
+DATE --policy POLICY --by OPERATOR` appends a new lease without modifying
+the set body. Use `--campaign NAME` instead of `--lease-until` if needed.
+The policy ceiling applies to the new hard maximum relative to renewal time.
+
+`pbresident.py --pool-root QUEUE adopt SET_ID --host HOST --source DIRECTORY`
+queues a verified same-filesystem adoption on the owning host; it does not
+hash or move bytes on the coordinator. `--checkout` and `--policy` have the
+same meaning as on publication. Remove manual global bind-mount units first
+and stop every container that captured the old `/mnt/shared` recursive bind.
+The payload refuses an active bind mount or running captured container. Read
+`status SET_ID` for completion and its per-file verification receipt.
+`pbrun --resident-set SET_ID` declares an optional set reference for lease
+renewal. It does not require a resident copy or change execution placement.
+Phase 1 records every attempt as `served_from: "canonical"`; local mount
+injection is not present. Readers accept `local` for forward compatibility,
+but only the Phase 2 shim writes it. `pbstatus.py --queue-root QUEUE --resident-sets`
+shows set declarations, host copy states, lease journals and capacity as JSON.
+A partial census has `complete: false` and names its unreadable records.
+
 Both transports publish the same verifiable CAS results. Their placement and
 resource enforcement differ, as described below. Examples name
 `--transport slurm` where SLURM behaviour is the point. You can set
@@ -225,7 +278,7 @@ its existing limits. This is not a whole-submission timeout.
 | `--anywhere` | Assert that dependencies outside the snapshot are identical on every eligible worker. | No constraint, and the default partition. |
 | `--priority N` | A queue hint. Higher runs sooner; a negative value yields to everything at 0, and aging never lifts it past them. Defaults to 0. | `--nice`, sent on every submission. SLURM subtracts the nice from the base priority its scheduler assigned. |
 | `--priority-reason TEXT` | Optional explanation shown beside priority in `pbstatus`; outside action identity and admission policy. | Stored with the lane submission, outside identity and scheduling flags. |
-| `--profile MODE` | Run a profiler around the action's child and store the profile as a CAS blob named on the ending. `sample` is py-spy over the whole process tree; `nsys` is Nsight Systems over CUDA and NVTX, optionally windowed (`nsys:600`); `torch` is a contract the action opts into. **Part of the action identity**, unlike `--priority`. | Carried unchanged; the worker resolves the backend on the box that runs it. |
+| `--profile MODE` | Run a profiler around the action's child and store the profile as a CAS blob named on the ending. `sample` is py-spy over the whole process tree, optionally at a sealed positive rate (`sample:10`); `nsys` is Nsight Systems over CUDA and NVTX, optionally windowed (`nsys:600`); `torch` is a contract the action opts into. **Part of the action identity**, unlike `--priority`. | Carried unchanged; the worker resolves the backend on the box that runs it. |
 
 Without `--tag`, `--here` or `--anywhere`, pool submissions from a
 declared Spark and GPU submissions from celestia default to `gb10` only
@@ -402,7 +455,14 @@ Class evidence is not a daemon lock or a guarantee against later image deletion.
 ### `--profile`: an opt-in profile, sealed into the key
 
 `--profile sample` runs py-spy at 100 Hz over the action's whole process tree
-and files the speedscope profile as a CAS blob. The ending carries
+and files the speedscope profile as a CAS blob. `--profile sample:HZ` seals a
+positive whole sampling rate instead — `sample:10` samples ten times a second,
+which is the lever to reach for when the 100 Hz default's own observer cost is
+the thing distorting a long instrumented run (#1494). Malformed and
+nonpositive rates are refused at `pbrun` before anything is sealed, and again
+at the worker's action validation; bare `sample` is byte-for-byte the mode
+that always existed, and two rates are two actions because the mode string is
+sealed into the key. The ending carries
 `profile: {mode, backend, backend_version, backend_path, backend_resolved_path,
 backend_sha256, backend_bytes, backend_returncode, rate_hz, blob_sha256, bytes,
 samples, blob_path, produced}`, and both `pbrun` and `pbstatus` print the digest
@@ -439,10 +499,11 @@ What is worth knowing before using it:
     medians and 4.12 % on the means; the paired 95 % interval is **1.2-7.0 %**
     (n = 5, shared box at loadavg 1.4-3.4). The tier's ~5 % budget is met as
     a point estimate and not established: the interval's upper end crosses
-    it. The rate stays at 100 Hz on that reading; a re-measurement on a quiet
-    box with more repeats is what would settle it. The rate is a property of the mode and is reported
-    in the ending, never sealed: receipts taken across a rate change are
-    comparable only through the `rate_hz` each one carries.
+    it. The rate stayed at 100 Hz on that reading; a re-measurement on a quiet
+    box with more repeats is what would settle it. The bare mode's rate is the
+    mode's default and is reported in the ending; a `sample:HZ` action seals
+    its rate through the mode string, and receipts taken across a rate change
+    remain comparable only through the `rate_hz` each one carries.
 *   **The backend has to be visible to the launcher's interpreter.** The
     backend is looked up beside `sys.executable` first and then on `PATH`, and
     `sys.executable` is the worker loop's `--python`. Eligibility comes from
@@ -1556,10 +1617,65 @@ is absolute, since a remote directory need not exist on the submitting box.
 The path is sealed as one literal `TMPDIR` environment argument. Each pytest
 shard keeps its own temporary children and outcome record. This is configurable
 scratch placement, not proof of direct-I/O support or of an earlier disk-write
-failure's cause. With an explicit option, the child checks the directory by
-creating and closing an anonymous temporary file before pytest and refuses an
-unavailable or unusable parent. The default keeps its existing fallback behavior.
-This startup check does not guarantee free space or later availability.
+failure's cause. With an explicit option, the child checks free inodes against
+the five percent filesystem floor before creating and closing an anonymous
+temporary file. It refuses low inode headroom or an unavailable or unusable
+parent by name. The default keeps its existing fallback behavior. This startup
+check does not guarantee later byte or inode availability.
+
+A passing test's `tmp_path` directory is removed as soon as the test ends
+(`tmp_path_retention_policy = "failed"` under `[tool.pytest.ini_options]` in
+`pyproject.toml`); only a failing test's directory is kept for diagnosis. Without
+it pytest keeps every test's directory until a later session prunes it, which on
+a RAM tmpfs with a fixed inode table (`nr_inodes`) held 750,000 inodes from six
+concurrent suites on dl380g10 and made every action there fail in preflight with
+`OSError 28` while the filesystem still reported free bytes. `pbtest` refuses a
+command-line `-o`, so this setting is part of the checkout the shards snapshot.
+The status error-injection fixtures also delegate integer directory descriptors
+to the real system call. Their named-path error injections and assertions stay
+unchanged; descriptor-based temporary-directory cleanup can therefore finish
+under the failed-only retention policy instead of failing in the fixture itself.
+Only `tmp_path` is removed per test. A directory made with `tmp_path_factory.mktemp`,
+and the directory of any failing test, lasts as long as the session's base temporary
+directory. By default `pbtest` passes no `--basetemp`, so that base is
+`$TMPDIR/pytest-of-<user>/pytest-N`, where `TMPDIR` is the default `/home/rob/tmp` or the
+`--tmpdir` directory when one is given. pytest removes the whole directory itself when
+the session ends with exit status 0 (policy `failed`); after a session with any failure it
+stays until later sessions prune older numbered directories (pytest keeps the newest three
+by default). With `--basetemp root` pytest does not remove the directory at the end of the
+session: it deletes and recreates the root at the start of the next session that uses that
+path, so a leftover root has to be cleaned by whoever sealed it.
+
+`--basetemp root` seals a separate scratch root for pytest's own temporary
+files (#1469), so selecting real test scratch no longer moves the process
+`TMPDIR` -- and with it the torch compiler/native-cache context -- of the
+shard. The coordinator validates only the spelling: a nonempty, NUL-free path
+with no `..`; absolute for a separately qualified mounted filesystem, relative
+for scratch confined to the attempt's own materialized checkout. The worker
+derives `root/<action-key>/<attempt>/pytest` from the action's own identity
+(`PRISMABUILD_ACTION_NONCE` where the launcher provides one, a per-execution
+identity where it does not) and hands that leaf to pytest as `--basetemp`;
+pytest deletes its basetemp at startup, so the sealed root is never passed to
+it, and simultaneous shards, separate actions and separate attempts each own
+a namespace the others cannot reach. Before pytest, the worker refuses a root
+that is missing, not a directory, a symlink, or not owned by the action's
+user -- no fallback. `TMPDIR` and `--tmpdir` keep their existing meaning, no
+`PYTEST_DEBUG_TEMPROOT` is injected, and no arbitrary `--env` forwarding is
+added; xdist worker children inherit the derived basetemp and stay under the
+action root. The root stays unsupported through `--pytest-args`: the closed
+vocabulary does not grow.
+
+Nothing removes the derived `root/<action-key>/<attempt>/pytest` namespaces
+automatically. pytest deletes only the basetemp it is handed, at its own
+start. A sealed root is not PrismaBuild-admitted scratch: the attempt
+lifetime contract (#1463, refs #1360) owns declared, registered ephemeral
+roots, not a caller-provisioned `--basetemp` root, so D1 disk admission does
+not see what accumulates there. A relative root needs no extra owner -- it
+lives inside the attempt's materialized checkout and is removed with it. An
+absolute root grows outside every PB accounting path, so the caller who
+provisions ROOT owns the removal of its action namespaces; until #1360
+extends scratch lifetime to sealed client roots, provision absolute roots
+under a retention policy of your own.
 
 Every requested path must be a file or directory. A missing or invalid path
 refuses the whole submission with exit code 2 and a diagnostic before any
@@ -1713,6 +1829,10 @@ counts do not establish zero execution, and `ran=false` is not a claim that no
 case ran. Such a shard remains non-green even if its process returned zero.
 Retained logs can identify individual observed failures, but cannot certify an
 unreported final population.
+When retained output names `ENOSPC`, `[Errno 28]` or `No space left on device`,
+the missing-summary report names `STORAGE EXHAUSTED (ENOSPC: No space left on
+device)` instead of only `NO PYTEST SUMMARY`. Coverage still remains unknown;
+the log alone cannot distinguish exhausted bytes from exhausted inodes.
 
 ### Choose the project's test environment
 
@@ -1755,6 +1875,31 @@ the shard. The diagnostic names the resolver and expected/installed commits;
 an unprovable installed commit is shown as `<unknown>`. A matching package
 prints `pbtest dependency pin` JSON into the action's retained stdout.
 Contract/package version equality alone does not prove the reviewed revision.
+
+`verify_install(module, expected, *, identity_policy=None)` in
+`tools/fleet/pbtest_pins.py` keeps that behavior by default. A caller that may
+stamp recorded identity drift (an editable flag, a non-Git origin, or a
+different recorded commit) passes a callable: it receives the identity-failure
+message and the observed facts, and returning normally — instead of raising —
+marks the run's evidence with `identity_drift_tolerated` and continues. The
+integrity phase is not optional and is not weakened by the policy:
+`verify_record_bytes(module)` is the one implementation of it (one owning
+distribution, RECORD present, every hashed RECORD entry present on disk and
+matching the bytes there — raw RECORD metadata is read as UTF-8 bytes from the
+owning PathDistribution metadata path before newline-preserving CSV parsing.
+The public read_text API normalizes quoted carriage returns and
+carriage-return-line-feed characters; Distribution.files also hides missing
+entries and splits quoted lines. Missing or unreadable raw metadata refuses
+without a lossy fallback. Quoted filename characters are preserved, malformed
+grammar refuses, and a deleted console script or package file refuses exactly
+like corrupted bytes,
+in both policies — the imported module owned by that RECORD, and no
+unrecorded package file), and
+`verify_install` always routes through it. Ownership of the imported module is
+an integrity check, so an editable or shadowed import refuses even when
+identity drift is tolerated. A raising policy propagates unchanged.
+`check_pins` and `preflight` (the shard gate) do not take a policy: a shard
+either proves its reviewed pins or refuses.
 
 Provision an environment with an immutable Git requirement, for example
 `python -m pip install --no-deps 'git+https://github.com/RobTand/tessera.git@<full-reviewed-commit>'`,
@@ -3012,6 +3157,30 @@ afterwards. Run `pbwait` on the keys to derive and file the terminal records.
 
 Any producer that builds its own actions should do the same: seal the action,
 hand it to `fleet_submit`, print the key, and read the CAS for the verdict.
+
+## The used-filesystem floor (#1483)
+
+Every filesystem PrismaBuild writes keeps five percent free plus every byte
+allowance it has granted there and not taken back.  The mode is fleet-wide
+and **off by default**; `observe` logs `[filesystem-floor] would refuse ...`
+and `enforce` refuses (a claim or tier take sees an ordinary shortage, a
+worker poll skips its admission, `pbrun` exits before submitting).
+
+```bash
+python -m prismabuild.filesystem_floor status          # bindings, verdicts, unbound byte ledgers
+python -m prismabuild.filesystem_floor register ROOT --member reservations/<host>:spool_gb
+python -m prismabuild.filesystem_floor register /storage_pool/shared --filesystem-gib N --filesystem-ledger storage-pool
+python -m prismabuild.filesystem_floor check PATH...   # used-path verdicts, any mode
+python -m prismabuild.filesystem_floor mode observe    # or off | enforce; no restart needed
+python -m prismabuild.filesystem_floor reap            # release growth held by dead owners
+```
+
+Register on the host where `ROOT` is local, through a PB action pinned to
+it.  `PRISMABUILD_FILESYSTEM_FLOOR=off|observe|enforce` overrides the mode
+for one process.  `pbrun --filesystem-growth-gib N` (default 1) sizes what a
+submission may write to the shared store while it publishes.  The bootstrap
+order, the end-to-end proof that gates `enforce`, and the known limits are
+in [filesystem_floor.md](filesystem_floor.md).
 
 ## Publish the runtime the fleet executes
 

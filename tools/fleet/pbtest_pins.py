@@ -6,9 +6,11 @@ installs packages or executes a resolver on the submitting machine.
 from __future__ import annotations
 
 import base64
-import hashlib
+from prismabuild.digest_primitives import stream_digest
+import csv
 import importlib.metadata as metadata
 import importlib.util
+import io
 import json
 from pathlib import Path
 import re
@@ -17,8 +19,31 @@ import subprocess
 import sys
 
 
-def verify_install(module: str, expected: str) -> dict:
-    """Require unambiguous Git provenance and intact installed package bytes."""
+def verify_record_bytes(module: str) -> dict:
+    """Require the imported module's installed bytes to match their RECORD.
+
+    This is the integrity phase of :func:`verify_install`, exposed on its
+    own: one distribution owning ``module``, a present RECORD, every hashed
+    RECORD entry present on disk and matching the bytes there, the module
+    Python actually imports owned by that RECORD, and no unrecorded file
+    inside the package. RECORD is read as UTF-8 bytes from the owning
+    PathDistribution's metadata path, then parsed by the standard library's
+    CSV reader without newline conversion. Quoted filename characters stay
+    intact; Distribution.read_text normalizes carriage returns, and
+    Distribution.files also hides missing entries and splits quoted lines.
+    Malformed grammar refuses: a hash-bearing row with no filename, extra
+    columns, a nonnumeric size, or a blank row (the size column is parsed,
+    never compared). A missing hashed entry refuses here
+    exactly like a byte mismatch, under the strict policy and after
+    tolerated identity drift alike; identity policies decide recorded
+    identity, never byte integrity. Unhashed entries keep their previous
+    treatment. It never compares against the expected pin (it reads
+    ``direct_url.json`` only to label its messages and report
+    ``installed_commit``). In particular the ownership refusal ("imported
+    module is not owned by its RECORD") belongs to this phase, so an
+    editable or shadowed import is refused here even when a caller has
+    decided to tolerate recorded identity drift.
+    """
     owners = metadata.packages_distributions().get(module, [])
     if len(owners) != 1:
         raise ValueError(f"installed commit=<unknown>; expected one distribution "
@@ -28,28 +53,46 @@ def verify_install(module: str, expected: str) -> dict:
     vcs = direct.get("vcs_info", {})
     observed = vcs.get("commit_id", "<unknown>")
     identity = f"distribution={owners[0]} installed commit={observed}"
-    if (direct.get("dir_info", {}).get("editable") or
-            vcs.get("vcs") != "git" or observed != expected):
-        raise ValueError(f"{identity}; require a non-editable Git install at "
-                         "the reviewed commit (local-directory installs do "
-                         "not record a Git commit)")
 
-    files = dist.files
-    if not files:
+    # The public read_text API normalizes CR and CRLF before CSV can see them.
+    # PathDistribution uses this metadata path on both Python 3.12 and 3.14;
+    # its pathlib/zipfile paths expose read_bytes without newline conversion.
+    # Do not fall back to lossy text or infer a different metadata directory.
+    try:
+        record = dist._path.joinpath("RECORD").read_bytes().decode("utf-8")
+    except (AttributeError, OSError, KeyError, UnicodeError) as exc:
+        raise ValueError(f"{identity}; installed RECORD is missing or unreadable") from exc
+    if not record:
         raise ValueError(f"{identity}; installed RECORD is missing")
     recorded = {}
-    for entry in files:
-        path = Path(dist.locate_file(entry)).resolve()
-        if entry.hash is not None:
-            if entry.hash.mode not in {"sha256", "sha384", "sha512"}:
-                raise ValueError(f"{identity}; unsupported RECORD hash: {entry}")
-            digest = hashlib.new(entry.hash.mode)
-            with path.open("rb") as handle:
-                for block in iter(lambda: handle.read(1024 * 1024), b""):
-                    digest.update(block)
-            actual = base64.urlsafe_b64encode(digest.digest()).rstrip(b"=").decode()
-            if actual != entry.hash.value:
-                raise ValueError(f"{identity}; installed bytes differ from RECORD: {entry}")
+    for row in csv.reader(io.StringIO(record, newline="")):
+        if not row or len(row) > 3:
+            raise ValueError(f"{identity}; malformed RECORD row: {row}")
+        name = row[0]
+        hash_field = row[1] if len(row) > 1 else ""
+        size_field = row[2] if len(row) > 2 else ""
+        if size_field:
+            try:
+                int(size_field)  # Grammar only, like the base parser: never compared to bytes.
+            except ValueError:
+                raise ValueError(f"{identity}; malformed RECORD row: {row}") from None
+        if not name:
+            if hash_field:
+                raise ValueError(f"{identity}; malformed RECORD row: {row}")
+            continue
+        path = Path(dist.locate_file(name)).resolve()
+        if hash_field:
+            mode, _, value = hash_field.partition("=")
+            if mode not in {"sha256", "sha384", "sha512"}:
+                raise ValueError(f"{identity}; unsupported RECORD hash: {name}")
+            try:
+                digest = stream_digest(path, algorithm=mode)
+            except FileNotFoundError as exc:
+                raise ValueError(
+                    f"{identity}; recorded file is missing: {name}") from exc
+            actual = base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
+            if actual != value:
+                raise ValueError(f"{identity}; installed bytes differ from RECORD: {name}")
             recorded[path] = actual
 
     # Distribution metadata alone does not say which module Python will load.
@@ -62,8 +105,53 @@ def verify_install(module: str, expected: str) -> dict:
             if path.is_file() and path.suffix != ".pyc" and path.resolve() not in recorded:
                 raise ValueError(f"{identity}; unrecorded package file: {path}")
     return {"module": module, "distribution": owners[0],
-            "expected_commit": expected, "installed_commit": observed,
+            "installed_commit": observed,
             "origin": spec.origin, "verified_files": len(recorded)}
+
+
+def verify_install(module: str, expected: str, *,
+                   identity_policy=None) -> dict:
+    """Require unambiguous Git provenance and intact installed package bytes.
+
+    ``identity_policy`` decides nothing about bytes. The default ``None``
+    keeps the historical behavior: any identity failure (editable install,
+    non-Git origin, or an installed commit other than ``expected``) raises
+    the same ValueError as before and the integrity phase never runs. A
+    callable receives the identity-failure message and the observed facts;
+    returning normally (any return value is ignored) records the drift as
+    tolerated -- stamped in the returned evidence as
+    ``identity_drift_tolerated`` -- and the full integrity phase still runs
+    and can still refuse. A policy that raises propagates unchanged.
+    """
+    owners = metadata.packages_distributions().get(module, [])
+    if len(owners) != 1:
+        raise ValueError(f"installed commit=<unknown>; expected one distribution "
+                         f"owning {module}, found {owners}")
+    dist = metadata.distribution(owners[0])
+    direct = json.loads(dist.read_text("direct_url.json") or "{}")
+    vcs = direct.get("vcs_info", {})
+    observed = vcs.get("commit_id", "<unknown>")
+    identity = f"distribution={owners[0]} installed commit={observed}"
+    tolerated = None
+    if (direct.get("dir_info", {}).get("editable") or
+            vcs.get("vcs") != "git" or observed != expected):
+        message = (f"{identity}; require a non-editable Git install at "
+                   "the reviewed commit (local-directory installs do "
+                   "not record a Git commit)")
+        if identity_policy is None:
+            raise ValueError(message)
+        identity_policy(message, {
+            "module": module, "expected_commit": expected,
+            "distribution": owners[0], "installed_commit": observed,
+            "editable": bool(direct.get("dir_info", {}).get("editable")),
+            "vcs": vcs.get("vcs"),
+        })
+        tolerated = message
+    evidence = verify_record_bytes(module)
+    evidence["expected_commit"] = expected
+    if tolerated is not None:
+        evidence["identity_drift_tolerated"] = tolerated
+    return evidence
 
 
 def check_pins() -> None:

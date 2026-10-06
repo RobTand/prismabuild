@@ -7,6 +7,8 @@ from pathlib import Path
 import subprocess
 import sys
 
+import pytest
+
 from pbtest_shard_output import ShardProcess, ONE_PASS, admitted_child, shard_environment  # noqa: E402
 
 
@@ -16,6 +18,24 @@ SPEC = importlib.util.spec_from_file_location(
 )
 pbtest = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(pbtest)  # type: ignore[union-attr]
+
+
+@pytest.mark.parametrize("option", ["tmpdir", "basetemp"])
+def test_shard_preflight_refuses_exhausted_inodes_before_pytest(tmp_path, option):
+    program = pbtest.shard_entry(
+        sys.executable, tmp_path, **{option: str(tmp_path)}, collection=True)[2]
+    fake = ("import os\n"
+            "os.statvfs = lambda path: os.statvfs_result("
+            "(4096,4096,1000,900,900,1000,0,0,0,255))\n")
+    program = program.split("# A pbtest shard:", 1)[0]
+    environment = shard_environment(["--"])
+    environment["PRISMABUILD_ACTION_KEY"] = "a" * 64
+    result = subprocess.run([sys.executable, "-c", fake + program],
+                            env=environment, capture_output=True, text=True)
+    assert result.returncode != 0
+    assert "inodes" in result.stderr, result.stderr
+    assert "5%" in result.stderr
+    assert not (tmp_path / ("a" * 64)).exists()
 
 
 def test_box_local_git_checkout_is_dispatched_without_leaking_its_path(

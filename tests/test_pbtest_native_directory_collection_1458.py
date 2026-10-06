@@ -66,11 +66,8 @@ def _directory_oracle(root, workers, paths=("tests",)):
     argv = ["-q", "-p", "no:cacheprovider", *paths]
     if workers > 1:
         argv += ["-n", str(workers), "--dist", "worksteal"]
-    program = (
-        f"import sys; sys.path.insert(0, {str(FLEET)!r}); "
-        f"import pbtest_outcomes; raise SystemExit(pbtest_outcomes.main({argv!r}))")
-    completed = subprocess.run([sys.executable, "-c", program], cwd=root,
-                               capture_output=True, text=True, timeout=120)
+    completed = subprocess.run([*pbtest.shard_entry(sys.executable, root), *argv],
+                               cwd=root, capture_output=True, text=True, timeout=120)
     record = pbtest.pbtest_outcomes.parse(completed.stdout)
     assert record is not None, completed.stdout + completed.stderr
     return completed.returncode, record

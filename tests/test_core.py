@@ -752,20 +752,22 @@ def test_worker_runtime_attestation_binds_core_and_optional_launcher(
 def test_worker_core_has_no_unattested_repository_imports():
     source = Path(pb.__file__).read_text(encoding="utf-8")
     tree = ast.parse(source)
+    runtime = pb._worker_runtime_identity(None)
+    attested = {Path(value["resolved_path"]) for value in runtime.values()
+                if isinstance(value, dict) and "resolved_path" in value}
     repository_imports = []
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and (
-            node.level > 0 or (node.module or "").startswith("prismaquant")
-        ):
-            repository_imports.append(ast.unparse(node))
-        if isinstance(node, ast.Import):
-            repository_imports.extend(
-                alias.name
-                for alias in node.names
-                if alias.name == "prismaquant"
-                or alias.name.startswith("prismaquant.")
-            )
-    assert repository_imports == []
+        if isinstance(node, ast.ImportFrom) and node.level:
+            names = [node.module] if node.module else [alias.name for alias in node.names]
+            repository_imports.extend(Path(pb.__file__).parent / (name.replace(".", "/") + ".py")
+                                      for name in names)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            names = ([node.module] if isinstance(node, ast.ImportFrom)
+                     else [alias.name for alias in node.names])
+            assert not any(name == "prismaquant" or name.startswith("prismaquant.")
+                           or name == "prismabuild" or name.startswith("prismabuild.")
+                           for name in names)
+    assert set(repository_imports) <= attested
 
 
 def test_slurm_worker_entrypoint_attests_its_early_launcher_snapshot(
