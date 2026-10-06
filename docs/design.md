@@ -1965,7 +1965,13 @@ Python dependency verification for every `pbtest` shard. The resolver runs
 under the target interpreter inside the admitted, sealed checkout and must
 print one full lowercase Git commit. The module must have one owning installed
 distribution, non-editable PEP 610 Git provenance at that commit, and intact
-hashed RECORD files. Python's selected module must be recorded by that
+hashed RECORD files: every hashed RECORD entry is present on disk and
+byte-valid. RECORD rows are enumerated raw (#1548), because
+`importlib.metadata` hides entries whose files are missing from
+`Distribution.files`; a deleted package file or pip's relocated console
+script therefore refuses exactly like corrupted bytes, under the strict
+policy and after tolerated identity drift alike. Python's selected module
+must be recorded by that
 distribution; unrecorded package files refuse. Missing/ambiguous provenance,
 local-directory installs without Git metadata, resolver errors, drift and
 import shadows refuse before pytest. Nothing installs into a shared venv.
@@ -16374,7 +16380,12 @@ File hashing and diagnostic encoding use that same shipped source; pin and
 capability identity checks retain their previous behavior. Composing with #1549
 keeps `pbtest_pins.verify_install` and `verify_record_bytes` separate: the latter
 hashes RECORD bytes through the owner's `stream_digest` with the recorded
-SHA-256, SHA-384 or SHA-512 algorithm. Its old primitive baseline site is
+SHA-256, SHA-384 or SHA-512 algorithm. Since #1548 it enumerates the RECORD
+rows raw with the standard library's CSV reader rather than the filtered
+`Distribution.files`, whose missing-file filter let a deleted recorded file
+read as an intact install: a missing hashed entry refuses the same way as a
+digest mismatch, in both identity policies, and unhashed entries keep their
+previous treatment. Its old primitive baseline site is
 removed, not renamed. This is a source repair, not a claim that the new runtime
 has been deployed.
 

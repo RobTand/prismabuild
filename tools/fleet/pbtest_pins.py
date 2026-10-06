@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import base64
 from prismabuild.digest_primitives import stream_digest
+import csv
 import importlib.metadata as metadata
 import importlib.util
 import json
@@ -22,13 +23,19 @@ def verify_record_bytes(module: str) -> dict:
 
     This is the integrity phase of :func:`verify_install`, exposed on its
     own: one distribution owning ``module``, a present RECORD, every hashed
-    RECORD entry matching the bytes on disk, the module Python actually
-    imports owned by that RECORD, and no unrecorded file inside the package.
-    It never compares against the expected pin (it reads ``direct_url.json``
-    only to label its messages and report ``installed_commit``). Known limit:
-    ``importlib.metadata`` hides RECORD entries whose files are missing, so a
-    deleted package file other than the imported module is not detected here.
-    In particular the ownership refusal ("imported
+    RECORD entry present on disk and matching the bytes there, the module
+    Python actually imports owned by that RECORD, and no unrecorded file
+    inside the package. RECORD rows are enumerated raw with the standard
+    library's CSV reader, because ``importlib.metadata`` hides entries
+    whose files are missing from ``Distribution.files``: without raw rows a
+    deleted file -- a package module or pip's relocated console script --
+    reads as an intact install (#1548). A missing hashed entry refuses here
+    exactly like a byte mismatch, under the strict policy and after
+    tolerated identity drift alike; identity policies decide recorded
+    identity, never byte integrity. Unhashed entries keep their previous
+    treatment. It never compares against the expected pin (it reads
+    ``direct_url.json`` only to label its messages and report
+    ``installed_commit``). In particular the ownership refusal ("imported
     module is not owned by its RECORD") belongs to this phase, so an
     editable or shadowed import is refused here even when a caller has
     decided to tolerate recorded identity drift.
@@ -43,19 +50,26 @@ def verify_record_bytes(module: str) -> dict:
     observed = vcs.get("commit_id", "<unknown>")
     identity = f"distribution={owners[0]} installed commit={observed}"
 
-    files = dist.files
-    if not files:
+    record = dist.read_text("RECORD")
+    if not record:
         raise ValueError(f"{identity}; installed RECORD is missing")
     recorded = {}
-    for entry in files:
-        path = Path(dist.locate_file(entry)).resolve()
-        if entry.hash is not None:
-            if entry.hash.mode not in {"sha256", "sha384", "sha512"}:
-                raise ValueError(f"{identity}; unsupported RECORD hash: {entry}")
-            digest = stream_digest(path, algorithm=entry.hash.mode)
+    for row in csv.reader(record.splitlines()):
+        if not row or not row[0]:
+            continue
+        path = Path(dist.locate_file(row[0])).resolve()
+        if len(row) > 1 and row[1]:
+            mode, _, value = row[1].partition("=")
+            if mode not in {"sha256", "sha384", "sha512"}:
+                raise ValueError(f"{identity}; unsupported RECORD hash: {row[0]}")
+            try:
+                digest = stream_digest(path, algorithm=mode)
+            except FileNotFoundError as exc:
+                raise ValueError(
+                    f"{identity}; recorded file is missing: {row[0]}") from exc
             actual = base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
-            if actual != entry.hash.value:
-                raise ValueError(f"{identity}; installed bytes differ from RECORD: {entry}")
+            if actual != value:
+                raise ValueError(f"{identity}; installed bytes differ from RECORD: {row[0]}")
             recorded[path] = actual
 
     # Distribution metadata alone does not say which module Python will load.
