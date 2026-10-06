@@ -19,8 +19,8 @@ MAIN = "4815485c5060f3cecbf42655a37c7585e14c1791"
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def main_definitions(path, names, **bindings):
-    source = subprocess.run(["git", "show", f"{MAIN}:{path}"], cwd=ROOT,
+def main_definitions(path, names, *, revision=MAIN, **bindings):
+    source = subprocess.run(["git", "show", f"{revision}:{path}"], cwd=ROOT,
                             check=True, text=True, capture_output=True).stdout
     tree = ast.parse(source)
     nodes = [node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.ClassDef))
@@ -138,3 +138,91 @@ def test_rollout_private_ascii_line_profile_matches_main():
     old = main_definitions("tools/fleet/qualify_rollout.py", ["canonical"])
     for value in [{"z": "λ", "a": [1.25, None]}, {"x": float("nan")}, []]:
         assert module._qualify_rollout_canonical(value) == old.canonical(value)
+
+
+RESIDENT_MAIN = "3916c1f621"
+
+
+@pytest.mark.parametrize("size", [0, (8 << 20) - 1, 8 << 20, (8 << 20) + 1, (16 << 20) + 7])
+def test_resident_copy_and_hash_match_main_at_native_block_boundaries(tmp_path, size):
+    import os
+    import stat
+    from prismabuild import local_resident, digest_primitives, resident_sets
+
+    old = main_definitions("src/prismabuild/local_resident.py", ["hash_file", "copy_file"],
+        revision=RESIDENT_MAIN, os=os, stat=stat, resident_sets=resident_sets,
+        BLOCK_BYTES=local_resident.BLOCK_BYTES)
+    assert core.new_sha256 is digest_primitives.new_sha256 is hashlib.sha256
+    payload = (b"resident\x00\xff\n" * (size // 11 + 1))[:size]
+    source = tmp_path / "source"
+    source.write_bytes(payload)
+    expected = hashlib.sha256(payload).hexdigest()
+    assert local_resident.hash_file(source) == old.hash_file(source) == (size, expected)
+    entry = {"path": str(source), "bytes": size, "sha256": expected}
+    before, after = tmp_path / "before", tmp_path / "after"
+    assert old.copy_file(source, before, entry) == local_resident.copy_file(source, after, entry) == expected
+    assert before.read_bytes() == after.read_bytes() == payload
+
+
+def test_resident_copy_keeps_the_open_descriptor_and_fsync_order(tmp_path, monkeypatch):
+    import os
+    import stat
+    from prismabuild import local_resident
+
+    source, moved, destination = (tmp_path / name for name in ("source", "opened", "destination"))
+    payload = b"held descriptor\x00\xff"
+    source.write_bytes(payload)
+    real_fdopen, real_fsync = os.fdopen, os.fsync
+    events = []
+
+    def swap_after_open(fd, mode, **kwargs):
+        if mode == "rb":
+            source.rename(moved)
+            source.symlink_to(tmp_path / "missing")
+        return real_fdopen(fd, mode, **kwargs)
+
+    def sync(fd):
+        events.append("file" if stat.S_ISREG(os.fstat(fd).st_mode) else "directory")
+        return real_fsync(fd)
+
+    monkeypatch.setattr(local_resident.os, "fdopen", swap_after_open)
+    monkeypatch.setattr(local_resident.os, "fsync", sync)
+    entry = {"path": str(source), "bytes": len(payload), "sha256": hashlib.sha256(payload).hexdigest()}
+    assert local_resident.copy_file(source, destination, entry) == entry["sha256"]
+    assert destination.read_bytes() == payload
+    assert events == ["file", "directory"]
+    with pytest.raises(OSError):
+        local_resident.hash_file(source)
+    with pytest.raises(OSError):
+        local_resident.copy_file(source, tmp_path / "refused", entry)
+    link = tmp_path / "destination-link"
+    link.symlink_to(destination)
+    with pytest.raises(OSError):
+        local_resident.copy_file(moved, link, entry)
+    assert destination.read_bytes() == payload
+
+
+def test_resident_json_profiles_and_real_writer_match_main(tmp_path):
+    import os
+    import tempfile
+    from prismabuild import resident_sets
+
+    old = main_definitions("src/prismabuild/resident_sets.py", ["_json", "write_record", "fsync_directory"],
+        revision=RESIDENT_MAIN, os=os, tempfile=tempfile)
+    value = {"z": "模型 λ", "a": [-0.0, 1.25, True, None], "nested": {"b": "\n"}}
+    assert core.compact_ascii_json_bytes(value) == old._json(value)
+    assert core.compact_ascii_json_bytes(value) != core._canonical_bytes(value)
+    before, after = tmp_path / "before.json", tmp_path / "after.json"
+    old.write_record(before, value)
+    resident_sets.write_record(after, value)
+    assert before.read_bytes() == after.read_bytes() == old._json(value) + b"\n"
+    for nonfinite in (float("nan"), float("inf"), -float("inf")):
+        mixed = {"unicode": "λ", "number": nonfinite}
+        assert core.sorted_json(mixed) == json.dumps(mixed, sort_keys=True)
+        for writer, path in ((old.write_record, before), (resident_sets.write_record, after)):
+            with pytest.raises(ValueError):
+                writer(path, mixed)
+            assert path.read_bytes() == old._json(value) + b"\n"
+        with pytest.raises(ValueError):
+            core.sorted_json(mixed, allow_nan=False)
+

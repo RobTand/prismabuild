@@ -32,11 +32,11 @@ def test_remint_shrinks_only_free_tokens(tmp_path, monkeypatch):
     queue.ensure_layout()
     spec = policy(tmp_path)
     monkeypatch.setattr(local_tier.os, "statvfs", lambda _: sample(125))
-    assert local_tier.mint(queue, "test-host", spec)["capacity"]["local_gib"] == 65
+    assert local_tier.mint_local_tier_capacity(queue, "test-host", spec)["capacity"]["local_gib"] == 65
     ledger = queue.tier_ledger("local:test-host")
     assert ledger.acquire("a" * 64, {"local_gib": 4})
     monkeypatch.setattr(local_tier.os, "statvfs", lambda _: sample(10))
-    local_tier.mint(queue, "test-host", spec)
+    local_tier.mint_local_tier_capacity(queue, "test-host", spec)
     assert ledger.held()["local_gib"] == 4
     assert not list(ledger.free_dir.glob("local_gib-*"))
 

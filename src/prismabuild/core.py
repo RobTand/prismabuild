@@ -47,7 +47,7 @@ try:
     from .digest_primitives import (
         ActionContractError, PrismaBuildError, _canonical_bytes,
         _sorted_json_bytes, _sorted_lf_bytes, canonical_sha256, raw_sha256,
-        stream_sha256,
+        compact_ascii_json_bytes, new_sha256, sorted_json, stream_sha256,
     )
 except ImportError:  # Isolated -I -S execution binds the sibling owner directly.
     import importlib.util as _digest_util
@@ -60,7 +60,7 @@ except ImportError:  # Isolated -I -S execution binds the sibling owner directly
     from digest_primitives import (  # noqa: F401
         ActionContractError, PrismaBuildError, _canonical_bytes,
         _sorted_json_bytes, _sorted_lf_bytes, canonical_sha256, raw_sha256,
-        stream_sha256,
+        compact_ascii_json_bytes, new_sha256, sorted_json, stream_sha256,
     )
     del _digest_util, _spec
 

@@ -26,9 +26,20 @@ def _canonical_bytes(value: object) -> bytes:
         raise ActionContractError("value is not finite canonical JSON data") from exc
 
 
+def sorted_json(value: object, *, allow_nan: bool = True) -> str:
+    """Sorted default JSON text, including the existing non-finite spelling."""
+    return json.dumps(value, sort_keys=True, allow_nan=allow_nan)
+
+
 def _sorted_json_bytes(value: object, *, allow_nan: bool = True) -> bytes:
     """Sorted default JSON without a terminator, retaining its wire spelling."""
-    return json.dumps(value, sort_keys=True, allow_nan=allow_nan).encode("utf-8")
+    return sorted_json(value, allow_nan=allow_nan).encode("utf-8")
+
+
+def compact_ascii_json_bytes(value: object) -> bytes:
+    """Finite compact JSON with the resident-manifest ASCII escape spelling."""
+    return json.dumps(value, sort_keys=True, separators=(",", ":"),
+                      allow_nan=False).encode("utf-8")
 
 
 def _sorted_lf_bytes(value: object) -> bytes:
@@ -44,6 +55,10 @@ def canonical_sha256(value: object) -> str:
 def raw_sha256(data: bytes) -> str:
     """SHA-256 of the bytes themselves, without JSON encoding."""
     return hashlib.sha256(data).hexdigest()
+
+
+# Incremental consumers keep their existing single I/O pass and native constructor.
+new_sha256 = hashlib.sha256
 
 
 def stream_digest(path: str | Path, *, algorithm: str = "sha256",

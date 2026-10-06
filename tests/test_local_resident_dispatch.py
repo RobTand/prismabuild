@@ -30,7 +30,7 @@ def test_local_role_announces_own_interpreter_and_tools(tmp_path):
     queue.ensure_layout()
     root = tmp_path / "local"
     spec = {"root": str(root), "maximum_gib": 0, "floor_fraction": .05, "docker_allowance_gib": 0}
-    local_tier_loop.cycle(queue, "test-host", {"hosts": {"test-host": spec}})
+    local_tier_loop.local_tier_cycle(queue, "test-host", {"hosts": {"test-host": spec}})
     tier = next(row for row in queue.tiers() if row["tier_id"] == "local:test-host")
     assert tier["host"] == "test-host"
     assert Path(tier["mover_python"]).is_absolute()

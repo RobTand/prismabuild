@@ -30,6 +30,39 @@ def publish(tmp_path, **changes):
     return store, store.publish(**args)
 
 
+def test_manifest_id_keeps_the_existing_ascii_escape_recipe(tmp_path):
+    from prismabuild import pool, resident_sets as rs
+
+    unicode_parent = tmp_path / "模型-λ"
+    unicode_parent.mkdir()
+    root, manifest = source(unicode_parent)
+    normalized = rs.validate_set_manifest(manifest, str(root))
+    from test_digest_sites_1547 import main_definitions
+    legacy = main_definitions("src/prismabuild/resident_sets.py", ["_json"],
+                              revision="3916c1f621")
+    legacy_bytes = legacy._json(normalized)
+    expected_id = hashlib.sha256(legacy_bytes).hexdigest()
+    pool.PoolQueue(tmp_path / "queue").mint_tier_capacity("local:test-host", {"local_gib": 1})
+    store = rs.ResidentSets(tmp_path / "queue")
+    record = store.publish(manifest=manifest, canonical_root=str(root), hosts=["test-host"],
+        lease={"until": 150, "hard_max": 200}, created_by="test", now=100)
+
+    assert record["set_id"] == expected_id
+    assert store.read(expected_id)["manifest"] == normalized
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), -float("inf")])
+def test_nonfinite_record_refusal_preserves_the_previous_record(tmp_path, value):
+    from prismabuild import resident_sets as rs
+
+    path = tmp_path / "copy.json"
+    rs.write_record(path, {"state": "resident", "bytes": 7})
+    previous = path.read_bytes()
+    with pytest.raises(ValueError):
+        rs.write_record(path, {"state": "resident", "bytes": value})
+    assert path.read_bytes() == previous
+
+
 def test_set_body_is_immutable_and_release_only_appends_lease(tmp_path):
     store, record = publish(tmp_path)
     body = store.set_path(record["set_id"]).read_bytes()

@@ -14,7 +14,7 @@ def test_adoption_verifies_every_file_and_moves_without_copying(tmp_path):
     source.mkdir()
     (source / "weights").write_bytes(b"weights")
     inode = (source / "weights").stat().st_ino
-    result = local_resident.adopt(store, record["set_id"], "test-host", spec, source, now=120)
+    result = local_resident.adopt_resident_copy(store, record["set_id"], "test-host", spec, source, now=120)
     assert result["state"] == "resident"
     assert not source.exists()
     target = Path(result["local_root"]) / "weights"
@@ -36,7 +36,7 @@ def test_adoption_refuses_wrong_bytes_or_incomplete_coverage_without_moving(tmp_
         (source / "weights").unlink()
         (source / "weights").symlink_to(Path(record["canonical_root"]) / "weights")
     with pytest.raises(ValueError):
-        local_resident.adopt(store, record["set_id"], "test-host", spec, source, now=120)
+        local_resident.adopt_resident_copy(store, record["set_id"], "test-host", spec, source, now=120)
     assert source.exists()
     assert store.read_copy(record["set_id"], "test-host")["state"] == "absent"
 
@@ -49,7 +49,7 @@ def test_adoption_refuses_cross_filesystem_before_rename(tmp_path, monkeypatch):
     (source / "weights").write_bytes(b"weights")
     monkeypatch.setattr(local_resident, "same_filesystem", lambda *_: False, raising=False)
     with pytest.raises(ValueError, match="same filesystem"):
-        local_resident.adopt(store, record["set_id"], "test-host", spec, source, now=120)
+        local_resident.adopt_resident_copy(store, record["set_id"], "test-host", spec, source, now=120)
     assert source.exists()
 
 
@@ -91,7 +91,7 @@ def _refused_adoption_keeps_its_reservation(tmp_path, monkeypatch, defect, *, re
             return original_read(path, *args, **kwargs)
 
         monkeypatch.setattr(Path, "read_text", mountinfo)
-    function = local_resident.adopt
+    function = local_resident.adopt_resident_copy
     if release_on_error:
         original = function
 

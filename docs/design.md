@@ -16336,9 +16336,10 @@ requests and receipts remain immutable and can be recovered as sealed. No system
 tool, fleet runtime, active queue, placement or result-population policy changes.
 
 Core's attested `digest_primitives.py` half owns the default sorted JSON profile used by retained-reader
-diagnostics and merge-queue duration hints (#1386). `_sorted_json_bytes` accepts
-the original JSON values, including list reports, with default spacing, ASCII
-escaping and nonfinite-number behavior and no trailing LF. `_sorted_lf_bytes`
+diagnostics, resident command output and merge-queue duration hints (#1386, #1547).
+`sorted_json` returns the shared text spelling; `_sorted_json_bytes` encodes it with
+default spacing, ASCII escaping and the original nonfinite-number behavior,
+including list reports, and no trailing LF. `_sorted_lf_bytes`
 keeps its mapping conversion and appends one LF. The hint filename hashes those
 exact prior bytes through `raw_sha256`; canonical finite JSON is a different
 profile. Reader ownership, retained-child messages and scheduling hints keep
@@ -16353,6 +16354,14 @@ where their previous writer already refused nonfinite values; the default
 remains unchanged. Rollout qualification uses `_compact_ascii_lf_bytes` for
 its existing compact ASCII line spelling. Helper collision renames change no
 validation, identity or byte-integrity rule.
+Resident-set manifest IDs and durable records use `compact_ascii_json_bytes`:
+finite compact sorted JSON with ASCII escapes and no terminator, not the
+canonical UTF-8 profile. Record and lease writers append their original one LF.
+The same owner exposes `new_sha256` as the native SHA-256 constructor, not a
+wrapper. Local resident copying and hashing keep the held no-follow descriptors,
+regular-file checks, single 8 MiB read pass, byte counts and original fsync order.
+Purpose-specific resident helper names replace their colliding names at every
+caller; command flags, leases, capacity and atomic publication remain unchanged.
 The owner split is approved by CEO decisions `dec-1005-170450-5ec5` and
 `rep-1005-170658-9efc`: exactly two attested owner files, no third file or raw-site
 exemption. Core re-exports the identical helper and exception objects. pbtest's
