@@ -4813,10 +4813,45 @@ FAILED or WITHDRAWN, including a one-attempt member the reaper failed after a lo
 lease, so a sibling that is already running is withdrawn rather than left waiting
 in its collective.
 
-**Priority rule.** A gang fences only against strictly lower priority. Equal or
-higher priority work can still take a fenced host; that is the existing priority
-semantics. Run window gangs (Goal 1 EXL3/PACT, Goal 2 served A/Bs) at priority 10,
-with routine work at 0 or below.
+**Priority rule.** A gang fences strictly lower priority work from the moment a
+member's host elects. Work of the gang's own priority is untouched while the gang
+is young. Once the gang has waited longer than `GANG_RESERVE_AFTER_S` (ten
+minutes) since its first member was published, it RESERVES its elected member's
+declared demand on each elected host (#1579): a new equal-priority row is admitted
+only if, in every dimension the member declares, `held + row + reserved <=
+capacity`, with `held` and `capacity` read from the host's resource ledger under
+host admission. Otherwise it is denied as `deferred_for_gang_reservation`, and the
+denial's `reservation` names the dimension and the shortfall. Running work is never
+touched and nothing is lent. The rule reads only what the claim pass already reads
+(the member's census row, the candidate's demand, the ledger): no plan reads, no
+prerequisite walk, no new census work.
+
+Unknown is consuming, never exempt. A candidate that omits `cpu` or `mem_gb`, or
+whose demand does not read, counts as the whole host in that dimension (an omitted
+`gpu` is zero unless the row sets `needs_gpu`); a member whose demand does not read
+reserves the whole host; a host ledger that does not read denies the row for the
+pass. Never held: the gang's own members and any gang's (two gangs of one priority
+are ordered by `rank`), higher priority, a verified publication canary slot (its
+own next-free-safe-boundary contract) and a row whose sealed action declares
+`returns_capacity` (`movement_actions.RETURNS_CAPACITY_PARAMS`: a stage or RAM
+egress, a produced-output egress, a produced spool export, a resident evict). A
+returner is DECLARED in the row's content-addressed definition, copied onto the
+queue row by `publish` and refused unless it is the literal `true`, so it cannot
+be lost when its consumer goes terminal and nothing infers it; a row without the
+declaration is held by its demand. A prerequisite mover is a CPU and tier-token
+row, so it fits in the slack the member leaves and needs no exemption list.
+
+A host is never both withheld for a waiting measurement and reserved for a gang:
+once the gang's ten minutes elapse the reservation wins on that host. The
+measurement fence and any measurement withhold are suspended there, a measurement
+single does not elect on it, and a gang member past the bound is not held back
+behind a measurement withhold, so it can elect. The suspended measurement row stays
+READY and withholds again once the gang has started and no waiting gang reserves
+the host. The gang therefore starts within ten minutes plus the longest running
+job on its hosts (each capped), plus one run of the returners it waits on. Before
+2026-10-06 equal priority was never fenced: a whole-box -10 gang waited fourteen
+minutes while smaller -10 singles took both Sparks. Gang jobs may also run at a
+priority above routine work, with routine work at 0 or below.
 
 **Mixed generations.** An old worker offers no `gang-v1` and ignores `gangs/`, so
 it never claims a member. During a rolling publish it may not honour a gang
