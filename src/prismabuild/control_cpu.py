@@ -5,6 +5,7 @@ work stays in the raw host reading. Control accounting is cooperative, not a
 security boundary against impersonation. Kernel identity uses Linux flags,
 never a process name, an empty cmdline or a low PID (#1399).
 """
+from decimal import Decimal, InvalidOperation, ROUND_CEILING
 import os
 from pathlib import Path
 import socket
@@ -124,13 +125,16 @@ def boot_ticks(*, proc_root=Path('/proc')):
     ``None`` when it or the clock rate cannot be read.
     """
     try:
-        seconds = float((proc_root / 'uptime').read_text().split()[0])
+        seconds = Decimal((proc_root / 'uptime').read_text().split()[0])
         rate = os.sysconf('SC_CLK_TCK')
-    except (OSError, ValueError, IndexError):
+    except (OSError, ValueError, IndexError, InvalidOperation):
         return None
-    if not seconds >= 0 or rate <= 0:
+    if not seconds.is_finite() or seconds < 0 or rate <= 0:
         return None
-    return int(seconds * rate)
+    # Decimal and rounded UP: a binary float turns 10.12 s into 1011.999... ticks,
+    # and truncating that lets a process that started at tick 1012, before the
+    # sample, count as born after it.  A larger boundary only credits less.
+    return int((seconds * rate).to_integral_value(ROUND_CEILING))
 
 
 def attributed_ticks(previous, current, busy, *, kind=None, born_after=None):

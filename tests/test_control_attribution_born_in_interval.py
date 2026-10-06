@@ -17,7 +17,7 @@ BORN_AFTER = 1000  # boot-relative clock ticks read after the previous host samp
 
 
 def _newborn(**over):
-    return {'start': 1500, 'cpu': 11, 'migrations': 0, 'ticks': 30,
+    return {'start': 1100, 'cpu': 11, 'migrations': 0, 'ticks': 30,
             'attribution_kind': 'control', 'process_identity': ['/runtime/worker_loop.py', 1500],
             **over}
 
@@ -91,8 +91,8 @@ def _sampler(tmp_path, monkeypatch, uptimes, newborn):
 
 
 def test_the_sampler_does_not_report_a_fresh_loops_startup_as_foreign(tmp_path, monkeypatch):
-    """Previous sample at boot tick 1000 (uptime 10.00 s); a loop born at tick 1500."""
-    observed = _sampler(tmp_path, monkeypatch, [10.0, 12.0], _newborn(start=1500, ticks=30))
+    """Previous sample at boot tick 1000 (uptime 10.00 s), this one at 1200: a loop born at tick 1100 with 30 ticks."""
+    observed = _sampler(tmp_path, monkeypatch, [10.0, 12.0], _newborn(start=1100, ticks=30))
     assert observed['per_cpu_busy']['11'] == pytest.approx(.17)  # raw load retained
     assert observed['control_plane_busy']['11'] == pytest.approx(.15)
     assert observed['foreign_per_cpu_busy']['11'] == pytest.approx(.02)
@@ -113,7 +113,7 @@ def test_a_process_born_before_the_previous_sample_is_foreign_whatever_the_wall_
 
 def test_without_a_persisted_boundary_nothing_is_credited(tmp_path, monkeypatch):
     """A previous sample written before this change carries no boot_ticks."""
-    observed = _sampler(tmp_path, monkeypatch, [None, 12.0], _newborn(start=1500, ticks=30))
+    observed = _sampler(tmp_path, monkeypatch, [None, 12.0], _newborn(start=1100, ticks=30))
     assert observed['control_plane_busy']['11'] == pytest.approx(0.0)
 
 
@@ -123,3 +123,28 @@ def test_boot_ticks_reads_the_boot_clock_and_refuses_what_it_cannot_read(tmp_pat
     assert boot_ticks(proc_root=tmp_path / 'absent') is None
     (tmp_path / 'proc' / 'uptime').write_text('not-a-number\n')
     assert boot_ticks(proc_root=tmp_path / 'proc') is None
+
+
+@pytest.mark.parametrize('start,credited', [(1012, False), (1013, True)])
+def test_a_fractional_uptime_boundary_is_rounded_up_never_down(tmp_path, monkeypatch, start, credited):
+    """Uptime 10.12 s is 1012 ticks; as a binary float it is 1011.999..., which truncated to 1011.
+
+    A process that started at tick 1012 began at the sample, not after it, and
+    must stay foreign; one at 1013 began after.  Through the real sampler and
+    the real ``boot_ticks``.
+    """
+    observed = _sampler(tmp_path, monkeypatch, [10.12, 12.0], _newborn(start=start, ticks=30))
+    assert observed['control_plane_busy']['11'] == pytest.approx(.15 if credited else 0.0)
+
+
+def test_boot_ticks_rounds_up_what_a_binary_float_would_round_down(tmp_path):
+    from prismabuild.control_cpu import boot_ticks
+    (tmp_path / 'proc').mkdir()
+    (tmp_path / 'proc' / 'uptime').write_text('10.12 1.0\n')
+    assert boot_ticks(proc_root=tmp_path / 'proc') == 1012
+
+
+def test_the_fixtures_assume_the_usual_user_hz():
+    """Linux reports /proc ticks at USER_HZ; the scripted ticks above assume 100."""
+    import os
+    assert os.sysconf('SC_CLK_TCK') == 100
