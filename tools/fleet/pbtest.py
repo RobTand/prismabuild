@@ -378,10 +378,36 @@ from worker_loop import DEFAULT_EXECUTION_CEILING_S  # noqa: E402
 #: Read the recorder from this tool's own generation. A pbtest test can itself
 #: run under an older sealed recorder; its sys.modules entry is that outer
 #: shard's recorder, not the sibling this source must seal and understand.
-_outcomes_spec = importlib.util.spec_from_file_location(
-    __name__ + "_outcomes", Path(__file__).with_name("pbtest_outcomes.py"))
-pbtest_outcomes = importlib.util.module_from_spec(_outcomes_spec)
-_outcomes_spec.loader.exec_module(pbtest_outcomes)
+#: Loaded on first use, not at import (#1554): importing a tool must not run
+#: code, and the import scanner (``tests/test_tools_do_not_run_on_import.py``)
+#: says so.  The object stands where the module stood, so ``pbtest_outcomes.x``
+#: reads, patches and deletes the same attribute of the same sibling module.
+class _OutcomesOwner:
+    _module = None
+    _lock = threading.Lock()
+
+    def _load(self):
+        with _OutcomesOwner._lock:
+            if _OutcomesOwner._module is None:
+                spec = importlib.util.spec_from_file_location(
+                    __name__ + "_outcomes",
+                    Path(__file__).with_name("pbtest_outcomes.py"))
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+                _OutcomesOwner._module = module
+            return _OutcomesOwner._module
+
+    def __getattr__(self, name):
+        return getattr(self._load(), name)
+
+    def __setattr__(self, name, value):
+        setattr(self._load(), name, value)
+
+    def __delattr__(self, name):
+        delattr(self._load(), name)
+
+
+pbtest_outcomes = _OutcomesOwner()
 
 #: The largest end a non-GPU shard may seal from an announcement it never
 #: asked for, derived from admission's own rule rather than picked.
