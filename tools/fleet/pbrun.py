@@ -255,6 +255,49 @@ def git_repository_root(cwd: Path) -> Path | None:
     return root
 
 
+def tested_repository_name(cwd: Path) -> str:
+    """The repository a sealed checkout belongs to, or ``"unknown"`` (#1565).
+
+    A linked worktree names its main repository, not its own directory: the
+    checkout's Git common dir places the repository the tree belongs to, in
+    the same ``rev-parse`` style :func:`git_repository_root` already uses --
+    no new mechanism.  A normal ``.git`` common dir names the working tree
+    that owns it (the checkout itself for a plain clone); a bare common dir
+    named ``X.git`` names ``X``; an exotic gitdir layout falls back to the
+    sealed root's own basename.  A checkout Git cannot place -- a plain
+    directory, an unreadable ``.git`` -- is ``"unknown"`` explicitly: never
+    blank, and never guessed from host, interpreter or parent process.
+    """
+    root = git_repository_root(cwd)
+    if root is None:
+        return pool.TESTED_REPOSITORY_UNKNOWN
+    try:
+        completed = pb._git_run(
+            root, "rev-parse", "--git-common-dir", timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return pool.TESTED_REPOSITORY_UNKNOWN
+    if completed.returncode != 0:
+        return pool.TESTED_REPOSITORY_UNKNOWN
+    text = completed.stdout.strip()
+    if not text:
+        return pool.TESTED_REPOSITORY_UNKNOWN
+    common = Path(text)
+    if not common.is_absolute():
+        # Git spells a co-located common dir relative (".git").
+        common = root / common
+    name = common.name
+    if name == ".git":
+        candidate = common.parent.name
+    elif name.endswith(".git"):
+        candidate = name[: -len(".git")]
+    else:
+        candidate = root.name
+    candidate = candidate.strip()
+    if not candidate:
+        return pool.TESTED_REPOSITORY_UNKNOWN
+    return candidate
+
+
 def _snapshot_fail(
     message: str, *, cause: BaseException | None = None,
 ) -> NoReturn:
@@ -5309,6 +5352,12 @@ def freeze_action_template(
     variables["PATH"] = (local_scratch.PROFILE_PATH if recorder is not None
                          else f"{wrapper_dir}:{prior_path}")
     identity = _git_identity(cwd)
+    # Which repository this template's tree belongs to (#1565): the owning
+    # repository's name -- a linked worktree resolves to its main repo --
+    # ``"unknown"`` when Git cannot place the checkout.  A submitter's
+    # handle, never sealed -- the queue row carries it, so the action key
+    # is byte-identical with and without it.
+    tested_repository = tested_repository_name(cwd)
     marker_root = SH / "pb-queue" / pool.CONTAINER_OWNERS
     # This owner belongs to the template's own command, and its only job here
     # is to be part of what the stamp name is fingerprinted over.  Ownership
@@ -5563,6 +5612,7 @@ def freeze_action_template(
         "cas": cas,
         "marker_root": marker_root,
         "checkout_identity": identity,
+        "tested_repository": tested_repository,
         "log_name": log_name,
         "stamp_name": stamp_name,
         "produced_output_template": produced_validated,
@@ -5616,8 +5666,12 @@ def freeze_action_template(
 #: ``produced_output_batches`` is a handle too: the refs are the sealed data
 #: manifest's own annotation, so the key already covers them.  The entry is
 #: present only when the manifest declares batches (#914).
+#: ``tested_repository`` is a handle too: the name of the tree the template
+#: froze, carried by the queue row rather than the sealed body, so no action
+#: sealed from the template varies with it (#1565).
 _TEMPLATE_SUBMITTER_KEYS = frozenset(
-    {"cas", "marker_root", "checkout_identity", "log_name", "stamp_name",
+    {"cas", "marker_root", "checkout_identity", "tested_repository",
+     "log_name", "stamp_name",
      "produced_output_template", "produced_output_batches"}
 )
 
@@ -7884,6 +7938,7 @@ def publication_row(
     queue,
     max_attempts: int | None = None,
     retry_safe: bool | None = None,
+    tested_repository: str | None = None,
 ) -> dict[str, object]:
     """The queue row that submits one sealed action.
 
@@ -7899,6 +7954,10 @@ def publication_row(
     Only the submitter's own handles -- priority, the attempt ceiling, retry
     safety -- come from ``args``, and they are exactly the fields no action
     body carries, because they say how hard to try rather than what to run.
+    The tested-repository tag (#1565) is the one caller-supplied field that
+    names the work: it arrives as an argument because it is frozen in the
+    template, which the sealed body must not carry, and a caller that cannot
+    name the tree it froze passes nothing.
 
     ``pbcampaign`` publishes decomposed children through this too.  The
     alternative is a second copy of the literal, which is how a row and a body
@@ -7934,6 +7993,19 @@ def publication_row(
                 "loaded queue runtime does not support priority_reason; "
                 "use a matching runtime or omit --priority-reason")
         row["priority_reason"] = pool.normalize_priority_reason(priority_reason)
+    if tested_repository is not None:
+        # The template's frozen answer for the tree this action seals (#1565).
+        # Guarded like the annotation above: a loaded runtime that cannot
+        # carry the tag refuses rather than silently untagging the submission.
+        parameters = inspect.signature(queue.publish).parameters
+        if ("tested_repository" not in parameters
+                and not any(p.kind is inspect.Parameter.VAR_KEYWORD
+                            for p in parameters.values())):
+            raise pool.PoolContractError(
+                "loaded queue runtime does not support tested_repository; "
+                "use a matching runtime")
+        row["tested_repository"] = pool.normalize_tested_repository(
+            tested_repository)
     if params.get("container_images"):
         # Derived from the sealed body, never re-read from the caller: the row
         # describes the action, so the action's own params are the authority.
@@ -8450,7 +8522,9 @@ def publish_consumer_row(q, action: Mapping[str, object],
                     f"{len(renewal['retired'])} predecessor cancellation "
                     f"marker(s); their decisions stay under "
                     f"{q.superseded_dir()}", file=sys.stderr, flush=True)
-            publication = publication_row(action, args=args, queue=q)
+            publication = publication_row(
+                action, args=args, queue=q,
+                tested_repository=template.get("tested_repository"))
             publication["residency"] = staged["residency"]
             if template.get("produced_output_template") is not None:
                 publication["produced_output_template"] = template[
@@ -8483,7 +8557,9 @@ def publish_consumer_row(q, action: Mapping[str, object],
                   f"adopt or publish",
                   file=sys.stderr, flush=True)
     else:
-        publication = publication_row(action, args=args, queue=q)
+        publication = publication_row(
+            action, args=args, queue=q,
+            tested_repository=template.get("tested_repository"))
         if template.get("produced_output_template") is not None:
             publication["produced_output_template"] = template[
                 "produced_output_template"]

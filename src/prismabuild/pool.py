@@ -1277,6 +1277,51 @@ def normalize_priority_reason(value: object) -> str | None:
             "of at most 1024 characters")
     return value.strip()
 
+#: What a record says when no submission named the repository it tested: a
+#: row filed before the tag existed, or a row from a producer that stages or
+#: moves bytes rather than testing a checkout.  Explicit, never blank.
+TESTED_REPOSITORY_UNKNOWN = "unknown"
+#: A repository name is a directory basename, never prose: the bound is a
+#: name's, not an annotation's.
+TESTED_REPOSITORY_MAX_CHARS = 256
+
+
+def normalize_tested_repository(value: object) -> str | None:
+    """Validate an optional tested-repository tag, never an action parameter.
+
+    The tag rides the queue row beside the sealed action the way
+    ``priority_reason`` rides beside ``priority``: publication metadata with
+    no key, order or enforcement change.  ``None`` means the producer did not
+    name one and the row omits the field, which is how every row filed
+    before the tag stays byte-identical.
+    """
+    if value is None:
+        return None
+    if (not isinstance(value, str) or not value.strip()
+            or len(value.strip()) > TESTED_REPOSITORY_MAX_CHARS
+            or not value.strip().isprintable()):
+        raise PoolContractError(
+            "tested_repository must be nonblank, single-line printable text "
+            f"of at most {TESTED_REPOSITORY_MAX_CHARS} characters")
+    return value.strip()
+
+
+def tested_repository_of(record: object) -> str:
+    """The repository a queue row names itself testing, or ``"unknown"``.
+
+    Readers call this instead of reading the field, so a row that predates
+    the tag and a row whose producer tests no checkout both answer the same
+    explicit unknown rather than a blank.  Never raises: a status or record
+    reader must not fail closed over an annotation.
+    """
+    if isinstance(record, Mapping):
+        value = record.get("tested_repository")
+        if (isinstance(value, str) and value.strip()
+                and len(value.strip()) <= TESTED_REPOSITORY_MAX_CHARS
+                and value.strip().isprintable()):
+            return value.strip()
+    return TESTED_REPOSITORY_UNKNOWN
+
 
 class StaleAbsenceError(FileNotFoundError):
     """A linked attempt file its directory lists that this client cannot open yet.
@@ -6479,6 +6524,7 @@ class PoolQueue:
         refuse_if_live: bool = False,
         gang: Mapping[str, object] | None = None,
         resident_set: str | None = None,
+        tested_repository: str | None = None,
     ) -> Path:
         """Enqueue one sealed action.  The action itself already lives in the CAS.
 
@@ -6524,10 +6570,17 @@ class PoolQueue:
         atomic (#810).  A live cancellation still wins: the marker means the
         submission was asked for as a replacement, so the check is skipped and
         the ordinary supersession runs.
+
+        ``tested_repository`` names the repository the submission sealed,
+        for test-cost accounting (#1565).  Optional publication metadata
+        beside the action, like ``priority_reason`` beside ``priority``:
+        no key, order or enforcement change, and absent the item is
+        byte-identical to what it was before the field existed.
         """
 
         self._refuse_if_fenced()
         reason = normalize_priority_reason(priority_reason)
+        repository = normalize_tested_repository(tested_repository)
         if not isinstance(action_key, str) or len(action_key) != 64:
             raise PoolContractError("action_key must be a 64-character digest")
         image_refs: list[str] = []
@@ -7006,6 +7059,9 @@ class PoolQueue:
         if reason is not None:
             # Optional publication metadata: no key, order or enforcement change.
             item["priority_reason"] = reason
+        if repository is not None:
+            # Optional publication metadata: no key, order or enforcement change.
+            item["tested_repository"] = repository
         if canary_ref is not None:
             item["publication_canary"] = canary_ref
         if residency_block is not None:
@@ -19823,7 +19879,11 @@ class PoolQueue:
             **addressing,
         }
         for field in ("max_attempts", "retry_safe", "container_owner",
-                      "container_images"):
+                      "container_images", "tested_repository"):
+            # ``tested_repository`` rides along because a requeue tests the
+            # same sealed tree again: a new generation, not a new repository.
+            # Absent stays absent, so rows from producers that never named one
+            # re-enter exactly as they published.
             if record.get(field) is not None:
                 arguments[field] = record[field]
         residency = record.get("residency")
@@ -24061,6 +24121,10 @@ class PoolQueue:
             "action_key": str(record.get("action_key") or ""),
             "published_unix": record.get("published_unix"),
             "published_by": record.get("published_by"),
+            # The submission's own answer, backfilled to explicit unknown for
+            # rows filed before the tag existed (#1565): every attempt record
+            # names a repository, so a consumer never tests for absence.
+            "tested_repository": tested_repository_of(record),
             "attempt": attempt,
             "max_attempts": max_attempts,
             # ``None`` is honest legacy evidence: lower-level pool producers
@@ -25185,6 +25249,9 @@ class PoolQueue:
                               "retry_safe"):
                     if field in snapshot:
                         filed[field] = snapshot[field]
+                # Every end record names a repository (#1565): the
+                # submission's own tag, backfilled to explicit unknown.
+                filed["tested_repository"] = tested_repository_of(snapshot)
                 _write_json_atomic(lost, filed)
             return lost
         record.pop("finish_pending", None)
@@ -26730,6 +26797,7 @@ class PoolQueue:
         except Exception as exc:                                 # noqa: BLE001
             outcome["resource_profile"] = {
                 "schema": RESOURCE_PROFILE_SCHEMA_V1,
+                "tested_repository": tested_repository_of(item),
                 "error": f"{type(exc).__name__}: {exc}",
             }
         return outcome
@@ -26755,6 +26823,10 @@ class PoolQueue:
         finished_unix = _now()
         profile: dict[str, object] = {
             "schema": RESOURCE_PROFILE_SCHEMA_V1,
+            # Which repository this run tested (#1565): the submission's own
+            # tag, backfilled to explicit unknown, so cost accounting can join
+            # a run's cost to its repository without reopening the queue row.
+            "tested_repository": tested_repository_of(item),
             "host": socket.gethostname(),
             "finished_unix": finished_unix,
         }

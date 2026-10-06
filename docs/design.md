@@ -413,6 +413,25 @@ the existing submission's annotation. Deferred release retains it in optional
 publication metadata; older deferred records without it still read. SLURM
 stores it with the submission, not in the action or `sbatch` priority flags.
 
+`tested_repository` names the repository a submission sealed, for test-cost
+accounting (#1565). `pbrun` freezes it from the checkout it seals: the Git
+common dir places the repository the tree belongs to, so a linked worktree
+names its main repository rather than its own directory (a bare origin named
+`X.git` names `X`); a plain checkout names its root, and `unknown` -- never
+blank, never guessed -- when Git cannot place the checkout at all. It rides
+the queue row beside the action the way `priority_reason` does:
+outside the sealed body and its cache key, so tagging an action never re-keys
+it. The worker side copies the row's tag into each attempt record, the end
+record keeps the row's own copy (a requeue carries it forward as a new
+generation of the same tree), and each run's `resource_profile` names it too,
+so the attempt, end and resource metadata all answer which repository was
+tested. Rows filed before the tag, and rows from producers that stage or move
+bytes rather than test a checkout, carry no field; every reader reports those
+as `unknown` through one definition rather than testing for absence. The name
+is never guessed from host, interpreter or parent process, and a name that is
+not nonblank single-line printable text of at most 256 characters is refused
+at publication. `pbstatus` projects it on live rows and endings.
+
 A ready record that states any of those three fields in a way the queue cannot
 read is **skipped from the listing and filed by the sweep**. `publish` refuses a
 non-integer `priority` and writes `published_unix` itself, so such a record was
