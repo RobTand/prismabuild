@@ -1226,7 +1226,7 @@ def is_box_local_path(path: object) -> bool:
 
     The rule that decides an action's placement lives here rather than in
     ``pbrun`` because two readers need it and they must not disagree: the
-    submitter turns it into a pin (``pbrun.placement_tags``), and the queue
+    submitter turns it into a pin (``pbrun.placement_contract``), and the queue
     turns it into a width (``placement_census``).  A second copy is how the
     pin and the measurement of the pin end up describing different fleets.
 

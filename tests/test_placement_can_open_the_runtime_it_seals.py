@@ -8,7 +8,7 @@ are sealed as absolute paths into the *submitting* runtime's tree, so a
 ``pbrun`` invoked out of a developer worktree can be executed only by the box
 that worktree is on.
 
-``placement_tags`` cannot see that and should not: it screens argv and the
+``placement_contract`` cannot see that and should not: it screens argv and the
 caller's environment, which are the submitter's inputs, not ``pbrun``'s own
 installation.  It does derive the right pin anyway, because the payload's
 ``env`` resolves outside the repository -- but an explicit ``--tag`` outranks

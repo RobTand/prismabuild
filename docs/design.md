@@ -2692,7 +2692,11 @@ miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
   An absent executable still refuses. The full direct argv and caller-environment
   screen runs before class selection; repository/shared paths remain portable.
   Missing, stale, incomplete or old-generation dependency evidence retains the
-  host pin with a notice naming why. The existing queue chooses by load.
+  host pin with a notice naming why, including when shared or checkout commands
+  have no external dependencies. Unavailable or invalid class inventory also
+  keeps that pin; a failed class proof never broadens to all workers. A genuine
+  non-class command keeps its ordinary dependency-derived placement. The
+  existing queue chooses by load.
   Class-default requirements are sealed as `local_dependencies`, projected
   onto the row and fenced by `local-dependency-v1`. The offer lookup extends
   the named-interpreter mechanism with executable/path answers; it primes only

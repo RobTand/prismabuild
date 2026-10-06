@@ -1736,7 +1736,7 @@ def placement_contract(
         except (OSError, ValueError, TypeError) as exc:
             print(f"pbrun: keeping {hostname} placement: class inventory unavailable: {exc}",
                   file=sys.stderr, flush=True)
-            members = {}
+            return [hostname], requirements, command
         aliases = {alias for names in members.values() for alias in names}
         if hostname in aliases or (hostname == "celestia" and needs_gpu):
             reason = offer_queue().class_dependency_gap("gb10", members, requirements)
@@ -1744,21 +1744,9 @@ def placement_contract(
                 return ["gb10", *([local_dependencies.TAG] if requirements else [])], requirements, command
             print(f"pbrun: keeping host pin {hostname}: gb10 dependencies not proven: {reason}",
                   file=sys.stderr, flush=True)
+            return [hostname], requirements, command
     return ([hostname] if requirements else []), requirements, command
 
-
-def placement_tags(
-    cwd: Path, *, explicit: list[str], here: bool, hostname: str,
-    portable_checkout: bool = False, command: list[str] | None = None,
-    repository_root: Path | None = None, environment: dict[str, str] | None = None,
-    caller_environment: dict[str, str] | None = None, anywhere: bool = False,
-) -> list[str]:
-    """Library path classifier; the CLI supplies the bounded fleet evidence boundary."""
-    return placement_contract(
-        cwd, explicit=explicit, here=here, hostname=hostname,
-        portable_checkout=portable_checkout, command=command,
-        repository_root=repository_root, environment=environment,
-        caller_environment=caller_environment, anywhere=anywhere)[0]
 
 
 def is_box_local(cwd: Path) -> bool:
@@ -1793,10 +1781,10 @@ def require_reachable_runtime(
     receipt), so a ``pbrun`` invoked out of a developer worktree can be executed
     only by the box that worktree is on.
 
-    ``placement_tags`` cannot see this and should not: it screens argv and the
+    ``placement_contract`` cannot see this and should not: it screens argv and the
     caller's environment, which are the submitter's inputs, not ``pbrun``'s own
     installation.  So an explicit ``--tag`` -- which by design outranks every
-    pin ``placement_tags`` derives -- sends the action to a box where the
+    pin ``placement_contract`` derives -- sends the action to a box where the
     launcher path does not exist, and the failure arrives from the far side as
     ``can't open file '<worktree>/tools/prismabuild_worker.py'``, after a
     claim, a checkout materialization and a wasted slot.  Measured 2026-09-06
@@ -2506,7 +2494,7 @@ def pin_notice(
     and so announced "PINNED to sparky by --here, so no other box can claim
     this action" for a submission whose tags were ``['x86']`` -- naming, as
     the *other* box, the only box that could actually run it.  A notice about
-    a pin has one job and that was it.  ``placement_tags`` no longer drops the
+    a pin has one job and that was it. ``placement_contract`` no longer drops the
     host pin that way, but the reading rule is what keeps this correct
     whatever it returns.
 
@@ -2518,7 +2506,7 @@ def pin_notice(
     contingency it is rather than as "match only this box".
 
     The explicit ``--tag`` list is deliberately NOT a parameter here.  The
-    only thing it decides is what ``placement_tags`` returned, and that is
+    only thing it decides is what ``placement_contract`` returned, and that is
     already in ``intent``; taking it as well would leave a second way to ask
     the flags what the tags already answer, which is the bug this function
     was rewritten to close.  ``here`` stays, because ``--here`` on a shared

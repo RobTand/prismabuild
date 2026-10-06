@@ -97,12 +97,9 @@ def _sealed_pbrun_action(checkout: Path, stamp_name: str) -> dict[str, object]:
 
 
 def _tags(cwd: str, **kw: object) -> list[str]:
-    return pbrun.placement_tags(
-        Path(cwd),
-        explicit=kw.pop("explicit", []),          # type: ignore[arg-type]
-        here=bool(kw.pop("here", False)),
-        hostname=HOST,
-    )
+    return pbrun.placement_contract(
+        Path(cwd), explicit=kw.pop("explicit", []), here=bool(kw.pop("here", False)),
+        hostname=HOST)[0]
 
 
 def test_a_shared_checkout_is_free_to_run_on_any_box() -> None:
@@ -141,16 +138,14 @@ def test_portable_snapshot_keeps_a_box_local_executable_host_pin(
     interpreter.write_bytes(b"ELF test executable")
     interpreter.chmod(0o755)
 
-    assert pbrun.placement_tags(
-        checkout,
-        explicit=[],
-        here=False,
-        hostname=HOST,
-        portable_checkout=True,
-        command=[str(interpreter), "-V"],
-        repository_root=checkout,
-        environment={"PATH": "/usr/bin:/bin"},
-    ) == [HOST]
+    assert pbrun.placement_contract(checkout,
+    explicit=[],
+    here=False,
+    hostname=HOST,
+    portable_checkout=True,
+    command=[str(interpreter), "-V"],
+    repository_root=checkout,
+    environment={"PATH": "/usr/bin:/bin"},)[0] == [HOST]
 
 
 def test_explicit_tag_owns_a_missing_external_executable_path(
@@ -159,16 +154,14 @@ def test_explicit_tag_owns_a_missing_external_executable_path(
     """A caller may name the worker class that owns a box-absent interpreter."""
 
     checkout = _git_checkout(tmp_path)
-    assert pbrun.placement_tags(
-        checkout,
-        explicit=["dl380g10"],
-        here=False,
-        hostname=HOST,
-        portable_checkout=True,
-        command=["/home/rob/venvs/pb-cpu/bin/python", "-V"],
-        repository_root=checkout,
-        environment={"PATH": "/usr/bin:/bin"},
-    ) == ["dl380g10"]
+    assert pbrun.placement_contract(checkout,
+    explicit=["dl380g10"],
+    here=False,
+    hostname=HOST,
+    portable_checkout=True,
+    command=["/home/rob/venvs/pb-cpu/bin/python", "-V"],
+    repository_root=checkout,
+    environment={"PATH": "/usr/bin:/bin"},)[0] == ["dl380g10"]
 
 
 def test_portable_snapshot_refuses_an_unplaced_missing_executable(
@@ -177,16 +170,14 @@ def test_portable_snapshot_refuses_an_unplaced_missing_executable(
     checkout = _git_checkout(tmp_path)
 
     with pytest.raises(SystemExit, match="--tag"):
-        pbrun.placement_tags(
-            checkout,
-            explicit=[],
-            here=False,
-            hostname=HOST,
-            portable_checkout=True,
-            command=["/home/rob/venvs/missing/bin/python", "-V"],
-            repository_root=checkout,
-            environment={"PATH": "/usr/bin:/bin"},
-        )
+        pbrun.placement_contract(checkout,
+        explicit=[],
+        here=False,
+        hostname=HOST,
+        portable_checkout=True,
+        command=["/home/rob/venvs/missing/bin/python", "-V"],
+        repository_root=checkout,
+        environment={"PATH": "/usr/bin:/bin"},)[0]
 
 
 def test_portable_snapshot_resolves_a_bare_executable_through_declared_path(
@@ -198,16 +189,14 @@ def test_portable_snapshot_resolves_a_bare_executable_through_declared_path(
     binary.write_text("#!/bin/sh\nexit 0\n")
     binary.chmod(0o755)
 
-    assert pbrun.placement_tags(
-        checkout,
-        explicit=[],
-        here=False,
-        hostname=HOST,
-        portable_checkout=True,
-        command=["python3", "-V"],
-        repository_root=checkout,
-        environment={"PATH": str(binary.parent)},
-    ) == [HOST]
+    assert pbrun.placement_contract(checkout,
+    explicit=[],
+    here=False,
+    hostname=HOST,
+    portable_checkout=True,
+    command=["python3", "-V"],
+    repository_root=checkout,
+    environment={"PATH": str(binary.parent)},)[0] == [HOST]
 
 
 def test_portable_snapshot_pins_a_direct_flag_value_outside_the_snapshot(
@@ -220,16 +209,14 @@ def test_portable_snapshot_pins_a_direct_flag_value_outside_the_snapshot(
     model.parent.mkdir()
     model.write_text("{}\n")
 
-    assert pbrun.placement_tags(
-        checkout,
-        explicit=[],
-        here=False,
-        hostname=HOST,
-        portable_checkout=True,
-        command=["./task.py", f"--model={model}"],
-        repository_root=checkout,
-        environment={"PATH": "/usr/bin:/bin"},
-    ) == [HOST]
+    assert pbrun.placement_contract(checkout,
+    explicit=[],
+    here=False,
+    hostname=HOST,
+    portable_checkout=True,
+    command=["./task.py", f"--model={model}"],
+    repository_root=checkout,
+    environment={"PATH": "/usr/bin:/bin"},)[0] == [HOST]
 
 
 def test_portable_snapshot_screens_caller_environment_paths(tmp_path: Path) -> None:
@@ -239,33 +226,29 @@ def test_portable_snapshot_screens_caller_environment_paths(tmp_path: Path) -> N
     cache = tmp_path / "model-cache"
     cache.mkdir()
 
-    assert pbrun.placement_tags(
-        checkout,
-        explicit=[],
-        here=False,
-        hostname=HOST,
-        portable_checkout=True,
-        command=["./task.py"],
-        repository_root=checkout,
-        environment={"PATH": "/usr/bin:/bin"},
-        caller_environment={"MODEL_CACHE": str(cache)},
-    ) == [HOST]
+    assert pbrun.placement_contract(checkout,
+    explicit=[],
+    here=False,
+    hostname=HOST,
+    portable_checkout=True,
+    command=["./task.py"],
+    repository_root=checkout,
+    environment={"PATH": "/usr/bin:/bin"},
+    caller_environment={"MODEL_CACHE": str(cache)},)[0] == [HOST]
 
 
 def test_anywhere_is_an_explicit_external_portability_assertion(tmp_path: Path) -> None:
     checkout = _git_checkout(tmp_path)
 
-    assert pbrun.placement_tags(
-        checkout,
-        explicit=[],
-        here=False,
-        hostname=HOST,
-        portable_checkout=True,
-        command=["/worker/owned/python", "--model=/worker/owned/model"],
-        repository_root=checkout,
-        environment={"PATH": "/usr/bin:/bin"},
-        anywhere=True,
-    ) == []
+    assert pbrun.placement_contract(checkout,
+    explicit=[],
+    here=False,
+    hostname=HOST,
+    portable_checkout=True,
+    command=["/worker/owned/python", "--model=/worker/owned/model"],
+    repository_root=checkout,
+    environment={"PATH": "/usr/bin:/bin"},
+    anywhere=True,)[0] == []
 
 
 def test_here_pins_a_shared_checkout_on_purpose() -> None:
@@ -817,13 +800,11 @@ def test_git_snapshot_from_a_linked_worktree_is_self_contained(
     common_dir = Path(_git(linked, "rev-parse", "--git-common-dir").stdout.strip())
     assert common_dir.is_absolute()
     assert linked not in common_dir.parents
-    assert pbrun.placement_tags(
-        linked,
-        explicit=[],
-        here=False,
-        hostname=HOST,
-        portable_checkout=True,
-    ) == []
+    assert pbrun.placement_contract(linked,
+    explicit=[],
+    here=False,
+    hostname=HOST,
+    portable_checkout=True,)[0] == []
 
     (linked / "linked-only.txt").write_text("sealed linked worktree bytes\n")
     cas = core_module.PrismaBuildCAS(tmp_path / "cas")
@@ -2025,7 +2006,7 @@ def test_a_tag_and_here_are_both_constraints_the_submitter_asked_for(
 ) -> None:
     """``--here --tag x86`` asks for this box AND for an x86 box.
 
-    ``placement_tags`` returned ``list(explicit)`` the moment any ``--tag``
+    The old placement logic returned ``list(explicit)`` the moment any ``--tag``
     was given, so the host pin was discarded without a word.  From a shared
     checkout on sparky, ``pbrun --here --tag x86`` then printed: "pbrun:
     PINNED to sparky by --here, so no other box can claim this action.  1
@@ -2034,8 +2015,8 @@ def test_a_tag_and_here_are_both_constraints_the_submitter_asked_for(
     are fixed here: the pin lands, and the notice reads the tags.
     """
 
-    tags = pbrun.placement_tags(Path("/mnt/shared/tessera-x86"),
-                                explicit=["x86"], here=True, hostname=HOST)
+    tags = pbrun.placement_contract(Path("/mnt/shared/tessera-x86"),
+                                explicit=["x86"], here=True, hostname=HOST)[0]
     assert tags == ["x86", HOST]               # both, hostname last
 
     notice = _notice(_fleet(tmp_path), cwd="/mnt/shared/tessera-x86", tags=tags,
@@ -2050,10 +2031,8 @@ def test_a_tag_and_here_are_both_constraints_the_submitter_asked_for(
 def test_here_beside_the_host_tag_does_not_repeat_the_hostname(tmp_path) -> None:
     """The two spellings of one pin are one tag, and the tag matcher is exact."""
 
-    assert pbrun.placement_tags(
-        Path("/mnt/shared/tessera-x86"),
-        explicit=[HOST, "x86"], here=True, hostname=HOST,
-    ) == ["x86", HOST]
+    assert pbrun.placement_contract(Path("/mnt/shared/tessera-x86"),
+    explicit=[HOST, "x86"], here=True, hostname=HOST,)[0] == ["x86", HOST]
 
 
 def test_a_pinning_tag_over_a_box_local_tree_says_both_things(tmp_path) -> None:
@@ -2431,15 +2410,33 @@ def test_bound_checkout_executable_remains_relative_when_snapshot_relocates(tmp_
 
 
 def test_default_cli_resolves_nominal_docker_through_capture_shim(class_submission, monkeypatch):
-    submit, _ = class_submission
+    """Execute the real selected shim against a controlled CLI, not a Docker daemon."""
+    submit, root = class_submission
     wrapper = Path(__file__).resolve().parents[1] / "tools" / "fleet"
     monkeypatch.setattr(pbrun, "CONTAINER_WRAPPER_DIR", wrapper)
-    action = submit(["docker", "--version"], answers={
-        m: {str(wrapper / "docker"): "executable"} for m in ("spark-a", "spark-b")})
+    backend = root / "controlled-docker"
+    calls = root / "docker-call.json"
+    calls.write_text("{}")
+    backend.write_text(
+        '#!/usr/bin/python3\nimport json, os, sys\n'
+        'with open(os.environ["DOCKER_CALL"], "w") as out:\n'
+        '    json.dump({"argv": sys.argv[1:], "executable": sys.argv[0], '
+        '"owner": os.environ["PRISMABUILD_CONTAINER_OWNER"]}, out)\n'
+        'print("controlled-docker-ok")\n')
+    backend.chmod(0o755)
+    from prismabuild import local_dependencies
+    answers = local_dependencies.observe({str(wrapper / "docker"): "executable",
+                                          str(backend): "path", str(calls): "path"})
+    action = submit(["docker", "--version"], flags=[
+        "--env", "PRISMABUILD_DOCKER_TESTING=1", "--env", "PRISMABUILD_DOCKER_REAL=" + str(backend),
+        "--env", "DOCKER_CALL=" + str(calls)], answers={m: answers for m in ("spark-a", "spark-b")})
     assert action["params"]["command"] == [str(wrapper / "docker"), "--version"]
-    from prismabuild import movement_actions
-    assert action["task"]["argv"] == movement_actions.standard_capture_argv(
-        action["params"]["command"], action["task"]["result_path"], path_prefix=str(wrapper))
+    result = subprocess.run(action["task"]["argv"], cwd=root, text=True, capture_output=True,
+                            env=action["environment"]["variables"])
+    assert result.returncode == 0, result.stderr
+    assert json.loads(calls.read_text()) == {"argv": ["--version"], "executable": str(backend),
+                                            "owner": action["environment"]["variables"]["PRISMABUILD_CONTAINER_OWNER"]}
+    assert (root / action["task"]["result_path"]).read_text().strip() == "controlled-docker-ok"
 
 
 @pytest.mark.parametrize("proof", ["missing", "stale", "invalid", "healthy", "non-class",

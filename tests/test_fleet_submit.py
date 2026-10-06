@@ -631,20 +631,39 @@ def test_a_producers_submission_is_findable_by_the_key_it_went_under(
     assert not (tmp_path / "pb-queue" / "failed").exists()
 
 
-def test_shared_submit_projects_sealed_local_dependency_requirements(tmp_path):
+@pytest.mark.parametrize("present", [False, True])
+def test_shared_submit_dependency_is_guarded_at_actual_claim(tmp_path, present):
+    from prismabuild import local_dependencies
     cas = _cas(tmp_path)
     original = _runnable_action(tmp_path, cas)
     body = {key: value for key, value in original.items() if key != "action_key"}
-    dependency = str(tmp_path / "input.bin")
-    body["params"] = dict(body["params"], local_dependencies={dependency: "path"},
-                          dependency_queries={dependency: "path"})
+    dependency = tmp_path / "input.bin"
+    if present:
+        dependency.write_text("input")
+    body["params"] = dict(body["params"], local_dependencies={str(dependency): "path"},
+                          dependency_queries={str(dependency): "path"})
     action = pb.seal_action(body)
     request = cas.publish_action_request(action)
     queue_root = tmp_path / "queue"
     fleet_submit.submit(action, cas=cas, request_path=request, transport="pool",
                         checkout_root=tmp_path, queue_root=queue_root, resources={"cpu": 1})
-    row = json.loads(pool.PoolQueue(queue_root).item_path(pool.READY, action["action_key"]).read_text())
-    assert row["local_dependencies"] == {dependency: "path"}
-    assert row["dependency_queries"] == {dependency: "path"}
-    assert "local-dependency-v1" in row["tags"]
-
+    queue = pool.PoolQueue(queue_root)
+    ready = queue.item_path(pool.READY, action["action_key"])
+    before = ready.read_bytes()
+    item = queue.claim(tags=[local_dependencies.TAG], capacity={"cpu": 1})
+    if not present:
+        assert item is None
+        assert ready.read_bytes() == before
+        assert not queue.item_path(pool.CLAIMED, action["action_key"]).exists()
+        from prismabuild import adaptive_cpu
+        denials = adaptive_cpu.read_json(
+            adaptive_cpu.local_state_base(queue.ledger().base) / pool.CLAIM_DENIALS).get("records", {})
+        assert any(row.get("reason") == "local_dependency_not_present"
+                   and row.get("detail", {}).get("paths") == [str(dependency)]
+                   for row in denials.values())
+    else:
+        assert item["action_key"] == action["action_key"]
+        assert item["attempts"] == 1
+        assert not ready.exists()
+        assert queue.item_path(pool.CLAIMED, action["action_key"]).exists()
+        queue.finish(item["action_key"], status="failed", detail={"returncode": 1}, claim_snapshot=item)

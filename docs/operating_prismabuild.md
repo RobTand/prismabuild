@@ -290,7 +290,11 @@ cannot supply two members. The existing queue still chooses by load.
 
 A host-only dependency, an unanswered path, a missing/stale member offer,
 or a worker without `local-dependency-v1` keeps the conservative host pin
-and prints why. Workers extend the existing interpreter lookup with path
+and prints why, even if a shared or checkout executable has no external
+dependencies. Missing or invalid class inventory also retains the host pin.
+Neither failure silently permits all-worker placement. A genuine non-class
+submission retains its ordinary dependency-derived placement. Workers extend
+the existing interpreter lookup with path
 questions from ready rows, plus local checks of PB's default bash and their
 configured worker interpreter. A first-use path may be unknown; neither the
 submitter's copy nor a busy/missing member proves homogeneity. Name
