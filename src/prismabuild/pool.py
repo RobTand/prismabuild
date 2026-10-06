@@ -6726,9 +6726,12 @@ class PoolQueue:
             sealed_params = sealed_request["params"] if sealed_request is not None else {}
             assert isinstance(sealed_params, Mapping)
             sealed_batch_raw = sealed_params.get("produced_output_batch")
-            returns_capacity = sealed_params.get("returns_capacity") is True
-            if "returns_capacity" in sealed_params and not returns_capacity:
-                raise PoolContractError("action.params.returns_capacity must be true when present")
+            from . import movement_actions
+            for forged in movement_actions.CAPACITY_ROLE_FIELDS:
+                if forged in sealed_params:
+                    raise PoolContractError(
+                        f"action.params.{forged} is assigned by PrismaBuild to its own "
+                        "movement nodes and cannot be declared by an action")
             if ("produced_output_batch" in sealed_params
                     and not isinstance(sealed_batch_raw, Mapping)):
                 raise PoolContractError(
@@ -7108,10 +7111,15 @@ class PoolQueue:
         if resident_set is not None:
             from . import resident_sets
             item["resident_set"] = resident_sets._set_id(resident_set)
-        if returns_capacity:
-            # Derived from the sealed params, never passed in (#1579): a row
-            # cannot declare what its action does not.
-            item["returns_capacity"] = True
+        if sealed_request_present:
+            # Assigned here, from the sealed definition, never declared (#1579):
+            # a movement node PrismaBuild publishes (``recompute``, its own
+            # script, its small sealed demand) and nothing else.
+            from . import movement_actions
+            role = movement_actions.capacity_role(
+                sealed_params, demand, recompute=recompute is True, residency=residency_block)
+            if role is not None:
+                item[role] = True
         if declared_requirements is not None:
             # The claim-relevant projection of the sealed params (#1495):
             # what a claim gate reads, no more -- the full capability
@@ -20550,6 +20558,11 @@ class PoolQueue:
         #: Their wait ends when this host's incumbents finish, so it never
         #: holds back work an incumbent itself depends on.
         measurement_withholds: set[str] = set()
+        #: Each ready row's priority, so a gang member past the reservation bound
+        #: is released from a measurement withhold only when that measurement is
+        #: not of strictly higher priority (#1579): higher priority goes first.
+        ready_priority = {str(row.get("action_key", "")): int(row.get("priority", 0))
+                          for row in ready if isinstance(row.get("priority", 0), int)}
         #: Whether a row this pass already withheld the whole box for (#1230
         #: review): ``carry_withhold``'s None then means "held elsewhere in
         #: this pass", not "no live carry", and the busy-row room must not
@@ -20581,6 +20594,10 @@ class PoolQueue:
                 verdict_snapshot(), item, host=socket.gethostname(), now=_now())
             if carried is not None:
                 withhold(key, WITHHOLD_KINDS.get(str(carried["mode"])))
+                if "drain_until_unix" in carried:
+                    # A measurement's carried episode (it snapshots its drain
+                    # deadline): the gang precedence reads it like a fresh one.
+                    measurement_withholds.add(key)
             return carried
 
         def keep_refused_room(key: str, reservation: Mapping[str, object],
@@ -20663,6 +20680,7 @@ class PoolQueue:
                 withheld_kinds is None
                 or self._demands_withheld_kind(item, withheld_kinds))
             if (held_back and withheld_for in measurement_withholds
+                    and ready_priority.get(withheld_for, 0) <= int(item.get("priority", 0))
                     and self._gang_member_past_reservation_bound(item)):
                 # The reservation wins over a measurement withhold (#1579): a
                 # gang member whose gang has waited past the bound is not held
@@ -21343,18 +21361,24 @@ class PoolQueue:
                             # suspended row stays READY and withholds again once
                             # the gang has started and no election waits (#1579).
                             reservation_now = _now()
-                            measurement_suspended = measurement_reservation.reservation_active_on(
+                            reserving_priority = measurement_reservation.reservation_priority_on(
                                 census, host=ledger.base.name, now=reservation_now)
+                            # This row's own measurement withhold yields only to a
+                            # gang of its priority or higher.
+                            measurement_suspended = (reserving_priority is not None
+                                                     and int(item.get("priority", 0)) <= reserving_priority)
                             reservation_held = reservation_capacity = None
-                            if measurement_suspended:
+                            if reserving_priority is not None:
                                 try:
                                     reservation_held = ledger.held()
                                     reservation_capacity = ledger.capacity()
                                 except (OSError, ValueError, PoolContractError):
                                     reservation_held = reservation_capacity = None  # fail safe
-                            census_blocked = (None if measurement_suspended else
-                                              measurement_reservation.blocking_selection(
-                                                  census, item, host=ledger.base.name, funded_by=None))
+                            census_blocked = measurement_reservation.blocking_selection(
+                                census, item, host=ledger.base.name, funded_by=None)
+                            if (measurement_suspended and census_blocked is not None
+                                    and census_blocked["priority"] <= reserving_priority):
+                                census_blocked = None  # the reservation wins; higher priority keeps its place
                             # A dependent of a current incumbent on this host
                             # (its sealed producer holds tokens here) only
                             # shortens that incumbent's life, which is what the

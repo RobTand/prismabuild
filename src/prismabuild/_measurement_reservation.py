@@ -520,15 +520,18 @@ def _gang_has_waited(chosen: dict, now: float) -> bool:
             and now - rank[1] > GANG_RESERVE_AFTER_S)
 
 
-def reservation_active_on(census: dict, *, host: str, now: float) -> bool:
-    """Whether some elected gang reserves ``host`` now: its wait passed the bound.
+def reservation_priority_on(census: dict, *, host: str, now: float) -> int | None:
+    """The highest priority among gangs that reserve ``host`` now, else ``None``.
 
-    Once true the reservation wins on that host: a measurement withhold is
-    suspended there (:func:`suspends_measurement`), so a host is never both
-    withheld for a waiting measurement and reserved for a gang.
+    A gang reserves a host once its wait passed the bound.  The reservation
+    wins over a measurement of the gang's priority or lower there: the
+    measurement's fence and withhold are suspended and it does not elect.  A
+    strictly HIGHER-priority measurement keeps its place ahead of the gang;
+    that is the priority order, not a reservation exception (#1579).
     """
-    return any(chosen["host"] == host and _gang_has_waited(chosen, now)
-               for chosen in census.get("gang_elections", {}).values())
+    reserving = [chosen["priority"] for chosen in census.get("gang_elections", {}).values()
+                 if chosen["host"] == host and _gang_has_waited(chosen, now)]
+    return max(reserving) if reserving else None
 
 
 def _reserved(member_demand: object, capacity: Mapping) -> dict[str, int]:
@@ -592,10 +595,12 @@ def gang_blocking(census: dict, item: dict, *, host: str, group: str | None,
     demand on the host, and a row is admitted only if the reservation survives
     it (:func:`reservation_shortfall`).  Never held: the gang's own members and
     any gang's (two gangs of one priority are ordered by ``rank``), a verified
-    publication canary slot (its own contract), and a row that declares
-    ``returns_capacity`` (a stage or RAM egress, an export): the running
-    action, and through it the gang, waits on those.  An undeclared row is
-    held by its demand.  Higher priority is never held.  The returned election
+    publication canary slot (its own contract), and a row PrismaBuild itself
+    marked ``returns_capacity`` (a stage or RAM egress, an export, a resident
+    evict) or ``serves_residency`` (a stage mover or RAM promotion): the
+    running action, and through it the gang, waits on those.  ``publish``
+    derives the marks from the sealed definition and refuses them in a
+    submitted action.  Any other row is held by its demand.  Higher priority is never held.  The returned election
     carries ``reservation`` (the shortfall) when it is this rule that holds.
     """
     now = time.time() if now is None else now
@@ -607,6 +612,7 @@ def gang_blocking(census: dict, item: dict, *, host: str, group: str | None,
         if (item.get("gang") is not None or int(item.get("priority", 0)) != chosen["priority"]
                 or isinstance(item.get("publication_canary"), dict)
                 or item.get("returns_capacity") is True
+                or item.get("serves_residency") is True
                 or not _gang_has_waited(chosen, now)):
             continue
         short = reservation_shortfall(item, chosen.get("demand"), held=held, capacity=capacity)
@@ -630,10 +636,12 @@ def elect(queue: PoolQueue, ledger: ResourceLedger, controller, item: dict,
         group = item["gang"].get("group") if isinstance(item.get("gang"), dict) else None
         if any(other["host"] == ledger.base.name and other["group"] != group
                and _gang_has_waited(other, pool._now())
+               and int(item.get("priority", 0)) <= other["priority"]
                for other in census["gang_elections"].values()):
-            # A gang reserves this host: the reservation wins, so the host is
-            # not also withheld for this measurement.  It stays READY and
-            # elects after the gang starts (#1579).
+            # A gang of this priority or higher reserves this host: the
+            # reservation wins, so the host is not also withheld for this
+            # measurement.  It stays READY and elects after the gang starts.  A
+            # strictly higher-priority measurement still elects (#1579).
             return None
         holders = verdict.get("holders")
         if (not isinstance(sampled_unix, (int, float)) or isinstance(sampled_unix, bool)

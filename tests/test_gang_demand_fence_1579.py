@@ -66,13 +66,14 @@ def test_a_small_row_is_held_once_running_work_has_used_the_slack():
     assert held is not None and held["reservation"] == {"mem_gb": 1}
 
 
-def test_a_declared_returner_is_admitted_even_with_the_slack_gone():
+def test_a_marked_returner_is_admitted_even_with_the_slack_gone():
     assert _blocked(_row(returns_capacity=True), held={"cpu": 2, "mem_gb": 119}) is None
 
 
 @pytest.mark.parametrize("value", [False, "true", 1, None, {}])
-def test_only_a_declared_true_returns_capacity_exempts(value):
-    assert _blocked(_row(returns_capacity=value), held={"cpu": 2, "mem_gb": 119}) is not None
+def test_only_a_true_role_mark_exempts(value):
+    for role in ("returns_capacity", "serves_residency"):
+        assert _blocked(_row(**{role: value}), held={"cpu": 2, "mem_gb": 119}) is not None
 
 
 @pytest.mark.parametrize("resources", [
@@ -142,12 +143,19 @@ def test_a_missing_rank_does_not_reserve():
 
 # --- measurement precedence ---------------------------------------------------------
 
-def test_the_reservation_is_active_only_past_the_bound_and_only_on_its_host():
+def test_the_reservation_priority_is_the_gangs_and_only_past_the_bound_on_its_host():
     census = _census()
-    assert not reservation.reservation_active_on(census, host="sparky", now=YOUNG)
-    assert reservation.reservation_active_on(census, host="sparky", now=OLD)
-    assert not reservation.reservation_active_on(census, host="sparklina", now=OLD)
-    assert not reservation.reservation_active_on({}, host="sparky", now=OLD)
+    assert reservation.reservation_priority_on(census, host="sparky", now=YOUNG) is None
+    assert reservation.reservation_priority_on(census, host="sparky", now=OLD) == -10
+    assert reservation.reservation_priority_on(census, host="sparklina", now=OLD) is None
+    assert reservation.reservation_priority_on({}, host="sparky", now=OLD) is None
+
+
+def test_the_role_marks_are_not_a_declaration_and_exempt_both_roles():
+    held = {"cpu": 2, "mem_gb": 119}
+    for role in ("returns_capacity", "serves_residency"):
+        assert _blocked(_row(**{role: True}), held=held) is None
+        assert _blocked(_row(**{role: "true"}), held=held) is not None
 
 
 # --- the timeline -------------------------------------------------------------------

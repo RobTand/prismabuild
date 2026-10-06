@@ -6457,8 +6457,7 @@ def _seal_output_egress(queue, *, record: Mapping[str, object],
             templated["template"], command=command,
             demand={"cpu": 1, "mem_gb": 1},
             tags=[host] if host else [],
-            log_name=log_name, retry_policy=retry_policy,
-            extra_params=movement_actions.RETURNS_CAPACITY_PARAMS)
+            log_name=log_name, retry_policy=retry_policy)
     except SystemExit as exc:
         return {"ok": False, "step": "seal", "refusal": str(exc)}
     except Exception as exc:

@@ -101,14 +101,62 @@ MOVEMENT_TASK = {"task_class": "generation", "determinism": "stochastic",
 MOVEMENT_EXECUTION_SCOPE = {"portability": "portable", "platform_key": None,
                             "host_class": None}
 
-#: Sealed into the params of every node whose whole job is to give capacity back
-#: (a stage or RAM egress, a produced-output egress or export, a resident evict).
-#: It is part of the action's content-addressed definition, and ``publish``
-#: copies it onto the queue row as ``returns_capacity``, where a gang's
-#: reservation reads it (#1579): such a row is never held behind a waiting gang,
-#: because a running action, and through it the gang, waits on it.  A row
-#: without it is held by its declared demand.
-RETURNS_CAPACITY_PARAMS = {"returns_capacity": True}
+#: Roles PrismaBuild itself assigns to a queue row (#1579): ``returns_capacity``
+#: for a node whose whole job is to give capacity back, ``serves_residency`` for
+#: a stage mover or RAM promotion a residency consumer waits on.  A gang's
+#: reservation never holds either, because the running action, and through it
+#: the gang, waits on them.  Nothing here is a flag a submitter can declare:
+#: ``PoolQueue.publish`` refuses both names in a sealed action and derives the
+#: role from the sealed definition (:func:`capacity_role`).
+CAPACITY_ROLE_FIELDS = ("returns_capacity", "serves_residency")
+PRODUCED_EXPORT_SCRIPT = "produced_export.py"
+LOCAL_RESIDENT_SCRIPT = "local_resident.py"
+
+
+def capacity_role(params: Mapping[str, object], demand: Mapping[str, object], *,
+                  recompute: bool, residency: Mapping[str, object] | None) -> str | None:
+    """The role PrismaBuild's own movement nodes have, from their sealed definition.
+
+    ``None`` for everything else, which a reservation then holds by its demand:
+    unknown is consuming.  Every PrismaBuild publisher of a movement node
+    (``tier_loop``, ``pbresident``, ``local_resident``, ``produced_output``)
+    publishes it with ``recompute``; the sealed command's script is the node's
+    identity; and the node's declared demand is the small one the node is
+    sealed with.  A submitted action that merely names one of these scripts
+    gets nothing unless it also matches all three, and by then it is that tool.
+
+    * ``returns_capacity``: ``stage_release.py``, ``produced_export.py`` or a
+      ``local_resident.py --operation evict``, demanding at most one CPU and one
+      GiB, no GPU, and no kind but a tier's (``kind@tier``).
+    * ``serves_residency``: ``stage_move.py`` or ``ram_promote.py`` carrying a
+      residency range, with no GPU.
+    """
+    if recompute is not True:
+        return None
+    command = params.get("command")
+    if (not isinstance(command, list) or len(command) < 2
+            or not all(isinstance(part, str) for part in command)):
+        return None
+    script = Path(command[1]).name
+    if not isinstance(demand, Mapping) or demand.get("gpu"):
+        return None
+    if script in (STAGE_MOVER_SCRIPT, RAM_PROMOTE_SCRIPT):
+        if isinstance(residency, Mapping) and "range_start_bytes" in residency:
+            return "serves_residency"
+        return None
+    evict = (script == LOCAL_RESIDENT_SCRIPT and "--operation" in command
+             and command[command.index("--operation") + 1:][:1] == ["evict"])
+    if script not in (STAGE_RELEASE_SCRIPT, PRODUCED_EXPORT_SCRIPT) and not evict:
+        return None
+    for kind, count in demand.items():
+        if type(count) is not int or count < 0:
+            return None
+        if kind == "cpu" and count > 1 or kind == "mem_gb" and count > 1:
+            return None
+        if kind not in ("cpu", "mem_gb") and "@" not in str(kind):
+            return None
+    return "returns_capacity"
+
 
 #: The retry policy a movement node gets when its caller names none (#950).
 #: Its own, never its consumer's: a mover copies into a temporary, verifies

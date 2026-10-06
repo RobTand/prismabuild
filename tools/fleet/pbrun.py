@@ -6556,11 +6556,9 @@ def residency_stage_rows(
                 # finds released what the first released.
                 retry_policy=mover_retry_policy,
                 log_name=f"stage-release-{ordinal:04d}-{span['name']}{csuffix}.log",
-                extra_params={
-                    **movement_actions.RETURNS_CAPACITY_PARAMS,
-                    **({} if egress_policy is None
-                       else {pb.PROGRESS_PARAM: egress_policy,
-                             pb.POOL_CONTENTION_PARAM: egress_contention})})
+                extra_params=(None if egress_policy is None
+                              else {pb.PROGRESS_PARAM: egress_policy,
+                                    pb.POOL_CONTENTION_PARAM: egress_contention}))
             cas.publish_action_request(chunk_egress)
             egress_progress[str(chunk_egress["action_key"])] = egress_derivation
             # No block on the egress: it reserves no tier capacity, and
@@ -6661,7 +6659,6 @@ def residency_stage_rows(
                     # loops that make it never-empty.
                     demand={"cpu": 1, "mem_gb": 1}, tags=tags,
                     retry_policy=mover_retry_policy,
-                    extra_params=movement_actions.RETURNS_CAPACITY_PARAMS,
                     log_name=f"ram-release-{ordinal:04d}-{span['name']}{csuffix}.log")
                 cas.publish_action_request(ram_mover)
                 cas.publish_action_request(ram_egress)

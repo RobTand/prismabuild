@@ -211,8 +211,7 @@ def movement_action(template, store, set_id, tier, *, policy_path, operation, so
             raise ValueError("adoption movement requires source")
         command.extend(["--source", str(source)])
     return movement_actions.seal_movement_action(template, command=command,
-        demand={"cpu": 1, "mem_gb": 1}, tags=[host], log_name=f"resident-{operation}-{set_id}-{host}.log",
-        extra_params=movement_actions.RETURNS_CAPACITY_PARAMS if operation == "evict" else None)
+        demand={"cpu": 1, "mem_gb": 1}, tags=[host], log_name=f"resident-{operation}-{set_id}-{host}.log")
 
 
 def publish_actions(template, store, set_id, tiers, *, policy_path):
