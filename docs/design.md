@@ -4838,13 +4838,31 @@ RAM egress (`stage_release.py`), a produced export (`produced_export.py`) or a
 resident evict. `serves_residency` marks a stage mover or RAM promotion a residency
 consumer waits on (`stage_move.py`, `ram_promote.py`, carrying its residency range).
 Neither is a declaration: `PoolQueue.publish` refuses `returns_capacity` and
-`serves_residency` in a sealed action, and derives the role from the sealed
-definition (`movement_actions.capacity_role`) only when the node was published with
-`recompute` (every PrismaBuild publisher of a movement node does), runs one of those
-scripts, has no GPU, and, for a returner, demands at most one CPU and one GiB and no
-kind but a tier's; a mover must carry its range. A submitted action that merely names
-one of the scripts gets no role unless it also matches all of that, and is then the
-tool. A node with a role skips the reservation arithmetic and still needs its real
+`serves_residency` in a sealed action, and derives the role from the node's EXECUTED
+identity (`movement_actions.capacity_role`), never from a sidecar field or from
+`params.command` alone. `task.argv` must equal exactly the bash capture wrapper that
+`seal_movement_action` builds around `params.command` and `task.result_path`
+(`captured_command`), so `params.command` is what runs; the task must carry the
+`MOVEMENT_TASK` fields and the execution scope must be `MOVEMENT_EXECUTION_SCOPE`;
+the command is an absolute python running one of the movement scripts; and that
+script must be a file of a runtime generation this fleet published
+(`resource_scope.published_generation_member`): resolved through symlinks, a regular
+file at `tools/<name>` or `tools/fleet/<name>` of a sealed (no write bits) direct
+child of `RETAINED_GENERATION_STORE`, whose `RUNTIME_VERSION.json` names the
+generation with a 40-hex commit and records the file's sha256, which it must match.
+That is the store and the receipt rules the pool already applies before it launches a
+worker from a retained generation, so no per-host setting is added; it is not a
+file-name match and not the tier-announced `mover_tools_root` (which is only where the
+tier loop was run from). The demand must be the small one the node is sealed with: a
+returner at most one CPU and one GiB and no kind but a tier's; a mover carries its
+residency range; neither has a GPU. `recompute` is not a condition (the produced spool
+publishes genuine exports without it). Anything unreadable, unpublished or altered is
+an ordinary row, held by its demand; a tier loop run from a dev checkout rather than a
+published generation announces tools the anchor does not trust, so its movers are held
+by demand, the safe direction. Residual: a genuine published movement script run with
+submitter-chosen arguments still gets the role, bounded by that tool's own demand; the
+role never reaches arbitrary code, because nothing but PrismaBuild's published tool
+can match. A node with a role skips the reservation arithmetic and still needs its real
 ledger fit (tier tokens, CPU, memory), so it cannot take what is not free. This is
 what lets a gang member that takes every CPU on its host progress: the movers it waits
 for are admitted although no CPU slack remains. Every other row is held by its demand.
