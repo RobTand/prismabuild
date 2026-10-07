@@ -12,7 +12,9 @@ Now the owner writes an export-wait record beside its progress report
 ``PoolQueue.export_wait_verdict``, under the staged wait's evidence rules
 (#1016): exempt only while a named export of the owner's own shows progress;
 a withheld, refused, failed, stalled or foreign export is not exempt, and
-the verdict names the export and what it went on.
+the verdict names the export and what it went on.  Only the owner action
+writes its export-wait record.  The export writer is a fixture thread, so
+the fixture waits on the thread's own ready event before the run.
 """
 from __future__ import annotations
 
@@ -27,8 +29,6 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from prismabuild import core as pb, pool, produced_spool, progress  # noqa: E402
-from test_a_staged_wait_is_not_no_progress import (  # noqa: E402
-    RESEED_TOKEN, _execute_after_reseed)
 from test_progress_keeps_a_working_action_alive import _claimed, _policy  # noqa: E402
 
 #: Declares an export wait on the keys in ``exports.json`` beside the
@@ -152,6 +152,7 @@ class _Writer:
     def __init__(self, destination: Path) -> None:
         self.path = Path(str(destination) + ".tmp")
         self.stop = threading.Event()
+        self.ready = threading.Event()
         self.thread = threading.Thread(target=self._run, daemon=True)
 
     def _run(self) -> None:
@@ -159,6 +160,7 @@ class _Writer:
             while not self.stop.wait(0.02):
                 handle.write(b"x" * 1024)
                 handle.flush()
+                self.ready.set()
 
     def __enter__(self):
         self.thread.start()
@@ -167,20 +169,12 @@ class _Writer:
     def wait_ready(self, timeout_s: float = 30.0) -> None:
         """Return after the writer lands its first bytes (#1506).
 
-        The thread starts with the context. This waits until its
-        temporary exists and holds bytes, so the first rung reads
-        growth, not an empty file. It raises when the deadline passes.
+        The thread signals its own event after the first flush. The
+        fixture waits on that event, so the run starts only after the
+        export shows growth. The wait has a deadline and fails loudly.
         """
 
-        deadline = time.monotonic() + timeout_s
-        while True:
-            try:
-                if self.path.stat().st_size > 0:
-                    return
-            except OSError:
-                pass
-            assert time.monotonic() < deadline, "the export writer never started"
-            time.sleep(0.005)
+        assert self.ready.wait(timeout_s), "the export writer never started"
 
     def __exit__(self, *exc) -> None:
         self.stop.set()
@@ -190,12 +184,11 @@ class _Writer:
 # -- red first: the owner the rung killed ------------------------------------
 
 def test_an_owner_waiting_on_its_live_export_is_not_killed_no_progress(
-        tmp_path: Path, monkeypatch) -> None:
+        tmp_path: Path) -> None:
     """Quiet for 1.5 s against a 0.4 s grace, all of it waiting on its own
-    export, which is claimed and writing. The fixture reseeds the wait
-    until the action declares it, so the first rung reads the wait however
-    slow the start is. The writer lands bytes before the run, so the first
-    rung reads growth."""
+    export, which is claimed and writing. The action signals after it
+    declares its wait. The writer lands bytes before the run, so the
+    export already shows bytes at the first rung."""
 
     sentinel = tmp_path / "export-declared"
     queue, item, exports = _owner(tmp_path, seconds=1.5, signal=sentinel)
@@ -205,16 +198,11 @@ def test_an_owner_waiting_on_its_live_export_is_not_killed_no_progress(
 
     with _Writer(destination) as writer:
         writer.wait_ready()
-        record = {"schema": progress.EXPORT_WAIT_SCHEMA_V1,
-                  "token": RESEED_TOKEN, "since_unix": time.time(),
-                  "exports": [export]}
-        record_path = Path(progress.export_wait_path(
-            str(queue.action_progress_path(str(item["action_key"])))))
-        outcome = _execute_after_reseed(
-            queue, item, record=record, record_path=record_path,
-            sentinel=sentinel, monkeypatch=monkeypatch)
+        outcome = _execute(queue, item)
 
     assert outcome["status"] == "executed", repr(outcome.get("termination_reason"))
+    assert sentinel.exists(), "the action never signalled it declared its wait"
+
     observed = outcome["progress_observation"]
     assert observed["export_wait_exempt_s"] > 0.4
     wait = observed["export_wait"]
