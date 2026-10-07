@@ -241,7 +241,7 @@ def test_declared_manifest_with_streaming_plan_is_refused(
                    declare_manifest=True, declare_plan=False)
     row = pool._read_json(queue.item_path(pool.READY, keys[0]))
     verdict = queue.residency_verdict(row)
-    assert verdict["state"] == "residency_prelaunch_undeclared", verdict
+    assert verdict["state"] == "prelaunch_undeclared", verdict
     assert verdict["manifest_declares"] == ["phase-0"], verdict
     assert verdict["plan_declares"] == [], verdict
 

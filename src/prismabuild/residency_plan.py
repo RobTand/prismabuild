@@ -1985,9 +1985,27 @@ def _filed_entry(queue, consumer_action_key: str, *,
         "phase_names": tuple(str(phase["name"])
                              for phase in plan["phases"]),  # type: ignore[union-attr]
         "mover_keys": tuple(mover_keys(plan)),
+        # The declared prelaunch prefix (#1594), so a verdict reads one cached
+        # tuple instead of parsing the whole plan on every claim scan.
+        "prelaunch_phases": tuple(prelaunch_phase_names(plan)),
     }
     _FILED[memo_key] = (read_incarnation, entry)
     return entry
+
+
+def filed_prelaunch_phases(queue, consumer_action_key: str, *,
+                           on_unreadable: Callable[[Exception], None] | None = None,
+                           ) -> tuple[str, ...] | None:
+    """The declared prelaunch phases of a filed plan, or ``None`` when none is filed.
+
+    ``None`` is "no readable plan": the caller keeps today's verdict.  An empty
+    tuple is a readable plan that declares nothing (#1594).
+    """
+
+    entry = _filed_entry(queue, consumer_action_key, on_unreadable=on_unreadable)
+    if entry is None:
+        return None
+    return tuple(entry["prelaunch_phases"])  # type: ignore[arg-type]
 
 
 def retain_filed(queue, live_keys: Collection[str]) -> None:
@@ -3720,6 +3738,7 @@ __all__ = [
     "consumer_residency",
     "filed_mover_keys",
     "expected_landings",
+    "filed_prelaunch_phases",
     "find_mover_leg",
     "freeze",
     "gang_prelaunch_demand",

@@ -408,12 +408,12 @@ WITHHOLD_CARRYING_REASONS = frozenset({
 #: ``ram_epoch_stale`` belongs here with ``map_not_composed``: the map names
 #: ram paths from the epoch before a reboot, so the bytes are gone and the
 #: tier loop's next recomposition is what makes the row admissible (#640).
-#: ``residency_prelaunch_undeclared`` belongs here as a shape refusal: the
+#: ``prelaunch_undeclared`` belongs here as a shape refusal: the
 #: sealed manifest declares a prelaunch prefix the filed plan does not carry,
 #: so no token moves until the plan matches the manifest (#1594).
 RESIDENCY_REFUSAL_STATES = ("lead_not_resident", "lead_unpinned", "map_not_composed",
                             "map_stale", "map_unreadable", "plan_unreadable",
-                            "ram_epoch_stale", "residency_prelaunch_undeclared")
+                            "ram_epoch_stale", "prelaunch_undeclared")
 
 #: Pending-lead statuses (``residency_verdict``'s ``pending``) that a later
 #: poll can still see land: a lead with no ending yet (``absent``), and a lead
@@ -5723,6 +5723,11 @@ class PoolQueue:
         #: one parse serves every later verdict over the same bytes.  Only
         #: successful parses are kept: a missing blob may still arrive.
         self._prelaunch_manifests: dict[tuple[str, str], list[str]] = {}
+        #: Each row's sealed data-manifest input, keyed by ``(cas root,
+        #: action key)`` (#1594 R4).  A sealed request is immutable, so the
+        #: answer never changes and the request is read once per row.
+        self._prelaunch_row_manifests: dict[
+            tuple[str, str], tuple[str, Mapping[str, object] | None]] = {}
         #: The last claim pass's transition holds (#1029), or ``None`` before
         #: the first pass: :meth:`_TransitionHolds.summary`.
         self.last_claim_pass: dict[str, object] | None = None
@@ -17732,31 +17737,44 @@ class PoolQueue:
         if not isinstance(cas_root, str) or not cas_root:
             return None
         from . import residency_plan
-        plan = residency_plan.read(self, key)
-        if plan is None:
-            # No filed plan, or one this reader refuses: the verdict below
-            # already answers ``plan_unreadable`` for the latter, so add
-            # nothing here and never turn that refusal into a pass.
+        # The declared prefix comes off the filed-plan memo: one ``stat`` per
+        # verdict, and a parse only when the filing changes (#1332).  No
+        # filed plan, or one this reader refuses, adds nothing here: the
+        # verdict below already answers ``plan_unreadable`` for the latter,
+        # and this check never turns that refusal into a pass.
+        plan_declares = residency_plan.filed_prelaunch_phases(self, key)
+        if plan_declares is None:
             return None
-        try:
-            action = _sealed_action_request(cas_root, key)
-        except (OSError, ValueError, PoolContractError):
-            # A broken request is the claim pass's own denial, not this
-            # check's: skip it rather than rename it.
-            return None
-        entry: Mapping[str, object] | None = None
-        inputs = action.get("inputs") if action is not None else None
-        if isinstance(inputs, list):
-            for candidate in inputs:
-                if (isinstance(candidate, Mapping)
-                        and str(candidate.get("id"))
-                        == pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID):
-                    entry = candidate
-                    break
+        row_key = (str(cas_root), key)
+        found = self._prelaunch_row_manifests.get(row_key)
+        if found is None:
+            try:
+                action = _sealed_action_request(cas_root, key)
+            except (OSError, ValueError, PoolContractError):
+                # A broken request is the claim pass's own denial, not this
+                # check's: skip it rather than rename it.
+                return None
+            entry: Mapping[str, object] | None = None
+            inputs = action.get("inputs") if action is not None else None
+            if isinstance(inputs, list):
+                for candidate in inputs:
+                    if (isinstance(candidate, Mapping)
+                            and str(candidate.get("id"))
+                            == pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID):
+                        entry = candidate
+                        break
+            digest = entry.get("sha256") if entry is not None else None
+            if not isinstance(digest, str) or not digest:
+                # A sealed request is immutable: a row without a data
+                # manifest never gains one, so remember the answer too.
+                self._prelaunch_row_manifests[row_key] = ("", None)
+                return None
+            found = (digest, entry)
+            if len(self._prelaunch_row_manifests) >= 4096:
+                self._prelaunch_row_manifests.clear()
+            self._prelaunch_row_manifests[row_key] = found
+        digest, entry = found
         if entry is None:
-            return None
-        digest = entry.get("sha256")
-        if not isinstance(digest, str) or not digest:
             return None
         memo_key = (str(cas_root), digest)
         declares = self._prelaunch_manifests.get(memo_key)
@@ -17773,10 +17791,9 @@ class PoolQueue:
                 return {"state": "map_unreadable", "map_path": None,
                         "manifest_sha256": digest, "error": str(exc)}
             self._prelaunch_manifests[memo_key] = list(declares)
-        plan_declares = residency_plan.prelaunch_phase_names(plan)
         if list(declares) == list(plan_declares):
             return None
-        return {"state": "residency_prelaunch_undeclared", "consumer": key,
+        return {"state": "prelaunch_undeclared", "consumer": key,
                 "manifest_sha256": digest,
                 "manifest_declares": list(declares),
                 "plan_declares": list(plan_declares)}
