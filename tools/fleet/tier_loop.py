@@ -54,6 +54,7 @@ from prismabuild import core as pb  # noqa: E402
 from prismabuild import filesystem_capacity, filesystem_floor  # noqa: E402
 from prismabuild import movement_actions  # noqa: E402
 from prismabuild import pool  # noqa: E402
+from prismabuild import prelaunch_group  # noqa: E402
 from prismabuild import produced_output  # noqa: E402
 from prismabuild import progress as pb_progress  # noqa: E402
 from prismabuild import reader_lease  # noqa: E402
@@ -65,6 +66,7 @@ from prismabuild import window_credit  # noqa: E402
 import deferred_release  # noqa: E402
 import prewarm_loop  # noqa: E402
 import manifest_promotion  # noqa: E402
+import prelaunch_tier  # noqa: E402
 import stage_release  # noqa: E402
 #: The same generation gate ``prewarm_loop`` reads, under the same name, for
 #: the same reason: a loop holds the modules it imported for its whole life,
@@ -1169,6 +1171,8 @@ def drop_prior_ram_epochs(
         except (OSError, pool.PoolContractError):
             continue
         for key in held:
+            if key.startswith(prelaunch_group.HOLDER_PREFIX):
+                continue      # a group holder belongs to the prelaunch pass
             if queue.item_path(pool.CLAIMED, key).exists():
                 # A promotion claimed right now holds tokens for a copy that
                 # is running; its receipt will date it, and the next cycle
@@ -1290,6 +1294,8 @@ def release_incomplete_ram_promotions(
         except (OSError, pool.PoolContractError):
             continue
         for key in _budget_order(budget, RAM_INCOMPLETE_UNIT, held, str):
+            if key.startswith(prelaunch_group.HOLDER_PREFIX):
+                continue      # a group holder belongs to the prelaunch pass
             if (queue.item_path(pool.READY, key).exists()
                     or queue.item_path(pool.CLAIMED, key).exists()):
                 # Queued or running: the window or the copy owns this key, and
@@ -3426,6 +3432,7 @@ def _held_ram_copies(queue: pool.PoolQueue, plan: Mapping[str, object],
 def _beyond_horizon_candidates(
     queue: pool.PoolQueue, tiers: Mapping[str, Mapping[str, object]],
     consumers: list, cancelled: frozenset[str],
+    declared_keys: frozenset = frozenset(),
 ) -> dict[str, list[dict[str, object]]]:
     """Per tier, the landed ranges no reader needs before a refill (#903, #906).
 
@@ -3452,6 +3459,8 @@ def _beyond_horizon_candidates(
     still reading it nominates it on its own terms, and then once, at the
     soonest any of them needs it, taking every sharer's ram copies with it.
     One sharer inside its horizon keeps it for all of them.
+    A declared prelaunch leg (#1594) is never a candidate when named in
+    ``declared_keys``; empty keeps today's set.
     """
 
     out: dict[str, list[dict[str, object]]] = {}
@@ -3498,6 +3507,11 @@ def _beyond_horizon_candidates(
             out.setdefault(tier_id, []).append(row)
     readers_of = _shared_readers(queue, consumers)
     for tier_id, rows in out.items():
+        if declared_keys:
+            # A live declared prefix stays to its consumer's end (#1594).
+            rows[:] = [row for row in rows
+                       if not prelaunch_tier.is_prelaunch_leg(
+                           declared_keys, str(row.get("mover_action_key")))]
         if readers_of:
             rows[:] = _agreed_shared_rows(rows, readers_of)
         rows.sort(key=lambda row: (-float(row["seconds_until_needed"]),  # type: ignore[arg-type]
@@ -5148,7 +5162,9 @@ def _claim_order_candidates(queue: pool.PoolQueue, *, tier_id: str,
                             tier_record: Mapping[str, object] | None,
                             consumers: list,
                             order: Mapping[str, object],
-                            taken: set[str]) -> list[dict[str, object]]:
+                            taken: set[str],
+                            declared_keys: frozenset = frozenset(),
+) -> list[dict[str, object]]:
     """Landed legs the head of a claim order may have evicted (#1011).
 
     In this order, each consumer's legs farthest first:
@@ -5210,6 +5226,7 @@ def _claim_order_candidates(queue: pool.PoolQueue, *, tier_id: str,
     or running, or whose promotion holds the ram tier (#640), and never a
     leg in ``taken``.  Each row carries its ``basis``, its
     ``seconds_until_needed`` and the head it is evicted for.
+    Never a declared prelaunch leg (#1594) named in ``declared_keys``.
     """
 
     entries = [entry for entry in order.get("entries") or ()  # type: ignore[union-attr]
@@ -5335,6 +5352,8 @@ def _claim_order_candidates(queue: pool.PoolQueue, *, tier_id: str,
         under_rule = ruled(basis, entry)
         for leg in sorted(legs, key=lambda leg: -int(leg["start_bytes"])):
             mover = str(leg["mover_row"]["action_key"])  # type: ignore[index]
+            if prelaunch_tier.is_prelaunch_leg(declared_keys, mover):
+                continue
             if mover in taken and mover not in nominated:
                 continue
             egress = leg.get("egress_row")
@@ -6331,9 +6350,26 @@ def _protect_tier_advances(queue: pool.PoolQueue,
     unknown_consumers: set[tuple[str, str]] = set()
     unknown_tiers: set[str] = set()
     unknown_ready = False
+    # Declared units the gate let through this pass: open to begin their
+    # group reservation (#1594).  Empty when no declared plan is live.
+    prelaunch_open: set[tuple[str, str]] = set()
     wants, census_unknown = _advance_wants(
         queue, tiers, mover_role=mover_role,
         tier_of=tier_of, state_of=state_of, horizon_of=horizon_of)
+    # Declared prelaunch units (#1594), once per call.  An undeclared queue
+    # files no declared phase, so this is empty and every want below keeps
+    # today's shape: only a declared consumer gains ``declared_unit``.
+    units = prelaunch_tier.declared_units(
+        queue, tiers, [want["consumer"] for want in wants])
+    units_by_consumer: dict[tuple[str, str], prelaunch_tier.Unit] = {}
+    for unit in units:
+        for member in unit.keys:
+            units_by_consumer[(str(member), str(unit.tier_id))] = unit
+    for want in wants:
+        unit = units_by_consumer.get(
+            (str(want["key"]), str(want["tier_id"])))
+        if unit is not None:
+            want["declared_unit"] = unit
     for entry in census_unknown:
         consumer_key = str(entry.get("consumer", ""))
         entry_tier = entry.get("tier_id")
@@ -6436,6 +6472,25 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                     ready_rows.append((action, row_gib))
                     ready_by_key[action] = item
         held_total = sum(int(tokens.get(kind, 0)) for tokens in held.values())
+        # Declared units on this tier (#1594).  A declared consumer's
+        # newcomer state comes from the unit, not from the streaming lead:
+        # a plan with no suffix has no lead, so the lead test calls it
+        # admitted and no permit would open its group.  A claimed consumer
+        # passed the claim gate and stays admitted; any other declared one
+        # is a newcomer until it holds tokens, a published chunk or a
+        # committed receipt.  Admitted declared windows oblige room for
+        # their peak, beside the protected nexts below.  With no declared
+        # unit the term is zero.
+        units_on_tier = [unit for unit in units
+                         if unit.tier_id == tier_id]
+        for want in tier_wants:
+            unit = want.get("declared_unit")
+            if unit is not None and want["consumer"].get("state") != pool.CLAIMED:
+                want["newcomer"] = not prelaunch_tier.is_admitted(
+                    unit, held, kind, want["already"])
+        oblig_totals, oblig_detail = prelaunch_tier.obligations(
+            units_on_tier, held, kind)
+        prelaunch_obligation = int(oblig_totals.get(tier_id, 0))
         output_gib, output_enforced, output_note, output_error = (
             output_obligation(queue, tier_id))
         if output_error:
@@ -6519,6 +6574,9 @@ def _protect_tier_advances(queue: pool.PoolQueue,
         admitted_currents: dict[str, int] = {}
         currents_counted = False
         admitted_newcomers: set[str] = set()
+        # Declared publication authority stashed per window (#1594); set
+        # after the suffix fence below, so a fence permit stands instead.
+        prelaunch_permits: dict[tuple[str, str], dict[str, object]] = {}
         # A shared range (#1026) is one advance for every window whose next
         # it is, so it is fenced once: by the first window, in this pass's
         # order, whose grant already holds it, else by the first to fence
@@ -6584,13 +6642,48 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                         "output_note": output_note,
                     }
                     continue
-                decision = window_credit.gate_newcomer(
-                    held_gib=held_total + running_extra + running_fence,
-                    ready_gib=ready_new_money,
-                    output_gib=output_gib, output_enforced=output_enforced,
-                    capacity_gib=capacity_gib,
-                    cur_min_gib=cur, next_min_gib=nxt if isinstance(nxt, int) else None,
-                    existing_min_next_gib=reserve_next or 0)
+                unit = want.get("declared_unit")
+                if unit is not None and unit.tier_id == tier_id:
+                    # A declared newcomer's footprint is its peak less what
+                    # it owns (#1594), not the suffix minimum: the whole
+                    # prefix must fit beside the admitted obligations.  Its
+                    # own obligation leaves the held sum, never counted
+                    # twice.  A peak past capacity refuses for good, as the
+                    # joint gate refuses oversize.
+                    owned = residency_plan.prelaunch_owned_gib(
+                        unit.plan, held, unit.holder, kind)
+                    own_due = int((oblig_detail.get(unit.unit) or {}).get(
+                        "obligation_gib", 0))
+                    footprint = window_credit.prelaunch_footprint_gib(
+                        unit.peak_gib, owned)
+                    if unit.peak_gib > capacity_gib:
+                        decision = {
+                            "admit": False,
+                            "reason": window_credit.REASON_OVERSIZE,
+                            "permanent": True, "output_note": output_note}
+                    else:
+                        decision = window_credit.gate_newcomer(
+                            held_gib=(held_total + running_extra
+                                      + running_fence
+                                      + prelaunch_obligation - own_due),
+                            ready_gib=ready_new_money,
+                            output_gib=output_gib,
+                            output_enforced=output_enforced,
+                            capacity_gib=capacity_gib,
+                            cur_min_gib=footprint, next_min_gib=None,
+                            existing_min_next_gib=reserve_next or 0)
+                    cur, next_gib = footprint, 0
+                else:
+                    decision = window_credit.gate_newcomer(
+                        held_gib=(held_total + running_extra + running_fence
+                                  + prelaunch_obligation),
+                        ready_gib=ready_new_money,
+                        output_gib=output_gib,
+                        output_enforced=output_enforced,
+                        capacity_gib=capacity_gib,
+                        cur_min_gib=cur,
+                        next_min_gib=nxt if isinstance(nxt, int) else None,
+                        existing_min_next_gib=reserve_next or 0)
                 # The commitment (#907): the newcomer's read footprint beside
                 # every admitted window's.  Asked unless the joint-fit gate
                 # refused for good, and it names the refusal when it refuses
@@ -6642,6 +6735,21 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                 running_extra += cur + next_gib
                 added_extra = cur + next_gib
                 admitted_newcomers.add(key)
+            # Declared publication authority (#1594): an admitted unit may
+            # publish its declared legs.  The suffix fence below still runs;
+            # a permit it sets stands instead of this stashed one.
+            # A newcomer the gate just let through is open too (#1594): its
+            # group is how it becomes admitted, so waiting for a holder first
+            # would never begin one.
+            if (mover_role == "mover_row"
+                    and want.get("declared_unit") is not None
+                    and (key in admitted_newcomers
+                         or prelaunch_tier.is_admitted(
+                             want["declared_unit"], held, kind,
+                             want["already"]))):
+                prelaunch_permits[(key, tier_id)] = {
+                    "advance": "prelaunch", "tier_id": tier_id,
+                    "leg": mover_role}
             # One fence per window: the advance after the frontier.  The
             # frontier pays from free under the gate's count; exactly the
             # advance is fenced -- bound when its row is queued, taken blind
@@ -7212,6 +7320,14 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                 "phase": phase, "tier_id": tier_id, "kind": kind,
                 "leg": mover_role,
             }
+        # Stashed declared permits (#1594) stand only where the suffix
+        # fence set none and the window was neither gated nor unknown:
+        # never an overwrite, never beside a refusal.
+        for permit_key, permit in prelaunch_permits.items():
+            if (permit_key not in gated
+                    and permit_key not in unknown_consumers):
+                permitted.setdefault(permit_key, permit)
+                prelaunch_open.add(permit_key)
         # Dangling-grant cleanup runs only on a complete census: a grant
         # whose consumer went unreadable this cycle is preserved, never
         # freed -- releasing on a partial view could return room a live
@@ -7237,6 +7353,12 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                                "consumer": None, "tier_id": tier_id,
                                "leg": mover_role, "reason": "dangling-grant",
                                "released_gib": released})
+        # Group holders no live unit owns (#1594) go under the same guard:
+        # the advance census above never names them, since held_grants
+        # matches advance- holders only.
+        for event in prelaunch_tier.dangling(
+                queue, tier_id, ledger, units_on_tier, complete_census=True):
+            events.append(event)
         # Per-cycle reconciliation (#1245 review B1/r2): a two-way sync.
         # Every live tier holder's ram-host hold is made equal to its
         # occupancy tokens -- which covers the claim path's bare tier
@@ -7254,10 +7376,32 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                            "reason": str(healed.get("reason")),
                            "holder": healed.get("holder"),
                            "released_gib": healed.get("released_gib")})
+    # Group holders on a stage tier no live consumer names (#1594).  The
+    # loop above visits only tiers with a live want, so a sole declared
+    # consumer withdrawn after its reservation and before its first
+    # publication would keep the tier's capacity until another consumer
+    # arrived there.  The same complete-census guard applies: with any
+    # consumer or ready scan unread, release nothing.
+    if mover_role == "mover_row" and not census_unknown and not unknown_ready:
+        for empty_tier in sorted(tiers):
+            if empty_tier in by_tier or empty_tier in unknown_tiers:
+                continue
+            if str((tiers[empty_tier] or {}).get("tier")) != "stage":
+                continue
+            try:
+                empty_ledger = queue.tier_ledger(empty_tier)
+            except (OSError, ValueError, pool.PoolContractError) as exc:
+                events.append({"event": "prelaunch-dangling-retained",
+                               "unit": None, "consumer": None,
+                               "holder": None, "tier_id": empty_tier,
+                               "reason": f"tier ledger unreadable: {exc!r}"})
+                continue
+            events.extend(prelaunch_tier.dangling(
+                queue, empty_tier, empty_ledger, [], complete_census=True))
     # The census this pass admitted on, and what it would be taken over, so
     # the stage window can report on the same one (#930).
     return {"gated": gated, "protected": protected, "grants": grants,
-            "permitted": permitted,
+            "permitted": permitted, "prelaunch_open": prelaunch_open,
             "unknown_ready": unknown_ready, "unknown_tiers": unknown_tiers,
             "unknown_consumers": unknown_consumers, "events": events,
             "census": census,
@@ -8306,6 +8450,7 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
         state_of=_mover_state, horizon_of=horizon_of,
         claim_order=claim_order)
     gated = protection["gated"]
+    prelaunch_open = protection.get("prelaunch_open") or set()
     assert isinstance(gated, dict)
     grants = protection["grants"]
     assert isinstance(grants, dict)
@@ -8324,6 +8469,54 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
                           "tier_id": None,
                           "reason": f"live census unreadable: {exc!r}"})
         cycle_consumers = []
+    # One declared-unit census per cycle: with no declared plan this answers
+    # [] off the cached filings and nothing below runs (#1594).
+    prelaunch_units = prelaunch_tier.declared_units(
+        queue, tiers, cycle_consumers)
+    prelaunch_by_member: dict[str, prelaunch_tier.Unit] = {}
+    prelaunch_authority: dict[str, bool] = {}
+    if prelaunch_units:
+        for unit in prelaunch_units:
+            prelaunch_by_member[unit.key] = unit
+            for member in unit.keys:
+                prelaunch_by_member[member] = unit
+        wanted: dict[str, list[prelaunch_tier.Unit]] = {}
+        for unit in prelaunch_units:
+            if unit.unsupported is not None:
+                published.append({"event": "prelaunch-turn-unsupported",
+                                  "unit": unit.unit, "consumer": unit.key,
+                                  "tier_id": unit.tier_id,
+                                  "reason": unit.unsupported})
+                continue
+            wanted.setdefault(unit.tier_id, []).append(unit)
+        for reserve_tier, tier_units in wanted.items():
+            try:
+                reserve_ledger = queue.tier_ledger(reserve_tier)
+                reserve_kind = storage_tiers.capacity_kind_of(reserve_tier)
+                reserve_held = {
+                    str(holder): dict(reserve_ledger.holder_tokens(holder))
+                    for holder in reserve_ledger.held_keys()}
+            except (OSError, pool.PoolContractError, ValueError):
+                reserve_held, reserve_kind = {}, ""
+            # A unit with no room waits: intent stands, the ledger never moves.
+            def admitted(unit: prelaunch_tier.Unit,
+                         held: Mapping[str, Mapping[str, int]] = reserve_held,
+                         kind: str = reserve_kind,
+                         tier_id: str = reserve_tier) -> bool:
+                try:
+                    already, _staged = _mover_state(queue, unit.plan, tier_id)
+                    movers: list[str] = sorted(already)
+                except (OSError, pool.PoolContractError, ValueError):
+                    movers = []
+                if prelaunch_tier.is_admitted(unit, held, kind, movers):
+                    return True
+                # A newcomer the gate let through begins its group (#1594).
+                return ((unit.key, tier_id) in prelaunch_open
+                        and (unit.key, tier_id) not in gated)
+            reserve_events, reserve_authority = prelaunch_tier.reserve_pass(
+                queue, reserve_tier, tier_units, admitted=admitted)
+            published.extend(reserve_events)
+            prelaunch_authority.update(reserve_authority)
     for consumer in cycle_consumers:
         key = str(consumer["action_key"])
         refusals: list[Exception] = []
@@ -8356,6 +8549,13 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
             # the thing the tier id exists to prevent.
             continue
         tier_record = tiers[tier_id]
+        # This consumer's declared unit, if the reserve pass saw one on this
+        # tier with room held.  None leaves every call below as it was.
+        prelaunch_unit = prelaunch_by_member.get(key)
+        if (prelaunch_unit is not None
+                and (prelaunch_unit.tier_id != tier_id
+                     or prelaunch_unit.unsupported is not None)):
+            prelaunch_unit = None
         superseded = residency_plan.superseded(queue, plan)
         if superseded is None:
             # An operator's withdrawal of one of the plan's movers retires
@@ -8431,12 +8631,22 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
         # Bounded by the consumer's refill horizon as well as by room and the
         # run-ahead budget (#903): a leg past it publishes on the cycle the
         # consumer's progress brings it inside, and not before.
-        decision = residency_plan.window(
-            plan, accepted_phase=consumer["accepted_phase"],  # type: ignore[arg-type]
-            free_gib=int(free), capacity_gib=int(capacity),
-            published=sorted(already), staged=sorted(staged),
-            withdrawn=sorted(cancelled),
-            horizon_end_bytes=horizon_of(consumer, plan, tier_id))
+        if prelaunch_unit is not None:
+            decision = residency_plan.window(
+                plan, accepted_phase=consumer["accepted_phase"],  # type: ignore[arg-type]
+                free_gib=int(free), capacity_gib=int(capacity),
+                published=sorted(already), staged=sorted(staged),
+                withdrawn=sorted(cancelled),
+                horizon_end_bytes=horizon_of(consumer, plan, tier_id),
+                prelaunch_held=bool(
+                    prelaunch_authority.get(prelaunch_unit.unit)))
+        else:
+            decision = residency_plan.window(
+                plan, accepted_phase=consumer["accepted_phase"],  # type: ignore[arg-type]
+                free_gib=int(free), capacity_gib=int(capacity),
+                published=sorted(already), staged=sorted(staged),
+                withdrawn=sorted(cancelled),
+                horizon_end_bytes=horizon_of(consumer, plan, tier_id))
         stall = decision["stall"]
         if isinstance(stall, Mapping) and superseded is None:
             # Said here rather than nowhere: the incident this bound exists to
@@ -8445,7 +8655,9 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
             # consumer is not denied, it is running and reporting nothing.  A
             # superseded window does not stall: nothing is waiting to publish.
             published.append({"event": "window-stalled", "consumer": key,
-                              **{field: stall[field] for field in (
+                              # A stall names every field; a missing one files
+                              # as None here, never as a KeyError (#1594).
+                              **{field: stall.get(field) for field in (
                                   "accepted_phase", "reading_phase",
                                   "blocked_phase", "blocked_gib", "runahead_gib",
                                   "runahead_budget_gib", "free_gib",
@@ -8466,7 +8678,14 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
                        or (key, tier_id) in unknown_consumers
                        or (key, "") in unknown_consumers
                        or ("", "") in unknown_consumers)
-        have_permit = (key, tier_id) in permitted
+        # A declared consumer with group authority publishes its declared
+        # legs: the group already holds their tokens (#1594).  The protection
+        # pass permits these itself (``advance: prelaunch``); this carries
+        # the same permission when that entry is absent.
+        have_permit = ((key, tier_id) in permitted
+                       or (prelaunch_unit is not None
+                           and prelaunch_authority.get(
+                               prelaunch_unit.unit) is True))
         publishable = ([] if (superseded is not None or gate is not None
                               or unknown_hit or not have_permit)
                        else decision["publish"])
@@ -8527,6 +8746,7 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
         item = consumer.get("item")
         if isinstance(item, Mapping):
             generation = item.get("published_unix")
+        prelaunch_rows: list[dict[str, object]] = []
         for entry in publishable:
             # The leg's own egress row, resolved off the plan rather than
             # the entry: publish entries carry their mover, evict entries
@@ -8627,6 +8847,34 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
                               "chunk_index": entry.get("chunk_index"),
                               "action_key": entry["mover_action_key"],
                               "stage_gib": entry["stage_gib"]})
+            prelaunch_rows.append(entry)
+        if prelaunch_unit is not None:
+            # The group fence stands behind every live declared leg, not only
+            # the rows this window published (#1594): a crash between a row's
+            # publication and its funding, or a funding that deferred on the
+            # mover lock, leaves a READY row with no credit, and the window
+            # skips it as already published.  Funding is idempotent: a funded
+            # leg answers ``already`` with no event, and a leg with no row yet
+            # is skipped.  A superseded unit funds nothing.
+            repair_rows = (
+                [{"mover_action_key": leg["mover_key"]}
+                 for leg in prelaunch_unit.legs]
+                if superseded is None
+                and prelaunch_authority.get(prelaunch_unit.unit) is True
+                else prelaunch_rows)
+            published.extend(prelaunch_tier.publish_declared(
+                queue, tier_id, prelaunch_unit, repair_rows))
+        if (prelaunch_unit is not None and superseded is not None
+                and prelaunch_group.has_holdings(queue, prelaunch_unit.unit)):
+            # A superseded window ends its unit: free the unsplit remainder
+            # and the fences no live co-owner still reads (#1594).
+            shared_owned = [
+                str(leg["mover_key"]) for leg in prelaunch_unit.legs
+                if set((readers_of.get(str(leg["mover_key"]))
+                        or (None, []))[1] or ()) - {key}]
+            published.extend(prelaunch_tier.release_terminal(
+                queue, tier_id, [prelaunch_unit],
+                shared_owned=shared_owned))
         for entry in decision["evict"]:
             row = dict(entry["egress_row"])                  # type: ignore[arg-type]
             egress_key = str(row["action_key"])
@@ -8864,6 +9112,11 @@ def evict_beyond_horizon(queue: pool.PoolQueue,
     if not pressure and not claim_order:
         return events
     cancelled = _withdrawn_keys(queue, withdrawn)
+    # Declared prefixes (#1594), once per call: an undeclared queue gets
+    # none, and every candidate below reads as today.
+    evict_units = prelaunch_tier.declared_units(
+        queue, tiers, [entry[1] for entry in consumers])
+    declared_keys = prelaunch_tier.declared_leg_keys(evict_units)
     short: dict[str, int] = {}
     for tier_id, needed in (pressure or {}).items():
         record = tiers.get(tier_id)
@@ -8884,7 +9137,8 @@ def evict_beyond_horizon(queue: pool.PoolQueue,
               and tiers[tier_id].get("tier") == "stage"}
     if not short and not ranked:
         return events
-    candidates = _beyond_horizon_candidates(queue, tiers, consumers, cancelled)
+    candidates = _beyond_horizon_candidates(
+        queue, tiers, consumers, cancelled, declared_keys=declared_keys)
 
     def evicted(row: Mapping[str, object], tier_id: str, stage_root: str,
                 needed: int, *, prefix: str = "beyond-horizon",
@@ -9057,7 +9311,8 @@ def evict_beyond_horizon(queue: pool.PoolQueue,
                          "for_consumer": order["head"]})
         rows.extend(_claim_order_candidates(
             queue, tier_id=tier_id, tier_record=tiers.get(tier_id),
-            consumers=consumers, order=order, taken=taken))
+            consumers=consumers, order=order, taken=taken,
+            declared_keys=declared_keys))
         offered = sum(int(row["stage_gib"]) for row in rows)  # type: ignore[arg-type]
         if free + offered < target:
             stamp("futile")

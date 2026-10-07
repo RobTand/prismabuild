@@ -4839,6 +4839,67 @@ with routine work at 0 or below.
 it never claims a member. During a rolling publish it may not honour a gang
 fence on its host; the start barrier still prevents a lone start.
 
+## Prelaunch-resident manifest phases (#1594)
+
+A consumer that opens its whole artifact before its servers start declares
+that fact per phase in the manifest.  The declaration is part of the
+content hash.  A phase declares with a literal `resident_before_launch:
+true`: on a v1 `annotations.phases[i]` entry, on a v2 `read_plan.phases[i]`
+entry.  An older `core` refuses the unknown v2 key, which fails closed.
+Only a literal boolean `true` declares.  Other values refuse at submission.
+The declared phases form a contiguous prefix from the first phase.
+`storage_tiers.manifest_prelaunch_phases` and `residency_plan.validate_plan`
+enforce the prefix.  The frozen plan carries the declaration per phase.  A
+plan with no declaration omits the key.  Its bytes, `plan_sha256` and rows
+stay byte-identical.
+
+With no declaration, `residency_plan.leads_for(plan)` gives the single
+first-mover lead, as today.  With one, it gives all stage-leg chunk movers
+of all declared phases, in read order, chunked or whole.  `lead_mover_row`
+is untouched.  `prelaunch_phase_names(plan)` reads the declared names.
+`prelaunch_bound(plan, owned_by_others)` gives `{retained_gib: T,
+suffix_gib: S, peak_gib: B}` with `B = T + max over i of (size(pi) +
+size(p(i+1)))` and `size(p(n+1)) = 0`.  Sizes come from the sealed
+`stage_gib` of the legs, minus legs that others own.  It gives `None` with
+no declaration.  `prelaunch_peak_gib` serves submission, `pbgang` and the
+gate.  The three never disagree.
+
+Submission refuses before it seals or publishes.  The refusal names the
+tier, the retained and suffix terms, and the capacity.
+`pbrun.residency_stage_rows` (also reached by `pbcampaign`) refuses when
+the declared peak exceeds the minted stage tier capacity.
+`storage_tiers.tier_tokens` of the announced tier record gives that
+capacity.  The tier loop mints the same mapping.  Unknown capacity never
+refuses.  `pbgang` refuses when the member distinct movers per stage tier
+jointly exceed it, with shared ranges counted once by `share_namespace`.
+The pure `residency_plan.gang_prelaunch_demand` computes that sum.
+Headroom below capacity waits, never refuses.  A peak equal to capacity
+passes.
+
+The tier loop reserves one group per declared unit before it publishes any
+leg.  A declared consumer is a newcomer until its unit holds tokens, has a
+published chunk or has a committed receipt; a claimed consumer is never one.
+The state comes from the unit, not from the streaming lead, so a plan with no
+suffix (one declared phase) still opens its group.  The filed intent is
+immutable: a later cycle holds the filed demand and chunks instead of
+recomputing them from moved evidence, and a leg whose registered shared
+mover is its own does not count as owned by others.  Every live declared leg
+is funded on every cycle, because a crash between a row and its funding, or
+a deferred funding, leaves a READY mover with no credit while the group
+holds the tier.  Funding is idempotent.  The group census counts a bound
+token the mover holds in a `reserved` record too: `publish_chunk` moves the
+tokens before it closes the record, and a stop or a deferred update between
+the two must not read as a short group, which would drop authority and
+leave the record unrepaired.  A stage tier that no live consumer
+names still releases a group holder no live unit owns, under the same
+complete-census guard, so a withdrawn sole consumer returns its capacity.
+Submission selects the prefix and suffix cuts by phase name, since an empty
+declared phase has no range.  A gang across tiers stays unsupported: its
+group is not reserved and the event `prelaunch-turn-unsupported` is filed.
+The terminal release writes its receipt after it frees tokens, so a crash
+between the two can lose the journal counts; a write-ahead release receipt
+is a follow-up before the multi-tier turn becomes live.
+
 ## Physical and adaptive GPU admission
 
 Both current GB10 workers have one physical GPU. Their fleet shape uses the

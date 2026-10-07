@@ -163,6 +163,10 @@ FLEET_SCRIPTS = (
     # missing from this list is a tool no box can run, so the gang canary could
     # not start from a published generation.
     "pbgang.py",
+    # tier_loop.py imports prelaunch_tier unconditionally (#1594).  A published
+    # script that imports a tools module the publication lacks makes the
+    # publisher refuse every generation, so the module ships.
+    "prelaunch_tier.py",
     # pbrun imports pbevidence unconditionally (#1598).  A published script that
     # imports a tools module the publication lacks makes the publisher refuse
     # every generation, so the tool ships even for commands that never use

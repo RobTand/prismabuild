@@ -2461,6 +2461,52 @@ def manifest_phase_ranges(manifest: Mapping[str, object]) -> list[dict[str, obje
     return ranges
 
 
+def manifest_prelaunch_phases(
+        manifest: Mapping[str, object]) -> list[str]:
+    """The declared prelaunch-resident phases of the manifest, in order, or ``[]``.
+
+    A phase declares with a literal ``resident_before_launch: true`` (#1594):
+    on a v1 ``annotations.phases`` entry, on a v2 ``read_plan.phases``
+    entry.  The declaration is part of the content hash.  Only a literal
+    boolean true declares.  Other present values refuse.  A declared set
+    past the prefix refuses.  A manifest with no read order declares
+    nothing.
+    """
+
+    layout = _manifest_read_layout(manifest)
+    if layout is None:
+        return []
+    names = [name for name, _ in layout[0]]
+    if manifest.get("schema") == "prismaquant.prismabuild.data_manifest.v2":
+        plan = manifest.get("read_plan")
+        raw_phases = (plan.get("phases") if isinstance(plan, Mapping)
+                      else None)
+    else:
+        annotations = manifest.get("annotations")
+        raw_phases = (annotations.get("phases")
+                      if isinstance(annotations, Mapping) else None)
+    if not isinstance(raw_phases, list):
+        return []
+    declared: list[str] = []
+    for index, phase in enumerate(raw_phases):
+        if not isinstance(phase, Mapping):
+            return []
+        if "resident_before_launch" not in phase:
+            continue
+        value = phase["resident_before_launch"]
+        if type(value) is not bool:
+            raise ValueError(
+                f"data manifest phase {index} resident_before_launch "
+                f"must be a boolean, got {value!r}")
+        if value:
+            declared.append(str(phase.get("name")))
+    if declared != names[:len(declared)]:
+        raise ValueError(
+            f"data manifest prelaunch phases {declared} are not a "
+            f"contiguous prefix of the read order {names}")
+    return declared
+
+
 def manifest_read_entries(
         manifest: Mapping[str, object]) -> list[Mapping[str, object]]:
     """The manifest's entries in the order its action reads them, or ``[]``.
@@ -2858,6 +2904,7 @@ __all__ = [
     "export_measured_mb_s",
     "mover_fill_price",
     "manifest_phase_ranges",
+    "manifest_prelaunch_phases",
     "manifest_read_entries",
     "capacity_kind_of",
     "promotion_chunk_gib_for_window",
