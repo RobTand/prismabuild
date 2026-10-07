@@ -5494,6 +5494,40 @@ def window_pressure(
     # Claim-time tier demands of ready consumers whose leads are pinned
     # (#901), per tier: the next thing such a consumer asks the tier for.
     claimants: dict[str, list[int]] = {}
+    # Declared prelaunch units no gate has admitted yet (#1594), per tier, as
+    # (demand, suffix overlap).  ``advance_needs`` leaves a declared prefix out
+    # of ``waiting`` on purpose, so the walk below never sees it.  Without this
+    # term the orphans that hold the room are never asked for: on 2026-10-07 a
+    # tier of 178 GiB held 169 GiB for ended consumers and an 88 GiB prefix
+    # waited beside them.
+    prelaunch_waiting: dict[str, list[tuple[int, int]]] = {}
+    try:
+        _declared = prelaunch_tier.declared_units(
+            queue, tiers, [entry[1] for entry in consumers])
+    except (OSError, pool.PoolContractError, ValueError):
+        _declared = []
+    _held_by_tier: dict[str, dict[str, dict[str, int]]] = {}
+    for unit in _declared:
+        if unit.unsupported is not None or unit.demand_gib <= 0:
+            continue
+        if all(str(member) in cancelled for member in unit.keys):
+            continue
+        tier_of_unit = str(unit.tier_id)
+        try:
+            if tier_of_unit not in _held_by_tier:
+                _led = queue.tier_ledger(tier_of_unit)
+                _held_by_tier[tier_of_unit] = {
+                    str(holder): dict(_led.holder_tokens(holder))
+                    for holder in _led.held_keys()}
+            _already, _staged = _mover_state(queue, unit.plan, tier_of_unit)
+        except (OSError, pool.PoolContractError, ValueError):
+            continue
+        if prelaunch_tier.is_admitted(
+                unit, _held_by_tier[tier_of_unit],
+                storage_tiers.capacity_kind_of(tier_of_unit), sorted(_already)):
+            continue
+        prelaunch_waiting.setdefault(tier_of_unit, []).append(
+            (int(unit.demand_gib), max(int(unit.peak_gib) - int(unit.demand_gib), 0)))
     # The commitment's decisions (#907), asked once and only when a
     # newcomer is found.
     admissions: dict[tuple[str, str], dict[str, object]] | None = None
@@ -5747,12 +5781,13 @@ def window_pressure(
     # gate -- or a running consumer re-gated after its lead retired --
     # waited for as long as that reader took to read it all.
     speculative: dict[str, int] = {}
-    if newcomers or claimants:
+    if newcomers or claimants or prelaunch_waiting:
         for tier_id, rows in _beyond_horizon_candidates(
                 queue, tiers, consumers, cancelled).items():
             speculative[tier_id] = sum(int(row["stage_gib"]) for row in rows)  # type: ignore[arg-type]
     for tier_id in sorted({t for t, w in newcomers.items() if w}
-                          | {t for t, c in claimants.items() if c}):
+                          | {t for t, c in claimants.items() if c}
+                          | {t for t, u in prelaunch_waiting.items() if u}):
         # A tier whose owed output was unreadable lost its newcomers above.
         waiting_newcomers = newcomers.get(tier_id, [])
         waiting_claims = claimants.get(tier_id, [])
@@ -5794,6 +5829,21 @@ def window_pressure(
                 held_gib=held_total, ready_gib=0, output_gib=0,
                 output_enforced=False, capacity_gib=capacity_gib,
                 cur_min_gib=demand_gib, next_min_gib=None,
+                existing_min_next_gib=0, free_gib=free_gib,
+                evictable_gib=evictable_gib)
+            if relief is not None:
+                need[tier_id] = max(need.get(tier_id, 0), relief)
+        # An unadmitted declared prefix (#1594): the group takes its demand
+        # from free in one step, and the gate then needs its suffix overlap
+        # beside it.  Probed through the same relief as a claim, so a prefix
+        # that could not fit even after every orphan returns asks for nothing
+        # (#632), and only what the tier can give back is ever asked.
+        for demand_gib, overlap_gib in prelaunch_waiting.get(tier_id, []):
+            relief = _admission_relief(
+                held_gib=held_total, ready_gib=0, output_gib=0,
+                output_enforced=False, capacity_gib=capacity_gib,
+                cur_min_gib=demand_gib,
+                next_min_gib=overlap_gib if overlap_gib > 0 else None,
                 existing_min_next_gib=0, free_gib=free_gib,
                 evictable_gib=evictable_gib)
             if relief is not None:
