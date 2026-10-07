@@ -18,8 +18,10 @@ from __future__ import annotations
 
 import inspect
 import json
+import os
 from pathlib import Path
 import sys
+import threading
 import time
 
 import pytest
@@ -59,20 +61,94 @@ os.replace(path + ".tmp", path)
 open("result", "w").write("ok")
 '''
 
+#: The same waiter, plus a ready signal after the wait is on disk (#1506).
+#: Only the handshake fixtures use it. All other tests keep WAITER.
+WAITER_SYNC = WAITER.replace(
+    'os.replace(tmp, path + ".staged-wait")',
+    'os.replace(tmp, path + ".staged-wait")\n'
+    'open(__READY__, "w").write("ok")')
+
+#: The launch token ``execute`` mints, fixed for one handshake run (#1506).
+#: Thirty-two hex characters, never the forged all-zero token.
+RESEED_TOKEN = "c" * 32
+
+
+def _fix_launch_token(monkeypatch) -> str:
+    """Fix the token ``execute`` mints, so the fixture can reseed the wait.
+
+    The token is minted per launch inside ``execute``. With it fixed,
+    the fixture writes the same bytes the action writes. Only code in
+    ``pool`` sees the fixed value. The monkeypatch restores ``uuid``
+    when the test ends.
+    """
+
+    class _Fixed:
+        hex = RESEED_TOKEN
+
+    monkeypatch.setattr(pool, "uuid", type("uuid", (), {
+        "uuid4": staticmethod(lambda: _Fixed())}))
+    return RESEED_TOKEN
+
+
+def _execute_after_reseed(queue: pool.PoolQueue, item, *, record: dict,
+                          record_path: Path, sentinel: Path,
+                          monkeypatch) -> dict:
+    """Run ``execute`` with its wait record already present (#1506).
+
+    The launcher starts the worker core before the action runs. Under
+    shard load the action declares its wait after the first rung. The
+    rung then reads no record and ends the action. The launch token is
+    fixed for this run, so a thread writes the same bytes the action
+    writes until the action signals it declared. Production code,
+    grace values, and evidence rules stay unchanged.
+    """
+
+    token = _fix_launch_token(monkeypatch)
+    assert record["token"] == token, "the reseed must carry the fixed token"
+    stop = threading.Event()
+
+    def reseed() -> None:
+        tmp = record_path.with_name(record_path.name + ".tmp")
+        while not stop.is_set():
+            try:
+                tmp.write_text(json.dumps(record))
+                os.replace(tmp, record_path)
+            except OSError:
+                pass
+            try:
+                if sentinel.exists():
+                    return
+            except OSError:
+                pass
+            stop.wait(0.005)
+
+    thread = threading.Thread(target=reseed, daemon=True)
+    thread.start()
+    try:
+        return _execute(queue, item)
+    finally:
+        stop.set()
+        thread.join(timeout=10.0)
+
+
 
 def _consumer_with_mover(tmp_path: Path, *, mover_seed: str, forged: bool = False,
-                         seconds: float = 1.5, declared_seed: str | None = None):
+                         seconds: float = 1.5, declared_seed: str | None = None,
+                         signal: Path | None = None):
     """A claimed consumer whose plan names one stage mover, and that mover.
 
     The staged-wait record names ``declared_seed``'s key, which is the
-    plan's own mover unless a test says otherwise.
+    plan's own mover unless a test says otherwise. With ``signal``, the
+    action uses WAITER_SYNC and signals that path after it declares.
     """
-
     mover = _hexkey(mover_seed)
     declared = _hexkey(declared_seed or mover_seed)
-    source = WAITER.replace("sys.argv[1]", repr(declared)).replace(
+    template = WAITER_SYNC if signal is not None else WAITER
+    source = template.replace("sys.argv[1]", repr(declared)).replace(
         "float(sys.argv[2])", repr(seconds)).replace(
         "sys.argv[3] == \"forged\"", repr(forged))
+    if signal is not None:
+        source = source.replace("__READY__", repr(str(signal)))
     queue, item = _claimed(tmp_path, mode="waiter", seconds=seconds,
                            policy=_policy(0.4, 0.4, 0.4), source=source)
     consumer = str(item["action_key"])
@@ -109,7 +185,7 @@ def _execute(queue, item):
 
 
 def test_a_consumer_waiting_on_its_claimed_mover_is_not_killed_no_progress(
-        tmp_path: Path) -> None:
+        tmp_path: Path, monkeypatch) -> None:
     """The copy is slower than every earlier receipt, and the mover is alive.
 
     Quiet for 1.5 s against a 0.4 s grace, all of it blocked on the claimed
@@ -118,11 +194,18 @@ def test_a_consumer_waiting_on_its_claimed_mover_is_not_killed_no_progress(
     the evidence the exemption now needs (#1022 review, item 1).
     """
 
-    queue, item, _plan, row = _consumer_with_mover(tmp_path, mover_seed="slow")
+    sentinel = tmp_path / "wait-declared"
+    queue, item, _plan, row = _consumer_with_mover(
+        tmp_path, mover_seed="slow", signal=sentinel)
     _hand_to_claimed(queue, row)
     _mover_reports(queue, row, units=1 << 30, reported_unix=time.time())
-
-    outcome = _execute(queue, item)
+    record = {"schema": progress.STAGED_WAIT_SCHEMA_V1, "token": RESEED_TOKEN,
+              "since_unix": time.time(), "movers": [str(row["action_key"])]}
+    record_path = Path(progress.staged_wait_path(
+        str(queue.action_progress_path(str(item["action_key"])))))
+    outcome = _execute_after_reseed(
+        queue, item, record=record, record_path=record_path,
+        sentinel=sentinel, monkeypatch=monkeypatch)
 
     assert outcome["status"] == "executed", repr(outcome.get("termination_reason"))
     observed = outcome["progress_observation"]
@@ -134,11 +217,20 @@ def test_a_consumer_waiting_on_its_claimed_mover_is_not_killed_no_progress(
         str(row["action_key"]), "claimed", "progress")
 
 
-def test_a_ready_mover_is_waited_on_as_well(tmp_path: Path) -> None:
-    queue, item, _plan, row = _consumer_with_mover(tmp_path, mover_seed="queued")
+def test_a_ready_mover_is_waited_on_as_well(
+        tmp_path: Path, monkeypatch) -> None:
+    sentinel = tmp_path / "wait-declared"
+    queue, item, _plan, row = _consumer_with_mover(
+        tmp_path, mover_seed="queued", signal=sentinel)
     queue.publish(**dict(row))
 
-    outcome = _execute(queue, item)
+    record = {"schema": progress.STAGED_WAIT_SCHEMA_V1, "token": RESEED_TOKEN,
+              "since_unix": time.time(), "movers": [str(row["action_key"])]}
+    record_path = Path(progress.staged_wait_path(
+        str(queue.action_progress_path(str(item["action_key"])))))
+    outcome = _execute_after_reseed(
+        queue, item, record=record, record_path=record_path,
+        sentinel=sentinel, monkeypatch=monkeypatch)
 
     assert outcome["status"] == "executed"
     assert outcome["progress_observation"]["staged_wait"]["movers"][0][

@@ -27,6 +27,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from prismabuild import core as pb, pool, produced_spool, progress  # noqa: E402
+from test_a_staged_wait_is_not_no_progress import (  # noqa: E402
+    RESEED_TOKEN, _execute_after_reseed)
 from test_progress_keeps_a_working_action_alive import _claimed, _policy  # noqa: E402
 
 #: Declares an export wait on the keys in ``exports.json`` beside the
@@ -56,12 +58,22 @@ os.replace(path + ".tmp", path)
 open("result", "w").write("ok")
 '''
 
+#: The same waiter, plus a ready signal after the wait is on disk (#1506).
+#: Only the live-export handshake fixture uses it.
+WAITER_SYNC = WAITER.replace(
+    'os.replace(tmp, path + ".export-wait")',
+    'os.replace(tmp, path + ".export-wait")\n'
+    'open(__READY__, "w").write("ok")')
+
 ENTRY_BYTES = 1 << 20
 
 
-def _owner(tmp_path: Path, *, seconds: float):
+def _owner(tmp_path: Path, *, seconds: float, signal: Path | None = None):
     exports = tmp_path / "exports.json"
-    source = WAITER.replace("EXPORTS", repr(str(exports)))
+    template = WAITER_SYNC if signal is not None else WAITER
+    source = template.replace("EXPORTS", repr(str(exports)))
+    if signal is not None:
+        source = source.replace("__READY__", repr(str(signal)))
     queue, item = _claimed(tmp_path, mode="waiter", seconds=seconds,
                            policy=_policy(0.4, 0.4, 0.4), source=source)
     return queue, item, exports
@@ -152,6 +164,24 @@ class _Writer:
         self.thread.start()
         return self
 
+    def wait_ready(self, timeout_s: float = 30.0) -> None:
+        """Return after the writer lands its first bytes (#1506).
+
+        The thread starts with the context. This waits until its
+        temporary exists and holds bytes, so the first rung reads
+        growth, not an empty file. It raises when the deadline passes.
+        """
+
+        deadline = time.monotonic() + timeout_s
+        while True:
+            try:
+                if self.path.stat().st_size > 0:
+                    return
+            except OSError:
+                pass
+            assert time.monotonic() < deadline, "the export writer never started"
+            time.sleep(0.005)
+
     def __exit__(self, *exc) -> None:
         self.stop.set()
         self.thread.join()
@@ -160,18 +190,27 @@ class _Writer:
 # -- red first: the owner the rung killed ------------------------------------
 
 def test_an_owner_waiting_on_its_live_export_is_not_killed_no_progress(
-        tmp_path: Path) -> None:
+        tmp_path: Path, monkeypatch) -> None:
     """Quiet for 1.5 s against a 0.4 s grace, all of it waiting on its own
     export, which is claimed and writing.  On main the rung kills the owner
     at 0.4 s, because nothing reads the export wait."""
 
-    queue, item, exports = _owner(tmp_path, seconds=1.5)
+    sentinel = tmp_path / "export-declared"
+    queue, item, exports = _owner(tmp_path, seconds=1.5, signal=sentinel)
     export, destination = _seal_export(tmp_path, item, seed="live")
     exports.write_text(json.dumps([export]))
     _claim(queue, item, export)
 
-    with _Writer(destination):
-        outcome = _execute(queue, item)
+    with _Writer(destination) as writer:
+        writer.wait_ready()
+        record = {"schema": progress.EXPORT_WAIT_SCHEMA_V1,
+                  "token": RESEED_TOKEN, "since_unix": time.time(),
+                  "exports": [export]}
+        record_path = Path(progress.export_wait_path(
+            str(queue.action_progress_path(str(item["action_key"])))))
+        outcome = _execute_after_reseed(
+            queue, item, record=record, record_path=record_path,
+            sentinel=sentinel, monkeypatch=monkeypatch)
 
     assert outcome["status"] == "executed", repr(outcome.get("termination_reason"))
     observed = outcome["progress_observation"]
