@@ -442,3 +442,45 @@ def publish_declared(queue, tier_id: str, unit: Unit,
                                       status=outcome.status,
                                       moved=outcome.moved))
     return events
+
+
+def _held_count(held: Mapping[str, Mapping[str, int]], holder: str,
+                kind: str) -> int:
+    """Tokens one holder owns of one kind, or zero when unknown."""
+    per_kind = held.get(holder) if isinstance(held, Mapping) else None
+    if not isinstance(per_kind, Mapping):
+        return 0
+    try:
+        return max(0, int(per_kind.get(kind, 0)))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0
+
+
+def obligations(units: Sequence[Unit], held: Mapping[str, Mapping[str, int]],
+                kind: str) -> tuple[dict[str, int], dict[str, dict]]:
+    """The admitted declared windows' peak obligations per tier.
+
+    A unit obliges when its holder or one of its leg movers owns
+    tokens now: its peak minus all it owns, never below zero. Units
+    that own nothing oblige nothing yet. Returns the per-tier sums
+    with one detail record per obliging unit for the logs.
+    """
+    totals: dict[str, int] = {}
+    detail: dict[str, dict] = {}
+    for unit in units or []:
+        if unit.unsupported is not None:
+            continue
+        owns_holder = _held_count(held, unit.holder, kind) > 0
+        owns_chunk = any(_held_count(held, leg["mover_key"], kind) > 0
+                         for leg in unit.legs)
+        if not owns_holder and not owns_chunk:
+            continue
+        owned = residency_plan.prelaunch_owned_gib(unit.plan, held,
+                                                   unit.holder, kind)
+        due = window_credit.prelaunch_obligation_gib(unit.peak_gib, owned)
+        totals[unit.tier_id] = totals.get(unit.tier_id, 0) + due
+        detail[unit.unit] = {"unit": unit.unit, "consumer": unit.key,
+                             "tier_id": unit.tier_id, "holder": unit.holder,
+                             "peak_gib": unit.peak_gib, "owned_gib": owned,
+                             "obligation_gib": due}
+    return (totals, detail)
