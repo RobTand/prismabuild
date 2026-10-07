@@ -2688,7 +2688,7 @@ miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
   selected executable directory is resolved before checkout relativization,
   while its leaf is retained so a venv Python remains a venv invocation.
   Input requirements retain the requested pathname for offer and claim checks.
-  The retained executable pathname determines its dependency scope.
+  A local executable alias needs its own dependency evidence.
   An alias outside the checkout and shared storage requires executable evidence, even when its target is portable.
   Each class member must report that alias.
   The claim check tests that alias before an attempt.

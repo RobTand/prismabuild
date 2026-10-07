@@ -1682,7 +1682,8 @@ def command_dependency_contract(
     executable = resolved_path(executable.parent) / executable.name
     # The worker executes the retained leaf pathname, not its resolved target.
     # A local alias needs evidence even if its target is portable.
-    requirements = {} if portable(executable) else {str(executable): "executable"}
+    requirements = ({str(executable): "executable"}
+                    if external(executable) or not portable(executable) else {})
     candidates = []
     for token in command[1:]:
         raw = token.split("=", 1)[1] if token.startswith("-") and "=" in token else token
