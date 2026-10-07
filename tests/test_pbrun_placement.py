@@ -2575,3 +2575,94 @@ def test_symlink_parent_traversal_guards_the_requested_input(symlink_parent_inpu
     target.unlink()
     announce()
     assert queue.placeable(probe) is False
+
+
+@pytest.fixture(params=["checkout", "shared"])
+def retained_executable_alias(class_submission, monkeypatch, request):
+    """Create a real local alias and a portable target."""
+    submit, root = class_submission
+    shared = root / "shared"
+    shared.mkdir()
+    monkeypatch.setattr(pbrun, "SHARED_ROOT", shared)
+    target_root = root / "checkout" if request.param == "checkout" else shared
+    target = target_root / "alias-target"
+    target.write_bytes(Path("/bin/bash").read_bytes())
+    target.chmod(0o755)
+    alias = root / "local-bin" / "alias-tool"
+    alias.parent.mkdir()
+    alias.symlink_to(target)
+    return submit, root, alias, target
+
+
+@pytest.mark.parametrize("availability", ["missing", "valid", "direct"])
+def test_retained_alias_controls_class_placement(retained_executable_alias, availability):
+    from prismabuild import local_dependencies
+    submit, root, alias, target = retained_executable_alias
+    requirements = {str(alias): "executable"}
+    present = local_dependencies.observe(requirements)
+    if availability == "missing":
+        alias.unlink()
+        absent = local_dependencies.observe(requirements)
+        assert absent[str(alias)] == "absent" and target.is_file()
+        alias.symlink_to(target)
+    else:
+        absent = present
+    direct = availability == "direct"
+    requested = ("./" + target.name if target.parent == root / "checkout" else str(target)) if direct else str(alias)
+    action = submit([requested, "-c", 'printf "%s\n" "$0"'],
+                    answers={"spark-a": present, "spark-b": absent})
+    invocation = action["params"]["command"][0]
+    assert invocation == requested
+    expected_tags = (["spark-a"] if availability == "missing" else ["gb10"] if direct
+                     else ["gb10", local_dependencies.TAG])
+    assert action["params"]["placement"]["required_tags"] == expected_tags
+    assert action["params"].get("dependency_queries", {}) == ({} if direct else requirements)
+    if availability == "valid":
+        assert action["params"]["local_dependencies"] == requirements
+    if availability != "missing":
+        result = subprocess.run(action["task"]["argv"], cwd=root / "checkout", text=True,
+                                capture_output=True, env=action["environment"]["variables"])
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == requested
+        assert (root / "checkout" / action["task"]["result_path"]).read_text().strip() == requested
+
+
+@pytest.mark.parametrize("present", [False, True])
+def test_retained_alias_is_checked_before_an_attempt(retained_executable_alias, present):
+    import fleet_submit
+    from prismabuild import adaptive_cpu, local_dependencies
+    submit, root, alias, target = retained_executable_alias
+    answers = local_dependencies.observe({str(alias): "executable", str(target): "executable"})
+    action = submit([str(alias), "-c", 'printf "%s\n" "$0"'],
+                    answers={member: answers for member in ("spark-a", "spark-b")})
+    cas = core_module.PrismaBuildCAS(root / "fleet" / "cas")
+    request_path = cas.publish_action_request(action)
+    queue = pool_module.PoolQueue(root / "fleet" / "pb-queue")
+    fleet_submit.submit(
+        action, cas=cas, request_path=request_path, transport="pool",
+        worker_script=Path(__file__).resolve().parents[1] / "tools" / "prismabuild_worker.py",
+        checkout_root=root / "checkout",
+        tags=action["params"]["placement"]["required_tags"], resources={"cpu": 1, "mem_gb": 4},
+        queue_root=queue.root)
+    ready = queue.item_path(pool_module.READY, action["action_key"])
+    before = ready.read_bytes()
+    if not present:
+        alias.unlink()
+    assert target.is_file()
+    item = queue.claim(tags=["gb10", local_dependencies.TAG], has_gpu=False,
+                       capacity={"cpu": 1, "mem_gb": 4})
+    if not present:
+        assert item is None
+        assert ready.read_bytes() == before
+        assert not queue.item_path(pool_module.CLAIMED, action["action_key"]).exists()
+        denials = adaptive_cpu.read_json(
+            adaptive_cpu.local_state_base(queue.ledger().base) / pool_module.CLAIM_DENIALS).get("records", {})
+        assert any(row.get("reason") == "local_dependency_not_present"
+                   and row.get("evidence", {}).get("paths") == [str(alias)]
+                   and row.get("attempts") == 0 for row in denials.values())
+    else:
+        assert item is not None and item["action_key"] == action["action_key"]
+        assert not ready.exists()
+        assert queue.item_path(pool_module.CLAIMED, action["action_key"]).exists()
+        queue.finish(item["action_key"], status="failed", detail={"returncode": 1}, claim_snapshot=item)
+

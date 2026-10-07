@@ -2688,6 +2688,11 @@ miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
   selected executable directory is resolved before checkout relativization,
   while its leaf is retained so a venv Python remains a venv invocation.
   Input requirements retain the requested pathname for offer and claim checks.
+  The retained executable pathname determines its dependency scope.
+  An alias outside the checkout and shared storage requires executable evidence, even when its target is portable.
+  Each class member must report that alias.
+  The claim check tests that alias before an attempt.
+  Direct checkout and shared-storage pathnames keep their existing portable scope.
   Checkout executables use relative invocation paths so snapshots relocate,
   and nominal Docker still runs through the existing shim. Pool defaults from
   a declared gb10 member, or GPU work from celestia, use gb10 only when every

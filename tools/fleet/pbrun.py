@@ -1647,10 +1647,12 @@ def command_dependency_contract(
         except (OSError, RuntimeError) as exc:
             raise SystemExit(f"pbrun: cannot resolve declared path {candidate}: {exc}") from exc
 
+    def portable(candidate: Path) -> bool:
+        return (candidate.is_relative_to(root)
+                or candidate.is_relative_to(SHARED_ROOT.resolve()))
+
     def external(candidate: Path) -> bool:
-        resolved = resolved_path(candidate)
-        return not (resolved.is_relative_to(root)
-                    or resolved.is_relative_to(SHARED_ROOT.resolve()))
+        return not portable(resolved_path(candidate))
 
     if not command or not command[0]:
         raise SystemExit("pbrun: portable placement requires argv[0]")
@@ -1678,7 +1680,9 @@ def command_dependency_contract(
     # relpath/abspath would cancel .. lexically and could select another file.
     # Keep the leaf: dereferencing a venv Python loses the venv invocation.
     executable = resolved_path(executable.parent) / executable.name
-    requirements = {str(executable): "executable"} if external(executable) else {}
+    # The worker executes the retained leaf pathname, not its resolved target.
+    # A local alias needs evidence even if its target is portable.
+    requirements = {} if portable(executable) else {str(executable): "executable"}
     candidates = []
     for token in command[1:]:
         raw = token.split("=", 1)[1] if token.startswith("-") and "=" in token else token
