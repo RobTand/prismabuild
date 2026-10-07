@@ -4219,12 +4219,16 @@ def require_host_class_scope(
 #: worker's platform and accelerator facts: a few hundred bytes.
 TARGET_EVIDENCE_MAX_BYTES = 64 * 1024
 
-#: The platform rule of each class a target-evidence packet may stand for
-#: (#1598): the machine and the platform key the class's workers report.  A
-#: class this table does not name has no rule, so a packet cannot stand for it.
+#: The rule of each class a target-evidence packet may stand for (#1598): the
+#: platform key and the accelerator model its workers report.  A class this
+#: table does not name has no rule, so a packet cannot stand for it.  GB10 is
+#: one AArch64 platform with one model.  Another model on AArch64, such as a
+#: GH200, is not GB10, and neither is another model that shares its capability.
 _TARGET_EVIDENCE_CLASSES = {
-    "gb10": lambda machine, platform_key: (
-        machine == "aarch64" and "-sm" in platform_key),
+    "gb10": lambda evidence, platform_key: (
+        platform_key == "linux-aarch64-sm121"
+        and all(row["name"] == "NVIDIA GB10" and row["compute_capability"] == "12.1"
+                for row in evidence["accelerators"])),
 }
 
 
@@ -4267,7 +4271,7 @@ def load_target_evidence(path: str, *, host_class: str) -> dict[str, object]:
         platform_key = pb._platform_key_from_evidence(evidence)
     except pb.ActionContractError as exc:
         raise SystemExit(f"pbrun: --target-evidence {path}: {exc}") from None
-    if not rule(str(evidence["machine"]), platform_key):
+    if not rule(evidence, platform_key):
         raise SystemExit(
             f"pbrun: --target-evidence {path} disagrees with class {host_class}: "
             f"it reports {platform_key}")

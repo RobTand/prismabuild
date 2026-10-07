@@ -70,10 +70,18 @@ def vet(evidence: dict) -> dict:
         raise PacketError(
             "the packet carries no device identity (name and uuid) for an "
             "accelerator") from None
+    # Several devices of one model are one class.  Two models are not, even
+    # when they share a compute capability and a driver: the sealed model hash
+    # would cover a mixed set that no class has.
+    if len({str(row["name"]) for row in accelerators}) != 1:
+        raise PacketError(
+            "the packet must report one accelerator model, one compute "
+            "capability and one driver")
     toolchain = pb.live_platform_toolchain_contract(evidence=packet)
     if "cuda_compute_capability" not in toolchain:
         raise PacketError(
-            "the packet must report one compute capability and one driver")
+            "the packet must report one accelerator model, one compute "
+            "capability and one driver")
     return packet
 
 
