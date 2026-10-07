@@ -68,7 +68,6 @@ import prewarm_loop  # noqa: E402
 import manifest_promotion  # noqa: E402
 import prelaunch_tier  # noqa: E402
 import stage_release  # noqa: E402
-import prelaunch_tier  # noqa: E402
 #: The same generation gate ``prewarm_loop`` reads, under the same name, for
 #: the same reason: a loop holds the modules it imported for its whole life,
 #: so a fix published under a running fleet reaches none of it (#615).
