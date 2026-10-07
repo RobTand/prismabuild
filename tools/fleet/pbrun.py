@@ -4241,6 +4241,7 @@ class TargetEvidence(dict):
     """
 
     argv0: dict[str, str]
+    recorder: dict[str, str] | None = None
 
 
 def load_target_evidence(path: str, *, host_class: str) -> dict[str, object]:
@@ -4280,6 +4281,7 @@ def load_target_evidence(path: str, *, host_class: str) -> dict[str, object]:
             f"a packet can stand for {', '.join(sorted(_TARGET_EVIDENCE_CLASSES))}")
     try:
         argv0 = pbevidence.argv0_contract(value)
+        recorder = pbevidence.recorder_contract(value)
     except pbevidence.PacketError as exc:
         raise SystemExit(f"pbrun: --target-evidence {path}: {exc}") from None
     try:
@@ -4292,6 +4294,7 @@ def load_target_evidence(path: str, *, host_class: str) -> dict[str, object]:
             f"it reports {platform_key}")
     vetted = TargetEvidence(evidence)
     vetted.argv0 = argv0
+    vetted.recorder = recorder
     return vetted
 
 
@@ -5637,8 +5640,19 @@ def freeze_action_template(
     if recorder is not None:
         # Actual executable/version facts, verified by the normal worker
         # preflight and bound into its real receipt; never guessed hashes.
-        toolchain = {**toolchain, **pb.executable_toolchain_contract(command[0]),
-                     **pb._probe_python_toolchain(Path(command[0]))}
+        if target_evidence is not None:
+            # The class is the worker's: its interpreter is not this box's, so
+            # the packet's own declaration is the only source (#1598).
+            declared = getattr(target_evidence, "recorder", None)
+            if declared is None or declared["path"] != command[0]:
+                raise SystemExit(
+                    "pbrun: a scratch recorder under --target-evidence needs the "
+                    f"worker's identity of {command[0]!r}; collect the packet with "
+                    f"pbevidence.py --recorder-python {command[0]}")
+            toolchain = {**toolchain, **{k: v for k, v in declared.items() if k != "path"}}
+        else:
+            toolchain = {**toolchain, **pb.executable_toolchain_contract(command[0]),
+                         **pb._probe_python_toolchain(Path(command[0]))}
     if pool_measurement_class and demand.get("gpu", 0) and (
         "cuda_compute_capability" not in toolchain or "nvidia_driver" not in toolchain
     ):

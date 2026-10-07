@@ -98,3 +98,73 @@ def test_the_collector_names_this_boxs_own_bash(monkeypatch) -> None:
     packet = pbevidence.collect_packet()
     assert packet["argv0"] == {"path": "/bin/bash", "sha256": "cd" * 32, "bytes": "99"}
     json.dumps(packet)
+
+
+# -- the scratch recorder's interpreter (review of PR 1611) --------------------
+
+RECORDER_PYTHON = "/usr/bin/python3"
+RECORDER = {"path": RECORDER_PYTHON, "sha256": "cd" * 32, "bytes": "7845048",
+            "python": "3.12.3"}
+
+
+def _recorder_body(packet, tmp_path, monkeypatch):
+    """The body sealed for a scratch recorder under a class measurement packet."""
+    from prismabuild import local_scratch
+    from test_pbrun_host_class import _sealed_body
+    monkeypatch.setattr(local_scratch, "check_profile_request",
+                        lambda *a, **k: {"root": "."})
+    monkeypatch.setattr(pb, "executable_toolchain_contract",
+                        lambda path: {"argv0.sha256": "ee" * 32, "argv0.bytes": "1"})
+    monkeypatch.setattr(pb, "_probe_python_toolchain", lambda path, *a: {"python": "9.9.9"})
+    path = _write(tmp_path, packet)
+    return _sealed_body(
+        ["--measurement", "--host-class", "gb10", "--transport", "pool",
+         "--target-evidence", str(path), "--", RECORDER_PYTHON,
+         "tools/fleet/local_scratch_profile.py"],
+        monkeypatch, tmp_path)
+
+
+def test_a_recorder_seals_the_workers_interpreter_and_not_the_submitters(
+        tmp_path, monkeypatch) -> None:
+    body = _recorder_body(dict(_packet(), recorder=RECORDER), tmp_path, monkeypatch)
+    toolchain = body["environment"]["toolchain"]
+    assert toolchain["argv0.sha256"] == RECORDER["sha256"]
+    assert toolchain["argv0.bytes"] == RECORDER["bytes"]
+    assert toolchain["python"] == RECORDER["python"]
+    assert "ee" * 32 not in toolchain.values() and "9.9.9" not in toolchain.values()
+
+
+def test_a_recorder_without_the_workers_interpreter_is_refused(tmp_path, monkeypatch) -> None:
+    with pytest.raises(SystemExit, match="--recorder-python"):
+        _recorder_body(_packet(), tmp_path, monkeypatch)
+
+
+def test_a_recorder_packet_for_another_interpreter_is_refused(tmp_path, monkeypatch) -> None:
+    other = dict(RECORDER, path="/opt/other/python3")
+    with pytest.raises(SystemExit, match="--recorder-python"):
+        _recorder_body(dict(_packet(), recorder=other), tmp_path, monkeypatch)
+
+
+@pytest.mark.parametrize("change", [
+    {"path": "python3"}, {"sha256": "AB" * 32}, {"bytes": "07"}, {"python": ""},
+])
+def test_a_malformed_recorder_declaration_is_refused(change) -> None:
+    with pytest.raises(pbevidence.PacketError):
+        pbevidence.recorder_contract(dict(_packet(), recorder=dict(RECORDER, **change)))
+    with pytest.raises(pbevidence.PacketError):
+        pbevidence.recorder_contract(dict(_packet(), recorder={"path": RECORDER_PYTHON}))
+
+
+def test_the_collector_names_the_recorder_interpreter_it_was_asked_for(monkeypatch) -> None:
+    monkeypatch.setattr(pb, "_collect_worker_evidence", lambda **_k: _packet_evidence())
+    monkeypatch.setattr(pb, "executable_toolchain_contract",
+                        lambda path: {"argv0.sha256": RECORDER["sha256"],
+                                      "argv0.bytes": RECORDER["bytes"]})
+    monkeypatch.setattr(pb, "_probe_python_toolchain", lambda path, *a: {"python": "3.12.3"})
+    packet = pbevidence.collect_packet(RECORDER_PYTHON)
+    assert pbevidence.recorder_contract(packet)["python"] == "3.12.3"
+    assert "recorder" not in pbevidence.collect_packet()
+
+
+def _packet_evidence():
+    return {k: v for k, v in _packet().items() if k != "argv0"}
