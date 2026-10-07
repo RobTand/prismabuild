@@ -513,3 +513,18 @@ def is_admitted(unit: Unit, held: Mapping[str, Mapping[str, int]], kind: str,
     if any(leg["mover_key"] in published for leg in unit.legs):
         return True
     return _committed(unit)
+
+
+def declared_leg_keys(units: Sequence[Unit]) -> frozenset:
+    """Every declared leg mover key of every live unit, for retention.
+
+    The eviction paths spare these movers: a live declared prefix
+    stays resident to its consumer's end.
+    """
+    return frozenset(leg["mover_key"] for unit in units or []
+                     for leg in unit.legs)
+
+
+def is_prelaunch_leg(leg_keys: frozenset, mover_key: str) -> bool:
+    """True when one mover belongs to a live declared prefix."""
+    return mover_key in leg_keys
