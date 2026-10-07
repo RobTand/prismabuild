@@ -90,6 +90,38 @@ REASON_DEFER_UNKNOWN = "advance-deferred-unknown-evidence"
 #: already committed to its admitted windows (#907).  Transient: it waits
 #: for those windows to finish, and no eviction can admit it.
 REASON_COMMITMENT = "joint-commitment-stall"
+#: A declared consumer whose prelaunch group is not held yet waits for room
+#: (#1594).  Transient: the group lands, then the window publishes.
+REASON_PRELAUNCH_WAIT = "prelaunch_waiting_for_room"
+
+
+def prelaunch_obligation_gib(peak_gib: int, owned_gib: int) -> int:
+    """Tokens an admitted declared window still obliges on one tier (#1594).
+
+    Peak minus owned, never below zero.  Owned falls as suffix chunks
+    retire, so the room the next suffix phase needs stays reserved.
+    Refuses negative inputs.
+    """
+
+    if peak_gib < 0 or owned_gib < 0:
+        raise ValueError(
+            f"prelaunch GiB must not be negative: {peak_gib!r}, {owned_gib!r}")
+    return max(0, peak_gib - owned_gib)
+
+
+def prelaunch_footprint_gib(peak_gib: int, owned_gib: int) -> int:
+    """Tokens a declared newcomer still needs to reserve on one tier (#1594).
+
+    The same remainder as the obligation: the peak minus what the unit
+    already owns.  The gate counts it beside admitted obligations.
+    Refuses negative inputs.
+    """
+
+    if peak_gib < 0 or owned_gib < 0:
+        raise ValueError(
+            f"prelaunch GiB must not be negative: {peak_gib!r}, {owned_gib!r}")
+    return max(0, peak_gib - owned_gib)
+
 
 #: The note on a decision that counted no produced-output obligation.  The
 #: tier loop counts a producer's unheld window (``produced_output.

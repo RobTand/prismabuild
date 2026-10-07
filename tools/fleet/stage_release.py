@@ -115,6 +115,7 @@ sys.path.insert(0, str(generation_root(__file__) / "src"))
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import movement_actions  # noqa: E402
 from prismabuild import pool  # noqa: E402
+from prismabuild import prelaunch_group  # noqa: E402
 from prismabuild import progress as pb_progress  # noqa: E402
 from prismabuild import produced_output  # noqa: E402
 from prismabuild import reader_lease  # noqa: E402
@@ -5033,6 +5034,11 @@ def sweep(queue: pool.PoolQueue, *, stage_roots: dict[str, str],
         for key in held:
             if key in wanted or key in owners:
                 continue
+            # A prelaunch group holder is the prelaunch pass's room
+            # reservation (#1594). It has no receipt and no fragment.
+            # The prelaunch pass owns its release, so keep it quietly.
+            if _is_prelaunch_holder(key):
+                continue
             # A funded produced-output mover is its lane's, receipt or no
             # receipt (#929).  Its receipt names a batch namespace, not a
             # queue action, and its fragment lives in the produced store, so
@@ -5325,6 +5331,13 @@ def _receiptless_refusal(mover: str, *, tier_id: str, stage_root: str,
         "complete": False, "errors": [why],
         "host": socket.gethostname(), "unix": time.time(),
     }
+
+
+def _is_prelaunch_holder(value: str) -> bool:
+    """Whether one held key is a prelaunch group holder (#1594)."""
+
+    prefix = getattr(prelaunch_group, "HOLDER_PREFIX", "prelaunch-")
+    return str(value).startswith(prefix)
 
 
 def _is_action_key(value: str) -> bool:

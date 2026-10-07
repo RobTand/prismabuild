@@ -337,6 +337,13 @@
    ],
    "name": "run",
    "reason": "The migration consumer returns a closed three-leaf read-only plan or original-FD-only mode change with partial-effect reporting. Existing run helpers execute actions, broker scopes, canary watches, benchmark loops or stage/upgrade operations; their arguments, effects and returned evidence are different."
+  },
+  {
+   "name": "reconcile",
+   "modules": [
+    "src/prismabuild/prelaunch_group.py"
+   ],
+   "reason": "The prelaunch group reconcile runs the crash-recovery rule table of one reservation group against the tier ledger and its receipts. Other reconcile helpers repair queue records or host holds. Their inputs and outcomes differ."
   }
  ],
  "same_name_helpers": {

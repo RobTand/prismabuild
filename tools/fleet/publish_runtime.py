@@ -159,6 +159,10 @@ FLEET_SCRIPTS = (
     # holding the mount, and it reads /proc on the box it runs on to find out
     # what is still live there.
     "pb_gc.py",
+    # tier_loop.py imports prelaunch_tier unconditionally (#1594).  A published
+    # script that imports a tools module the publication lacks makes the
+    # publisher refuse every generation, so the module ships.
+    "prelaunch_tier.py",
     # pbrun imports pbevidence unconditionally (#1598).  A published script that
     # imports a tools module the publication lacks makes the publisher refuse
     # every generation, so the tool ships even for commands that never use

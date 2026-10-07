@@ -449,6 +449,10 @@ _DATA_MANIFEST_READ_PLAN_KEYS = frozenset({"phases", "read_bytes"})
 _DATA_MANIFEST_READ_PHASE_KEYS = frozenset(
     {"name", "entry_indices", "bytes", "cumulative_bytes"}
 )
+#: The one optional v2 phase key beyond the exact set (#1594): a literal
+#: ``resident_before_launch: true``.  Validation strips and checks it before
+#: the exact-keys check.  Other unknown keys still refuse.
+_DATA_MANIFEST_READ_PHASE_PRELAUNCH_KEY = "resident_before_launch"
 _DATA_MANIFEST_ENTRY_KEYS = frozenset({"path", "offset", "bytes", "sha256"})
 _GIT_OBJECT_ID_RE = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
 #: A snapshot ref name is an allow-list, not Git's full branch grammar: it is
@@ -2594,6 +2598,17 @@ def validate_data_manifest(value: object) -> dict[str, object]:
         reads = 0
         for index, raw in enumerate(raw_phases):
             where = f"data manifest read_plan.phases[{index}]"
+            # A per-phase prelaunch declaration (#1594): the only key beyond
+            # the exact set, allowed only as a literal true.  Other values
+            # refuse here.  An older core refuses the unknown key outright.
+            prelaunch = None
+            if (isinstance(raw, Mapping)
+                    and _DATA_MANIFEST_READ_PHASE_PRELAUNCH_KEY in raw):
+                prelaunch = raw[_DATA_MANIFEST_READ_PHASE_PRELAUNCH_KEY]
+                if prelaunch is not True:
+                    _fail(f"{where}.resident_before_launch must be true when present")
+                raw = {key: value for key, value in raw.items()
+                       if key != _DATA_MANIFEST_READ_PHASE_PRELAUNCH_KEY}
             phase = _exact_mapping(raw, keys=_DATA_MANIFEST_READ_PHASE_KEYS,
                                    where=where)
             name = _text(phase["name"], where=f"{where}.name")
@@ -2625,8 +2640,12 @@ def validate_data_manifest(value: object) -> dict[str, object]:
             if (_nonnegative_integer(phase["cumulative_bytes"],
                                      where=f"{where}.cumulative_bytes") != cumulative):
                 _fail(f"{where}.cumulative_bytes disagrees with entry references")
-            phases.append({"name": name, "entry_indices": list(indices),
-                           "bytes": size, "cumulative_bytes": cumulative})
+            normalized_phase: dict[str, object] = {
+                "name": name, "entry_indices": list(indices),
+                "bytes": size, "cumulative_bytes": cumulative}
+            if prelaunch is True:
+                normalized_phase[_DATA_MANIFEST_READ_PHASE_PRELAUNCH_KEY] = True
+            phases.append(normalized_phase)
         if len(used) != len(entries):
             _fail("data manifest read_plan must reference every unique entry")
         if (_nonnegative_integer(plan["read_bytes"], where="data manifest read_plan.read_bytes")
