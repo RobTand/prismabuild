@@ -109,6 +109,8 @@ if verb == "kill":
         sys.exit(1)
     data["running"] = False
     data["killed"] = True
+    if os.environ.get("FAKE_RM") == "1":
+        data["removed"] = True          # --rm: a stopped container is gone
     save(data)
     print(argv[-1])
     sys.exit(0)
@@ -116,7 +118,7 @@ if verb == "kill":
 if verb == "inspect":
     record(verb="inspect", argv=argv)
     data = load()
-    if argv[-1] != data.get("cid"):
+    if argv[-1] != data.get("cid") or data.get("removed"):
         sys.exit(1)
     labels = dict(data.get("labels", {}))
     labels.update(json.loads(os.environ.get("FAKE_LABEL_OVERRIDE", "{}")))
@@ -239,6 +241,28 @@ def test_a_term_ignoring_workload_has_its_exact_container_killed(tmp_path):
     assert receipt["outcome"] == "killed"
     assert receipt["escalation"]["container_killed"] is True
     assert receipt["container_final"]["running"] is False
+
+
+def test_a_removed_container_after_our_kill_is_reported_as_killed(tmp_path):
+    """With --rm the container is gone once stopped; absent after a kill is a kill."""
+    process = _start(tmp_path, mode="ignore", grace="1", extra={"FAKE_RM": "1"})
+    _wait_started(tmp_path)
+    process.send_signal(signal.SIGTERM)
+    process.wait(timeout=15)
+    receipt = _receipts(tmp_path)[0]
+    assert receipt["escalation"]["container_killed"] is True
+    assert receipt["container_final"]["found"] is False
+    assert receipt["outcome"] == "killed"
+
+
+def test_a_removed_container_after_a_clean_stop_is_reported_as_stopped(tmp_path):
+    process = _start(tmp_path, mode="honor", extra={"FAKE_RM": "1"})
+    _wait_started(tmp_path)
+    process.send_signal(signal.SIGTERM)
+    process.wait(timeout=15)
+    receipt = _receipts(tmp_path)[0]
+    assert receipt["escalation"]["container_killed"] is False
+    assert receipt["outcome"] == "stopped"
 
 
 def test_a_container_this_attempt_does_not_own_is_never_killed(tmp_path):

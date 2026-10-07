@@ -826,7 +826,9 @@ def _run_relayed(real: str, args: list[str], environment: dict, *, owner: str,
         state, row = _inspect(real, global_options, environment, cid)
         final = _final_state(row, state)
         if state == "absent":
-            outcome = "stopped"
+            # ``--rm`` removes a stopped container, so absent after our own
+            # kill is a kill, not a clean stop (the real daemon showed this).
+            outcome = "killed" if escalation["container_killed"] else "stopped"
         elif state == "unreadable":
             outcome = "unknown"
         elif not _owned_by_this_attempt(row, owner, scope, nonce):
