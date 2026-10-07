@@ -163,6 +163,12 @@ FLEET_SCRIPTS = (
     # missing from this list is a tool no box can run, so the gang canary could
     # not start from a published generation.
     "pbgang.py",
+    # pbrun imports pbevidence unconditionally (#1598).  A published script that
+    # imports a tools module the publication lacks makes the publisher refuse
+    # every generation, so the tool ships even for commands that never use
+    # --target-evidence.  It also runs as a normal action on a worker of the
+    # class, where it prints the evidence packet.
+    "pbevidence.py",
     # Explicit plan-first banked-checkout recovery runs on the owning host.
     "pbrecover_checkout.py",
     # The reconcile, for the same reason: the endings it files are the ones

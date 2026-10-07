@@ -1928,6 +1928,23 @@ receipt records the selected worker and actual GPU UUID. Unknown device identity
 refuses. `--here` adds a host pin even with a class; `--anywhere` is unnecessary
 and refused. The class is placement intent, not a claimed SLURM attestation.
 
+A box without an accelerator cannot probe the class facts, so it cannot submit
+the command above. Take the facts from a worker of the class instead. Run
+`tools/fleet/pbevidence.py --out PATH` as a normal detached action on a worker
+of the class (`--tag gb10`). Then submit with `--target-evidence PATH`:
+
+    tools/fleet/pbrun.py --transport pool --measurement --host-class gb10 --gpu \
+        --target-evidence PATH -- ./paired-probe.sh
+
+For a gang, give `pbgang.py --manifest M --target-evidence PATH`, an absolute
+path. The manifest does not change. `pbgang` forwards the option to the members
+that declare `measurement` and `host_class`. Collect the packet just before you
+submit. Each worker checks the sealed facts against its own live facts before
+it runs. A stale packet, for example after a driver update, fails at the worker.
+With one attempt, that loses the run. `pbrun` refuses a packet that is not
+local, has no accelerator or device identity, mixes models or drivers, or does
+not match the class. Without the option, the refusal does not change.
+
 Keep both arms of a comparison in one self-contained interleaved action. CPU
 near-idle admission, measurement isolation, GPU exclusivity, memory and telemetry
 gates remain enforced. This option changes eligibility, not available capacity.
