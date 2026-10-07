@@ -328,6 +328,7 @@ The code applies this rule to direct argv and caller-environment paths.
 The code checks the retained pathname and follows directory symlinks before parent components.
 It keeps the requested pathname for offer and claim checks.
 A portable target does not remove the alias requirement.
+Parent components that leave the portable roots require local evidence.
 
 Explicit `--here` and tags
 remain authoritative; `--anywhere --tag` remains invalid. Use a class tag

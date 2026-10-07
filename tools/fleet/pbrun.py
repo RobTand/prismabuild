@@ -1647,9 +1647,20 @@ def command_dependency_contract(
         except (OSError, RuntimeError) as exc:
             raise SystemExit(f"pbrun: cannot resolve declared path {candidate}: {exc}") from exc
 
+    def stays_within(candidate: Path, owner: Path) -> bool:
+        try:
+            parts = candidate.relative_to(owner).parts
+        except ValueError:
+            return False
+        depth = 0
+        for part in parts:
+            depth += -1 if part == ".." else 1
+            if depth < 0:
+                return False
+        return True
+
     def portable(candidate: Path) -> bool:
-        return (candidate.is_relative_to(root)
-                or candidate.is_relative_to(SHARED_ROOT.resolve()))
+        return stays_within(candidate, root) or stays_within(candidate, SHARED_ROOT.resolve())
 
     def requires_local_path(candidate: Path) -> bool:
         location = resolved_path(candidate.parent) / candidate.name

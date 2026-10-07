@@ -2700,6 +2700,7 @@ miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
   The code checks the retained pathname and the resolved parent directory without replacing its leaf.
   Offer and claim checks keep the requested pathname, including directory symlinks and parent components.
   The rule also keeps evidence for external targets.
+  Parent components that leave the portable roots require local evidence.
 
   Checkout executables use relative invocation paths so snapshots relocate,
   and nominal Docker still runs through the existing shim. Pool defaults from

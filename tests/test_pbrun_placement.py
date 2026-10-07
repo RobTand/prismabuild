@@ -2669,9 +2669,11 @@ def test_retained_alias_is_checked_before_an_attempt(retained_executable_alias, 
 
 @pytest.fixture(params=[("checkout", "leaf"), ("checkout", "parent"),
                         ("shared", "leaf"), ("shared", "parent"),
-                        ("checkout", "directory"), ("shared", "directory")],
+                        ("checkout", "directory"), ("shared", "directory"),
+                        ("checkout", "relative-directory"), ("shared", "relative-directory")],
                 ids=["checkout-leaf", "checkout-parent", "shared-leaf", "shared-parent",
-                     "checkout-directory", "shared-directory"])
+                     "checkout-directory", "shared-directory",
+                     "checkout-relative-directory", "shared-relative-directory"])
 def retained_input_alias(class_submission, monkeypatch, request):
     """Create a real input alias and preserve its requested pathname."""
     submit, root = class_submission
@@ -2683,12 +2685,16 @@ def retained_input_alias(class_submission, monkeypatch, request):
     target = target_root / "input-target.bin"
     target.write_text("input-target-ok\n")
     target.chmod(0o644)
+    portable_child = target_root / "portable-child"
+    portable_child.mkdir()
+    (portable_child / "marker").write_text("snapshot directory\n")
     alias_root = root / "local-input"
     (alias_root / "child").mkdir(parents=True)
-    if spelling == "directory":
+    if spelling in ("directory", "relative-directory"):
         alias = root / "input-directory"
         alias.symlink_to(target.parent, target_is_directory=True)
-        requested = alias / target.name
+        requested = ((Path("..") / alias.name / target.name)
+                     if spelling == "relative-directory" else alias / target.name)
     else:
         alias = alias_root / "input.bin"
         alias.symlink_to(target)
@@ -2705,23 +2711,28 @@ def retained_input_alias(class_submission, monkeypatch, request):
 
 
 @pytest.mark.parametrize("source", ["argv", "environment"])
-@pytest.mark.parametrize("availability", ["missing", "valid", "direct"])
+@pytest.mark.parametrize("availability", ["missing", "valid", "direct", "direct-parent"])
 def test_retained_input_alias_controls_class_placement(retained_input_alias, source, availability):
     from prismabuild import local_dependencies
     submit, root, alias, target, requested = retained_input_alias
-    requirements = {str(requested): "path"}
+    declared = str(root / "checkout" / requested)
+    requirements = {declared: "path"}
     present = local_dependencies.observe(requirements)
     if availability == "missing":
         alias_target = alias.readlink()
         alias.unlink()
         absent = local_dependencies.observe(requirements)
-        assert absent[str(requested)] == "absent" and target.is_file()
+        assert absent[declared] == "absent" and target.is_file()
         alias.symlink_to(alias_target, target_is_directory=alias_target.is_dir())
     else:
         absent = present
-    direct = availability == "direct"
-    raw = (("./" + target.name if target.parent == root / "checkout" else str(target))
-           if direct else str(requested))
+    direct = availability in ("direct", "direct-parent")
+    if availability == "direct-parent":
+        raw = ("portable-child/../" + target.name if target.parent == root / "checkout"
+               else str(target.parent / "portable-child" / ".." / target.name))
+    else:
+        raw = (("./" + target.name if target.parent == root / "checkout" else str(target))
+               if direct else str(requested))
     command = ["./reader", *([raw] if source == "argv" else [])]
     flags = ["--env", "INPUT=" + raw] if source == "environment" else []
     action = submit(command, flags=flags, answers={"spark-a": present, "spark-b": absent})
@@ -2748,7 +2759,8 @@ def test_retained_input_alias_is_checked_before_an_attempt(retained_input_alias,
     import fleet_submit
     from prismabuild import adaptive_cpu, local_dependencies
     submit, root, alias, target, requested = retained_input_alias
-    answers = local_dependencies.observe({str(requested): "path"})
+    declared = str(root / "checkout" / requested)
+    answers = local_dependencies.observe({declared: "path"})
     command = ["./reader", *([str(requested)] if source == "argv" else [])]
     flags = ["--env", "INPUT=" + str(requested)] if source == "environment" else []
     action = submit(command, flags=flags, answers={member: answers for member in ("spark-a", "spark-b")})
@@ -2774,7 +2786,7 @@ def test_retained_input_alias_is_checked_before_an_attempt(retained_input_alias,
         denials = adaptive_cpu.read_json(
             adaptive_cpu.local_state_base(queue.ledger().base) / pool_module.CLAIM_DENIALS).get("records", {})
         assert any(row.get("reason") == "local_dependency_not_present"
-                   and row.get("evidence", {}).get("paths") == [str(requested)]
+                   and row.get("evidence", {}).get("paths") == [declared]
                    and row.get("attempts") == 0 for row in denials.values())
     else:
         assert item is not None and item["action_key"] == action["action_key"]
