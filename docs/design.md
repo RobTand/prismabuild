@@ -4934,6 +4934,16 @@ size(p(i+1)))` and `size(p(n+1)) = 0`.  Sizes come from the sealed
 no declaration.  `prelaunch_peak_gib` serves submission, `pbgang` and the
 gate.  The three never disagree.
 
+The submission and gang refusals compare the peak with the tier's MINTED
+supply, `storage_tiers.minted_tokens(record)`, and not with
+`tier_tokens(record)`.  A stage tier mints `writable + landed`; the tier loop
+announces that supply as `record["tokens"]`.  `capacity_bytes` is only the
+writable room, which `tier_tokens` converts, and which the loop mints FROM.
+Reading the writable room refuses a prefix that fits the tier whenever copies
+have landed.  The first live submissions of 2026-10-07 were refused against
+9 GiB while the tier had minted 178 GiB.  A record with no usable announced
+supply falls back to `tier_tokens`, and unknown capacity never refuses.
+
 Submission refuses before it seals or publishes.  The refusal names the
 tier, the retained and suffix terms, and the capacity.
 `pbrun.residency_stage_rows` (also reached by `pbcampaign`) refuses when

@@ -267,7 +267,9 @@ def test_undeclared_plan_is_byte_identical() -> None:
 
 
 def _minted(tier_record, tier_id=TIER):
-    return storage_tiers.tier_tokens(tier_record).get(
+    # The minted supply, as the production checks read it.  The calls into the
+    # real functions are in test_prelaunch_minted_capacity_1594.py.
+    return storage_tiers.minted_tokens(tier_record).get(
         storage_tiers.capacity_kind_of(tier_id))
 
 
