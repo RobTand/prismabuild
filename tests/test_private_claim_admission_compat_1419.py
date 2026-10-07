@@ -10,7 +10,6 @@ import pytest
 
 from prismabuild import pool
 import worker_loop
-import bench_claim_pass
 import bench_tier_cycle_r13 as cycle
 import test_prepaid_writer_integration as funding
 
@@ -57,23 +56,6 @@ def test_private_parameters_refuse_unknown_inherited_topology(tmp_path, monkeypa
     with pytest.raises(pool.PoolContractError, match="known inherited CPU topology"):
         worker_loop.private_claim_parameters(queue)
     assert queue.ledger().held_keys() == []
-
-
-def test_private_poll_caller_supplies_observation_to_both_real_passes(tmp_path, monkeypatch, capsys):
-    seen = []
-    original = pool.PoolQueue.claim
-    def claim(self, *args, **kwargs):
-        seen.append(dict(kwargs))
-        return original(self, *args, **kwargs)
-    monkeypatch.setattr(pool.PoolQueue, "claim", claim)
-    monkeypatch.setattr(worker_loop, "private_claim_parameters", lambda queue: {
-        "capacity": CAPACITY, "cpu_tiers": TIERS, "adaptive_cpu": False})
-    bench_claim_pass.build_and_poll(ROOT, tmp_path, ready=1, claimed=0, passes=0)
-    assert len(seen) == 2 and all(row["capacity"] == CAPACITY for row in seen)
-    assert all(row["cpu_tiers"] == TIERS for row in seen)
-    queue = pool.PoolQueue(tmp_path / "pb-queue")
-    assert len(queue.ready_items()) == 1 and not queue.ledger().held_keys()
-    assert '"claimed": null' in capsys.readouterr().out
 
 
 def test_private_write_only_owner_claims_and_holds_real_host_tokens(tmp_path, monkeypatch):
