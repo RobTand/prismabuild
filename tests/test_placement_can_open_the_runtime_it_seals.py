@@ -156,8 +156,12 @@ def _shard_argv(tmp_path, monkeypatch, *, runtime_root, extra=()):
     return calls[0]
 
 
+def _flags(command) -> list[str]:
+    return command[:command.index("--")]
+
+
 def _tags(command) -> list[str]:
-    flags = command[:command.index("--")]
+    flags = _flags(command)
     return [flags[i + 1] for i, flag in enumerate(flags) if flag == "--tag"]
 
 
@@ -168,16 +172,18 @@ def test_a_worktree_pbtest_names_no_tag_and_lets_pbrun_pin(
     # payload's own executable, and only an explicit tag could overrule it.
     argv = _shard_argv(tmp_path, monkeypatch, runtime_root=WORKTREE)
     assert _tags(argv) == []
+    assert "--anywhere" not in _flags(argv)
 
 
-def test_a_published_pbtest_still_defaults_to_x86(
+def test_a_published_pbtest_asserts_portability_and_names_no_class_tag(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    # The default exists to say at the call site that a pass here is not a
-    # measurement, and to keep the sparks' cores for GPU work.  Where the
-    # runtime is reachable from every box, it is still both of those things.
+    # Since #1462 an untagged CPU shard from the shared runtime says so with
+    # pbrun's own --anywhere, and carries no class tag: the interpreter
+    # requirement, not a default x86 tag, keeps it off hosts that cannot run it.
     argv = _shard_argv(tmp_path, monkeypatch, runtime_root=PUBLISHED)
-    assert _tags(argv) == ["x86"]
+    assert _tags(argv) == []
+    assert "--anywhere" in _flags(argv)
 
 
 @pytest.mark.parametrize("runtime_root", [WORKTREE, PUBLISHED])
