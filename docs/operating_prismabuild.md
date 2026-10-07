@@ -316,11 +316,13 @@ Executable paths and relative PATH entries follow directory symlinks before
 before a checkout command is made relative, without dereferencing its leaf.
 Direct argv and caller-environment inputs keep the requested pathname, so
 presence and claim checks inspect the same target the command names.
+
 An executable alias outside the checkout and shared storage needs its own dependency evidence.
 A portable target does not make the local alias portable.
 Each class member must report the alias.
 The worker checks the alias before an attempt.
 Direct checkout and shared-storage commands keep their portable scope.
+
 Explicit `--here` and tags
 remain authoritative; `--anywhere --tag` remains invalid. Use a class tag
 alone, or `--anywhere` alone only if every eligible worker can run the command.
