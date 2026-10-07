@@ -1636,7 +1636,7 @@ def keep_droppings_out_of_git(cwd: Path) -> Path | None:
 def command_dependency_contract(
     cwd: Path, command: list[str], *, repository_root: Path,
     environment: dict[str, str] | None, caller_environment: dict[str, str] | None,
-) -> tuple[list[str], dict[str, str]]:
+) -> tuple[list[str], dict[str, str], dict[str, str]]:
     """Bind the invocation and its direct path requirements in one resolution."""
     cwd = cwd.resolve()
     root = repository_root.resolve()
@@ -1662,10 +1662,13 @@ def command_dependency_contract(
     def portable(candidate: Path) -> bool:
         return stays_within(candidate, root) or stays_within(candidate, SHARED_ROOT.resolve())
 
-    def requires_local_path(candidate: Path) -> bool:
+    def path_scope(candidate: Path) -> tuple[bool, bool]:
         location = resolved_path(candidate.parent) / candidate.name
-        return (not portable(candidate) or not portable(location)
-                or not portable(resolved_path(candidate)))
+        target = resolved_path(candidate)
+        local = not portable(candidate) or not portable(location) or not portable(target)
+        checkout_local = (stays_within(candidate, root) and stays_within(location, root)
+                          and stays_within(target, root))
+        return local, checkout_local
 
     if not command or not command[0]:
         raise SystemExit("pbrun: portable placement requires argv[0]")
@@ -1695,40 +1698,49 @@ def command_dependency_contract(
     executable = resolved_path(executable.parent) / executable.name
     # Executables and inputs need evidence for a retained local alias.
     # A portable target does not make that alias available to the worker.
-    requirements = {str(executable): "executable"} if requires_local_path(executable) else {}
-    candidates = []
-    for token in command[1:]:
-        raw = token.split("=", 1)[1] if token.startswith("-") and "=" in token else token
-        if token.startswith("-") and raw == token:
-            continue
+    requirements = {str(executable): "executable"} if path_scope(executable)[0] else {}
+    bindings: dict[Path, str | None] = {}
+
+    def bind_input(raw: str) -> str:
         candidate = Path(raw)
-        if candidate.is_absolute() or os.sep in raw or (cwd / candidate).exists():
-            candidates.append(candidate)
-    for name, value in (caller_environment or {}).items():
-        if name == "PATH":
-            continue
-        for raw in value.split(os.pathsep):
-            candidate = Path(raw)
-            if candidate.is_absolute() or os.sep in raw or (cwd / candidate).exists():
-                candidates.append(candidate)
-    for candidate in dict.fromkeys(candidates):
-        # Observe the requested pathname, including symlink-sensitive ..,
-        # rather than a lexical alias that might name an unrelated input.
-        path = cwd / candidate
-        if not requires_local_path(path):
-            continue
-        if not path.exists():
-            raise SystemExit(
-                "pbrun: direct argv or caller environment names an "
-                "external path absent from the submitting box: "
-                f"{candidate}. Pass --tag for the worker class that owns "
-                "it, or --anywhere to assert its portability.")
-        requirements.setdefault(str(path), "path")
+        if not (candidate.is_absolute() or os.sep in raw or (cwd / candidate).exists()):
+            return raw
+        if candidate not in bindings:
+            path = cwd / candidate
+            local, checkout_local = path_scope(path)
+            if local:
+                if not path.exists():
+                    raise SystemExit(
+                        "pbrun: direct argv or caller environment names an "
+                        "external path absent from the submitting box: "
+                        f"{candidate}. Pass --tag for the worker class that owns "
+                        "it, or --anywhere to assert its portability.")
+                requirements.setdefault(str(path), "path")
+            bindings[candidate] = (str(path) if not candidate.is_absolute()
+                                   and not checkout_local else None)
+        bound = bindings[candidate]
+        return raw if bound is None else bound
+
+    arguments = []
+    for token in command[1:]:
+        if token.startswith("-"):
+            if "=" not in token:
+                arguments.append(token)
+                continue
+            option, raw = token.split("=", 1)
+            arguments.append(option + "=" + bind_input(raw))
+        else:
+            arguments.append(bind_input(token))
+    bound_caller = dict(caller_environment or {})
+    for name, value in bound_caller.items():
+        if name != "PATH":
+            bound_caller[name] = os.pathsep.join(bind_input(raw) for raw in value.split(os.pathsep))
+
     invocation = (os.path.relpath(executable, cwd)
                   if executable.is_relative_to(root) else str(executable))
     if not os.path.isabs(invocation) and os.sep not in invocation:
         invocation = "./" + invocation
-    return [invocation, *command[1:]], local_dependencies.normalize(requirements)
+    return [invocation, *arguments], local_dependencies.normalize(requirements), bound_caller
 
 
 def placement_contract(
@@ -1737,20 +1749,21 @@ def placement_contract(
     repository_root: Path | None = None, environment: dict[str, str] | None = None,
     caller_environment: dict[str, str] | None = None, anywhere: bool = False,
     needs_gpu: bool = False, offer_queue=None,
-) -> tuple[list[str], dict[str, str], list[str] | None]:
-    """Placement, dependency questions and the exact command they prove."""
+) -> tuple[list[str], dict[str, str], list[str] | None, dict[str, str]]:
+    """Return placement, dependency questions, command, and caller environment."""
+    bound_caller = dict(caller_environment or {})
     if explicit:
         return (([*dict.fromkeys(t for t in explicit if t != hostname), hostname]
-                 if here else list(explicit)), {}, command)
+                 if here else list(explicit)), {}, command, bound_caller)
     if here:
-        return [hostname], {}, command
+        return [hostname], {}, command, bound_caller
     if anywhere:
-        return [], {}, command
+        return [], {}, command, bound_caller
     if not portable_checkout:
-        return ([hostname] if is_box_local(cwd) else []), {}, command
+        return ([hostname] if is_box_local(cwd) else []), {}, command, bound_caller
     if command is None:
-        return [], {}, command
-    command, requirements = command_dependency_contract(
+        return [], {}, command, bound_caller
+    command, requirements, bound_caller = command_dependency_contract(
         cwd, command, repository_root=repository_root or cwd,
         environment=environment, caller_environment=caller_environment)
     if offer_queue is not None:
@@ -1760,16 +1773,16 @@ def placement_contract(
         except (OSError, ValueError, TypeError) as exc:
             print(f"pbrun: keeping {hostname} placement: class inventory unavailable: {exc}",
                   file=sys.stderr, flush=True)
-            return [hostname], requirements, command
+            return [hostname], requirements, command, bound_caller
         aliases = {alias for names in members.values() for alias in names}
         if hostname in aliases or (hostname == "celestia" and needs_gpu):
             reason = offer_queue().class_dependency_gap("gb10", members, requirements)
             if reason is None:
-                return ["gb10", *([local_dependencies.TAG] if requirements else [])], requirements, command
+                return ["gb10", *([local_dependencies.TAG] if requirements else [])], requirements, command, bound_caller
             print(f"pbrun: keeping host pin {hostname}: gb10 dependencies not proven: {reason}",
                   file=sys.stderr, flush=True)
-            return [hostname], requirements, command
-    return ([hostname] if requirements else []), requirements, command
+            return [hostname], requirements, command, bound_caller
+    return ([hostname] if requirements else []), requirements, command, bound_caller
 
 
 
@@ -7403,10 +7416,13 @@ def prepare_submission(args: argparse.Namespace) -> dict[str, object]:
             offer_snapshot = bounded_offer_snapshot(q)
         return offer_snapshot
 
+    # Check original inputs before the collector binds external relative paths.
+    if portable_checkout:
+        require_relocatable_checkout(command[1:], variables, cwd, repository_root=repository_root)
     # Resolve against the same shim-prefixed PATH the captured action receives.
     invocation_environment = {
         **variables, "PATH": f"{wrapper_dir}:{variables.get('PATH') or '/usr/local/bin:/usr/bin:/bin'}"}
-    tags, dependency_queries, command = placement_contract(
+    tags, dependency_queries, command, bound_caller = placement_contract(
         cwd,
         explicit=[*args.tag, *([args.host_class] if pool_measurement_class else [])],
         here=args.here or (pool_measurement and not pool_measurement_class),
@@ -7416,6 +7432,7 @@ def prepare_submission(args: argparse.Namespace) -> dict[str, object]:
         anywhere=args.anywhere, needs_gpu=bool(demand.get("gpu")),
         offer_queue=offer_queue if args.transport == "pool" else None,
     )
+    variables = {**variables, **bound_caller}
     tags = pool.normalize_placement_tags(tags)
     if args.host_class is not None:
         # The class rides the placement axis, the same way --tag does, so the
@@ -7523,7 +7540,7 @@ def prepare_submission(args: argparse.Namespace) -> dict[str, object]:
 
     if portable_checkout:
         require_relocatable_checkout(
-            command, variables, cwd, repository_root=repository_root
+            command[:1], {}, cwd, repository_root=repository_root
         )
 
     # A CPU slot must not be able to run GPU work.  The pool's whole claim is

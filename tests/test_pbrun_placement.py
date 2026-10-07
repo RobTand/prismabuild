@@ -2402,7 +2402,7 @@ def test_bound_checkout_executable_remains_relative_when_snapshot_relocates(tmp_
     executable = checkout / "task"
     executable.write_text('#!/bin/sh\npwd\n')
     executable.chmod(0o755)
-    command, requirements = pbrun.command_dependency_contract(
+    command, requirements, _ = pbrun.command_dependency_contract(
         checkout, ["task"], repository_root=checkout,
         environment={"PATH": ".:/usr/bin:/bin"}, caller_environment={})
     assert command == ["./task"] and requirements == {}
@@ -2508,7 +2508,7 @@ def test_relocated_capture_preserves_symlink_parent_traversal(tmp_path):
                             (checkout / "tool", "lexically-wrong-executable")):
         target.write_text("#!/bin/sh\nprintf " + payload + "\n")
         target.chmod(0o755)
-    command, _ = pbrun.command_dependency_contract(
+    command, _, _ = pbrun.command_dependency_contract(
         checkout, ["link/../tool"], repository_root=checkout,
         environment={"PATH": "/usr/bin:/bin"}, caller_environment={})
     relocated = tmp_path / "relocated"
@@ -2561,9 +2561,13 @@ def test_symlink_parent_traversal_guards_the_requested_input(symlink_parent_inpu
                  else "../external-links/link/../input.bin")
     command = ["/usr/bin/cat", requested] if source == "argv" else ["/usr/bin/cat"]
     caller = {"INPUT": requested} if source == "environment" else {}
-    _, requirements = pbrun.command_dependency_contract(
+    original_command, original_caller = list(command), dict(caller)
+    bound_command, requirements, bound_caller = pbrun.command_dependency_contract(
         checkout, command, repository_root=checkout,
         environment={"PATH": "/usr/bin:/bin"}, caller_environment=caller)
+    assert command == original_command and caller == original_caller
+    bound_input = bound_command[1] if source == "argv" else bound_caller["INPUT"]
+    assert requirements[bound_input] == "path"
     queue = pool_module.PoolQueue(checkout.parent / "input-queue")
     probe = {"tags": [local_dependencies.TAG], "resources": {"cpu": 1},
              "local_dependencies": requirements}
@@ -2742,7 +2746,7 @@ def test_retained_input_alias_controls_class_placement(retained_input_alias, sou
     action = submit(command, flags=flags, answers={"spark-a": present, "spark-b": absent})
     retained = (action["params"]["command"][1] if source == "argv"
                 else action["environment"]["variables"]["INPUT"])
-    assert retained == raw
+    assert retained == declared
     expected = ["spark-a"] if availability == "missing" else ["gb10", local_dependencies.TAG]
     assert action["params"]["placement"]["required_tags"] == expected
     assert action["params"].get("dependency_queries", {}) == requirements
@@ -2821,4 +2825,136 @@ def test_retained_input_alias_is_checked_before_an_attempt(retained_input_alias,
         assert not ready.exists()
         assert queue.item_path(pool_module.CLAIMED, action["action_key"]).exists()
         queue.finish(item["action_key"], status="failed", detail={"returncode": 1}, claim_snapshot=item)
+
+
+@pytest.fixture
+def relocated_input_submission(tmp_path, monkeypatch):
+    """Submit a real action to a private queue with snapshot materialization."""
+    import socket
+    from prismabuild import local_dependencies
+    work = _git_checkout(tmp_path)
+    (work / "local.txt").write_text("checkout-local\n")
+    reader = work / "reader"
+    reader.write_text(
+        '#!/bin/sh\nset -e\nprintf "cwd=%s\n" "$(pwd)"\n'
+        'if [ "$#" -gt 0 ]; then\n'
+        '  case "$1" in --input=*) input=${1#--input=} ;; *) input=$1 ;; esac\n'
+        '  cat "$input"\n'
+        'elif [ -n "$INPUTS" ]; then\n'
+        '  IFS=:; for input in $INPUTS; do [ -z "$input" ] || cat "$input"; done\n'
+        'else cat local.txt; fi\n')
+    reader.chmod(0o755)
+    actual = tmp_path / "actual-input"
+    (actual / "child").mkdir(parents=True)
+    target = tmp_path / "payload.bin"
+    target.write_text("external-input\n")
+    alias = actual / "input.bin"
+    alias.symlink_to(target)
+    links = tmp_path / "input-links"
+    links.mkdir()
+    (links / "link").symlink_to(actual / "child", target_is_directory=True)
+    (links / "input.bin").write_text("lexically-wrong-input\n")
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    (shared / "input.bin").write_text("shared-input\n")
+    monkeypatch.setattr(pbrun, "SHARED_ROOT", shared)
+    fleet = tmp_path / "fleet"
+    roster = tmp_path / "roster.json"
+    roster.write_text(json.dumps({"boxes": {
+        member: {"args": ["--class", "gb10"]} for member in ("spark-a", "spark-b")}}))
+    queue = pool_module.PoolQueue(fleet / "pb-queue")
+    raw = "../input-links/link/../input.bin"
+    declared = str(work / raw)
+    answers = local_dependencies.observe({declared: "path",
+                                          str(work / ".." / "shared" / "input.bin"): "path"})
+    for member in ("spark-a", "spark-b"):
+        queue.announce(host=member, tags=["gb10", member, local_dependencies.TAG],
+                       has_gpu=False, capacity={"cpu": 1, "mem_gb": 4},
+                       local_dependency_answers=answers)
+    monkeypatch.setattr(pbrun, "FLEET_ROSTER_PATH", roster)
+    monkeypatch.setattr(pbrun, "SH", fleet)
+    monkeypatch.setattr(pbrun, "RUNTIME_ROOT", PUBLISHED_RUNTIME)
+    monkeypatch.setattr(socket, "gethostname", lambda: "spark-a")
+
+    def submit(case):
+        command = ["./reader"]
+        flags = ["--env", "PATH=/usr/bin:/bin", "--env", "LABEL=alpha:beta"]
+        if case in ("argv", "missing"):
+            command.append(raw)
+        elif case == "option":
+            command.append("--input=" + raw)
+        elif case == "environment":
+            flags += ["--env", "INPUTS=" + raw + ":local.txt:"]
+        elif case == "shared":
+            command.append("../shared/input.bin")
+        else:
+            command.append("local.txt")
+        monkeypatch.setattr(sys, "argv", ["pbrun.py", "--cwd", str(work), "--detach",
+                                         *flags, "--", *command])
+        assert pbrun.main() == 0
+        row, = queue.ready_items()
+        row["worker_script"] = str(Path(__file__).resolve().parents[1] / "tools" / "prismabuild_worker.py")
+        pool_module._write_json_atomic(queue.item_path(pool_module.READY, row["action_key"]), row)
+        return row
+    return submit, queue, work, alias, declared
+
+
+@pytest.mark.parametrize("case", ["argv", "option", "environment", "shared", "checkout", "missing"])
+def test_relocated_consumer_reads_the_checked_input(relocated_input_submission, case):
+    from prismabuild import adaptive_cpu, local_dependencies
+    submit, queue, work, alias, declared = relocated_input_submission
+    row = submit(case)
+    ready = queue.item_path(pool_module.READY, row["action_key"])
+    before = ready.read_bytes()
+    if case == "missing":
+        alias.unlink()
+    item = queue.claim(tags=["gb10", local_dependencies.TAG], has_gpu=False,
+                       capacity={"cpu": 1, "mem_gb": 4})
+    if case == "missing":
+        assert item is None
+        assert ready.read_bytes() == before
+        assert not queue.item_path(pool_module.CLAIMED, row["action_key"]).exists()
+        denials = adaptive_cpu.read_json(
+            adaptive_cpu.local_state_base(queue.ledger().base) / pool_module.CLAIM_DENIALS).get("records", {})
+        assert any(entry.get("reason") == "local_dependency_not_present"
+                   and entry.get("evidence", {}).get("paths") == [declared]
+                   and entry.get("attempts") == 0 for entry in denials.values())
+        return
+    assert item is not None
+    outcome = queue.execute(item, heartbeat_s=0.05)
+    queue.finish(item["action_key"], status=outcome["status"], detail=outcome, claim_snapshot=item)
+    executed_root = Path(outcome["argv"][outcome["argv"].index("--checkout-root") + 1])
+    assert executed_root != work
+    assert outcome["status"] == "executed" and outcome["returncode"] == 0, outcome
+    cas = core_module.PrismaBuildCAS(row["cas_root"])
+    action = cas.read_action_request(row["action_key"])
+    receipt = cas.lookup(action)
+    assert receipt is not None
+    payload = cas.result_path(receipt, action).read_text()
+    lines = payload.splitlines()
+    assert lines[0] == "cwd=" + str(executed_root)
+    expected = (["external-input", "checkout-local"] if case == "environment"
+                else ["shared-input"] if case == "shared"
+                else ["checkout-local"] if case == "checkout" else ["external-input"])
+    assert lines[1:] == expected
+    assert action["environment"]["variables"]["LABEL"] == "alpha:beta"
+    if case == "environment":
+        assert action["environment"]["variables"]["INPUTS"] == declared + ":local.txt:"
+        assert action["params"]["local_dependencies"][declared] == "path"
+    elif case == "option":
+        assert action["params"]["command"][1] == "--input=" + declared
+        assert action["params"]["local_dependencies"][declared] == "path"
+    elif case == "argv":
+        assert action["params"]["command"][1] == declared
+        assert action["params"]["local_dependencies"][declared] == "path"
+    elif case == "shared":
+        shared_path = str(work / ".." / "shared" / "input.bin")
+        assert action["params"]["command"][1] == shared_path
+        assert action["params"]["local_dependencies"][shared_path] == "path"
+    else:
+        assert action["params"]["command"][1] == "local.txt"
+        assert action["params"].get("local_dependencies", {}) == {}
+    print(json.dumps({"relocated_consumer": {"case": case, "action_key": row["action_key"],
+        "source_checkout": str(work), "executed_checkout": str(executed_root),
+        "payload": payload, "receipt_sha256": receipt["receipt_sha256"]}}, sort_keys=True))
 

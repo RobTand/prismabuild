@@ -330,6 +330,13 @@ It keeps the requested pathname for offer and claim checks.
 A portable target does not remove the alias requirement.
 Parent components that leave the portable roots require local evidence.
 
+External relative input paths bind to the same retained absolute pathname used by dependency checks.
+The collector preserves positional arguments, option prefixes, and colon-separated caller-environment entries.
+It keeps directory-symlink traversal and parent components.
+Checkout-local relative inputs stay relative after capture and work from the private snapshot.
+The collector returns a new caller-environment map and leaves caller data unchanged.
+It does not reinterpret PATH or unrecognized values.
+
 Explicit `--here` and tags
 remain authoritative; `--anywhere --tag` remains invalid. Use a class tag
 alone, or `--anywhere` alone only if every eligible worker can run the command.

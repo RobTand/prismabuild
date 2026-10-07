@@ -2702,6 +2702,13 @@ miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
   The rule also keeps evidence for external targets.
   Parent components that leave the portable roots require local evidence.
 
+  External relative inputs bind to their retained absolute pathname before action capture.
+  The dependency collector binds positional arguments, option values, and caller-environment path-list entries.
+  It preserves directory-symlink traversal and parent components without replacing the leaf.
+  Checkout-owned relative inputs remain relative so the snapshot can relocate.
+  The collector returns the bound command and caller environment without mutating caller data.
+  PATH and unrecognized values remain unchanged.
+
   Checkout executables use relative invocation paths so snapshots relocate,
   and nominal Docker still runs through the existing shim. Pool defaults from
   a declared gb10 member, or GPU work from celestia, use gb10 only when every
