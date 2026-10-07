@@ -27,12 +27,13 @@ def _hexkey(seed: str) -> str:
     return hashlib.sha256(seed.encode()).hexdigest()
 
 
-def _mover_row(key: str, start: int, end: int, total: int) -> dict:
+def _mover_row(key: str, start: int, end: int, total: int,
+               digest: str = DIGEST) -> dict:
     gib = storage_tiers.stage_tokens_for_bytes(end - start)
     return {"action_key": key,
             "resources": {STAGE_KIND: gib, "cpu": 1, "mem_gb": 1},
             "residency": {"schema": pool.RESIDENCY_SCHEMA_V1,
-                          "tier_id": TIER, "manifest_sha256": DIGEST,
+                          "tier_id": TIER, "manifest_sha256": digest,
                           "manifest_bytes": total,
                           "range_start_bytes": start,
                           "range_end_bytes": end}}
@@ -43,10 +44,10 @@ def _egress_row(key: str) -> dict:
 
 
 def _whole(name: str, start: int, end: int, total: int, seed: str,
-           declared: bool = False) -> dict:
+           declared: bool = False, digest: str = DIGEST) -> dict:
     phase = {"name": name, "start_bytes": start, "end_bytes": end,
              "mover_row": _mover_row(_hexkey(f"{seed}mover"), start, end,
-                                    total),
+                                    total, digest),
              "egress_row": _egress_row(_hexkey(f"{seed}egress"))}
     if declared:
         phase["resident_before_launch"] = True
@@ -54,7 +55,8 @@ def _whole(name: str, start: int, end: int, total: int, seed: str,
 
 
 def _chunked_at(name: str, ranges: list[tuple[int, int]], total: int,
-                seed: str, declared: bool = False) -> dict:
+                seed: str, declared: bool = False,
+                digest: str = DIGEST) -> dict:
     """Build a submitter phase from explicit chunk ranges in read order."""
     chunks = []
     for index, (cstart, cend) in enumerate(ranges):
@@ -62,7 +64,7 @@ def _chunked_at(name: str, ranges: list[tuple[int, int]], total: int,
             "chunk_index": index, "start_bytes": cstart, "end_bytes": cend,
             "stage_gib": storage_tiers.stage_tokens_for_bytes(cend - cstart),
             "mover_row": _mover_row(_hexkey(f"{seed}mover{index}"),
-                                   cstart, cend, total),
+                                   cstart, cend, total, digest),
             "egress_row": _egress_row(_hexkey(f"{seed}egress{index}"))})
     phase = {"name": name, "start_bytes": ranges[0][0],
              "end_bytes": ranges[-1][1], "stage_chunks": chunks}
@@ -338,7 +340,7 @@ def _member(sizes, declared, digest, consumer_seed, tier=TIER):
         end = start + gib * GIB
         phases.append(_whole(f"phase-{index}", start, end, total,
                              f"{consumer_seed}{index}",
-                             declared=index < declared))
+                             declared=index < declared, digest=digest))
         start = end
     return residency_plan.build_plan(
         consumer_action_key=_hexkey(consumer_seed), tier_id=tier,
@@ -358,11 +360,11 @@ def test_gang_shared_ranges_count_once() -> None:
 
 def test_gang_disjoint_ranges_sum() -> None:
     first = _member([90, 40, 40], 1, "a" * 64, "h0")
-    second = _member([90, 40, 40], 1, "b" * 64, "h1")
+    second = _member([50, 20, 20], 1, "b" * 64, "h1")
     demand = residency_plan.gang_prelaunch_demand(
         [first, second], {TIER: 210})
-    assert demand[TIER]["retained_gib"] == 180
-    assert demand[TIER]["peak_gib"] == 170 + 170
+    assert demand[TIER]["retained_gib"] == 140
+    assert demand[TIER]["peak_gib"] == 170 + 90
     assert demand[TIER]["over_capacity"] is True
 
 
