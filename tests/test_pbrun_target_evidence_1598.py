@@ -174,7 +174,7 @@ def test_a_packet_without_device_identity_is_refused(tmp_path):
     assert "device identity" in _refusal(tmp_path, packet)
 
 
-def test_a_packet_that_mixes_models_or_drivers_is_refused(tmp_path):
+def test_a_packet_that_mixes_drivers_is_refused(tmp_path):
     packet = _packet()
     other = copy.deepcopy(packet["accelerators"][0])
     other["uuid"] = "GPU-2222"
@@ -183,9 +183,42 @@ def test_a_packet_that_mixes_models_or_drivers_is_refused(tmp_path):
     assert "one compute capability and one driver" in _refusal(tmp_path, packet)
 
 
+def test_a_packet_that_mixes_models_is_refused(tmp_path):
+    """Two model names that share a capability and a driver are still two models."""
+
+    packet = _packet()
+    other = copy.deepcopy(packet["accelerators"][0])
+    other["uuid"] = "GPU-2222"
+    other["name"] = "NVIDIA Another Model"
+    packet["accelerators"].append(other)
+    assert "one accelerator model" in _refusal(tmp_path, packet)
+
+
+def test_a_packet_with_several_devices_of_one_model_is_accepted(tmp_path):
+    packet = _packet()
+    other = copy.deepcopy(packet["accelerators"][0])
+    other["uuid"] = "GPU-2222"
+    packet["accelerators"].append(other)
+    path = _write(tmp_path, packet)
+    loaded = pbrun.load_target_evidence(str(path), host_class="gb10")
+    assert len(loaded["accelerators"]) == 2
+
+
 def test_a_packet_that_disagrees_with_the_class_is_refused(tmp_path):
     packet = _packet()
     packet["machine"] = "x86_64"
+    assert "disagrees with class gb10" in _refusal(tmp_path, packet)
+
+
+@pytest.mark.parametrize("name,capability", [
+    ("NVIDIA GH200", "9.0"),           # another model on AArch64
+    ("NVIDIA H100", "9.0"),
+    ("NVIDIA Another Model", "12.1"),  # another model with the GB10 capability
+])
+def test_another_model_on_aarch64_does_not_stand_for_gb10(tmp_path, name, capability):
+    packet = _packet()
+    packet["accelerators"][0]["name"] = name
+    packet["accelerators"][0]["compute_capability"] = capability
     assert "disagrees with class gb10" in _refusal(tmp_path, packet)
 
 
