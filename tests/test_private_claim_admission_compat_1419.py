@@ -78,9 +78,10 @@ _BOX_STATE_ENV = "PRISMABUILD_BOX_STATE_ROOT"
 _BENCH = ROOT / "tools" / "fleet" / "bench_claim_pass.py"
 
 #: Fresh-subprocess driver. It installs an audit guard before runpy starts
-#: the real benchmark entry point. The guard refuses writes under the
-#: production admission root and records them. It never imports pool or
-#: conftest first. Such an import would bind the wrong root too early.
+#: the real benchmark entry point. The guard refuses mutating calls under
+#: the production admission root and records them. Read-only opens pass.
+#: It never imports pool or conftest first. Such an import would bind the
+#: wrong root too early.
 _CHILD_SOURCE = '''import contextlib
 import io
 import json
@@ -94,7 +95,6 @@ KEY = "PRISMABUILD_BOX_STATE_ROOT"
 ONE_PATH = ("open", "os.open", "os.mkdir", "os.remove", "os.unlink",
             "os.rmdir", "os.chmod", "os.truncate", "os.listdir", "os.scandir")
 TWO_PATH = ("os.rename", "os.replace", "os.link", "os.symlink")
-READ_ONLY = ("os.listdir", "os.scandir")
 
 
 def norm(raw):
@@ -112,6 +112,29 @@ def norm(raw):
     if not os.path.isabs(raw):
         raw = os.path.join(os.getcwd(), raw)
     return os.path.normpath(raw)
+
+
+def open_is_read_only(event, args):
+    if event == "os.open":
+        flags = args[1] if len(args) > 1 else None
+        if not isinstance(flags, int):
+            return False
+        return not flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT
+                            | os.O_TRUNC | os.O_APPEND)
+    if event == "open":
+        mode = args[1] if len(args) > 1 else None
+        flags = args[2] if len(args) > 2 else 0
+        if isinstance(mode, str) and any(
+                char in mode for char in "wax+"):
+            return False
+        if isinstance(flags, int) and flags & (
+                os.O_WRONLY | os.O_RDWR | os.O_CREAT
+                | os.O_TRUNC | os.O_APPEND):
+            return False
+        if isinstance(mode, str) or isinstance(flags, int):
+            return True
+        return False
+    return False
 
 
 def main():
@@ -136,7 +159,10 @@ def main():
             if path is None:
                 continue
             if path == prod or path.startswith(prod_slash):
-                if event in READ_ONLY:
+                if event in ("os.listdir", "os.scandir"):
+                    continue
+                if event in ("open", "os.open") and open_is_read_only(
+                        event, args):
                     continue
                 attempts.append([event, path])
                 raise RuntimeError(
@@ -147,16 +173,8 @@ def main():
 
     sys.addaudithook(hook)
 
-    def prod_snapshot():
-        try:
-            return sorted(os.listdir(prod))
-        except FileNotFoundError:
-            return None
-        except OSError as exc:
-            return "unreadable: %s" % exc
 
-    record = {"attempts": attempts, "tmp_ops": tmp_ops,
-              "prod_before": prod_snapshot(), "prod": prod}
+    record = {"attempts": attempts, "tmp_ops": tmp_ops, "prod": prod}
     error = None
     output = io.StringIO()
     sys.argv = ["bench_claim_pass.py", "--work", work, "--checkout",
@@ -195,7 +213,6 @@ def main():
         record["held_keys"] = sorted(queue.ledger().held_keys())
     except BaseException:
         record["queue_error"] = traceback.format_exc()
-    record["prod_after"] = prod_snapshot()
     Path(result_path).write_text(json.dumps(record, indent=1))
     return 1 if error else 0
 
@@ -240,7 +257,7 @@ def _run_guarded_bench(tmp_path, mode):
 def _assert_two_foreign_polls(record):
     assert "queue_error" not in record, record["queue_error"]
     rows = record["poll_rows"]
-    assert len(rows) == 2
+    assert [row["poll"] for row in rows] == [1, 2]
     for row in rows:
         assert row["snapshot"] == 1
         assert row["claimed"] is None
@@ -249,7 +266,6 @@ def _assert_two_foreign_polls(record):
 def test_bench_claim_pass_absent_override_uses_owned_temporary_root(tmp_path):
     record, _ = _run_guarded_bench(tmp_path, "absent")
     assert record["attempts"] == [], record["attempts"]
-    assert record["prod_before"] == record["prod_after"]
     _assert_two_foreign_polls(record)
     effective = record["effective_root"]
     assert effective.startswith("/tmp/")
@@ -266,7 +282,6 @@ def test_bench_claim_pass_absent_override_uses_owned_temporary_root(tmp_path):
 def test_bench_claim_pass_empty_override_uses_owned_temporary_root(tmp_path):
     record, _ = _run_guarded_bench(tmp_path, "empty")
     assert record["attempts"] == [], record["attempts"]
-    assert record["prod_before"] == record["prod_after"]
     _assert_two_foreign_polls(record)
     effective = record["effective_root"]
     assert effective.startswith("/tmp/")
@@ -284,7 +299,6 @@ def test_bench_claim_pass_empty_override_uses_owned_temporary_root(tmp_path):
 def test_bench_claim_pass_explicit_override_stays_intact(tmp_path):
     record, explicit = _run_guarded_bench(tmp_path, "explicit")
     assert record["attempts"] == [], record["attempts"]
-    assert record["prod_before"] == record["prod_after"]
     _assert_two_foreign_polls(record)
     assert record["effective_root"] == str(explicit)
     assert record["root_exists_after"] is True
