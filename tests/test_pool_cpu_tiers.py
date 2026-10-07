@@ -63,10 +63,35 @@ def test_concurrent_claimants_have_disjoint_cpu_reservations(tmp_path):
         return queue.claim(capacity={'cpu': 4}, cpu_tiers=tiers)
     with ThreadPoolExecutor(max_workers=8) as workers:
         items = [x for x in workers.map(claim, range(8)) if x]
-    assert len(items) == 4
+    assert len(items) <= 4
+    allocated = [cpu for x in items for values in x['cpu_allocation'].values()
+                 for cpu in values]
+    assert len(allocated) <= 4
+    assert len(set(allocated)) == len(allocated)
+    assert set(allocated) <= {2, 3, 8, 9}
+    for x in items:
+        own = [cpu for values in x['cpu_allocation'].values() for cpu in values]
+        assert len(own) == 1
+
+
+def test_sequential_claimants_exhaust_cpu_capacity_without_retries(tmp_path):
+    queue = pool.PoolQueue(tmp_path / 'queue')
+    tiers = {'preferred': [9, 3], 'fallback': [8, 2]}
+    queue.ledger().configure_cpu_tiers(tiers)
+    queue.ledger().ensure_capacity({'cpu': 4})
+    for i in range(8):
+        publish(queue, tmp_path, i)
+    items = []
+    for _ in range(4):
+        item = queue.claim(capacity={'cpu': 4}, cpu_tiers=tiers)
+        assert item is not None
+        items.append(item)
     allocated = [cpu for x in items for values in x['cpu_allocation'].values()
                  for cpu in values]
     assert sorted(allocated) == [2, 3, 8, 9]
+    assert len(set(allocated)) == 4
+    assert queue.ledger().available().get('cpu', 0) == 0
+    assert queue.claim(capacity={'cpu': 4}, cpu_tiers=tiers) is None
     assert queue.ledger().available().get('cpu', 0) == 0
 
 

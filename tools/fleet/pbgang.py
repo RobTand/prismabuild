@@ -311,6 +311,13 @@ def member_command(args, manifest: dict, member: dict, *, group: str, index: int
                 command += [flag, str(entry)]
         else:
             command += [flag, str(value)]
+    # A class-scoped GPU measurement seals its class facts from a vetted
+    # packet when the submitting box has no accelerator (#1598).  Only a
+    # member that declares both a measurement and a host class can use it, so
+    # only those members carry the flag; ``pbrun`` judges the packet.
+    evidence = getattr(args, "target_evidence", None)
+    if evidence is not None and member.get("measurement") and member.get("host_class"):
+        command += ["--target-evidence", str(evidence)]
     return [*command, "--", *map(str, member["argv"])]
 
 
@@ -328,10 +335,23 @@ def main(argv: list[str] | None = None) -> int:
                     help="checkout every member snapshots, unless the member names its own cwd")
     ap.add_argument("--queue", type=Path, default=SH / "pb-queue",
                     help="queue root where pbgang reads the published member rows and files the group record; must be the queue pbrun publishes to")
+    ap.add_argument("--target-evidence", type=Path, default=None, metavar="PATH",
+                    help="absolute path of an evidence packet (tools/fleet/pbevidence.py "
+                         "prints one on a worker of the class); each member that declares "
+                         "a measurement and a host_class seals its class facts from it "
+                         "instead of probing this box (#1598). The manifest does not change")
     args = ap.parse_args(argv)
     manifest = _pbgang_load_manifest(args.manifest)
     if args.cwd is None and any("cwd" not in member for member in manifest["members"]):
         ap.error("--cwd is required unless every member names its own cwd")
+    if args.target_evidence is not None:
+        if not args.target_evidence.is_absolute():
+            ap.error("--target-evidence must be an absolute path: pbrun reads a relative "
+                     "one against its own working directory")
+        if not any(member.get("measurement") and member.get("host_class")
+                   for member in manifest["members"]):
+            ap.error("--target-evidence needs a member that declares measurement and "
+                     "host_class")
     skew_s = float(manifest.get("skew_s", _gang.DEFAULT_SKEW_S))
     group = secrets.token_hex(16)
     keys: list[str] = []
