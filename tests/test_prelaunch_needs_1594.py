@@ -96,8 +96,10 @@ def test_declared_needs_cover_suffix_only_plus_prefix_keys() -> None:
     assert out["next_min_gib"] == 40
     assert out["final"] is False
     assert out["reading_phase"] == "d0"
-    assert out["next_phase"] == "s1"
-    assert out["next_mover_action_key"] == _mover(plan, 1)
+    # ``next`` is the second waiting leg, as for any plan: the lead is the
+    # first.  The suffix reads exactly as an undeclared two-phase plan does.
+    assert out["next_phase"] == "s2"
+    assert out["next_mover_action_key"] == _mover(plan, 2)
     assert out["lead_mover_action_key"] == _mover(plan, 1)
     assert out["fence_target"] == {
         "phase": "s2", "mover_action_key": _mover(plan, 2),
