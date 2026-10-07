@@ -192,8 +192,10 @@ class _Writer:
 def test_an_owner_waiting_on_its_live_export_is_not_killed_no_progress(
         tmp_path: Path, monkeypatch) -> None:
     """Quiet for 1.5 s against a 0.4 s grace, all of it waiting on its own
-    export, which is claimed and writing.  On main the rung kills the owner
-    at 0.4 s, because nothing reads the export wait."""
+    export, which is claimed and writing. The fixture reseeds the wait
+    until the action declares it, so the first rung reads the wait however
+    slow the start is. The writer lands bytes before the run, so the first
+    rung reads growth."""
 
     sentinel = tmp_path / "export-declared"
     queue, item, exports = _owner(tmp_path, seconds=1.5, signal=sentinel)

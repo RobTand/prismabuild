@@ -189,9 +189,10 @@ def test_a_consumer_waiting_on_its_claimed_mover_is_not_killed_no_progress(
     """The copy is slower than every earlier receipt, and the mover is alive.
 
     Quiet for 1.5 s against a 0.4 s grace, all of it blocked on the claimed
-    mover for its own range.  On main the rung kills it at 0.4 s.  The
-    mover's landed-bytes report is fresh (within two heartbeats), which is
-    the evidence the exemption now needs (#1022 review, item 1).
+    mover for its own range. The fixture reseeds the wait until the action
+    declares it, so the first rung reads the wait however slow the start
+    is. The mover's landed-bytes report is fresh (within two heartbeats),
+    which is the evidence the exemption now needs (#1022 review, item 1).
     """
 
     sentinel = tmp_path / "wait-declared"
