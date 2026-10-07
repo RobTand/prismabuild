@@ -237,6 +237,16 @@ opens remain (actions 8c9e1d2bd5f4 and 8550ef5bc4ab). On the NFS export a
 listing is at least one READDIR, and a per-key lookup is a LOOKUP unless
 the client's dentry cache answers it.
 
+The standalone `bench_claim_pass` run binds the same isolation at its own
+entry point. With no nonempty `PRISMABUILD_BOX_STATE_ROOT`, main creates
+one owned temporary directory under `/tmp`. It exports that directory
+before `build_and_poll` first imports `pool`. It holds the directory
+across both synchronous polls. It then restores the prior environment
+value and removes only that directory. A nonempty explicit override
+passes through untouched. The count-only branch returns before work
+creation and scope creation. Production roots and admission policy stay
+unchanged.
+
 Each claim pass times its per-key transition-lock holds (#1029): every lock
 the pass acquires is timed on `time.monotonic()` from acquisition to the end
 of the block that held it, however the block ends, and a lock another loop

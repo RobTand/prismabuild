@@ -1,4 +1,8 @@
 """Private callers keep the real admission boundary and shared observation."""
+import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 import time
 
@@ -86,3 +90,222 @@ def test_private_write_only_owner_claims_and_holds_real_host_tokens(tmp_path, mo
     assert queue.ledger().held_keys() == [key]
     assert queue.item_path(pool.CLAIMED, key).exists()
     assert queue.ledger().holder_tokens(key) == {"cpu": 1, "mem_gb": 1}
+
+_BOX_STATE_ENV = "PRISMABUILD_BOX_STATE_ROOT"
+
+_BENCH = ROOT / "tools" / "fleet" / "bench_claim_pass.py"
+
+#: Fresh-subprocess driver. It installs an audit guard before runpy starts
+#: the real benchmark entry point. The guard refuses writes under the
+#: production admission root and records them. It never imports pool or
+#: conftest first. Such an import would bind the wrong root too early.
+_CHILD_SOURCE = '''import contextlib
+import io
+import json
+import os
+import runpy
+import sys
+import traceback
+from pathlib import Path
+
+KEY = "PRISMABUILD_BOX_STATE_ROOT"
+ONE_PATH = ("open", "os.open", "os.mkdir", "os.remove", "os.unlink",
+            "os.rmdir", "os.chmod", "os.truncate", "os.listdir", "os.scandir")
+TWO_PATH = ("os.rename", "os.replace", "os.link", "os.symlink")
+READ_ONLY = ("os.listdir", "os.scandir")
+
+
+def norm(raw):
+    try:
+        raw = os.fspath(raw)
+    except TypeError:
+        return None
+    if isinstance(raw, bytes):
+        try:
+            raw = raw.decode()
+        except (ValueError, OSError):
+            return None
+    if not isinstance(raw, str):
+        return None
+    if not os.path.isabs(raw):
+        raw = os.path.join(os.getcwd(), raw)
+    return os.path.normpath(raw)
+
+
+def main():
+    bench, checkout, work, result_path = sys.argv[1:5]
+    prod = os.path.normpath("/tmp/prismabuild-admission-%d" % os.getuid())
+    prod_slash = prod + "/"
+    attempts = []
+    tmp_ops = []
+
+    def names(event, args):
+        if event in ONE_PATH:
+            return args[:1]
+        if event == "os.utime":
+            return args[:1]
+        if event in TWO_PATH:
+            return args[:2]
+        return []
+
+    def hook(event, args):
+        for raw in names(event, args):
+            path = norm(raw)
+            if path is None:
+                continue
+            if path == prod or path.startswith(prod_slash):
+                attempts.append([event, path])
+                if event not in READ_ONLY:
+                    raise RuntimeError(
+                        "refused production-root write: %s %s" % (event, path))
+            elif (event in ("open", "os.open", "os.mkdir")
+                    and path.startswith("/tmp/")):
+                tmp_ops.append([event, path])
+
+    sys.addaudithook(hook)
+
+    def prod_snapshot():
+        try:
+            return sorted(os.listdir(prod))
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            return "unreadable: %s" % exc
+
+    record = {"attempts": attempts, "tmp_ops": tmp_ops,
+              "prod_before": prod_snapshot(), "prod": prod}
+    error = None
+    output = io.StringIO()
+    sys.argv = ["bench_claim_pass.py", "--work", work, "--checkout",
+                checkout, "--ready", "1", "--claimed", "0", "--passes", "0"]
+    try:
+        with contextlib.redirect_stdout(output):
+            runpy.run_path(bench, run_name="__main__")
+    except SystemExit as exc:
+        if exc.code:
+            error = "benchmark exited with status %r" % (exc.code,)
+    except BaseException:
+        error = traceback.format_exc()
+    record["stdout"] = output.getvalue()
+    record["error"] = error
+    rows = []
+    for line in record["stdout"].splitlines():
+        text = line.strip()
+        if text.startswith("{"):
+            try:
+                rows.append(json.loads(text))
+            except ValueError:
+                record.setdefault("unparsed", []).append(text)
+    record["poll_rows"] = rows
+    module = sys.modules.get("prismabuild.adaptive_cpu")
+    effective = None
+    if module is not None:
+        effective = str(getattr(module, "BOX_STATE_ROOT", ""))
+    record["effective_root"] = effective
+    record["root_exists_after"] = Path(effective).exists() if effective else None
+    record["env_present"] = KEY in os.environ
+    record["env_value"] = os.environ.get(KEY)
+    try:
+        from prismabuild import pool
+        queue = pool.PoolQueue(Path(work) / "pb-queue")
+        record["ready_count"] = len(queue.ready_items())
+        record["held_keys"] = sorted(queue.ledger().held_keys())
+    except BaseException:
+        record["queue_error"] = traceback.format_exc()
+    record["prod_after"] = prod_snapshot()
+    Path(result_path).write_text(json.dumps(record, indent=1))
+    return 1 if error else 0
+
+
+raise SystemExit(main())
+'''
+
+
+def _run_guarded_bench(tmp_path, mode):
+    child = tmp_path / ("guard-child-%s.py" % mode)
+    child.write_text(_CHILD_SOURCE)
+    work = tmp_path / ("bench-work-%s" % mode)
+    result = tmp_path / ("bench-result-%s.json" % mode)
+    env = dict(os.environ)
+    explicit = None
+    if mode == "absent":
+        env.pop(_BOX_STATE_ENV, None)
+    elif mode == "empty":
+        env[_BOX_STATE_ENV] = ""
+    else:
+        explicit = tmp_path / "explicit-root"
+        explicit.mkdir()
+        (explicit / "sentinel.json").write_bytes(b'{"owner": "explicit"}')
+        env[_BOX_STATE_ENV] = str(explicit)
+    completed = subprocess.run(
+        [sys.executable, str(child), str(_BENCH), str(ROOT),
+         str(work), str(result)],
+        cwd=tmp_path, env=env, capture_output=True, text=True,
+        timeout=240)
+    if result.exists():
+        record = json.loads(result.read_text())
+    else:
+        record = {}
+    assert completed.returncode == 0, (
+        completed.stderr[-1000:]
+        + "\nchild-error=" + str(record.get("error"))[-3000:]
+        + "\nattempts=" + str(record.get("attempts")))
+    assert record["error"] is None, record["error"]
+    return record, explicit
+
+
+def _assert_two_foreign_polls(record):
+    assert "queue_error" not in record, record["queue_error"]
+    rows = record["poll_rows"]
+    assert len(rows) == 2
+    for row in rows:
+        assert row["snapshot"] == 1
+        assert row["claimed"] is None
+
+
+def test_bench_claim_pass_absent_override_uses_owned_temporary_root(tmp_path):
+    record, _ = _run_guarded_bench(tmp_path, "absent")
+    assert record["attempts"] == []
+    assert record["prod_before"] == record["prod_after"]
+    _assert_two_foreign_polls(record)
+    effective = record["effective_root"]
+    assert effective.startswith("/tmp/")
+    assert effective != record["prod"]
+    assert record["root_exists_after"] is False
+    assert record["held_keys"] == []
+    assert record["ready_count"] == 1
+    assert record["env_present"] is False
+    mkdirs = [path for event, path in record["tmp_ops"] if event == "os.mkdir"]
+    assert any(path == effective or path.startswith(effective + "/")
+               for path in mkdirs)
+
+
+def test_bench_claim_pass_empty_override_uses_owned_temporary_root(tmp_path):
+    record, _ = _run_guarded_bench(tmp_path, "empty")
+    assert record["attempts"] == []
+    assert record["prod_before"] == record["prod_after"]
+    _assert_two_foreign_polls(record)
+    effective = record["effective_root"]
+    assert effective.startswith("/tmp/")
+    assert effective != record["prod"]
+    assert record["root_exists_after"] is False
+    assert record["held_keys"] == []
+    assert record["ready_count"] == 1
+    assert record["env_present"] is True
+    assert record["env_value"] == ""
+    mkdirs = [path for event, path in record["tmp_ops"] if event == "os.mkdir"]
+    assert any(path == effective or path.startswith(effective + "/")
+               for path in mkdirs)
+
+
+def test_bench_claim_pass_explicit_override_stays_intact(tmp_path):
+    record, explicit = _run_guarded_bench(tmp_path, "explicit")
+    assert record["attempts"] == []
+    assert record["prod_before"] == record["prod_after"]
+    _assert_two_foreign_polls(record)
+    assert record["effective_root"] == str(explicit)
+    assert record["root_exists_after"] is True
+    assert (explicit / "sentinel.json").read_bytes() == b'{"owner": "explicit"}'
+    assert record["env_value"] == str(explicit)
+    assert record["held_keys"] == []
+    assert record["ready_count"] == 1
