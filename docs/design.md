@@ -2373,6 +2373,13 @@ miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
   fact against its own live facts before it runs, so a wrong packet fails
   closed at the worker. The default refusal, when the option is absent, does
   not change.
+  The packet also carries the worker's own `/bin/bash` identity (`argv0`), which
+  `pbrun` seals instead of reading the submitter's file; a packet without it is
+  refused. A scratch recorder runs the worker's interpreter as argv[0], so its
+  digest, size and version come from the packet's optional `recorder` field,
+  collected with `pbevidence.py --recorder-python PATH`. A recorder submitted
+  under a packet that lacks it, or names another interpreter, is refused; the
+  submitter's interpreter is never sealed for a class.
   Legacy receipts and ordinary measurement keys retain their existing shape.
   Explicit `--here` still pins the host. `--anywhere` remains invalid.
   Declaring a class asserts that external command, container, Python and data

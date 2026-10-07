@@ -33,6 +33,8 @@ def _packet(host="sparky", uuid="GPU-1111", *, driver="595.91.07"):
         "accelerators": [{"kind": "nvidia", "compute_capability": "12.1",
                           "driver_version": driver, "name": "NVIDIA GB10",
                           "uuid": uuid}],
+        # The worker's /bin/bash as the worker sees it; never the submitter's.
+        "argv0": {"path": "/bin/bash", "sha256": "ab" * 32, "bytes": "1543048"},
     }
 
 
@@ -90,7 +92,14 @@ def test_a_packet_from_either_worker_seals_the_same_scope_and_toolchain(
 
 
 def test_the_packet_equals_a_live_probe_of_the_same_facts(monkeypatch, tmp_path):
-    packet = _write(tmp_path, _packet("sparklina", "GPU-2222"))
+    # The same box: the packet names this box's own bash.  A packet from another
+    # architecture names that worker's bash instead (#1598, see
+    # test_pbrun_target_evidence_argv0_1598).
+    same_box = _packet("sparklina", "GPU-2222")
+    local = pb.executable_toolchain_contract(pbrun.SEALED_ARGV0)
+    same_box["argv0"] = {"path": pbrun.SEALED_ARGV0, "sha256": local["argv0.sha256"],
+                         "bytes": local["argv0.bytes"]}
+    packet = _write(tmp_path, same_box)
     _no_probe(monkeypatch)
     with_packet = _sealed_body(
         [*CLASS_ARGS, "--target-evidence", str(packet), "--", "true"],
