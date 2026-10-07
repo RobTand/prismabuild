@@ -561,8 +561,16 @@ def reconcile(queue: pool.PoolQueue, tier_id: str, unit: str, holder: str,
         return ReconcileOutcome("unreserved",
                                 events + ["prelaunch-begin-declined"],
                                 False, found)
+    # The begun acquisition owns the whole demand in its private handle, so
+    # the census this pass reports is read again after the begin: the gate
+    # reads need from it, and the tokens have already left free.
+    try:
+        after = census(queue, tier_id, unit, holder, demand, movers)
+    except (OSError, pool.PoolContractError, ValueError):
+        after = found
+        events.append("prelaunch-unknown-evidence")
     return ReconcileOutcome("acquiring", events + ["prelaunch-group-begun"],
-                            False, found)
+                            False, after)
 
 
 # ------------------------------------------------------------- funding
