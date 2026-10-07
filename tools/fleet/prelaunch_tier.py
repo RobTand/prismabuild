@@ -315,3 +315,56 @@ def declared_units(queue, tiers, consumers) -> list[Unit]:
     units.sort(key=lambda found: (-found.priority, found.published_unix,
                                   found.unit))
     return units
+
+
+def _intent_chunks(unit: Unit) -> list[dict]:
+    """The write-ahead chunk entries for one unit's declared legs."""
+    digest = residency_plan.plan_sha256(unit.plan)
+    consumer = str(unit.plan.get("consumer_action_key"))
+    return [{"mover_action_key": leg["mover_key"],
+             "start_bytes": int(leg["start_bytes"]),
+             "end_bytes": int(leg["end_bytes"]),
+             "stage_gib": int(leg["stage_gib"]),
+             "plan_sha256": digest, "consumer_action_key": consumer}
+            for leg in unit.legs]
+
+
+def _unit_event(unit: Unit, tier_id: str, name: str, **fields) -> dict:
+    """One tier-loop event naming the unit it belongs to."""
+    event = {"event": name, "unit": unit.unit, "consumer": unit.key,
+             "tier_id": tier_id}
+    event.update(fields)
+    return event
+
+
+def reserve_pass(queue, tier_id: str, units: Sequence[Unit], *, admitted,
+                 writer_is_me: bool = True) -> tuple[list[dict], dict]:
+    """File each unit's intent, then reconcile the admitted ones.
+
+    ``admitted`` is the caller's gate: it takes a unit and answers true
+    when the unit may reserve now. A unit the gate refuses still files
+    its intent, then waits with no ledger change unless it already
+    holds tokens or receipts. Units on another tier and unsupported
+    units stay untouched. Returns the events with the authority map.
+    """
+    events: list[dict] = []
+    authority: dict[str, bool] = {}
+    for unit in units or []:
+        if unit.tier_id != tier_id or unit.unsupported is not None:
+            continue
+        movers = [leg["mover_key"] for leg in unit.legs]
+        prelaunch_group.file_intent(queue, unit.unit, unit.holder, tier_id,
+                                    unit.demand_gib, _intent_chunks(unit))
+        if not admitted(unit) and not prelaunch_group.has_holdings(
+                queue, unit.unit):
+            events.append(_unit_event(unit, tier_id, "prelaunch-waiting"))
+            authority[unit.unit] = False
+            continue
+        outcome = prelaunch_group.reconcile(
+            queue, tier_id, unit.unit, unit.holder, unit.demand_gib, movers,
+            writer_is_me=writer_is_me)
+        for name in outcome.events:
+            events.append(_unit_event(unit, tier_id, name,
+                                      state=outcome.state))
+        authority[unit.unit] = bool(outcome.authority)
+    return (events, authority)
