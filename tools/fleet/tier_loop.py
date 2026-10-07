@@ -1171,6 +1171,8 @@ def drop_prior_ram_epochs(
         except (OSError, pool.PoolContractError):
             continue
         for key in held:
+            if key.startswith(prelaunch_group.HOLDER_PREFIX):
+                continue      # a group holder belongs to the prelaunch pass
             if queue.item_path(pool.CLAIMED, key).exists():
                 # A promotion claimed right now holds tokens for a copy that
                 # is running; its receipt will date it, and the next cycle
@@ -1292,6 +1294,8 @@ def release_incomplete_ram_promotions(
         except (OSError, pool.PoolContractError):
             continue
         for key in _budget_order(budget, RAM_INCOMPLETE_UNIT, held, str):
+            if key.startswith(prelaunch_group.HOLDER_PREFIX):
+                continue      # a group holder belongs to the prelaunch pass
             if (queue.item_path(pool.READY, key).exists()
                     or queue.item_path(pool.CLAIMED, key).exists()):
                 # Queued or running: the window or the copy owns this key, and
