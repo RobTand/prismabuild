@@ -2488,6 +2488,19 @@ miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
   capabilities. The live NVIDIA model and physical UUID are recorded in the
   receipt; UUID is provenance, not a requirement to use the same physical GPU.
   Missing model/UUID evidence or a failed identity probe refuses this opt-in.
+- A box without an accelerator takes the class facts from a vetted packet
+  (#1598): `pbrun --target-evidence PATH` replaces the local probe of a pool
+  `--measurement --host-class` submission, and `pbgang --target-evidence PATH`
+  forwards it to the members that declare both. `tools/fleet/pbevidence.py`
+  prints the packet on a worker of the class, as a normal PrismaBuild action.
+  `pbrun` refuses a packet that is not local, has no accelerator, has no device
+  identity, mixes models or drivers, or does not match the class. Only `gb10`
+  has a class rule. The sealed facts are the same ones a live probe seals: the
+  host name and the device UUID stay provenance and are not identity. The option
+  adds no seal and no identity field. Each worker still checks every declared
+  fact against its own live facts before it runs, so a wrong packet fails
+  closed at the worker. The default refusal, when the option is absent, does
+  not change.
   Legacy receipts and ordinary measurement keys retain their existing shape.
   Explicit `--here` still pins the host. `--anywhere` remains invalid.
   Declaring a class asserts that external command, container, Python and data
