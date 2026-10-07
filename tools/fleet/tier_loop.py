@@ -8406,6 +8406,13 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
             # the thing the tier id exists to prevent.
             continue
         tier_record = tiers[tier_id]
+        # This consumer's declared unit, if the reserve pass saw one on this
+        # tier with room held.  None leaves every call below as it was.
+        prelaunch_unit = prelaunch_by_member.get(key)
+        if (prelaunch_unit is not None
+                and (prelaunch_unit.tier_id != tier_id
+                     or prelaunch_unit.unsupported is not None)):
+            prelaunch_unit = None
         superseded = residency_plan.superseded(queue, plan)
         if superseded is None:
             # An operator's withdrawal of one of the plan's movers retires
@@ -8481,12 +8488,22 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
         # Bounded by the consumer's refill horizon as well as by room and the
         # run-ahead budget (#903): a leg past it publishes on the cycle the
         # consumer's progress brings it inside, and not before.
-        decision = residency_plan.window(
-            plan, accepted_phase=consumer["accepted_phase"],  # type: ignore[arg-type]
-            free_gib=int(free), capacity_gib=int(capacity),
-            published=sorted(already), staged=sorted(staged),
-            withdrawn=sorted(cancelled),
-            horizon_end_bytes=horizon_of(consumer, plan, tier_id))
+        if prelaunch_unit is not None:
+            decision = residency_plan.window(
+                plan, accepted_phase=consumer["accepted_phase"],  # type: ignore[arg-type]
+                free_gib=int(free), capacity_gib=int(capacity),
+                published=sorted(already), staged=sorted(staged),
+                withdrawn=sorted(cancelled),
+                horizon_end_bytes=horizon_of(consumer, plan, tier_id),
+                prelaunch_held=bool(
+                    prelaunch_authority.get(prelaunch_unit.unit)))
+        else:
+            decision = residency_plan.window(
+                plan, accepted_phase=consumer["accepted_phase"],  # type: ignore[arg-type]
+                free_gib=int(free), capacity_gib=int(capacity),
+                published=sorted(already), staged=sorted(staged),
+                withdrawn=sorted(cancelled),
+                horizon_end_bytes=horizon_of(consumer, plan, tier_id))
         stall = decision["stall"]
         if isinstance(stall, Mapping) and superseded is None:
             # Said here rather than nowhere: the incident this bound exists to
@@ -8495,7 +8512,9 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
             # consumer is not denied, it is running and reporting nothing.  A
             # superseded window does not stall: nothing is waiting to publish.
             published.append({"event": "window-stalled", "consumer": key,
-                              **{field: stall[field] for field in (
+                              # A stall names every field; a missing one files
+                              # as None here, never as a KeyError (#1594).
+                              **{field: stall.get(field) for field in (
                                   "accepted_phase", "reading_phase",
                                   "blocked_phase", "blocked_gib", "runahead_gib",
                                   "runahead_budget_gib", "free_gib",
@@ -8516,7 +8535,14 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
                        or (key, tier_id) in unknown_consumers
                        or (key, "") in unknown_consumers
                        or ("", "") in unknown_consumers)
-        have_permit = (key, tier_id) in permitted
+        # A declared consumer with group authority publishes its declared
+        # legs: the group already holds their tokens (#1594).  The protection
+        # pass permits these itself (``advance: prelaunch``); this carries
+        # the same permission when that entry is absent.
+        have_permit = ((key, tier_id) in permitted
+                       or (prelaunch_unit is not None
+                           and prelaunch_authority.get(
+                               prelaunch_unit.unit) is True))
         publishable = ([] if (superseded is not None or gate is not None
                               or unknown_hit or not have_permit)
                        else decision["publish"])
@@ -8577,6 +8603,7 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
         item = consumer.get("item")
         if isinstance(item, Mapping):
             generation = item.get("published_unix")
+        prelaunch_rows: list[dict[str, object]] = []
         for entry in publishable:
             # The leg's own egress row, resolved off the plan rather than
             # the entry: publish entries carry their mover, evict entries
@@ -8677,6 +8704,23 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
                               "chunk_index": entry.get("chunk_index"),
                               "action_key": entry["mover_action_key"],
                               "stage_gib": entry["stage_gib"]})
+            prelaunch_rows.append(entry)
+        if prelaunch_unit is not None:
+            # The group fence stands behind the rows this window published:
+            # bind each declared leg's funding record now (#1594).
+            published.extend(prelaunch_tier.publish_declared(
+                queue, tier_id, prelaunch_unit, prelaunch_rows))
+        if (prelaunch_unit is not None and superseded is not None
+                and prelaunch_group.has_holdings(queue, prelaunch_unit.unit)):
+            # A superseded window ends its unit: free the unsplit remainder
+            # and the fences no live co-owner still reads (#1594).
+            shared_owned = [
+                str(leg["mover_key"]) for leg in prelaunch_unit.legs
+                if set((readers_of.get(str(leg["mover_key"]))
+                        or (None, []))[1] or ()) - {key}]
+            published.extend(prelaunch_tier.release_terminal(
+                queue, tier_id, [prelaunch_unit],
+                shared_owned=shared_owned))
         for entry in decision["evict"]:
             row = dict(entry["egress_row"])                  # type: ignore[arg-type]
             egress_key = str(row["action_key"])
