@@ -9,6 +9,7 @@ No function imports the tier loop.
 """
 from __future__ import annotations
 
+import json
 import math
 import sys
 from dataclasses import dataclass, field
@@ -484,3 +485,31 @@ def obligations(units: Sequence[Unit], held: Mapping[str, Mapping[str, int]],
                              "peak_gib": unit.peak_gib, "owned_gib": owned,
                              "obligation_gib": due}
     return (totals, detail)
+
+
+def _committed(unit: Unit) -> bool:
+    """True when the unit's committed receipt stands and names its holder."""
+    if unit.receipt_dir is None:
+        return False
+    try:
+        raw = (unit.receipt_dir / "committed.json").read_bytes()
+    except OSError:
+        return False
+    try:
+        body = json.loads(raw)
+    except ValueError:
+        return False
+    return isinstance(body, Mapping) and str(body.get("holder")) == unit.holder
+
+
+def is_admitted(unit: Unit, held: Mapping[str, Mapping[str, int]], kind: str,
+                published_movers: Sequence[str]) -> bool:
+    """True when one unit is no newcomer: it holds tokens, it published
+    a chunk, or its committed receipt stands.
+    """
+    if _held_count(held, unit.holder, kind) > 0:
+        return True
+    published = set(published_movers or [])
+    if any(leg["mover_key"] in published for leg in unit.legs):
+        return True
+    return _committed(unit)
