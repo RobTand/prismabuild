@@ -74,6 +74,25 @@ if verb in ("run", "create"):
     mode = os.environ.get("FAKE_MODE", "honor")
     delay = float(os.environ.get("FAKE_DELAY_START", "0"))
     record(verb=verb, argv=argv)
+    late = os.environ.get("FAKE_LATE_CREATE")
+    if late:
+        # The client has sent its create request; an independent process (the
+        # daemon) completes it later, after the client may be gone.
+        import subprocess
+        code = (
+            "import json, pathlib, sys, time\n"
+            "time.sleep(float(sys.argv[1]))\n"
+            "path = pathlib.Path(sys.argv[2])\n"
+            "data = json.loads(path.read_text()) if path.exists() else {'calls': []}\n"
+            "data.update(cid=sys.argv[3], labels=json.loads(sys.argv[4]), running=True, killed=False)\n"
+            "tmp = path.with_suffix('.late'); tmp.write_text(json.dumps(data)); tmp.replace(path)\n")
+        subprocess.Popen([sys.executable, "-c", code, late, str(state_path),
+                          os.environ.get("FAKE_CID", "c" * 64), json.dumps(labels)],
+                         start_new_session=True)
+        pathlib.Path(os.environ["FAKE_STARTED"]).write_text("1")
+        signal.signal(signal.SIGTERM, lambda *a: sys.exit(143))
+        time.sleep(60)
+        sys.exit(0)
     if delay:
         time.sleep(delay)
     data = load()
@@ -303,16 +322,47 @@ def test_without_a_cidfile_the_attempt_label_finds_the_container(tmp_path):
     assert receipt["found_by"] == "label"
 
 
-def test_a_signal_before_the_container_exists_leaves_a_receipt_and_no_kill(tmp_path):
+def test_a_signal_before_the_container_exists_is_unresolved_and_not_a_stop(tmp_path):
+    """An empty answer is not proof that no container will appear (a delayed create)."""
     process = _start(tmp_path, mode="slow", grace="1",
                      extra={"FAKE_DELAY_START": "30"})
     time.sleep(0.5)
     process.send_signal(signal.SIGTERM)
-    assert process.wait(timeout=20) == 128 + signal.SIGTERM
+    assert process.wait(timeout=20) == 125
     assert _calls(tmp_path, "kill") == []
     receipt = _receipts(tmp_path)[0]
-    assert receipt["outcome"] == "no_container"
+    assert receipt["outcome"] == "creation_unresolved"
+    assert receipt["stop_proved"] is False
     assert receipt["container_id"] is None
+    assert len(_calls(tmp_path, "ps")) >= 2          # it kept watching to the deadline
+
+
+def test_a_container_created_after_the_client_is_gone_is_found_and_stopped(tmp_path):
+    """An independent daemon request survives the client and creates the container late."""
+    process = _start(tmp_path, mode="ignore", grace="1",
+                     extra={"FAKE_LATE_CREATE": "1.2"})
+    _wait_started(tmp_path)
+    process.send_signal(signal.SIGTERM)
+    code = process.wait(timeout=20)
+    receipt = _receipts(tmp_path)[0]
+    assert receipt["container_id"] == CID
+    assert receipt["found_by"] == "label"
+    assert receipt["outcome"] in {"stopped", "killed"}, receipt
+    assert receipt["stop_proved"] is True
+    assert code == 128 + signal.SIGTERM
+    kills = _calls(tmp_path, "kill")
+    assert kills and kills[-1]["argv"][-1] == CID
+
+
+def test_a_creation_that_lands_after_the_deadline_is_reported_and_not_a_stop(tmp_path):
+    process = _start(tmp_path, mode="ignore", grace="1",
+                     extra={"FAKE_LATE_CREATE": "30"})
+    _wait_started(tmp_path)
+    process.send_signal(signal.SIGTERM)
+    assert process.wait(timeout=20) == 125
+    receipt = _receipts(tmp_path)[0]
+    assert receipt["outcome"] == "creation_unresolved"
+    assert receipt["stop_proved"] is False
 
 
 def test_a_failed_container_query_is_unknown_and_not_an_empty_answer(tmp_path):

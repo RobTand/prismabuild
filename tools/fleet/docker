@@ -863,7 +863,14 @@ def _run_relayed(real: str, args: list[str], environment: dict, *, owner: str,
         # has passed, and call it stopped only on a successful query.
         if cid is None:
             cid, found_by = stop.container_id(cidfile, nonce)
-        outcome = "unknown" if found_by == "unreadable" else "no_container"
+            # An empty answer is not proof that no container will exist: a
+            # create request the client already sent can still complete at the
+            # daemon after the client is gone.  Keep watching for the call's
+            # label until the deadline, and stop whatever appears.
+            while cid is None and found_by is None and stop.left() > 0.3:
+                time.sleep(0.2)
+                cid, found_by = stop.container_id(cidfile, nonce)
+        outcome = "unknown" if found_by == "unreadable" else "creation_unresolved"
         final = {"found": False, "inspect": None, "running": None}
         if cid is not None:
             relayed = False
@@ -900,7 +907,7 @@ def _run_relayed(real: str, args: list[str], environment: dict, *, owner: str,
                     outcome = "still_running" if last_seen is not None else "unknown"
                     break
                 time.sleep(0.1)
-        proved = outcome in ("stopped", "killed", "no_container")
+        proved = outcome in ("stopped", "killed")
         _write_receipt(receipt_path, {
             "schema": RECEIPT_SCHEMA, "owner": owner, "nonce": nonce,
             "scope": scope[0] if scope else None,
