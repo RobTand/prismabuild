@@ -3427,6 +3427,7 @@ def _held_ram_copies(queue: pool.PoolQueue, plan: Mapping[str, object],
 def _beyond_horizon_candidates(
     queue: pool.PoolQueue, tiers: Mapping[str, Mapping[str, object]],
     consumers: list, cancelled: frozenset[str],
+    declared_keys: frozenset = frozenset(),
 ) -> dict[str, list[dict[str, object]]]:
     """Per tier, the landed ranges no reader needs before a refill (#903, #906).
 
@@ -3453,6 +3454,8 @@ def _beyond_horizon_candidates(
     still reading it nominates it on its own terms, and then once, at the
     soonest any of them needs it, taking every sharer's ram copies with it.
     One sharer inside its horizon keeps it for all of them.
+    A declared prelaunch leg (#1594) is never a candidate when named in
+    ``declared_keys``; empty keeps today's set.
     """
 
     out: dict[str, list[dict[str, object]]] = {}
@@ -3499,6 +3502,11 @@ def _beyond_horizon_candidates(
             out.setdefault(tier_id, []).append(row)
     readers_of = _shared_readers(queue, consumers)
     for tier_id, rows in out.items():
+        if declared_keys:
+            # A live declared prefix stays to its consumer's end (#1594).
+            rows[:] = [row for row in rows
+                       if not prelaunch_tier.is_prelaunch_leg(
+                           declared_keys, str(row.get("mover_action_key")))]
         if readers_of:
             rows[:] = _agreed_shared_rows(rows, readers_of)
         rows.sort(key=lambda row: (-float(row["seconds_until_needed"]),  # type: ignore[arg-type]
@@ -5149,7 +5157,9 @@ def _claim_order_candidates(queue: pool.PoolQueue, *, tier_id: str,
                             tier_record: Mapping[str, object] | None,
                             consumers: list,
                             order: Mapping[str, object],
-                            taken: set[str]) -> list[dict[str, object]]:
+                            taken: set[str],
+                            declared_keys: frozenset = frozenset(),
+) -> list[dict[str, object]]:
     """Landed legs the head of a claim order may have evicted (#1011).
 
     In this order, each consumer's legs farthest first:
@@ -5211,6 +5221,7 @@ def _claim_order_candidates(queue: pool.PoolQueue, *, tier_id: str,
     or running, or whose promotion holds the ram tier (#640), and never a
     leg in ``taken``.  Each row carries its ``basis``, its
     ``seconds_until_needed`` and the head it is evicted for.
+    Never a declared prelaunch leg (#1594) named in ``declared_keys``.
     """
 
     entries = [entry for entry in order.get("entries") or ()  # type: ignore[union-attr]
@@ -5336,6 +5347,8 @@ def _claim_order_candidates(queue: pool.PoolQueue, *, tier_id: str,
         under_rule = ruled(basis, entry)
         for leg in sorted(legs, key=lambda leg: -int(leg["start_bytes"])):
             mover = str(leg["mover_row"]["action_key"])  # type: ignore[index]
+            if prelaunch_tier.is_prelaunch_leg(declared_keys, mover):
+                continue
             if mover in taken and mover not in nominated:
                 continue
             egress = leg.get("egress_row")
@@ -8954,6 +8967,11 @@ def evict_beyond_horizon(queue: pool.PoolQueue,
     if not pressure and not claim_order:
         return events
     cancelled = _withdrawn_keys(queue, withdrawn)
+    # Declared prefixes (#1594), once per call: an undeclared queue gets
+    # none, and every candidate below reads as today.
+    evict_units = prelaunch_tier.declared_units(
+        queue, tiers, [entry[1] for entry in consumers])
+    declared_keys = prelaunch_tier.declared_leg_keys(evict_units)
     short: dict[str, int] = {}
     for tier_id, needed in (pressure or {}).items():
         record = tiers.get(tier_id)
@@ -8974,7 +8992,8 @@ def evict_beyond_horizon(queue: pool.PoolQueue,
               and tiers[tier_id].get("tier") == "stage"}
     if not short and not ranked:
         return events
-    candidates = _beyond_horizon_candidates(queue, tiers, consumers, cancelled)
+    candidates = _beyond_horizon_candidates(
+        queue, tiers, consumers, cancelled, declared_keys=declared_keys)
 
     def evicted(row: Mapping[str, object], tier_id: str, stage_root: str,
                 needed: int, *, prefix: str = "beyond-horizon",
@@ -9147,7 +9166,8 @@ def evict_beyond_horizon(queue: pool.PoolQueue,
                          "for_consumer": order["head"]})
         rows.extend(_claim_order_candidates(
             queue, tier_id=tier_id, tier_record=tiers.get(tier_id),
-            consumers=consumers, order=order, taken=taken))
+            consumers=consumers, order=order, taken=taken,
+            declared_keys=declared_keys))
         offered = sum(int(row["stage_gib"]) for row in rows)  # type: ignore[arg-type]
         if free + offered < target:
             stamp("futile")
