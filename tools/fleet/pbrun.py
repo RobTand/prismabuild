@@ -89,6 +89,7 @@ from prismabuild import (  # noqa: E402
     decomposition as dc, materialize, movement_actions, pool, residency_plan, slurm_lane,
     storage_tiers,
 )
+import pbevidence  # noqa: E402
 import pbstatus  # noqa: E402
 
 POLL_S = 5.0
@@ -4153,8 +4154,72 @@ def require_host_class_scope(
         )
 
 
+#: The largest packet ``--target-evidence`` reads (#1598).  A packet is one
+#: worker's platform and accelerator facts: a few hundred bytes.
+TARGET_EVIDENCE_MAX_BYTES = 64 * 1024
+
+#: The rule of each class a target-evidence packet may stand for (#1598): the
+#: platform key and the accelerator model its workers report.  A class this
+#: table does not name has no rule, so a packet cannot stand for it.  GB10 is
+#: one AArch64 platform with one model.  Another model on AArch64, such as a
+#: GH200, is not GB10, and neither is another model that shares its capability.
+_TARGET_EVIDENCE_CLASSES = {
+    "gb10": lambda evidence, platform_key: (
+        platform_key == "linux-aarch64-sm121"
+        and all(row["name"] == "NVIDIA GB10" and row["compute_capability"] == "12.1"
+                for row in evidence["accelerators"])),
+}
+
+
+def load_target_evidence(path: str, *, host_class: str) -> dict[str, object]:
+    """Read and vet one target-evidence packet for ``host_class`` (#1598).
+
+    ``pbevidence.py`` prints the packet on a worker of the class.  It replaces
+    the local probe a class-scoped pool measurement makes, so a box without an
+    accelerator can seal the class facts.  Nothing here is an attestation: each
+    worker checks the declared facts against its own live facts before it
+    runs, so a wrong packet fails closed there.  This function refuses the
+    packets that could never seal a class -- not local, no accelerator, no
+    device identity, mixed models, or a platform the class does not have --
+    before anything is sealed.
+    """
+
+    try:
+        with open(path, "rb") as handle:
+            raw = handle.read(TARGET_EVIDENCE_MAX_BYTES + 1)
+    except OSError as exc:
+        raise SystemExit(f"pbrun: cannot read --target-evidence {path}: {exc}") from None
+    if len(raw) > TARGET_EVIDENCE_MAX_BYTES:
+        raise SystemExit(
+            f"pbrun: --target-evidence {path} exceeds {TARGET_EVIDENCE_MAX_BYTES} "
+            "bytes: a packet is one worker's facts, not a payload")
+    try:
+        value = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise SystemExit(f"pbrun: --target-evidence {path} is not JSON: {exc}") from None
+    try:
+        evidence = pbevidence.vet(value)
+    except pbevidence.PacketError as exc:
+        raise SystemExit(f"pbrun: --target-evidence {path}: {exc}") from None
+    rule = _TARGET_EVIDENCE_CLASSES.get(host_class)
+    if rule is None:
+        raise SystemExit(
+            f"pbrun: --target-evidence {path}: no rule for class {host_class!r}; "
+            f"a packet can stand for {', '.join(sorted(_TARGET_EVIDENCE_CLASSES))}")
+    try:
+        platform_key = pb._platform_key_from_evidence(evidence)
+    except pb.ActionContractError as exc:
+        raise SystemExit(f"pbrun: --target-evidence {path}: {exc}") from None
+    if not rule(evidence, platform_key):
+        raise SystemExit(
+            f"pbrun: --target-evidence {path} disagrees with class {host_class}: "
+            f"it reports {platform_key}")
+    return evidence
+
+
 def host_class_scope(
     host_class: str | None, *, measurement: bool = False, transport: str = "slurm",
+    target_evidence: Mapping[str, object] | None = None,
 ) -> tuple[dict[str, object], dict[str, str]]:
     """The execution scope and the toolchain a submission seals.
 
@@ -4171,14 +4236,22 @@ def host_class_scope(
     another class is refused there, naming the field that differs.
     """
 
+    if target_evidence is not None and not (
+            measurement and transport == "pool" and host_class is not None):
+        raise ValueError(
+            "target_evidence stands for a class-scoped pool measurement only")
     if measurement and transport == "pool":
         # A pool worker can attest its platform and executable/ABI directly.
         # A class is placement intent, not a forged SLURM attestation. The
         # actual platform, ABI, driver and device models constrain numerics;
         # physical UUIDs and the selected worker remain receipt provenance.
-        evidence = pb._collect_worker_evidence(
-            **({"attest_accelerator_identity": True} if host_class is not None else {})
-        )
+        # A vetted target-evidence packet stands in for the local probe when
+        # the submitting box has no accelerator (#1598): the worker still
+        # checks every declared fact against its own live facts.
+        evidence = (target_evidence if target_evidence is not None else
+                    pb._collect_worker_evidence(
+                        **({"attest_accelerator_identity": True}
+                           if host_class is not None else {})))
         toolchain = {
             **pb.executable_toolchain_contract(SEALED_ARGV0),
             **pb.live_platform_toolchain_contract(evidence=evidence),
@@ -5232,6 +5305,7 @@ def freeze_action_template(
     container_image_refs: Sequence[str] = (),
     wrapper_dir: Path | None = None,
     gang: Mapping[str, object] | None = None,
+    target_evidence: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """Read the tree and the environment once, and freeze what they say.
 
@@ -5461,7 +5535,8 @@ def freeze_action_template(
                 f"pbrun: --produced-output-template declaration: {exc}") from None
         inputs.append(template_input)
     execution_scope, toolchain = host_class_scope(
-        host_class, measurement=measurement, transport=transport)
+        host_class, measurement=measurement, transport=transport,
+        target_evidence=target_evidence)
     if recorder is not None:
         # Actual executable/version facts, verified by the normal worker
         # preflight and bound into its real receipt; never guessed hashes.
@@ -6810,6 +6885,13 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
                          "driver and device models; external dependencies must be "
                          "identical across the class. SLURM seals host_class_keyed "
                          "and attests its constraint through the controller")
+    ap.add_argument("--target-evidence", default=None, metavar="PATH",
+                    help="seal the class facts of a pool --measurement "
+                         "--host-class submission from this packet instead of "
+                         "probing this box (#1598). Run tools/fleet/pbevidence.py "
+                         "as an action on a worker of the class to make one. "
+                         "Each worker still checks the facts against its own "
+                         "live facts before it runs")
     ap.add_argument("--anywhere", action="store_true",
                     help="assert that command/tool/data dependencies outside "
                          "the snapshot are identical on every eligible worker")
@@ -7286,6 +7368,25 @@ def prepare_submission(args: argparse.Namespace) -> dict[str, object]:
             "the boxes offering "
             f"{', '.join(sorted(set(args.tag)))}.  Drop whichever is not true."
         )
+    target_evidence = None
+    target_evidence_path = getattr(args, "target_evidence", None)
+    if target_evidence_path is not None:
+        missing = [name for name, present in (
+            ("--measurement", args.measurement),
+            ("--host-class", args.host_class is not None),
+            ("the pool transport", args.transport == "pool")) if not present]
+        if missing:
+            raise SystemExit(
+                "pbrun: --target-evidence needs " + ", ".join(missing) + ": it "
+                "stands in for the local probe of a class-scoped pool "
+                "measurement (#1598)")
+        target_evidence = load_target_evidence(
+            target_evidence_path, host_class=args.host_class)
+        print(
+            f"pbrun: sealing the facts of class {args.host_class} from "
+            f"--target-evidence {target_evidence_path}, not from this box; "
+            "each worker checks them against its own live facts before it runs",
+            file=sys.stderr, flush=True)
     require_host_class_scope(
         measurement=args.measurement, host_class=args.host_class,
         transport=args.transport, anywhere=args.anywhere,
@@ -7473,6 +7574,7 @@ def prepare_submission(args: argparse.Namespace) -> dict[str, object]:
         measurement=args.measurement,
         transport=args.transport,
         pool_measurement_class=bool(pool_measurement_class),
+        target_evidence=target_evidence,
         # A deferred submission's manifest is built at release (#913); its
         # static part is ingested beside the template, never sealed into it.
         data_manifest_path=(None if getattr(args, "after", None)
