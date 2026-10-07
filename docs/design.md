@@ -4863,6 +4863,26 @@ The pure `residency_plan.gang_prelaunch_demand` computes that sum.
 Headroom below capacity waits, never refuses.  A peak equal to capacity
 passes.
 
+The tier loop reserves one group per declared unit before it publishes any
+leg.  A declared consumer is a newcomer until its unit holds tokens, has a
+published chunk or has a committed receipt; a claimed consumer is never one.
+The state comes from the unit, not from the streaming lead, so a plan with no
+suffix (one declared phase) still opens its group.  The filed intent is
+immutable: a later cycle holds the filed demand and chunks instead of
+recomputing them from moved evidence, and a leg whose registered shared
+mover is its own does not count as owned by others.  Every live declared leg
+is funded on every cycle, because a crash between a row and its funding, or
+a deferred funding, leaves a READY mover with no credit while the group
+holds the tier.  Funding is idempotent.  A stage tier that no live consumer
+names still releases a group holder no live unit owns, under the same
+complete-census guard, so a withdrawn sole consumer returns its capacity.
+Submission selects the prefix and suffix cuts by phase name, since an empty
+declared phase has no range.  A gang across tiers stays unsupported: its
+group is not reserved and the event `prelaunch-turn-unsupported` is filed.
+The terminal release writes its receipt after it frees tokens, so a crash
+between the two can lose the journal counts; a write-ahead release receipt
+is a follow-up before the multi-tier turn becomes live.
+
 ## Physical and adaptive GPU admission
 
 Both current GB10 workers have one physical GPU. Their fleet shape uses the

@@ -6472,15 +6472,20 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                     ready_rows.append((action, row_gib))
                     ready_by_key[action] = item
         held_total = sum(int(tokens.get(kind, 0)) for tokens in held.values())
-        # Declared units on this tier (#1594).  A declared consumer with
-        # holdings is admitted, not a newcomer; the rest keep today's flag.
-        # Admitted declared windows oblige room for their peak, beside the
-        # protected nexts below.  With no declared unit the term is zero.
+        # Declared units on this tier (#1594).  A declared consumer's
+        # newcomer state comes from the unit, not from the streaming lead:
+        # a plan with no suffix has no lead, so the lead test calls it
+        # admitted and no permit would open its group.  A claimed consumer
+        # passed the claim gate and stays admitted; any other declared one
+        # is a newcomer until it holds tokens, a published chunk or a
+        # committed receipt.  Admitted declared windows oblige room for
+        # their peak, beside the protected nexts below.  With no declared
+        # unit the term is zero.
         units_on_tier = [unit for unit in units
                          if unit.tier_id == tier_id]
         for want in tier_wants:
             unit = want.get("declared_unit")
-            if unit is not None and want["newcomer"]:
+            if unit is not None and want["consumer"].get("state") != pool.CLAIMED:
                 want["newcomer"] = not prelaunch_tier.is_admitted(
                     unit, held, kind, want["already"])
         oblig_totals, oblig_detail = prelaunch_tier.obligations(
@@ -7371,6 +7376,28 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                            "reason": str(healed.get("reason")),
                            "holder": healed.get("holder"),
                            "released_gib": healed.get("released_gib")})
+    # Group holders on a stage tier no live consumer names (#1594).  The
+    # loop above visits only tiers with a live want, so a sole declared
+    # consumer withdrawn after its reservation and before its first
+    # publication would keep the tier's capacity until another consumer
+    # arrived there.  The same complete-census guard applies: with any
+    # consumer or ready scan unread, release nothing.
+    if mover_role == "mover_row" and not census_unknown and not unknown_ready:
+        for empty_tier in sorted(tiers):
+            if empty_tier in by_tier or empty_tier in unknown_tiers:
+                continue
+            if str((tiers[empty_tier] or {}).get("tier")) != "stage":
+                continue
+            try:
+                empty_ledger = queue.tier_ledger(empty_tier)
+            except (OSError, ValueError, pool.PoolContractError) as exc:
+                events.append({"event": "prelaunch-dangling-retained",
+                               "unit": None, "consumer": None,
+                               "holder": None, "tier_id": empty_tier,
+                               "reason": f"tier ledger unreadable: {exc!r}"})
+                continue
+            events.extend(prelaunch_tier.dangling(
+                queue, empty_tier, empty_ledger, [], complete_census=True))
     # The census this pass admitted on, and what it would be taken over, so
     # the stage window can report on the same one (#930).
     return {"gated": gated, "protected": protected, "grants": grants,
@@ -8822,10 +8849,21 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
                               "stage_gib": entry["stage_gib"]})
             prelaunch_rows.append(entry)
         if prelaunch_unit is not None:
-            # The group fence stands behind the rows this window published:
-            # bind each declared leg's funding record now (#1594).
+            # The group fence stands behind every live declared leg, not only
+            # the rows this window published (#1594): a crash between a row's
+            # publication and its funding, or a funding that deferred on the
+            # mover lock, leaves a READY row with no credit, and the window
+            # skips it as already published.  Funding is idempotent: a funded
+            # leg answers ``already`` with no event, and a leg with no row yet
+            # is skipped.  A superseded unit funds nothing.
+            repair_rows = (
+                [{"mover_action_key": leg["mover_key"]}
+                 for leg in prelaunch_unit.legs]
+                if superseded is None
+                and prelaunch_authority.get(prelaunch_unit.unit) is True
+                else prelaunch_rows)
             published.extend(prelaunch_tier.publish_declared(
-                queue, tier_id, prelaunch_unit, prelaunch_rows))
+                queue, tier_id, prelaunch_unit, repair_rows))
         if (prelaunch_unit is not None and superseded is not None
                 and prelaunch_group.has_holdings(queue, prelaunch_unit.unit)):
             # A superseded window ends its unit: free the unsplit remainder

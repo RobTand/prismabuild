@@ -5964,6 +5964,29 @@ def reader_declaration(args) -> dict[str, int]:
     return reader
 
 
+def split_prelaunch_cuts(
+    ranges: Sequence[Mapping[str, object]],
+    cuts: Sequence[list[tuple[int, int]]],
+    prelaunch_names: frozenset[str] | set[str],
+) -> tuple[list[list[tuple[int, int]]], list[list[tuple[int, int]]]]:
+    """The declared prefix's cuts and the streaming suffix's, chosen by name.
+
+    ``cuts`` holds one entry per range, and ``ranges`` omits an empty phase,
+    so the manifest's declared count and the cut list can disagree: slicing
+    by count would take a suffix phase's cuts into the prefix.  The names
+    are what the manifest declared, so the split follows them (#1594).
+    """
+
+    if len(ranges) != len(cuts):
+        raise SystemExit("pbrun: prelaunch cuts and ranges disagree; "
+                         "nothing was sealed or published.")
+    prefix = [chunks for span, chunks in zip(ranges, cuts)
+              if str(span["name"]) in prelaunch_names]
+    suffix = [chunks for span, chunks in zip(ranges, cuts)
+              if str(span["name"]) not in prelaunch_names]
+    return (prefix, suffix)
+
+
 def residency_leg_cuts(
     record: Mapping[str, object],
     *,
@@ -6218,8 +6241,8 @@ def residency_stage_rows(
         # cut at the same boundaries.  This refuses what the plan demands.
         # Headroom is not checked: a fit prefix with no free room waits.
         # Unknown capacity never refuses.
-        prefix_cuts = stage_cuts[:len(prelaunch)]
-        suffix_cuts = stage_cuts[len(prelaunch):]
+        prefix_cuts, suffix_cuts = split_prelaunch_cuts(
+            ranges, stage_cuts, prelaunch_names)
 
         def _cut_gib(cuts: list[list[tuple[int, int]]]) -> list[int]:
             return [sum(storage_tiers.stage_tokens_for_bytes(cend - cstart)

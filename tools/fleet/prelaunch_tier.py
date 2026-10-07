@@ -184,7 +184,9 @@ def _owned_by_others(queue, mover_keys: Sequence[str]) -> frozenset:
         if not isinstance(record, Mapping):
             continue
         shared = record.get("mover_action_key")
-        if (isinstance(shared, str) and shared
+        # A leg whose registered owner is its own mover is not owned by
+        # others: the unit's demand must not drop when it publishes.
+        if (isinstance(shared, str) and shared and shared != mover_key
                 and _mover_live(queue, shared)):
             owned.add(mover_key)
     return frozenset(owned)
@@ -262,6 +264,33 @@ def _rank(item: object) -> tuple[int, float]:
     return (priority, published)
 
 
+def _hold_filed(queue, unit_id: str, tier_id: str, entries: Sequence[dict],
+                legs: list[dict], demand: int, peak: int,
+                ) -> tuple[list[dict], int, int]:
+    """The legs and demand a group's standing intent already names.
+
+    A filed intent is immutable and the ledger counts it, so a later cycle
+    must not rebuild a different demand from evidence that has moved: a
+    shared mover that went live, a range that landed.  With no readable
+    intent, or one this plan cannot rebuild, the computed values stand.
+    """
+    standing = prelaunch_group.standing_intent(queue, unit_id, tier_id)
+    if standing is None:
+        return legs, demand, peak
+    try:
+        filed = int(standing["demand_gib"])
+        movers = [str(chunk["mover_action_key"])
+                  for chunk in standing["chunks"]]
+    except (KeyError, TypeError, ValueError):
+        return legs, demand, peak
+    wanted = set(movers)
+    kept = [leg for leg in _union(entries, frozenset())[0]
+            if leg["mover_key"] in wanted]
+    if [leg["mover_key"] for leg in kept] != movers:
+        return legs, demand, peak
+    return kept, filed, max(int(peak), filed)
+
+
 def _merge(queue, unit_id: str, entries: Sequence[dict],
            owned: frozenset) -> Unit:
     """One unit from its member consumers, merged on a gang group."""
@@ -278,6 +307,8 @@ def _merge(queue, unit_id: str, entries: Sequence[dict],
         demand, peak = bound["retained_gib"], bound["peak_gib"]
     else:
         legs, demand, peak = _union(entries, owned)
+    legs, demand, peak = _hold_filed(queue, unit_id, tier_id, entries, legs,
+                                     demand, peak)
     priority, published = _rank(first["item"])
     return Unit(
         key=first["key"], keys=[entry["key"] for entry in entries],

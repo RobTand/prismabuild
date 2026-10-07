@@ -246,6 +246,18 @@ def file_intent(queue: pool.PoolQueue, unit: str, holder: str, tier_id: str,
     return result in ("filed", "standing")
 
 
+def standing_intent(queue: pool.PoolQueue, unit: str, tier_id: str) -> dict | None:
+    """The filed intent of one group, or None when none is readable.
+
+    A standing intent is immutable, so a reader that builds a unit later
+    holds the filed demand and chunks instead of recomputing them from
+    evidence that has moved since (a live shared mover, a landed range).
+    """
+    status, record, _ = _read_receipt(group_dir(queue, unit, tier_id)
+                                      / "intent.json")
+    return record if status == "record" else None
+
+
 def _check_demand(demand_gib: object) -> int:
     """A whole non-negative token demand, or ValueError."""
     if isinstance(demand_gib, bool) or not isinstance(demand_gib, int):
