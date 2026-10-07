@@ -54,6 +54,7 @@ from prismabuild import core as pb  # noqa: E402
 from prismabuild import filesystem_capacity, filesystem_floor  # noqa: E402
 from prismabuild import movement_actions  # noqa: E402
 from prismabuild import pool  # noqa: E402
+from prismabuild import prelaunch_group  # noqa: E402
 from prismabuild import produced_output  # noqa: E402
 from prismabuild import progress as pb_progress  # noqa: E402
 from prismabuild import reader_lease  # noqa: E402
@@ -66,6 +67,7 @@ import deferred_release  # noqa: E402
 import prewarm_loop  # noqa: E402
 import manifest_promotion  # noqa: E402
 import stage_release  # noqa: E402
+import prelaunch_tier  # noqa: E402
 #: The same generation gate ``prewarm_loop`` reads, under the same name, for
 #: the same reason: a loop holds the modules it imported for its whole life,
 #: so a fix published under a running fleet reaches none of it (#615).
