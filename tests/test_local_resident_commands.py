@@ -10,6 +10,10 @@ from prismabuild import core, local_resident, pool, resident_sets
 from test_local_resident_mover import world
 from test_resident_sets_records import source
 
+from local_resident_space import roomy_disk  # noqa: F401
+
+pytestmark = pytest.mark.usefixtures("roomy_disk")
+
 
 def _dispatch_fixture(tmp_path, monkeypatch):
     import pbresident

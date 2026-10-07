@@ -7,6 +7,10 @@ import pytest
 from prismabuild import local_resident, pool, resident_sets
 from test_local_resident_mover import world
 
+from local_resident_space import roomy_disk  # noqa: F401
+
+pytestmark = pytest.mark.usefixtures("roomy_disk")
+
 
 def _publication(tmp_path, monkeypatch, store, set_id, spec, operation):
     import pbresident
