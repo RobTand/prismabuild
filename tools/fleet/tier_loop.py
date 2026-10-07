@@ -5550,6 +5550,7 @@ def window_pressure(
             "current_min_gib": window_credit.prelaunch_footprint_gib(
                 unit.peak_gib, owned),
             "next_min_gib": None,
+            "declared": True,
             "extra_held_gib": max(
                 int(_totals.get(tier_of_unit, 0)) - own_due, 0)})
     for _key, consumer, plan, tier_id in consumers:
@@ -5860,6 +5861,7 @@ def window_pressure(
             continue
         try:
             ready_full = 0
+            ready_new = 0
             for item in queue.ready_items():
                 if not isinstance(item, Mapping):
                     continue
@@ -5870,16 +5872,29 @@ def window_pressure(
                     continue
                 tier_needs = demands.get(tier_id)
                 if isinstance(tier_needs, Mapping):
-                    ready_full += int(tier_needs.get(kind, 0) or 0)
+                    row_gib = int(tier_needs.get(kind, 0) or 0)
+                    ready_full += row_gib
+                    # A declared unit is asked what its gate asks: a row its
+                    # funding record fully covers consumes its fence rather
+                    # than free, so it commits no new capacity (#1594).
+                    try:
+                        covered, _generation = queue.funded_cover(
+                            tier_id, item, kind, row_gib)
+                    except (OSError, pool.PoolContractError, ValueError,
+                            KeyError):
+                        covered = 0
+                    if not (row_gib and covered >= row_gib):
+                        ready_new += row_gib
         except (OSError, pool.PoolContractError, ValueError):
             ready_full = 0
+            ready_new = 0
         output_gib, output_enforced = owed[tier_id]
         existing_next = landed_next.get(tier_id, 0)
         for needs in waiting_newcomers:
             nxt = needs.get("next_min_gib")
             relief = _admission_relief(
                 held_gib=held_total + int(needs.get("extra_held_gib") or 0),
-                ready_gib=ready_full,
+                ready_gib=ready_new if needs.get("declared") else ready_full,
                 output_gib=output_gib, output_enforced=output_enforced,
                 capacity_gib=capacity_gib,
                 cur_min_gib=int(needs.get("current_min_gib") or 0),

@@ -19,10 +19,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from prismabuild import prelaunch_group, residency_plan  # noqa: E402
+from prismabuild import pool, prelaunch_group, residency_plan  # noqa: E402
 import stage_release  # noqa: E402
 from test_a_resident_range_is_adopted_rather_than_recopied import (  # noqa: E402
-    PHASE_GIB, STAGE_KIND, TIER, _cycle, _row, _stage_range, _tier_record)
+    PHASE_GIB, STAGE_KIND, TIER, _claim_with_progress, _cycle, _row,
+    _stage_range, _tier_record)
 from test_prelaunch_group_reconcile_1594 import _hexkey, _queue  # noqa: E402
 from test_prelaunch_tier_gate_1594 import _live  # noqa: E402
 from test_prelaunch_tier_module_1594 import _declared_plan  # noqa: E402
@@ -152,6 +153,58 @@ def test_the_relief_counts_queued_demand_the_gate_counts(tmp_path) -> None:
     assert _prefix_tokens(queue, consumer, plan) == 8, "the declared prefix never reserved"
 
 
+def _funded_next(queue, stage, movers_below: int = 3) -> int:
+    """A live reader whose next mover is published and funded; returns its gib.
+
+    Phase s0 (2 GiB) has landed and the reader reports it, so the window
+    publishes s1 (4 GiB) from the fence it took when the window was admitted:
+    the row is queued, and the loop's hand-off makes its funding record cover
+    the whole row (``transferring``), exactly what a gate calls "no new money".
+    """
+    reader = _hexkey("funded-reader")
+    plan = _declared_plan(queue, reader, [("s0", 2, False, 1), ("s1", 4, False, 1)],
+                          tag="fr")
+    _live(queue, plan, reader)
+    _cycle(queue, stage, gib=CAPACITY)                   # admit: fence s1
+    first = residency_plan.leads_for(plan)[0]
+    queue.item_path(pool.READY, first).unlink()          # its copy lands...
+    _stage_range(queue, mover=first, consumer=reader, stage=stage, ordinal=8,
+                 manifest="d" * 64)
+    _claim_with_progress(queue, reader, phase="s0")      # ...and is being read
+    for _ in range(3):
+        _cycle(queue, stage, gib=CAPACITY)                # publish s1, hand off
+    nxt = next(item for item in queue.ready_items()
+               if "stage_gib@" + TIER in " ".join(item.get("resources") or {}))
+    covered, _generation = queue.funded_cover(TIER, nxt, "stage_gib", 4)
+    assert covered == 4, "the fixture's queued row is not funded"
+    return 4
+
+
+def test_funded_queued_demand_is_not_new_money_for_the_relief(tmp_path) -> None:
+    """P1 (review of f3a2e3c): a row its funding covers commits nothing new.
+
+    Tier 20: three orphans (6), a landed prefix of a live reader (2) and its
+    funded next row (4, held as its fence): 12 held.  The waiter's peak is 11.
+    The gate adds the queued row's NEW money, which is zero, and needs 3 back.
+    A probe that adds the funded row's full 4 asks for 7 against 6 reclaimable
+    and concludes the relief is futile.
+    """
+    queue = _queue(tmp_path, stage_gib=CAPACITY)
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
+    movers = _orphans(queue, stage, 3)
+    _funded_next(queue, stage)
+    waiter = _hexkey("waiter-beside-funded-row")
+    plan = _declared_plan(queue, waiter, [("w0", 10, True, 1), ("w1", 1, False, 1)],
+                          tag="fw")
+    _live(queue, plan, waiter)                           # peak 11
+    for _ in range(8):
+        _cycle(queue, stage, gib=CAPACITY)
+    assert _held_orphans(queue, movers) < 3, "futile: no orphan was given back"
+    assert _prefix_tokens(queue, waiter, plan) == 10, "the declared prefix never reserved"
+
+
 def test_a_live_declared_prefix_is_not_counted_as_evictable(tmp_path) -> None:
     """P2: a waiter that fits only if a live prefix were evictable asks nothing.
 
@@ -187,7 +240,13 @@ def test_a_live_declared_prefix_is_not_counted_as_evictable(tmp_path) -> None:
 
 def test_the_pressure_census_receives_the_declared_keys(
         tmp_path, monkeypatch) -> None:
-    """P2, wiring: the horizon candidates are asked with the protected keys."""
+    """P2, wiring only: the horizon candidates are asked with the protected keys.
+
+    This proves argument forwarding, not eviction behaviour.  Two attempts to
+    build a fixture whose horizon pass returns a declared leg as a candidate
+    (a claimed reader, landed chunks, a landing rate) returned no candidate at
+    all, so no behavioural P2 regression exists here yet.
+    """
     import tier_loop
     queue = _queue(tmp_path, stage_gib=CAPACITY)
     stage = tmp_path / "stage"
