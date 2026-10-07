@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 from test_gang_reservation_1517 import HOSTS, gang_fleet  # noqa: F401
+from test_measurement_drains_gpu_backfill import fleet  # noqa: F401
 
 from prismabuild import _gang, core as pb, pool, residency_map, residency_plan
 
@@ -165,6 +166,8 @@ def _gang_pair(gang_fleet, tmp_path, name, *, declare_manifest: bool,
     queue, clock, publish, finish, gclaim, denial, members = gang_fleet
     cas = pb.PrismaBuildCAS(tmp_path / f"{name}-cas")
     checkout = tmp_path / f"{name}-checkout"
+    checkout.mkdir(exist_ok=True)
+    (checkout / "task.py").write_text("print('1594')\n")
     group = secrets.token_hex(16)
     keys = []
     leads = []

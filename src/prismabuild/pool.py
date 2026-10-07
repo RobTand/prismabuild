@@ -17824,15 +17824,15 @@ class PoolQueue:
                 declared = True
                 continue
             problems: list[Exception] = []
-            plan = residency_plan.read(self, other_key,
-                                       on_unreadable=problems.append)
-            if plan is None:
+            declared_here = residency_plan.filed_prelaunch_phases(
+                self, other_key, on_unreadable=problems.append)
+            if declared_here is None:
                 if problems:
                     # An unreadable plan may declare: fail closed and read
                     # the siblings below instead of calling this gang clean.
                     declared = True
                 continue
-            if residency_plan.prelaunch_phase_names(plan):
+            if declared_here:
                 declared = True
         if not declared:
             return None
