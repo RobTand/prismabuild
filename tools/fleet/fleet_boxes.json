@@ -72,7 +72,7 @@
     "--mem-gb-ram-tier-roof",
     "--all-cores",
     "--timeout-s",
-    "3600",
+    "7200",
     "--max-idle",
     "2000",
     "--poll-s",
