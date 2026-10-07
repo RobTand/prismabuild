@@ -1524,6 +1524,12 @@ creating and closing an anonymous temporary file before pytest and refuses an
 unavailable or unusable parent. The default keeps its existing fallback behavior.
 This startup check does not guarantee free space or later availability.
 
+A checkout that cannot be edited chooses pytest's tmp retention through
+`--pytest-args '["-o", "tmp_path_retention_policy=none"]'` (or `all`, or `failed`;
+`--override-ini` is the same option). It is the only key `-o` accepts, and it is
+accepted once. The value enters the sealed action identity, so two retention
+choices are two actions.
+
 Every requested path must be a file or directory. A missing or invalid path
 refuses the whole submission with exit code 2 and a diagnostic before any
 shard starts; valid paths cannot hide a misspelled path by yielding a green
@@ -1646,8 +1652,10 @@ multiple workers and accepts `load`, `loadscope`, `loadfile`, `loadgroup`, or
 `worksteal`; `each` would repeat the population and is refused.
 
 Forwarded arguments cannot add files, change worker counts, select another
-config, or inject plugins/ini overrides. Unknown options are refused before
-submission; new plugin options require an explicit vocabulary extension.
+config, or inject plugins. The one ini override is the tmp retention policy
+above; every other `-o` or `--override-ini` is refused. Unknown options are
+refused before submission; new plugin options require an explicit vocabulary
+extension.
 When `--pytest-args` is supplied (even `[]`), it replaces both project and
 environment `addopts` so those cannot silently contradict the reservations.
 Pass the wanted supported options explicitly. Without this option, existing
