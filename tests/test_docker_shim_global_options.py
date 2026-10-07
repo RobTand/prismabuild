@@ -117,8 +117,11 @@ def _shim(tmp_path: Path, argv: list[str], *, cgroup: str | None = None,
 
 
 def _labels(forwarded: list[str]) -> list[str]:
+    """The owner, job and scope labels.  The per-call attempt label (#1599) is a
+    random nonce and is asserted in test_docker_shim_relays_termination_1599."""
     return [forwarded[index + 1] for index, token in enumerate(forwarded)
-            if token == "--label" and index + 1 < len(forwarded)]
+            if token == "--label" and index + 1 < len(forwarded)
+            and not forwarded[index + 1].startswith("prismabuild.shim=")]
 
 
 @pytest.mark.parametrize("argv,at", [
@@ -148,8 +151,14 @@ def test_a_creation_behind_global_options_is_still_labelled(
     assert inspected[:global_count] == argv[:global_count]
     created = next(i for i, token in enumerate(forwarded) if token in {"run", "create"}) + 1
     assert forwarded[created:created + 2] == ["--label", f"prismabuild.action={OWNER}"]
-    assert forwarded[created + 2] == "--cpuset-cpus"
-    assert forwarded[created + 4:] == argv[at:]
+    # The per-call attempt label (#1599) follows the owner label, then the
+    # cpuset, then the cidfile the stop path reads; nothing else is inserted
+    # and the image and its argv stay exactly as the caller wrote them.
+    assert forwarded[created + 2] == "--label"
+    assert forwarded[created + 3].startswith("prismabuild.shim=")
+    assert forwarded[created + 4] == "--cpuset-cpus"
+    assert forwarded[created + 6] == "--cidfile"
+    assert forwarded[created + 8:] == argv[at:]
 
 
 def test_the_job_label_also_survives_a_global_option(tmp_path: Path) -> None:

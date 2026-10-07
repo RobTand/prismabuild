@@ -7,16 +7,42 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import math
 import re
+import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 
 
 OWNER_ENV = "PRISMABUILD_CONTAINER_OWNER"
 MARKER_ENV = "PRISMABUILD_CONTAINER_MARKER"
 LABEL = "prismabuild.action"
 SCOPE_LABEL = "prismabuild.scope"
+
+#: One label per shim invocation: a random nonce that names the container THIS
+#: call created.  The owner label names the action, and an action may run
+#: several containers at once, so a stop that must touch exactly one container
+#: cannot use it alone (#1599).  Callers may not set it.
+SHIM_LABEL = "prismabuild.shim"
+
+#: Termination is relayed to the real client (#1599).  A guard that stops a
+#: workload sends TERM to this process, and the container belongs to the
+#: daemon, so a shim that only waits ends without stopping it.  The signals
+#: the shim forwards, the grace the workload gets before the container is
+#: killed, and the wait for the client to follow.  The defaults sit inside the
+#: five seconds the campaign guard allows between TERM and its own KILL; an
+#: action that runs its own escalation may lengthen them, never past the cap.
+RELAYED_SIGNALS = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
+GRACE_ENV = "PRISMABUILD_DOCKER_STOP_GRACE_S"
+KILL_WAIT_ENV = "PRISMABUILD_DOCKER_STOP_KILL_WAIT_S"
+DEFAULT_GRACE_S, MAX_GRACE_S = 3.0, 30.0
+DEFAULT_KILL_WAIT_S, MAX_KILL_WAIT_S = 1.0, 10.0
+#: Each daemon call the stop path makes is bounded on its own.
+DAEMON_CALL_S = 3.0
+RECEIPT_SCHEMA = "prismabuild.docker_stop_receipt.v1"
 SCOPE_RE = re.compile(r"prismabuild-job[a-f0-9]{32}\.slice")
 
 #: A second label naming the SLURM job this container was created inside.
@@ -288,7 +314,7 @@ def _label_values(argv: list[str]):
 
 def _has_reserved_label(argv: list[str]) -> bool:
     for value in _label_values(argv):
-        if value.split("=", 1)[0] in {LABEL, JOB_LABEL, SCOPE_LABEL}:
+        if value.split("=", 1)[0] in {LABEL, JOB_LABEL, SCOPE_LABEL, SHIM_LABEL}:
             return True
     return False
 
@@ -370,6 +396,8 @@ def _container_options(argv: list[str], *, memory_limit: int | None = None) -> t
                     break  # Explicit short boolean value, left for Docker to validate.
         if name in {"--label", "-l"}:
             options.extend(["--label", value])
+        if name == "--cidfile":
+            options.extend(["--cidfile", value])
         if memory_limit is not None and name == "--oom-score-adj":
             try:
                 adjustment = int(value)
@@ -606,6 +634,234 @@ def _container_intent(scope: str, *, ticket: str | None = None) -> dict:
         raise Refused(f"cannot register container creation with the PB resource broker: {exc}") from exc
 
 
+def _bounded_seconds(name: str, default: float, maximum: float) -> float:
+    """A positive, finite, capped number of seconds from the environment."""
+    raw = os.environ.get(name, "")
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    if not math.isfinite(value) or value <= 0:
+        return default
+    return min(value, maximum)
+
+
+def _stop_grace() -> float:
+    return _bounded_seconds(GRACE_ENV, DEFAULT_GRACE_S, MAX_GRACE_S)
+
+
+def _kill_wait() -> float:
+    return _bounded_seconds(KILL_WAIT_ENV, DEFAULT_KILL_WAIT_S, MAX_KILL_WAIT_S)
+
+
+def _daemon(real: str, global_options: list[str], environment: dict, args: list[str]):
+    """One bounded call to the real client; ``(None, "")`` when it cannot run."""
+    try:
+        done = subprocess.run([real, *global_options, *args], env=environment,
+                              capture_output=True, text=True, check=False,
+                              timeout=DAEMON_CALL_S)
+    except (OSError, subprocess.TimeoutExpired):
+        return None, ""
+    return done.returncode, done.stdout
+
+
+def _container_id(cidfile: Path, real: str, global_options: list[str],
+                  environment: dict, nonce: str):
+    """The id of the container THIS invocation created, and how it was found.
+
+    The cidfile is the client's own record of the id.  When it is absent (the
+    client may stop before it writes one) the invocation's own label finds the
+    container: the nonce names this call and no other.  Neither is a name, and
+    neither matches another container of the same action.
+    """
+    try:
+        text = cidfile.read_text(encoding="utf-8").strip()
+    except OSError:
+        text = ""
+    if re.fullmatch(r"[0-9a-f]{12,64}", text):
+        return text, "cidfile"
+    code, out = _daemon(real, global_options, environment,
+                        ["ps", "-aq", "--no-trunc", "--filter",
+                         f"label={SHIM_LABEL}={nonce}"])
+    found = [line for line in out.split() if re.fullmatch(r"[0-9a-f]{12,64}", line)]
+    if code != 0:
+        # A failed query is not an empty answer (the D44 helper's rule): an
+        # unreadable daemon says nothing about whether the container exists.
+        return None, "unreadable"
+    if len(found) == 1:
+        return found[0], "label"
+    return None, None
+
+
+def _inspect(real: str, global_options: list[str], environment: dict, cid: str):
+    """``(state, row)``: present, absent (the daemon has no such container) or unreadable."""
+    code, out = _daemon(real, global_options, environment, ["inspect", cid])
+    if code is None:
+        return "unreadable", None
+    if code != 0:
+        return "absent", None
+    try:
+        rows = json.loads(out)
+    except ValueError:
+        return "unreadable", None
+    if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict):
+        return "unreadable", None
+    return "present", rows[0]
+
+
+def _owned_by_this_attempt(row: dict, owner: str, scope, nonce: str) -> bool:
+    """The existing ownership contract (see ``_owned_exec``), plus this call's nonce."""
+    labels = (row.get("Config") or {}).get("Labels") or {}
+    if labels.get(LABEL) != owner or labels.get(SHIM_LABEL) != nonce:
+        return False
+    if scope is not None:
+        if (labels.get(SCOPE_LABEL) != scope[0]
+                or (row.get("HostConfig") or {}).get("CgroupParent") != scope[0]):
+            return False
+    return True
+
+
+def _final_state(row: dict | None, state: str) -> dict:
+    running = bool(((row or {}).get("State") or {}).get("Running"))
+    info = (row or {}).get("State") or {}
+    return {"found": state == "present", "inspect": state,
+            "running": running if state == "present" else None,
+            "status": info.get("Status"), "exit_code": info.get("ExitCode"),
+            "oom_killed": info.get("OOMKilled"),
+            "finished_at": info.get("FinishedAt")}
+
+
+def _write_receipt(path: Path, receipt: dict) -> None:
+    """Atomic and best-effort: a receipt that cannot be written never changes the stop."""
+    try:
+        temporary = path.with_name(path.name + f".tmp{os.getpid()}")
+        temporary.write_text(json.dumps(receipt, sort_keys=True) + "\n", encoding="utf-8")
+        os.replace(temporary, path)
+    except OSError:
+        pass
+
+
+def _run_relayed(real: str, args: list[str], environment: dict, *, owner: str,
+                 scope, global_options: list[str], nonce: str, cidfile: Path,
+                 receipt_path: Path) -> int:
+    """Run the real client; on TERM, INT or HUP stop the workload it started (#1599).
+
+    The handlers are installed BEFORE the client starts, so a signal in the
+    launch window is not lost.  The first signal is forwarded to the client,
+    which relays it to the container's main process.  When the client is still
+    running after the grace, the exact container this call created (checked
+    against the owner and scope labels) is killed, and the client is killed
+    only if it outlives that.  Once the client has gone, a container of this
+    call that still runs gets the same signal and then a kill, so a client
+    that died without relaying leaves nothing behind.  The shim returns only
+    after that, so the marker lock and the resource scope outlive the workload.
+    A container the shim cannot show to be this attempt's is never killed.
+    """
+    received: list[tuple[int, float]] = []
+
+    def note(number, _frame):
+        received.append((number, time.time()))
+
+    previous = {number: signal.signal(number, note) for number in RELAYED_SIGNALS}
+    grace, kill_wait = _stop_grace(), _kill_wait()
+    escalation = {"container_killed": False, "client_killed": False}
+    started = time.time()
+    first_unix = None
+    try:
+        child = subprocess.Popen([real, *args], env=environment)
+        forwarded = 0
+        deadline = None
+        while child.poll() is None:
+            while forwarded < len(received):
+                number, at = received[forwarded]
+                forwarded += 1
+                if first_unix is None:
+                    first_unix = at
+                    deadline = time.monotonic() + grace
+                    _write_receipt(receipt_path, {
+                        "schema": RECEIPT_SCHEMA, "owner": owner, "nonce": nonce,
+                        "outcome": "signalled", "container_id": None,
+                        "signals": [{"signal": int(n), "at_unix": t} for n, t in received],
+                        "grace_s": grace, "kill_wait_s": kill_wait})
+                try:
+                    child.send_signal(number)
+                except OSError:
+                    pass
+            if deadline is not None and time.monotonic() >= deadline:
+                break
+            time.sleep(0.02)
+        if child.poll() is None:
+            # The client outlived the grace: stop the exact container first.
+            cid, found_by = _container_id(cidfile, real, global_options, environment, nonce)
+            if cid is not None:
+                state, row = _inspect(real, global_options, environment, cid)
+                if state == "present" and _owned_by_this_attempt(row, owner, scope, nonce):
+                    _daemon(real, global_options, environment,
+                            ["kill", "--signal", "KILL", cid])
+                    escalation["container_killed"] = True
+            wait_until = time.monotonic() + kill_wait
+            while child.poll() is None and time.monotonic() < wait_until:
+                time.sleep(0.02)
+            if child.poll() is None:
+                child.kill()
+                escalation["client_killed"] = True
+                try:
+                    child.wait(timeout=DAEMON_CALL_S)
+                except subprocess.TimeoutExpired:
+                    pass
+        code = child.returncode
+    finally:
+        for number, handler in previous.items():
+            signal.signal(number, handler)
+    if not received:
+        return code if code is not None else 1
+    if first_unix is None:
+        first_unix = received[0][1]
+
+    # The client is gone.  Find the container and make sure it is stopped.
+    cid, found_by = _container_id(cidfile, real, global_options, environment, nonce)
+    outcome = "unknown" if found_by == "unreadable" else "no_container"
+    final = {"found": False, "inspect": None, "running": None}
+    if cid is not None:
+        state, row = _inspect(real, global_options, environment, cid)
+        final = _final_state(row, state)
+        if state == "absent":
+            outcome = "stopped"
+        elif state == "unreadable":
+            outcome = "unknown"
+        elif not _owned_by_this_attempt(row, owner, scope, nonce):
+            outcome = "not_owned"
+        elif not final["running"]:
+            outcome = "killed" if escalation["container_killed"] else "stopped"
+        else:
+            number = received[0][0]
+            _daemon(real, global_options, environment,
+                    ["kill", "--signal", signal.Signals(number).name[3:], cid])
+            end = time.monotonic() + max(0.0, grace - (time.time() - first_unix))
+            while time.monotonic() < end:
+                state, row = _inspect(real, global_options, environment, cid)
+                if state != "present" or not (row.get("State") or {}).get("Running"):
+                    break
+                time.sleep(0.1)
+            if state == "present" and (row.get("State") or {}).get("Running"):
+                _daemon(real, global_options, environment,
+                        ["kill", "--signal", "KILL", cid])
+                escalation["container_killed"] = True
+                state, row = _inspect(real, global_options, environment, cid)
+            final = _final_state(row, state)
+            outcome = ("still_running" if final["running"]
+                       else "killed" if escalation["container_killed"] else "stopped")
+    _write_receipt(receipt_path, {
+        "schema": RECEIPT_SCHEMA, "owner": owner, "nonce": nonce,
+        "scope": scope[0] if scope else None,
+        "container_id": cid, "found_by": found_by, "outcome": outcome,
+        "signals": [{"signal": int(n), "at_unix": t} for n, t in received],
+        "started_unix": started, "finished_unix": time.time(),
+        "client_exit_code": code, "grace_s": grace, "kill_wait_s": kill_wait,
+        "escalation": escalation, "container_final": final})
+    return 128 + int(received[0][0])
+
+
 def main() -> int:
     argv = sys.argv[1:]
     owner = os.environ.get(OWNER_ENV, "")
@@ -701,6 +957,7 @@ def main() -> int:
     marker = Path(marker_raw)
     marker.parent.mkdir(parents=True, exist_ok=True)
     descriptor = os.open(marker, os.O_RDWR | os.O_CREAT, 0o644)
+    cid_directory = None
     try:
         # Held until the Docker CLI returns or this action is killed.  Cleanup
         # acquires the same lock before querying the daemon, so it cannot race
@@ -710,6 +967,7 @@ def main() -> int:
         os.write(descriptor, owner.encode() + b"\n")
         os.fsync(descriptor)
         labels = ["--label", f"{LABEL}={owner}"]
+        nonce = os.urandom(16).hex()
         job = _slurm_job_id()
         if job:
             labels += ["--label", f"{JOB_LABEL}={job}"]
@@ -722,11 +980,28 @@ def main() -> int:
             limit = int(memory_options[-1]) if memory_options else limit
             containment = ["--cgroup-parent", unit, "--memory", str(limit),
                            "--memory-swap", str(limit)]
+        labels += ["--label", f"{SHIM_LABEL}={nonce}"]
+        # The client's own record of the container id, for the stop path.  A
+        # cidfile the caller named is theirs and is kept; ours is made fresh,
+        # because Docker refuses a cidfile that exists, and is removed after.
+        caller_cidfile = [options[i + 1] for i, token in enumerate(options)
+                          if token == "--cidfile" and i + 1 < len(options)]
+        if caller_cidfile:
+            cidfile, cid_option = Path(caller_cidfile[-1]), []
+        else:
+            cid_directory = Path(tempfile.mkdtemp(prefix="pbdocker-cid-"))
+            cidfile = cid_directory / "cid"
+            cid_option = ["--cidfile", str(cidfile)]
         labelled = [*global_options, *sub[:relative], *labels, *containment,
-                    "--cpuset-cpus", cpuset, *creation]
+                    "--cpuset-cpus", cpuset, *cid_option, *creation]
         try:
             ticket = _container_intent(scope[0])["ticket"] if scope else None
-            result = subprocess.run([real, *labelled], env=environment, check=False)
+            receipt_path = marker.with_name(f"{marker.name}.stop-{nonce[:12]}.json")
+            result = subprocess.CompletedProcess(
+                [real, *labelled], _run_relayed(
+                    real, labelled, environment, owner=owner, scope=scope,
+                    global_options=global_options, nonce=nonce, cidfile=cidfile,
+                    receipt_path=receipt_path))
             # Only CLI success proves the daemon operation settled. A nonzero
             # exit can follow a connection failure after daemon acceptance.
             # Retain its pending ticket (also for an ordinary user-command
@@ -739,6 +1014,8 @@ def main() -> int:
             return 125
     finally:
         os.close(descriptor)
+        if cid_directory is not None:
+            shutil.rmtree(cid_directory, ignore_errors=True)
 
 
 if __name__ == "__main__":
