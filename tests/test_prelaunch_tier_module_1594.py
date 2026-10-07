@@ -224,10 +224,13 @@ def test_gang_group_merges_into_one_unit_with_deduplicated_legs(
     found = units[0]
     assert found.unit == group and found.keys == [first, second]
     assert found.key == first
+    # Legs dedupe by share namespace: the same manifest, tier and range is one
+    # copy.  ``phase-b`` is the same range in both plans, so it counts once.  A
+    # production range has one registered mover (#1026); this fixture has two
+    # unregistered ones, and the first stays.
     assert sorted(leg["mover_key"] for leg in found.legs) == sorted(
-        [shared_mover, _mover_of(plan_a, "phase-b"),
-         _mover_of(plan_b, "phase-b")])
-    assert found.demand_gib == 12 and found.peak_gib == 14
+        [shared_mover, _mover_of(plan_a, "phase-b")])
+    assert found.demand_gib == 8 and found.peak_gib == 10
 
 
 def test_multi_tier_gang_is_unsupported(tmp_path) -> None:
@@ -441,10 +444,10 @@ def test_declared_leg_keys_names_live_prefixes(tmp_path) -> None:
 def _orphan(queue, tag):
     """A committed group whose consumer never goes live."""
     consumer = _hexkey(f"{tag}-orphan")
-    mover = _hexkey(f"{tag}-orphan-mover")
     plan = _declared_plan(queue, consumer, [("phase-a", 2, True, 1)],
                           tag=tag)
     residency_plan.freeze(queue, plan)
+    mover = _mover_of(plan, "phase-a")
     unit, holder = _file_group(queue, plan, [mover], demand=2)
     _drive_to_committed(queue, TIER, unit, holder, 2, [mover])
     return consumer, holder

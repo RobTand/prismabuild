@@ -77,7 +77,9 @@ def test_declared_window_reserves_then_publishes_and_binds(tmp_path) -> None:
             break
     assert all(queue.item_path(pool.READY, mover).exists()
                or queue.item_path(pool.CLAIMED, mover).exists()
-               for mover in movers)
+               for mover in movers), [
+        (event.get("event"), event.get("reason"), event.get("phase"))
+        for event in seen]
     bound = [event for event in seen
              if event.get("event") == "prelaunch-chunk-published"]
     assert {event["mover"] for event in bound} == set(movers)
@@ -138,7 +140,7 @@ def test_multi_tier_gang_gets_unsupported_and_no_holder(tmp_path) -> None:
     queue = _queue(tmp_path, stage_gib=300)
     queue.mint_tier_capacity(OTHER_TIER, {"stage_gib": 300})
     tiers = {TIER: _stage(queue, TIER), OTHER_TIER: _stage(queue, OTHER_TIER)}
-    group = _hexkey("gang-group")
+    group = _hexkey("gang-group")[:32]
     first = _hexkey("gang-first")
     second = _hexkey("gang-second")
     specs = [("phase-a", 2, True, 1)]
@@ -167,9 +169,11 @@ def test_superseded_declared_unit_releases_its_group(tmp_path) -> None:
     plan = _declared_plan(queue, consumer, specs, tag="ended")
     _live(queue, plan, consumer, specs)
     unit, _movers = _declared_movers(queue, consumer)
+    seen: list[dict] = []
     for _ in range(6):
-        tier_loop.residency_window(queue, tiers=tiers)
-    assert pg.has_holdings(queue, unit.unit)
+        seen.extend(tier_loop.residency_window(queue, tiers=tiers))
+    assert pg.has_holdings(queue, unit.unit), [
+        (event.get("event"), event.get("reason")) for event in seen]
     filed, incarnation = residency_plan.read_filed(queue, consumer)
     assert filed is not None
     assert residency_plan.mark_superseded(

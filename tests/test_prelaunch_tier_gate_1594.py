@@ -208,11 +208,9 @@ def test_undeclared_newcomer_waits_then_proceeds(tmp_path) -> None:
     assert entry["reason"] == "joint-fit-stall"
     assert entry["permanent"] is False
     assert (declared, TIER) not in first["gated"]
-    items = {item["action_key"]: item for item in queue.ready_items()}
-    got = queue.claim(tags=["dl380g10"], owner="w-plain",
-                      ready=[items[declared]])
-    assert got is not None and got["action_key"] == declared
-    queue.finish(declared, status="executed")
+    # The declared consumer ends.  Its leads are not resident, so a claim is
+    # refused by design; a withdrawal is how a waiting window ends.
+    queue.withdraw(declared, reason="test: the declared consumer ended")
     released = pt.release_terminal(queue, TIER, units, shared_owned=[])
     assert any(event["event"] == "prelaunch-group-released"
                for event in released)
@@ -429,6 +427,7 @@ def test_incomplete_census_withholds_the_release(tmp_path) -> None:
     holder = _orphan(queue, "half")
     _plain_live(queue, "half")
     stranger = _hexkey("half-stranger")
+    Path(queue.residency_plan_path(stranger)).write_text("{not json")
     queue.publish(
         action_key=stranger, cas_root=str(queue.root / "cas"),
         checkout_root=str(queue.root / "co"),
