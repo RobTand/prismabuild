@@ -61,6 +61,8 @@ if "context" in argv and "inspect" in argv:
     print(json.dumps("unix:///var/run/docker.sock"))
     sys.exit(0)
 verb = next((t for t in argv if t in {"run", "create", "inspect", "kill", "ps"}), None)
+if verb in ("inspect", "kill", "ps") and os.environ.get("FAKE_DAEMON_SLOW"):
+    time.sleep(float(os.environ["FAKE_DAEMON_SLOW"]))
 
 if verb in ("run", "create"):
     cidfile = argv[argv.index("--cidfile") + 1] if "--cidfile" in argv else None
@@ -104,6 +106,9 @@ if verb in ("run", "create"):
 
 if verb == "kill":
     record(verb="kill", argv=argv)
+    if os.environ.get("FAKE_KILL_REJECTS") == "1":
+        sys.stderr.write("Error response from daemon: permission denied\\n")
+        sys.exit(1)
     data = load()
     if argv[-1] != data.get("cid"):
         sys.exit(1)
@@ -118,7 +123,11 @@ if verb == "kill":
 if verb == "inspect":
     record(verb="inspect", argv=argv)
     data = load()
+    if os.environ.get("FAKE_INSPECT_FAILS") == "1":
+        sys.stderr.write("Cannot connect to the Docker daemon at unix:///var/run/docker.sock\\n")
+        sys.exit(1)
     if argv[-1] != data.get("cid") or data.get("removed"):
+        sys.stderr.write("Error: No such object: " + argv[-1] + "\\n")
         sys.exit(1)
     labels = dict(data.get("labels", {}))
     labels.update(json.loads(os.environ.get("FAKE_LABEL_OVERRIDE", "{}")))
@@ -221,7 +230,7 @@ def test_a_term_reaches_the_client_and_the_receipt_names_the_container(tmp_path)
     assert receipt["owner"] == OWNER
     assert receipt["outcome"] == "stopped"
     assert receipt["signals"][0]["signal"] == int(signal.SIGTERM)
-    assert receipt["escalation"] == {"container_killed": False, "client_killed": False}
+    assert receipt["escalation"] == {"container_killed": False, "client_killed": False, "kill_rejected": 0}
     assert receipt["container_final"]["running"] is False
 
 
@@ -329,7 +338,7 @@ def test_the_wait_is_bounded_when_the_client_survives_everything_but_kill(tmp_pa
     assert time.monotonic() - began < 10
     assert len(_calls(tmp_path, "kill")) == 1
     receipt = _receipts(tmp_path)[0]
-    assert receipt["escalation"] == {"container_killed": True, "client_killed": True}
+    assert receipt["escalation"] == {"container_killed": True, "client_killed": True, "kill_rejected": 0}
 
 
 def test_without_a_signal_there_is_no_receipt_and_no_cidfile_left(tmp_path):
@@ -367,7 +376,7 @@ def test_a_caller_cidfile_is_used_and_kept(tmp_path):
 
 
 @pytest.mark.parametrize("raw,expected", [
-    (None, 3.0), ("", 3.0), ("abc", 3.0), ("-1", 3.0), ("nan", 3.0), ("0", 3.0),
+    (None, 1.5), ("", 1.5), ("abc", 1.5), ("-1", 1.5), ("nan", 1.5), ("0", 1.5),
     ("0.5", 0.5), ("7", 7.0), ("999", 30.0),
 ])
 def test_the_grace_is_parsed_bounded_and_defaulted(raw, expected):
@@ -384,3 +393,121 @@ def test_the_grace_is_parsed_bounded_and_defaulted(raw, expected):
         os.environ.pop("PRISMABUILD_DOCKER_STOP_GRACE_S", None)
         if previous is not None:
             os.environ["PRISMABUILD_DOCKER_STOP_GRACE_S"] = previous
+
+
+def test_a_failed_inspect_is_unknown_and_never_a_stop(tmp_path):
+    """A daemon that cannot be queried proves nothing about the container."""
+    process = _start(tmp_path, mode="ignore", grace="1",
+                     extra={"FAKE_INSPECT_FAILS": "1"})
+    _wait_started(tmp_path)
+    process.send_signal(signal.SIGTERM)
+    code = process.wait(timeout=15)
+    assert code == 125, code            # not 143: no stop was proven
+    receipt = _receipts(tmp_path)[0]
+    assert receipt["outcome"] == "unknown"
+    assert receipt["escalation"]["container_killed"] is False
+    assert _calls(tmp_path, "kill") == []   # ownership could not be shown
+
+
+def test_a_rejected_kill_is_not_a_kill_and_the_shim_does_not_claim_a_stop(tmp_path):
+    process = _start(tmp_path, mode="ignore", grace="1",
+                     extra={"FAKE_KILL_REJECTS": "1"})
+    _wait_started(tmp_path)
+    began = time.monotonic()
+    process.send_signal(signal.SIGTERM)
+    code = process.wait(timeout=20)
+    assert time.monotonic() - began < 6
+    assert code == 125, code
+    receipt = _receipts(tmp_path)[0]
+    assert receipt["outcome"] == "still_running"
+    assert receipt["escalation"]["container_killed"] is False
+    assert receipt["escalation"]["kill_rejected"] >= 1
+    assert receipt["container_final"]["running"] is True
+    assert len(_calls(tmp_path, "kill")) >= 2        # it retried within the bound
+
+
+def test_the_relay_handlers_stay_armed_through_the_stop(tmp_path):
+    """A second TERM during cleanup must not kill the shim before its receipt."""
+    process = _start(tmp_path, mode="ignore", grace="1",
+                     extra={"FAKE_KILL_REJECTS": "1"})
+    _wait_started(tmp_path)
+    process.send_signal(signal.SIGTERM)
+    time.sleep(1.4)                      # past the grace: the stop path is running
+    process.send_signal(signal.SIGTERM)
+    code = process.wait(timeout=20)
+    assert code == 125, code             # not -15: the handler was still armed
+    assert _receipts(tmp_path)[0]["outcome"] == "still_running"
+
+
+def test_a_hung_daemon_cannot_stretch_the_stop_past_the_guard_interval(tmp_path):
+    """Default settings: the whole stop fits the five seconds a guard allows."""
+    process = _start(tmp_path, mode="ignore", grace=None, kill_wait=None,
+                     extra={"FAKE_DAEMON_SLOW": "30"})
+    _wait_started(tmp_path)
+    began = time.monotonic()
+    process.send_signal(signal.SIGTERM)
+    code = process.wait(timeout=20)
+    elapsed = time.monotonic() - began
+    assert elapsed < 5.0, elapsed
+    assert code == 125, code
+    assert _receipts(tmp_path)[0]["outcome"] in {"unknown", "still_running"}
+
+
+def test_the_default_stop_of_a_term_ignoring_workload_fits_the_guard_interval(tmp_path):
+    process = _start(tmp_path, mode="ignore", grace=None, kill_wait=None)
+    _wait_started(tmp_path)
+    began = time.monotonic()
+    process.send_signal(signal.SIGTERM)
+    assert process.wait(timeout=20) == 128 + signal.SIGTERM
+    assert time.monotonic() - began < 5.0
+    assert _receipts(tmp_path)[0]["outcome"] == "killed"
+
+
+@pytest.mark.parametrize("number", [signal.SIGINT, signal.SIGHUP])
+def test_int_and_hup_are_relayed_like_term(tmp_path, number):
+    process = _start(tmp_path, mode="honor")
+    _wait_started(tmp_path)
+    process.send_signal(number)
+    assert process.wait(timeout=15) == 128 + int(number)
+    seen = [c["signal"] for c in _state(tmp_path)["calls"] if c.get("event") == "signal-seen"]
+    assert seen == [int(number)]
+    assert _receipts(tmp_path)[0]["outcome"] == "stopped"
+
+
+def test_a_nonce_mismatch_is_not_owned_and_is_never_killed(tmp_path):
+    process = _start(tmp_path, mode="ignore", grace="1",
+                     extra={"FAKE_LABEL_OVERRIDE": json.dumps({"prismabuild.shim": "0" * 32})})
+    _wait_started(tmp_path)
+    process.send_signal(signal.SIGTERM)
+    code = process.wait(timeout=15)
+    assert code == 125, code
+    assert _calls(tmp_path, "kill") == []
+    assert _receipts(tmp_path)[0]["outcome"] == "not_owned"
+
+
+def _shim_module():
+    loader = importlib.machinery.SourceFileLoader("pb_docker_shim_1599_own", str(SHIM))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+SCOPE = ("prismabuild-job" + "a" * 32 + ".slice", 1)
+
+
+@pytest.mark.parametrize("labels,parent,scope,expected", [
+    ({"prismabuild.action": OWNER, "prismabuild.shim": "n"}, "", None, True),
+    ({"prismabuild.action": "2" * 64, "prismabuild.shim": "n"}, "", None, False),
+    ({"prismabuild.action": OWNER, "prismabuild.shim": "other"}, "", None, False),
+    ({"prismabuild.action": OWNER, "prismabuild.shim": "n",
+      "prismabuild.scope": SCOPE[0]}, SCOPE[0], SCOPE, True),
+    ({"prismabuild.action": OWNER, "prismabuild.shim": "n",
+      "prismabuild.scope": "prismabuild-job" + "b" * 32 + ".slice"}, SCOPE[0], SCOPE, False),
+    ({"prismabuild.action": OWNER, "prismabuild.shim": "n",
+      "prismabuild.scope": SCOPE[0]}, "elsewhere.slice", SCOPE, False),
+    ({"prismabuild.action": OWNER, "prismabuild.shim": "n"}, SCOPE[0], SCOPE, False),
+])
+def test_ownership_needs_owner_nonce_and_the_scope_when_scoped(labels, parent, scope, expected):
+    row = {"Config": {"Labels": labels}, "HostConfig": {"CgroupParent": parent}}
+    assert _shim_module()._owned_by_this_attempt(row, OWNER, scope, "n") is expected

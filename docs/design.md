@@ -5077,28 +5077,36 @@ cooperative execution controls, not hostile-process containment.
 
 The shim relays termination (#1599).  A foreground `docker run` or `create`
 runs the real client as a child, with handlers for TERM, INT and HUP installed
-before it starts.  The first signal is forwarded to the client, which relays it
-to the container's main process.  If the client outlives a bounded grace (3 s,
-`PRISMABUILD_DOCKER_STOP_GRACE_S`, capped at 30 s), the shim kills the exact
-container this call created and then the client if it outlives a second bound
-(1 s, `PRISMABUILD_DOCKER_STOP_KILL_WAIT_S`, capped at 10 s).  The container is
-named by a `--cidfile` (the caller's own, else a fresh one the shim removes) and
-by a per-call label, `prismabuild.shim=<nonce>`, that callers may not set.  It
-is killed only after `docker inspect` shows the owner label and nonce, and the
+before it starts and kept armed until the receipt is written.  The first signal
+is forwarded to the client, which relays it to the container's main process.
+One absolute deadline bounds the whole stop: a grace (1.5 s,
+`PRISMABUILD_DOCKER_STOP_GRACE_S`, capped at 30 s) plus a tail of 2.5 s that
+covers the ownership query, the kill and the check afterwards, 4 s by default,
+inside the five a guard may allow between TERM and its own KILL; each daemon call
+is also capped by what remains.  After the grace the shim kills the exact
+container this call created, then the client if it outlives a short wait
+(0.5 s, `PRISMABUILD_DOCKER_STOP_KILL_WAIT_S`).  The container is named by a
+`--cidfile` (the caller's own, else a fresh one the shim removes) and by a
+per-call label, `prismabuild.shim=<nonce>`, that callers may not set.  It is
+killed only after `docker inspect` shows the owner label and nonce, and the
 scope label and cgroup parent when the action has a scope.  A container that
-cannot be shown to be this attempt's is never killed, and nothing is ever
-stopped by name.  A failed Docker query is `unknown`, not an empty answer.
-After the client exits, a container of this call that still runs gets the same
-signal and then a kill, and the shim returns only afterwards, so the marker
-lock and the scope outlive the workload.  A receipt, `<marker>.stop-<nonce12>.json`
-(schema `prismabuild.docker_stop_receipt.v1`), names the real container, how it
-was found, the signals, what was escalated and the container's final state; its
-outcome is `stopped`, `killed`, `not_owned`, `no_container`, `still_running` or
-`unknown`.  A shim that is itself killed cannot relay: the label cleanup of
-`pool.cleanup_action_containers` remains the backstop.  The defaults sit inside
-the five seconds a guard may allow between TERM and its own KILL.
-`tools/fleet/qualify_docker_stop.py` proves the stop against a real daemon,
-inside an admitted action, for a TERM-ignoring and a TERM-honoring container.
+cannot be shown to be this attempt's is never killed, and nothing is stopped by
+name.  A query counts as proof only when it succeeds: a container is absent only
+on the daemon's own "No such object", and every other failure is `unknown`.  A
+kill is recorded only when Docker accepts it; a refused kill is retried to the
+deadline and counted in `kill_rejected`.  The shim then checks the daemon until
+the container is proved stopped or absent.  It returns 128+signal only when the
+stop is proved; otherwise it returns 125, so a guard never reads "terminated"
+while the workload lives.  A receipt, `<marker>.stop-<nonce12>.json` (schema
+`prismabuild.docker_stop_receipt.v1`), names the real container, how it was
+found, the signals, the escalation and the final state; its outcome is
+`stopped`, `killed`, `not_owned`, `no_container`, `still_running` or `unknown`,
+and `stop_proved` says whether the exit was 128+signal.  A shim that is itself
+killed cannot relay: the label cleanup of `pool.cleanup_action_containers`
+remains the backstop.  `tools/fleet/qualify_docker_stop.py` proves the stop
+against a real daemon, inside an admitted action, for a TERM-ignoring and a
+TERM-honoring container, after the workload reports ready, and fails a stop that
+takes five seconds or more.
 Offers advertise `cpu_tiers`, and
 claims and endings retain `cpu_allocation`. Already-running overflow actions
 are not migrated when preferred cores become free; subsequent actions reuse

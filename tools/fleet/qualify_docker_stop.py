@@ -47,7 +47,11 @@ MARKER = os.environ.get("PRISMABUILD_CONTAINER_MARKER", "")
 OWNER_LABEL = "prismabuild.action"
 SHIM_LABEL = "prismabuild.shim"
 START_WAIT_S = 60.0
+READY_WAIT_S = 30.0
 STOP_WAIT_S = 60.0
+#: A guard may allow only this long between TERM and its own KILL, so the
+#: shim has to stop the workload inside it (the check is enforced, not hoped).
+GUARD_INTERVAL_S = 5.0
 
 CASES = {
     "term_ignoring": "trap '' TERM INT HUP; echo ready; while :; do sleep 1; done",
@@ -105,6 +109,21 @@ def run_case(name: str, script: str) -> dict:
             shim.kill()
             case["failures"].append("the container never started under the shim")
             return case
+        # Signal only once the workload has installed its own handling: a TERM
+        # before its trap is set would test the shell's start-up, not the stop.
+        ready_deadline = time.monotonic() + READY_WAIT_S
+        ready = False
+        while time.monotonic() < ready_deadline and shim.poll() is None:
+            code_logs, logs = docker("logs", cid)
+            if code_logs == 0 and "ready" in logs:
+                ready = True
+                break
+            time.sleep(0.2)
+        case["workload_ready"] = ready
+        if not ready:
+            shim.kill()
+            case["failures"].append("the workload never printed ready")
+            return case
         sent = time.time()
         shim.send_signal(signal.SIGTERM)
         try:
@@ -116,6 +135,9 @@ def run_case(name: str, script: str) -> dict:
             case["failures"].append(f"the shim outlived {STOP_WAIT_S} s")
     case["elapsed_s"] = round(time.time() - sent, 3)
     case["shim_exit_code"] = code
+    if case["elapsed_s"] >= GUARD_INTERVAL_S:
+        case["failures"].append(
+            f"the stop took {case['elapsed_s']} s, outside the {GUARD_INTERVAL_S} s guard interval")
     if code != 128 + int(signal.SIGTERM):
         case["failures"].append(f"shim exit {code}, expected {128 + int(signal.SIGTERM)}")
     receipts = sorted(Path(MARKER).parent.glob(f"{Path(MARKER).name}.stop-{nonce[:12]}.json"))
@@ -133,6 +155,8 @@ def run_case(name: str, script: str) -> dict:
         killed = (receipt.get("escalation") or {}).get("container_killed")
         if killed is not (name == "term_ignoring"):
             case["failures"].append(f"container_killed is {killed}")
+        if receipt.get("stop_proved") is not True:
+            case["failures"].append("the receipt does not say the stop was proved")
     still = {c for c in owner_containers(running_only=True) if c == cid}
     case["container_running_after"] = bool(still)
     if still:
