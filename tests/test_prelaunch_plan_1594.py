@@ -71,6 +71,13 @@ def _chunked_at(name: str, ranges: list[tuple[int, int]], total: int,
     return phase
 
 
+def _build(phases, consumer="c" * 64, digest=DIGEST, tier=TIER):
+    total = phases[-1]["end_bytes"]
+    return residency_plan.build_plan(
+        consumer_action_key=consumer, tier_id=tier, stage_root="/stage",
+        manifest_sha256=digest, manifest_bytes=total, phases=phases)
+
+
 def test_declared_whole_phase_prefix_validates() -> None:
     plan = _build([_whole("a", 0, 90 * GIB, 170 * GIB, "w0", declared=True),
                    _whole("b", 90 * GIB, 170 * GIB, 170 * GIB, "w1")])
