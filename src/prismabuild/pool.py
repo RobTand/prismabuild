@@ -408,9 +408,12 @@ WITHHOLD_CARRYING_REASONS = frozenset({
 #: ``ram_epoch_stale`` belongs here with ``map_not_composed``: the map names
 #: ram paths from the epoch before a reboot, so the bytes are gone and the
 #: tier loop's next recomposition is what makes the row admissible (#640).
+#: ``residency_prelaunch_undeclared`` belongs here as a shape refusal: the
+#: sealed manifest declares a prelaunch prefix the filed plan does not carry,
+#: so no token moves until the plan matches the manifest (#1594).
 RESIDENCY_REFUSAL_STATES = ("lead_not_resident", "lead_unpinned", "map_not_composed",
                             "map_stale", "map_unreadable", "plan_unreadable",
-                            "ram_epoch_stale")
+                            "ram_epoch_stale", "residency_prelaunch_undeclared")
 
 #: Pending-lead statuses (``residency_verdict``'s ``pending``) that a later
 #: poll can still see land: a lead with no ending yet (``absent``), and a lead
@@ -5715,6 +5718,11 @@ class PoolQueue:
         #: without a GPU (#1262): evidence for the denial, never a timer.
         self._cpu_host_yields: dict[tuple[str, str], float] = {}
         self._claim_denial_bases: dict[str, Path] = {}
+        #: Declared prelaunch phases per sealed manifest (#1594 R4), keyed by
+        #: ``(cas root, manifest sha256)``.  A manifest blob is immutable, so
+        #: one parse serves every later verdict over the same bytes.  Only
+        #: successful parses are kept: a missing blob may still arrive.
+        self._prelaunch_manifests: dict[tuple[str, str], list[str]] = {}
         #: The last claim pass's transition holds (#1029), or ``None`` before
         #: the first pass: :meth:`_TransitionHolds.summary`.
         self.last_claim_pass: dict[str, object] | None = None
@@ -17708,6 +17716,160 @@ class PoolQueue:
         except (OSError, ValueError, TypeError, PoolContractError) as exc:
             return {"unreadable": True, "error": str(exc)}
 
+    def _prelaunch_shape_verdict(self, item: Mapping[str, object]) -> dict[str, object] | None:
+        """Refuse a declared manifest with an undeclared plan (#1594 R4).
+
+        A v1 submitter ignores the manifest annotation and files a streaming
+        plan.  This check refuses that shape before any token moves.  It
+        answers ``None`` when the row carries no sealed data manifest or no
+        filed plan, so ordinary rows keep today's verdict byte-identically.
+        """
+
+        key = item.get("action_key")
+        cas_root = item.get("cas_root")
+        if not isinstance(key, str) or not key:
+            return None
+        if not isinstance(cas_root, str) or not cas_root:
+            return None
+        from . import residency_plan
+        plan = residency_plan.read(self, key)
+        if plan is None:
+            # No filed plan, or one this reader refuses: the verdict below
+            # already answers ``plan_unreadable`` for the latter, so add
+            # nothing here and never turn that refusal into a pass.
+            return None
+        try:
+            action = _sealed_action_request(cas_root, key)
+        except (OSError, ValueError, PoolContractError):
+            # A broken request is the claim pass's own denial, not this
+            # check's: skip it rather than rename it.
+            return None
+        entry: Mapping[str, object] | None = None
+        inputs = action.get("inputs") if action is not None else None
+        if isinstance(inputs, list):
+            for candidate in inputs:
+                if (isinstance(candidate, Mapping)
+                        and str(candidate.get("id"))
+                        == pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID):
+                    entry = candidate
+                    break
+        if entry is None:
+            return None
+        digest = entry.get("sha256")
+        if not isinstance(digest, str) or not digest:
+            return None
+        memo_key = (str(cas_root), digest)
+        declares = self._prelaunch_manifests.get(memo_key)
+        if declares is None:
+            try:
+                path = pb.PrismaBuildCAS(cas_root).input_path(entry)
+                manifest, _ = pb.read_data_manifest(path)
+                declares = storage_tiers.manifest_prelaunch_phases(manifest)
+            except (OSError, ValueError, pb.PrismaBuildError) as exc:
+                # Unknown evidence waits; it never admits.  ``map_unreadable``
+                # is the nearest existing refusal: like an unreadable composed
+                # map, the declaration itself cannot be parsed, so the next
+                # scan retries rather than launching on a guess.
+                return {"state": "map_unreadable", "map_path": None,
+                        "manifest_sha256": digest, "error": str(exc)}
+            self._prelaunch_manifests[memo_key] = list(declares)
+        plan_declares = residency_plan.prelaunch_phase_names(plan)
+        if list(declares) == list(plan_declares):
+            return None
+        return {"state": "residency_prelaunch_undeclared", "consumer": key,
+                "manifest_sha256": digest,
+                "manifest_declares": list(declares),
+                "plan_declares": list(plan_declares)}
+
+    def _gang_prelaunch_blocker(self, gang_record: Mapping[str, object],
+                                gang_entry: Mapping[str, object],
+                                ) -> dict[str, object] | None:
+        """The sibling whose verdict defers this member's election (#1594 R3).
+
+        Only a gang with a declared prelaunch prefix reads sibling verdicts.
+        An undeclared gang answers ``None`` with no verdict read and no
+        manifest read.  Missing or unreadable sibling evidence defers, never
+        admits.  Nothing here is memoized: the caller re-checks at the
+        election boundary every pass.
+        """
+
+        from . import _gang, residency_plan
+        members = gang_record.get("members")
+        if not isinstance(members, list) or not members:
+            return None
+        declared = False
+        for other in members:
+            if not isinstance(other, Mapping):
+                declared = True
+                continue
+            other_key = other.get("action_key")
+            if not isinstance(other_key, str) or not other_key:
+                declared = True
+                continue
+            problems: list[Exception] = []
+            plan = residency_plan.read(self, other_key,
+                                       on_unreadable=problems.append)
+            if plan is None:
+                if problems:
+                    # An unreadable plan may declare: fail closed and read
+                    # the siblings below instead of calling this gang clean.
+                    declared = True
+                continue
+            if residency_plan.prelaunch_phase_names(plan):
+                declared = True
+        if not declared:
+            return None
+        group = gang_record.get("group")
+        own = gang_entry.get("index")
+        try:
+            states = _gang.member_states(self, gang_record)
+        except (OSError, ValueError, pb.PrismaBuildError, KeyError, TypeError) as exc:
+            return {"group": group, "sibling_index": None,
+                    "sibling_state": "unknown",
+                    "error": f"sibling states unreadable: {exc}"}
+        for other in members:
+            if not isinstance(other, Mapping):
+                continue
+            index = other.get("index")
+            other_key = other.get("action_key")
+            if index == own or not isinstance(other_key, str):
+                continue
+            state = (states.get(index, "absent") if isinstance(index, int)
+                     else "absent")
+            if state in ("claimed", "done"):
+                # Admitted or finished: nothing to wait on.
+                continue
+            if state != "ready":
+                return {"group": group, "sibling_index": index,
+                        "sibling_action_key": other_key,
+                        "sibling_state": state}
+            try:
+                row = _read_json(self.item_path(READY, other_key))
+            except (OSError, ValueError, PoolContractError) as exc:
+                return {"group": group, "sibling_index": index,
+                        "sibling_action_key": other_key,
+                        "sibling_state": "unknown",
+                        "error": f"sibling row unreadable: {exc}"}
+            if (not isinstance(row, Mapping)
+                    or row.get("action_key") != other_key):
+                return {"group": group, "sibling_index": index,
+                        "sibling_action_key": other_key,
+                        "sibling_state": "unknown",
+                        "error": "sibling row unreadable"}
+            try:
+                verdict = self.residency_verdict(row)
+            except (OSError, ValueError, PoolContractError) as exc:
+                return {"group": group, "sibling_index": index,
+                        "sibling_action_key": other_key,
+                        "sibling_state": "unknown",
+                        "error": f"sibling verdict unreadable: {exc}"}
+            if verdict["state"] in RESIDENCY_REFUSAL_STATES:
+                return {"group": group, "sibling_index": index,
+                        "sibling_action_key": other_key,
+                        "sibling_state": state,
+                        "sibling_verdict": verdict["state"]}
+        return None
+
     def residency_verdict(self, item: Mapping[str, object]) -> dict[str, object]:
         """Whether this item's declared bytes are resident, and why not.
 
@@ -17720,6 +17882,9 @@ class PoolQueue:
         resident.  Both are traps a deterministic descriptor invites, because
         it is what lets a consumer bind a mover's result before the mover runs.
         """
+        shape = self._prelaunch_shape_verdict(item)
+        if shape is not None:
+            return shape
 
         residency = item.get("residency")
         if not isinstance(residency, Mapping):
@@ -21623,6 +21788,16 @@ class PoolQueue:
                                         "gang_election": ahead[0], "ranked_behind": True})
                                     continue
                                 if mine is None and not sibling_here:
+                                    # A prelaunch gang elects only whole: defer
+                                    # while a sibling's verdict is unresolved
+                                    # (#1594 R3).  One call; the merge keeps it.
+                                    prelaunch_blocker = self._gang_prelaunch_blocker(
+                                        gang_record, gang_entry)
+                                    if prelaunch_blocker is not None:
+                                        self.record_denial(
+                                            item, "deferred_for_gang_prelaunch",
+                                            prelaunch_blocker)
+                                        continue
                                     try:
                                         mine = _gang.elect_gang_member(self, gang_record, gang_entry, here, _now())
                                     except (_gang.GangContractError, OSError, pb.PrismaBuildError) as exc:
