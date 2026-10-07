@@ -5494,43 +5494,64 @@ def window_pressure(
     # Claim-time tier demands of ready consumers whose leads are pinned
     # (#901), per tier: the next thing such a consumer asks the tier for.
     claimants: dict[str, list[int]] = {}
-    # Declared prelaunch units no gate has admitted yet (#1594), per tier, as
-    # (demand, suffix overlap).  ``advance_needs`` leaves a declared prefix out
-    # of ``waiting`` on purpose, so the walk below never sees it.  Without this
-    # term the orphans that hold the room are never asked for: on 2026-10-07 a
-    # tier of 178 GiB held 169 GiB for ended consumers and an 88 GiB prefix
-    # waited beside them.
-    prelaunch_waiting: dict[str, list[tuple[int, int]]] = {}
+    # The commitment's decisions (#907), asked once and only when a
+    # newcomer is found.
+    admissions: dict[tuple[str, str], dict[str, object]] | None = None
+    # Declared prelaunch units (#1594).  ``advance_needs`` leaves a declared
+    # prefix out of ``waiting`` on purpose, so the walk below never sees it and
+    # a declared consumer produced no pressure: on 2026-10-07 a tier of 178 GiB
+    # held 169 GiB for ended consumers while an 88 GiB prefix waited beside
+    # them.  An unadmitted unit joins the newcomers with the footprint and the
+    # held term its own gate uses, so the probe asks for exactly what the gate
+    # will check.  The protected prefixes of live units are not evictable:
+    # ``declared_keys`` keeps them out of both feasibility terms below, as
+    # :func:`evict_beyond_horizon` does.
+    declared_keys: frozenset = frozenset()
     try:
         _declared = prelaunch_tier.declared_units(
             queue, tiers, [entry[1] for entry in consumers])
     except (OSError, pool.PoolContractError, ValueError):
         _declared = []
-    _held_by_tier: dict[str, dict[str, dict[str, int]]] = {}
+    if _declared:
+        declared_keys = prelaunch_tier.declared_leg_keys(_declared)
+    _tier_state: dict[str, tuple[dict[str, dict[str, int]], str, dict, dict]] = {}
     for unit in _declared:
-        if unit.unsupported is not None or unit.demand_gib <= 0:
+        tier_of_unit = str(unit.tier_id)
+        if unit.unsupported is not None:
             continue
         if all(str(member) in cancelled for member in unit.keys):
             continue
-        tier_of_unit = str(unit.tier_id)
         try:
-            if tier_of_unit not in _held_by_tier:
+            if tier_of_unit not in _tier_state:
                 _led = queue.tier_ledger(tier_of_unit)
-                _held_by_tier[tier_of_unit] = {
-                    str(holder): dict(_led.holder_tokens(holder))
-                    for holder in _led.held_keys()}
+                _held = {str(holder): dict(_led.holder_tokens(holder))
+                         for holder in _led.held_keys()}
+                _kind = storage_tiers.capacity_kind_of(tier_of_unit)
+                _totals, _detail = prelaunch_tier.obligations(
+                    [other for other in _declared
+                     if str(other.tier_id) == tier_of_unit], _held, _kind)
+                _tier_state[tier_of_unit] = (_held, _kind, _totals, _detail)
+            _held, _kind, _totals, _detail = _tier_state[tier_of_unit]
             _already, _staged = _mover_state(queue, unit.plan, tier_of_unit)
         except (OSError, pool.PoolContractError, ValueError):
             continue
-        if prelaunch_tier.is_admitted(
-                unit, _held_by_tier[tier_of_unit],
-                storage_tiers.capacity_kind_of(tier_of_unit), sorted(_already)):
+        if prelaunch_tier.is_admitted(unit, _held, _kind, sorted(_already)):
             continue
-        prelaunch_waiting.setdefault(tier_of_unit, []).append(
-            (int(unit.demand_gib), max(int(unit.peak_gib) - int(unit.demand_gib), 0)))
-    # The commitment's decisions (#907), asked once and only when a
-    # newcomer is found.
-    admissions: dict[tuple[str, str], dict[str, object]] | None = None
+        # The commitment refuses it (#907) and no eviction can change that.
+        if admissions is None:
+            admissions = _commitment_admissions(_commitment_census(
+                queue, tiers, consumers=consumers, unknown=unknown or ()))
+        if _commitment_refusal(admissions, str(unit.key), tier_of_unit) is not None:
+            continue
+        own_due = int((_detail.get(unit.unit) or {}).get("obligation_gib", 0))
+        owned = residency_plan.prelaunch_owned_gib(
+            unit.plan, _held, unit.holder, _kind)
+        newcomers.setdefault(tier_of_unit, []).append({
+            "current_min_gib": window_credit.prelaunch_footprint_gib(
+                unit.peak_gib, owned),
+            "next_min_gib": None,
+            "extra_held_gib": max(
+                int(_totals.get(tier_of_unit, 0)) - own_due, 0)})
     for _key, consumer, plan, tier_id in consumers:
         if residency_plan.superseded(queue, plan) is not None:
             # A superseded window publishes nothing (#708), so it is not
@@ -5781,13 +5802,13 @@ def window_pressure(
     # gate -- or a running consumer re-gated after its lead retired --
     # waited for as long as that reader took to read it all.
     speculative: dict[str, int] = {}
-    if newcomers or claimants or prelaunch_waiting:
+    if newcomers or claimants:
         for tier_id, rows in _beyond_horizon_candidates(
-                queue, tiers, consumers, cancelled).items():
+                queue, tiers, consumers, cancelled,
+                declared_keys=declared_keys).items():
             speculative[tier_id] = sum(int(row["stage_gib"]) for row in rows)  # type: ignore[arg-type]
     for tier_id in sorted({t for t, w in newcomers.items() if w}
-                          | {t for t, c in claimants.items() if c}
-                          | {t for t, u in prelaunch_waiting.items() if u}):
+                          | {t for t, c in claimants.items() if c}):
         # A tier whose owed output was unreadable lost its newcomers above.
         waiting_newcomers = newcomers.get(tier_id, [])
         waiting_claims = claimants.get(tier_id, [])
@@ -5806,6 +5827,8 @@ def window_pressure(
             orphan_gib = 0
             for holder in ledger.held_keys():
                 if holder in wanted_claims or holder in owners:
+                    continue
+                if prelaunch_tier.is_prelaunch_leg(declared_keys, str(holder)):
                     continue
                 record = queue.move_record(holder)
                 if (isinstance(record, Mapping)
@@ -5833,21 +5856,6 @@ def window_pressure(
                 evictable_gib=evictable_gib)
             if relief is not None:
                 need[tier_id] = max(need.get(tier_id, 0), relief)
-        # An unadmitted declared prefix (#1594): the group takes its demand
-        # from free in one step, and the gate then needs its suffix overlap
-        # beside it.  Probed through the same relief as a claim, so a prefix
-        # that could not fit even after every orphan returns asks for nothing
-        # (#632), and only what the tier can give back is ever asked.
-        for demand_gib, overlap_gib in prelaunch_waiting.get(tier_id, []):
-            relief = _admission_relief(
-                held_gib=held_total, ready_gib=0, output_gib=0,
-                output_enforced=False, capacity_gib=capacity_gib,
-                cur_min_gib=demand_gib,
-                next_min_gib=overlap_gib if overlap_gib > 0 else None,
-                existing_min_next_gib=0, free_gib=free_gib,
-                evictable_gib=evictable_gib)
-            if relief is not None:
-                need[tier_id] = max(need.get(tier_id, 0), relief)
         if not waiting_newcomers:
             continue
         try:
@@ -5870,7 +5878,8 @@ def window_pressure(
         for needs in waiting_newcomers:
             nxt = needs.get("next_min_gib")
             relief = _admission_relief(
-                held_gib=held_total, ready_gib=ready_full,
+                held_gib=held_total + int(needs.get("extra_held_gib") or 0),
+                ready_gib=ready_full,
                 output_gib=output_gib, output_enforced=output_enforced,
                 capacity_gib=capacity_gib,
                 cur_min_gib=int(needs.get("current_min_gib") or 0),
