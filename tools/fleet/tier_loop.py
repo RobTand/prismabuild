@@ -8330,6 +8330,50 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
                           "tier_id": None,
                           "reason": f"live census unreadable: {exc!r}"})
         cycle_consumers = []
+    # One declared-unit census per cycle: with no declared plan this answers
+    # [] off the cached filings and nothing below runs (#1594).
+    prelaunch_units = prelaunch_tier.declared_units(
+        queue, tiers, cycle_consumers)
+    prelaunch_by_member: dict[str, prelaunch_tier.Unit] = {}
+    prelaunch_authority: dict[str, bool] = {}
+    if prelaunch_units:
+        for unit in prelaunch_units:
+            prelaunch_by_member[unit.key] = unit
+            for member in unit.keys:
+                prelaunch_by_member[member] = unit
+        wanted: dict[str, list[prelaunch_tier.Unit]] = {}
+        for unit in prelaunch_units:
+            if unit.unsupported is not None:
+                published.append({"event": "prelaunch-turn-unsupported",
+                                  "unit": unit.unit, "consumer": unit.key,
+                                  "tier_id": unit.tier_id,
+                                  "reason": unit.unsupported})
+                continue
+            wanted.setdefault(unit.tier_id, []).append(unit)
+        for reserve_tier, tier_units in wanted.items():
+            try:
+                reserve_ledger = queue.tier_ledger(reserve_tier)
+                reserve_kind = storage_tiers.capacity_kind_of(reserve_tier)
+                reserve_held = {
+                    str(holder): dict(reserve_ledger.holder_tokens(holder))
+                    for holder in reserve_ledger.held_keys()}
+            except (OSError, pool.PoolContractError, ValueError):
+                reserve_held, reserve_kind = {}, ""
+            # A unit with no room waits: intent stands, the ledger never moves.
+            def admitted(unit: prelaunch_tier.Unit,
+                         held: Mapping[str, Mapping[str, int]] = reserve_held,
+                         kind: str = reserve_kind,
+                         tier_id: str = reserve_tier) -> bool:
+                try:
+                    already, _staged = _mover_state(queue, unit.plan, tier_id)
+                    movers: list[str] = sorted(already)
+                except (OSError, pool.PoolContractError, ValueError):
+                    movers = []
+                return prelaunch_tier.is_admitted(unit, held, kind, movers)
+            reserve_events, reserve_authority = prelaunch_tier.reserve_pass(
+                queue, reserve_tier, tier_units, admitted=admitted)
+            published.extend(reserve_events)
+            prelaunch_authority.update(reserve_authority)
     for consumer in cycle_consumers:
         key = str(consumer["action_key"])
         refusals: list[Exception] = []
