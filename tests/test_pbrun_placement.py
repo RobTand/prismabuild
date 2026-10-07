@@ -2667,27 +2667,28 @@ def test_retained_alias_is_checked_before_an_attempt(retained_executable_alias, 
         queue.finish(item["action_key"], status="failed", detail={"returncode": 1}, claim_snapshot=item)
 
 
-@pytest.fixture(params=[("checkout", "leaf"), ("checkout", "parent"),
-                        ("shared", "leaf"), ("shared", "parent"),
-                        ("checkout", "directory"), ("shared", "directory"),
-                        ("checkout", "relative-directory"), ("shared", "relative-directory")],
-                ids=["checkout-leaf", "checkout-parent", "shared-leaf", "shared-parent",
-                     "checkout-directory", "shared-directory",
-                     "checkout-relative-directory", "shared-relative-directory"])
-def retained_input_alias(class_submission, monkeypatch, request):
-    """Create a real input alias and preserve its requested pathname."""
+@pytest.fixture(params=["checkout", "shared"])
+def input_submission(class_submission, monkeypatch, request):
+    """Create the portable input and its real consumer."""
     submit, root = class_submission
     shared = root / "shared"
     shared.mkdir()
     monkeypatch.setattr(pbrun, "SHARED_ROOT", shared)
-    scope, spelling = request.param
-    target_root = root / "checkout" if scope == "checkout" else shared
+    target_root = root / "checkout" if request.param == "checkout" else shared
     target = target_root / "input-target.bin"
     target.write_text("input-target-ok\n")
     target.chmod(0o644)
-    portable_child = target_root / "portable-child"
-    portable_child.mkdir()
-    (portable_child / "marker").write_text("snapshot directory\n")
+    reader = root / "checkout" / "reader"
+    reader.write_text('#!/bin/sh\nif [ "$#" -gt 0 ]; then cat "$1"; else cat "$INPUT"; fi\n')
+    reader.chmod(0o755)
+    return submit, root, target
+
+
+@pytest.fixture(params=["leaf", "parent", "directory", "relative-directory"])
+def retained_input_alias(input_submission, request):
+    """Create a real input alias and preserve its requested pathname."""
+    submit, root, target = input_submission
+    spelling = request.param
     alias_root = root / "local-input"
     (alias_root / "child").mkdir(parents=True)
     if spelling in ("directory", "relative-directory"):
@@ -2699,19 +2700,28 @@ def retained_input_alias(class_submission, monkeypatch, request):
         alias = alias_root / "input.bin"
         alias.symlink_to(target)
         if spelling == "parent":
+            shared = root / "shared"
             (shared / "input-link").symlink_to(alias_root / "child", target_is_directory=True)
             (shared / "input.bin").write_text("lexically-wrong-input\n")
             requested = shared / "input-link" / ".." / "input.bin"
         else:
             requested = alias
-    reader = root / "checkout" / "reader"
-    reader.write_text('#!/bin/sh\nif [ "$#" -gt 0 ]; then cat "$1"; else cat "$INPUT"; fi\n')
-    reader.chmod(0o755)
     return submit, root, alias, target, requested
 
 
+@pytest.fixture
+def direct_portable_input(input_submission):
+    """Create the parent-component control without an alias-form parameter."""
+    _, _, target = input_submission
+    child = target.parent / "portable-child"
+    child.mkdir()
+    (child / "marker").write_text("snapshot directory\n")
+    return input_submission
+
+
+
 @pytest.mark.parametrize("source", ["argv", "environment"])
-@pytest.mark.parametrize("availability", ["missing", "valid", "direct", "direct-parent"])
+@pytest.mark.parametrize("availability", ["missing", "valid"])
 def test_retained_input_alias_controls_class_placement(retained_input_alias, source, availability):
     from prismabuild import local_dependencies
     submit, root, alias, target, requested = retained_input_alias
@@ -2726,23 +2736,16 @@ def test_retained_input_alias_controls_class_placement(retained_input_alias, sou
         alias.symlink_to(alias_target, target_is_directory=alias_target.is_dir())
     else:
         absent = present
-    direct = availability in ("direct", "direct-parent")
-    if availability == "direct-parent":
-        raw = ("portable-child/../" + target.name if target.parent == root / "checkout"
-               else str(target.parent / "portable-child" / ".." / target.name))
-    else:
-        raw = (("./" + target.name if target.parent == root / "checkout" else str(target))
-               if direct else str(requested))
+    raw = str(requested)
     command = ["./reader", *([raw] if source == "argv" else [])]
     flags = ["--env", "INPUT=" + raw] if source == "environment" else []
     action = submit(command, flags=flags, answers={"spark-a": present, "spark-b": absent})
     retained = (action["params"]["command"][1] if source == "argv"
                 else action["environment"]["variables"]["INPUT"])
     assert retained == raw
-    expected = (["spark-a"] if availability == "missing" else ["gb10"] if direct
-                else ["gb10", local_dependencies.TAG])
+    expected = ["spark-a"] if availability == "missing" else ["gb10", local_dependencies.TAG]
     assert action["params"]["placement"]["required_tags"] == expected
-    assert action["params"].get("dependency_queries", {}) == ({} if direct else requirements)
+    assert action["params"].get("dependency_queries", {}) == requirements
     if availability == "valid":
         assert action["params"]["local_dependencies"] == requirements
     if availability != "missing":
@@ -2751,6 +2754,31 @@ def test_retained_input_alias_controls_class_placement(retained_input_alias, sou
         assert result.returncode == 0, result.stderr
         assert result.stdout == "input-target-ok\n"
         assert (root / "checkout" / action["task"]["result_path"]).read_text() == "input-target-ok\n"
+
+
+@pytest.mark.parametrize("source", ["argv", "environment"])
+@pytest.mark.parametrize("spelling", ["direct", "parent"])
+def test_direct_portable_input_preserves_class_placement(direct_portable_input, source, spelling):
+    submit, root, target = direct_portable_input
+    if spelling == "parent":
+        raw = ("portable-child/../" + target.name if target.parent == root / "checkout"
+               else str(target.parent / "portable-child" / ".." / target.name))
+    else:
+        raw = "./" + target.name if target.parent == root / "checkout" else str(target)
+    command = ["./reader", *([raw] if source == "argv" else [])]
+    flags = ["--env", "INPUT=" + raw] if source == "environment" else []
+    action = submit(command, flags=flags)
+    retained = (action["params"]["command"][1] if source == "argv"
+                else action["environment"]["variables"]["INPUT"])
+    assert retained == raw
+    assert action["params"]["placement"]["required_tags"] == ["gb10"]
+    assert action["params"].get("dependency_queries", {}) == {}
+    assert action["params"].get("local_dependencies", {}) == {}
+    result = subprocess.run(action["task"]["argv"], cwd=root / "checkout", text=True,
+                            capture_output=True, env=action["environment"]["variables"])
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "input-target-ok\n"
+    assert (root / "checkout" / action["task"]["result_path"]).read_text() == "input-target-ok\n"
 
 
 @pytest.mark.parametrize("source", ["argv", "environment"])
