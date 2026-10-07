@@ -368,3 +368,77 @@ def reserve_pass(queue, tier_id: str, units: Sequence[Unit], *, admitted,
                                       state=outcome.state))
         authority[unit.unit] = bool(outcome.authority)
     return (events, authority)
+
+
+def _live_mover_row(queue, mover_key: str) -> tuple[dict | None, bool]:
+    """One published mover row, preferring ready over claimed.
+
+    Returns the row with False, or (None, True) when the row stands
+    but will not read. A missing row is (None, False): the window has
+    not published this leg yet, and a later pass binds it.
+    """
+    for state in (pool.READY, pool.CLAIMED):
+        path = queue.item_path(state, mover_key)
+        try:
+            present = path.exists()
+        except OSError:
+            return (None, True)
+        if not present:
+            continue
+        try:
+            row = pool.read_queue_record(path)
+        except (OSError, ValueError, pool.PoolContractError):
+            return (None, True)
+        if row is None:
+            continue
+        return (row, False)
+    return (None, False)
+
+
+def publish_declared(queue, tier_id: str, unit: Unit,
+                     publish_rows: Sequence[Mapping[str, object]]) -> list[dict]:
+    """Bind the group fence behind the rows the window just published.
+
+    ``publish_rows`` names the window rows to fund this pass. Each
+    named leg whose mover row stands calls ``publish_chunk`` with the
+    row's own publish time. A leg with no row yet skips with no error.
+    Returns one event per chunk handoff.
+    """
+    wanted: set[str] = set()
+    for row in publish_rows or []:
+        if isinstance(row, Mapping):
+            mover = row.get("mover_action_key")
+            if isinstance(mover, str) and mover:
+                wanted.add(mover)
+    events: list[dict] = []
+    for leg in unit.legs:
+        mover = leg["mover_key"]
+        if mover not in wanted:
+            continue
+        row, unreadable = _live_mover_row(queue, mover)
+        if unreadable:
+            events.append(_unit_event(unit, tier_id,
+                                      "prelaunch-unknown-evidence",
+                                      mover=mover))
+            continue
+        if row is None:
+            continue
+        try:
+            published = float(row.get("published_unix"))  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            events.append(_unit_event(unit, tier_id,
+                                      "prelaunch-unknown-evidence",
+                                      mover=mover))
+            continue
+        funding = {"mover_action_key": mover,
+                   "start_bytes": int(leg["start_bytes"]),
+                   "end_bytes": int(leg["end_bytes"]),
+                   "stage_gib": int(leg["stage_gib"])}
+        outcome = prelaunch_group.publish_chunk(
+            queue, tier_id, unit.unit, unit.holder, unit.plan, funding,
+            published)
+        for name in outcome.events:
+            events.append(_unit_event(unit, tier_id, name, mover=mover,
+                                      status=outcome.status,
+                                      moved=outcome.moved))
+    return events
