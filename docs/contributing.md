@@ -74,6 +74,12 @@ its first milestone at that boundary. The export writer retains its own
 ready event. These fixture barriers change no production timer or negative
 control. Their evidence covers selected subprocess paths, not arbitrary host load.
 
+Warm-listing trust fixtures pin the complete object resolver
+`stage_move._object_filesystem_type`, not its direct device subquery
+`stage_move._filesystem_type`. A direct `None` answer can still resolve trust
+through the validated mount table, so only the complete resolver models trust
+loss (#1506).
+
 Unrelated subprocesses retain native Popen behavior when env=None.
 
 Install the local direct-push guard with:
