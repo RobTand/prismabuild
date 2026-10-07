@@ -40,7 +40,7 @@ def _live(queue, plan, consumer, specs, *, tier=TIER, gang=None):
     """Freeze one plan and publish its consumer row with leads."""
     residency_plan.freeze(queue, plan)
     total = sum(gib for _, gib, _, _ in specs) * GIB
-    extra = {} if gang is None else {"gang": gang}
+    extra = {} if gang is None else {"gang": gang, "max_attempts": 1}
     queue.publish(
         action_key=consumer, cas_root=queue.root / "cas",
         checkout_root=queue.root / "co",

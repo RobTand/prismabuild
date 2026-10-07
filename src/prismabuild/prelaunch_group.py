@@ -15,7 +15,6 @@ done, short, overfull, unknown. Authority to publish a chunk needs
 """
 from __future__ import annotations
 
-import hashlib
 import os
 import re
 import socket
@@ -28,6 +27,7 @@ from typing import Mapping, Sequence
 from . import pool
 from . import storage_tiers
 from ._gang import _link_new
+from .digest_primitives import raw_sha256
 from .materialize import _write_json_atomic
 
 __all__ = [
@@ -121,13 +121,13 @@ class TakeTurn:
 
 def tier_digest(tier_id: str) -> str:
     """Twelve hex chars naming one tier in file names."""
-    return hashlib.sha256(str(tier_id).encode()).hexdigest()[:12]
+    return raw_sha256(str(tier_id).encode())[:12]
 
 
 def phase_digest(phase_names: Sequence[str]) -> str:
     """Twelve hex chars naming one declared phase set."""
     joined = "\x1f".join(str(name) for name in phase_names)
-    return hashlib.sha256(joined.encode()).hexdigest()[:12]
+    return raw_sha256(joined.encode())[:12]
 
 
 def holder_name(unit: str, tier_id: str, phase_names: Sequence[str]) -> str:
@@ -1073,7 +1073,7 @@ def _ticket_file(queue: pool.PoolQueue, unit: str) -> Path:
     if re.fullmatch(r"[A-Za-z0-9_=@:.-]{1,128}", unit):
         name = unit
     else:
-        name = "u-" + hashlib.sha256(unit.encode()).hexdigest()[:32]
+        name = "u-" + raw_sha256(unit.encode())[:32]
     return _turn_dir(queue) / _TIERS / f"{name}.json"
 
 

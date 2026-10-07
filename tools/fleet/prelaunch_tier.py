@@ -79,7 +79,7 @@ class Unit:
     unsupported: str | None = None
 
 
-def _member(queue, tiers, consumer) -> dict | None:
+def _unit_member(queue, tiers, consumer) -> dict | None:
     """One consumer's declared plan and rank, or None with no claim."""
     if not isinstance(consumer, Mapping):
         return None
@@ -301,7 +301,7 @@ def declared_units(queue, tiers, consumers) -> list[Unit]:
     """
     members: dict[str, list[dict]] = {}
     for consumer in consumers or []:
-        entry = _member(queue, tiers, consumer)
+        entry = _unit_member(queue, tiers, consumer)
         if entry is None:
             continue
         members.setdefault(entry["unit"], []).append(entry)

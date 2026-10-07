@@ -6350,6 +6350,9 @@ def _protect_tier_advances(queue: pool.PoolQueue,
     unknown_consumers: set[tuple[str, str]] = set()
     unknown_tiers: set[str] = set()
     unknown_ready = False
+    # Declared units the gate let through this pass: open to begin their
+    # group reservation (#1594).  Empty when no declared plan is live.
+    prelaunch_open: set[tuple[str, str]] = set()
     wants, census_unknown = _advance_wants(
         queue, tiers, mover_role=mover_role,
         tier_of=tier_of, state_of=state_of, horizon_of=horizon_of)
@@ -6730,10 +6733,15 @@ def _protect_tier_advances(queue: pool.PoolQueue,
             # Declared publication authority (#1594): an admitted unit may
             # publish its declared legs.  The suffix fence below still runs;
             # a permit it sets stands instead of this stashed one.
+            # A newcomer the gate just let through is open too (#1594): its
+            # group is how it becomes admitted, so waiting for a holder first
+            # would never begin one.
             if (mover_role == "mover_row"
                     and want.get("declared_unit") is not None
-                    and prelaunch_tier.is_admitted(
-                        want["declared_unit"], held, kind, want["already"])):
+                    and (key in admitted_newcomers
+                         or prelaunch_tier.is_admitted(
+                             want["declared_unit"], held, kind,
+                             want["already"]))):
                 prelaunch_permits[(key, tier_id)] = {
                     "advance": "prelaunch", "tier_id": tier_id,
                     "leg": mover_role}
@@ -7314,6 +7322,7 @@ def _protect_tier_advances(queue: pool.PoolQueue,
             if (permit_key not in gated
                     and permit_key not in unknown_consumers):
                 permitted.setdefault(permit_key, permit)
+                prelaunch_open.add(permit_key)
         # Dangling-grant cleanup runs only on a complete census: a grant
         # whose consumer went unreadable this cycle is preserved, never
         # freed -- releasing on a partial view could return room a live
@@ -7365,7 +7374,7 @@ def _protect_tier_advances(queue: pool.PoolQueue,
     # The census this pass admitted on, and what it would be taken over, so
     # the stage window can report on the same one (#930).
     return {"gated": gated, "protected": protected, "grants": grants,
-            "permitted": permitted,
+            "permitted": permitted, "prelaunch_open": prelaunch_open,
             "unknown_ready": unknown_ready, "unknown_tiers": unknown_tiers,
             "unknown_consumers": unknown_consumers, "events": events,
             "census": census,
@@ -8414,6 +8423,7 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
         state_of=_mover_state, horizon_of=horizon_of,
         claim_order=claim_order)
     gated = protection["gated"]
+    prelaunch_open = protection.get("prelaunch_open") or set()
     assert isinstance(gated, dict)
     grants = protection["grants"]
     assert isinstance(grants, dict)
@@ -8471,7 +8481,11 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
                     movers: list[str] = sorted(already)
                 except (OSError, pool.PoolContractError, ValueError):
                     movers = []
-                return prelaunch_tier.is_admitted(unit, held, kind, movers)
+                if prelaunch_tier.is_admitted(unit, held, kind, movers):
+                    return True
+                # A newcomer the gate let through begins its group (#1594).
+                return ((unit.key, tier_id) in prelaunch_open
+                        and (unit.key, tier_id) not in gated)
             reserve_events, reserve_authority = prelaunch_tier.reserve_pass(
                 queue, reserve_tier, tier_units, admitted=admitted)
             published.extend(reserve_events)
