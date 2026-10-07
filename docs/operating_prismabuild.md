@@ -323,6 +323,12 @@ Each class member must report the alias.
 The worker checks the alias before an attempt.
 Direct checkout and shared-storage commands keep their portable scope.
 
+A local input alias also needs its own dependency evidence.
+The code applies this rule to direct argv and caller-environment paths.
+The code checks the retained pathname and follows directory symlinks before parent components.
+It keeps the requested pathname for offer and claim checks.
+A portable target does not remove the alias requirement.
+
 Explicit `--here` and tags
 remain authoritative; `--anywhere --tag` remains invalid. Use a class tag
 alone, or `--anywhere` alone only if every eligible worker can run the command.

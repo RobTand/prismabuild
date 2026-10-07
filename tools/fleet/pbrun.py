@@ -1651,8 +1651,10 @@ def command_dependency_contract(
         return (candidate.is_relative_to(root)
                 or candidate.is_relative_to(SHARED_ROOT.resolve()))
 
-    def external(candidate: Path) -> bool:
-        return not portable(resolved_path(candidate))
+    def requires_local_path(candidate: Path) -> bool:
+        location = resolved_path(candidate.parent) / candidate.name
+        return (not portable(candidate) or not portable(location)
+                or not portable(resolved_path(candidate)))
 
     if not command or not command[0]:
         raise SystemExit("pbrun: portable placement requires argv[0]")
@@ -1680,10 +1682,9 @@ def command_dependency_contract(
     # relpath/abspath would cancel .. lexically and could select another file.
     # Keep the leaf: dereferencing a venv Python loses the venv invocation.
     executable = resolved_path(executable.parent) / executable.name
-    # The worker executes the retained leaf pathname, not its resolved target.
-    # A local alias needs evidence even if its target is portable.
-    requirements = ({str(executable): "executable"}
-                    if external(executable) or not portable(executable) else {})
+    # Executables and inputs need evidence for a retained local alias.
+    # A portable target does not make that alias available to the worker.
+    requirements = {str(executable): "executable"} if requires_local_path(executable) else {}
     candidates = []
     for token in command[1:]:
         raw = token.split("=", 1)[1] if token.startswith("-") and "=" in token else token
@@ -1703,7 +1704,7 @@ def command_dependency_contract(
         # Observe the requested pathname, including symlink-sensitive ..,
         # rather than a lexical alias that might name an unrelated input.
         path = cwd / candidate
-        if not external(path):
+        if not requires_local_path(path):
             continue
         if not path.exists():
             raise SystemExit(

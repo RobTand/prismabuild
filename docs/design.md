@@ -2695,6 +2695,12 @@ miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
   The claim check tests that alias before an attempt.
   Direct checkout and shared-storage pathnames keep their existing portable scope.
 
+  Direct argv and caller-environment inputs use the same local dependency rule.
+  A local input alias needs evidence even when its target is portable.
+  The code checks the retained pathname and the resolved parent directory without replacing its leaf.
+  Offer and claim checks keep the requested pathname, including directory symlinks and parent components.
+  The rule also keeps evidence for external targets.
+
   Checkout executables use relative invocation paths so snapshots relocate,
   and nominal Docker still runs through the existing shim. Pool defaults from
   a declared gb10 member, or GPU work from celestia, use gb10 only when every

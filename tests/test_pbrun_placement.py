@@ -2666,3 +2666,119 @@ def test_retained_alias_is_checked_before_an_attempt(retained_executable_alias, 
         assert queue.item_path(pool_module.CLAIMED, action["action_key"]).exists()
         queue.finish(item["action_key"], status="failed", detail={"returncode": 1}, claim_snapshot=item)
 
+
+@pytest.fixture(params=[("checkout", "leaf"), ("checkout", "parent"),
+                        ("shared", "leaf"), ("shared", "parent"),
+                        ("checkout", "directory"), ("shared", "directory")],
+                ids=["checkout-leaf", "checkout-parent", "shared-leaf", "shared-parent",
+                     "checkout-directory", "shared-directory"])
+def retained_input_alias(class_submission, monkeypatch, request):
+    """Create a real input alias and preserve its requested pathname."""
+    submit, root = class_submission
+    shared = root / "shared"
+    shared.mkdir()
+    monkeypatch.setattr(pbrun, "SHARED_ROOT", shared)
+    scope, spelling = request.param
+    target_root = root / "checkout" if scope == "checkout" else shared
+    target = target_root / "input-target.bin"
+    target.write_text("input-target-ok\n")
+    target.chmod(0o644)
+    alias_root = root / "local-input"
+    (alias_root / "child").mkdir(parents=True)
+    if spelling == "directory":
+        alias = root / "input-directory"
+        alias.symlink_to(target.parent, target_is_directory=True)
+        requested = alias / target.name
+    else:
+        alias = alias_root / "input.bin"
+        alias.symlink_to(target)
+        if spelling == "parent":
+            (shared / "input-link").symlink_to(alias_root / "child", target_is_directory=True)
+            (shared / "input.bin").write_text("lexically-wrong-input\n")
+            requested = shared / "input-link" / ".." / "input.bin"
+        else:
+            requested = alias
+    reader = root / "checkout" / "reader"
+    reader.write_text('#!/bin/sh\nif [ "$#" -gt 0 ]; then cat "$1"; else cat "$INPUT"; fi\n')
+    reader.chmod(0o755)
+    return submit, root, alias, target, requested
+
+
+@pytest.mark.parametrize("source", ["argv", "environment"])
+@pytest.mark.parametrize("availability", ["missing", "valid", "direct"])
+def test_retained_input_alias_controls_class_placement(retained_input_alias, source, availability):
+    from prismabuild import local_dependencies
+    submit, root, alias, target, requested = retained_input_alias
+    requirements = {str(requested): "path"}
+    present = local_dependencies.observe(requirements)
+    if availability == "missing":
+        alias_target = alias.readlink()
+        alias.unlink()
+        absent = local_dependencies.observe(requirements)
+        assert absent[str(requested)] == "absent" and target.is_file()
+        alias.symlink_to(alias_target, target_is_directory=alias_target.is_dir())
+    else:
+        absent = present
+    direct = availability == "direct"
+    raw = (("./" + target.name if target.parent == root / "checkout" else str(target))
+           if direct else str(requested))
+    command = ["./reader", *([raw] if source == "argv" else [])]
+    flags = ["--env", "INPUT=" + raw] if source == "environment" else []
+    action = submit(command, flags=flags, answers={"spark-a": present, "spark-b": absent})
+    retained = (action["params"]["command"][1] if source == "argv"
+                else action["environment"]["variables"]["INPUT"])
+    assert retained == raw
+    expected = (["spark-a"] if availability == "missing" else ["gb10"] if direct
+                else ["gb10", local_dependencies.TAG])
+    assert action["params"]["placement"]["required_tags"] == expected
+    assert action["params"].get("dependency_queries", {}) == ({} if direct else requirements)
+    if availability == "valid":
+        assert action["params"]["local_dependencies"] == requirements
+    if availability != "missing":
+        result = subprocess.run(action["task"]["argv"], cwd=root / "checkout", text=True,
+                                capture_output=True, env=action["environment"]["variables"])
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "input-target-ok\n"
+        assert (root / "checkout" / action["task"]["result_path"]).read_text() == "input-target-ok\n"
+
+
+@pytest.mark.parametrize("source", ["argv", "environment"])
+@pytest.mark.parametrize("present", [False, True])
+def test_retained_input_alias_is_checked_before_an_attempt(retained_input_alias, source, present):
+    import fleet_submit
+    from prismabuild import adaptive_cpu, local_dependencies
+    submit, root, alias, target, requested = retained_input_alias
+    answers = local_dependencies.observe({str(requested): "path"})
+    command = ["./reader", *([str(requested)] if source == "argv" else [])]
+    flags = ["--env", "INPUT=" + str(requested)] if source == "environment" else []
+    action = submit(command, flags=flags, answers={member: answers for member in ("spark-a", "spark-b")})
+    cas = core_module.PrismaBuildCAS(root / "fleet" / "cas")
+    request_path = cas.publish_action_request(action)
+    queue = pool_module.PoolQueue(root / "fleet" / "pb-queue")
+    fleet_submit.submit(
+        action, cas=cas, request_path=request_path, transport="pool",
+        worker_script=Path(__file__).resolve().parents[1] / "tools" / "prismabuild_worker.py",
+        checkout_root=root / "checkout", tags=action["params"]["placement"]["required_tags"],
+        resources={"cpu": 1, "mem_gb": 4}, queue_root=queue.root)
+    ready = queue.item_path(pool_module.READY, action["action_key"])
+    before = ready.read_bytes()
+    if not present:
+        alias.unlink()
+    assert target.is_file()
+    item = queue.claim(tags=["gb10", local_dependencies.TAG], has_gpu=False,
+                       capacity={"cpu": 1, "mem_gb": 4})
+    if not present:
+        assert item is None
+        assert ready.read_bytes() == before
+        assert not queue.item_path(pool_module.CLAIMED, action["action_key"]).exists()
+        denials = adaptive_cpu.read_json(
+            adaptive_cpu.local_state_base(queue.ledger().base) / pool_module.CLAIM_DENIALS).get("records", {})
+        assert any(row.get("reason") == "local_dependency_not_present"
+                   and row.get("evidence", {}).get("paths") == [str(requested)]
+                   and row.get("attempts") == 0 for row in denials.values())
+    else:
+        assert item is not None and item["action_key"] == action["action_key"]
+        assert not ready.exists()
+        assert queue.item_path(pool_module.CLAIMED, action["action_key"]).exists()
+        queue.finish(item["action_key"], status="failed", detail={"returncode": 1}, claim_snapshot=item)
+
