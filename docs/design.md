@@ -5095,6 +5095,11 @@ name.  An empty search is not proof that no container will appear, because a cre
 request the client already sent can complete at the daemon after the client is
 gone; the shim keeps watching for the call's label to the deadline, stops what
 appears, and otherwise reports `creation_unresolved` and returns 125.
+A stop is proved only by an affirmative terminal state, `exited` or `dead`,
+or by the daemon's own "No such object"; `Running=false` is not enough, because a
+container that is only `created` can still be started by a request the client
+already sent.  The shim removes such an exact, owned container after the grace;
+if it cannot, the outcome is `start_unresolved` and the exit is 125.
 A query counts as proof only when it succeeds: a container is absent only
 on the daemon's own "No such object", and every other failure is `unknown`.  A
 kill is recorded only when Docker accepts it; a refused kill is retried to the
@@ -5104,8 +5109,8 @@ stop is proved; otherwise it returns 125, so a guard never reads "terminated"
 while the workload lives.  A receipt, `<marker>.stop-<nonce12>.json` (schema
 `prismabuild.docker_stop_receipt.v1`), names the real container, how it was
 found, the signals, the escalation and the final state; its outcome is
-`stopped`, `killed`, `not_owned`, `creation_unresolved`, `still_running` or
-`unknown`,
+`stopped`, `killed`, `not_owned`, `creation_unresolved`, `start_unresolved`,
+`still_running` or `unknown`,
 and `stop_proved` says whether the exit was 128+signal.  A shim that is itself
 killed cannot relay: the label cleanup of `pool.cleanup_action_containers`
 remains the backstop.  `tools/fleet/qualify_docker_stop.py` proves the stop

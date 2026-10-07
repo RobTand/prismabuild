@@ -60,7 +60,7 @@ argv = sys.argv[1:]
 if "context" in argv and "inspect" in argv:
     print(json.dumps("unix:///var/run/docker.sock"))
     sys.exit(0)
-verb = next((t for t in argv if t in {"run", "create", "inspect", "kill", "ps"}), None)
+verb = next((t for t in argv if t in {"run", "create", "inspect", "kill", "ps", "rm"}), None)
 if verb in ("inspect", "kill", "ps") and os.environ.get("FAKE_DAEMON_SLOW"):
     time.sleep(float(os.environ["FAKE_DAEMON_SLOW"]))
 
@@ -99,6 +99,24 @@ if verb in ("run", "create"):
     data.update(cid=os.environ.get("FAKE_CID", "c" * 64), labels=labels,
                 running=True, killed=False)
     save(data)
+    start_later = os.environ.get("FAKE_START_LATER")
+    if start_later:
+        # The container exists but is only created; an independent process
+        # (the daemon) starts it later, after the client may be gone.
+        import subprocess
+        data["running"] = False
+        data["status"] = "created"
+        save(data)
+        code = (
+            "import json, pathlib, sys, time\n"
+            "time.sleep(float(sys.argv[1]))\n"
+            "path = pathlib.Path(sys.argv[2])\n"
+            "data = json.loads(path.read_text())\n"
+            "if not data.get('removed'):\n"
+            "    data.update(running=True, status='running')\n"
+            "    tmp = path.with_suffix('.start'); tmp.write_text(json.dumps(data)); tmp.replace(path)\n")
+        subprocess.Popen([sys.executable, "-c", code, start_later, str(state_path)],
+                         start_new_session=True)
     if cidfile and os.environ.get("FAKE_NO_CIDFILE") != "1":
         pathlib.Path(cidfile).write_text(data["cid"])
     pathlib.Path(os.environ["FAKE_STARTED"]).write_text("1")
@@ -119,9 +137,24 @@ if verb in ("run", "create"):
         current = load()
         if exit_after and time.monotonic() - started >= exit_after:
             sys.exit(0)
-        if not current.get("running", True) and mode != "stuck":
+        if (not current.get("running", True) and mode != "stuck"
+                and current.get("status") != "created"):
             sys.exit(137 if current.get("killed") else 143)
         time.sleep(0.02)
+
+if verb == "rm":
+    record(verb="rm", argv=argv)
+    if os.environ.get("FAKE_RM_REJECTS") == "1":
+        sys.stderr.write("Error response from daemon: removal denied\\n")
+        sys.exit(1)
+    data = load()
+    if argv[-1] != data.get("cid"):
+        sys.exit(1)
+    data["running"] = False
+    data["removed"] = True
+    save(data)
+    print(argv[-1])
+    sys.exit(0)
 
 if verb == "kill":
     record(verb="kill", argv=argv)
@@ -131,8 +164,13 @@ if verb == "kill":
     data = load()
     if argv[-1] != data.get("cid"):
         sys.exit(1)
+    if not data.get("running"):
+        # The real daemon refuses to signal a container that is not running.
+        sys.stderr.write("Error response from daemon: container is not running\\n")
+        sys.exit(1)
     data["running"] = False
     data["killed"] = True
+    data["status"] = "exited"
     if os.environ.get("FAKE_RM") == "1":
         data["removed"] = True          # --rm: a stopped container is gone
     save(data)
@@ -151,11 +189,12 @@ if verb == "inspect":
     labels = dict(data.get("labels", {}))
     labels.update(json.loads(os.environ.get("FAKE_LABEL_OVERRIDE", "{}")))
     running = bool(data.get("running"))
+    status = data.get("status") or ("running" if running else "exited")
     print(json.dumps([{
         "Id": data["cid"],
         "Config": {"Labels": labels},
         "HostConfig": {"CgroupParent": ""},
-        "State": {"Running": running, "Status": "running" if running else "exited",
+        "State": {"Running": running, "Status": status,
                   "ExitCode": 137 if data.get("killed") else 143,
                   "OOMKilled": False, "FinishedAt": "2026-10-07T00:00:00Z"},
     }]))
@@ -249,7 +288,8 @@ def test_a_term_reaches_the_client_and_the_receipt_names_the_container(tmp_path)
     assert receipt["owner"] == OWNER
     assert receipt["outcome"] == "stopped"
     assert receipt["signals"][0]["signal"] == int(signal.SIGTERM)
-    assert receipt["escalation"] == {"container_killed": False, "client_killed": False, "kill_rejected": 0}
+    assert receipt["escalation"] == {"container_killed": False, "client_killed": False, "kill_rejected": 0,
+                                     "container_removed": False, "remove_rejected": 0}
     assert receipt["container_final"]["running"] is False
 
 
@@ -354,6 +394,36 @@ def test_a_container_created_after_the_client_is_gone_is_found_and_stopped(tmp_p
     assert kills and kills[-1]["argv"][-1] == CID
 
 
+def test_a_created_container_is_removed_so_a_late_start_cannot_land(tmp_path):
+    """Running=false is not stopped: an accepted start can complete after the client."""
+    process = _start(tmp_path, mode="honor", grace="1",
+                     extra={"FAKE_START_LATER": "2.5"})
+    _wait_started(tmp_path)
+    process.send_signal(signal.SIGTERM)
+    code = process.wait(timeout=20)
+    time.sleep(3.0)                       # past the moment the late start would land
+    receipt = _receipts(tmp_path)[0]
+    assert receipt["stop_proved"] is True and code == 128 + signal.SIGTERM
+    assert receipt["escalation"]["container_removed"] is True
+    removals = _calls(tmp_path, "rm")
+    assert len(removals) >= 1 and removals[-1]["argv"][-1] == CID
+    assert _state(tmp_path)["running"] is False        # the late start found it removed
+
+
+def test_a_created_container_that_cannot_be_removed_is_start_unresolved(tmp_path):
+    process = _start(tmp_path, mode="honor", grace="1",
+                     extra={"FAKE_START_LATER": "30", "FAKE_RM_REJECTS": "1"})
+    _wait_started(tmp_path)
+    process.send_signal(signal.SIGTERM)
+    code = process.wait(timeout=20)
+    assert code == 125, code
+    receipt = _receipts(tmp_path)[0]
+    assert receipt["stop_proved"] is False
+    assert receipt["outcome"] == "start_unresolved"
+    assert receipt["escalation"]["remove_rejected"] >= 1
+    assert receipt["escalation"]["container_removed"] is False
+
+
 def test_a_creation_that_lands_after_the_deadline_is_reported_and_not_a_stop(tmp_path):
     process = _start(tmp_path, mode="ignore", grace="1",
                      extra={"FAKE_LATE_CREATE": "30"})
@@ -388,7 +458,8 @@ def test_the_wait_is_bounded_when_the_client_survives_everything_but_kill(tmp_pa
     assert time.monotonic() - began < 10
     assert len(_calls(tmp_path, "kill")) == 1
     receipt = _receipts(tmp_path)[0]
-    assert receipt["escalation"] == {"container_killed": True, "client_killed": True, "kill_rejected": 0}
+    assert receipt["escalation"] == {"container_killed": True, "client_killed": True, "kill_rejected": 0,
+                                     "container_removed": False, "remove_rejected": 0}
 
 
 def test_without_a_signal_there_is_no_receipt_and_no_cidfile_left(tmp_path):

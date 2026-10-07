@@ -48,6 +48,9 @@ DAEMON_CALL_S = 0.8
 #: Returned instead of 128+signal when a stop was NOT proved (the container
 #: still runs, the daemon could not be asked, or it is not this attempt's).
 STOP_FAILED_EXIT = 125
+#: A stop is proved by an affirmative terminal state, or by the daemon's own
+#: "No such object".  "created" has Running=false but can still be started.
+TERMINAL_STATES = frozenset({"exited", "dead"})
 RECEIPT_SCHEMA = "prismabuild.docker_stop_receipt.v1"
 SCOPE_RE = re.compile(r"prismabuild-job[a-f0-9]{32}\.slice")
 
@@ -775,6 +778,16 @@ class _Stop:
         code, _, _ = self.call(["kill", "--signal", name, cid])
         return code == 0
 
+    def remove(self, cid: str) -> bool:
+        """True only when Docker accepted removing this exact container.
+
+        Used for a container that was created but not started: a start request
+        the client already sent can still complete at the daemon, and a removed
+        container cannot start.
+        """
+        code, _, _ = self.call(["rm", "-f", cid])
+        return code == 0
+
 
 def _run_relayed(real: str, args: list[str], environment: dict, *, owner: str,
                  scope, global_options: list[str], nonce: str, cidfile: Path,
@@ -804,7 +817,8 @@ def _run_relayed(real: str, args: list[str], environment: dict, *, owner: str,
     try:
         grace, kill_wait = _stop_grace(), _kill_wait()
         escalation = {"container_killed": False, "client_killed": False,
-                      "kill_rejected": 0}
+                      "kill_rejected": 0, "container_removed": False,
+                      "remove_rejected": 0}
         started = time.time()
         child = subprocess.Popen([real, *args], env=environment)
         stop = None
@@ -875,36 +889,58 @@ def _run_relayed(real: str, args: list[str], environment: dict, *, owner: str,
         if cid is not None:
             relayed = False
             last_seen = None        # the last successful observation of a live container
+            last_open = None        # ... of a container whose start or removal is unresolved
             while True:
                 state, row = stop.inspect(cid)
                 final = _final_state(row, state)
+                status = final["status"]
                 if state == "present":
                     last_seen = final if final["running"] else None
+                    last_open = (final if (not final["running"]
+                                           and status not in TERMINAL_STATES) else None)
                 if state == "absent":
-                    outcome = "killed" if escalation["container_killed"] else "stopped"
+                    outcome = ("killed" if (escalation["container_killed"]
+                                            or escalation["container_removed"])
+                               else "stopped")
                     break
                 if state == "present":
                     if not _owned_by_this_attempt(row, owner, scope, nonce):
                         outcome = "not_owned"
                         break
-                    if not final["running"]:
-                        outcome = "killed" if escalation["container_killed"] else "stopped"
+                    if not final["running"] and status in TERMINAL_STATES:
+                        # Proved only by an affirmative terminal state.  Not
+                        # running is not enough: "created" has Running=false and
+                        # an accepted start request can still complete.
+                        outcome = ("killed" if escalation["container_killed"]
+                                   else "stopped")
                         break
-                    if not relayed:
-                        relayed = True
-                        stop.kill(cid, signal.Signals(received[0][0]).name[3:])
-                    elif time.monotonic() >= stop.grace_end:
-                        if stop.kill(cid, "KILL"):
-                            escalation["container_killed"] = True
+                    if final["running"]:
+                        if not relayed:
+                            relayed = True
+                            stop.kill(cid, signal.Signals(received[0][0]).name[3:])
+                        elif time.monotonic() >= stop.grace_end:
+                            if stop.kill(cid, "KILL"):
+                                escalation["container_killed"] = True
+                            else:
+                                escalation["kill_rejected"] += 1
+                    elif status == "created" and time.monotonic() >= stop.grace_end:
+                        # Created and not started: remove this exact container
+                        # so a late start cannot land.
+                        if stop.remove(cid):
+                            escalation["container_removed"] = True
                         else:
-                            escalation["kill_rejected"] += 1
+                            escalation["remove_rejected"] += 1
                 if stop.left() <= 0.05:
                     # Last seen running and never proved stopped is still_running,
-                    # even when the final query ran out of time; a container that
-                    # was never successfully inspected is unknown.
-                    if state != "present" and last_seen is not None:
-                        final = dict(last_seen, stale=True)
-                    outcome = "still_running" if last_seen is not None else "unknown"
+                    # even when the final query ran out of time; a container left
+                    # created or in an unknown state is start_unresolved; a
+                    # container that was never successfully inspected is unknown.
+                    seen = last_seen or last_open
+                    if state != "present" and seen is not None:
+                        final = dict(seen, stale=True)
+                    outcome = ("still_running" if last_seen is not None
+                               else "start_unresolved" if last_open is not None
+                               else "unknown")
                     break
                 time.sleep(0.1)
         proved = outcome in ("stopped", "killed")
