@@ -1,8 +1,14 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from prismabuild import pool
 from test_resident_sets_records import source
+
+from local_resident_space import roomy_disk  # noqa: F401
+
+pytestmark = pytest.mark.usefixtures("roomy_disk")
 
 
 def test_publish_dispatches_host_movers_after_record_publication(tmp_path, monkeypatch, capsys):
