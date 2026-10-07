@@ -5644,6 +5644,10 @@ def freeze_action_template(
             # The class is the worker's: its interpreter is not this box's, so
             # the packet's own declaration is the only source (#1598).
             declared = getattr(target_evidence, "recorder", None)
+            # Both refusals are correctness checks, not D32 seals (CEO ruling on
+            # dec-1007-143227-359f): facts about another file are not comparable
+            # to this command's executable, and absent facts are missing input.
+            # They also protect the content-addressed action key.
             if declared is None or declared["path"] != command[0]:
                 raise SystemExit(
                     "pbrun: a scratch recorder under --target-evidence needs the "
