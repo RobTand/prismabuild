@@ -74,6 +74,11 @@ its first milestone at that boundary. The export writer retains its own
 ready event. These fixture barriers change no production timer or negative
 control. Their evidence covers selected subprocess paths, not arbitrary host load.
 
+One-shot claim fixtures separate backpressure from capacity exhaustion.
+Test concurrent waves only for disjoint use of held CPU IDs. Test exact
+allocation and exhaustion with sequential claims. A concurrent wave may
+refuse a caller with None. Never retry a refused call in a fixture.
+
 Warm-listing trust fixtures pin the complete object resolver
 `stage_move._object_filesystem_type`, not its direct device subquery
 `stage_move._filesystem_type`. A direct `None` answer can still resolve trust
