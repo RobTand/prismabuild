@@ -67,6 +67,26 @@ reviewed design, unchanged-main failure and targeted PrismaBuild receipt. Do not
 widen a progress grace to hide a load-sensitive failure. Spool tests need a
 basetemp on a supported local disk; dl380g10's tmpfs-backed /tmp is not one.
 
+The three positive wait fixtures for #1506 use an action-written declaration
+signal before the native Popen returns to the pool. A pipe releases the
+action after the real progress watch starts. The claimed mover publishes
+its first milestone at that boundary. The export writer retains its own
+ready event. These fixture barriers change no production timer or negative
+control. Their evidence covers selected subprocess paths, not arbitrary host load.
+
+One-shot claim fixtures separate backpressure from capacity exhaustion.
+Test concurrent waves only for disjoint use of held CPU IDs. Test exact
+allocation and exhaustion with sequential claims. A concurrent wave may
+refuse a caller with None. Never retry a refused call in a fixture.
+
+Warm-listing trust fixtures pin the complete object resolver
+`stage_move._object_filesystem_type`, not its direct device subquery
+`stage_move._filesystem_type`. A direct `None` answer can still resolve trust
+through the validated mount table, so only the complete resolver models trust
+loss (#1506).
+
+Unrelated subprocesses retain native Popen behavior when env=None.
+
 Install the local direct-push guard with:
 
 ```bash

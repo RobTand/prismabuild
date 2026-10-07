@@ -51,7 +51,12 @@ relative name would ingest a different file of the same name), and a member
 that declares ``data_manifest`` must also declare ``residency`` (``stage``):
 the #1247 manifest planner files one row's plan per
 tier-loop cycle, so a member left to it would hold its gang -- and its elected
-siblings' hosts -- fenced while it reads the pool unplanned. Any other key is
+siblings' hosts -- fenced while it reads the pool unplanned.  A third check
+runs after every member is published: members with declared
+prelaunch-resident prefixes (#1594) must jointly fit each stage tier's
+minted capacity, with shared ranges counted once.  Each member submission
+already refused an oversize prefix.  No member can see the joint sum
+alone.  Any other key is
 refused by name:
 the gang flags, ``tag``, ``priority`` and ``retry_safe`` are the driver's (a
 retry ends the gang, so a member gets one attempt). ``--cwd`` is the
@@ -81,7 +86,7 @@ from runtime_paths import generation_root  # noqa: E402
 
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
-from prismabuild import _gang, core, pool  # noqa: E402
+from prismabuild import _gang, core, pool, residency_plan, storage_tiers  # noqa: E402
 
 SH = Path("/mnt/shared/prismabuild-fleet")
 SCHEMA = "prismabuild.pbgang.v1"
@@ -210,6 +215,66 @@ def _pbgang_load_manifest(path: Path) -> dict:
     return manifest
 
 
+def gang_prelaunch_refusal(queue, keys: list[str]) -> str | None:
+    """Why this gang's declared prelaunch prefixes do not fit, or ``None``.
+
+    Each stage tier (#1594) must fit the member distinct movers.  Shared
+    ranges count once through ``share_namespace``.  Each member submission
+    already refused an oversize prefix.  This refuses only the joint sum.
+    Members with no filed plan add nothing.  Unknown capacity never
+    refuses.
+    """
+
+    plans = []
+    for key in keys:
+        try:
+            plan = residency_plan.read(queue, key)
+        except (OSError, ValueError):
+            plan = None
+        if isinstance(plan, dict):
+            plans.append(plan)
+    if not any(residency_plan.prelaunch_phase_names(plan) for plan in plans):
+        return None
+    tiers: dict[str, int] = {}
+    try:
+        announced = queue.tiers()
+    except (OSError, ValueError):
+        announced = []
+    for plan in plans:
+        tier_id = plan.get("tier_id")
+        if not isinstance(tier_id, str) or tier_id in tiers:
+            continue
+        records = [record for record in announced
+                   if isinstance(record, dict)
+                   and str(record.get("tier_id")) == tier_id
+                   and not record.get("retired")]
+        if len(records) != 1:
+            continue
+        try:
+            minted = storage_tiers.tier_tokens(records[0]).get(
+                storage_tiers.capacity_kind_of(tier_id))
+        except (ValueError, KeyError, TypeError):
+            continue
+        if isinstance(minted, int) and not isinstance(minted, bool):
+            tiers[tier_id] = minted
+    demand = residency_plan.gang_prelaunch_demand(plans, tiers)
+    over = {tier_id: entry for tier_id, entry in demand.items()
+            if entry["over_capacity"]}
+    if not over:
+        return None
+    rendered = []
+    for tier_id in sorted(over):
+        entry = over[tier_id]
+        rendered.append(
+            f"stage tier {tier_id}: members {entry['members']} need joint "
+            f"peak {entry['peak_gib']} GiB (retained "
+            f"{entry['retained_gib']} GiB + suffix "
+            f"{entry['suffix_gib']} GiB), above the tier's minted "
+            f"capacity of {entry['capacity_gib']} GiB")
+    return "pbgang: declared prelaunch prefixes do not fit: " + "; ".join(rendered)
+
+
+
 def member_command(args, manifest: dict, member: dict, *, group: str, index: int) -> list[str]:
     size = len(manifest["members"])
     command = [sys.executable, str(HERE / "pbrun.py"),
@@ -246,6 +311,13 @@ def member_command(args, manifest: dict, member: dict, *, group: str, index: int
                 command += [flag, str(entry)]
         else:
             command += [flag, str(value)]
+    # A class-scoped GPU measurement seals its class facts from a vetted
+    # packet when the submitting box has no accelerator (#1598).  Only a
+    # member that declares both a measurement and a host class can use it, so
+    # only those members carry the flag; ``pbrun`` judges the packet.
+    evidence = getattr(args, "target_evidence", None)
+    if evidence is not None and member.get("measurement") and member.get("host_class"):
+        command += ["--target-evidence", str(evidence)]
     return [*command, "--", *map(str, member["argv"])]
 
 
@@ -263,10 +335,23 @@ def main(argv: list[str] | None = None) -> int:
                     help="checkout every member snapshots, unless the member names its own cwd")
     ap.add_argument("--queue", type=Path, default=SH / "pb-queue",
                     help="queue root where pbgang reads the published member rows and files the group record; must be the queue pbrun publishes to")
+    ap.add_argument("--target-evidence", type=Path, default=None, metavar="PATH",
+                    help="absolute path of an evidence packet (tools/fleet/pbevidence.py "
+                         "prints one on a worker of the class); each member that declares "
+                         "a measurement and a host_class seals its class facts from it "
+                         "instead of probing this box (#1598). The manifest does not change")
     args = ap.parse_args(argv)
     manifest = _pbgang_load_manifest(args.manifest)
     if args.cwd is None and any("cwd" not in member for member in manifest["members"]):
         ap.error("--cwd is required unless every member names its own cwd")
+    if args.target_evidence is not None:
+        if not args.target_evidence.is_absolute():
+            ap.error("--target-evidence must be an absolute path: pbrun reads a relative "
+                     "one against its own working directory")
+        if not any(member.get("measurement") and member.get("host_class")
+                   for member in manifest["members"]):
+            ap.error("--target-evidence needs a member that declares measurement and "
+                     "host_class")
     skew_s = float(manifest.get("skew_s", _gang.DEFAULT_SKEW_S))
     group = secrets.token_hex(16)
     keys: list[str] = []
@@ -290,6 +375,11 @@ def main(argv: list[str] | None = None) -> int:
     if any(row is None for row in rows):
         withdraw(keys, "pbgang: a member left READY before its group was filed")
         print("pbgang: a member row is no longer READY; withdrew the gang", file=sys.stderr)
+        return 1
+    refusal = gang_prelaunch_refusal(queue, keys)
+    if refusal is not None:
+        withdraw(keys, refusal)
+        print(f"{refusal}; withdrew {len(keys)} published member(s)", file=sys.stderr)
         return 1
     try:
         record = _gang.publish_group(queue, group, rows, skew_s=skew_s)  # type: ignore[arg-type]

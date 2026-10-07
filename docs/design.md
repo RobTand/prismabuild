@@ -237,6 +237,8 @@ opens remain (actions 8c9e1d2bd5f4 and 8550ef5bc4ab). On the NFS export a
 listing is at least one READDIR, and a per-key lookup is a LOOKUP unless
 the client's dentry cache answers it.
 
+The standalone `bench_claim_pass` command uses an owned temporary admission directory under `/tmp` when `PRISMABUILD_BOX_STATE_ROOT` is absent or empty. It sets the environment value before `build_and_poll` imports `pool` and retains the directory across both synchronous polls. It restores the prior environment value and removes only the owned directory after the call. A nonempty explicit override remains unchanged. The count-only branch returns before work or scope creation. Production roots and admission policy remain unchanged.
+
 Each claim pass times its per-key transition-lock holds (#1029): every lock
 the pass acquires is timed on `time.monotonic()` from acquisition to the end
 of the block that held it, however the block ends, and a lock another loop
@@ -1950,6 +1952,10 @@ Structured `--pytest-args` forwarding uses a closed population/report vocabulary
 and replaces environment/project `addopts` when supplied. Worker count, config
 indirection, extra file paths, and xdist's population-duplicating `each` mode
 are refused rather than overriding PB's reservations or file partitioning.
+The one ini override, `-o tmp_path_retention_policy=all|failed|none` (#1535,
+D29), is a retention choice for sealed checkouts that carry no setting. Any
+other `-o` key is refused, because `addopts`, `testpaths` and plugin keys
+would reopen resource control and config indirection.
 Surface report names expand `{shard}` or receive `.shard-N` before the final
 suffix. Expanded arguments and GPU budgets enter the ordinary sealed action
 identity through `pbrun`; no second dispatcher or placement policy is added.
@@ -2488,6 +2494,19 @@ miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
   capabilities. The live NVIDIA model and physical UUID are recorded in the
   receipt; UUID is provenance, not a requirement to use the same physical GPU.
   Missing model/UUID evidence or a failed identity probe refuses this opt-in.
+- A box without an accelerator takes the class facts from a vetted packet
+  (#1598): `pbrun --target-evidence PATH` replaces the local probe of a pool
+  `--measurement --host-class` submission, and `pbgang --target-evidence PATH`
+  forwards it to the members that declare both. `tools/fleet/pbevidence.py`
+  prints the packet on a worker of the class, as a normal PrismaBuild action.
+  `pbrun` refuses a packet that is not local, has no accelerator, has no device
+  identity, mixes models or drivers, or does not match the class. Only `gb10`
+  has a class rule. The sealed facts are the same ones a live probe seals: the
+  host name and the device UUID stay provenance and are not identity. The option
+  adds no seal and no identity field. Each worker still checks every declared
+  fact against its own live facts before it runs, so a wrong packet fails
+  closed at the worker. The default refusal, when the option is absent, does
+  not change.
   Legacy receipts and ordinary measurement keys retain their existing shape.
   Explicit `--here` still pins the host. `--anywhere` remains invalid.
   Declaring a class asserts that external command, container, Python and data
@@ -4883,6 +4902,67 @@ with routine work at 0 or below.
 it never claims a member. During a rolling publish it may not honour a gang
 fence on its host; the start barrier still prevents a lone start.
 
+## Prelaunch-resident manifest phases (#1594)
+
+A consumer that opens its whole artifact before its servers start declares
+that fact per phase in the manifest.  The declaration is part of the
+content hash.  A phase declares with a literal `resident_before_launch:
+true`: on a v1 `annotations.phases[i]` entry, on a v2 `read_plan.phases[i]`
+entry.  An older `core` refuses the unknown v2 key, which fails closed.
+Only a literal boolean `true` declares.  Other values refuse at submission.
+The declared phases form a contiguous prefix from the first phase.
+`storage_tiers.manifest_prelaunch_phases` and `residency_plan.validate_plan`
+enforce the prefix.  The frozen plan carries the declaration per phase.  A
+plan with no declaration omits the key.  Its bytes, `plan_sha256` and rows
+stay byte-identical.
+
+With no declaration, `residency_plan.leads_for(plan)` gives the single
+first-mover lead, as today.  With one, it gives all stage-leg chunk movers
+of all declared phases, in read order, chunked or whole.  `lead_mover_row`
+is untouched.  `prelaunch_phase_names(plan)` reads the declared names.
+`prelaunch_bound(plan, owned_by_others)` gives `{retained_gib: T,
+suffix_gib: S, peak_gib: B}` with `B = T + max over i of (size(pi) +
+size(p(i+1)))` and `size(p(n+1)) = 0`.  Sizes come from the sealed
+`stage_gib` of the legs, minus legs that others own.  It gives `None` with
+no declaration.  `prelaunch_peak_gib` serves submission, `pbgang` and the
+gate.  The three never disagree.
+
+Submission refuses before it seals or publishes.  The refusal names the
+tier, the retained and suffix terms, and the capacity.
+`pbrun.residency_stage_rows` (also reached by `pbcampaign`) refuses when
+the declared peak exceeds the minted stage tier capacity.
+`storage_tiers.tier_tokens` of the announced tier record gives that
+capacity.  The tier loop mints the same mapping.  Unknown capacity never
+refuses.  `pbgang` refuses when the member distinct movers per stage tier
+jointly exceed it, with shared ranges counted once by `share_namespace`.
+The pure `residency_plan.gang_prelaunch_demand` computes that sum.
+Headroom below capacity waits, never refuses.  A peak equal to capacity
+passes.
+
+The tier loop reserves one group per declared unit before it publishes any
+leg.  A declared consumer is a newcomer until its unit holds tokens, has a
+published chunk or has a committed receipt; a claimed consumer is never one.
+The state comes from the unit, not from the streaming lead, so a plan with no
+suffix (one declared phase) still opens its group.  The filed intent is
+immutable: a later cycle holds the filed demand and chunks instead of
+recomputing them from moved evidence, and a leg whose registered shared
+mover is its own does not count as owned by others.  Every live declared leg
+is funded on every cycle, because a crash between a row and its funding, or
+a deferred funding, leaves a READY mover with no credit while the group
+holds the tier.  Funding is idempotent.  The group census counts a bound
+token the mover holds in a `reserved` record too: `publish_chunk` moves the
+tokens before it closes the record, and a stop or a deferred update between
+the two must not read as a short group, which would drop authority and
+leave the record unrepaired.  A stage tier that no live consumer
+names still releases a group holder no live unit owns, under the same
+complete-census guard, so a withdrawn sole consumer returns its capacity.
+Submission selects the prefix and suffix cuts by phase name, since an empty
+declared phase has no range.  A gang across tiers stays unsupported: its
+group is not reserved and the event `prelaunch-turn-unsupported` is filed.
+The terminal release writes its receipt after it frees tokens, so a crash
+between the two can lose the journal counts; a write-ahead release receipt
+is a follow-up before the multi-tier turn becomes live.
+
 ## Physical and adaptive GPU admission
 
 Both current GB10 workers have one physical GPU. Their fleet shape uses the
@@ -5118,6 +5198,49 @@ It resolves and pins the selected Unix daemon endpoint; remote or unresolved
 contexts refuse because CPU identities belong to the admitted host. Agents
 must retain this shim and must not widen their assigned affinity. These are
 cooperative execution controls, not hostile-process containment.
+
+The shim relays termination (#1599).  A foreground `docker run` or `create`
+runs the real client as a child, with handlers for TERM, INT and HUP installed
+before it starts and kept armed until the receipt is written.  The first signal
+is forwarded to the client, which relays it to the container's main process.
+One absolute deadline bounds the whole stop: a grace (1.5 s,
+`PRISMABUILD_DOCKER_STOP_GRACE_S`, capped at 30 s) plus a tail of 2.5 s that
+covers the ownership query, the kill and the check afterwards, 4 s by default,
+inside the five a guard may allow between TERM and its own KILL; each daemon call
+is also capped by what remains.  After the grace the shim kills the exact
+container this call created, then the client if it outlives a short wait
+(0.5 s, `PRISMABUILD_DOCKER_STOP_KILL_WAIT_S`).  The container is named by a
+`--cidfile` (the caller's own, else a fresh one the shim removes) and by a
+per-call label, `prismabuild.shim=<nonce>`, that callers may not set.  It is
+killed only after `docker inspect` shows the owner label and nonce, and the
+scope label and cgroup parent when the action has a scope.  A container that
+cannot be shown to be this attempt's is never killed, and nothing is stopped by
+name.  An empty search is not proof that no container will appear, because a create
+request the client already sent can complete at the daemon after the client is
+gone; the shim keeps watching for the call's label to the deadline, stops what
+appears, and otherwise reports `creation_unresolved` and returns 125.
+A stop is proved only by an affirmative terminal state, `exited` or `dead`,
+or by the daemon's own "No such object"; `Running=false` is not enough, because a
+container that is only `created` can still be started by a request the client
+already sent.  The shim removes such an exact, owned container after the grace;
+if it cannot, the outcome is `start_unresolved` and the exit is 125.
+A query counts as proof only when it succeeds: a container is absent only
+on the daemon's own "No such object", and every other failure is `unknown`.  A
+kill is recorded only when Docker accepts it; a refused kill is retried to the
+deadline and counted in `kill_rejected`.  The shim then checks the daemon until
+the container is proved stopped or absent.  It returns 128+signal only when the
+stop is proved; otherwise it returns 125, so a guard never reads "terminated"
+while the workload lives.  A receipt, `<marker>.stop-<nonce12>.json` (schema
+`prismabuild.docker_stop_receipt.v1`), names the real container, how it was
+found, the signals, the escalation and the final state; its outcome is
+`stopped`, `killed`, `not_owned`, `creation_unresolved`, `start_unresolved`,
+`still_running` or `unknown`,
+and `stop_proved` says whether the exit was 128+signal.  A shim that is itself
+killed cannot relay: the label cleanup of `pool.cleanup_action_containers`
+remains the backstop.  `tools/fleet/qualify_docker_stop.py` proves the stop
+against a real daemon, inside an admitted action, for a TERM-ignoring and a
+TERM-honoring container, after the workload reports ready, and fails a stop that
+takes five seconds or more.
 Offers advertise `cpu_tiers`, and
 claims and endings retain `cpu_allocation`. Already-running overflow actions
 are not migrated when preferred cores become free; subsequent actions reuse

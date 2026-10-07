@@ -1672,8 +1672,12 @@ A passing test's `tmp_path` directory is removed as soon as the test ends
 it pytest keeps every test's directory until a later session prunes it, which on
 a RAM tmpfs with a fixed inode table (`nr_inodes`) held 750,000 inodes from six
 concurrent suites on dl380g10 and made every action there fail in preflight with
-`OSError 28` while the filesystem still reported free bytes. `pbtest` refuses a
-command-line `-o`, so this setting is part of the checkout the shards snapshot.
+`OSError 28` while the filesystem still reported free bytes. A checkout that
+does not carry the setting, such as a sealed one that cannot be edited, passes
+it through `--pytest-args '["-o", "tmp_path_retention_policy=none"]'` (or
+`all`, or `failed`; `--override-ini` is the same option). It is the only key
+`-o` accepts, and it is accepted once. The value enters the sealed action
+identity, so two retention choices are two actions.
 The status error-injection fixtures also delegate integer directory descriptors
 to the real system call. Their named-path error injections and assertions stay
 unchanged; descriptor-based temporary-directory cleanup can therefore finish
@@ -1845,8 +1849,10 @@ multiple workers and accepts `load`, `loadscope`, `loadfile`, `loadgroup`, or
 `worksteal`; `each` would repeat the population and is refused.
 
 Forwarded arguments cannot add files, change worker counts, select another
-config, or inject plugins/ini overrides. Unknown options are refused before
-submission; new plugin options require an explicit vocabulary extension.
+config, or inject plugins. The one ini override is the tmp retention policy
+above; every other `-o` or `--override-ini` is refused. Unknown options are
+refused before submission; new plugin options require an explicit vocabulary
+extension.
 When `--pytest-args` is supplied (even `[]`), it replaces both project and
 environment `addopts` so those cannot silently contradict the reservations.
 Pass the wanted supported options explicitly. Without this option, existing
@@ -1993,6 +1999,23 @@ driver, and GPU models/counts and compute capabilities before running. The
 receipt records the selected worker and actual GPU UUID. Unknown device identity
 refuses. `--here` adds a host pin even with a class; `--anywhere` is unnecessary
 and refused. The class is placement intent, not a claimed SLURM attestation.
+
+A box without an accelerator cannot probe the class facts, so it cannot submit
+the command above. Take the facts from a worker of the class instead. Run
+`tools/fleet/pbevidence.py --out PATH` as a normal detached action on a worker
+of the class (`--tag gb10`). Then submit with `--target-evidence PATH`:
+
+    tools/fleet/pbrun.py --transport pool --measurement --host-class gb10 --gpu \
+        --target-evidence PATH -- ./paired-probe.sh
+
+For a gang, give `pbgang.py --manifest M --target-evidence PATH`, an absolute
+path. The manifest does not change. `pbgang` forwards the option to the members
+that declare `measurement` and `host_class`. Collect the packet just before you
+submit. Each worker checks the sealed facts against its own live facts before
+it runs. A stale packet, for example after a driver update, fails at the worker.
+With one attempt, that loses the run. `pbrun` refuses a packet that is not
+local, has no accelerator or device identity, mixes models or drivers, or does
+not match the class. Without the option, the refusal does not change.
 
 Keep both arms of a comparison in one self-contained interleaved action. CPU
 near-idle admission, measurement isolation, GPU exclusivity, memory and telemetry
@@ -3805,6 +3828,18 @@ with the reservation. A disjoint mask or remote Docker context refuses with an
 explanation. Use the action's ordinary `docker` command so the shim can preserve
 CPU affinity and ownership labels. Directly choosing another Docker executable
 or widening a child mask violates the agent execution policy.
+
+When an action is terminated, the shim also stops its container (#1599). TERM,
+INT and HUP go to the Docker client; after a grace of 1.5 seconds the exact
+container that call created is killed, and only if it carries this action's
+owner label (and scope label when scoped). The whole stop is bounded at about
+four seconds by default. Set `PRISMABUILD_DOCKER_STOP_GRACE_S` (up to 30) only
+when your own guard waits longer than five seconds. The shim exits 128+signal
+only when the stop is proved; exit 125 means it could not prove the container
+stopped, so treat the workload as alive. Read `<marker>.stop-<nonce>.json` for
+the real container ID and its final state. To prove it on a box with Docker, run
+`tools/fleet/qualify_docker_stop.py` inside an admitted action; exit 0 means
+`proved`, 2 means nothing was tested.
 
 The CPU map is immutable while a host serves work. To change an existing host's
 usable topology or CPU cap: drain its reservations, stop its supervisor and

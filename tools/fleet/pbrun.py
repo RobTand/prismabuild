@@ -90,6 +90,7 @@ from prismabuild import (  # noqa: E402
     decomposition as dc, dependency_digest, filesystem_floor, materialize,
     movement_actions, pool, residency_plan, slurm_lane, storage_tiers,
 )
+import pbevidence  # noqa: E402
 import pbstatus  # noqa: E402
 import fleet_roster  # noqa: E402
 from prismabuild import local_dependencies  # noqa: E402
@@ -4207,8 +4208,72 @@ def require_host_class_scope(
         )
 
 
+#: The largest packet ``--target-evidence`` reads (#1598).  A packet is one
+#: worker's platform and accelerator facts: a few hundred bytes.
+TARGET_EVIDENCE_MAX_BYTES = 64 * 1024
+
+#: The rule of each class a target-evidence packet may stand for (#1598): the
+#: platform key and the accelerator model its workers report.  A class this
+#: table does not name has no rule, so a packet cannot stand for it.  GB10 is
+#: one AArch64 platform with one model.  Another model on AArch64, such as a
+#: GH200, is not GB10, and neither is another model that shares its capability.
+_TARGET_EVIDENCE_CLASSES = {
+    "gb10": lambda evidence, platform_key: (
+        platform_key == "linux-aarch64-sm121"
+        and all(row["name"] == "NVIDIA GB10" and row["compute_capability"] == "12.1"
+                for row in evidence["accelerators"])),
+}
+
+
+def load_target_evidence(path: str, *, host_class: str) -> dict[str, object]:
+    """Read and vet one target-evidence packet for ``host_class`` (#1598).
+
+    ``pbevidence.py`` prints the packet on a worker of the class.  It replaces
+    the local probe a class-scoped pool measurement makes, so a box without an
+    accelerator can seal the class facts.  Nothing here is an attestation: each
+    worker checks the declared facts against its own live facts before it
+    runs, so a wrong packet fails closed there.  This function refuses the
+    packets that could never seal a class -- not local, no accelerator, no
+    device identity, mixed models, or a platform the class does not have --
+    before anything is sealed.
+    """
+
+    try:
+        with open(path, "rb") as handle:
+            raw = handle.read(TARGET_EVIDENCE_MAX_BYTES + 1)
+    except OSError as exc:
+        raise SystemExit(f"pbrun: cannot read --target-evidence {path}: {exc}") from None
+    if len(raw) > TARGET_EVIDENCE_MAX_BYTES:
+        raise SystemExit(
+            f"pbrun: --target-evidence {path} exceeds {TARGET_EVIDENCE_MAX_BYTES} "
+            "bytes: a packet is one worker's facts, not a payload")
+    try:
+        value = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise SystemExit(f"pbrun: --target-evidence {path} is not JSON: {exc}") from None
+    try:
+        evidence = pbevidence.vet(value)
+    except pbevidence.PacketError as exc:
+        raise SystemExit(f"pbrun: --target-evidence {path}: {exc}") from None
+    rule = _TARGET_EVIDENCE_CLASSES.get(host_class)
+    if rule is None:
+        raise SystemExit(
+            f"pbrun: --target-evidence {path}: no rule for class {host_class!r}; "
+            f"a packet can stand for {', '.join(sorted(_TARGET_EVIDENCE_CLASSES))}")
+    try:
+        platform_key = pb._platform_key_from_evidence(evidence)
+    except pb.ActionContractError as exc:
+        raise SystemExit(f"pbrun: --target-evidence {path}: {exc}") from None
+    if not rule(evidence, platform_key):
+        raise SystemExit(
+            f"pbrun: --target-evidence {path} disagrees with class {host_class}: "
+            f"it reports {platform_key}")
+    return evidence
+
+
 def host_class_scope(
     host_class: str | None, *, measurement: bool = False, transport: str = "slurm",
+    target_evidence: Mapping[str, object] | None = None,
 ) -> tuple[dict[str, object], dict[str, str]]:
     """The execution scope and the toolchain a submission seals.
 
@@ -4225,14 +4290,22 @@ def host_class_scope(
     another class is refused there, naming the field that differs.
     """
 
+    if target_evidence is not None and not (
+            measurement and transport == "pool" and host_class is not None):
+        raise ValueError(
+            "target_evidence stands for a class-scoped pool measurement only")
     if measurement and transport == "pool":
         # A pool worker can attest its platform and executable/ABI directly.
         # A class is placement intent, not a forged SLURM attestation. The
         # actual platform, ABI, driver and device models constrain numerics;
         # physical UUIDs and the selected worker remain receipt provenance.
-        evidence = pb._collect_worker_evidence(
-            **({"attest_accelerator_identity": True} if host_class is not None else {})
-        )
+        # A vetted target-evidence packet stands in for the local probe when
+        # the submitting box has no accelerator (#1598): the worker still
+        # checks every declared fact against its own live facts.
+        evidence = (target_evidence if target_evidence is not None else
+                    pb._collect_worker_evidence(
+                        **({"attest_accelerator_identity": True}
+                           if host_class is not None else {})))
         toolchain = {
             **pb.executable_toolchain_contract(SEALED_ARGV0),
             **pb.live_platform_toolchain_contract(evidence=evidence),
@@ -5289,6 +5362,7 @@ def freeze_action_template(
     gang: Mapping[str, object] | None = None,
     requires_files: list[dict] | None = None,
     resident_set: str | None = None,
+    target_evidence: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """Read the tree and the environment once, and freeze what they say.
 
@@ -5524,7 +5598,8 @@ def freeze_action_template(
                 f"pbrun: --produced-output-template declaration: {exc}") from None
         inputs.append(template_input)
     execution_scope, toolchain = host_class_scope(
-        host_class, measurement=measurement, transport=transport)
+        host_class, measurement=measurement, transport=transport,
+        target_evidence=target_evidence)
     if recorder is not None:
         # Actual executable/version facts, verified by the normal worker
         # preflight and bound into its real receipt; never guessed hashes.
@@ -5962,6 +6037,29 @@ def reader_declaration(args) -> dict[str, int]:
     return reader
 
 
+def split_prelaunch_cuts(
+    ranges: Sequence[Mapping[str, object]],
+    cuts: Sequence[list[tuple[int, int]]],
+    prelaunch_names: frozenset[str] | set[str],
+) -> tuple[list[list[tuple[int, int]]], list[list[tuple[int, int]]]]:
+    """The declared prefix's cuts and the streaming suffix's, chosen by name.
+
+    ``cuts`` holds one entry per range, and ``ranges`` omits an empty phase,
+    so the manifest's declared count and the cut list can disagree: slicing
+    by count would take a suffix phase's cuts into the prefix.  The names
+    are what the manifest declared, so the split follows them (#1594).
+    """
+
+    if len(ranges) != len(cuts):
+        raise SystemExit("pbrun: prelaunch cuts and ranges disagree; "
+                         "nothing was sealed or published.")
+    prefix = [chunks for span, chunks in zip(ranges, cuts)
+              if str(span["name"]) in prelaunch_names]
+    suffix = [chunks for span, chunks in zip(ranges, cuts)
+              if str(span["name"]) not in prelaunch_names]
+    return (prefix, suffix)
+
+
 def residency_leg_cuts(
     record: Mapping[str, object],
     *,
@@ -6063,6 +6161,18 @@ def residency_stage_rows(
             "pbrun: --residency stage needs a manifest that declares its read "
             "order in phases; this one declares none, so there is no boundary "
             "to stage up to that is not invented here")
+    # Read the declared prelaunch-resident prefix (#1594).  Mark its phases
+    # on the sealed plan.  Refuse its peak when it exceeds the tier.  A v1
+    # manifest reaches this reader unchecked by ``core``.  Refuse a
+    # non-boolean or a non-prefix declaration here.
+    try:
+        prelaunch = storage_tiers.manifest_prelaunch_phases(manifest)
+    except ValueError as exc:
+        raise SystemExit(
+            f"pbrun: data manifest {str(entry['sha256'])[:12]} declares an "
+            f"unusable prelaunch prefix: {exc}; nothing was sealed or "
+            f"published.") from None
+    prelaunch_names = frozenset(prelaunch)
     tier_id = str(tier["tier_id"])
     # A consumer that is already staged keeps the window it was frozen with.
     # Receipts price a *new* window; they must never repartition a frozen one.
@@ -6198,6 +6308,32 @@ def residency_stage_rows(
     ram_cuts = (None if ram_tier is None else
                 residency_leg_cuts(ram_tier, leg="ram", ranges=ranges,
                                    read_entries=read_entries))
+    if prelaunch:
+        # Fit the declared prefix peak to the minted tier capacity (#1594).
+        # The sizes are the same chunk demands the sealed legs will carry,
+        # cut at the same boundaries.  This refuses what the plan demands.
+        # Headroom is not checked: a fit prefix with no free room waits.
+        # Unknown capacity never refuses.
+        prefix_cuts, suffix_cuts = split_prelaunch_cuts(
+            ranges, stage_cuts, prelaunch_names)
+
+        def _cut_gib(cuts: list[list[tuple[int, int]]]) -> list[int]:
+            return [sum(storage_tiers.stage_tokens_for_bytes(cend - cstart)
+                        for cstart, cend in chunks) for chunks in cuts]
+
+        bound = residency_plan.prelaunch_peak_gib(
+            _cut_gib(prefix_cuts), _cut_gib(suffix_cuts))
+        minted = storage_tiers.tier_tokens(tier).get(
+            storage_tiers.capacity_kind_of(tier_id))
+        if minted is not None and bound["peak_gib"] > minted:
+            raise SystemExit(
+                f"pbrun: prelaunch prefix {prelaunch} of "
+                f"{str(entry['sha256'])[:12]} needs peak "
+                f"{bound['peak_gib']} GiB (retained "
+                f"{bound['retained_gib']} GiB + suffix "
+                f"{bound['suffix_gib']} GiB) on stage tier {tier_id}, "
+                f"above the tier's minted capacity of {minted} GiB.  "
+                f"Nothing was sealed or published.")
 
     # One read of the live receipts for the whole window: every mover in it has
     # the same structure and reads the same pool, so they price alike, and a
@@ -6719,6 +6855,12 @@ def residency_stage_rows(
             phase_record["ram_egress_row"] = ram_egress_row
         if ram_chunks is not None:
             phase_record["ram_chunks"] = ram_chunks
+        # Carry the declared prefix on the frozen plan (#1594).  Discovery,
+        # admission and reuse derive leads from ``leads_for(plan)`` with no
+        # manifest in hand.  Only declared phases carry the key.  Undeclared
+        # plans stay byte-identical.
+        if str(span["name"]) in prelaunch_names:
+            phase_record["resident_before_launch"] = True
         phases.append(phase_record)
     plan = residency_plan.build_plan(
         consumer_action_key=consumer_action_key, tier_id=tier_id,
@@ -6897,6 +7039,13 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
                          "driver and device models; external dependencies must be "
                          "identical across the class. SLURM seals host_class_keyed "
                          "and attests its constraint through the controller")
+    ap.add_argument("--target-evidence", default=None, metavar="PATH",
+                    help="seal the class facts of a pool --measurement "
+                         "--host-class submission from this packet instead of "
+                         "probing this box (#1598). Run tools/fleet/pbevidence.py "
+                         "as an action on a worker of the class to make one. "
+                         "Each worker still checks the facts against its own "
+                         "live facts before it runs")
     ap.add_argument("--anywhere", action="store_true",
                     help="assert that command/tool/data dependencies outside "
                          "the snapshot are identical on every eligible worker")
@@ -7396,6 +7545,25 @@ def prepare_submission(args: argparse.Namespace) -> dict[str, object]:
             "the boxes offering "
             f"{', '.join(sorted(set(args.tag)))}.  Drop whichever is not true."
         )
+    target_evidence = None
+    target_evidence_path = getattr(args, "target_evidence", None)
+    if target_evidence_path is not None:
+        missing = [name for name, present in (
+            ("--measurement", args.measurement),
+            ("--host-class", args.host_class is not None),
+            ("the pool transport", args.transport == "pool")) if not present]
+        if missing:
+            raise SystemExit(
+                "pbrun: --target-evidence needs " + ", ".join(missing) + ": it "
+                "stands in for the local probe of a class-scoped pool "
+                "measurement (#1598)")
+        target_evidence = load_target_evidence(
+            target_evidence_path, host_class=args.host_class)
+        print(
+            f"pbrun: sealing the facts of class {args.host_class} from "
+            f"--target-evidence {target_evidence_path}, not from this box; "
+            "each worker checks them against its own live facts before it runs",
+            file=sys.stderr, flush=True)
     require_host_class_scope(
         measurement=args.measurement, host_class=args.host_class,
         transport=args.transport, anywhere=args.anywhere,
@@ -7595,6 +7763,7 @@ def prepare_submission(args: argparse.Namespace) -> dict[str, object]:
         measurement=args.measurement,
         transport=args.transport,
         pool_measurement_class=bool(pool_measurement_class),
+        target_evidence=target_evidence,
         # A deferred submission's manifest is built at release (#913); its
         # static part is ingested beside the template, never sealed into it.
         data_manifest_path=(None if getattr(args, "after", None)
@@ -7797,7 +7966,13 @@ def announce_placement(
     capability_verdict = queue.placeable(
         probe_intent, max_age_s=RECORDED_OFFER_MAX_AGE_S)
     if capability_verdict is False:
-        without_images = {name: value for name, value in intent.items()
+        # The counterfactuals below start from ``probe_intent``, the intent the
+        # verdict above was asked of (#1595).  An unknown interpreter is
+        # already out of it.  Starting from ``intent`` kept the interpreter
+        # requirement, so every question failed on the interpreter and the
+        # missing image or capability was never named.  The interpreter keeps
+        # its own verdict, asked of ``intent`` below.
+        without_images = {name: value for name, value in probe_intent.items()
                           if name != "container_images"}
         image_blocked = bool(intent.get("container_images")) and queue.placeable(
             without_images, max_age_s=RECORDED_OFFER_MAX_AGE_S) is True
@@ -7833,7 +8008,7 @@ def announce_placement(
                     "  interpreter:    " + str(intent["interpreter"])
                     + " (every recorded eligible worker names it absent)\n")
         capacity_line = ("" if image_blocked or capability_blocked else
-                         placement_capacity_notice(queue, intent))
+                         placement_capacity_notice(queue, probe_intent))
         remedy = (
             "Load or pull the image on a box that offers these tags and the "
             f"{pb.CONTAINER_IMAGE_TAG} capability, then wait for its worker's "

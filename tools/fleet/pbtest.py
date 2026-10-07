@@ -1309,6 +1309,14 @@ PYTEST_SWITCHES = {"--strict-cuda", "--strict-markers", "--strict-config",
                    "--collect-only", "--co", "--disable-warnings", "-x"}
 PYTEST_VALUES = {"-k", "-m", "--dist", "--surface-json", "--durations",
                  "--durations-min", "--maxfail", "--tb"}
+#: ``-o`` and its long spelling name one ini key and three values: pytest's own
+#: tmp retention policy (#1535, D29).  A sealed checkout cannot take a config
+#: edit, and a repository without the key keeps every passing test's directory
+#: on an inode-limited scratch.  No other key passes: ``addopts``, ``testpaths``
+#: and plugin keys would reopen resource control and config indirection.
+PYTEST_OVERRIDES = {"-o", "--override-ini"}
+RETENTION_KEY = "tmp_path_retention_policy"
+RETENTION_POLICIES = {"all", "failed", "none"}
 
 
 def parse_pytest_args(raw: str, *, gpu: bool, workers: int) -> list[str]:
@@ -1319,6 +1327,7 @@ def parse_pytest_args(raw: str, *, gpu: bool, workers: int) -> list[str]:
     ):
         raise ValueError("--pytest-args must be a JSON array of nonempty strings")
     result: list[str] = []
+    retention_seen = False
     index = 0
     while index < len(values):
         option, equals, value = values[index].partition("=")
@@ -1329,7 +1338,7 @@ def parse_pytest_args(raw: str, *, gpu: bool, workers: int) -> list[str]:
                 raise ValueError("--strict-cuda requires --gpu")
             result.append(option)
             continue
-        if option not in PYTEST_VALUES:
+        if option not in PYTEST_VALUES | PYTEST_OVERRIDES:
             raise ValueError(f"unsupported pytest option {option!r}; use "
                              "--workers-per-shard for parallelism and paths for files")
         if not equals:
@@ -1346,6 +1355,15 @@ def parse_pytest_args(raw: str, *, gpu: bool, workers: int) -> list[str]:
                 raise ValueError("--dist must partition tests; 'each' duplicates the population")
         if option == "--surface-json" and not Path(value).name:
             raise ValueError("--surface-json requires a filename")
+        if option in PYTEST_OVERRIDES:
+            key, _, policy = value.partition("=")
+            if key != RETENTION_KEY or policy not in RETENTION_POLICIES:
+                raise ValueError(
+                    f"unsupported pytest option {option!r} {value!r}; the only "
+                    f"override is {RETENTION_KEY}=" + "|".join(sorted(RETENTION_POLICIES)))
+            if retention_seen:
+                raise ValueError(f"{RETENTION_KEY} may be set once")
+            retention_seen = True
         result += [option, value]
     return result
 
