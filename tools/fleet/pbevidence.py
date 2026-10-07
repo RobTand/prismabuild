@@ -22,10 +22,7 @@ attest an accelerator.
 from __future__ import annotations
 
 import argparse
-import json
-import os
 import sys
-import tempfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve(strict=True).parent
@@ -34,7 +31,7 @@ from runtime_paths import generation_root  # noqa: E402
 
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
-from prismabuild import core as pb  # noqa: E402
+from prismabuild import core as pb, materialize  # noqa: E402
 
 
 class PacketError(ValueError):
@@ -85,7 +82,7 @@ def vet(evidence: dict) -> dict:
     return packet
 
 
-def collect() -> dict:
+def collect_packet() -> dict:
     """This box's evidence packet, with the device identity attested."""
 
     try:
@@ -95,23 +92,6 @@ def collect() -> dict:
     return vet(evidence)
 
 
-def _write_atomic(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, name = tempfile.mkstemp(
-        prefix=f".{path.name}.", dir=str(path.parent))
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            handle.write(text)
-        os.chmod(name, 0o644)
-        os.replace(name, path)
-    except BaseException:
-        try:
-            os.unlink(name)
-        except OSError:
-            pass
-        raise
-
-
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--out", type=Path, default=None,
@@ -119,15 +99,15 @@ def main(argv: list[str] | None = None) -> int:
                          "instead of stdout")
     args = ap.parse_args(argv)
     try:
-        packet = collect()
+        packet = collect_packet()
     except PacketError as exc:
         print(f"pbevidence: {exc}", file=sys.stderr)
         return 1
-    text = json.dumps(packet, sort_keys=True, separators=(",", ":")) + "\n"
     if args.out is None:
-        sys.stdout.write(text)
+        sys.stdout.write(pb._sorted_lf_bytes(packet).decode("utf-8"))
     else:
-        _write_atomic(args.out, text)
+        # The repo's one owner of rename-atomic JSON records (#1330).
+        materialize._write_json_atomic(args.out, packet, trailing_newline=True)
     return 0
 
 

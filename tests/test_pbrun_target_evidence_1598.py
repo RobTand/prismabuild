@@ -252,7 +252,7 @@ def test_the_collector_asks_for_the_device_identity(monkeypatch):
         return _packet()
 
     monkeypatch.setattr(pb, "_collect_worker_evidence", probe)
-    pbevidence.collect()
+    pbevidence.collect_packet()
     assert seen == {"attest_accelerator_identity": True}
 
 
