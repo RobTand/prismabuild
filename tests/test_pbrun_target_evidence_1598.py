@@ -303,7 +303,8 @@ def test_pbgang_refuses_the_option_when_no_member_can_use_it(tmp_path, capsys):
         pbgang.main(["--manifest", str(manifest), "--cwd", str(tmp_path),
                      "--target-evidence", str(packet)])
     assert exc.value.code == 2
-    assert "--target-evidence" in capsys.readouterr().err
+    assert "needs a member that declares measurement and host_class" in (
+        capsys.readouterr().err)
 
 
 def test_pbgang_refuses_a_relative_packet_path(tmp_path, capsys):
