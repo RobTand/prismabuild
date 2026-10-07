@@ -644,3 +644,25 @@ def dangling(queue, tier_id: str, ledger, live_units: Sequence[Unit], *,
                        "unit": info["unit"], "consumer": info["unit"],
                        "holder": name, "tier_id": tier_id, "events": inner})
     return events
+
+
+def release_terminal(queue, tier_id: str, units_ended: Sequence[Unit], *,
+                     shared_owned: Sequence[str] = frozenset()) -> list[dict]:
+    """Release every ended unit's unsplit remainder and unconsumed fences.
+
+    A bound mover whose copy still runs keeps its charge, and a fence a
+    co-owner still needs stays with the mover. Unsupported units own
+    nothing and stay untouched.
+    """
+    shared = {str(key) for key in shared_owned or []}
+    events: list[dict] = []
+    for unit in units_ended or []:
+        if unit.unsupported is not None:
+            continue
+        movers = [leg["mover_key"] for leg in unit.legs]
+        inner = prelaunch_group.release_unit(
+            queue, tier_id, unit.unit, unit.holder, movers, terminal=True,
+            shared_owned=shared)
+        for name in inner:
+            events.append(_unit_event(unit, tier_id, name))
+    return events
