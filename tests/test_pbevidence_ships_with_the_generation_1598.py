@@ -17,6 +17,10 @@ import pytest
 
 from test_publish_runtime import ROOT, _fake_git_and_probe, publish_runtime
 
+#: The publisher fixture replaces ``subprocess.run`` for the whole process, so
+#: the commands below start through the function bound before any fixture runs.
+_RUN = subprocess.run
+
 
 def _published(tmp_path, monkeypatch) -> Path:
     mirror = tmp_path / "fleet" / "repo"
@@ -54,7 +58,7 @@ def test_the_command_starts_from_the_generation_alone(
     consumer.mkdir()
     env = {key: value for key, value in os.environ.items()
            if key not in {"PYTHONPATH", "PYTHONHOME"}}
-    completed = subprocess.run(
+    completed = _RUN(
         [sys.executable, "-I", str(generation / "tools" / tool), "--help"],
         cwd=consumer, env=env, capture_output=True, text=True, check=False)
     assert completed.returncode == 0, completed.stderr
