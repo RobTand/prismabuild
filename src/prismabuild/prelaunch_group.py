@@ -371,7 +371,15 @@ def census(queue: pool.PoolQueue, tier_id: str, unit: str, holder: str,
             if status == "unknown":
                 found.funding_unknown.append(mover)
             continue
-        if (str(record.get("state")) not in ("transferring", "consumed")
+        # A bound token the mover holds is the mover's, whatever the record
+        # says: ``publish_chunk`` moves the tokens first and closes the record
+        # from ``reserved`` to ``transferring`` after.  A stop between the two
+        # (or a deferred update) must not read as a short group, or the
+        # reconcile would release the holder's remainder and no pass could
+        # repair the record.  A ``reserved`` record whose tokens still sit in
+        # the group holder counts zero here: the mover holds none of them.
+        if (str(record.get("state")) not in ("reserved", "transferring",
+                                             "consumed")
                 or not _chunk_binds(intent, record, mover)):
             continue
         held = _held_or_unknown(ledger, mover, found)

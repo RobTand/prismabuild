@@ -12,7 +12,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from prismabuild import pool  # noqa: E402
 import tier_loop  # noqa: E402
-from test_prelaunch_group_reconcile_1594 import _hexkey, _queue  # noqa: E402
+from test_prelaunch_group_reconcile_1594 import (  # noqa: E402
+    _hexkey, _queue, MANIFEST)
 from test_prelaunch_tier_module_1594 import _declared_plan, TIER  # noqa: E402
 from test_prelaunch_tier_publish_1594 import (  # noqa: E402
     _declared_movers, _live, _stage)
@@ -50,13 +51,30 @@ def test_a_prefix_only_plan_begins_its_group_and_publishes(tmp_path) -> None:
         assert record is not None and record["state"] == "transferring"
 
 
+def _register_shared(queue, plan) -> None:
+    """Register every declared range in the real shared registry, as pbrun does."""
+    from prismabuild import residency_plan
+    for phase in plan["phases"]:
+        for chunk in phase.get("stage_chunks") or [phase]:
+            row = chunk["mover_row"]
+            residency_plan.register_shared_range(
+                queue, manifest_sha256=MANIFEST, tier_id=TIER,
+                start=int(chunk["start_bytes"]), end=int(chunk["end_bytes"]),
+                seal=lambda row=row: (dict(row), {}),
+                registered_by="test",
+                sealed_against={"mover_python": "/usr/bin/python3",
+                                "mover_tools_root": "/tools"})
+
+
 def test_the_filed_group_demand_survives_its_own_publication(tmp_path) -> None:
     """A unit's own live mover is not 'owned by others'.
 
-    With the default shared registry the first publication made the unit's
-    retained demand drop to zero, and the next cycle tried to file a
-    different intent for the same group.  The demand must stay the filed one
-    through reservation, publication and the next census.
+    The ranges are registered in the real shared registry, as pbrun registers
+    them at submission.  The first publication then made the unit's own
+    movers live, the unit's retained demand dropped to zero, and the next
+    cycle tried to file a different intent for the same group.  The demand
+    must stay the filed one through reservation, publication and the next
+    census.
     """
     from prismabuild import prelaunch_group as pg
     queue = _queue(tmp_path, stage_gib=300)
@@ -64,6 +82,7 @@ def test_the_filed_group_demand_survives_its_own_publication(tmp_path) -> None:
     consumer = _hexkey("stable-demand-consumer")
     specs = [("phase-a", 4, True, 2), ("phase-b", 4, False, 1)]
     plan = _declared_plan(queue, consumer, specs, tag="stable")
+    _register_shared(queue, plan)
     _live(queue, plan, consumer, specs)
     unit, movers = _declared_movers(queue, consumer)
     before = unit.demand_gib
@@ -180,3 +199,56 @@ def test_prefix_cuts_follow_phase_names_when_a_declared_phase_is_empty() -> None
         ranges, cuts, {"empty-declared", "kept"})
     assert prefix == [[(0, 4)]]
     assert suffix == [[(4, 8)]]
+
+
+import pytest  # noqa: E402
+
+
+@pytest.mark.parametrize("mode", ["crash", "deferred"])
+def test_an_interruption_after_the_token_transfer_is_repaired(
+        tmp_path, monkeypatch, mode) -> None:
+    """The tokens are the mover's before its funding record is closed.
+
+    One mover whose demand equals the tier: the group holds nothing after
+    the transfer.  A stop between the transfer and the update to
+    ``transferring`` (a crash, or a deferred update with no crash) must not
+    read as a short group, or the reconcile drops authority and the record
+    stays ``reserved`` while the mover holds every token and cannot claim.
+    """
+    from prismabuild import prelaunch_group as pg
+    queue = _queue(tmp_path, stage_gib=8)
+    tiers = {TIER: _stage(queue, TIER)}
+    consumer = _hexkey(f"xfer-{mode}")
+    specs = [("phase-a", 8, True, 1)]
+    plan = _declared_plan(queue, consumer, specs, tag=f"x{mode[:2]}")
+    _live(queue, plan, consumer, specs)
+    unit, movers = _declared_movers(queue, consumer)
+    assert unit.demand_gib == 8 and len(movers) == 1
+    mover = movers[0]
+    real = pg._advance_record
+    calls: list[str] = []
+
+    def interrupted(*args, **kwargs):
+        calls.append(mode)
+        if mode == "crash":
+            raise OSError("stopped after the token transfer")
+        return False
+
+    monkeypatch.setattr(pg, "_advance_record", interrupted)
+    for _ in range(6):
+        try:
+            tier_loop.residency_window(queue, tiers=tiers)
+        except OSError:
+            pass
+        if calls:
+            break
+    assert calls, "the window never reached the funding update"
+    ledger = queue.tier_ledger(TIER)
+    assert len(pool.held_names_visible(ledger, mover)) == 8
+    assert queue.read_funding(mover, TIER)["state"] == "reserved"
+    monkeypatch.setattr(pg, "_advance_record", real)
+    for _ in range(5):
+        tier_loop.residency_window(queue, tiers=tiers)
+    record = queue.read_funding(mover, TIER)
+    assert record is not None and record["state"] == "transferring"
+    assert len(pool.held_names_visible(queue.tier_ledger(TIER), mover)) == 8

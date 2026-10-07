@@ -4873,7 +4873,11 @@ recomputing them from moved evidence, and a leg whose registered shared
 mover is its own does not count as owned by others.  Every live declared leg
 is funded on every cycle, because a crash between a row and its funding, or
 a deferred funding, leaves a READY mover with no credit while the group
-holds the tier.  Funding is idempotent.  A stage tier that no live consumer
+holds the tier.  Funding is idempotent.  The group census counts a bound
+token the mover holds in a `reserved` record too: `publish_chunk` moves the
+tokens before it closes the record, and a stop or a deferred update between
+the two must not read as a short group, which would drop authority and
+leave the record unrepaired.  A stage tier that no live consumer
 names still releases a group holder no live unit owns, under the same
 complete-census guard, so a withdrawn sole consumer returns its capacity.
 Submission selects the prefix and suffix cuts by phase name, since an empty
