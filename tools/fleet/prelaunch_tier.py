@@ -528,3 +528,119 @@ def declared_leg_keys(units: Sequence[Unit]) -> frozenset:
 def is_prelaunch_leg(leg_keys: frozenset, mover_key: str) -> bool:
     """True when one mover belongs to a live declared prefix."""
     return mover_key in leg_keys
+
+
+def _intent_for_holder(queue, holder: str) -> tuple[dict | None, str]:
+    """The receipt naming one holder: unit, tier and movers, or a reason.
+
+    The holder name carries digests only, so the mapping comes from the
+    receipt directory whose intent names it.
+    """
+    try:
+        entries = list((queue.root / prelaunch_group.GROUP_DIR).iterdir())
+    except FileNotFoundError:
+        return (None, "no group receipts stand")
+    except OSError as exc:
+        return (None, f"receipt census unreadable: {exc!r}")
+    for entry in entries:
+        if not entry.is_dir():
+            continue
+        try:
+            raw = (entry / "intent.json").read_bytes()
+        except OSError:
+            continue
+        try:
+            record = json.loads(raw)
+        except ValueError:
+            continue
+        if (not isinstance(record, Mapping)
+                or str(record.get("holder")) != holder):
+            continue
+        try:
+            unit = str(record["unit"])  # type: ignore[index]
+            tier_id = str(record["tier_id"])  # type: ignore[index]
+            chunks = record["chunks"]  # type: ignore[index]
+            if not isinstance(chunks, list):
+                raise ValueError("intent chunks must be a list")
+            movers = [str(entry["mover_action_key"])  # type: ignore[index]
+                      for entry in chunks]
+            if not unit or not tier_id or not all(movers):
+                raise ValueError("intent names nobody")
+        except (KeyError, TypeError, ValueError):
+            return (None, "intent names no usable unit")
+        return ({"unit": unit, "tier_id": tier_id, "movers": movers}, "")
+    return (None, "no intent names this holder")
+
+
+def _shared_fences(queue, movers: Sequence[str]) -> set[str]:
+    """Bound movers a co-owner may still need, kept past this unit's end.
+
+    A mover with a share namespace stays with the mover settlement.
+    A namespace that will not read also stays: unreadable evidence
+    retains.
+    """
+    try:
+        registry = (Path(queue.root) / pool.RESIDENCY_PLANS
+                    / residency_plan.SHARED)
+        if not registry.is_dir():
+            return set()
+    except OSError:
+        return set(movers)
+    shared: set[str] = set()
+    for mover in movers:
+        try:
+            namespace = residency_plan.share_namespace_of(queue, mover)
+        except (OSError, ValueError, pool.PoolContractError,
+                residency_plan.ResidencyPlanError):
+            shared.add(mover)
+            continue
+        if namespace is not None:
+            shared.add(mover)
+    return shared
+
+
+def dangling(queue, tier_id: str, ledger, live_units: Sequence[Unit], *,
+             complete_census: bool) -> list[dict]:
+    """Release group holders no live unit owns on one tier.
+
+    Without a complete census this pass releases nothing and files
+    nothing. Else every ``prelaunch-`` holder that names no live
+    unit's holder releases through ``release_unit``, unless its unit
+    still lives or its evidence will not read.
+    """
+    if not complete_census:
+        return []
+    live = list(live_units or [])
+    live_holders = {unit.holder for unit in live
+                    if unit.tier_id == tier_id}
+    live_ids = {unit.unit for unit in live}
+    try:
+        names = ledger.held_keys()
+    except (OSError, ValueError, pool.PoolContractError) as exc:
+        return [{"event": "prelaunch-dangling-retained", "unit": None,
+                 "consumer": None, "holder": None, "tier_id": tier_id,
+                 "reason": f"tier ledger census unreadable: {exc!r}"}]
+    events: list[dict] = []
+    for name in sorted(str(holder) for holder in names):
+        if (not name.startswith(prelaunch_group.HOLDER_PREFIX)
+                or name in live_holders):
+            continue
+        info, reason = _intent_for_holder(queue, name)
+        if info is None:
+            events.append({"event": "prelaunch-dangling-retained",
+                           "unit": None, "consumer": None, "holder": name,
+                           "tier_id": tier_id, "reason": reason})
+            continue
+        if info["unit"] in live_ids or info["tier_id"] != tier_id:
+            events.append({"event": "prelaunch-dangling-retained",
+                           "unit": info["unit"], "consumer": info["unit"],
+                           "holder": name, "tier_id": tier_id,
+                           "reason": "unit still lives"})
+            continue
+        inner = prelaunch_group.release_unit(
+            queue, tier_id, info["unit"], name, info["movers"],
+            terminal=True, shared_owned=_shared_fences(queue, info["movers"]))
+        events.append({"event": "prelaunch-dangling-released",
+                       "unit": info["unit"], "consumer": info["unit"],
+                       "holder": name, "tier_id": tier_id, "events": inner})
+    return events
