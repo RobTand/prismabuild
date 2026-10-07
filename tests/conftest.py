@@ -351,6 +351,14 @@ LIVE_DEFAULTS = (
     # through or read the fleet's own roots.
     ("pbcanary", "DEFAULT_PUBLISHED_ROOT", "fleet/repo"),
     ("pbcanary", "DEFAULT_FLEET_ROOT", "fleet"),
+    # Two more fleet tools that name the live store as a default: the gang
+    # launcher's queue root (``--queue`` defaults to ``SH / "pb-queue"``) and
+    # the canary watcher's published repo link.  The guard test
+    # ``test_every_live_store_constant_is_in_the_repoint_list`` named both
+    # (#1506); left alone, a test that built their parsers without a flag read
+    # the fleet's own queue and repo link.
+    ("pbgang", "SH", "fleet"),
+    ("pbcanary_watch", "DEFAULT_REPO_LINK", "fleet/repo"),
     ("qualify_rollout", "QUALIFICATION_ROOT", "qualification"),
     ("seal_and_publish", "SH", "fleet"),
     ("pbtest", "SHARED", "mount"),
