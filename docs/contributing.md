@@ -67,6 +67,13 @@ reviewed design, unchanged-main failure and targeted PrismaBuild receipt. Do not
 widen a progress grace to hide a load-sensitive failure. Spool tests need a
 basetemp on a supported local disk; dl380g10's tmpfs-backed /tmp is not one.
 
+The three positive wait fixtures for #1506 use an action-written declaration
+signal before the native Popen returns to the pool. A pipe releases the
+action after the real progress watch starts. The claimed mover publishes
+its first milestone at that boundary. The export writer retains its own
+ready event. These fixture barriers change no production timer or negative
+control. Their evidence covers selected subprocess paths, not arbitrary host load.
+
 Install the local direct-push guard with:
 
 ```bash

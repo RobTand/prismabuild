@@ -15,6 +15,8 @@ a withheld, refused, failed, stalled or foreign export is not exempt, and
 the verdict names the export and what it went on.  Only the owner action
 writes its export-wait record.  The export writer is a fixture thread, so
 the fixture waits on the thread's own ready event before the run.
+The native launch returns only after the action declares its wait.
+The real watch then releases the action's quiet interval through a pipe.
 """
 from __future__ import annotations
 
@@ -30,6 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from prismabuild import core as pb, pool, produced_spool, progress  # noqa: E402
 from test_progress_keeps_a_working_action_alive import _claimed, _policy  # noqa: E402
+from test_a_staged_wait_is_not_no_progress import _declared_launch  # noqa: E402
 
 #: Declares an export wait on the keys in ``exports.json`` beside the
 #: checkout, stays quiet for ``seconds``, then commits one unit and exits.
@@ -58,12 +61,13 @@ os.replace(path + ".tmp", path)
 open("result", "w").write("ok")
 '''
 
-#: The same waiter, plus a ready signal after the wait is on disk (#1506).
+#: The action declares its wait, signals readiness, then awaits the real watch.
 #: Only the live-export handshake fixture uses it.
 WAITER_SYNC = WAITER.replace(
     'os.replace(tmp, path + ".export-wait")',
     'os.replace(tmp, path + ".export-wait")\n'
-    'open(__READY__, "w").write("ok")')
+    'with open(__READY__, "w") as ready: ready.write("ok")\n'
+    'with open(__RESUME__, "rb") as resume: assert resume.read(1) == b"1"')
 
 ENTRY_BYTES = 1 << 20
 
@@ -73,7 +77,8 @@ def _owner(tmp_path: Path, *, seconds: float, signal: Path | None = None):
     template = WAITER_SYNC if signal is not None else WAITER
     source = template.replace("EXPORTS", repr(str(exports)))
     if signal is not None:
-        source = source.replace("__READY__", repr(str(signal)))
+        source = source.replace("__READY__", repr(str(signal))).replace(
+            "__RESUME__", repr(str(signal) + ".resume"))
     queue, item = _claimed(tmp_path, mode="waiter", seconds=seconds,
                            policy=_policy(0.4, 0.4, 0.4), source=source)
     return queue, item, exports
@@ -184,10 +189,10 @@ class _Writer:
 # -- red first: the owner the rung killed ------------------------------------
 
 def test_an_owner_waiting_on_its_live_export_is_not_killed_no_progress(
-        tmp_path: Path) -> None:
+        tmp_path: Path, monkeypatch) -> None:
     """Quiet for 1.5 s against a 0.4 s grace, all of it waiting on its own
-    export, which is claimed and writing. The action signals after it
-    declares its wait. The writer lands bytes before the run, so the
+    export, which is claimed and writing. The action declares before the
+    watch starts. The writer lands bytes before the run, so the
     export already shows bytes at the first rung."""
 
     sentinel = tmp_path / "export-declared"
@@ -198,7 +203,8 @@ def test_an_owner_waiting_on_its_live_export_is_not_killed_no_progress(
 
     with _Writer(destination) as writer:
         writer.wait_ready()
-        outcome = _execute(queue, item)
+        with _declared_launch(queue, item, sentinel, monkeypatch):
+            outcome = _execute(queue, item)
 
     assert outcome["status"] == "executed", repr(outcome.get("termination_reason"))
     assert sentinel.exists(), "the action never signalled it declared its wait"
