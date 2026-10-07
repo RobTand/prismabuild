@@ -10,16 +10,24 @@ record against the consumer's own dependents (:meth:`PoolQueue.dependent_rows`)
 and does not count that time as quiet.  It counts it, and says so, in the
 progress observation.
 
+Only the action writes its wait record under the real launch token.
+The three positive fixtures delay the native Popen return until the action
+signals its declaration. A pipe releases the action after the real watch
+starts. Production graces and negative controls stay unchanged.
+
 What still ends: a record that names a mover the consumer does not depend
 on, a mover that failed under a superseded plan, and a record with a foreign
 token.  Those are the same ``no_progress`` ending as before.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 import inspect
 import json
+import os
 from pathlib import Path
 import sys
+import threading
 import time
 
 import pytest
@@ -59,20 +67,88 @@ os.replace(path + ".tmp", path)
 open("result", "w").write("ok")
 '''
 
+#: The action declares its wait, signals readiness, then awaits the real watch.
+#: Only the positive fixtures use this barrier. Other tests keep WAITER.
+WAITER_SYNC = WAITER.replace(
+    'os.replace(tmp, path + ".staged-wait")',
+    'os.replace(tmp, path + ".staged-wait")\n'
+    'with open(__READY__, "w") as ready: ready.write("ok")\n'
+    'with open(__RESUME__, "rb") as resume: assert resume.read(1) == b"1"')
+
+
+@contextmanager
+def _declared_launch(queue, item, signal: Path, monkeypatch, *, on_ready=None):
+    """Return the native process after its action declares the wait.
+
+    Match only this action's progress path and real launch token. The
+    action's quiet interval starts after the unchanged watch constructor.
+    A failure before Popen returns uses the pool's native group cleanup.
+    """
+
+    path = queue.action_progress_path(str(item["action_key"]))
+    resume = Path(str(signal) + ".resume")
+    os.mkfifo(resume)
+    descriptor = os.open(resume, os.O_RDWR | os.O_NONBLOCK)
+    native_popen = pool.subprocess.Popen
+    native_watch_init = pool.ProgressWatch.__init__
+    launch_token = None
+    pause = threading.Event()
+
+    def launch(*args, **kwargs):
+        nonlocal launch_token
+        process = native_popen(*args, **kwargs)
+        environment = kwargs.get("env")
+        if environment is None or environment.get(pb.ACTION_PROGRESS_PATH_ENV) != str(path):
+            return process
+        try:
+            launch_token = environment[pb.ACTION_PROGRESS_TOKEN_ENV]
+            deadline = time.monotonic() + 30.0
+            while not signal.exists():
+                assert process.poll() is None, "the action exited before its declaration"
+                assert time.monotonic() < deadline, "the action never declared its wait"
+                pause.wait(0.01)
+            assert process.poll() is None, "the action exited at its declaration"
+            return process
+        except BaseException:
+            pb._terminate_process_group(process, grace_s=0.2)
+            pool._drain(process, timeout_s=0.2)
+            raise
+
+    def watch_init(watch, watch_path, token, policy, *, started):
+        native_watch_init(watch, watch_path, token, policy, started=started)
+        if watch_path == path and token == launch_token:
+            if on_ready is not None:
+                on_ready()
+            os.write(descriptor, b"1")
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(pool.subprocess, "Popen", launch)
+            patch.setattr(pool.ProgressWatch, "__init__", watch_init)
+            yield
+    finally:
+        os.close(descriptor)
+        resume.unlink()
+
 
 def _consumer_with_mover(tmp_path: Path, *, mover_seed: str, forged: bool = False,
-                         seconds: float = 1.5, declared_seed: str | None = None):
+                         seconds: float = 1.5, declared_seed: str | None = None,
+                         signal: Path | None = None):
     """A claimed consumer whose plan names one stage mover, and that mover.
 
     The staged-wait record names ``declared_seed``'s key, which is the
-    plan's own mover unless a test says otherwise.
+    plan's own mover unless a test says otherwise. With ``signal``, the
+    action uses WAITER_SYNC and signals that path after it declares.
     """
-
     mover = _hexkey(mover_seed)
     declared = _hexkey(declared_seed or mover_seed)
-    source = WAITER.replace("sys.argv[1]", repr(declared)).replace(
+    template = WAITER_SYNC if signal is not None else WAITER
+    source = template.replace("sys.argv[1]", repr(declared)).replace(
         "float(sys.argv[2])", repr(seconds)).replace(
         "sys.argv[3] == \"forged\"", repr(forged))
+    if signal is not None:
+        source = source.replace("__READY__", repr(str(signal))).replace(
+            "__RESUME__", repr(str(signal) + ".resume"))
     queue, item = _claimed(tmp_path, mode="waiter", seconds=seconds,
                            policy=_policy(0.4, 0.4, 0.4), source=source)
     consumer = str(item["action_key"])
@@ -109,22 +185,29 @@ def _execute(queue, item):
 
 
 def test_a_consumer_waiting_on_its_claimed_mover_is_not_killed_no_progress(
-        tmp_path: Path) -> None:
+        tmp_path: Path, monkeypatch) -> None:
     """The copy is slower than every earlier receipt, and the mover is alive.
 
     Quiet for 1.5 s against a 0.4 s grace, all of it blocked on the claimed
-    mover for its own range.  On main the rung kills it at 0.4 s.  The
-    mover's landed-bytes report is fresh (within two heartbeats), which is
-    the evidence the exemption now needs (#1022 review, item 1).
+    mover for its own range. The action declares before the watch starts.
+    The mover's first landed-bytes report occurs at that boundary, within two
+    heartbeats, which is the evidence the exemption now needs (#1022
+    review, item 1).
     """
 
-    queue, item, _plan, row = _consumer_with_mover(tmp_path, mover_seed="slow")
+    sentinel = tmp_path / "wait-declared"
+    queue, item, _plan, row = _consumer_with_mover(
+        tmp_path, mover_seed="slow", signal=sentinel)
     _hand_to_claimed(queue, row)
-    _mover_reports(queue, row, units=1 << 30, reported_unix=time.time())
-
-    outcome = _execute(queue, item)
+    with _declared_launch(
+            queue, item, sentinel, monkeypatch,
+            on_ready=lambda: _mover_reports(
+                queue, row, units=1 << 30, reported_unix=time.time())):
+        outcome = _execute(queue, item)
 
     assert outcome["status"] == "executed", repr(outcome.get("termination_reason"))
+    assert sentinel.exists(), "the action never signalled it declared its wait"
+
     observed = outcome["progress_observation"]
     assert observed["staged_wait_exempt_s"] > 0.4
     wait = observed["staged_wait"]
@@ -134,13 +217,17 @@ def test_a_consumer_waiting_on_its_claimed_mover_is_not_killed_no_progress(
         str(row["action_key"]), "claimed", "progress")
 
 
-def test_a_ready_mover_is_waited_on_as_well(tmp_path: Path) -> None:
-    queue, item, _plan, row = _consumer_with_mover(tmp_path, mover_seed="queued")
+def test_a_ready_mover_is_waited_on_as_well(tmp_path: Path, monkeypatch) -> None:
+    sentinel = tmp_path / "wait-declared"
+    queue, item, _plan, row = _consumer_with_mover(
+        tmp_path, mover_seed="queued", signal=sentinel)
     queue.publish(**dict(row))
 
-    outcome = _execute(queue, item)
+    with _declared_launch(queue, item, sentinel, monkeypatch):
+        outcome = _execute(queue, item)
 
     assert outcome["status"] == "executed"
+    assert sentinel.exists(), "the action never signalled it declared its wait"
     assert outcome["progress_observation"]["staged_wait"]["movers"][0][
         "state"] == "ready"
 
