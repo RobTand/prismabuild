@@ -74,6 +74,8 @@ def _submit(
             # (#918).
             "--wait-s",
             "0",
+            # The output path is created by the worker, not present here.
+            *(() if "--tag" in options else ("--tag", "sparky")),
             *options,
             "--",
             "/bin/bash",

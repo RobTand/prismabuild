@@ -29,6 +29,7 @@ import contextlib
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
 import socket
 import subprocess
@@ -245,7 +246,10 @@ def test_a_consumer_filed_before_its_producer_runs_reads_the_committed_bytes(
     # the committed file by its committed digest.
     request = _request(tmp_path, key)
     manifest_path = Path(request["params"]["command"][1])
-    assert request["params"]["command"][0] == "/bin/cat"
+    # The directory is resolved and the leaf kept (a merged-/usr host puts
+    # /bin at /usr/bin; the leaf may itself be a link, as with Rust coreutils).
+    assert request["params"]["command"][0] == os.path.join(
+        os.path.realpath("/bin"), "cat")
     manifest, _ = pb.read_data_manifest(manifest_path)
     assert [(entry["path"], entry["sha256"]) for entry in manifest["entries"]] == [
         (str(path), hashlib.sha256(payload).hexdigest())]
