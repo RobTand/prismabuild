@@ -7834,7 +7834,13 @@ def announce_placement(
     capability_verdict = queue.placeable(
         probe_intent, max_age_s=RECORDED_OFFER_MAX_AGE_S)
     if capability_verdict is False:
-        without_images = {name: value for name, value in intent.items()
+        # The counterfactuals below start from ``probe_intent``, the intent the
+        # verdict above was asked of (#1595).  An unknown interpreter is
+        # already out of it.  Starting from ``intent`` kept the interpreter
+        # requirement, so every question failed on the interpreter and the
+        # missing image or capability was never named.  The interpreter keeps
+        # its own verdict, asked of ``intent`` below.
+        without_images = {name: value for name, value in probe_intent.items()
                           if name != "container_images"}
         image_blocked = bool(intent.get("container_images")) and queue.placeable(
             without_images, max_age_s=RECORDED_OFFER_MAX_AGE_S) is True
@@ -7870,7 +7876,7 @@ def announce_placement(
                     "  interpreter:    " + str(intent["interpreter"])
                     + " (every recorded eligible worker names it absent)\n")
         capacity_line = ("" if image_blocked or capability_blocked else
-                         placement_capacity_notice(queue, intent))
+                         placement_capacity_notice(queue, probe_intent))
         remedy = (
             "Load or pull the image on a box that offers these tags and the "
             f"{pb.CONTAINER_IMAGE_TAG} capability, then wait for its worker's "
