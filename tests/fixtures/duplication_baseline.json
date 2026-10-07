@@ -338,6 +338,7 @@
   {
    "name": "census",
    "modules": [
+    "src/prismabuild/filesystem_floor.py",
     "src/prismabuild/prelaunch_group.py"
    ],
    "reason": "The prelaunch group census counts the tokens of one reservation group in the tier ledger, in its private acquisition handles and in its chunk movers. The filesystem floor census reads mounted filesystem trust. The two share a name and no contract."
