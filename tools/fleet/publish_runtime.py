@@ -214,6 +214,11 @@ EXCLUDED: tuple[tuple[str, str], ...] = (
      "a read-only profile of the census a finish pays, run from a checkout "
      "through pbrun against a view of a queue's funding directory; it is a "
      "record of one measurement rather than an operator command"),
+    ("qualify_docker_stop.py",
+     "the #1599 real-container stop proof, run from a checkout inside an "
+     "admitted action on a box with Docker; it starts the checkout's own shim "
+     "beside it, so it is a qualification of one source tree and not an "
+     "operator command for a box without a checkout"),
     ("qualify_rollout.py",
      "paired rollout qualification actors use submitted checkouts and a fresh "
      "private shared root; their simulated host services are not an operator "
