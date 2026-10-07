@@ -48,6 +48,11 @@ def vet(evidence: dict) -> dict:
     check that the packet agrees with the class it is used for.
     """
 
+    # A SLURM packet is refused for what it is, whatever its job record holds.
+    if isinstance(evidence, dict) and (
+            evidence.get("source") == "slurm" or evidence.get("slurm") is not None):
+        raise PacketError(
+            "the packet must be local: a SLURM packet names a job, not a box")
     try:
         packet = pb._normalize_worker_evidence(evidence)
     except pb.ActionContractError as exc:
