@@ -125,3 +125,25 @@ def test_cleanup_retry_does_not_remove_a_newly_claimed_attempt(scoped, monkeypat
     assert json.loads(queue.lease_path(key).read_text())['owner'] == 'second-attempt'
     assert queue.ledger().held() == {'cpu': 1, 'mem_gb': 2}
     assert not queue.item_path(pool.READY, key).exists()
+
+
+def test_a_claim_pass_summary_never_reaches_the_fake_worker_launch(scoped, monkeypatch):
+    """The fake worker replaces ``pool.subprocess.Popen``, which is the global module.
+
+    A claim pass that records diagnostics starts the adaptive snapshot
+    publication, and that child is a ``Popen`` too.  A second publication
+    while the fixture's own publisher still holds the lock, or inside
+    ``MIN_PUBLISH_INTERVAL_S`` of it, is skipped, so the test above passes on a
+    fast host.  Once that publisher has finished and the interval has passed
+    (a slow body, a loaded host), the retry claim reaches the fake and fails
+    with ``KeyError: 'resource_scope'``.  Waiting for the publisher and a zero
+    interval make that case deterministic; the fake worker must see no launch.
+    """
+    queue, item, calls = scoped
+    snapshot = pool.cpu_admission.adaptive_snapshot
+    for child in list(snapshot._children):
+        child.wait(timeout=60)           # the fixture's own publisher holds the lock
+    _process(monkeypatch, queue, item, calls)
+    monkeypatch.setattr(snapshot, 'MIN_PUBLISH_INTERVAL_S', 0.0)
+    queue._record_claim_pass({"loops": 1})
+    assert 'launch' not in calls
