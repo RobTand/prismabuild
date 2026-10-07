@@ -1950,6 +1950,10 @@ Structured `--pytest-args` forwarding uses a closed population/report vocabulary
 and replaces environment/project `addopts` when supplied. Worker count, config
 indirection, extra file paths, and xdist's population-duplicating `each` mode
 are refused rather than overriding PB's reservations or file partitioning.
+The one ini override, `-o tmp_path_retention_policy=all|failed|none` (#1535,
+D29), is a retention choice for sealed checkouts that carry no setting. Any
+other `-o` key is refused, because `addopts`, `testpaths` and plugin keys
+would reopen resource control and config indirection.
 Surface report names expand `{shard}` or receive `.shard-N` before the final
 suffix. Expanded arguments and GPU budgets enter the ordinary sealed action
 identity through `pbrun`; no second dispatcher or placement policy is added.

@@ -1600,8 +1600,12 @@ A passing test's `tmp_path` directory is removed as soon as the test ends
 it pytest keeps every test's directory until a later session prunes it, which on
 a RAM tmpfs with a fixed inode table (`nr_inodes`) held 750,000 inodes from six
 concurrent suites on dl380g10 and made every action there fail in preflight with
-`OSError 28` while the filesystem still reported free bytes. `pbtest` refuses a
-command-line `-o`, so this setting is part of the checkout the shards snapshot.
+`OSError 28` while the filesystem still reported free bytes. A checkout that
+does not carry the setting, such as a sealed one that cannot be edited, passes
+it through `--pytest-args '["-o", "tmp_path_retention_policy=none"]'` (or
+`all`, or `failed`; `--override-ini` is the same option). It is the only key
+`-o` accepts, and it is accepted once. The value enters the sealed action
+identity, so two retention choices are two actions.
 The status error-injection fixtures also delegate integer directory descriptors
 to the real system call. Their named-path error injections and assertions stay
 unchanged; descriptor-based temporary-directory cleanup can therefore finish
@@ -1773,8 +1777,10 @@ multiple workers and accepts `load`, `loadscope`, `loadfile`, `loadgroup`, or
 `worksteal`; `each` would repeat the population and is refused.
 
 Forwarded arguments cannot add files, change worker counts, select another
-config, or inject plugins/ini overrides. Unknown options are refused before
-submission; new plugin options require an explicit vocabulary extension.
+config, or inject plugins. The one ini override is the tmp retention policy
+above; every other `-o` or `--override-ini` is refused. Unknown options are
+refused before submission; new plugin options require an explicit vocabulary
+extension.
 When `--pytest-args` is supplied (even `[]`), it replaces both project and
 environment `addopts` so those cannot silently contradict the reservations.
 Pass the wanted supported options explicitly. Without this option, existing
