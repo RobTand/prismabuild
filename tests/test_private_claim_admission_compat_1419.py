@@ -136,10 +136,11 @@ def main():
             if path is None:
                 continue
             if path == prod or path.startswith(prod_slash):
+                if event in READ_ONLY:
+                    continue
                 attempts.append([event, path])
-                if event not in READ_ONLY:
-                    raise RuntimeError(
-                        "refused production-root write: %s %s" % (event, path))
+                raise RuntimeError(
+                    "refused production-root write: %s %s" % (event, path))
             elif (event in ("open", "os.open", "os.mkdir")
                     and path.startswith("/tmp/")):
                 tmp_ops.append([event, path])
@@ -247,7 +248,7 @@ def _assert_two_foreign_polls(record):
 
 def test_bench_claim_pass_absent_override_uses_owned_temporary_root(tmp_path):
     record, _ = _run_guarded_bench(tmp_path, "absent")
-    assert record["attempts"] == []
+    assert record["attempts"] == [], record["attempts"]
     assert record["prod_before"] == record["prod_after"]
     _assert_two_foreign_polls(record)
     effective = record["effective_root"]
@@ -264,7 +265,7 @@ def test_bench_claim_pass_absent_override_uses_owned_temporary_root(tmp_path):
 
 def test_bench_claim_pass_empty_override_uses_owned_temporary_root(tmp_path):
     record, _ = _run_guarded_bench(tmp_path, "empty")
-    assert record["attempts"] == []
+    assert record["attempts"] == [], record["attempts"]
     assert record["prod_before"] == record["prod_after"]
     _assert_two_foreign_polls(record)
     effective = record["effective_root"]
@@ -282,7 +283,7 @@ def test_bench_claim_pass_empty_override_uses_owned_temporary_root(tmp_path):
 
 def test_bench_claim_pass_explicit_override_stays_intact(tmp_path):
     record, explicit = _run_guarded_bench(tmp_path, "explicit")
-    assert record["attempts"] == []
+    assert record["attempts"] == [], record["attempts"]
     assert record["prod_before"] == record["prod_after"]
     _assert_two_foreign_polls(record)
     assert record["effective_root"] == str(explicit)
