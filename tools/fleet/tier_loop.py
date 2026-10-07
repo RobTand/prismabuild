@@ -7289,6 +7289,13 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                 "phase": phase, "tier_id": tier_id, "kind": kind,
                 "leg": mover_role,
             }
+        # Stashed declared permits (#1594) stand only where the suffix
+        # fence set none and the window was neither gated nor unknown:
+        # never an overwrite, never beside a refusal.
+        for permit_key, permit in prelaunch_permits.items():
+            if (permit_key not in gated
+                    and permit_key not in unknown_consumers):
+                permitted.setdefault(permit_key, permit)
         # Dangling-grant cleanup runs only on a complete census: a grant
         # whose consumer went unreadable this cycle is preserved, never
         # freed -- releasing on a partial view could return room a live
@@ -7314,6 +7321,12 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                                "consumer": None, "tier_id": tier_id,
                                "leg": mover_role, "reason": "dangling-grant",
                                "released_gib": released})
+        # Group holders no live unit owns (#1594) go under the same guard:
+        # the advance census above never names them, since held_grants
+        # matches advance- holders only.
+        for event in prelaunch_tier.dangling(
+                queue, tier_id, ledger, units_on_tier, complete_census=True):
+            events.append(event)
         # Per-cycle reconciliation (#1245 review B1/r2): a two-way sync.
         # Every live tier holder's ram-host hold is made equal to its
         # occupancy tokens -- which covers the claim path's bare tier
