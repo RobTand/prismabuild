@@ -485,10 +485,20 @@ def test_each_audited_call_under_the_store_is_refused_before_it_runs(
 
 def test_a_relative_path_is_placed_against_the_working_directory(
         guarded: Path, monkeypatch) -> None:
+    # pytest removes a passing test's tmp_path at teardown, while the working
+    # directory is still the one chosen here.  ``shutil.rmtree`` opens each
+    # child by a name relative to a directory descriptor, and the guard places
+    # a relative name against the working directory, so with the cwd inside the
+    # guarded store's parent the removal itself was refused.  Put the working
+    # directory back before the test ends.
+    original = os.getcwd()
     monkeypatch.chdir(guarded.parent)
-    with pytest.raises(RuntimeError, match=str(guarded / "pb-queue/done/r.json")):
-        open("guarded-live/pb-queue/done/r.json", "w")
-    assert not (guarded / "pb-queue/done/r.json").exists()
+    try:
+        with pytest.raises(RuntimeError, match=str(guarded / "pb-queue/done/r.json")):
+            open("guarded-live/pb-queue/done/r.json", "w")
+        assert not (guarded / "pb-queue/done/r.json").exists()
+    finally:
+        os.chdir(original)
 
 
 def test_calls_outside_the_store_pass(guarded: Path, tmp_path: Path) -> None:
