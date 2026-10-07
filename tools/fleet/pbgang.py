@@ -251,7 +251,7 @@ def gang_prelaunch_refusal(queue, keys: list[str]) -> str | None:
         if len(records) != 1:
             continue
         try:
-            minted = storage_tiers.tier_tokens(records[0]).get(
+            minted = storage_tiers.minted_tokens(records[0]).get(
                 storage_tiers.capacity_kind_of(tier_id))
         except (ValueError, KeyError, TypeError):
             continue

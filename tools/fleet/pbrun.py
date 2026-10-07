@@ -6003,6 +6003,31 @@ def reader_declaration(args) -> dict[str, int]:
     return reader
 
 
+def prelaunch_capacity_refusal(
+    tier: Mapping[str, object], tier_id: str, bound: Mapping[str, int],
+    prelaunch: object, manifest_sha256: str,
+) -> str | None:
+    """Why a declared prefix cannot fit this stage tier, or ``None`` (#1594).
+
+    Compares the peak with the tier's minted capacity.  Headroom is not
+    checked: a fit prefix with no free room waits.  Unknown capacity never
+    refuses.
+    """
+
+    minted = storage_tiers.minted_tokens(tier).get(
+        storage_tiers.capacity_kind_of(tier_id))
+    if minted is None or bound["peak_gib"] <= minted:
+        return None
+    return (
+        f"pbrun: prelaunch prefix {prelaunch} of "
+        f"{manifest_sha256[:12]} needs peak "
+        f"{bound['peak_gib']} GiB (retained "
+        f"{bound['retained_gib']} GiB + suffix "
+        f"{bound['suffix_gib']} GiB) on stage tier {tier_id}, "
+        f"above the tier's minted capacity of {minted} GiB.  "
+        f"Nothing was sealed or published.")
+
+
 def split_prelaunch_cuts(
     ranges: Sequence[Mapping[str, object]],
     cuts: Sequence[list[tuple[int, int]]],
@@ -6289,17 +6314,10 @@ def residency_stage_rows(
 
         bound = residency_plan.prelaunch_peak_gib(
             _cut_gib(prefix_cuts), _cut_gib(suffix_cuts))
-        minted = storage_tiers.tier_tokens(tier).get(
-            storage_tiers.capacity_kind_of(tier_id))
-        if minted is not None and bound["peak_gib"] > minted:
-            raise SystemExit(
-                f"pbrun: prelaunch prefix {prelaunch} of "
-                f"{str(entry['sha256'])[:12]} needs peak "
-                f"{bound['peak_gib']} GiB (retained "
-                f"{bound['retained_gib']} GiB + suffix "
-                f"{bound['suffix_gib']} GiB) on stage tier {tier_id}, "
-                f"above the tier's minted capacity of {minted} GiB.  "
-                f"Nothing was sealed or published.")
+        refusal = prelaunch_capacity_refusal(
+            tier, tier_id, bound, prelaunch, str(entry["sha256"]))
+        if refusal is not None:
+            raise SystemExit(refusal)
 
     # One read of the live receipts for the whole window: every mover in it has
     # the same structure and reads the same pool, so they price alike, and a
