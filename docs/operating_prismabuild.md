@@ -3757,6 +3757,16 @@ explanation. Use the action's ordinary `docker` command so the shim can preserve
 CPU affinity and ownership labels. Directly choosing another Docker executable
 or widening a child mask violates the agent execution policy.
 
+When an action is terminated, the shim also stops its container (#1599). TERM,
+INT and HUP go to the Docker client; after a grace of 3 seconds the exact
+container that call created is killed, and only if it carries this action's
+owner label (and scope label when scoped). Set
+`PRISMABUILD_DOCKER_STOP_GRACE_S` (up to 30) only when your own guard waits
+longer than the default. Read `<marker>.stop-<nonce>.json` for the real
+container ID and its final state. To prove it on a box with Docker, run
+`tools/fleet/qualify_docker_stop.py` inside an admitted action; exit 0 means
+`proved`, 2 means nothing was tested.
+
 The CPU map is immutable while a host serves work. To change an existing host's
 usable topology or CPU cap: drain its reservations, stop its supervisor and
 worker loops, preserve the old `reservations/<host>/cpu-map.json` as recovery
