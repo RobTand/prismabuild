@@ -15,6 +15,7 @@ visible.
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import sys
 
@@ -47,9 +48,13 @@ def _offer(queue, host, *, capability=True, images=(), capacity=None):
 
 
 def _refusal(tmp_path, monkeypatch, *options) -> str:
+    """Submit and return the refusal.  ``--tag sparky`` names the box that the
+    test runtime is local to (``_run_pbrun`` fakes that hostname), so the
+    box-local runtime check passes and the placement verdict is what refuses."""
+
     work = _checkout(tmp_path)
     with pytest.raises(SystemExit) as exc:
-        _run_pbrun(tmp_path, monkeypatch, work, "--detach", "--tag", "gb10",
+        _run_pbrun(tmp_path, monkeypatch, work, "--detach", "--tag", "sparky",
                    *options, command=(PYTHON, "-c", "print(1)"))
     return str(exc.value)
 
@@ -111,7 +116,7 @@ def test_a_placeable_image_with_an_unknown_interpreter_still_publishes(
     _offer(queue, "sparklina", images=[REF_A])
     work = _checkout(tmp_path)
 
-    assert _run_pbrun(tmp_path, monkeypatch, work, "--detach", "--tag", "gb10",
+    assert _run_pbrun(tmp_path, monkeypatch, work, "--detach", "--tag", "sparky",
                       "--container-image", REF_A,
                       command=(PYTHON, "-c", "print(1)")) == 0
 
@@ -126,7 +131,6 @@ def test_a_unanimous_absent_interpreter_is_still_named(tmp_path, monkeypatch):
     for host in ("sparky", "sparklina"):
         _offer(queue, host, images=[REF_A])
         record_path = queue.root / "workers" / f"{host}.json"
-        import json
         record = json.loads(record_path.read_text())
         record["interpreters_absent"] = [PYTHON]
         record_path.write_text(json.dumps(record))
