@@ -97,8 +97,8 @@ def _declared_launch(queue, item, signal: Path, monkeypatch, *, on_ready=None):
     def launch(*args, **kwargs):
         nonlocal launch_token
         process = native_popen(*args, **kwargs)
-        environment = kwargs.get("env", {})
-        if environment.get(pb.ACTION_PROGRESS_PATH_ENV) != str(path):
+        environment = kwargs.get("env")
+        if environment is None or environment.get(pb.ACTION_PROGRESS_PATH_ENV) != str(path):
             return process
         try:
             launch_token = environment[pb.ACTION_PROGRESS_TOKEN_ENV]

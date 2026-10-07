@@ -74,6 +74,8 @@ its first milestone at that boundary. The export writer retains its own
 ready event. These fixture barriers change no production timer or negative
 control. Their evidence covers selected subprocess paths, not arbitrary host load.
 
+Unrelated subprocesses retain native Popen behavior when env=None.
+
 Install the local direct-push guard with:
 
 ```bash
