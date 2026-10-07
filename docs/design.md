@@ -2709,6 +2709,16 @@ miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
   The collector returns the bound command and caller environment without mutating caller data.
   PATH and unrecognized values remain unchanged.
 
+  Input binding preserves raw pathname strings, including terminal slash and dot components.
+  The collector prefixes external relative values with the absolute cwd without normalization.
+  Cache keys and dependency keys retain the raw pathname spelling.
+  Physical presence checks use the same raw strings instead of Path objects.
+  Namespace assessment can use Path without changing the captured or checked pathname.
+  Directory-content copy semantics and invalid file suffixes remain unchanged.
+
+  Explicit executable checks also use the raw pathname before binding its directory.
+  A directory suffix cannot turn a regular file into a valid executable.
+
   Checkout executables use relative invocation paths so snapshots relocate,
   and nominal Docker still runs through the existing shim. Pool defaults from
   a declared gb10 member, or GPU work from celestia, use gb10 only when every

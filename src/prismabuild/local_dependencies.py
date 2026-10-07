@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
-from pathlib import Path
 
 TAG = "local-dependency-v1"
 
@@ -24,11 +23,10 @@ def observe(requirements: Mapping[str, str]) -> dict[str, str]:
     """One local lookup per declared path; no scanning, SSH or remembered state."""
     answers = {}
     for path in requirements:
-        candidate = Path(path)
         try:
-            if candidate.is_file() and os.access(candidate, os.X_OK):
+            if os.path.isfile(path) and os.access(path, os.X_OK):
                 answers[path] = "executable"
-            elif candidate.exists():
+            elif os.path.exists(path):
                 answers[path] = "path"
             else:
                 answers[path] = "absent"

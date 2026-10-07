@@ -1674,13 +1674,14 @@ def command_dependency_contract(
         raise SystemExit("pbrun: portable placement requires argv[0]")
     raw = command[0]
     if os.sep in raw:
-        executable = cwd / raw
-        if not executable.is_file() or not os.access(executable, os.X_OK):
+        executable_path = os.path.join(str(cwd), raw)
+        if not os.path.isfile(executable_path) or not os.access(executable_path, os.X_OK):
             raise SystemExit(
                 "pbrun: command executable is absent or not executable "
                 f"on the submitting box: {raw!r}. Pass --tag for the "
                 "worker class that owns it, or --anywhere to assert an "
                 "identical executable contract on every eligible worker.")
+        executable = Path(executable_path)
     else:
         declared_path = (environment or {}).get("PATH") or os.defpath
         search = [str(cwd / entry) for entry in declared_path.split(os.pathsep)]
@@ -1699,26 +1700,24 @@ def command_dependency_contract(
     # Executables and inputs need evidence for a retained local alias.
     # A portable target does not make that alias available to the worker.
     requirements = {str(executable): "executable"} if path_scope(executable)[0] else {}
-    bindings: dict[Path, str | None] = {}
+    bindings: dict[str, str | None] = {}
 
     def bind_input(raw: str) -> str:
-        candidate = Path(raw)
-        if not (candidate.is_absolute() or os.sep in raw or (cwd / candidate).exists()):
+        if not (os.path.isabs(raw) or os.sep in raw or os.path.exists(os.path.join(str(cwd), raw))):
             return raw
-        if candidate not in bindings:
-            path = cwd / candidate
-            local, checkout_local = path_scope(path)
+        if raw not in bindings:
+            path = os.path.join(str(cwd), raw)
+            local, checkout_local = path_scope(Path(path))
             if local:
-                if not path.exists():
+                if not os.path.exists(path):
                     raise SystemExit(
                         "pbrun: direct argv or caller environment names an "
                         "external path absent from the submitting box: "
-                        f"{candidate}. Pass --tag for the worker class that owns "
+                        f"{raw}. Pass --tag for the worker class that owns "
                         "it, or --anywhere to assert its portability.")
-                requirements.setdefault(str(path), "path")
-            bindings[candidate] = (str(path) if not candidate.is_absolute()
-                                   and not checkout_local else None)
-        bound = bindings[candidate]
+                requirements.setdefault(path, "path")
+            bindings[raw] = (path if not os.path.isabs(raw) and not checkout_local else None)
+        bound = bindings[raw]
         return raw if bound is None else bound
 
     arguments = []

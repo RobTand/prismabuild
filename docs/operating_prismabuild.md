@@ -337,6 +337,13 @@ Checkout-local relative inputs stay relative after capture and work from the pri
 The collector returns a new caller-environment map and leaves caller data unchanged.
 It does not reinterpret PATH or unrecognized values.
 
+The binder keeps the raw pathname, including a final slash or dot component.
+It prefixes external relative values with the absolute cwd and does not normalize them.
+Its cache and dependency keys retain the raw spelling.
+Offer and claim checks use that same string for physical filesystem checks.
+Namespace assessment does not rewrite the pathname.
+The explicit executable check also preserves invalid directory-suffixed file pathnames.
+
 Explicit `--here` and tags
 remain authoritative; `--anywhere --tag` remains invalid. Use a class tag
 alone, or `--anywhere` alone only if every eligible worker can run the command.

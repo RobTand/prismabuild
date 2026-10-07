@@ -2958,3 +2958,119 @@ def test_relocated_consumer_reads_the_checked_input(relocated_input_submission, 
         "source_checkout": str(work), "executed_checkout": str(executed_root),
         "payload": payload, "receipt_sha256": receipt["receipt_sha256"]}}, sort_keys=True))
 
+
+@pytest.mark.parametrize("source,suffix", [("argv", "/"), ("environment", "/.")])
+def test_raw_file_suffix_is_invalid_at_capture(tmp_path, source, suffix):
+    work = _git_checkout(tmp_path)
+    data = tmp_path / "input.bin"
+    data.write_bytes(b"regular input")
+    raw = "../input.bin"
+    invalid = raw + suffix
+    assert not os.path.exists(os.path.join(str(work), invalid))
+    command = ["/bin/cat", raw, invalid] if source == "argv" else ["/bin/cat"]
+    caller = {"INPUTS": raw + ":" + invalid} if source == "environment" else {}
+    before = dict(caller)
+    with pytest.raises(SystemExit):
+        pbrun.command_dependency_contract(work, command, repository_root=work,
+                                         environment={"PATH": "/usr/bin:/bin"}, caller_environment=caller)
+    assert caller == before
+
+
+@pytest.mark.parametrize("suffix", ["/", "/."])
+def test_explicit_executable_suffix_cannot_name_a_regular_file(tmp_path, suffix):
+    work = _git_checkout(tmp_path)
+    executable = tmp_path / "native-tool"
+    executable.write_bytes(Path("/bin/true").read_bytes())
+    executable.chmod(0o755)
+    requested = str(executable) + suffix
+    assert not os.path.isfile(requested)
+    with pytest.raises(SystemExit):
+        pbrun.command_dependency_contract(work, [requested], repository_root=work,
+                                         environment={"PATH": "/usr/bin:/bin"}, caller_environment={})
+
+
+@pytest.fixture
+def raw_copy_submission(tmp_path, monkeypatch):
+    """Run the real rsync directory contract from a private snapshot."""
+    import socket
+    import shutil
+    from prismabuild import local_dependencies
+    rsync = shutil.which("rsync")
+    assert rsync is not None, "The admitted CPU environment requires rsync."
+    work = _git_checkout(tmp_path)
+    source = tmp_path / "copy-source"
+    source.mkdir()
+    content = b"copy-payload\x00\xff\n"
+    (source / "payload.bin").write_bytes(content)
+    copier = work / "copy.py"
+    copier.write_text(
+        "#!" + sys.executable + "\n"
+        "import json, os, pathlib, subprocess, sys\n"
+        "destination = pathlib.Path('copied'); destination.mkdir()\n"
+        "sources = sys.argv[1:] or [os.environ['COPY_SOURCE']]\n"
+        "subprocess.run([" + repr(rsync) + ", '-a', *sources, 'copied/'], check=True)\n"
+        "files = {str(p.relative_to(destination)): p.read_bytes().hex() "
+        "for p in destination.rglob('*') if p.is_file()}\n"
+        "print(json.dumps({'cwd': os.getcwd(), 'files': files}, sort_keys=True))\n")
+    copier.chmod(0o755)
+    fleet = tmp_path / "fleet"
+    queue = pool_module.PoolQueue(fleet / "pb-queue")
+    roster = tmp_path / "roster.json"
+    roster.write_text(json.dumps({"boxes": {
+        member: {"args": ["--class", "gb10"]} for member in ("spark-a", "spark-b")}}))
+    raw = "../copy-source"
+    paths = {os.path.join(str(work), raw + suffix): "path" for suffix in ("", "/", "/.")}
+    answers = local_dependencies.observe(paths)
+    for member in ("spark-a", "spark-b"):
+        queue.announce(host=member, tags=["gb10", member, local_dependencies.TAG],
+                       has_gpu=False, capacity={"cpu": 1, "mem_gb": 4},
+                       local_dependency_answers=answers)
+    monkeypatch.setattr(pbrun, "FLEET_ROSTER_PATH", roster)
+    monkeypatch.setattr(pbrun, "SH", fleet)
+    monkeypatch.setattr(pbrun, "RUNTIME_ROOT", PUBLISHED_RUNTIME)
+    monkeypatch.setattr(socket, "gethostname", lambda: "spark-a")
+
+    def submit(mode):
+        command = ["./copy.py", *([raw, raw + "/"] if mode == "mixed" else [])]
+        flags = ["--env", "COPY_SOURCE=" + raw + "/."] if mode == "dot-environment" else []
+        monkeypatch.setattr(sys, "argv", ["pbrun.py", "--cwd", str(work), "--detach", *flags, "--", *command])
+        assert pbrun.main() == 0
+        row, = queue.ready_items()
+        row["worker_script"] = str(Path(__file__).resolve().parents[1] / "tools" / "prismabuild_worker.py")
+        pool_module._write_json_atomic(queue.item_path(pool_module.READY, row["action_key"]), row)
+        return row
+    return submit, queue, work, raw, content
+
+
+@pytest.mark.parametrize("mode", ["mixed", "dot-environment"])
+def test_raw_directory_suffix_preserves_real_copy_layout(raw_copy_submission, mode):
+    from prismabuild import local_dependencies
+    submit, queue, work, raw, content = raw_copy_submission
+    row = submit(mode)
+    item = queue.claim(tags=["gb10", local_dependencies.TAG], has_gpu=False,
+                       capacity={"cpu": 1, "mem_gb": 4})
+    assert item is not None
+    outcome = queue.execute(item, heartbeat_s=0.05)
+    queue.finish(item["action_key"], status=outcome["status"], detail=outcome, claim_snapshot=item)
+    assert outcome["status"] == "executed" and outcome["returncode"] == 0, outcome
+    executed_root = Path(outcome["argv"][outcome["argv"].index("--checkout-root") + 1])
+    assert executed_root != work
+    cas = core_module.PrismaBuildCAS(row["cas_root"])
+    action = cas.read_action_request(row["action_key"])
+    receipt = cas.lookup(action)
+    assert receipt is not None
+    copied = json.loads(cas.result_path(receipt, action).read_text())
+    assert copied["cwd"] == str(executed_root)
+    expected = {"payload.bin": content.hex()}
+    if mode == "mixed":
+        expected["copy-source/payload.bin"] = content.hex()
+    assert copied["files"] == expected
+    if mode == "mixed":
+        retained = action["params"]["command"][1:]
+        assert retained == [os.path.join(str(work), raw), os.path.join(str(work), raw + "/")]
+    else:
+        assert action["environment"]["variables"]["COPY_SOURCE"] == os.path.join(str(work), raw + "/.")
+    print(json.dumps({"raw_copy_consumer": {"mode": mode, "action_key": row["action_key"],
+        "source_checkout": str(work), "executed_checkout": str(executed_root),
+        "files": copied["files"], "receipt_sha256": receipt["receipt_sha256"]}}, sort_keys=True))
+

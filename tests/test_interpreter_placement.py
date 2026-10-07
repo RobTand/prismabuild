@@ -452,3 +452,42 @@ def test_local_dependency_capability_without_requirements_refuses(tmp_path):
         _publish(q, "e" * 64, tags=[local_dependencies.TAG])
     assert not q.item_path(pool.READY, "e" * 64).exists()
 
+
+@pytest.mark.parametrize("kind,suffix", [("path", "/"), ("path", "/."),
+                                        ("executable", "/"), ("executable", "/.")])
+def test_raw_file_suffix_is_absent_at_offer_and_claim(tmp_path, kind, suffix):
+    from prismabuild import local_dependencies
+    file = tmp_path / "input.bin"
+    file.write_bytes(Path("/bin/true").read_bytes() if kind == "executable" else b"ordinary input")
+    file.chmod(0o755 if kind == "executable" else 0o644)
+    invalid = str(file) + suffix
+    assert not os.path.exists(invalid)
+    requirements = {invalid: kind}
+    answers = local_dependencies.observe(requirements)
+    queue = _queue_at(tmp_path)
+    queue.announce(host="raw-worker", tags=[local_dependencies.TAG], has_gpu=False,
+                   capacity={"cpu": 1}, local_dependency_answers=answers)
+    probe = {"tags": [local_dependencies.TAG], "resources": {"cpu": 1},
+             "local_dependencies": requirements}
+    placeable = queue.placeable(probe)
+    key = "f" * 64
+    _publish(queue, key, resources={"cpu": 1}, local_dependencies=requirements)
+    before = _item_of(queue, key)
+    item = queue.claim(tags=[local_dependencies.TAG], capacity={"cpu": 1})
+    assert item is None
+    assert answers == {invalid: "absent"}
+    assert placeable is False
+    assert _item_of(queue, key) == before
+    assert any(entry.get("reason") == "local_dependency_not_present"
+               and entry.get("evidence", {}).get("paths") == [invalid]
+               and entry.get("attempts") == 0 for entry in _denials(queue))
+
+
+def test_raw_directory_suffix_controls_preserve_presence(tmp_path):
+    from prismabuild import local_dependencies
+    directory = tmp_path / "directory"
+    directory.mkdir()
+    requirements = {str(directory) + suffix: "path" for suffix in ("/", "/.")}
+    assert all(os.path.isdir(path) for path in requirements)
+    assert local_dependencies.observe(requirements) == {path: "path" for path in requirements}
+
