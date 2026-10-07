@@ -4232,6 +4232,17 @@ _TARGET_EVIDENCE_CLASSES = {
 }
 
 
+class TargetEvidence(dict):
+    """A vetted packet's evidence, plus the worker's argv[0] toolchain fields.
+
+    It compares equal to the plain evidence mapping, so everything that reads
+    the evidence is unchanged.  ``argv0`` is what the class seals for argv[0]:
+    the WORKER's executable identity, never the submitting box's (#1598).
+    """
+
+    argv0: dict[str, str]
+
+
 def load_target_evidence(path: str, *, host_class: str) -> dict[str, object]:
     """Read and vet one target-evidence packet for ``host_class`` (#1598).
 
@@ -4268,6 +4279,10 @@ def load_target_evidence(path: str, *, host_class: str) -> dict[str, object]:
             f"pbrun: --target-evidence {path}: no rule for class {host_class!r}; "
             f"a packet can stand for {', '.join(sorted(_TARGET_EVIDENCE_CLASSES))}")
     try:
+        argv0 = pbevidence.argv0_contract(value)
+    except pbevidence.PacketError as exc:
+        raise SystemExit(f"pbrun: --target-evidence {path}: {exc}") from None
+    try:
         platform_key = pb._platform_key_from_evidence(evidence)
     except pb.ActionContractError as exc:
         raise SystemExit(f"pbrun: --target-evidence {path}: {exc}") from None
@@ -4275,7 +4290,9 @@ def load_target_evidence(path: str, *, host_class: str) -> dict[str, object]:
         raise SystemExit(
             f"pbrun: --target-evidence {path} disagrees with class {host_class}: "
             f"it reports {platform_key}")
-    return evidence
+    vetted = TargetEvidence(evidence)
+    vetted.argv0 = argv0
+    return vetted
 
 
 def host_class_scope(
@@ -4313,8 +4330,19 @@ def host_class_scope(
                     pb._collect_worker_evidence(
                         **({"attest_accelerator_identity": True}
                            if host_class is not None else {})))
+        # The class's executable identity is the WORKER's: a submitter of another
+        # architecture has a different /bin/bash, and the worker refuses a
+        # declared size that is not its own (#1598).
+        if target_evidence is not None:
+            argv0 = getattr(target_evidence, "argv0", None)
+            if not argv0:
+                raise ValueError(
+                    "target_evidence carries no worker argv0 identity; "
+                    "load it with load_target_evidence")
+        else:
+            argv0 = pb.executable_toolchain_contract(SEALED_ARGV0)
         toolchain = {
-            **pb.executable_toolchain_contract(SEALED_ARGV0),
+            **argv0,
             **pb.live_platform_toolchain_contract(evidence=evidence),
         }
         if host_class is not None:

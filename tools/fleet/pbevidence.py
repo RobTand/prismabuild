@@ -32,6 +32,15 @@ from runtime_paths import generation_root  # noqa: E402
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from prismabuild import core as pb, materialize  # noqa: E402
+from prismabuild.movement_actions import SEALED_ARGV0  # noqa: E402
+
+
+#: The packet also names the identity of the executable a class-scoped action
+#: seals as argv[0], as the WORKER sees it.  A class spans boxes whose
+#: ``/bin/bash`` differs (the sizes differ between an x86_64 submitter and an
+#: aarch64 worker), and the worker refuses a declared size that is not its own,
+#: so the submitter must not read this from its own file system (#1598).
+ARGV0_KEY = "argv0"
 
 
 class PacketError(ValueError):
@@ -42,9 +51,14 @@ def vet(evidence: dict) -> dict:
     """The normalized packet, or a ``PacketError`` naming what is wrong.
 
     This is the class-independent half of the vetting.  ``pbrun`` adds the
-    check that the packet agrees with the class it is used for.
+    check that the packet agrees with the class it is used for.  The
+    worker's argv[0] identity rides in the same file but is not evidence: the
+    core normalizer refuses an extra field, so it is taken out here and read
+    by :func:`argv0_contract`.
     """
 
+    if isinstance(evidence, dict) and ARGV0_KEY in evidence:
+        evidence = {key: value for key, value in evidence.items() if key != ARGV0_KEY}
     # A SLURM packet is refused for what it is, whatever its job record holds.
     if isinstance(evidence, dict) and (
             evidence.get("source") == "slurm" or evidence.get("slurm") is not None):
@@ -82,14 +96,44 @@ def vet(evidence: dict) -> dict:
     return packet
 
 
+def argv0_contract(packet: dict) -> dict[str, str]:
+    """The ``argv0.*`` toolchain fields a packet declares for the class.
+
+    Refuses a packet with no identity, a path other than the sealed argv[0], a
+    digest that is not 64 hex characters, or a size that is not a canonical
+    positive integer.
+    """
+
+    value = packet.get(ARGV0_KEY)
+    if not isinstance(value, dict):
+        raise PacketError(
+            "the packet carries no argv0 identity of the worker's "
+            f"{SEALED_ARGV0}; collect it again with the current pbevidence.py")
+    if value.get("path") != SEALED_ARGV0:
+        raise PacketError(f"the packet's argv0 is not {SEALED_ARGV0}")
+    digest, size = value.get("sha256"), value.get("bytes")
+    if (not isinstance(digest, str) or len(digest) != 64
+            or any(c not in "0123456789abcdef" for c in digest)):
+        raise PacketError("the packet's argv0 sha256 is not 64 hex characters")
+    if (not isinstance(size, str) or not size.isascii() or not size.isdigit()
+            or size != str(int(size)) or int(size) <= 0):
+        raise PacketError("the packet's argv0 bytes is not a canonical positive integer")
+    return {"argv0.sha256": digest, "argv0.bytes": size}
+
+
 def collect_packet() -> dict:
     """This box's evidence packet, with the device identity attested."""
 
     try:
         evidence = pb._collect_worker_evidence(attest_accelerator_identity=True)
+        identity = pb.executable_toolchain_contract(SEALED_ARGV0)
     except pb.ActionContractError as exc:
         raise PacketError(f"this box cannot attest its facts: {exc}") from None
-    return vet(evidence)
+    packet = dict(vet(evidence))
+    packet[ARGV0_KEY] = {"path": SEALED_ARGV0, "sha256": identity["argv0.sha256"],
+                         "bytes": identity["argv0.bytes"]}
+    argv0_contract(packet)
+    return packet
 
 
 def main(argv: list[str] | None = None) -> int:
