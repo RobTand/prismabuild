@@ -189,7 +189,7 @@ def main() -> int:
     except (OSError, RuntimeError, subprocess.TimeoutExpired, ValueError) as exc:
         report["verdict"] = "failed"
         report["error"] = repr(exc)
-    print(json.dumps(report, indent=1, sort_keys=True))
+    print(json.dumps(report, indent=1))
     return 0 if report["verdict"] == "proved" else 1
 
 

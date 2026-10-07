@@ -703,7 +703,7 @@ def _write_receipt(path: Path, receipt: dict) -> None:
     """Atomic and best-effort: a receipt that cannot be written never changes the stop."""
     try:
         temporary = path.with_name(path.name + f".tmp{os.getpid()}")
-        temporary.write_text(json.dumps(receipt, sort_keys=True) + "\n", encoding="utf-8")
+        temporary.write_text(json.dumps(receipt) + "\n", encoding="utf-8")
         os.replace(temporary, path)
     except OSError:
         pass
