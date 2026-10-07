@@ -2699,14 +2699,75 @@ miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
   names such as `repo-results` remain external paths. It also checks embedded
   `--out=<path>`, quoted command strings, and colon-separated path lists. New
   submissions from non-Git directories refuse: there is no mutable-path
-  override. The command executable is resolved exactly from argv[0] and the
-  declared `PATH`. An executable outside the repository and shared storage
-  retains the submitting host's tag; an absent executable refuses unless an
-  explicit tag names the worker class that owns it. Other direct argv and
-  caller-environment paths receive a conservative lexical screen, not a claim
-  that PrismaBuild can parse shell/application indirection. `--tag` explicitly
-  assigns those dependencies to a worker class; `--anywhere` explicitly
-  asserts that they are portable. The normalized effective tags are sealed in
+  override. Default portable placement resolves argv[0] against the same
+  shim-prefixed PATH as capture and binds that invocation into params.command
+  and task.argv; a later same-name PATH entry cannot redirect execution.
+  Explicit executable paths, relative PATH entries and direct input paths
+  follow filesystem traversal: `link/..` is not cancelled lexically. The
+  selected executable directory is resolved before checkout relativization,
+  while its leaf is retained so a venv Python remains a venv invocation.
+  Input requirements retain the requested pathname for offer and claim checks.
+
+  A local executable alias needs its own dependency evidence.
+  An alias outside the checkout and shared storage requires executable evidence, even when its target is portable.
+  Each class member must report that alias.
+  The claim check tests that alias before an attempt.
+  Direct checkout and shared-storage pathnames keep their existing portable scope.
+
+  Direct argv and caller-environment inputs use the same local dependency rule.
+  A local input alias needs evidence even when its target is portable.
+  The code checks the retained pathname and the resolved parent directory without replacing its leaf.
+  Offer and claim checks keep the requested pathname, including directory symlinks and parent components.
+  The rule also keeps evidence for external targets.
+  Parent components that leave the portable roots require local evidence.
+
+  External relative inputs bind to their retained absolute pathname before action capture.
+  The dependency collector binds positional arguments, option values, and caller-environment path-list entries.
+  It preserves directory-symlink traversal and parent components without replacing the leaf.
+  Checkout-owned relative inputs remain relative so the snapshot can relocate.
+  The collector returns the bound command and caller environment without mutating caller data.
+  PATH and unrecognized values remain unchanged.
+
+  Input binding preserves raw pathname strings, including terminal slash and dot components.
+  The collector prefixes external relative values with the absolute cwd without normalization.
+  Cache keys and dependency keys retain the raw pathname spelling.
+  Physical presence checks use the same raw strings instead of Path objects.
+  Namespace assessment can use Path without changing the captured or checked pathname.
+  Directory-content copy semantics and invalid file suffixes remain unchanged.
+
+  Explicit executable checks also use the raw pathname before binding its directory.
+  A directory suffix cannot turn a regular file into a valid executable.
+
+  Checkout executables use relative invocation paths so snapshots relocate,
+  and nominal Docker still runs through the existing shim. Pool defaults from
+  a declared gb10 member, or GPU work from celestia, use gb10 only when every
+  distinct active canonical member has its own fresh offer positively answering
+  every local dependency (#1511). Alias/canonical overlap refuses roster proof;
+  a physical offer cannot supply multiple declared members.
+  An absent executable still refuses. The full direct argv and caller-environment
+  screen runs before class selection; repository/shared paths remain portable.
+  Missing, stale, incomplete or old-generation dependency evidence retains the
+  host pin with a notice naming why, including when shared or checkout commands
+  have no external dependencies. Unavailable or invalid class inventory also
+  keeps that pin; a failed class proof never broadens to all workers. A genuine
+  non-class command keeps its ordinary dependency-derived placement. The
+  existing queue chooses by load.
+  Class-default requirements are sealed as `local_dependencies`, projected
+  onto the row and fenced by `local-dependency-v1`. The offer lookup extends
+  the named-interpreter mechanism with executable/path answers; it primes only
+  PB's default bash and configured worker Python, then answers the ready rows'
+  sealed `dependency_queries` on every box. Queries from a conservative host
+  pin are advisory, not homogeneity proof. Claim rechecks required paths before
+  spending an attempt. A dangling link is absent; real file/directory targets
+  preserve presence. This proves presence, not byte/toolchain equivalence or
+  protection against deletion after the check. Venv invocation paths are not
+  collapsed to their system-Python symlink targets. The screen cannot parse
+  shell/application indirection: `--tag` assigns those dependencies to a
+  worker class; `--anywhere` asserts all-worker portability. Explicit tags
+  and `--here` retain precedence; `--anywhere` with either still refuses.
+  Pool measurements keep existing exclusivity, platform/toolchain identity
+  and implicit host pin unless `--host-class` is explicit.
+  The normalized effective tags are sealed in
   action params, so a receipt produced for one placement conjunction cannot
   answer an otherwise identical submission constrained to another. Workers
   continue to understand

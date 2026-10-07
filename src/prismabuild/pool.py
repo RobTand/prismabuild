@@ -149,6 +149,7 @@ from . import materialize, cpu_topology
 from . import adaptive_cpu as cpu_admission
 from . import adaptive_gpu as gpu_admission
 from . import container_images as image_inventory
+from . import local_dependencies
 from . import dependency_digest
 from . import residency_map
 from . import storage_tiers
@@ -1228,7 +1229,7 @@ def is_box_local_path(path: object) -> bool:
 
     The rule that decides an action's placement lives here rather than in
     ``pbrun`` because two readers need it and they must not disagree: the
-    submitter turns it into a pin (``pbrun.placement_tags``), and the queue
+    submitter turns it into a pin (``pbrun.placement_contract``), and the queue
     turns it into a width (``placement_census``).  A second copy is how the
     pin and the measurement of the pin end up describing different fleets.
 
@@ -5991,6 +5992,7 @@ class PoolQueue:
         container_class_verdict: Mapping[str, object] | None = None,
         interpreters: Sequence[str] | None = None,
         interpreters_absent: Sequence[str] | None = None,
+        local_dependency_answers: Mapping[str, str] | None = None,
         dependency_files: Sequence[str] | None = None,
         dependency_files_absent: Sequence[str] | None = None,
         state: str | None = None,
@@ -6151,6 +6153,8 @@ class PoolQueue:
             # with a notice rather than a deadlock.
             record["interpreters_absent"] = sorted(
                 {str(p) for p in interpreters_absent})
+        if local_dependency_answers is not None:
+            record["local_dependencies"] = dict(local_dependency_answers)
         if dependency_files is not None:
             # The digest-contract answers (#1495): the requirement paths this
             # poll's ready rows name, statted on this box.  Present-and-empty
@@ -6255,6 +6259,10 @@ class PoolQueue:
                 declared_interpreter, str):
             raise PoolContractError(
                 "pool item interpreter must be an absolute path string")
+        try:
+            dependencies = local_dependencies.normalize(item.get("local_dependencies", {}))
+        except ValueError as exc:
+            raise PoolContractError(str(exc)) from exc
         declared_requirements = item.get("requires_files")
         if declared_requirements is not None and (
                 not isinstance(declared_requirements, list) or any(
@@ -6296,6 +6304,8 @@ class PoolQueue:
                         declared_interpreter not in {
                             str(entry) for entry in offered_paths}:
                     continue
+            if local_dependencies.missing(dependencies, offer.get("local_dependencies")):
+                continue
             if declared_requirements:
                 # The same positive-evidence rule for digest-pinned
                 # dependencies (#1495): an offer that has not answered for a
@@ -6327,6 +6337,39 @@ class PoolQueue:
                 continue          # this box can never fit it, however idle
             matches.append(offer)
         return matches
+
+    def class_dependency_gap(
+        self, klass: str, members: Mapping[str, Sequence[str]],
+        requirements: Mapping[str, str],
+    ) -> str | None:
+        """Every roster member must positively answer; partial offers are not proof."""
+        if not members:
+            return f"no active {klass} class members declared"
+        live = self.offers()
+        used_hosts = set()
+        known = {alias for aliases in members.values() for alias in aliases}
+        for offer in live:
+            if klass in (offer.get("tags") or []) and offer.get("host") not in known:
+                return f"class offer {offer.get('host')} is not in the fleet inventory"
+        for member, aliases in members.items():
+            offers = [offer for offer in live if offer.get("host") in aliases
+                      and klass in (offer.get("tags") or [])]
+            if len(offers) != 1:
+                return f"{member}: missing or ambiguous fresh {klass} offer"
+            offer = offers[0]
+            host = offer.get("host")
+            if host in used_hosts:
+                return f"{member}: fresh {klass} offer {host} already supplies another member"
+            used_hosts.add(host)
+            if requirements and local_dependencies.TAG not in (offer.get("tags") or []):
+                return f"{member}: dependency capability unknown"
+            missing = local_dependencies.missing(requirements, offer.get("local_dependencies"))
+            if missing:
+                path = missing[0]
+                answers = offer.get("local_dependencies")
+                answer = answers.get(path, "unknown") if isinstance(answers, Mapping) else "unknown"
+                return f"{member}: {path} ({answer})"
+        return None
 
     def interpreter_placement_verdict(
             self, item: Mapping[str, object], interpreter: str, *,
@@ -6696,6 +6739,8 @@ class PoolQueue:
         container_owner: str | None = None,
         container_images: Sequence[str] | None = None,
         interpreter: str | None = None,
+        local_dependencies: Mapping[str, str] | None = None,
+        dependency_queries: Mapping[str, str] | None = None,
         requires_files: Sequence[Mapping[str, object]] | None = None,
         preempted_claim: Mapping[str, object] | None = None,
         handoff_by: str | None = None,
@@ -6794,6 +6839,14 @@ class PoolQueue:
                     "interpreter must be an absolute path to an executable "
                     f"(got {interpreter!r})")
             declared_interpreter = interpreter
+        # The required map is class-default eligibility; queries alone are
+        # advisory questions from a conservative host-pinned first use.
+        from . import local_dependencies as dependency_contract
+        try:
+            dependencies = dependency_contract.normalize(local_dependencies or {})
+            queries = dependency_contract.normalize(dependency_queries or {})
+        except ValueError as exc:
+            raise PoolContractError(str(exc)) from exc
         declared_requirements: list[dict] | None = None
         if requires_files is not None:
             # Validated here for the same reason the interpreter is: the row
@@ -6840,6 +6893,11 @@ class PoolQueue:
                 f"{pb.INTERPRETER_TAG} requires an interpreter; an item may "
                 "not require the declared-interpreter capability without "
                 "naming one")
+        if dependencies:
+            normalized_tags = normalize_placement_tags(
+                [*normalized_tags, dependency_contract.TAG])
+        elif dependency_contract.TAG in normalized_tags:
+            raise PoolContractError(f"{dependency_contract.TAG} requires local_dependencies")
         if declared_requirements is not None:
             # The same ride (#714 shape): a loop from before this contract
             # offers neither the tag nor the claim check, so a row whose
@@ -7286,6 +7344,10 @@ class PoolQueue:
             item["container_images"] = image_refs
         if declared_interpreter is not None:
             item["interpreter"] = declared_interpreter
+        if dependencies:
+            item["local_dependencies"] = dependencies
+        if queries:
+            item["dependency_queries"] = queries
         if resident_set is not None:
             from . import resident_sets
             item["resident_set"] = resident_sets._set_id(resident_set)
@@ -20281,7 +20343,8 @@ class PoolQueue:
             **addressing,
         }
         for field in ("max_attempts", "retry_safe", "container_owner",
-                      "container_images", "tested_repository"):
+                      "container_images", "interpreter", "local_dependencies",
+                      "dependency_queries", "tested_repository"):
             # ``tested_repository`` rides along because a requeue tests the
             # same sealed tree again: a new generation, not a new repository.
             # Absent stays absent, so rows from producers that never named one
@@ -21249,6 +21312,19 @@ class PoolQueue:
                         self.record_denial(item, "interpreter_not_present", {
                             "interpreter": declared_interpreter})
                         continue
+                try:
+                    dependencies = local_dependencies.normalize(item.get("local_dependencies", {}))
+                    if local_dependencies.TAG in (item.get("tags") or []) and not dependencies:
+                        raise ValueError(f"{local_dependencies.TAG} requires local_dependencies")
+                    missing_dependencies = local_dependencies.missing(
+                        dependencies, local_dependencies.observe(dependencies))
+                except (ValueError, OSError) as exc:
+                    self.record_denial(item, "local_dependencies_unavailable", {"error": str(exc)})
+                    continue
+                if missing_dependencies:
+                    self.record_denial(item, "local_dependency_not_present",
+                                       {"paths": missing_dependencies})
+                    continue
                 declared_requirements = item.get("requires_files")
                 item_tags = item.get("tags")
                 if (not declared_requirements and isinstance(item_tags, list)

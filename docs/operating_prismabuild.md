@@ -102,9 +102,9 @@ Three properties follow from that.
     submit every row, and only the missing ones cost anything.
 
 Placement is part of identity. `pbrun` normalizes and sorts the tags that
-landed, including a hostname pin derived from a box-local executable, and seals
-them before computing the key. Flag order and duplicate tags do not move the
-key; a different admissible worker population does.
+landed, including a dependency-derived host pin or a proven gb10 class
+default, and seals them before computing the key. Flag order and duplicate
+tags do not move the key; a different admissible worker population does.
 
 The runtime-generation path of PB's Docker wrapper is also sealed. Publishing
 a new runtime can therefore change an ordinary re-run's key even when its
@@ -279,6 +279,78 @@ its existing limits. This is not a whole-submission timeout.
 | `--priority N` | A queue hint. Higher runs sooner; a negative value yields to everything at 0, and aging never lifts it past them. Defaults to 0. | `--nice`, sent on every submission. SLURM subtracts the nice from the base priority its scheduler assigned. |
 | `--priority-reason TEXT` | Optional explanation shown beside priority in `pbstatus`; outside action identity and admission policy. | Stored with the lane submission, outside identity and scheduling flags. |
 | `--profile MODE` | Run a profiler around the action's child and store the profile as a CAS blob named on the ending. `sample` is py-spy over the whole process tree, optionally at a sealed positive rate (`sample:10`); `nsys` is Nsight Systems over CUDA and NVTX, optionally windowed (`nsys:600`); `torch` is a contract the action opts into. **Part of the action identity**, unlike `--priority`. | Carried unchanged; the worker resolves the backend on the box that runs it. |
+
+Without `--tag`, `--here` or `--anywhere`, pool submissions from a
+declared Spark and GPU submissions from celestia default to `gb10` only
+when **every active class member** has fresh, positive worker-offer evidence
+for the command's executable and every direct local argv/environment path.
+The fleet roster retains every distinct canonical member and rejects overlapping
+canonical names or aliases. Each member needs its own fresh offer: one host
+cannot supply two members. The existing queue still chooses by load.
+
+A host-only dependency, an unanswered path, a missing/stale member offer,
+or a worker without `local-dependency-v1` keeps the conservative host pin
+and prints why, even if a shared or checkout executable has no external
+dependencies. Missing or invalid class inventory also retains the host pin.
+Neither failure silently permits all-worker placement. A genuine non-class
+submission retains its ordinary dependency-derived placement. Workers extend
+the existing interpreter lookup with path
+questions from ready rows, plus local checks of PB's default bash and their
+configured worker interpreter. A first-use path may be unknown; neither the
+submitter's copy nor a busy/missing member proves homogeneity. Name
+`--tag gb10` explicitly when you own that dependency assertion. An executable
+or direct external input absent on the submitter still refuses by default; a
+dangling symlink is absent, while links to real files or directories are valid.
+Repository/shared paths remain portable under the snapshot contract; indirect
+shell/application dependencies remain yours to declare.
+
+Sealed local requirements and the capability fence class-default rows during
+rolling adoption. Claim rechecks presence before an attempt; this does not
+attest equal bytes or prevent later deletion. Default portable placement binds
+the resolved invocation into the captured command, so later PATH entries cannot
+redirect it. Resolution includes the normal Docker shim prefix; Docker still
+uses that shim. Checkout executables retain relocatable relative paths. A venv
+Python keeps its invocation path, not its dereferenced system interpreter.
+Executable paths and relative PATH entries follow directory symlinks before
+`..`; they are not simplified lexically. The selected directory is resolved
+before a checkout command is made relative, without dereferencing its leaf.
+Direct argv and caller-environment inputs keep the requested pathname, so
+presence and claim checks inspect the same target the command names.
+
+An executable alias outside the checkout and shared storage needs its own dependency evidence.
+A portable target does not make the local alias portable.
+Each class member must report the alias.
+The worker checks the alias before an attempt.
+Direct checkout and shared-storage commands keep their portable scope.
+
+A local input alias also needs its own dependency evidence.
+The code applies this rule to direct argv and caller-environment paths.
+The code checks the retained pathname and follows directory symlinks before parent components.
+It keeps the requested pathname for offer and claim checks.
+A portable target does not remove the alias requirement.
+Parent components that leave the portable roots require local evidence.
+
+External relative input paths bind to the same retained absolute pathname used by dependency checks.
+The collector preserves positional arguments, option prefixes, and colon-separated caller-environment entries.
+It keeps directory-symlink traversal and parent components.
+Checkout-local relative inputs stay relative after capture and work from the private snapshot.
+The collector returns a new caller-environment map and leaves caller data unchanged.
+It does not reinterpret PATH or unrecognized values.
+
+The binder keeps the raw pathname, including a final slash or dot component.
+It prefixes external relative values with the absolute cwd and does not normalize them.
+Its cache and dependency keys retain the raw spelling.
+Offer and claim checks use that same string for physical filesystem checks.
+Namespace assessment does not rewrite the pathname.
+The explicit executable check also preserves invalid directory-suffixed file pathnames.
+
+Explicit `--here` and tags
+remain authoritative; `--anywhere --tag` remains invalid. Use a class tag
+alone, or `--anywhere` alone only if every eligible worker can run the command.
+Measurements keep their submitting-host pin by default. Existing
+`--measurement --host-class CLASS` is the opt-in class contract with unchanged
+platform/toolchain attestation and exclusivity; same-host A/B and TP2 rank
+pins are not rewritten.
 
 `pbrun` accepts only `cpu`, `gpu`, `mem_gb`, and `disk_metadata` in `--demand`.
 It refuses an unknown resource before sealing at this client boundary;

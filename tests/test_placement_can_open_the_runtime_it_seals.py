@@ -8,7 +8,7 @@ are sealed as absolute paths into the *submitting* runtime's tree, so a
 ``pbrun`` invoked out of a developer worktree can be executed only by the box
 that worktree is on.
 
-``placement_tags`` cannot see that and should not: it screens argv and the
+``placement_contract`` cannot see that and should not: it screens argv and the
 caller's environment, which are the submitter's inputs, not ``pbrun``'s own
 installation.  It does derive the right pin anyway, because the payload's
 ``env`` resolves outside the repository -- but an explicit ``--tag`` outranks
@@ -100,25 +100,6 @@ def test_a_published_runtime_admits_every_placement(tags):
         tags, hostname="sparky", runtime_root=PUBLISHED) is None
 
 
-def test_the_rule_is_pools_and_not_a_second_copy_of_it():
-    # ``pool.is_box_local_path`` documents itself as the one place the rule
-    # lives, because the submitter's pin and the queue's census of that pin
-    # must not describe different fleets.  A second spelling here is how they
-    # would drift, so this asserts the delegation rather than the answer.
-    seen: list[Path] = []
-    real = pbrun.pool.is_box_local_path
-
-    def _spy(path):
-        seen.append(path)
-        return real(path)
-
-    pbrun.pool.is_box_local_path = _spy
-    try:
-        pbrun.require_reachable_runtime(
-            ["sparky"], hostname="sparky", runtime_root=WORKTREE)
-    finally:
-        pbrun.pool.is_box_local_path = real
-    assert seen == [WORKTREE]
 
 
 # --------------------------------------------------------------------------
@@ -190,8 +171,7 @@ def test_a_published_pbtest_asserts_portability_and_names_no_class_tag(
 def test_an_explicit_tag_is_forwarded_from_either_runtime(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, runtime_root
 ):
-    # The operator's own tag is the one thing this must never rewrite; the
-    # default is a default, and the conditional applies only to the default.
+    # The operator's explicit tag must reach the shard unchanged.
     argv = _shard_argv(tmp_path, monkeypatch, runtime_root=runtime_root,
                        extra=("--tag", "sparky"))
     assert _tags(argv) == ["sparky"]

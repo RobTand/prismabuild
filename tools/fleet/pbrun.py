@@ -92,6 +92,10 @@ from prismabuild import (  # noqa: E402
 )
 import pbevidence  # noqa: E402
 import pbstatus  # noqa: E402
+import fleet_roster  # noqa: E402
+from prismabuild import local_dependencies  # noqa: E402
+
+FLEET_ROSTER_PATH = Path(__file__).resolve().parent / "fleet_boxes.json"
 
 POLL_S = 5.0
 #: Which transport carries a submission.  The pull queue is still the default:
@@ -1630,167 +1634,156 @@ def keep_droppings_out_of_git(cwd: Path) -> Path | None:
         ) from exc
 
 
-def placement_tags(
-    cwd: Path,
-    *,
-    explicit: list[str],
-    here: bool,
-    hostname: str,
-    portable_checkout: bool = False,
-    command: list[str] | None = None,
-    repository_root: Path | None = None,
-    environment: dict[str, str] | None = None,
-    caller_environment: dict[str, str] | None = None,
-    anywhere: bool = False,
-) -> list[str]:
-    """Return the placement tags for an action whose working directory is ``cwd``.
+def command_dependency_contract(
+    cwd: Path, command: list[str], *, repository_root: Path,
+    environment: dict[str, str] | None, caller_environment: dict[str, str] | None,
+) -> tuple[list[str], dict[str, str], dict[str, str]]:
+    """Bind the invocation and its direct path requirements in one resolution."""
+    cwd = cwd.resolve()
+    root = repository_root.resolve()
 
-    Placement is PrismaBuild's decision, not the submitter's.  The submitter
-    knows one thing the pool cannot infer -- an explicit ``--tag`` naming a
-    hardware class the work requires -- and everything else follows from where
-    the checkout lives:
+    def resolved_path(candidate: Path) -> Path:
+        try:
+            return candidate.resolve(strict=False)
+        except (OSError, RuntimeError) as exc:
+            raise SystemExit(f"pbrun: cannot resolve declared path {candidate}: {exc}") from exc
 
-    * A Git checkout is snapshotted through the CAS. Its command executable is
-      resolved exactly from argv[0] and the declared PATH. A submitter-local
-      executable retains the source-host pin; an absent executable refuses.
-      Direct argv and caller-environment paths are also screened
-      conservatively. This lexical screen is not proof of a shell program's or
-      application code's indirect inputs: ``--tag`` names the worker class
-      owning those dependencies, while ``--anywhere`` explicitly asserts they
-      are portable.
-    * The path rule remains only for already-published legacy queue records.
-      New ``pbrun`` submissions refuse a non-Git directory rather than execute
-      mutable bytes. ``--here`` still forces a host pin for work genuinely
-      about *this* machine.
+    def stays_within(candidate: Path, owner: Path) -> bool:
+        try:
+            parts = candidate.relative_to(owner).parts
+        except ValueError:
+            return False
+        depth = 0
+        for part in parts:
+            depth += -1 if part == ".." else 1
+            if depth < 0:
+                return False
+        return True
 
-    ``--tag`` and ``--here`` are two constraints, not two spellings of one.
-    A submitter who passes both asks for a box of that class *and* for this
-    box, so both land: the explicit tags, then ``hostname``, deduplicated and
-    with the hostname last.  Returning ``list(explicit)`` instead dropped the
-    host pin without saying so, which is a narrowing the submitter asked for
-    and did not get.  (The order is for a reader: the conjunction is sorted
-    by ``pool.normalize_placement_tags`` before it is sealed.)
+    def portable(candidate: Path) -> bool:
+        return stays_within(candidate, root) or stays_within(candidate, SHARED_ROOT.resolve())
 
-    Nothing here decides *which* free box runs a shared-checkout action; the
-    queue does, from the demand and what each worker offers.  That separation
-    is the point.
-    """
+    def path_scope(candidate: Path) -> tuple[bool, bool]:
+        location = resolved_path(candidate.parent) / candidate.name
+        target = resolved_path(candidate)
+        local = not portable(candidate) or not portable(location) or not portable(target)
+        checkout_local = (stays_within(candidate, root) and stays_within(location, root)
+                          and stays_within(target, root))
+        return local, checkout_local
 
-    if explicit:
-        if here:
-            return [*dict.fromkeys(t for t in explicit if t != hostname),
-                    hostname]
-        return list(explicit)
-    if here:
-        return [hostname]
-    if anywhere:
-        return []
-    if portable_checkout:
-        root = (repository_root or cwd).resolve()
-        if command is None:
-            # Library callers asking only about source-checkout placement do
-            # not have a command contract to classify. The CLI always passes
-            # argv and therefore always takes the exact executable gate below.
-            return []
+    if not command or not command[0]:
+        raise SystemExit("pbrun: portable placement requires argv[0]")
+    raw = command[0]
+    if os.sep in raw:
+        executable_path = os.path.join(str(cwd), raw)
+        if not os.path.isfile(executable_path) or not os.access(executable_path, os.X_OK):
+            raise SystemExit(
+                "pbrun: command executable is absent or not executable "
+                f"on the submitting box: {raw!r}. Pass --tag for the "
+                "worker class that owns it, or --anywhere to assert an "
+                "identical executable contract on every eligible worker.")
+        executable = Path(executable_path)
+    else:
+        declared_path = (environment or {}).get("PATH") or os.defpath
+        search = [str(cwd / entry) for entry in declared_path.split(os.pathsep)]
+        found = shutil.which(raw, path=os.pathsep.join(search))
+        if found is None:
+            raise SystemExit(
+                "pbrun: command executable cannot be resolved from the "
+                f"declared PATH: {raw!r}. Pass --tag for the worker class "
+                "that owns it, or --anywhere to assert an identical "
+                "executable contract on every eligible worker.")
+        executable = Path(found)
+    # Traverse directory symlinks and .. before making a relocatable command.
+    # relpath/abspath would cancel .. lexically and could select another file.
+    # Keep the leaf: dereferencing a venv Python loses the venv invocation.
+    executable = resolved_path(executable.parent) / executable.name
+    # Executables and inputs need evidence for a retained local alias.
+    # A portable target does not make that alias available to the worker.
+    requirements = {str(executable): "executable"} if path_scope(executable)[0] else {}
+    bindings: dict[str, str | None] = {}
 
-        def scope(candidate: Path) -> tuple[Path, bool, bool]:
-            try:
-                resolved_path = candidate.resolve(strict=False)
-            except (OSError, RuntimeError) as exc:
-                raise SystemExit(
-                    f"pbrun: cannot resolve declared path {candidate}: {exc}"
-                ) from exc
-            try:
-                resolved_path.relative_to(root)
-                inside_repository = True
-            except ValueError:
-                inside_repository = False
-            try:
-                resolved_path.relative_to(SHARED_ROOT.resolve())
-                on_shared_storage = True
-            except ValueError:
-                on_shared_storage = False
-            return resolved_path, inside_repository, on_shared_storage
-
-        def command_executable() -> Path:
-            if not command or not command[0]:
-                raise SystemExit("pbrun: portable placement requires argv[0]")
-            raw = command[0]
-            if os.sep in raw:
-                candidate = Path(raw)
-                if not candidate.is_absolute():
-                    candidate = cwd / candidate
-                executable = candidate.resolve(strict=False)
-                if not executable.is_file() or not os.access(executable, os.X_OK):
+    def bind_input(raw: str) -> str:
+        if not (os.path.isabs(raw) or os.sep in raw or os.path.exists(os.path.join(str(cwd), raw))):
+            return raw
+        if raw not in bindings:
+            path = os.path.join(str(cwd), raw)
+            local, checkout_local = path_scope(Path(path))
+            if local:
+                if not os.path.exists(path):
                     raise SystemExit(
-                        "pbrun: command executable is absent or not executable "
-                        f"on the submitting box: {raw!r}. Pass --tag for the "
-                        "worker class that owns it, or --anywhere to assert an "
-                        "identical executable contract on every eligible worker."
-                    )
-                return executable
+                        "pbrun: direct argv or caller environment names an "
+                        "external path absent from the submitting box: "
+                        f"{raw}. Pass --tag for the worker class that owns "
+                        "it, or --anywhere to assert its portability.")
+                requirements.setdefault(path, "path")
+            bindings[raw] = (path if not os.path.isabs(raw) and not checkout_local else None)
+        bound = bindings[raw]
+        return raw if bound is None else bound
 
-            declared_path = (environment or {}).get("PATH") or os.defpath
-            search_parts = []
-            for entry in declared_path.split(os.pathsep):
-                directory = Path(entry) if entry else cwd
-                if not directory.is_absolute():
-                    directory = cwd / directory
-                search_parts.append(str(directory.resolve(strict=False)))
-            found = shutil.which(raw, path=os.pathsep.join(search_parts))
-            if found is None:
-                raise SystemExit(
-                    "pbrun: command executable cannot be resolved from the "
-                    f"declared PATH: {raw!r}. Pass --tag for the worker class "
-                    "that owns it, or --anywhere to assert an identical "
-                    "executable contract on every eligible worker."
-                )
-            return Path(found).resolve(strict=True)
-
-        executable, executable_in_repo, executable_shared = scope(
-            command_executable()
-        )
-        if not executable_in_repo and not executable_shared:
-            return [hostname]
-
-        # This is intentionally a conservative lexical screen, never the
-        # authority for command interpretation. argv[0] above is exact. Here
-        # only direct path-shaped tokens and caller-declared values can add a
-        # host pin; shell strings and application configuration remain the
-        # caller's explicit --tag/--anywhere responsibility.
-        candidates: list[Path] = []
-        for token in (command or [])[1:]:
-            raw = token.split("=", 1)[1] if token.startswith("-") and "=" in token else token
-            if token.startswith("-") and raw == token:
+    arguments = []
+    for token in command[1:]:
+        if token.startswith("-"):
+            if "=" not in token:
+                arguments.append(token)
                 continue
-            candidate = Path(raw)
-            relative_candidate = cwd / candidate
-            if candidate.is_absolute() or os.sep in raw or relative_candidate.exists():
-                candidates.append(candidate)
-        for name, value in (caller_environment or {}).items():
-            if name == "PATH":
-                continue  # argv[0] was resolved against the complete value above
-            for raw in value.split(os.pathsep):
-                candidate = Path(raw)
-                relative_candidate = cwd / candidate
-                if candidate.is_absolute() or os.sep in raw or relative_candidate.exists():
-                    candidates.append(candidate)
+            option, raw = token.split("=", 1)
+            arguments.append(option + "=" + bind_input(raw))
+        else:
+            arguments.append(bind_input(token))
+    bound_caller = dict(caller_environment or {})
+    for name, value in bound_caller.items():
+        if name != "PATH":
+            bound_caller[name] = os.pathsep.join(bind_input(raw) for raw in value.split(os.pathsep))
 
-        for candidate in dict.fromkeys(candidates):
-            path = candidate if candidate.is_absolute() else cwd / candidate
-            resolved_path, inside_repository, on_shared_storage = scope(path)
-            if inside_repository or on_shared_storage:
-                continue
-            if not resolved_path.exists() and not resolved_path.is_symlink():
-                raise SystemExit(
-                    "pbrun: direct argv or caller environment names an "
-                    "external path absent from the submitting box: "
-                    f"{candidate}. Pass --tag for the worker class that owns "
-                    "it, or --anywhere to assert its portability."
-                )
-            return [hostname]
-        return []
-    return [hostname] if is_box_local(cwd) else []
+    invocation = (os.path.relpath(executable, cwd)
+                  if executable.is_relative_to(root) else str(executable))
+    if not os.path.isabs(invocation) and os.sep not in invocation:
+        invocation = "./" + invocation
+    return [invocation, *arguments], local_dependencies.normalize(requirements), bound_caller
+
+
+def placement_contract(
+    cwd: Path, *, explicit: list[str], here: bool, hostname: str,
+    portable_checkout: bool = False, command: list[str] | None = None,
+    repository_root: Path | None = None, environment: dict[str, str] | None = None,
+    caller_environment: dict[str, str] | None = None, anywhere: bool = False,
+    needs_gpu: bool = False, offer_queue=None,
+) -> tuple[list[str], dict[str, str], list[str] | None, dict[str, str]]:
+    """Return placement, dependency questions, command, and caller environment."""
+    bound_caller = dict(caller_environment or {})
+    if explicit:
+        return (([*dict.fromkeys(t for t in explicit if t != hostname), hostname]
+                 if here else list(explicit)), {}, command, bound_caller)
+    if here:
+        return [hostname], {}, command, bound_caller
+    if anywhere:
+        return [], {}, command, bound_caller
+    if not portable_checkout:
+        return ([hostname] if is_box_local(cwd) else []), {}, command, bound_caller
+    if command is None:
+        return [], {}, command, bound_caller
+    command, requirements, bound_caller = command_dependency_contract(
+        cwd, command, repository_root=repository_root or cwd,
+        environment=environment, caller_environment=caller_environment)
+    if offer_queue is not None:
+        try:
+            roster = json.loads(FLEET_ROSTER_PATH.read_text())
+            members = fleet_roster.class_members(roster, "gb10")
+        except (OSError, ValueError, TypeError) as exc:
+            print(f"pbrun: keeping {hostname} placement: class inventory unavailable: {exc}",
+                  file=sys.stderr, flush=True)
+            return [hostname], requirements, command, bound_caller
+        aliases = {alias for names in members.values() for alias in names}
+        if hostname in aliases or (hostname == "celestia" and needs_gpu):
+            reason = offer_queue().class_dependency_gap("gb10", members, requirements)
+            if reason is None:
+                return ["gb10", *([local_dependencies.TAG] if requirements else [])], requirements, command, bound_caller
+            print(f"pbrun: keeping host pin {hostname}: gb10 dependencies not proven: {reason}",
+                  file=sys.stderr, flush=True)
+            return [hostname], requirements, command, bound_caller
+    return ([hostname] if requirements else []), requirements, command, bound_caller
+
 
 
 def is_box_local(cwd: Path) -> bool:
@@ -1825,10 +1818,10 @@ def require_reachable_runtime(
     receipt), so a ``pbrun`` invoked out of a developer worktree can be executed
     only by the box that worktree is on.
 
-    ``placement_tags`` cannot see this and should not: it screens argv and the
+    ``placement_contract`` cannot see this and should not: it screens argv and the
     caller's environment, which are the submitter's inputs, not ``pbrun``'s own
     installation.  So an explicit ``--tag`` -- which by design outranks every
-    pin ``placement_tags`` derives -- sends the action to a box where the
+    pin ``placement_contract`` derives -- sends the action to a box where the
     launcher path does not exist, and the failure arrives from the far side as
     ``can't open file '<worktree>/tools/prismabuild_worker.py'``, after a
     claim, a checkout materialization and a wasted slot.  Measured 2026-09-06
@@ -2538,7 +2531,7 @@ def pin_notice(
     and so announced "PINNED to sparky by --here, so no other box can claim
     this action" for a submission whose tags were ``['x86']`` -- naming, as
     the *other* box, the only box that could actually run it.  A notice about
-    a pin has one job and that was it.  ``placement_tags`` no longer drops the
+    a pin has one job and that was it. ``placement_contract`` no longer drops the
     host pin that way, but the reading rule is what keeps this correct
     whatever it returns.
 
@@ -2550,7 +2543,7 @@ def pin_notice(
     contingency it is rather than as "match only this box".
 
     The explicit ``--tag`` list is deliberately NOT a parameter here.  The
-    only thing it decides is what ``placement_tags`` returned, and that is
+    only thing it decides is what ``placement_contract`` returned, and that is
     already in ``intent``; taking it as well would leave a second way to ask
     the flags what the tags already answer, which is the bug this function
     was rewritten to close.  ``here`` stays, because ``--here`` on a shared
@@ -5365,6 +5358,7 @@ def freeze_action_template(
     profile: object | None,
     container_image_refs: Sequence[str] = (),
     wrapper_dir: Path | None = None,
+    dependency_queries: Mapping[str, str] | None = None,
     gang: Mapping[str, object] | None = None,
     requires_files: list[dict] | None = None,
     resident_set: str | None = None,
@@ -5624,6 +5618,10 @@ def freeze_action_template(
         "checkout_snapshot": checkout_snapshot,
         "retry_policy": retry_policy,
     }
+    if dependency_queries:
+        params["dependency_queries"] = dict(dependency_queries)
+        if local_dependencies.TAG in placement["required_tags"]:
+            params["local_dependencies"] = dict(dependency_queries)
     if resident_set is not None:
         from prismabuild import resident_sets
         params["resident_set"] = resident_sets._set_id(resident_set)
@@ -7572,20 +7570,37 @@ def prepare_submission(args: argparse.Namespace) -> dict[str, object]:
     )
     pool_measurement = args.measurement and args.transport == "pool"
     pool_measurement_class = pool_measurement and args.host_class is not None
-    tags = pool.normalize_placement_tags(
-        placement_tags(
-            cwd,
-            explicit=[*args.tag, *([args.host_class] if pool_measurement_class else [])],
-            here=args.here or (pool_measurement and not pool_measurement_class),
-            hostname=socket.gethostname(),
-            portable_checkout=portable_checkout,
-            command=command,
-            repository_root=repository_root,
-            environment=variables,
-            caller_environment=caller_variables,
-            anywhere=args.anywhere,
-        )
+    # One bounded offer snapshot serves default-class proof and the later
+    # admission advice. Explicit placement and measurements never read it here.
+    q = None
+    offer_snapshot = None
+
+    def offer_queue():
+        nonlocal q, offer_snapshot
+        if q is None:
+            q = pool.PoolQueue(SH / "pb-queue")
+        if offer_snapshot is None:
+            offer_snapshot = bounded_offer_snapshot(q)
+        return offer_snapshot
+
+    # Check original inputs before the collector binds external relative paths.
+    if portable_checkout:
+        require_relocatable_checkout(command[1:], variables, cwd, repository_root=repository_root)
+    # Resolve against the same shim-prefixed PATH the captured action receives.
+    invocation_environment = {
+        **variables, "PATH": f"{wrapper_dir}:{variables.get('PATH') or '/usr/local/bin:/usr/bin:/bin'}"}
+    tags, dependency_queries, command, bound_caller = placement_contract(
+        cwd,
+        explicit=[*args.tag, *([args.host_class] if pool_measurement_class else [])],
+        here=args.here or (pool_measurement and not pool_measurement_class),
+        hostname=socket.gethostname(), portable_checkout=portable_checkout,
+        command=command, repository_root=repository_root,
+        environment=invocation_environment, caller_environment=caller_variables,
+        anywhere=args.anywhere, needs_gpu=bool(demand.get("gpu")),
+        offer_queue=offer_queue if args.transport == "pool" else None,
     )
+    variables = {**variables, **bound_caller}
+    tags = pool.normalize_placement_tags(tags)
     if args.host_class is not None:
         # The class rides the placement axis, the same way --tag does, so the
         # action key moves with it and the SLURM lane seals it as
@@ -7627,18 +7642,7 @@ def prepare_submission(args: argparse.Namespace) -> dict[str, object]:
             [*tags, dependency_digest.DEPENDENCY_DIGEST_TAG])
     require_reachable_runtime(
         tags, hostname=socket.gethostname(), runtime_root=RUNTIME_ROOT)
-    # Its offer scan remains lazy so cache-hit, withdrawal and SLURM paths
-    # keep avoiding both worker-offer reads and PoolQueue construction.
-    q = None
-    offer_snapshot = None
-
-    def offer_queue():
-        nonlocal q, offer_snapshot
-        if q is None:
-            q = pool.PoolQueue(SH / "pb-queue")
-        if offer_snapshot is None:
-            offer_snapshot = bounded_offer_snapshot(q)
-        return offer_snapshot
+    # Other paths retain lazy discovery until submission advice needs it.
 
     placement = {"required_tags": tags}
     if args.exclusive and args.transport == "slurm":
@@ -7703,7 +7707,7 @@ def prepare_submission(args: argparse.Namespace) -> dict[str, object]:
 
     if portable_checkout:
         require_relocatable_checkout(
-            command, variables, cwd, repository_root=repository_root
+            command[:1], {}, cwd, repository_root=repository_root
         )
 
     # A CPU slot must not be able to run GPU work.  The pool's whole claim is
@@ -7774,6 +7778,7 @@ def prepare_submission(args: argparse.Namespace) -> dict[str, object]:
         profile=args.profile,
         container_image_refs=images,
         wrapper_dir=wrapper_dir,
+        dependency_queries=dependency_queries,
         gang=gang,
         resident_set=getattr(args, "resident_set", None),
         requires_files=requirements,
@@ -7825,6 +7830,8 @@ def announce_placement(
         # answers for the row it is about to write.
         intent["interpreter"] = str(params["interpreter"])
         intent["tags"] = [*tags, pb.INTERPRETER_TAG]
+    if params.get("local_dependencies"):
+        intent["local_dependencies"] = dict(params["local_dependencies"])
     if params.get("requires_files"):
         # Same authority for the digest requirements (#1495): the probe
         # carries the sealed paths and the capability tag publish adds, so
@@ -8187,6 +8194,9 @@ def publication_row(
         row["container_images"] = list(params["container_images"])
     if params.get("interpreter"):
         row["interpreter"] = str(params["interpreter"])
+    for field in ("local_dependencies", "dependency_queries"):
+        if params.get(field):
+            row[field] = dict(params[field])
     if params.get("gang"):
         row["gang"] = dict(params["gang"])
     if params.get("requires_files") and "requires_files" in (

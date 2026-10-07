@@ -252,3 +252,27 @@ def test_supervisor_without_a_roster_answers_nothing(tmp_path, monkeypatch):
     monkeypatch.setattr(supervise, "CONFIG", tmp_path / "missing.json")
     monkeypatch.setattr(supervise, "_current_root", lambda: tmp_path / "noroot")
     assert supervise.box_presence("boxa") is None
+
+
+@pytest.mark.parametrize("aliases", [("shared", "shared"), ("box-b", "box-b")])
+def test_class_members_refuses_distinct_boxes_with_overlapping_names(aliases):
+    roster = {"boxes": {
+        "box-a": {"_alias": aliases[0], "args": ["--class", "gb10"]},
+        "box-b": {"_alias": aliases[1], "args": ["--class", "gb10"]},
+    }}
+    with pytest.raises(fleet_roster.RosterPresenceError) as refused:
+        fleet_roster.class_members(roster, "gb10")
+    assert "box-a" in str(refused.value) and "box-b" in str(refused.value)
+
+
+def test_class_members_preserves_all_unique_canonical_declarations():
+    roster = {"boxes": {
+        "box-a": {"_alias": "new-a", "args": ["--class", "gb10"]},
+        "box-b": {"args": ["--class", "gb10"]},
+        "box-c": {"args": ["--class", "gb10"]},
+        "gone": {"args": ["--class", "gb10"], **OFFLINE},
+        "cpu": {"args": ["--class", "x86"]},
+    }}
+    assert fleet_roster.class_members(roster, "gb10") == {
+        "box-a": ("box-a", "new-a"), "box-b": ("box-b",), "box-c": ("box-c",)}
+

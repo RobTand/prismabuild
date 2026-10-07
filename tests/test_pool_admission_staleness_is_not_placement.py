@@ -161,7 +161,7 @@ def test_a_box_that_matches_nothing_never_advances_its_admission_sample(
     Every READY item carries ``tags: ["sparky"]`` -- the shape the live queue
     held at the observation, where the pin came from a submitter-local
     interpreter (``/home/rob/dq-runs/venvs/prismaquant-cu130/bin/python``) and
-    ``pbrun.placement_tags`` kept the source-host pin.
+    ``pbrun.placement_contract`` kept the source-host pin.
 
     ``claim()`` is entered with ``adaptive_cpu=True``, so the CPU controller is
     really constructed and really holds its lock.  It is still never *asked*:
