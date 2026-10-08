@@ -158,8 +158,9 @@ def _scan_publications(queue: PoolQueue) -> dict:
                 else:
                     queue.attempt_generation(record)  # strict publication identity
                     if type(record.get("priority", 0)) is not int:
-                        if (state == pool.READY and pool.PoolQueue._unorderable_queue_field(
-                                record) is not None):
+                        unorderable_field = pool.PoolQueue._unorderable_queue_field(record)
+                        if (state == pool.READY and unorderable_field is not None
+                                and unorderable_field[0] == "priority"):
                             # A READY record the queue itself cannot order
                             # holds no tokens and runs nothing, and the queue
                             # files it by name instead of raising
@@ -168,9 +169,13 @@ def _scan_publications(queue: PoolQueue) -> dict:
                             # claimed, so it cannot reach the CLAIMED census.
                             # It is still a live gang member: only candidate
                             # classification skips it.  A priority the queue
-                            # CAN order (5.5, True, "5") stays strict, and so
-                            # does a CLAIMED one: a running incumbent the
-                            # census cannot read is unknown.
+                            # CAN order (5.5, True, "5") stays strict, even
+                            # when another ordering field is unreadable: the
+                            # helper names the FIRST bad field, and the queue
+                            # reads a bad ``passes`` as 0 before it orders, so
+                            # it still lists and can claim such a record.  A
+                            # CLAIMED one stays strict too: a running
+                            # incumbent the census cannot read is unknown.
                             unorderable.setdefault(key, []).append(record)
                             continue
                         raise CensusUnavailable("unreadable publication priority")
