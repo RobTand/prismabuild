@@ -8432,6 +8432,7 @@ def submit_deferred(prepared: Mapping[str, object],
     """
 
     template = prepared["template"]
+    d38_gate.refuse_deferred(args, template["params"])
     cas = template["cas"]
     q = pool.PoolQueue(SH / "pb-queue")
     edges = resolve_after_edges(q, Path(cas.root), args.after)
@@ -8722,8 +8723,12 @@ def release_deferred(q, pending_id: str, record: Mapping[str, object], *,
                 produced_mod.load_origin_batches(q.root, all_refs)
             except produced_mod.ProducedOutputError as exc:
                 raise action_edges.ActionEdgeError(str(exc)) from None
-        cas.publish_action_request(action)
         options = argparse.Namespace(**dict(record["publication"]))
+        # D38 again, now that the key exists: a record an older client filed
+        # carries no evidence for it, and nothing is published without it.
+        d38_gate.require(options, action, cas=cas, queue_root=q.root,
+                         transport="pool")
+        cas.publish_action_request(action)
         sealed = {**template,
                   "params": {**template["params"], "data_manifest": summary},
                   "inputs": [*template["inputs"], manifest_input]}

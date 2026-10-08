@@ -414,6 +414,34 @@ def require(args, action: Mapping[str, object], *, cas, queue_root: str | Path,
               f"{job}", file=sys.stderr, flush=True)
 
 
+def refuse_deferred(args, params: Mapping[str, object]) -> None:
+    """Refuse (exit 2) a deferred ``--after`` submission with GPU intent.
+
+    A deferred job has no identity until its producer ends: the data manifest
+    that completes the key is not known yet.  No receipt or grant can bind a
+    key that does not exist, so D38 could never authorize it.  Filing it would
+    queue work that is refused at release; refusing now says so while the
+    submitter is still there.  The release checks the sealed key again, for a
+    record an older client filed.
+    """
+
+    if not ENFORCE:
+        return
+    demand = params.get("demand") or {}
+    tags = (params.get("placement") or {}).get("required_tags") or []  # type: ignore[union-attr]
+    if not requires_receipt(demand, tags,  # type: ignore[arg-type]
+                            host_class=getattr(args, "host_class", None)):
+        return
+    images = list(container_images.normalize_refs(
+        params.get("container_images") or []))
+    namespace = params.get(NAMESPACE_PARAM)
+    raise _refuse(
+        "a deferred --after submission has no job identity until its producer "
+        "ends, so no receipt or grant can bind it; submit it after the "
+        "producer succeeds", job="none (deferred)", images=images,
+        namespace=namespace if isinstance(namespace, str) else None)
+
+
 def _user() -> str:
     try:
         return getpass.getuser()
