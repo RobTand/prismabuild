@@ -16733,23 +16733,44 @@ transports alike.  It reads evidence only; nothing asks a model whether evidence
 A publication has GPU intent when its final sealed demand has `gpu` above zero, a required
 tag (derived host pins included) is `gb10`, `sparky` or `sparklina`, or `--host-class` is
 `gb10`.  A `--preflight` token, an environment variable or `--gpu` with zero demand exempts
-nothing.  A CAS hit or a live attachment publishes nothing and needs no receipt.
+nothing.
 
-`--d38-namespace PATH` seals the digest of a namespace descriptor into the job's params
-before the key is computed, so a changed namespace is a changed job.  Absent, keys are
-byte-identical to before.  `--d38-receipt KEY` names a preflight action whose content-verified
-CAS receipt must exist before publication and whose `fleet.d38.preflight.v1` result (strict
-JSON, 64 KiB, no duplicate keys or NaN) binds this job identity, normalized images and
-namespace, passed, has not expired and is not dated in the future; the preflight action must
-declare the D38 producer parameter and CPU-only demand, and its producer evidence must agree
-with the receipt's host class.  `--d38-exception DECISION_ID` reads a CEO decision whose
-`grant.d38_exception` binds the exact job, images, namespace and expiry; it waives D38 only.
-Either way an immutable event is written under `pb-queue/d38-audit/<job hash>/` before the
-publication, and a failed write refuses.  Refusal is exit 2 with no runnable submission.
+**Evidence.**  `--d38-namespace PATH` seals the digest of a namespace descriptor into the
+job's params before the key is computed, so a changed namespace is a changed job; absent,
+keys are byte-identical to before.  `--d38-receipt KEY` names a preflight action.  Its
+content-verified CAS receipt must exist before publication, and its `fleet.d38.preflight.v1`
+result (strict JSON, 64 KiB, no duplicate keys or NaN) must bind this job identity, normalized
+images and namespace, say `pass`, not be future-dated and not have expired.  The preflight
+action must also carry its target plan as a verified CAS input (`d38-plan`, schema
+`fleet.d38.plan.v1`) whose digest is the one the action declares.  The plan names the target
+(identity, images, namespace) and states the target command, which must be this job's command,
+and the CPU command, which must be the preflight action's command.  The interpreter and the
+entry point (slots 0 and 1) must be identical, and only argument slots the plan declares may
+differ; no shell semantics are inferred.  A receipt with no plan, an unrelated entry point or a
+plan for another job is refused.  Device hiding is read from what the preflight action sealed:
+`CUDA_VISIBLE_DEVICES` empty, and `NVIDIA_VISIBLE_DEVICES=none` for a gb10 proof.  The worker's
+host accelerator inventory is not task visibility: a CPU-only gb10 container still has the
+Spark's GPU in its host evidence, so the check reads the sealed environment and keeps only the
+host-class (machine) check on the evidence.  `--d38-exception DECISION_ID` reads a CEO decision
+whose `grant.d38_exception` binds the exact job, images, namespace and expiry; it waives D38
+only, never together with a receipt.  Either way an immutable event is written under
+`pb-queue/d38-audit/<job hash>/` before the publication, and a failed write refuses.
 
-A deferred (`--after`) submission carries both flags in its publication options (optional
-keys, so older records still read); the release check against the sealed key is a later step.
-The producer (`--d38-plan`, `--d38-preflight-for`) is a later change, so until it lands a GPU
-job is publishable only through a scoped exception.  `d38_gate.ENFORCE` is the one switch; it
-is a module attribute that no flag or environment variable reaches, and only the existing
-test suite turns it off.
+**No exemption by liveness.**  The gate has no early return for a cache hit or a live run:
+whether a publication creates new work is decided inside the queue, and a liveness read taken
+earlier goes stale (and `slurm_outcome` submits a new job even when a pool run is live).  Without
+evidence, `pbrun` publishes and submits nothing.  Attached, it may only wait on a live pool run it
+can see, whatever transport was asked for, or refuse with exit 2.  A live SLURM job, and an
+attached cache hit, are refused without evidence: stricter than "needs no receipt", and a
+detached submission still answers a cache hit or a live attachment without publishing.
+
+A deferred (`--after`) submission has no job identity until its producer ends, so no receipt or
+grant can bind it.  GPU intent is refused at registration, and the release checks the sealed key
+again for a record an older client filed (the two flags ride in its publication options, as
+optional keys so older records still read).  Deferred GPU work needs a separate design.
+
+The producer (`--d38-plan`, `--d38-preflight-for`), a supported grant issuer, `pbgang` member
+flags and retiring old installed clients are later changes; until the producer lands a GPU job
+is publishable only through a scoped exception, and enforcement must not be published before
+them.  `d38_gate.ENFORCE` is the one switch; it is a module attribute that no flag or environment
+variable reaches, and only the existing test suite turns it off.

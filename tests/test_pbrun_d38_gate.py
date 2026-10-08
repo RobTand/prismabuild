@@ -349,8 +349,9 @@ def test_a_matching_receipt_permits_publication_and_is_audited(
     target, cas = _seal(tmp_path, monkeypatch, work, "--gpu",
                         "--d38-namespace", str(ns))
     key = _publish_receipt(tmp_path, cas, target)
-    assert _run(tmp_path, monkeypatch, work, "--gpu", "--detach",
-                "--d38-namespace", str(ns), "--d38-receipt", key) == 0
+    code = _run(tmp_path, monkeypatch, work, "--gpu", "--detach",
+                "--d38-namespace", str(ns), "--d38-receipt", key)
+    assert code == 0, capsys.readouterr().err
     assert len(_ready(tmp_path)) == 1
     events = _audit(tmp_path, target["action_key"])
     assert len(events) == 1
@@ -372,8 +373,9 @@ def test_a_valid_unchanged_receipt_permits_another_publication(
                         "--d38-namespace", str(ns))
     key = _publish_receipt(tmp_path, cas, target)
     for _ in range(2):
-        assert _run(tmp_path, monkeypatch, work, "--gpu", "--detach",
-                    "--d38-namespace", str(ns), "--d38-receipt", key) == 0
+        code = _run(tmp_path, monkeypatch, work, "--gpu", "--detach",
+                    "--d38-namespace", str(ns), "--d38-receipt", key)
+        assert code == 0, capsys.readouterr().err
         capsys.readouterr()
     assert len(_audit(tmp_path, target["action_key"])) >= 1
 
@@ -597,8 +599,9 @@ def test_a_receipt_filed_after_a_refusal_does_not_authorize_the_refused_one(
     key = _publish_receipt(tmp_path, cas, target)
     capsys.readouterr()
     assert _ready(tmp_path) == []
-    assert _run(tmp_path, monkeypatch, work, "--gpu", "--detach",
-                "--d38-namespace", str(ns), "--d38-receipt", key) == 0
+    code = _run(tmp_path, monkeypatch, work, "--gpu", "--detach",
+                "--d38-namespace", str(ns), "--d38-receipt", key)
+    assert code == 0, capsys.readouterr().err
     assert len(_ready(tmp_path)) == 1
 
 
@@ -930,10 +933,9 @@ def test_a_generation_that_ends_before_publication_cannot_publish_without_eviden
     work, ns, target, _cas = _gpu_target(tmp_path, monkeypatch)
     live = {"transport": "pool", "generation": 1.0, "submission": None,
             "job_id": None}
-    reads = iter([None])
 
     def liveness(_queue, _key, **_kw):
-        return next(reads, live)
+        return live            # stale: nothing is really running
 
     monkeypatch.setattr(pbrun, "bounded_attachment", liveness)
     _run(tmp_path, monkeypatch, work, "--gpu", "--d38-namespace", str(ns))

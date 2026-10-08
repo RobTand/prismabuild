@@ -9058,14 +9058,29 @@ def submit_and_publish(args, *, publication_canary_intent=None,
             return 0
 
     # D38: new GPU work needs preflight evidence before anything runnable is
-    # published, on every transport.  A CAS hit or a live attachment publishes
-    # nothing and needs none: the detached branches above have already answered
-    # both, and the attached one is answered here.
-    d38_gate.require(
+    # published, on every transport.  There is no liveness or cache exemption
+    # here: a read taken now is stale by the time the queue decides whether the
+    # key is new.  Without evidence this process publishes and submits nothing;
+    # it may only wait on a pool run it can see, or refuse.  (The detached
+    # branches above already answered a cache hit and a live attachment without
+    # publishing.)
+    verdict = d38_gate.decide(
         args, action, cas=cas, queue_root=SH / "pb-queue",
-        transport=args.transport,
-        publishes_nothing=lambda: bounded_attachment(
-            pool.PoolQueue(SH / "pb-queue"), key) is not None)
+        transport=args.transport)
+    if verdict is not None:
+        if not args.detach:
+            try:
+                live = bounded_attachment(pool.PoolQueue(SH / "pb-queue"), key)
+            except (OutcomeReadUnavailable, OSError):
+                live = None
+            if live is not None and live["transport"] == "pool":
+                print(f"pbrun: {key[:12]} is already running on the pool; "
+                      f"waiting on that run, and publishing nothing, because "
+                      f"D38 evidence is missing", file=sys.stderr, flush=True)
+                return functools.partial(
+                    await_outcome, pool.PoolQueue(SH / "pb-queue"), key,
+                    wait_s=args.wait_s, generation=live["generation"])
+        raise d38_gate.refusal(verdict, action)
 
     if args.transport == "slurm":
         # Everything below this point reads the pull queue -- worker offers,

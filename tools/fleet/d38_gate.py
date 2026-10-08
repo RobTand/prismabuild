@@ -34,6 +34,11 @@ AUDIT_SCHEMA = "fleet.d38.audit.v1"
 PRODUCER_PARAM = "d38_preflight"
 PRODUCER_ID = "fleet.d38.producer.v1"
 NAMESPACE_PARAM = "d38_namespace"
+PLAN_SCHEMA = "fleet.d38.plan.v1"
+#: The input id a preflight action files its plan under.  The plan is the CAS
+#: object that binds the receipt to a target and to the CPU invocation that
+#: stands in for it (D38).
+PLAN_INPUT_ID = "d38-plan"
 AUDIT_DIR_NAME = "d38-audit"
 #: The authoritative CEO decision store.  A decision id alone is not authority:
 #: the file must grant this exact job.
@@ -202,7 +207,23 @@ def _verified_receipt(cas, key: str) -> tuple[dict, dict]:
     return preflight, receipt
 
 
-def _check_declaration(preflight: Mapping[str, object]) -> None:
+def _plan_input(preflight: Mapping[str, object]) -> Mapping[str, object]:
+    found = [entry for entry in preflight.get("inputs") or ()  # type: ignore[union-attr]
+             if isinstance(entry, Mapping) and entry.get("id") == PLAN_INPUT_ID]
+    if len(found) != 1:
+        raise Refusal(f"the preflight action must carry exactly one {PLAN_INPUT_ID} "
+                      "CAS input (its target plan)")
+    return found[0]
+
+
+def load_plan(cas, preflight: Mapping[str, object]) -> dict:
+    """The target plan the preflight action declares, verified against the CAS.
+
+    The plan is a CAS input of the preflight action, and its digest is the one
+    the action declares, so a label and an arbitrary digest prove nothing: the
+    bytes are read back and hashed.
+    """
+
     params = preflight["params"]
     declared = params.get(PRODUCER_PARAM)  # type: ignore[union-attr]
     if (not isinstance(declared, Mapping)
@@ -214,9 +235,96 @@ def _check_declaration(preflight: Mapping[str, object]) -> None:
     demand = params.get("demand") or {}  # type: ignore[union-attr]
     if not isinstance(demand, Mapping) or demand.get("gpu", 0) not in (0, None):
         raise Refusal("the preflight action does not declare CPU-only demand")
+    entry = _plan_input(preflight)
+    if entry.get("sha256") != declared["plan_sha256"]:
+        raise Refusal("the declared plan digest is not the plan input's digest")
+    try:
+        raw = Path(cas.input_path(entry)).read_bytes()
+    except Exception as exc:                                    # noqa: BLE001
+        raise Refusal(f"the plan input cannot be read: {exc}") from None
+    if hashlib.sha256(raw).hexdigest() != declared["plan_sha256"]:
+        raise Refusal("the plan input bytes do not match their digest")
+    if len(raw) > MAX_RECEIPT_BYTES:
+        raise Refusal("the plan is larger than 64 KiB")
+    try:
+        plan = _strict_json(raw)
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise Refusal(f"the plan is not valid JSON: {exc}") from None
+    if not isinstance(plan, dict) or plan.get("schema") != PLAN_SCHEMA:
+        raise Refusal("the plan schema is not fleet.d38.plan.v1")
+    return plan
 
 
-def _check_host_evidence(receipt: Mapping[str, object], host_class: str) -> None:
+def _tokens(value: object, where: str) -> list[str]:
+    if not isinstance(value, list) or not value or any(
+            not isinstance(item, str) for item in value):
+        raise Refusal(f"the plan {where} is not a non-empty list of strings")
+    return value
+
+
+def check_plan_binds(plan: Mapping[str, object], preflight: Mapping[str, object], *,
+                     job: str, images: Sequence[str], namespace: str,
+                     target_command: Sequence[str]) -> None:
+    """The plan names this target, and the CPU run is this target's run.
+
+    Only argument values may differ (CPU mode, a bounded slice, an output
+    destination), and only at slots the plan declares.  The interpreter and the
+    entry point, slots 0 and 1, never change; no shell semantics are inferred
+    and no token is removed to make identities match.
+    """
+
+    target = plan.get("target")
+    if not isinstance(target, Mapping):
+        raise Refusal("the plan names no target")
+    if target.get("job_identity_hash") != job:
+        raise Refusal("the plan binds a different job identity")
+    if target.get("image_digest") != list(images):
+        raise Refusal("the plan binds different container images")
+    if target.get("namespace") != namespace:
+        raise Refusal("the plan binds a different namespace")
+    planned_target = _tokens(plan.get("target_command"), "target_command")
+    cpu = _tokens(plan.get("cpu_command"), "cpu_command")
+    if planned_target != list(target_command):
+        raise Refusal("the plan's target command is not this job's command")
+    if cpu != list(preflight["params"]["command"]):  # type: ignore[index]
+        raise Refusal("the plan's CPU command is not the preflight action's command")
+    differences = plan.get("differences")
+    if (not isinstance(differences, list) or any(
+            type(i) is not int for i in differences)
+            or len(set(differences)) != len(differences)):
+        raise Refusal("the plan's differences are not unique slot numbers")
+    if len(cpu) != len(planned_target):
+        raise Refusal("the CPU command and the target command differ in length")
+    for slot, (target_token, cpu_token) in enumerate(zip(planned_target, cpu)):
+        declared = slot in differences
+        if declared and slot < 2:
+            raise Refusal("the plan changes the interpreter or the entry point")
+        if not declared and target_token != cpu_token:
+            raise Refusal(f"the CPU command differs from the target at slot "
+                          f"{slot}, which the plan does not declare")
+    if any(slot < 0 or slot >= len(cpu) for slot in differences):
+        raise Refusal("the plan declares a difference outside the command")
+
+
+def check_cpu_visibility(preflight: Mapping[str, object], host_class: str) -> None:
+    """The proved namespace hides every GPU, read from what the action sealed.
+
+    The host's accelerator inventory is not task visibility: a CPU-only
+    container on a Spark still has the Spark's GPU in its host evidence.  What
+    proves the run was CPU-only is the environment the preflight action sealed.
+    """
+
+    variables = (preflight.get("environment") or {}).get("variables") or {}  # type: ignore[union-attr]
+    if variables.get("CUDA_VISIBLE_DEVICES") != "":
+        raise Refusal("the preflight action does not seal CUDA_VISIBLE_DEVICES "
+                      "empty, so it did not hide the GPU")
+    if host_class == "gb10" and variables.get("NVIDIA_VISIBLE_DEVICES") != "none":
+        raise Refusal("a gb10 preflight must seal NVIDIA_VISIBLE_DEVICES=none")
+
+
+def check_host_class(receipt: Mapping[str, object], host_class: str) -> None:
+    """The producer ran on the host class the receipt says."""
+
     producer = receipt.get("producer")
     evidence = producer.get("evidence") if isinstance(producer, Mapping) else None
     if not isinstance(evidence, Mapping):
@@ -224,17 +332,17 @@ def _check_host_evidence(receipt: Mapping[str, object], host_class: str) -> None
     if str(evidence.get("machine")) not in _MACHINES[host_class]:
         raise Refusal(f"the producer ran on {evidence.get('machine')!r}, not on "
                       f"a {host_class} host")
-    if evidence.get("accelerators"):
-        raise Refusal("the producer exposed an accelerator; a preflight is "
-                      "CPU-only")
 
 
 def verify_receipt(cas, key: str, *, job: str, images: Sequence[str],
-                   namespace: str, at: datetime.datetime) -> dict:
+                   namespace: str, target_command: Sequence[str],
+                   at: datetime.datetime) -> dict:
     """Prove that one preflight receipt binds this job, or raise Refusal."""
 
     preflight, receipt = _verified_receipt(cas, key)
-    _check_declaration(preflight)
+    plan = load_plan(cas, preflight)
+    check_plan_binds(plan, preflight, job=job, images=images,
+                     namespace=namespace, target_command=target_command)
     result = receipt.get("result")
     if not isinstance(result, Mapping) or not isinstance(
             result.get("bytes"), int) or result["bytes"] > MAX_RECEIPT_BYTES:
@@ -259,7 +367,8 @@ def verify_receipt(cas, key: str, *, job: str, images: Sequence[str],
         raise Refusal("the receipt is dated in the future")
     if body["expires"] is not None and not at < _aware(body["expires"], "expires"):
         raise Refusal("the receipt has expired")
-    _check_host_evidence(receipt, body["host_class"])
+    check_cpu_visibility(preflight, body["host_class"])
+    check_host_class(receipt, body["host_class"])
     return {"authorization": "receipt", "preflight_action_key": key,
             "receipt_sha256": receipt["receipt_sha256"],
             "host_class": body["host_class"]}
@@ -353,43 +462,35 @@ def authorize(args, action: Mapping[str, object], *, cas,
         raise Refusal("the job declares no --d38-namespace descriptor, so no "
                       "receipt can bind its namespace")
     if receipt:
-        return verify_receipt(cas, receipt, job=job, images=images,
-                              namespace=namespace, at=at)
+        return verify_receipt(
+            cas, receipt, job=job, images=images, namespace=namespace,
+            target_command=params["command"], at=at)  # type: ignore[index]
     if exception:
         return verify_exception(exception, job=job, images=images,
                                 namespace=namespace, at=at)
     raise Refusal("no preflight receipt was supplied")
 
 
-def require(args, action: Mapping[str, object], *, cas, queue_root: str | Path,
-            transport: str,
-            publishes_nothing: Callable[[], bool] | None = None) -> None:
-    """Refuse (exit 2) a new GPU publication without evidence; else audit it.
+def decide(args, action: Mapping[str, object], *, cas, queue_root: str | Path,
+           transport: str) -> tuple[str, str | None] | None:
+    """Authorize a new GPU publication; return ``(reason, namespace)`` if refused.
 
-    ``publishes_nothing`` answers whether this submission would only attach to
-    work that already exists.  A CAS hit or a live attachment never needs a
-    receipt and never creates a second GPU run.
+    ``None`` means the job is not GPU intent or its evidence authorized it, and
+    the authorization is audited.  There is no exemption here for a cache hit
+    or a live run: whether new work would be created is decided inside the
+    publication, and a liveness read taken earlier goes stale.  The caller turns
+    a refusal into a path that cannot publish (a wait on a run it can see) or
+    into :func:`refusal`.
     """
 
     if not ENFORCE:
-        return
+        return None
     params = action["params"]
     demand = params.get("demand") or {}  # type: ignore[union-attr]
     tags = (params.get("placement") or {}).get("required_tags") or []  # type: ignore[union-attr]
     if not requires_receipt(demand, tags,
                             host_class=getattr(args, "host_class", None)):
-        return
-    try:
-        if cas.lookup(action) is not None:
-            return
-    except Exception:                                           # noqa: BLE001
-        pass                  # an unreadable cache is not a hit: keep checking
-    if publishes_nothing is not None:
-        try:
-            if publishes_nothing():
-                return
-        except Exception:                                       # noqa: BLE001
-            pass
+        return None
     job = str(action["action_key"])
     images = target_images(action)
     namespace = params.get(NAMESPACE_PARAM)  # type: ignore[union-attr]
@@ -407,11 +508,30 @@ def require(args, action: Mapping[str, object], *, cas, queue_root: str | Path,
         except OSError as exc:
             raise Refusal(f"the audit event cannot be written: {exc}") from None
     except Refusal as exc:
-        raise _refuse(str(exc), job=job, images=images,
-                      namespace=namespace if isinstance(namespace, str) else None)
+        return (str(exc), namespace if isinstance(namespace, str) else None)
     if evidence["authorization"] == "exception":
         print(f"pbrun: D38 exception {evidence['decision_id']} authorizes job "
               f"{job}", file=sys.stderr, flush=True)
+    return None
+
+
+def refusal(verdict: tuple[str, str | None], action: Mapping[str, object]
+            ) -> SystemExit:
+    """The exit-2 refusal for a verdict :func:`decide` returned."""
+
+    reason, namespace = verdict
+    return _refuse(reason, job=str(action["action_key"]),
+                   images=target_images(action), namespace=namespace)
+
+
+def require(args, action: Mapping[str, object], *, cas, queue_root: str | Path,
+            transport: str) -> None:
+    """Refuse (exit 2) a new GPU publication without evidence; else audit it."""
+
+    verdict = decide(args, action, cas=cas, queue_root=queue_root,
+                     transport=transport)
+    if verdict is not None:
+        raise refusal(verdict, action)
 
 
 def refuse_deferred(args, params: Mapping[str, object]) -> None:
