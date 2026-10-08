@@ -14928,6 +14928,23 @@ because a queue that has stopped moving is diagnosed from which of the two it
 is sitting on. An adopted range files a fragment under its own mover key, so a
 window nobody had to copy satisfies this without a special case.
 
+A shared lead can make the map incomplete without making it stale (#1594). A
+lead another consumer sealed is a shared range (#1026): the tier loop's fan-out
+gives each reader its own fragment, for the entries the source material has
+dated so far, so a map can name every lead and hold only part of what the lead
+staged. A streaming consumer reads the rest lazily. A consumer whose filed plan
+declares a `resident_before_launch` prefix is promised the whole prefix before
+launch, so for each lead whose source fragment is filed under its share
+namespace the verdict compares the source's entries with the consumer's own
+fragment and denies `map_incomplete` (reason `residency_map_incomplete`,
+naming the lead and the count) while any entry is missing. It is the same wait
+as `map_stale`: no host token is taken and no pass ages. An entry the material
+never dates keeps the consumer waiting, visibly, instead of launching and
+failing at the reader. Measured on action `e9fc9f1dbe8f`, 2026-10-08: claimed
+on a map of one entry out of 899, failed on its first read, and its complete
+fragment was filed five seconds later. The comparison reads two fragments, so
+it is remembered by their sizes and mtimes.
+
 ### A plan the coordinator cannot read
 
 `residency_plan.read` answers `None` both when no plan was filed and when the
