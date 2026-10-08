@@ -95,3 +95,41 @@ def test_the_same_key_resubmitted_after_a_withdrawal_begins_its_group_again(
                     or queue.item_path(pool.CLAIMED, mover).exists()
                     for mover in movers)
     assert _holder_tokens(queue, unit.holder) > 0 or published, json.dumps(state, indent=1)
+
+
+def test_a_committed_group_whose_tokens_left_without_a_release_begins_again(
+        tmp_path: Path) -> None:
+    """The live state: committed.json, no released.json, an empty holder.
+
+    The mover tokens left through another path than the group's own release
+    (the first three here; the last chunk keeps its one token), so the census
+    reads short while the receipt still says committed.
+    """
+    queue = _queue(tmp_path, stage_gib=300)
+    tiers = {TIER: _stage(queue, TIER)}
+    consumer = _hexkey("band-source")
+    plan = _declared_plan(queue, consumer, SPECS, tag="band")
+    _live(queue, plan, consumer, SPECS)
+    unit, movers = _declared_movers(queue, consumer)
+    _cycles(queue, tiers, 10)
+    ledger = queue.tier_ledger(TIER)
+    for mover in movers[:-1]:
+        ledger.release(mover)
+    ledger.release(unit.holder)
+    before = {
+        "group files": _group_files(queue, consumer),
+        "holder tokens": _holder_tokens(queue, unit.holder),
+        "mover tokens": {m[:8]: int(ledger.holder_tokens(m).get("stage_gib", 0))
+                         for m in movers},
+    }
+    seen = _cycles(queue, tiers, 15)
+    state = {"before": before, "group files after": _group_files(queue, consumer),
+             "holder tokens after": _holder_tokens(queue, unit.holder),
+             "mover tokens after": {m[:8]: int(ledger.holder_tokens(m).get("stage_gib", 0))
+                                    for m in movers},
+             "events": sorted(set(_names(seen)))}
+    found = prelaunch_group.census(queue, TIER, unit.unit, unit.holder,
+                                   int(unit.demand_gib), movers)
+    state["census"] = {"h": found.h, "p": found.p, "m": found.m, "r": found.r}
+    accounted = prelaunch_group._accounted(found, int(unit.demand_gib))
+    assert accounted[1] is True, json.dumps(state, indent=1)
