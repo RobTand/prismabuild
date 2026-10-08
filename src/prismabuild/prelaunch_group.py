@@ -779,20 +779,60 @@ def publish_chunk(queue: pool.PoolQueue, tier_id: str, unit: str, holder: str,
         old = record.get("generation")
         rotate_from = str(old) if isinstance(old, str) else None
         tokens = _record_tokens(record)
-        if (tokens is None or rotate_from is None
-                or not _republished(record, tier_id, mover, kind,
-                                    consumer, digest, start, end)):
+        republished = (tokens is not None
+                       and _republished(record, tier_id, mover, kind,
+                                        consumer, digest, start, end))
+        # Movers are keyed by manifest range, so a second capture of one
+        # manifest names the first capture's movers.  What the first left is
+        # a spent record bound to another consumer and plan.  It covers
+        # nothing (only ``transferring`` funds a claim) and no state leaves
+        # it, so it is rotated like an older publication of this chunk -- but
+        # only when the mover holds no tokens (#1628).  A live record of
+        # another consumer is still occupied.
+        spent = str(record.get("state")) in ("consumed", "released")
+        if rotate_from is None or not (republished or spent):
             return PublishOutcome("refused", ["prelaunch-mover-occupied"],
                                   None, 0)
         held = _held_or_unknown(ledger, mover, GroupCensus())
         if held is None:
             return PublishOutcome("deferred", ["prelaunch-unknown-evidence"],
                                   None, 0)
-        if held - set(tokens):
-            return PublishOutcome("refused", ["prelaunch-mover-occupied"],
-                                  None, 0)
-        prior = set(tokens) & held
-        generation = None
+        if republished:
+            if held - set(tokens):
+                return PublishOutcome("refused", ["prelaunch-mover-occupied"],
+                                      None, 0)
+            prior = set(tokens) & held
+            generation = None
+        else:
+            if held:
+                return PublishOutcome("refused", ["prelaunch-mover-occupied"],
+                                      None, 0)
+            # Establish the new reserved generation BEFORE any token moves,
+            # naming tokens still in the group's holder, the way the
+            # no-record path below does.  Rotating after the transfer would
+            # leave tokens under the mover beside the old spent record when
+            # the rotation is deferred or the process stops mid-transfer, and
+            # the retry would find a held mover and refuse it for good.  With
+            # the binding first, a retry finds a matching record and resumes.
+            try:
+                names = pool.held_names_visible(ledger, str(holder))
+            except (OSError, pool.PoolContractError, ValueError):
+                return PublishOutcome("deferred",
+                                      ["prelaunch-unknown-evidence"], None, 0)
+            kind_names = sorted(n for n in names if n.startswith(kind + "-"))
+            if len(kind_names) < gib:
+                return PublishOutcome("short", ["prelaunch-funding-short"],
+                                      None, 0)
+            bound = set(kind_names[:gib])
+            fresh = _fresh_binding(tier_id, mover, kind, consumer, digest,
+                                   start, end, published, kind_names[:gib])
+            generation = _rotate_record(queue, mover, tier_id, rotate_from,
+                                        fresh)
+            if generation is None:
+                return PublishOutcome("deferred",
+                                      ["prelaunch-publish-deferred"], None, 0)
+            rotate_from = None
+            prior = set()
     else:
         held = _held_or_unknown(ledger, mover, GroupCensus())
         if held is None:
