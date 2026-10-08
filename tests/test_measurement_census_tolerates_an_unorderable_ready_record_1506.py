@@ -81,6 +81,39 @@ def test_a_priority_the_queue_can_order_is_not_skipped(
         mr._capture(queue)
 
 
+@pytest.mark.parametrize("bad_field", [
+    {"passes": "garbage"}, {"published_unix": "not a time"},
+    {"passes": [1], "published_unix": None}])
+def test_an_orderable_priority_beside_another_bad_field_is_not_skipped(
+        queue: pool.PoolQueue, bad_field: dict) -> None:
+    """``_unorderable_queue_field`` names the first bad ordering field, so a
+    record with a readable-by-``int`` priority and an unreadable ``passes`` is
+    reported as bad on ``passes``.  The queue reads that field as 0 before it
+    orders, so it still lists and can claim the record, which would then reach
+    the CLAIMED census.  The exception is for a result that names priority."""
+
+    _rewrite(_publish(queue, POISON), priority=5.5, **bad_field)
+    field = pool.PoolQueue._unorderable_queue_field(
+        json.loads(queue.item_path(pool.READY, POISON).read_text()))
+    assert field is not None and field[0] != "priority"
+
+    with pytest.raises((mr.CensusUnavailable, pool.PoolContractError, ValueError)):
+        mr._capture(queue)
+
+
+def test_an_unreadable_priority_beside_another_bad_field_is_still_skipped(
+        queue: pool.PoolQueue) -> None:
+    """Priority is checked first, so the helper names it and the skip stands."""
+
+    _publish(queue, GOOD)
+    _rewrite(_publish(queue, POISON), priority="high", passes="garbage")
+    field = pool.PoolQueue._unorderable_queue_field(
+        json.loads(queue.item_path(pool.READY, POISON).read_text()))
+    assert field is not None and field[0] == "priority"
+
+    mr._capture(queue)
+
+
 def test_a_skipped_record_is_never_claimed_so_it_cannot_reach_the_claimed_census(
         queue: pool.PoolQueue) -> None:
     _publish(queue, GOOD)
