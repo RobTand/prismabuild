@@ -695,3 +695,78 @@ def test_the_shipped_gate_is_on_and_no_caller_input_can_turn_it_off() -> None:
     assert "os.environ" not in source and "getenv" not in source
     parsed = pbrun.parse_args(["--cwd", ".", "--", "/bin/true"])
     assert not any("enforce" in name.lower() for name in vars(parsed))
+
+
+# --------------------------------------------------------------------------
+# Deferred (--after) submissions
+# --------------------------------------------------------------------------
+
+def _deferred_setup(tmp_path, monkeypatch):
+    import test_deferred_action_edges as de
+
+    queue, work = de._env(tmp_path, monkeypatch)
+    template = de._template(tmp_path / "canonical")
+    producer = de._producer_key(tmp_path, template, "d38-band")
+    de._publish_producer(queue, template, producer)
+    de._announce_tier(queue, mountpoint=tmp_path / "stage")
+    return de, queue, work, template, producer
+
+
+def _submit_deferred(work, monkeypatch, de, producer, template, *options):
+    monkeypatch.setattr(sys, "argv", [
+        "pbrun.py", "--cwd", str(work), "--wait-s", "0.01", "--detach",
+        "--after", f"{producer}:{template['template_id']}",
+        "--residency", "stage", *options, "--", "/bin/cat", de.PLACEHOLDER])
+    try:
+        return int(pbrun.main() or 0)
+    except SystemExit as exc:
+        if not isinstance(exc.code, int):
+            print(exc.code, file=sys.stderr)
+            return 1
+        return exc.code
+
+
+def test_a_deferred_gpu_submission_is_refused_at_registration(
+        tmp_path, monkeypatch, capsys) -> None:
+    """A deferred job has no identity until its producer ends, so no receipt or
+    grant can bind it beforehand: it files nothing rather than file work D38
+    could never authorize."""
+
+    de, queue, work, template, producer = _deferred_setup(tmp_path, monkeypatch)
+    ns = _namespace_file(tmp_path)
+    code = _submit_deferred(work, monkeypatch, de, producer, template,
+                            "--d38-namespace", str(ns))
+    err = capsys.readouterr().err
+    assert code == 2, err
+    assert "D38 refuses GPU publication" in err
+    assert "deferred" in err
+    deferred = tmp_path / "pb-queue" / "deferred"
+    assert not deferred.exists() or list(deferred.glob("*.json")) == []
+
+
+def test_a_deferred_cpu_submission_still_files(
+        tmp_path, monkeypatch, capsys) -> None:
+    de, queue, work, template, producer = _deferred_setup(tmp_path, monkeypatch)
+    # An x86 placement on a non-pinned runtime is not GPU intent.
+    monkeypatch.setattr(d38_gate, "requires_receipt", lambda *a, **k: False)
+    assert _submit_deferred(work, monkeypatch, de, producer, template) == 0, \
+        capsys.readouterr().err
+
+
+def test_a_release_re_checks_the_gate_for_a_record_an_old_client_filed(
+        tmp_path, monkeypatch, capsys) -> None:
+    """Defence in depth: a record filed with the gate off publishes nothing at
+    release once the gate is on, because the sealed key has no evidence."""
+
+    de, queue, work, template, producer = _deferred_setup(tmp_path, monkeypatch)
+    monkeypatch.setattr(d38_gate, "ENFORCE", False)
+    assert _submit_deferred(work, monkeypatch, de, producer, template) == 0, \
+        capsys.readouterr().err
+    instance = de._start(queue, template, producer)
+    de._commit(queue, template, instance, "b1", b"d38 handoff bytes")
+    queue.finish(producer, status="executed")
+    monkeypatch.setattr(d38_gate, "ENFORCE", True)
+    events = de.dr.release_tick(queue)
+    assert de._released(events) == [], events
+    assert {row.stem for row in queue.dir(pool.READY).glob("*.json")} == {
+        producer}, "the consumer was published without D38 evidence"
