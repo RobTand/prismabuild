@@ -126,14 +126,25 @@ def test_a_declared_sharer_is_not_admitted_on_a_partial_vouch(
 
 def test_the_same_sharer_is_admitted_once_the_vouch_is_whole(
         tmp_path: Path, monkeypatch) -> None:
+    """The fan-out completes the consumer's fragment a cycle before the map is
+    recomposed from it.  The consumer reads the map, so it waits until then."""
+
     queue, stage, _plans, mover, namespace, key = _shared(
         tmp_path, declared=True, monkeypatch=monkeypatch)
     _fan_out(queue, stage)
     _cycle(queue, stage)
     assert _verdict(queue, SECOND)["state"] == "map_incomplete"
     _date_the_late_entry(queue, stage, namespace, mover, key)
-    _fan_out(queue, stage)
-    _cycle(queue, stage)
+    _fan_out(queue, stage)                      # the fragment is whole ...
+    root = queue.residency_fragment_root()
+    mine = json.loads(residency_map.fragment_path(root, SECOND, mover).read_text())
+    assert key in mine["entries"], "the fixture must complete the fragment first"
+    assert key not in residency_map.read_map(queue.residency_map_path(SECOND))["entries"]
+    held, passes = queue.ledger().held(), queue.passes(SECOND)
+    verdict = _verdict(queue, SECOND)           # ... and the map is not yet
+    assert verdict["state"] == "map_incomplete", verdict
+    assert queue.ledger().held() == held and queue.passes(SECOND) == passes
+    _cycle(queue, stage)                        # recomposed
     assert _verdict(queue, SECOND)["state"] == "resident"
 
 
@@ -148,18 +159,26 @@ def test_control_an_undeclared_sharer_still_streams_on_a_partial_vouch(
     assert _verdict(queue, SECOND)["state"] == "resident"
 
 
-def test_control_the_owner_of_the_range_has_nothing_to_wait_for(
+def test_control_a_declared_consumer_of_its_own_range_is_admitted(
         tmp_path: Path, monkeypatch) -> None:
-    """The consumer that sealed the range is not a sharer: its own mover's
-    fragment is the vouch, so the new wait never applies to it."""
+    """Not a sharer: its own mover's fragment is the vouch, filed under the
+    consumer.  There is no source fragment to compare, so nothing to wait for."""
 
-    queue, stage, _plans, mover, namespace, key = _shared(
-        tmp_path, declared=True, monkeypatch=monkeypatch)
-    assert namespace != FIRST
+    from test_a_consumer_stages_only_to_its_refill_horizon import _mover, _plan
+
+    queue, stage = _fixture_queue(tmp_path, 20)
+    monkeypatch.setattr(queue, "_lead_was_adopted", lambda *args: True)
+    _declare(monkeypatch)
+    owner = _hexkey("1594owner")
+    manifest = _hexkey("1594ownmanifest")
+    plan = _plan(queue, owner, label="own", manifest=manifest, phases=1)
+    _publish_consumer(queue, owner, plan, manifest=manifest)
+    phase = plan["phases"][0]                                    # type: ignore[index]
+    _land(queue, stage, consumer=owner, manifest=manifest, mover=_mover("own", 0),
+          name="phase-0", start=int(phase["start_bytes"]), end=int(phase["end_bytes"]))
     _fan_out(queue, stage)
     _cycle(queue, stage)
-    state = _verdict(queue, FIRST)["state"]
-    assert state in ("resident", "map_incomplete")
+    assert _verdict(queue, owner)["state"] == "resident"
 
 
 def _denial(queue: pool.PoolQueue, key: str) -> dict[str, object] | None:
@@ -188,3 +207,52 @@ def test_the_claim_pass_waits_and_names_the_denial(
     assert evidence["unvouched"] == {mover: 1}
     assert queue.ledger().held() == held
     assert queue.passes(SECOND) == 0
+
+
+def _partial_sharer(tmp_path: Path, monkeypatch):
+    queue, stage, _plans, mover, namespace, key = _shared(
+        tmp_path, declared=True, monkeypatch=monkeypatch)
+    _fan_out(queue, stage)
+    _cycle(queue, stage)
+    assert _verdict(queue, SECOND)["state"] == "map_incomplete"
+    source = residency_map.fragment_path(queue.residency_fragment_root(), namespace, mover)
+    return queue, source
+
+
+def _waits(queue: pool.PoolQueue, key: str, source: Path) -> None:
+    """The claim pass keeps the item ready, takes no token, ages no pass, and
+    the denial names the source it could not read."""
+
+    held, passes = queue.ledger().held(), queue.passes(key)
+    assert queue.claim(owner="worker", capacity={"cpu": 4, "mem_gb": 4}) is None
+    assert queue.item_path(pool.READY, key).exists()
+    denial = _denial(queue, key)
+    assert denial is not None and denial["reason"] == "residency_map_unreadable", denial
+    assert str(source) in denial["evidence"]["residency"]["error"]   # type: ignore[index]
+    assert queue.ledger().held() == held and queue.passes(key) == passes
+
+
+def test_a_source_fragment_that_cannot_be_statted_is_a_wait_not_a_pass(
+        tmp_path: Path, monkeypatch) -> None:
+    queue, source = _partial_sharer(tmp_path, monkeypatch)
+    real = Path.stat
+
+    def stat(self, *args, **kwargs):
+        if self == source:
+            raise OSError(5, "Input/output error")
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", stat)
+    verdict = _verdict(queue, SECOND)
+    assert verdict["state"] == "map_unreadable", verdict
+    assert verdict["state"] in pool.RESIDENCY_REFUSAL_STATES
+    _waits(queue, SECOND, source)
+
+
+def test_a_malformed_source_fragment_is_a_wait_not_a_pass(
+        tmp_path: Path, monkeypatch) -> None:
+    queue, source = _partial_sharer(tmp_path, monkeypatch)
+    source.write_text("{ not json")
+    verdict = _verdict(queue, SECOND)
+    assert verdict["state"] == "map_unreadable", verdict
+    _waits(queue, SECOND, source)
