@@ -16721,3 +16721,35 @@ selection reconstructs missing/corrupt views; corrected descendant heads remain
 eligible. Unowned replacements are retained for explicit recovery rather than
 removed. Supported once retains no hold/view. Original failed evidence survives
 cleanup, and deployment still requires separate coordinator acceptance.
+
+
+## D38 preflight gate (#1639)
+
+D38 requires a CPU dry run before a new or changed GPU job.  `tools/fleet/d38_gate.py`
+is the consumer side and `pbrun.py` calls it once, in the shared submission path, after
+the target is sealed and before any new runnable work is published, on the pool and SLURM
+transports alike.  It reads evidence only; nothing asks a model whether evidence exists.
+
+A publication has GPU intent when its final sealed demand has `gpu` above zero, a required
+tag (derived host pins included) is `gb10`, `sparky` or `sparklina`, or `--host-class` is
+`gb10`.  A `--preflight` token, an environment variable or `--gpu` with zero demand exempts
+nothing.  A CAS hit or a live attachment publishes nothing and needs no receipt.
+
+`--d38-namespace PATH` seals the digest of a namespace descriptor into the job's params
+before the key is computed, so a changed namespace is a changed job.  Absent, keys are
+byte-identical to before.  `--d38-receipt KEY` names a preflight action whose content-verified
+CAS receipt must exist before publication and whose `fleet.d38.preflight.v1` result (strict
+JSON, 64 KiB, no duplicate keys or NaN) binds this job identity, normalized images and
+namespace, passed, has not expired and is not dated in the future; the preflight action must
+declare the D38 producer parameter and CPU-only demand, and its producer evidence must agree
+with the receipt's host class.  `--d38-exception DECISION_ID` reads a CEO decision whose
+`grant.d38_exception` binds the exact job, images, namespace and expiry; it waives D38 only.
+Either way an immutable event is written under `pb-queue/d38-audit/<job hash>/` before the
+publication, and a failed write refuses.  Refusal is exit 2 with no runnable submission.
+
+A deferred (`--after`) submission carries both flags in its publication options (optional
+keys, so older records still read); the release check against the sealed key is a later step.
+The producer (`--d38-plan`, `--d38-preflight-for`) is a later change, so until it lands a GPU
+job is publishable only through a scoped exception.  `d38_gate.ENFORCE` is the one switch; it
+is a module attribute that no flag or environment variable reaches, and only the existing
+test suite turns it off.
