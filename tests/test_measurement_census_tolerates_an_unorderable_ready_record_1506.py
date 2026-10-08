@@ -23,6 +23,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from prismabuild import _measurement_reservation as mr  # noqa: E402
 from prismabuild import pool  # noqa: E402
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from test_gang_reservation_1517 import (  # noqa: E402,F401
+    HOSTS, _busy_both, fleet, gang_fleet)
+
 GOOD = "a" * 64
 POISON = "c" * 64
 
@@ -47,16 +51,69 @@ def _rewrite(path: Path, **changes: object) -> None:
     path.write_text(json.dumps(record), encoding="utf-8")
 
 
-@pytest.mark.parametrize("value", ["high", 5.5, None, True, [1]])
-def test_a_ready_record_with_an_unreadable_priority_does_not_blank_the_census(
+@pytest.mark.parametrize("value", ["high", None, [1], {"p": 1}])
+def test_a_ready_record_the_queue_cannot_order_does_not_blank_the_census(
         queue: pool.PoolQueue, value: object) -> None:
     _publish(queue, GOOD)
     _rewrite(_publish(queue, POISON), priority=value)
+    assert pool.PoolQueue._unorderable_queue_field(
+        json.loads(queue.item_path(pool.READY, POISON).read_text())) is not None
 
     census = mr._capture(queue)
 
     assert set(census) == {"measurements", "elections", "selections",
                            "opportunities", "keys", "gang_elections"}
+
+
+@pytest.mark.parametrize("value", [5.5, True, "5"])
+def test_a_priority_the_queue_can_order_is_not_skipped(
+        queue: pool.PoolQueue, value: object) -> None:
+    """The queue reads these with ``int(...)``, so they can be claimed and then
+    reach the CLAIMED census, which refuses them.  Skipping them as READY would
+    launder them into that refusal, so the exception follows the queue's own
+    definition of unorderable and nothing wider."""
+
+    _rewrite(_publish(queue, POISON), priority=value)
+    assert pool.PoolQueue._unorderable_queue_field(
+        json.loads(queue.item_path(pool.READY, POISON).read_text())) is None
+
+    with pytest.raises(mr.CensusUnavailable, match="unreadable publication priority"):
+        mr._capture(queue)
+
+
+def test_a_skipped_record_is_never_claimed_so_it_cannot_reach_the_claimed_census(
+        queue: pool.PoolQueue) -> None:
+    _publish(queue, GOOD)
+    _rewrite(_publish(queue, POISON), priority="high")
+
+    first = queue.claim(owner="worker", capacity={"cpu": 4})
+    second = queue.claim(owner="worker", capacity={"cpu": 4})
+
+    assert first is not None and first["action_key"] == GOOD
+    assert second is None
+    assert queue.item_path(pool.READY, POISON).exists()
+    assert not queue.item_path(pool.CLAIMED, POISON).exists()
+    mr._capture(queue)          # and the census is still available after
+
+
+def test_an_elected_gang_keeps_its_fences_when_its_ready_members_are_unorderable(
+        gang_fleet) -> None:
+    """A gang election fences its host while any member row is READY or
+    CLAIMED.  A member the census skips as a candidate is still a live member."""
+
+    queue, clock, publish, finish, gclaim, denial, members = gang_fleet
+    _busy_both(publish, gclaim)
+    group, keys = members("busy")
+    for host in HOSTS:
+        assert gclaim(host) is None
+    before = mr._capture(queue)["gang_elections"]
+    assert len(before) == 2, before
+
+    for key in keys:
+        _rewrite(queue.item_path(pool.READY, key), priority="high")
+
+    after = mr._capture(queue)["gang_elections"]
+    assert after == before, "the census dropped the host fences of a live gang"
 
 
 def test_a_claimed_record_with_an_unreadable_priority_still_refuses(
