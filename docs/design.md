@@ -164,8 +164,11 @@ current-census admission (#1419) is implemented in the private
 `_measurement_reservation` domain boundary for capacity-backed claims and
 integrated with explicit fixture compatibility. The census skips, as a candidate, a READY record
 whose publication priority the queue itself cannot order (`PoolQueue._unorderable_queue_field`
-names `priority`; a record whose priority the queue can order and whose `passes` or `published_unix`
-is unreadable is not skipped, because the queue still lists and can claim it):
+names `priority`; a record whose priority the queue can order and whose `passes` sidecar is
+unreadable is not skipped, because the queue reads `passes` as 0 and can still list and claim it.
+A record whose `published_unix` is unreadable is unorderable too, but it fails the strict
+publication identity check before the skip is reached, so it still refuses: a follow-up, not part
+of this change):
 it holds no tokens, runs nothing, is never claimed, and the queue already files it by name
 instead of raising (#1506). The skipped record still counts as a live gang member, so an
 elected gang keeps its host fences. A priority the queue can order (`5.5`, `True`, `"5"`)
