@@ -21,12 +21,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from prismabuild import pool, prelaunch_group  # noqa: E402
+from prismabuild import pool, prelaunch_group, residency_plan  # noqa: E402
 import tier_loop  # noqa: E402
 from test_prelaunch_group_reconcile_1594 import _hexkey, _queue  # noqa: E402
-from test_prelaunch_tier_module_1594 import _declared_plan, TIER  # noqa: E402
+from test_prelaunch_tier_module_1594 import (  # noqa: E402
+    _declared_plan, MANIFEST, TIER)
 from test_prelaunch_tier_publish_1594 import (  # noqa: E402
     _declared_movers, _live, _stage)
+import prelaunch_tier  # noqa: E402
+from test_prelaunch_tier_gate_1594 import (  # noqa: E402
+    _held, _units, _two_consumer_queue)
 
 SPECS = [("source", 4, True, 4)]
 
@@ -133,3 +137,100 @@ def test_a_committed_group_whose_tokens_left_without_a_release_begins_again(
     state["census"] = {"h": found.h, "p": found.p, "m": found.m, "r": found.r}
     accounted = prelaunch_group._accounted(found, int(unit.demand_gib))
     assert accounted[1] is True, json.dumps(state, indent=1)
+    gib_of = {m: 1 for m in movers}
+    gib_of.update({leg["mover_key"]: int(leg["stage_gib"]) for leg in unit.legs})
+    state["uncovered movers"] = _uncovered(queue, movers, gib_of)
+    assert state["uncovered movers"] == {}, json.dumps(state, indent=1)
+
+
+def _row(queue, mover: str) -> dict:
+    return json.loads(queue.item_path(pool.READY, mover).read_text(encoding="utf-8"))
+
+
+def _uncovered(queue, movers, gib_of) -> dict[str, tuple]:
+    """Every READY mover whose funding record does not cover its whole row."""
+    out = {}
+    for mover in movers:
+        if not queue.item_path(pool.READY, mover).exists():
+            continue
+        covered = queue.funded_cover(TIER, _row(queue, mover), "stage_gib",
+                                     gib_of[mover])
+        if covered[0] != gib_of[mover]:
+            out[mover[-8:]] = covered
+    return out
+
+
+def test_a_committed_unit_that_owns_nothing_still_obliges_its_peak(
+        tmp_path: Path) -> None:
+    """Review of f1c9694e, point 1: a receipt alone must keep the peak."""
+    queue, tiers, first, _second, _pf, _ps = _two_consumer_queue(tmp_path)
+    _cycles(queue, tiers, 10)
+    unit = _units(queue, first)[0]
+    assert "committed.json" in " ".join(_group_files(queue, first))
+    ledger = queue.tier_ledger(TIER)
+    for holder in [unit.holder] + [leg["mover_key"] for leg in unit.legs]:
+        ledger.release(holder)
+    assert not any(_held(queue).get(h) for h in
+                   [unit.holder] + [leg["mover_key"] for leg in unit.legs])
+    totals, detail = prelaunch_tier.obligations(_units(queue, first), _held(queue),
+                                                "stage_gib")
+    assert totals.get(TIER) == unit.peak_gib, json.dumps(
+        {"totals": totals, "detail": detail, "peak": unit.peak_gib}, indent=1)
+
+
+def _publish_ranked(queue, plan, consumer: str) -> None:
+    """Freeze one plan and publish its consumer ahead of every priority-0 unit."""
+    residency_plan.freeze(queue, plan)
+    span = sum(int(phase["end_bytes"]) - int(phase["start_bytes"])
+               for phase in plan["phases"])
+    queue.publish(
+        action_key=consumer, cas_root=str(queue.root / "cas"),
+        checkout_root=str(queue.root / "co"),
+        worker_script=str(queue.root / "worker.py"),
+        resources={"cpu": 1, "mem_gb": 1}, priority=10,
+        priority_reason="test: the rival outranks the unit that lost its tokens",
+        residency={"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER,
+                   "manifest_sha256": MANIFEST, "manifest_bytes": span,
+                   "leads": residency_plan.leads_for(plan)})
+
+
+def test_a_rival_waits_while_a_committed_group_recovers_its_tokens(
+        tmp_path: Path) -> None:
+    """Review of f1c9694e, point 1: complete loss, a suffix, an outranking rival.
+
+    The rival is ranked first in the reserve pass, so it meets the gate before
+    the lost unit's top-up runs.  If the lost unit obliges nothing, the gate
+    admits it, the top-up then takes its prefix from the rest, and the joint
+    peaks exceed the tier.
+    """
+    queue, tiers, first, _second, _pf, _ps = _two_consumer_queue(tmp_path)
+    _cycles(queue, tiers, 10)
+    unit = _units(queue, first)[0]
+    gib_of = {leg["mover_key"]: int(leg["stage_gib"]) for leg in unit.legs}
+    ledger = queue.tier_ledger(TIER)
+    for holder in [unit.holder] + list(gib_of):
+        ledger.release(holder)
+    rival_key = _hexkey("gate-rival")
+    specs = [("p0", 40, True, 1), ("p1", 10, False, 1), ("p2", 10, False, 1)]
+    _publish_ranked(queue, _declared_plan(queue, rival_key, specs, tag="rival"),
+                    rival_key)
+    # Small enough to clear the gate beside the lost unit's unfunded 90 GiB
+    # row (new money) alone, so only the lost unit's own obligation can hold
+    # it back; the two peaks together are more than the tier.
+    assert _units(queue, rival_key)[0].peak_gib + 90 <= 210
+    assert _units(queue, rival_key)[0].peak_gib + unit.peak_gib > 210
+    seen = _cycles(queue, tiers, 20)
+    rival = _units(queue, rival_key)[0]
+    found = prelaunch_group.census(queue, TIER, unit.unit, unit.holder,
+                                   int(unit.demand_gib), list(gib_of))
+    state = {"census": {"h": found.h, "p": found.p, "m": found.m, "r": found.r},
+             "rival holder": _holder_tokens(queue, rival.holder),
+             "events": sorted(set(_names(seen))),
+             "rival gating": [{k: v for k, v in event.items() if k != "unix"}
+                              for event in seen
+                              if str(event.get("consumer")) == rival_key
+                              or str(event.get("unit")) == rival.unit][:3]}
+    assert _holder_tokens(queue, rival.holder) == 0, json.dumps(state, indent=1)
+    assert prelaunch_group._accounted(found, int(unit.demand_gib))[1] is True, \
+        json.dumps(state, indent=1)
+    assert _uncovered(queue, gib_of, gib_of) == {}, json.dumps(state, indent=1)
