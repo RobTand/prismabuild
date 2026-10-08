@@ -779,19 +779,34 @@ def publish_chunk(queue: pool.PoolQueue, tier_id: str, unit: str, holder: str,
         old = record.get("generation")
         rotate_from = str(old) if isinstance(old, str) else None
         tokens = _record_tokens(record)
-        if (tokens is None or rotate_from is None
-                or not _republished(record, tier_id, mover, kind,
-                                    consumer, digest, start, end)):
+        republished = (tokens is not None
+                       and _republished(record, tier_id, mover, kind,
+                                        consumer, digest, start, end))
+        # Movers are keyed by manifest range, so a second capture of one
+        # manifest names the first capture's movers.  What the first left is
+        # a spent record bound to another consumer and plan.  It covers
+        # nothing (only ``transferring`` funds a claim) and no state leaves
+        # it, so it is rotated like an older publication of this chunk -- but
+        # only when the mover holds no tokens (#1628).  A live record of
+        # another consumer is still occupied.
+        spent = str(record.get("state")) in ("consumed", "released")
+        if rotate_from is None or not (republished or spent):
             return PublishOutcome("refused", ["prelaunch-mover-occupied"],
                                   None, 0)
         held = _held_or_unknown(ledger, mover, GroupCensus())
         if held is None:
             return PublishOutcome("deferred", ["prelaunch-unknown-evidence"],
                                   None, 0)
-        if held - set(tokens):
-            return PublishOutcome("refused", ["prelaunch-mover-occupied"],
-                                  None, 0)
-        prior = set(tokens) & held
+        if republished:
+            if held - set(tokens):
+                return PublishOutcome("refused", ["prelaunch-mover-occupied"],
+                                      None, 0)
+            prior = set(tokens) & held
+        else:
+            if held:
+                return PublishOutcome("refused", ["prelaunch-mover-occupied"],
+                                      None, 0)
+            prior = set()
         generation = None
     else:
         held = _held_or_unknown(ledger, mover, GroupCensus())
