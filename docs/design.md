@@ -4987,7 +4987,18 @@ counts, into the same holder, and the next pass settles it like any begun
 acquisition.  The intent is not recomputed.  No room files
 `prelaunch-begin-declined` and waits.  A committed group that is short with
 holder tokens still releases them first, as before, and tops up on the next
-pass.  A pass that is not the writer changes nothing.
+pass.  Only the top-up and the settling of its handle are writer-only; the
+release in the committed-short path has never checked the writer and still
+does not.
+Two rules keep that recovery safe.  A live unit whose committed receipt
+stands obliges its whole peak, less what it owns, even when it owns nothing,
+so no newcomer is admitted into room its recovery needs.  And the group's
+replacement tokens reach the movers: a `transferring` record on a READY mover
+row whose bound tokens left is rebound to what the mover still holds plus the
+exact remainder from the holder, under the mover lock, only while the record
+is still `transferring` and the row still READY.  A claimed or consumed row
+keeps its refusal, and `funded_cover` is unchanged: the mover claims through
+its fence and takes no second stage charge.
 Submission selects the prefix and suffix cuts by phase name, since an empty
 declared phase has no range.  A gang across tiers stays unsupported: its
 group is not reserved and the event `prelaunch-turn-unsupported` is filed.

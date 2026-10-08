@@ -141,6 +141,17 @@ def test_a_committed_group_whose_tokens_left_without_a_release_begins_again(
     gib_of.update({leg["mover_key"]: int(leg["stage_gib"]) for leg in unit.legs})
     state["uncovered movers"] = _uncovered(queue, movers, gib_of)
     assert state["uncovered movers"] == {}, json.dumps(state, indent=1)
+    # The claim spends the restored fence and takes nothing more from the tier.
+    ready = [m for m in movers if queue.item_path(pool.READY, m).exists()]
+    free_before = ledger.available().get("stage_gib")
+    got = queue.claim(tags=["dl380g10"], owner="w-mover")
+    state["claimed"] = None if got is None else str(got["action_key"])[-8:]
+    assert got is not None and got["action_key"] in ready, json.dumps(state, indent=1)
+    assert ledger.available().get("stage_gib") == free_before, json.dumps(
+        dict(state, free_before=free_before,
+             free_after=ledger.available().get("stage_gib")), indent=1)
+    assert int(ledger.holder_tokens(got["action_key"]).get("stage_gib", 0)) == \
+        gib_of[got["action_key"]], json.dumps(state, indent=1)
 
 
 def _row(queue, mover: str) -> dict:
