@@ -4978,6 +4978,16 @@ transfer. The record binds valid retained mover tokens and the exact remaining
 group tokens. A deferred rotation moves no tokens. A partial transfer retains
 that generation, and a retry moves only its missing tokens. Foreign live
 records still refuse, and foreign spent recovery keeps its existing rule.
+A committed group whose census reads short with an empty holder lost its
+tokens to a path that wrote no release receipt (live, 2026-10-08: the PACT band
+source).  Its receipt still said committed, so the unit was never a newcomer
+again and no pass restored the tokens.  The writer now begins one acquisition
+for the deficit, the filed demand less the holder, bound mover and released
+counts, into the same holder, and the next pass settles it like any begun
+acquisition.  The intent is not recomputed.  No room files
+`prelaunch-begin-declined` and waits.  A committed group that is short with
+holder tokens still releases them first, as before, and tops up on the next
+pass.  A pass that is not the writer changes nothing.
 Submission selects the prefix and suffix cuts by phase name, since an empty
 declared phase has no range.  A gang across tiers stays unsupported: its
 group is not reserved and the event `prelaunch-turn-unsupported` is filed.

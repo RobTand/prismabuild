@@ -470,6 +470,51 @@ def _rollback_receipt(queue: pool.PoolQueue, unit: str, tier_id: str,
                    ["unit", "holder", "tier_id", "demand_gib"])
 
 
+def _settle_handles(ledger: pool.ResourceLedger, holder: str,
+                    found: GroupCensus, events: list[str]) -> ReconcileOutcome:
+    """Commit each acquisition handle this writer owns or a dead one left."""
+    live = False
+    for handle, _, host, pid, _ in found.handles:
+        if _is_me(host, pid) or _is_dead(host, pid):
+            try:
+                moved = ledger.commit_acquire(str(holder), handle)
+            except (OSError, pool.PoolContractError, ValueError):
+                return ReconcileOutcome(
+                    "unknown", events + ["prelaunch-unknown-evidence"],
+                    False, found)
+            if moved > 0:
+                events.append("prelaunch-acquisition-committed")
+        else:
+            live = True
+    if live:
+        events.append("prelaunch-acquisition-in-flight")
+    return ReconcileOutcome("acquiring", events, False, found)
+
+
+def _top_up(ledger: pool.ResourceLedger, kind: str, holder: str,
+            demand: int, found: GroupCensus,
+            events: list[str]) -> ReconcileOutcome:
+    """Begin the acquisition of what a committed group lost.
+
+    The deficit is the demand less every token the census accounts for, so
+    the settled group is exactly the filed demand again and the intent is
+    never recomputed.  No room is a wait: the next pass asks again.
+    """
+    deficit = demand - (found.h + found.m + found.r)
+    try:
+        handle = ledger.begin_acquire(str(holder), {kind: deficit})
+    except (OSError, pool.PoolContractError, ValueError):
+        return ReconcileOutcome("unknown",
+                                events + ["prelaunch-unknown-evidence"],
+                                False, found)
+    if handle is None:
+        return ReconcileOutcome("short", events + ["prelaunch-begin-declined"],
+                                False, found)
+    return ReconcileOutcome("acquiring",
+                            events + ["prelaunch-group-topped-up"],
+                            False, found)
+
+
 def reconcile(queue: pool.PoolQueue, tier_id: str, unit: str, holder: str,
               demand_gib: int, chunk_movers: Sequence[str],
               *, writer_is_me: bool) -> ReconcileOutcome:
@@ -497,6 +542,10 @@ def reconcile(queue: pool.PoolQueue, tier_id: str, unit: str, holder: str,
                                 False, found)
     if committed is not None:
         state, authority = _accounted(found, demand)
+        if not authority and writer_is_me and found.p > 0:
+            return _settle_handles(ledger, holder, found, events)
+        if not authority and writer_is_me and state == "short" and found.h == 0:
+            return _top_up(ledger, kind, holder, demand, found, events)
         if authority:
             return ReconcileOutcome(state, events, True, found)
         try:
@@ -517,22 +566,7 @@ def reconcile(queue: pool.PoolQueue, tier_id: str, unit: str, holder: str,
         return ReconcileOutcome(passive, events + ["prelaunch-not-writer"],
                                 False, found)
     if found.p > 0:
-        live = False
-        for handle, _, host, pid, _ in found.handles:
-            if _is_me(host, pid) or _is_dead(host, pid):
-                try:
-                    moved = ledger.commit_acquire(str(holder), handle)
-                except (OSError, pool.PoolContractError, ValueError):
-                    return ReconcileOutcome(
-                        "unknown", events + ["prelaunch-unknown-evidence"],
-                        False, found)
-                if moved > 0:
-                    events.append("prelaunch-acquisition-committed")
-            else:
-                live = True
-        if live:
-            events.append("prelaunch-acquisition-in-flight")
-        return ReconcileOutcome("acquiring", events, False, found)
+        return _settle_handles(ledger, holder, found, events)
     if found.h == demand:
         try:
             result = _commit_receipt(queue, unit, tier_id, holder, demand)
