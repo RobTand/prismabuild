@@ -76,12 +76,13 @@ _PUBLICATION_KEYS = frozenset({
 #: Publication options a deferred record may carry beyond the required set:
 #: the reader's declaration (#909), whether its stage ranges are shared
 #: with other consumers of the same manifest (#1026), and a scheduling-only
-#: priority reason (#1249). Optional so that a
+#: priority reason (#1249), and the D38 preflight evidence the release checks
+#: again against the sealed key (#1639). Optional so that a
 #: record filed before they existed still reads, and is released with no
 #: declaration and with sharing at its default.
 _OPTIONAL_PUBLICATION_KEYS = frozenset({
     "residency_prefetch_depth_gib", "residency_read_mb_s", "residency_share",
-    "priority_reason",
+    "priority_reason", "d38_receipt", "d38_exception",
 })
 
 
