@@ -111,8 +111,11 @@ def _serve(queue: pool.PoolQueue, *, limit: int | None = None) -> int:
 
     served = 0
     while limit is None or served < limit:
+        # The children run under the fleet's own interpreter, so placement
+        # requires the interpreter-path tag as well as the host pin; a worker
+        # that offers only ``sparky`` claims none of them (#1263).
         one = queue.serve_once(
-            tags=["sparky"], python=sys.executable, timeout_s=120.0,
+            tags=["sparky", pb.INTERPRETER_TAG], python=sys.executable, timeout_s=120.0,
             capacity={"cpu": 4, "mem_gb": 16, "gpu": 1},
         )
         if one is None:
