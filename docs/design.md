@@ -6345,9 +6345,16 @@ journal, not operator descriptors.
 
 `pbresident dispatch SET_ID` retries action publication for an already-filed
 immutable body. It never republishes the set or acquires a second publication
-hold. Repeated dispatch attaches to a live copy generation; a resident host
-gets its descriptors refreshed without another copy action. An absent or
-interrupted copy can be re-driven through the existing movement retry policy.
+hold. Dispatch checks `lease_active` before action publication or descriptor updates.
+It refuses a released lease or a lease at its hard maximum.
+Ready or claimed rows with `resident_set` can extend an until lease before that maximum.
+
+Repeated dispatch attaches to a live copy generation for the same checkout snapshot.
+A changed checkout snapshot changes the action key and can queue another copy.
+The mover lock serializes copies; the second copy verifies the completed tree again.
+A resident host gets its descriptors refreshed without another copy action.
+An absent or interrupted copy can be re-driven through the existing movement retry policy.
+
 `pbresident renew SET_ID` appends an explicit until-date or campaign lease with
 a required hard maximum, bounded by the configured renewal ceiling. Neither
 command changes the immutable body or adds a seal/authority requirement.
@@ -6378,7 +6385,8 @@ manifest-subset inference (the design note section 3.3 supersedes its older
 lifecycle wording). Until leases may be extended by ready or claimed rows,
 but never past their hard maximum. Campaign leases end on release or maximum.
 An explicit `ResidentSets.renew` appends a new bounded lease without changing
-the body. Explicit Phase 1 readers take `local_resident.pin` and release that
+the body. It can reactivate a released set; live rows cannot cancel a release.
+Explicit Phase 1 readers take `local_resident.pin` and release that
 token only after their last read; a crashed reader pin stays until the existing
 broker scope attestation proves stop. Phase 2 will integrate container pins.
 Explicit renewals are capped at `now + renewal_ceiling_s`, a positive finite
