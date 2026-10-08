@@ -802,12 +802,37 @@ def publish_chunk(queue: pool.PoolQueue, tier_id: str, unit: str, holder: str,
                 return PublishOutcome("refused", ["prelaunch-mover-occupied"],
                                       None, 0)
             prior = set(tokens) & held
+            generation = None
         else:
             if held:
                 return PublishOutcome("refused", ["prelaunch-mover-occupied"],
                                       None, 0)
+            # Establish the new reserved generation BEFORE any token moves,
+            # naming tokens still in the group's holder, the way the
+            # no-record path below does.  Rotating after the transfer would
+            # leave tokens under the mover beside the old spent record when
+            # the rotation is deferred or the process stops mid-transfer, and
+            # the retry would find a held mover and refuse it for good.  With
+            # the binding first, a retry finds a matching record and resumes.
+            try:
+                names = pool.held_names_visible(ledger, str(holder))
+            except (OSError, pool.PoolContractError, ValueError):
+                return PublishOutcome("deferred",
+                                      ["prelaunch-unknown-evidence"], None, 0)
+            kind_names = sorted(n for n in names if n.startswith(kind + "-"))
+            if len(kind_names) < gib:
+                return PublishOutcome("short", ["prelaunch-funding-short"],
+                                      None, 0)
+            bound = set(kind_names[:gib])
+            fresh = _fresh_binding(tier_id, mover, kind, consumer, digest,
+                                   start, end, published, kind_names[:gib])
+            generation = _rotate_record(queue, mover, tier_id, rotate_from,
+                                        fresh)
+            if generation is None:
+                return PublishOutcome("deferred",
+                                      ["prelaunch-publish-deferred"], None, 0)
+            rotate_from = None
             prior = set()
-        generation = None
     else:
         held = _held_or_unknown(ledger, mover, GroupCensus())
         if held is None:

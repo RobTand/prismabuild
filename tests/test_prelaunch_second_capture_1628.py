@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import pytest  # noqa: E402
 
 from prismabuild import pool  # noqa: E402
+from prismabuild import prelaunch_group as pg  # noqa: E402
 import tier_loop  # noqa: E402
 from test_prelaunch_group_reconcile_1594 import _hexkey, _queue  # noqa: E402
 from test_prelaunch_tier_module_1594 import _declared_plan, TIER  # noqa: E402
@@ -36,6 +37,21 @@ def _publish_all(queue, tiers, movers, *, rounds=10):
         seen.extend(tier_loop.residency_window(queue, tiers=tiers))
         if all(queue.item_path(pool.READY, m).exists()
                or queue.item_path(pool.CLAIMED, m).exists() for m in movers):
+            break
+    return seen
+
+
+def _publish_until_bound(queue, tiers, movers, *, rounds=14):
+    """Cycle until every mover's record is ``transferring``, for recovery tests.
+
+    ``_publish_all`` stops when the rows exist, which an interrupted
+    publication reaches before its funding is bound.
+    """
+    seen: list[dict] = []
+    for _ in range(rounds):
+        seen.extend(tier_loop.residency_window(queue, tiers=tiers))
+        records = [queue.read_funding(m, TIER) for m in movers]
+        if all(r is not None and r["state"] == "transferring" for r in records):
             break
     return seen
 
@@ -109,3 +125,77 @@ def test_a_live_record_of_another_consumer_still_refuses(tmp_path) -> None:
         assert after["generation"] == before[mover]["generation"]
         assert after["consumer_action_key"] == before[mover]["consumer_action_key"]
         assert after["state"] == "transferring"
+
+
+def _holder_tokens(queue, name):
+    return int(queue.tier_ledger(TIER).holder_tokens(name).get("stage_gib", 0))
+
+
+def test_a_deferred_rotation_moves_nothing_and_the_retry_completes(
+        tmp_path, monkeypatch) -> None:
+    """Recovery: the new binding is written BEFORE any token moves.
+
+    The first rotation is deferred (its lock was busy).  Nothing may have left
+    the group's holder, so the next cycle finds nothing held and publishes.
+    """
+    queue, tiers, second, unit, movers = _first_then_second(tmp_path)
+    real = pg._rotate_record
+    calls = {"n": 0}
+    deferred: list[str] = []
+
+    def flaky(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            deferred.append(str(args[1]))      # (queue, mover, tier, old, new)
+            return None
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(pg, "_rotate_record", flaky)
+    group_before = _holder_tokens(queue, unit.holder)
+    for _ in range(10):                    # the group begins, then publishes
+        tier_loop.residency_window(queue, tiers=tiers)
+        if calls["n"] >= 1:
+            break
+    assert calls["n"] >= 1, "the rotation was never attempted"
+    assert deferred and deferred[0] in movers
+    assert _holder_tokens(queue, deferred[0]) == 0, (
+        "a deferred rotation moved tokens under its mover")
+    assert queue.read_funding(deferred[0], TIER)["state"] == "consumed", (
+        "the old record is untouched until the new one is written")
+    seen = _publish_until_bound(queue, tiers, movers)
+    assert [e for e in seen if e.get("event") == "prelaunch-chunk-published"]
+    for mover in movers:
+        record = queue.read_funding(mover, TIER)
+        assert record["state"] == "transferring"
+        assert record["consumer_action_key"] == second
+    assert group_before >= _holder_tokens(queue, unit.holder)
+
+
+def test_a_partial_transfer_resumes_from_the_bound_record(
+        tmp_path, monkeypatch) -> None:
+    """Recovery: a transfer that moved some tokens and then failed retries.
+
+    The binding already names the group's tokens, so the retry finds a matching
+    ``reserved`` record with partial holdings and moves only what is missing:
+    no mover holds more than its leg, and none is refused as occupied.
+    """
+    queue, tiers, second, unit, movers = _first_then_second(tmp_path)
+    real = queue.transfer_tier_reservation_count
+    state = {"failed": False}
+
+    def partial(tier_id, holder, mover, count):
+        if not state["failed"] and count >= 2:
+            state["failed"] = True
+            real(tier_id, holder, mover, 1)          # half of it lands
+            raise OSError("interrupted mid-transfer")
+        return real(tier_id, holder, mover, count)
+
+    monkeypatch.setattr(queue, "transfer_tier_reservation_count", partial)
+    seen = _publish_until_bound(queue, tiers, movers)
+    assert state["failed"], "the fixture never interrupted a transfer"
+    assert not [e for e in seen if "prelaunch-mover-occupied" in str(e)]
+    for mover in movers:
+        record = queue.read_funding(mover, TIER)
+        assert record["state"] == "transferring"
+        assert record["consumer_action_key"] == second
+        assert _holder_tokens(queue, mover) == 2, "a leg holds exactly its tokens"
