@@ -14,6 +14,7 @@ the claim on another thread while the recovery's own transfer is in progress.
 from __future__ import annotations
 
 from pathlib import Path
+import os
 import sys
 import threading
 
@@ -158,6 +159,66 @@ def test_a_claim_is_deferred_when_the_fence_custody_cannot_be_read(
              "free before": free_before, "free after": _free(queue),
              "mover tokens": _tokens(queue, first)}
     monkeypatch.setattr(pool, "held_names_visible", real_held)
+    assert got is None or got["action_key"] != first, state
+    assert _free(queue) == free_before, state
+    assert _tokens(queue, first) == 1, state
+
+    assert _recover(queue, plan, unit, holder, first, row).status == "published"
+    free_mid = _free(queue)
+    got = queue.claim(tags=["dl380g10"], owner="w-after")
+    assert got is not None and got["action_key"] == first
+    assert _free(queue) == free_mid
+    assert _tokens(queue, first) == 2
+
+
+def _break_garbage(path: Path) -> object:
+    original = path.read_bytes()
+    path.write_bytes(b"{not json")
+    return lambda: path.write_bytes(original)
+
+
+def _break_unreadable(path: Path) -> object:
+    mode = path.stat().st_mode & 0o777
+    path.chmod(0)
+    return lambda: path.chmod(mode)
+
+
+import pytest  # noqa: E402
+
+
+@pytest.mark.parametrize("breaker", [_break_garbage, _break_unreadable],
+                         ids=["malformed", "unreadable"])
+def test_a_claim_is_deferred_when_the_funding_record_cannot_be_read(
+        tmp_path: Path, monkeypatch, breaker) -> None:
+    """Review of e1a18d1704: an unreadable or malformed record is unknown.
+
+    The record exists and may still bind tokens, so neither says that the
+    prior fence holds nothing.  ``read_funding`` is the tolerant spelling that
+    turns both into ``None``; the claim guard reads ``read_funding_evidence``.
+    """
+    if breaker is _break_unreadable and os.geteuid() == 0:
+        pytest.skip("root reads a mode-000 file")
+    queue, plan, unit, holder, first, row = _recovering(tmp_path)
+    free_before = _free(queue)
+    real = queue.transfer_tier_reservation_count
+
+    def part_then_stop(tier_id, source, target, count):
+        real(tier_id, source, target, 1)
+        raise OSError("the recovery stopped after a partial transfer")
+
+    monkeypatch.setattr(queue, "transfer_tier_reservation_count", part_then_stop)
+    assert _recover(queue, plan, unit, holder, first, row).status == "deferred"
+    assert _tokens(queue, first) == 1
+    monkeypatch.setattr(queue, "transfer_tier_reservation_count", real)
+
+    restore = breaker(queue.funding_path(first, TIER))
+    try:
+        got = queue.claim(tags=["dl380g10"], owner="w-unreadable")
+        state = {"claimed": None if got is None else str(got["action_key"])[-8:],
+                 "free before": free_before, "free after": _free(queue),
+                 "mover tokens": _tokens(queue, first)}
+    finally:
+        restore()
     assert got is None or got["action_key"] != first, state
     assert _free(queue) == free_before, state
     assert _tokens(queue, first) == 1, state
