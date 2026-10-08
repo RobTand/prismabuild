@@ -63,7 +63,7 @@ def _isolated(monkeypatch, tmp_path):
     for name in ("PRISMABUILD_ACTION_NONCE", "PRISMABUILD_ACTION_SCOPE",
                  "PRISMABUILD_READER_HELPER_ROOT"):
         monkeypatch.delenv(name, raising=False)
-    monkeypatch.setattr(d38_gate, "now", lambda: NOW)
+    monkeypatch.setattr(d38_gate, "utc_now", lambda: NOW)
     monkeypatch.setattr(d38_gate, "ENFORCE", True)
     # The published runtime is not box-local; a test checkout is.  Without this
     # every placement would be pinned to the Spark it was submitted from.

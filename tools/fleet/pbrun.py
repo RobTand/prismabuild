@@ -9064,7 +9064,7 @@ def submit_and_publish(args, *, publication_canary_intent=None,
     # it may only wait on a pool run it can see, or refuse.  (The detached
     # branches above already answered a cache hit and a live attachment without
     # publishing.)
-    verdict = d38_gate.decide(
+    verdict = d38_gate.judge_publication(
         args, action, cas=cas, queue_root=SH / "pb-queue",
         transport=args.transport)
     if verdict is not None:
@@ -9080,7 +9080,7 @@ def submit_and_publish(args, *, publication_canary_intent=None,
                 return functools.partial(
                     await_outcome, pool.PoolQueue(SH / "pb-queue"), key,
                     wait_s=args.wait_s, generation=live["generation"])
-        raise d38_gate.refusal(verdict, action)
+        raise d38_gate.refusal_exit(verdict, action)
 
     if args.transport == "slurm":
         # Everything below this point reads the pull queue -- worker offers,

@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import datetime
 import getpass
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -27,7 +26,7 @@ import sys
 import uuid
 from typing import Callable, Mapping, Sequence
 
-from prismabuild import action_result, container_images, core as pb
+from prismabuild import action_result, container_images, core as pb, digest_primitives
 
 RECEIPT_SCHEMA = "fleet.d38.preflight.v1"
 AUDIT_SCHEMA = "fleet.d38.audit.v1"
@@ -75,7 +74,7 @@ class Refusal(Exception):
     """Evidence is missing, unreadable or does not bind this job."""
 
 
-def now() -> datetime.datetime:
+def utc_now() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc)
 
 
@@ -97,7 +96,7 @@ def requires_receipt(demand: Mapping[str, object], required_tags: Sequence[str],
 
 # ----------------------------------------------------------------- parsing
 
-def _strict_json(raw: bytes) -> object:
+def _json_without_duplicates(raw: bytes) -> object:
     """JSON with no duplicate keys, NaN or Infinity."""
 
     def pairs(items):
@@ -137,7 +136,7 @@ def load_namespace(path: str | Path) -> tuple[dict, str]:
     if len(raw) > MAX_NAMESPACE_BYTES:
         raise SystemExit("pbrun: --d38-namespace is larger than 64 KiB")
     try:
-        descriptor = _strict_json(raw)
+        descriptor = _json_without_duplicates(raw)
     except (ValueError, UnicodeDecodeError) as exc:
         raise SystemExit(f"pbrun: --d38-namespace is not valid JSON: {exc}") \
             from None
@@ -155,7 +154,7 @@ def _parse_receipt(raw: bytes) -> dict:
     if len(raw) > MAX_RECEIPT_BYTES:
         raise Refusal("the receipt is larger than 64 KiB")
     try:
-        body = _strict_json(raw)
+        body = _json_without_duplicates(raw)
     except (ValueError, UnicodeDecodeError) as exc:
         raise Refusal(f"the receipt is not valid JSON: {exc}") from None
     if not isinstance(body, dict):
@@ -250,12 +249,12 @@ def load_plan(cas, preflight: Mapping[str, object]) -> dict:
         raw = Path(cas.input_path(entry)).read_bytes()
     except Exception as exc:                                    # noqa: BLE001
         raise Refusal(f"the plan input cannot be read: {exc}") from None
-    if hashlib.sha256(raw).hexdigest() != declared["plan_sha256"]:
+    if digest_primitives.raw_sha256(raw) != declared["plan_sha256"]:
         raise Refusal("the plan input bytes do not match their digest")
     if len(raw) > MAX_RECEIPT_BYTES:
         raise Refusal("the plan is larger than 64 KiB")
     try:
-        plan = _strict_json(raw)
+        plan = _json_without_duplicates(raw)
     except (ValueError, UnicodeDecodeError) as exc:
         raise Refusal(f"the plan is not valid JSON: {exc}") from None
     if not isinstance(plan, dict) or plan.get("schema") != PLAN_SCHEMA:
@@ -263,7 +262,7 @@ def load_plan(cas, preflight: Mapping[str, object]) -> dict:
     return plan
 
 
-def _tokens(value: object, where: str) -> list[str]:
+def _plan_token_list(value: object, where: str) -> list[str]:
     if not isinstance(value, list) or not value or any(
             not isinstance(item, str) for item in value):
         raise Refusal(f"the plan {where} is not a non-empty list of strings")
@@ -322,8 +321,8 @@ def check_plan_binds(plan: Mapping[str, object], preflight: Mapping[str, object]
     entry = plan.get("entry")
     if not isinstance(entry, Mapping):
         raise Refusal("the plan names no entry point")
-    planned_target = _tokens(plan.get("target_command"), "target_command")
-    cpu = _tokens(plan.get("cpu_command"), "cpu_command")
+    planned_target = _plan_token_list(plan.get("target_command"), "target_command")
+    cpu = _plan_token_list(plan.get("cpu_command"), "cpu_command")
     if planned_target != list(target_command):
         raise Refusal("the plan's target command is not this job's command")
     if cpu != list(preflight["params"]["command"]):  # type: ignore[index]
@@ -449,7 +448,7 @@ def verify_exception(decision_id: str, *, job: str, images: Sequence[str],
     except OSError as exc:
         raise Refusal(f"the decision cannot be read: {exc}") from None
     try:
-        decision = _strict_json(raw)
+        decision = _json_without_duplicates(raw)
     except (ValueError, UnicodeDecodeError) as exc:
         raise Refusal(f"the decision is not valid JSON: {exc}") from None
     if not isinstance(decision, dict):
@@ -471,7 +470,7 @@ def verify_exception(decision_id: str, *, job: str, images: Sequence[str],
     if not at < _aware(scoped.get("expires"), "grant expires"):
         raise Refusal("the grant has expired")
     return {"authorization": "exception", "decision_id": decision_id,
-            "decision_sha256": hashlib.sha256(raw).hexdigest()}
+            "decision_sha256": digest_primitives.raw_sha256(raw)}
 
 
 # -------------------------------------------------------------------- audit
@@ -481,8 +480,8 @@ def write_audit(queue_root: str | Path, event: Mapping[str, object]) -> Path:
 
     directory = Path(queue_root) / AUDIT_DIR_NAME / str(event["job_identity_hash"])
     directory.mkdir(parents=True, exist_ok=True)
-    path = directory / f"{int(now().timestamp() * 1e6):016d}-{uuid.uuid4().hex}.json"
-    payload = (json.dumps(event, sort_keys=True, indent=1) + "\n").encode()
+    path = directory / f"{int(utc_now().timestamp() * 1e6):016d}-{uuid.uuid4().hex}.json"
+    payload = (digest_primitives.sorted_json(dict(event)) + "\n").encode()
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o444)
     try:
         os.write(descriptor, payload)
@@ -494,7 +493,7 @@ def write_audit(queue_root: str | Path, event: Mapping[str, object]) -> Path:
 
 # --------------------------------------------------------------------- gate
 
-def _refuse(reason: str, *, job: str, images: Sequence[str],
+def _exit_refused(reason: str, *, job: str, images: Sequence[str],
             namespace: str | None) -> "SystemExit":
     print(f"pbrun: D38 refuses GPU publication: {reason}.\n"
           f"job={job} images={json.dumps(list(images))} "
@@ -532,7 +531,7 @@ def authorize(args, action: Mapping[str, object], *, cas,
     raise Refusal("no preflight receipt was supplied")
 
 
-def decide(args, action: Mapping[str, object], *, cas, queue_root: str | Path,
+def judge_publication(args, action: Mapping[str, object], *, cas, queue_root: str | Path,
            transport: str) -> tuple[str, str | None] | None:
     """Authorize a new GPU publication; return ``(reason, namespace)`` if refused.
 
@@ -555,7 +554,7 @@ def decide(args, action: Mapping[str, object], *, cas, queue_root: str | Path,
     job = str(action["action_key"])
     images = target_images(action)
     namespace = params.get(NAMESPACE_PARAM)  # type: ignore[union-attr]
-    at = now()
+    at = utc_now()
     try:
         evidence = authorize(args, action, cas=cas, at=at)
         event = {
@@ -576,12 +575,12 @@ def decide(args, action: Mapping[str, object], *, cas, queue_root: str | Path,
     return None
 
 
-def refusal(verdict: tuple[str, str | None], action: Mapping[str, object]
+def refusal_exit(verdict: tuple[str, str | None], action: Mapping[str, object]
             ) -> SystemExit:
     """The exit-2 refusal for a verdict :func:`decide` returned."""
 
     reason, namespace = verdict
-    return _refuse(reason, job=str(action["action_key"]),
+    return _exit_refused(reason, job=str(action["action_key"]),
                    images=target_images(action), namespace=namespace)
 
 
@@ -589,10 +588,10 @@ def require(args, action: Mapping[str, object], *, cas, queue_root: str | Path,
             transport: str) -> None:
     """Refuse (exit 2) a new GPU publication without evidence; else audit it."""
 
-    verdict = decide(args, action, cas=cas, queue_root=queue_root,
+    verdict = judge_publication(args, action, cas=cas, queue_root=queue_root,
                      transport=transport)
     if verdict is not None:
-        raise refusal(verdict, action)
+        raise refusal_exit(verdict, action)
 
 
 def refuse_deferred(args, params: Mapping[str, object]) -> None:
@@ -616,7 +615,7 @@ def refuse_deferred(args, params: Mapping[str, object]) -> None:
     images = list(container_images.normalize_refs(
         params.get("container_images") or []))
     namespace = params.get(NAMESPACE_PARAM)
-    raise _refuse(
+    raise _exit_refused(
         "a deferred --after submission has no job identity until its producer "
         "ends, so no receipt or grant can bind it; submit it after the "
         "producer succeeds", job="none (deferred)", images=images,
