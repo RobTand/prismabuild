@@ -27,7 +27,7 @@ import sys
 import uuid
 from typing import Callable, Mapping, Sequence
 
-from prismabuild import container_images, core as pb
+from prismabuild import action_result, container_images, core as pb
 
 RECEIPT_SCHEMA = "fleet.d38.preflight.v1"
 AUDIT_SCHEMA = "fleet.d38.audit.v1"
@@ -35,6 +35,14 @@ PRODUCER_PARAM = "d38_preflight"
 PRODUCER_ID = "fleet.d38.producer.v1"
 NAMESPACE_PARAM = "d38_namespace"
 PLAN_SCHEMA = "fleet.d38.plan.v1"
+#: Reviewed invocation descriptors, keyed ``<kind>:<interpreter>:<target>`` for a
+#: ``script`` or ``module`` entry point.  Each lists the exact CPU changes a
+#: preflight of that entry point may make to the target's arguments:
+#: ``{"cpu_changes": [{"flag": "--device", "from": "cuda", "to": "cpu"}]}``.
+#: A harness owner adds an entry here through review.  None ships, so until one
+#: does no receipt can authorize a job and the scoped exception is the only
+#: path -- which is what D38 says of a launcher it cannot identify.
+INVOCATIONS: dict[str, dict] = {}
 #: The input id a preflight action files its plan under.  The plan is the CAS
 #: object that binds the receipt to a target and to the CPU invocation that
 #: stands in for it (D38).
@@ -262,15 +270,44 @@ def _tokens(value: object, where: str) -> list[str]:
     return value
 
 
+def _split_invocation(command: Sequence[str], entry: Mapping[str, object]
+                      ) -> list[str]:
+    """The arguments after the entry point, or Refusal if it is not the entry.
+
+    The entry point is a script (``[interpreter, script, *args]``) or a module
+    (``[interpreter, "-m", module, *args]``).  Nothing here parses a shell: a
+    target that starts with ``-`` is an option, so ``bash -lc "..."`` and every
+    other launcher whose program sits in a later slot cannot be identified, and
+    needs a reviewed descriptor or a CEO exception.
+    """
+
+    kind, interpreter, target = (entry.get("kind"), entry.get("interpreter"),
+                                 entry.get("target"))
+    if kind not in ("script", "module") or not all(
+            isinstance(item, str) and item for item in (interpreter, target)):
+        raise Refusal("the plan's entry point is not a script or module "
+                      "invocation")
+    if target.startswith("-"):  # type: ignore[union-attr]
+        raise Refusal("the entry point is an option, not a program: an opaque "
+                      "launcher or shell needs a reviewed invocation "
+                      "descriptor, or a CEO exception")
+    head = ([interpreter, target] if kind == "script"
+            else [interpreter, "-m", target])
+    if list(command[:len(head)]) != head:
+        raise Refusal("a command does not run the entry point the plan names")
+    return list(command[len(head):])
+
+
 def check_plan_binds(plan: Mapping[str, object], preflight: Mapping[str, object], *,
                      job: str, images: Sequence[str], namespace: str,
                      target_command: Sequence[str]) -> None:
     """The plan names this target, and the CPU run is this target's run.
 
-    Only argument values may differ (CPU mode, a bounded slice, an output
-    destination), and only at slots the plan declares.  The interpreter and the
-    entry point, slots 0 and 1, never change; no shell semantics are inferred
-    and no token is removed to make identities match.
+    The entry point is identified by the plan (a script or module) and must be
+    the one both commands run.  A reviewed descriptor (:data:`INVOCATIONS`) lists
+    the CPU changes that entry point allows, and the CPU arguments must equal the
+    target's arguments with exactly the plan's listed changes applied: a changed
+    program, module, input or check argument is a difference no descriptor lists.
     """
 
     target = plan.get("target")
@@ -282,28 +319,45 @@ def check_plan_binds(plan: Mapping[str, object], preflight: Mapping[str, object]
         raise Refusal("the plan binds different container images")
     if target.get("namespace") != namespace:
         raise Refusal("the plan binds a different namespace")
+    entry = plan.get("entry")
+    if not isinstance(entry, Mapping):
+        raise Refusal("the plan names no entry point")
     planned_target = _tokens(plan.get("target_command"), "target_command")
     cpu = _tokens(plan.get("cpu_command"), "cpu_command")
     if planned_target != list(target_command):
         raise Refusal("the plan's target command is not this job's command")
     if cpu != list(preflight["params"]["command"]):  # type: ignore[index]
         raise Refusal("the plan's CPU command is not the preflight action's command")
-    differences = plan.get("differences")
-    if (not isinstance(differences, list) or any(
-            type(i) is not int for i in differences)
-            or len(set(differences)) != len(differences)):
-        raise Refusal("the plan's differences are not unique slot numbers")
-    if len(cpu) != len(planned_target):
-        raise Refusal("the CPU command and the target command differ in length")
-    for slot, (target_token, cpu_token) in enumerate(zip(planned_target, cpu)):
-        declared = slot in differences
-        if declared and slot < 2:
-            raise Refusal("the plan changes the interpreter or the entry point")
-        if not declared and target_token != cpu_token:
-            raise Refusal(f"the CPU command differs from the target at slot "
-                          f"{slot}, which the plan does not declare")
-    if any(slot < 0 or slot >= len(cpu) for slot in differences):
-        raise Refusal("the plan declares a difference outside the command")
+    target_args = _split_invocation(planned_target, entry)
+    cpu_args = _split_invocation(cpu, entry)
+    key = f"{entry['kind']}:{entry['interpreter']}:{entry['target']}"
+    descriptor = INVOCATIONS.get(key)
+    allowed = descriptor.get("cpu_changes") if isinstance(descriptor, Mapping) else None
+    if not isinstance(allowed, list):
+        raise Refusal(f"no reviewed invocation descriptor exists for the entry "
+                      f"point {key}; a CEO exception is the only path until one "
+                      "is added")
+    changes = plan.get("changes")
+    if not isinstance(changes, list):
+        raise Refusal("the plan's changes are not a list")
+    expected = list(target_args)
+    for change in changes:
+        if (not isinstance(change, Mapping)
+                or set(change) != {"flag", "from", "to"}
+                or any(not isinstance(change[name], str)
+                       for name in ("flag", "from", "to"))
+                or dict(change) not in allowed):
+            raise Refusal("the plan lists a CPU change the reviewed descriptor "
+                          "does not allow")
+        at = [i for i in range(len(expected) - 1)
+              if expected[i] == change["flag"] and expected[i + 1] == change["from"]]
+        if len(at) != 1:
+            raise Refusal("a listed CPU change does not occur exactly once in "
+                          "the target's arguments")
+        expected[at[0] + 1] = change["to"]
+    if expected != cpu_args:
+        raise Refusal("the CPU command differs from the target command by more "
+                      "than the plan's reviewed CPU changes")
 
 
 def check_cpu_visibility(preflight: Mapping[str, object], host_class: str) -> None:
@@ -340,6 +394,13 @@ def verify_receipt(cas, key: str, *, job: str, images: Sequence[str],
     """Prove that one preflight receipt binds this job, or raise Refusal."""
 
     preflight, receipt = _verified_receipt(cas, key)
+    try:
+        # What the worker executes is task.argv, not the descriptive
+        # params.command: prove the first is the recipe of the second.
+        action_result.bind_standard_capture_command(preflight)
+    except action_result.ActionResultError as exc:
+        raise Refusal(f"the preflight task does not execute its declared "
+                      f"command: {exc}") from None
     plan = load_plan(cas, preflight)
     check_plan_binds(plan, preflight, job=job, images=images,
                      namespace=namespace, target_command=target_command)

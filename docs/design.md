@@ -16743,18 +16743,30 @@ result (strict JSON, 64 KiB, no duplicate keys or NaN) must bind this job identi
 images and namespace, say `pass`, not be future-dated and not have expired.  The preflight
 action must also carry its target plan as a verified CAS input (`d38-plan`, schema
 `fleet.d38.plan.v1`) whose digest is the one the action declares.  The plan names the target
-(identity, images, namespace) and states the target command, which must be this job's command,
-and the CPU command, which must be the preflight action's command.  The interpreter and the
-entry point (slots 0 and 1) must be identical, and only argument slots the plan declares may
-differ; no shell semantics are inferred.  A receipt with no plan, an unrelated entry point or a
-plan for another job is refused.  Device hiding is read from what the preflight action sealed:
+(identity, images, namespace), the entry point, the target command (which must be this job's
+command), the CPU command (which must be the preflight action's command) and a list of typed
+CPU changes.  The entry point is a `script` (`[interpreter, script, *args]`) or a `module`
+(`[interpreter, "-m", module, *args]`); nothing parses a shell, and a target that starts with `-`
+(`bash -lc "..."`, any launcher whose program sits in a later slot) is refused as opaque.  A
+reviewed invocation descriptor (`d38_gate.INVOCATIONS`, keyed `kind:interpreter:target`) lists
+the CPU changes that entry point allows, each `{flag, from, to}`; the CPU arguments must equal
+the target's arguments with exactly the plan's listed changes applied, so a changed program,
+module, input or check argument is a difference no descriptor lists.  No descriptor ships, so no
+receipt authorizes a job until a harness owner adds a reviewed one, and the scoped exception is
+the only path.  What the worker executes is `task.argv`, not the descriptive `params.command`:
+the preflight's `task.argv` must be the standard captured-log recipe of its declared command
+(`action_result.bind_standard_capture_command`), so an unrelated task cannot present a passing
+receipt.  A receipt with no plan, an unrelated entry point, a plan for another job, an unlisted
+change or an unrelated task is refused.  Device hiding is read from what the preflight action sealed:
 `CUDA_VISIBLE_DEVICES` empty, and `NVIDIA_VISIBLE_DEVICES=none` for a gb10 proof.  The worker's
 host accelerator inventory is not task visibility: a CPU-only gb10 container still has the
 Spark's GPU in its host evidence, so the check reads the sealed environment and keeps only the
 host-class (machine) check on the evidence.  `--d38-exception DECISION_ID` reads a CEO decision
 whose `grant.d38_exception` binds the exact job, images, namespace and expiry; it waives D38
 only, never together with a receipt.  Either way an immutable event is written under
-`pb-queue/d38-audit/<job hash>/` before the publication, and a failed write refuses.
+`pb-queue/d38-audit/<job hash>/` before the publication, and a failed write refuses.  The CAS
+action request is written before authorization, so the guarantee is that no new runnable work is
+published, not that nothing is written.
 
 **No exemption by liveness.**  The gate has no early return for a cache hit or a live run:
 whether a publication creates new work is decided inside the queue, and a liveness read taken
