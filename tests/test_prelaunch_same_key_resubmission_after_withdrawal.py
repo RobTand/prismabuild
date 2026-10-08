@@ -168,10 +168,9 @@ def test_a_committed_unit_that_owns_nothing_still_obliges_its_peak(
     unit = _units(queue, first)[0]
     assert "committed.json" in " ".join(_group_files(queue, first))
     ledger = queue.tier_ledger(TIER)
-    for holder in [unit.holder] + [leg["mover_key"] for leg in unit.legs]:
+    for holder in list(ledger.held_keys()):          # complete token loss
         ledger.release(holder)
-    assert not any(_held(queue).get(h) for h in
-                   [unit.holder] + [leg["mover_key"] for leg in unit.legs])
+    assert _held(queue) == {} or not any(_held(queue).values())
     totals, detail = prelaunch_tier.obligations(_units(queue, first), _held(queue),
                                                 "stage_gib")
     assert totals.get(TIER) == unit.peak_gib, json.dumps(

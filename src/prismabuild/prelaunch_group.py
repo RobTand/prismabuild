@@ -704,10 +704,21 @@ def _birth_record(queue: pool.PoolQueue, tier_id: str, mover: str, kind: str,
     return str(generation) if isinstance(generation, str) else None
 
 
+def _row_is_ready(queue: pool.PoolQueue, mover: str) -> bool:
+    """True while the mover's row waits to be claimed, never once claimed."""
+    return (queue.item_path(pool.READY, mover).exists()
+            and not queue.item_path(pool.CLAIMED, mover).exists())
+
+
 def _rotate_record(queue: pool.PoolQueue, mover: str, tier_id: str,
-                   expect_generation: str, fresh: Mapping[str, object]
-                   ) -> str | None:
-    """Replace one generation under the mover lock; None on any loss."""
+                   expect_generation: str, fresh: Mapping[str, object],
+                   *, expect_state: str | None = None) -> str | None:
+    """Replace one generation under the mover lock; None on any loss.
+
+    ``expect_state`` also requires, under the lock a claim holds from its
+    tier acquire to its consumed-marking, that the record is in that state
+    and the row is still READY: a recovery never rotates a live claim.
+    """
     with queue.mover_transition_lock(mover, blocking=False) as acquired:
         if not acquired:
             return None
@@ -717,6 +728,10 @@ def _rotate_record(queue: pool.PoolQueue, mover: str, tier_id: str,
             return None
         if (status != "record" or current is None
                 or str(current.get("generation")) != expect_generation):
+            return None
+        if expect_state is not None and (
+                str(current.get("state")) != expect_state
+                or not _row_is_ready(queue, mover)):
             return None
         try:
             queue._rotate_funding_locked(dict(fresh),
@@ -754,6 +769,7 @@ def _rebind_retained(queue: pool.PoolQueue, ledger: pool.ResourceLedger,
                      digest: str, start: int, end: int, published: float,
                      gib: int, holder: str, tokens: list[str],
                      held: set[str], rotate_from: str,
+                     expect_state: str | None = None,
                      ) -> tuple[str, set[str], set[str]] | PublishOutcome:
     """Bind a mover's retained tokens and the group's exact remainder.
 
@@ -776,7 +792,8 @@ def _rebind_retained(queue: pool.PoolQueue, ledger: pool.ResourceLedger,
     bound = prior | set(kind_names[:need])
     fresh = _fresh_binding(tier_id, mover, kind, consumer, digest,
                            start, end, published, sorted(bound))
-    generation = _rotate_record(queue, mover, tier_id, rotate_from, fresh)
+    generation = _rotate_record(queue, mover, tier_id, rotate_from, fresh,
+                                expect_state=expect_state)
     if generation is None:
         return PublishOutcome("deferred", ["prelaunch-publish-deferred"],
                               None, 0)
@@ -835,14 +852,26 @@ def publish_chunk(queue: pool.PoolQueue, tier_id: str, unit: str, holder: str,
         state = str(record.get("state"))
         if state in ("transferring", "consumed") and set(tokens) <= held:
             return PublishOutcome("already", [], generation, 0)
-        if state == "transferring" or state == "consumed":
-            return PublishOutcome("short", ["prelaunch-funding-short"],
-                                  generation, 0)
-        if state != "reserved":
-            return PublishOutcome("deferred", ["prelaunch-unknown-evidence"],
-                                  None, 0)
-        prior = set(tokens) & held
-        bound = set(tokens)
+        if state == "transferring" and _row_is_ready(queue, mover):
+            # A READY row whose bound tokens left (a recovered group): bind
+            # what it still holds and the group's exact remainder, and only
+            # while the record is still ``transferring`` under the lock (#1637).
+            rebound = _rebind_retained(
+                queue, ledger, tier_id, mover, kind, consumer, digest,
+                start, end, published, gib, holder, tokens, held,
+                generation, expect_state="transferring")
+            if isinstance(rebound, PublishOutcome):
+                return rebound
+            generation, prior, bound = rebound
+        else:
+            if state == "transferring" or state == "consumed":
+                return PublishOutcome("short", ["prelaunch-funding-short"],
+                                      generation, 0)
+            if state != "reserved":
+                return PublishOutcome("deferred",
+                                      ["prelaunch-unknown-evidence"], None, 0)
+            prior = set(tokens) & held
+            bound = set(tokens)
     elif record is not None:
         old = record.get("generation")
         rotate_from = str(old) if isinstance(old, str) else None
