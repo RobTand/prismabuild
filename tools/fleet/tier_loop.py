@@ -3681,6 +3681,58 @@ def _claim_tier_demands(item: object,
     return out
 
 
+#: Why :func:`_relief_verdict` asks a sweep for nothing (#1627).  ``relief`` is
+#: not one of them: it is the answer that does ask.  ``admits-already`` is not
+#: a stall either, so neither of the two is a waiter the sweep failed.
+RELIEF = "relief"
+ADMITS_ALREADY = "admits-already"
+GATE_REFUSED = "gate-refused"
+NO_SHORTFALL = "no-shortfall"
+SHORTFALL_EXCEEDS_EVICTABLE = "shortfall-exceeds-evictable"
+
+
+def _relief_verdict(*, held_gib: int, ready_gib: int, output_gib: int,
+                    output_enforced: bool, capacity_gib: int,
+                    cur_min_gib: int, next_min_gib: int | None,
+                    existing_min_next_gib: int, free_gib: int,
+                    evictable_gib: int,
+                    ) -> tuple[int | None, str, dict[str, object]]:
+    """``(relief, reason, facts)``: what :func:`_admission_relief` answers and why.
+
+    ``relief`` is the free a sweep must reach so ``gate_newcomer`` admits, or
+    ``None``.  ``reason`` says which of the five ways the answer came out:
+    ``relief``; ``admits-already``; ``gate-refused`` (the gate's answer is
+    permanent or unknown, so no eviction could admit it); ``no-shortfall``
+    (the gate stalls on a term the arithmetic does not count); or
+    ``shortfall-exceeds-evictable`` (#632: a demand that cannot fit even after
+    everything evictable returns asks for nothing).  ``facts`` are the
+    numbers the decision read, so a record of it needs no second arithmetic.
+    """
+
+    decision = window_credit.gate_newcomer(
+        held_gib=held_gib, ready_gib=ready_gib, output_gib=output_gib,
+        output_enforced=output_enforced, capacity_gib=capacity_gib,
+        cur_min_gib=cur_min_gib, next_min_gib=next_min_gib,
+        existing_min_next_gib=existing_min_next_gib)
+    facts: dict[str, object] = {
+        "capacity_gib": capacity_gib, "held_gib": held_gib,
+        "ready_gib": ready_gib, "output_gib": output_gib,
+        "cur_min_gib": cur_min_gib, "next_min_gib": next_min_gib,
+        "free_gib": free_gib, "evictable_gib": evictable_gib}
+    if decision.get("admit"):
+        return None, ADMITS_ALREADY, facts
+    if str(decision.get("reason")) != window_credit.REASON_STALL:
+        facts["gate_reason"] = str(decision.get("reason"))
+        return None, GATE_REFUSED, facts
+    shortfall = (held_gib + ready_gib + output_gib + cur_min_gib
+                 + (next_min_gib or 0) + existing_min_next_gib - capacity_gib)
+    facts["shortfall_gib"] = shortfall
+    if 0 < shortfall <= evictable_gib:
+        return free_gib + shortfall, RELIEF, facts
+    return None, (NO_SHORTFALL if shortfall <= 0
+                  else SHORTFALL_EXCEEDS_EVICTABLE), facts
+
+
 def _admission_relief(*, held_gib: int, ready_gib: int, output_gib: int,
                       output_enforced: bool, capacity_gib: int,
                       cur_min_gib: int, next_min_gib: int | None,
@@ -3697,22 +3749,15 @@ def _admission_relief(*, held_gib: int, ready_gib: int, output_gib: int,
     the landed ranges past their readers' refill horizons (#903).
     Otherwise the answer is stated as the free the sweeps must reach; their
     stop-at-needed order keeps the eviction to the shortfall.
+    :func:`_relief_verdict` says which of those it was.
     """
 
-    decision = window_credit.gate_newcomer(
+    return _relief_verdict(
         held_gib=held_gib, ready_gib=ready_gib, output_gib=output_gib,
         output_enforced=output_enforced, capacity_gib=capacity_gib,
         cur_min_gib=cur_min_gib, next_min_gib=next_min_gib,
-        existing_min_next_gib=existing_min_next_gib)
-    if decision.get("admit"):
-        return None
-    if str(decision.get("reason")) != window_credit.REASON_STALL:
-        return None
-    shortfall = (held_gib + ready_gib + output_gib + cur_min_gib
-                 + (next_min_gib or 0) + existing_min_next_gib - capacity_gib)
-    if 0 < shortfall <= evictable_gib:
-        return free_gib + shortfall
-    return None
+        existing_min_next_gib=existing_min_next_gib, free_gib=free_gib,
+        evictable_gib=evictable_gib)[0]
 
 
 #: The fastest consumption each claim has provably attained, in bytes per
