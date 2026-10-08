@@ -5002,10 +5002,12 @@ its fence and takes no second stage charge.
 At claim time a row whose own `reserved` fence names its publication, with
 every bound token held by some holder, defers with `window_funding_pending`
 instead of paying its full demand.  A funding record or holder directory that
-cannot be read is unknown, not absent: the claim defers with
-`window_funding_unknown` and asks again.  Only proven absence pays as before:
-no record, another state or publication, a malformed record, or bound tokens
-that are gone.
+cannot be read, or a funding record that is malformed, is unknown, not
+absent: the record exists and may still bind tokens, so the claim defers with
+`window_funding_unknown` and asks again.  The claim reads the record through
+`read_funding_evidence`, never the tolerant `read_funding`.  Only proven
+absence pays as before: no record, another state or publication, or bound
+tokens that are gone.
 Submission selects the prefix and suffix cuts by phase name, since an empty
 declared phase has no range.  A gang across tiers stays unsupported: its
 group is not reserved and the event `prelaunch-turn-unsupported` is filed.

@@ -16645,23 +16645,27 @@ class PoolQueue:
         tokens after.  A claim in that gap would pay its full demand and then
         hold the fence on top of it (#1637).  ``"pending"``: the record names
         this row's publication and every bound token is held by some holder.
-        ``"unknown"``: the funding record or a holder directory could not be
-        read, which does not prove the fence absent (see
-        :func:`held_names_visible`), so the claim defers and asks again.
-        ``None``: proven absent or stale -- no record, another state or
-        publication, a malformed record, or bound tokens that are gone -- and
-        the claim pays as before, so nothing waits on a fence that cannot
+        ``"unknown"``: the funding record is unreadable or malformed, or a
+        holder directory could not be read.  The record exists and may still
+        bind tokens, so none of these proves the fence absent (see
+        :meth:`read_funding_evidence` and :func:`held_names_visible`), and the
+        claim defers and asks again.  ``None``: proven absent or stale -- no
+        record, another state or publication, or bound tokens that are gone --
+        and the claim pays as before, so nothing waits on a fence that cannot
         arrive.
         """
         if not isinstance(sealed, Mapping):
             return None
         try:
-            record = self.read_funding(action_key, tier_id)
-        except OSError:
+            status, record, _why = self.read_funding_evidence(
+                action_key, tier_id)
+        except (OSError, PoolContractError, ValueError):
             return "unknown"
-        except (PoolContractError, ValueError):
+        if status == "unknown":
+            return "unknown"
+        if status != "record" or record is None:
             return None
-        if record is None or record.get("state") != "reserved":
+        if record.get("state") != "reserved":
             return None
         try:
             if float(record["published_unix"]) != float(sealed["published_unix"]):
