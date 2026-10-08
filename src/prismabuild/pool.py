@@ -16636,6 +16636,36 @@ class PoolQueue:
             raise ValueError(f"tier commitment record {path.name} is not one")
         return record
 
+    def _window_fence_pending(self, ledger: "ResourceLedger", tier_id: str,
+                              action_key: str,
+                              sealed: Mapping[str, object] | None) -> bool:
+        """True while this row's own ``reserved`` fence still has every token held.
+
+        A publication or a recovery files the generation first and moves the
+        tokens after.  A claim in that gap would pay its full demand and then
+        hold the fence on top of it (#1637).  Only a record that names this
+        row's publication and whose bound tokens are all held by some holder
+        is pending; a stale record or tokens that are gone pay as before, so
+        nothing waits on a fence that cannot arrive.
+        """
+        if not isinstance(sealed, Mapping):
+            return False
+        try:
+            record = self.read_funding(action_key, tier_id)
+            if record is None or record.get("state") != "reserved":
+                return False
+            if float(record["published_unix"]) != float(sealed["published_unix"]):
+                return False
+            tokens = record.get("tokens")
+            if not isinstance(tokens, list) or not tokens:
+                return False
+            held: set[str] = set()
+            for holder in ledger.held_keys():
+                held |= held_names_visible(ledger, holder)
+        except (OSError, PoolContractError, ValueError, KeyError, TypeError):
+            return False
+        return {str(name) for name in tokens} <= held
+
     def _begin_tier_acquire(
         self, action_key: str, tier_demand: Mapping[str, Mapping[str, int]],
         handles: dict[str, str], funded: dict[str, dict[str, object]],
@@ -16859,6 +16889,11 @@ class PoolQueue:
                     return {"tier_id": tier_id,
                             "reason": "output_funding_required_absent",
                             "demand": dict(needs)}
+            if not any(covered.values()) and self._window_fence_pending(
+                    ledger, tier_id, action_key, sealed):
+                return {"tier_id": tier_id,
+                        "reason": "window_funding_pending",
+                        "demand": dict(needs)}
             handle = ledger.begin_acquire(action_key, remainder)
             if handle is None:
                 shortage = {"tier_id": tier_id, "reason": "tier_reservation_unavailable",

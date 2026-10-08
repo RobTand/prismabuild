@@ -206,12 +206,15 @@ def _publish_ranked(queue, plan, consumer: str) -> None:
 
 def test_a_rival_waits_while_a_committed_group_recovers_its_tokens(
         tmp_path: Path) -> None:
-    """Review of f1c9694e, point 1: complete loss, a suffix, an outranking rival.
+    """Complete loss, a suffix and an outranking rival: an end-to-end recovery check.
 
     The rival is ranked first in the reserve pass, so it meets the gate before
-    the lost unit's top-up runs.  If the lost unit obliges nothing, the gate
-    admits it, the top-up then takes its prefix from the rest, and the joint
-    peaks exceed the tier.
+    the lost unit's top-up runs.  This test passes without the obligation
+    change too: the existing ``joint-fit-stall`` gate holds the rival at every
+    size tried, because the lost unit's unfunded READY rows count as queued new
+    money.  The obligation boundary is proven by
+    ``test_a_committed_unit_that_owns_nothing_still_obliges_its_peak``; this
+    test shows the whole recovery completing beside a rival.
     """
     queue, tiers, first, _second, _pf, _ps = _two_consumer_queue(tmp_path)
     _cycles(queue, tiers, 10)
@@ -224,9 +227,8 @@ def test_a_rival_waits_while_a_committed_group_recovers_its_tokens(
     specs = [("p0", 40, True, 1), ("p1", 10, False, 1), ("p2", 10, False, 1)]
     _publish_ranked(queue, _declared_plan(queue, rival_key, specs, tag="rival"),
                     rival_key)
-    # Small enough to clear the gate beside the lost unit's unfunded 90 GiB
-    # row (new money) alone, so only the lost unit's own obligation can hold
-    # it back; the two peaks together are more than the tier.
+    # Sized to fit beside the lost unit's 90 GiB of unfunded rows, and to
+    # exceed the tier beside its full peak.  The joint-fit gate still holds it.
     assert _units(queue, rival_key)[0].peak_gib + 90 <= 210
     assert _units(queue, rival_key)[0].peak_gib + unit.peak_gib > 210
     seen = _cycles(queue, tiers, 20)

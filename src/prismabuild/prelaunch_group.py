@@ -803,7 +803,27 @@ def _rebind_retained(queue: pool.PoolQueue, ledger: pool.ResourceLedger,
 def publish_chunk(queue: pool.PoolQueue, tier_id: str, unit: str, holder: str,
                   plan: Mapping[str, object], leg: Mapping[str, object],
                   mover_row_published_unix: float) -> PublishOutcome:
-    """Hand one leg's tokens to its mover and bind them as its fence."""
+    """Hand one leg's tokens to its mover and bind them as its fence.
+
+    The mover lock is held from the holdings read to the ``transferring``
+    update.  A claim takes the same lock from its tier acquire to its
+    consumed-marking, so it can neither pay a second charge in the gap between
+    the rotation and the transfer nor spend a fence that is half moved (#1637).
+    A busy lock defers to the next pass.
+    """
+    mover = _leg_mover(leg)
+    with queue.mover_transition_lock(mover, blocking=False) as acquired:
+        if not acquired:
+            return PublishOutcome("deferred", ["prelaunch-publish-deferred"],
+                                  None, 0)
+        return _publish_chunk(queue, tier_id, unit, holder, plan, leg,
+                              mover_row_published_unix)
+
+
+def _publish_chunk(queue: pool.PoolQueue, tier_id: str, unit: str, holder: str,
+                   plan: Mapping[str, object], leg: Mapping[str, object],
+                   mover_row_published_unix: float) -> PublishOutcome:
+    """The publication itself, under the mover lock its caller holds."""
     from . import residency_plan as plans
     mover = _leg_mover(leg)
     start, end, gib = _leg_size(leg)
