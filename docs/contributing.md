@@ -87,6 +87,15 @@ loss (#1506).
 
 Unrelated subprocesses retain native Popen behavior when env=None.
 
+The live-store test guard checks `os.open(name, dir_fd=fd)` against the
+descriptor path from local `/proc/self/fd` (#1610). Its wrapper retains the
+descriptor because CPython omits it from the `open` audit event.
+Calls without a descriptor use the cwd. Absolute names ignore the descriptor.
+The guarded roots and the `live_store` marker remain unchanged.
+
+Restore scratch guard roots before pytest removes the scratch tree.
+Restore the cwd before each regression ends.
+
 Install the local direct-push guard with:
 
 ```bash
