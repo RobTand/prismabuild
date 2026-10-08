@@ -385,13 +385,29 @@ def test_unreadable_ledger_retains_without_crashing(fleet, monkeypatch):
     consumer, mover = _dead_owner(fleet)
     held = queue.tier_ledger(TIER).held_dir
     original = os.listdir
+    original_scandir = os.scandir
+
+    def inaccessible(path) -> bool:
+        # An integer is a directory descriptor (``shutil.rmtree``, pytest's
+        # tmp_path cleanup): it names no path to compare (#1506, as #1588).
+        return isinstance(path, (str, os.PathLike)) and Path(path) == held
 
     def listed(path):
-        if Path(path) == held:
+        if inaccessible(path):
             raise PermissionError('fixture ledger inaccessible')
         return original(path)
 
+    def scanned(path='.'):
+        # ``Path.iterdir`` lists through ``os.scandir`` on Python 3.13 and
+        # later; before that it used ``os.listdir``.  The ledger reads by
+        # ``iterdir``, so the fault must be injected on both calls or it
+        # injects nothing and the sweep correctly reads a healthy ledger.
+        if inaccessible(path):
+            raise PermissionError('fixture ledger inaccessible')
+        return original_scandir(path)
+
     monkeypatch.setattr(os, 'listdir', listed)
+    monkeypatch.setattr(os, 'scandir', scanned)
     stage_release.sweep(queue, stage_roots={TIER: str(stage)}, pressure={TIER: 0})
     _assert_retained(queue, stage, consumer, mover)
 
