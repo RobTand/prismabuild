@@ -162,7 +162,19 @@ infrastructure does not certify a complete measurement census: `ready_items`
 still supplies an advisory, potentially skipping snapshot. Reservation-aware
 current-census admission (#1419) is implemented in the private
 `_measurement_reservation` domain boundary for capacity-backed claims and
-integrated with explicit fixture compatibility. The combined source qualification
+integrated with explicit fixture compatibility. The census skips, as a candidate, a READY record
+whose publication priority the queue itself cannot order (`PoolQueue._unorderable_queue_field`
+names `priority`; a record whose priority the queue can order and whose `passes` sidecar is
+unreadable is not skipped, because the queue reads `passes` as 0 and can still list and claim it.
+A record whose `published_unix` is unreadable is unorderable too, but it fails the strict
+publication identity check before the skip is reached, so it still refuses: a follow-up, not part
+of this change):
+it holds no tokens, runs nothing, is never claimed, and the queue already files it by name
+instead of raising (#1506). The skipped record still counts as a live gang member, so an
+elected gang keeps its host fences. A priority the queue can order (`5.5`, `True`, `"5"`)
+stays a refusal, because such a record can be claimed and reach the CLAIMED census. A CLAIMED
+record the census cannot read, any identity mismatch, and a missing census record still
+refuse. The combined source qualification
 at `e5abdd29291064f1efc228c3054ffed9b8a682b3` is independently verified and
 accepted by Astra (2026-10-02); its evidence is recorded below. **Deployment and
 end-to-end acceptance remain HOLD.** The owner's enforce-admission decision
