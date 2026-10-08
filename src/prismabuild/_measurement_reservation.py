@@ -120,6 +120,7 @@ def _scan_publications(queue: PoolQueue) -> dict:
     """
     from . import pool
     rows: dict[str, list[dict]] = {}
+    unorderable: dict[str, list[dict]] = {}   # live members, never candidates
     selected: dict[str, dict] = {}
     opportunities: dict[str, dict] = {}
     count = 0
@@ -157,14 +158,20 @@ def _scan_publications(queue: PoolQueue) -> dict:
                 else:
                     queue.attempt_generation(record)  # strict publication identity
                     if type(record.get("priority", 0)) is not int:
-                        if state == pool.READY:
-                            # A READY record holds no tokens and runs nothing,
-                            # so its priority cannot make the census wrong, and
-                            # the queue already files such a record by name
-                            # instead of raising (``ready_items``).  Refusing
-                            # it denied every good claim on the host (#1506).
-                            # A CLAIMED one is a running incumbent, and one
-                            # the census cannot read is unknown: that refuses.
+                        if (state == pool.READY and pool.PoolQueue._unorderable_queue_field(
+                                record) is not None):
+                            # A READY record the queue itself cannot order
+                            # holds no tokens and runs nothing, and the queue
+                            # files it by name instead of raising
+                            # (``ready_items``).  Refusing it denied every
+                            # good claim on the host (#1506).  It is never
+                            # claimed, so it cannot reach the CLAIMED census.
+                            # It is still a live gang member: only candidate
+                            # classification skips it.  A priority the queue
+                            # CAN order (5.5, True, "5") stays strict, and so
+                            # does a CLAIMED one: a running incumbent the
+                            # census cannot read is unknown.
+                            unorderable.setdefault(key, []).append(record)
                             continue
                         raise CensusUnavailable("unreadable publication priority")
                     rows.setdefault(key, []).append(record)
@@ -219,7 +226,9 @@ def _scan_publications(queue: PoolQueue) -> dict:
         elections[key] = chosen  # missing authority stays fenced, indefinitely
     return {"measurements": measurements, "elections": elections, "selections": selected,
             "opportunities": opportunities, "keys": sorted(set(measurements) | set(selected)),
-            "gang_elections": _gang_elections(queue, rows, count)}
+            "gang_elections": _gang_elections(
+                queue, {key: rows.get(key, []) + unorderable.get(key, [])
+                        for key in rows.keys() | unorderable.keys()}, count)}
 
 
 def _gang_elections(queue: PoolQueue, rows: dict[str, list[dict]], count: int) -> dict:
