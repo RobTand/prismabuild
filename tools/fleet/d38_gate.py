@@ -39,6 +39,12 @@ AUDIT_DIR_NAME = "d38-audit"
 #: the file must grant this exact job.
 DECISION_DIR = Path("/home/rob/fleet/ceo/inbox/done")
 GPU_TAGS = frozenset({"gb10", "sparky", "sparklina"})
+#: The gate is on.  This is the one switch, and it is a module attribute on
+#: purpose: no flag, environment variable or caller input can reach it, because
+#: D38 allows no caller-controlled exemption.  Only the existing test suite
+#: turns it off (``tests/conftest.py``), because those tests submit as a Spark
+#: from a box-local checkout, which the spec's own rule counts as GPU intent.
+ENFORCE = True
 MAX_RECEIPT_BYTES = 64 * 1024
 MAX_NAMESPACE_BYTES = 64 * 1024
 
@@ -365,6 +371,8 @@ def require(args, action: Mapping[str, object], *, cas, queue_root: str | Path,
     receipt and never creates a second GPU run.
     """
 
+    if not ENFORCE:
+        return
     params = action["params"]
     demand = params.get("demand") or {}  # type: ignore[union-attr]
     tags = (params.get("placement") or {}).get("required_tags") or []  # type: ignore[union-attr]

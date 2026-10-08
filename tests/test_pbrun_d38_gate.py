@@ -64,6 +64,7 @@ def _isolated(monkeypatch, tmp_path):
                  "PRISMABUILD_READER_HELPER_ROOT"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(d38_gate, "now", lambda: NOW)
+    monkeypatch.setattr(d38_gate, "ENFORCE", True)
     # The published runtime is not box-local; a test checkout is.  Without this
     # every placement would be pinned to the Spark it was submitted from.
     monkeypatch.setattr(pool, "is_box_local_path", lambda _path: False)
@@ -676,3 +677,21 @@ def test_an_attached_submission_keeps_the_gate(
                 "--d38-namespace", str(ns)) == 2
     assert "D38 refuses GPU publication" in capsys.readouterr().err
     assert _ready(tmp_path) == []
+
+
+def test_the_shipped_gate_is_on_and_no_caller_input_can_turn_it_off() -> None:
+    """Read the value a fresh interpreter ships with, not the fixture's."""
+
+    import subprocess
+
+    shipped = subprocess.run(
+        [sys.executable, "-c",
+         "import sys; sys.path[:0] = ['src', 'tools/fleet'];"
+         "import d38_gate; print(d38_gate.ENFORCE)"],
+        cwd=REPOSITORY, capture_output=True, text=True)
+    assert shipped.stdout.strip() == "True", shipped.stderr
+    source = (REPOSITORY / "tools" / "fleet" / "d38_gate.py").read_text(
+        encoding="utf-8")
+    assert "os.environ" not in source and "getenv" not in source
+    parsed = pbrun.parse_args(["--cwd", ".", "--", "/bin/true"])
+    assert not any("enforce" in name.lower() for name in vars(parsed))

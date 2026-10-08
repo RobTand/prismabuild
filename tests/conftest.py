@@ -245,6 +245,22 @@ def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo):
 
 
 @pytest.fixture(autouse=True)
+def _d38_gate_is_off_for_the_existing_suite(monkeypatch, request):
+    """The D38 gate is exercised by its own file; everything else submits freely.
+
+    Existing tests submit as ``sparky`` from a box-local checkout, so the
+    derived host pin is GPU intent under D38 and the gate would refuse them for
+    a reason they do not test.  ``tests/test_pbrun_d38_gate.py`` turns the gate
+    back on, and its default-on test reads the shipped value.
+    """
+
+    import d38_gate
+
+    if request.node.fspath.basename != "test_pbrun_d38_gate.py":
+        monkeypatch.setattr(d38_gate, "ENFORCE", False)
+
+
+@pytest.fixture(autouse=True)
 def _live_store_refusals(request: pytest.FixtureRequest):
     """Fail a test whose refused call was swallowed by its own ``except``.
 
