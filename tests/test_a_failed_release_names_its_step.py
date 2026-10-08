@@ -153,7 +153,9 @@ def _inject(monkeypatch, world, path: Path, step: str, code: int, *,
         real_scandir = os.scandir
 
         def scandir(target="."):
-            if Path(target) == root and due():
+            # An integer is a directory descriptor (``shutil.rmtree``, pytest's
+            # tmp_path cleanup): it names no path to compare (#1506, as #1588).
+            if isinstance(target, (str, os.PathLike)) and Path(target) == root and due():
                 raise fault
             return real_scandir(target)
 

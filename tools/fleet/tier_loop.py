@@ -3681,6 +3681,60 @@ def _claim_tier_demands(item: object,
     return out
 
 
+#: Why :func:`_relief_verdict` asks a sweep for nothing (#1627).  ``relief`` is
+#: not one of them: it is the answer that does ask.  ``admits-already`` is not
+#: a stall either, so neither of the two is a waiter the sweep failed.
+RELIEF = "relief"
+ADMITS_ALREADY = "admits-already"
+GATE_REFUSED = "gate-refused"
+NO_SHORTFALL = "no-shortfall"
+SHORTFALL_EXCEEDS_EVICTABLE = "shortfall-exceeds-evictable"
+
+
+def _relief_verdict(*, held_gib: int, ready_gib: int, output_gib: int,
+                    output_enforced: bool, capacity_gib: int,
+                    cur_min_gib: int, next_min_gib: int | None,
+                    existing_min_next_gib: int, free_gib: int,
+                    evictable_gib: int,
+                    ) -> tuple[int | None, str, dict[str, object]]:
+    """``(relief, reason, facts)``: what :func:`_admission_relief` answers and why.
+
+    ``relief`` is the free a sweep must reach so ``gate_newcomer`` admits, or
+    ``None``.  ``reason`` says which of the five ways the answer came out:
+    ``relief``; ``admits-already``; ``gate-refused`` (the gate's answer is
+    permanent or unknown, so no eviction could admit it); ``no-shortfall``
+    (the gate stalls on a term the arithmetic does not count); or
+    ``shortfall-exceeds-evictable`` (#632: a demand that cannot fit even after
+    everything evictable returns asks for nothing).  ``facts`` are the
+    numbers the decision read, so a record of it needs no second arithmetic.
+    """
+
+    decision = window_credit.gate_newcomer(
+        held_gib=held_gib, ready_gib=ready_gib, output_gib=output_gib,
+        output_enforced=output_enforced, capacity_gib=capacity_gib,
+        cur_min_gib=cur_min_gib, next_min_gib=next_min_gib,
+        existing_min_next_gib=existing_min_next_gib)
+    facts: dict[str, object] = {
+        "capacity_gib": capacity_gib, "held_gib": held_gib,
+        "ready_gib": ready_gib, "output_gib": output_gib,
+        "cur_min_gib": cur_min_gib, "next_min_gib": next_min_gib,
+        "existing_min_next_gib": existing_min_next_gib,
+        "output_enforced": output_enforced,
+        "free_gib": free_gib, "evictable_gib": evictable_gib}
+    if decision.get("admit"):
+        return None, ADMITS_ALREADY, facts
+    if str(decision.get("reason")) != window_credit.REASON_STALL:
+        facts["gate_reason"] = str(decision.get("reason"))
+        return None, GATE_REFUSED, facts
+    shortfall = (held_gib + ready_gib + output_gib + cur_min_gib
+                 + (next_min_gib or 0) + existing_min_next_gib - capacity_gib)
+    facts["shortfall_gib"] = shortfall
+    if 0 < shortfall <= evictable_gib:
+        return free_gib + shortfall, RELIEF, facts
+    return None, (NO_SHORTFALL if shortfall <= 0
+                  else SHORTFALL_EXCEEDS_EVICTABLE), facts
+
+
 def _admission_relief(*, held_gib: int, ready_gib: int, output_gib: int,
                       output_enforced: bool, capacity_gib: int,
                       cur_min_gib: int, next_min_gib: int | None,
@@ -3697,22 +3751,15 @@ def _admission_relief(*, held_gib: int, ready_gib: int, output_gib: int,
     the landed ranges past their readers' refill horizons (#903).
     Otherwise the answer is stated as the free the sweeps must reach; their
     stop-at-needed order keeps the eviction to the shortfall.
+    :func:`_relief_verdict` says which of those it was.
     """
 
-    decision = window_credit.gate_newcomer(
+    return _relief_verdict(
         held_gib=held_gib, ready_gib=ready_gib, output_gib=output_gib,
         output_enforced=output_enforced, capacity_gib=capacity_gib,
         cur_min_gib=cur_min_gib, next_min_gib=next_min_gib,
-        existing_min_next_gib=existing_min_next_gib)
-    if decision.get("admit"):
-        return None
-    if str(decision.get("reason")) != window_credit.REASON_STALL:
-        return None
-    shortfall = (held_gib + ready_gib + output_gib + cur_min_gib
-                 + (next_min_gib or 0) + existing_min_next_gib - capacity_gib)
-    if 0 < shortfall <= evictable_gib:
-        return free_gib + shortfall
-    return None
+        existing_min_next_gib=existing_min_next_gib, free_gib=free_gib,
+        evictable_gib=evictable_gib)[0]
 
 
 #: The fastest consumption each claim has provably attained, in bytes per
@@ -5408,6 +5455,121 @@ def _claim_order_candidates(queue: pool.PoolQueue, *, tier_id: str,
     return rows
 
 
+def _waiter_keys(rows: Iterable[Mapping[str, object]]) -> list[str]:
+    """The consumers a tier's waiting newcomers belong to, sorted and distinct."""
+
+    return sorted({str(row["consumer"]) for row in rows if row.get("consumer")})
+
+
+#: The reasons :func:`window_pressure` reports for a waiter whose own relief
+#: verdict asked a sweep for nothing and was not already admitted (#1627).
+_STALLED_VERDICTS = frozenset(
+    {GATE_REFUSED, NO_SHORTFALL, SHORTFALL_EXCEEDS_EVICTABLE})
+
+
+def _note_skip(skipped: list[dict[str, object]] | None, *, scope: str,
+               tier_id: str, reason: str, consumer: str | None = None,
+               **facts: object) -> None:
+    """Record why a waiter or a tier asked :func:`window_pressure` for nothing.
+
+    ``skipped`` is the caller's list, or ``None`` when nobody is asking, which
+    records nothing.  One row per ``(scope, consumer, tier, reason)``: a
+    declared consumer is walked as a unit and again as a consumer, and that
+    is one waiter.  Two demands of one consumer that stall on different
+    numbers are two rows.  Every row carries ``consumer`` (``None`` for a tier), so a
+    reader indexes it without branching.
+    """
+
+    if skipped is None:
+        return
+    identity = (scope, consumer, tier_id, reason, facts.get("cur_min_gib"))
+    for row in skipped:
+        if (row["scope"], row["consumer"], row["tier_id"], row["reason"],
+                row.get("cur_min_gib")) == identity:
+            return
+    skipped.append({"scope": scope, "consumer": consumer, "tier_id": tier_id,
+                    "reason": reason, **facts})
+
+
+#: How many of a refusal's ``terms`` ride on a skipped-waiter row.  The terms
+#: say what the gap is made of (#930) and are the point of the row, but a
+#: tier of hundreds of holders must not make the row hundreds of lines.
+_DECISION_TERMS_SHOWN = 8
+
+
+def _decision_facts(decision: Mapping[str, object]) -> dict[str, object]:
+    """What :func:`_commitment_decision` refused on, flat, for a skipped row.
+
+    The decision keeps its numbers one level down, in ``commitment``: capacity,
+    held, evictable, queued, committed, growth and (on a refusal) the shortfall
+    and ``terms``, and an unreadable census puts its ``error`` there.  This
+    reads that real schema.  Scalars only, apart from the first
+    ``_DECISION_TERMS_SHOWN`` terms and their total.
+    """
+
+    scalar = (str, int, float, bool)
+    facts: dict[str, object] = {
+        str(key): value for key, value in decision.items()
+        if key != "admit" and isinstance(value, scalar)}
+    inner = decision.get("commitment")
+    if isinstance(inner, Mapping):
+        for key, value in inner.items():
+            if key == "terms":
+                if isinstance(value, Sequence) and not isinstance(value, str):
+                    facts["terms_total"] = len(value)
+                    facts["terms"] = [dict(term) for term in
+                                      value[:_DECISION_TERMS_SHOWN]
+                                      if isinstance(term, Mapping)]
+            elif isinstance(value, scalar):
+                facts[str(key)] = value
+    return facts
+
+
+#: The event a skipped waiter or an empty tier is filed under (#1627).
+PRESSURE_SKIPPED_EVENT = "window-pressure-skipped"
+
+#: What each queue's loop last reported, by ``(queue root, scope, consumer,
+#: tier, reason)``, so a standing reason is one line and a changed one is
+#: another.  The reason is in the key because one tier can be skipped for two
+#: reasons at once; keyed without it the two overwrite each other and each is
+#: reported again every cycle.
+#: A key that is no longer skipped is forgotten, so it is reported again if
+#: it comes back.  Held by this process: a restart reports each once more.
+_PRESSURE_SKIPS: dict[tuple[str, str, str, str, str], tuple[str, str]] = {}
+
+
+def _pressure_skip_events(queue: pool.PoolQueue,
+                          skipped: Sequence[Mapping[str, object]],
+                          ) -> list[dict[str, object]]:
+    """The rows :func:`window_pressure` skipped, once per change of reason (#1627).
+
+    Only the reason (and a commitment refusal's own reason) decides a change:
+    the numbers move every cycle as a sweep runs and would turn a standing
+    wait into a line a cycle.  The numbers ride on the first line and on
+    every change.
+    """
+
+    root = str(queue.root)
+    current: dict[tuple[str, str, str, str, str], tuple[str, str]] = {}
+    events: list[dict[str, object]] = []
+    for row in skipped:
+        key = (root, str(row["scope"]), str(row.get("consumer") or ""),
+               str(row["tier_id"]), str(row["reason"]))
+        decision = row.get("decision")
+        signature = (str(row["reason"]),
+                     str(decision.get("reason", "")) if isinstance(decision, Mapping)
+                     else "")
+        current[key] = signature
+        if _PRESSURE_SKIPS.get(key) != signature:
+            events.append({"event": PRESSURE_SKIPPED_EVENT, **row})
+    for key in [key for key in _PRESSURE_SKIPS
+                if key[0] == root and key not in current]:
+        del _PRESSURE_SKIPS[key]
+    _PRESSURE_SKIPS.update(current)
+    return events
+
+
+
 def window_pressure(
     queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, object]],
     consumers: list | None = None,
@@ -5415,6 +5577,7 @@ def window_pressure(
     unknown: list[dict[str, object]] | None = None,
     commitments: Mapping[str, Mapping[str, object]] | None = None,
     claim_order: dict[str, dict[str, object]] | None = None,
+    skipped: list[dict[str, object]] | None = None,
 ) -> dict[str, int]:
     """Per tier, the GiB a live window needs and the tier does not have free.
 
@@ -5474,6 +5637,14 @@ def window_pressure(
     here, so it costs no second walk of the plans, and it adds nothing to
     the returned pressure: the room the head needs is made by
     :func:`evict_beyond_horizon`'s claim-order pass.
+    ``skipped``, when given, is appended one row for each waiter that produced
+    no pressure and each tier that could give nothing back, with the reason
+    and the numbers the decision read (#1627): a commitment refusal, a
+    cancelled or superseded plan, an unreadable ledger, a gate that refuses
+    for good, a shortfall beyond everything evictable, a tier with nothing
+    evictable.  It changes no answer.  Until it existed, a waiter that
+    waited beside a tier full of ended holders left no record of why the
+    sweep evicted nothing.
     """
 
     need: dict[str, int] = {}
@@ -5493,7 +5664,7 @@ def window_pressure(
     landed_next: dict[str, int] = {}
     # Claim-time tier demands of ready consumers whose leads are pinned
     # (#901), per tier: the next thing such a consumer asks the tier for.
-    claimants: dict[str, list[int]] = {}
+    claimants: dict[str, list[tuple[str, int]]] = {}
     # The commitment's decisions (#907), asked once and only when a
     # newcomer is found.
     admissions: dict[tuple[str, str], dict[str, object]] | None = None
@@ -5518,8 +5689,13 @@ def window_pressure(
     for unit in _declared:
         tier_of_unit = str(unit.tier_id)
         if unit.unsupported is not None:
+            _note_skip(skipped, scope="waiter", consumer=str(unit.key),
+                       tier_id=tier_of_unit, reason="unit-unsupported",
+                       detail=str(unit.unsupported)[:200])
             continue
         if all(str(member) in cancelled for member in unit.keys):
+            _note_skip(skipped, scope="waiter", consumer=str(unit.key),
+                       tier_id=tier_of_unit, reason="cancelled")
             continue
         try:
             if tier_of_unit not in _tier_state:
@@ -5533,7 +5709,10 @@ def window_pressure(
                 _tier_state[tier_of_unit] = (_held, _kind, _totals, _detail)
             _held, _kind, _totals, _detail = _tier_state[tier_of_unit]
             _already, _staged = _mover_state(queue, unit.plan, tier_of_unit)
-        except (OSError, pool.PoolContractError, ValueError):
+        except (OSError, pool.PoolContractError, ValueError) as exc:
+            _note_skip(skipped, scope="waiter", consumer=str(unit.key),
+                       tier_id=tier_of_unit, reason="state-unreadable",
+                       error=repr(exc)[:200])
             continue
         if prelaunch_tier.is_admitted(unit, _held, _kind, sorted(_already)):
             continue
@@ -5541,7 +5720,11 @@ def window_pressure(
         if admissions is None:
             admissions = _commitment_admissions(_commitment_census(
                 queue, tiers, consumers=consumers, unknown=unknown or ()))
-        if _commitment_refusal(admissions, str(unit.key), tier_of_unit) is not None:
+        refusal = _commitment_refusal(admissions, str(unit.key), tier_of_unit)
+        if refusal is not None:
+            _note_skip(skipped, scope="waiter", consumer=str(unit.key),
+                       tier_id=tier_of_unit, reason="commitment-refused",
+                       decision=_decision_facts(refusal))
             continue
         own_due = int((_detail.get(unit.unit) or {}).get("obligation_gib", 0))
         owned = residency_plan.prelaunch_owned_gib(
@@ -5551,12 +5734,15 @@ def window_pressure(
                 unit.peak_gib, owned),
             "next_min_gib": None,
             "declared": True,
+            "consumer": str(unit.key),
             "extra_held_gib": max(
                 int(_totals.get(tier_of_unit, 0)) - own_due, 0)})
     for _key, consumer, plan, tier_id in consumers:
         if residency_plan.superseded(queue, plan) is not None:
             # A superseded window publishes nothing (#708), so it is not
             # waiting on room: evicting for it would make room nobody uses.
+            _note_skip(skipped, scope="waiter", consumer=str(_key),
+                       tier_id=str(tier_id), reason="superseded")
             continue
         already, staged = _mover_state(queue, plan, tier_id)
         if (consumer.get("state") == pool.READY and _key not in cancelled
@@ -5570,7 +5756,7 @@ def window_pressure(
             # will never claim (#708).
             for demand_tier, gib in _claim_tier_demands(
                     consumer.get("item"), tiers):
-                claimants.setdefault(demand_tier, []).append(gib)
+                claimants.setdefault(demand_tier, []).append((str(_key), gib))
         accepted = consumer["accepted_phase"]
         # The refill horizon (#903): a leg past it is not something this
         # window will publish this cycle, however much room there is, so it
@@ -5631,13 +5817,18 @@ def window_pressure(
             if admissions is None:
                 admissions = _commitment_admissions(_commitment_census(
                     queue, tiers, consumers=consumers, unknown=unknown or ()))
-            if _commitment_refusal(admissions, _key, str(tier_id)) is not None:
+            refusal = _commitment_refusal(admissions, _key, str(tier_id))
+            if refusal is not None:
                 # The commitment refuses it (#907), and no eviction can
                 # change that: its window publishes nothing this cycle, so
                 # neither its lead nor its admission shortfall is pressure
                 # (#632).
+                _note_skip(skipped, scope="waiter", consumer=str(_key),
+                           tier_id=str(tier_id), reason="commitment-refused",
+                           decision=_decision_facts(refusal))
                 continue
-            newcomers.setdefault(str(tier_id), []).append(stage_needs)
+            newcomers.setdefault(str(tier_id), []).append(
+                {**stage_needs, "consumer": str(_key)})
         if waiting:
             # A mover already in ``ready/`` or ``claimed/`` that holds no
             # tokens is the plainest form of "the tier needs the tokens": it
@@ -5754,7 +5945,8 @@ def window_pressure(
                 staged=sorted(state["staged"]), mover_role="ram_mover_row",
                 horizon_end_bytes=state["horizon_end_bytes"])    # type: ignore[arg-type]
             if _is_newcomer(consumer, ram_needs, set(state["already"])):
-                newcomers.setdefault(ram_tier_id, []).append(ram_needs)
+                newcomers.setdefault(ram_tier_id, []).append(
+                    {**ram_needs, "consumer": str(_key)})
             elif str(ram_wanted[0]["phase"]) != reading:
                 # The stage leg's rule: an unpublished current is no next.
                 ram_next = int(ram_wanted[0]["stage_gib"])
@@ -5778,6 +5970,10 @@ def window_pressure(
         owed_gib, owed_enforced, _note, owed_error = (
             output_obligation(queue, tier_id))
         if owed_error:
+            _note_skip(skipped, scope="tier", tier_id=tier_id,
+                       reason="output-owed-unreadable",
+                       error=str(owed_error)[:200],
+                       waiters=_waiter_keys(newcomers.get(tier_id, ())))
             need.pop(tier_id, None)
             newcomers.pop(tier_id, None)
             continue
@@ -5819,27 +6015,61 @@ def window_pressure(
             held_total = int(ledger.held().get(kind, 0))
             free_gib = int(ledger.available().get(kind, 0))
             capacity_gib = int(ledger.capacity().get(kind, 0))
-        except (OSError, pool.PoolContractError, ValueError):
+        except (OSError, pool.PoolContractError, ValueError) as exc:
+            _note_skip(skipped, scope="tier", tier_id=tier_id,
+                       reason="ledger-unreadable", error=repr(exc)[:200],
+                       waiters=_waiter_keys(waiting_newcomers))
             continue
         if capacity_gib <= 0:
+            _note_skip(skipped, scope="tier", tier_id=tier_id,
+                       reason="capacity-unknown",
+                       waiters=_waiter_keys(waiting_newcomers))
             continue
+        holders = live_holders = prelaunch_holders = receiptless_holders = 0
         try:
             wanted_claims, owners = stage_release.live_claims(queue)
             orphan_gib = 0
             for holder in ledger.held_keys():
+                holders += 1
                 if holder in wanted_claims or holder in owners:
+                    live_holders += 1
                     continue
                 if prelaunch_tier.is_prelaunch_leg(declared_keys, str(holder)):
+                    prelaunch_holders += 1
                     continue
                 record = queue.move_record(holder)
                 if (isinstance(record, Mapping)
                         and record.get("consumer_action_key")):
                     orphan_gib += int(
                         ledger.holder_tokens(holder).get(kind, 0))
-        except (OSError, pool.PoolContractError, ValueError):
+                else:
+                    # No receipt names a consumer, so this probe cannot count
+                    # it as evictable; the sweep keeps it unless a fragment
+                    # names its owner (#892).
+                    receiptless_holders += 1
+        except (OSError, pool.PoolContractError, ValueError) as exc:
+            _note_skip(skipped, scope="tier", tier_id=tier_id,
+                       reason="holders-unreadable", error=repr(exc)[:200],
+                       waiters=_waiter_keys(waiting_newcomers))
             continue
         evictable_gib = orphan_gib + speculative.get(tier_id, 0)
+        held_by = {"orphan_gib": orphan_gib,
+                   "speculative_gib": speculative.get(tier_id, 0),
+                   "holders": holders, "live_holders": live_holders,
+                   "prelaunch_holders": prelaunch_holders,
+                   "receiptless_holders": receiptless_holders}
         if evictable_gib <= 0:
+            # Only a tier somebody needs room from is worth a row: a waiter
+            # that fits in what is free asks for nothing, and says nothing.
+            if (any(int(row.get("current_min_gib") or 0)
+                    + (row["next_min_gib"]
+                       if isinstance(row.get("next_min_gib"), int) else 0)
+                    > free_gib for row in waiting_newcomers)
+                    or any(demand > free_gib for _claim, demand in waiting_claims)):
+                _note_skip(skipped, scope="tier", tier_id=tier_id,
+                           reason="no-evictable", capacity_gib=capacity_gib,
+                           held_gib=held_total, free_gib=free_gib, **held_by,
+                           waiters=_waiter_keys(waiting_newcomers))
             continue
         # A ready consumer's claim (#901): its claim-time demand is a final
         # window of one step, asked of the same gate with the obligations
@@ -5848,8 +6078,8 @@ def window_pressure(
         # capacity are the whole question: no queued demand, no owed output
         # (the demand may itself be that output window) and no protected
         # next.  Its oversize answer is the claim's ``never_fits``.
-        for demand_gib in waiting_claims:
-            relief = _admission_relief(
+        for claim_key, demand_gib in waiting_claims:
+            relief, why, facts = _relief_verdict(
                 held_gib=held_total, ready_gib=0, output_gib=0,
                 output_enforced=False, capacity_gib=capacity_gib,
                 cur_min_gib=demand_gib, next_min_gib=None,
@@ -5857,6 +6087,9 @@ def window_pressure(
                 evictable_gib=evictable_gib)
             if relief is not None:
                 need[tier_id] = max(need.get(tier_id, 0), relief)
+            elif why in _STALLED_VERDICTS:
+                _note_skip(skipped, scope="claim", consumer=claim_key,
+                           tier_id=tier_id, reason=why, **facts, **held_by)
         if not waiting_newcomers:
             continue
         try:
@@ -5892,7 +6125,7 @@ def window_pressure(
         existing_next = landed_next.get(tier_id, 0)
         for needs in waiting_newcomers:
             nxt = needs.get("next_min_gib")
-            relief = _admission_relief(
+            relief, why, facts = _relief_verdict(
                 held_gib=held_total + int(needs.get("extra_held_gib") or 0),
                 ready_gib=ready_new if needs.get("declared") else ready_full,
                 output_gib=output_gib, output_enforced=output_enforced,
@@ -5903,6 +6136,11 @@ def window_pressure(
                 evictable_gib=evictable_gib)
             if relief is not None:
                 need[tier_id] = max(need.get(tier_id, 0), relief)
+            elif why in _STALLED_VERDICTS:
+                _note_skip(skipped, scope="waiter",
+                           consumer=(str(needs["consumer"])
+                                     if needs.get("consumer") else None),
+                           tier_id=tier_id, reason=why, **facts, **held_by)
     return need
 
 
@@ -10748,9 +10986,13 @@ def _cycle(
     commitments = _commitment_census(queue, announced_tiers, consumers=planned,
                                      unknown=planned_unknown, remember=False)
     claim_order: dict[str, dict[str, object]] = {}
+    skipped: list[dict[str, object]] = []
     pressure = window_pressure(queue, tiers=announced_tiers, consumers=planned,
                                withdrawn=withdrawn, unknown=planned_unknown,
-                               commitments=commitments, claim_order=claim_order)
+                               commitments=commitments, claim_order=claim_order,
+                               skipped=skipped)
+    for event in _pressure_skip_events(queue, skipped):
+        _emit(queue, host, event, tier_consumers=tier_consumers)
     phases.lap("window_pressure")
     # Failed movers' partials next: a terminal, unpinned mover that still
     # names bytes is an eviction candidate when the window has no room (#627).

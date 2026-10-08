@@ -162,7 +162,19 @@ infrastructure does not certify a complete measurement census: `ready_items`
 still supplies an advisory, potentially skipping snapshot. Reservation-aware
 current-census admission (#1419) is implemented in the private
 `_measurement_reservation` domain boundary for capacity-backed claims and
-integrated with explicit fixture compatibility. The combined source qualification
+integrated with explicit fixture compatibility. The census skips, as a candidate, a READY record
+whose publication priority the queue itself cannot order (`PoolQueue._unorderable_queue_field`
+names `priority`; a record whose priority the queue can order and whose `passes` sidecar is
+unreadable is not skipped, because the queue reads `passes` as 0 and can still list and claim it.
+A record whose `published_unix` is unreadable is unorderable too, but it fails the strict
+publication identity check before the skip is reached, so it still refuses: a follow-up, not part
+of this change):
+it holds no tokens, runs nothing, is never claimed, and the queue already files it by name
+instead of raising (#1506). The skipped record still counts as a live gang member, so an
+elected gang keeps its host fences. A priority the queue can order (`5.5`, `True`, `"5"`)
+stays a refusal, because such a record can be claimed and reach the CLAIMED census. A CLAIMED
+record the census cannot read, any identity mismatch, and a missing census record still
+refuse. The combined source qualification
 at `e5abdd29291064f1efc228c3054ffed9b8a682b3` is independently verified and
 accepted by Astra (2026-10-02); its evidence is recorded below. **Deployment and
 end-to-end acceptance remain HOLD.** The owner's enforce-admission decision
@@ -4973,6 +4985,41 @@ the two must not read as a short group, which would drop authority and
 leave the record unrepaired.  A stage tier that no live consumer
 names still releases a group holder no live unit owns, under the same
 complete-census guard, so a withdrawn sole consumer returns its capacity.
+A same-consumer republication writes its reserved generation before token
+transfer. The record binds valid retained mover tokens and the exact remaining
+group tokens. A deferred rotation moves no tokens. A partial transfer retains
+that generation, and a retry moves only its missing tokens. Foreign live
+records still refuse, and foreign spent recovery keeps its existing rule.
+A committed group whose census reads short with an empty holder lost its
+tokens to a path that wrote no release receipt (live, 2026-10-08: the PACT band
+source).  Its receipt still said committed, so the unit was never a newcomer
+again and no pass restored the tokens.  The writer now begins one acquisition
+for the deficit, the filed demand less the holder, bound mover and released
+counts, into the same holder, and the next pass settles it like any begun
+acquisition.  The intent is not recomputed.  No room files
+`prelaunch-begin-declined` and waits.  A committed group that is short with
+holder tokens still releases them first, as before, and tops up on the next
+pass.  Only the top-up and the settling of its handle are writer-only; the
+release in the committed-short path has never checked the writer and still
+does not.
+Two rules keep that recovery safe.  A live unit whose committed receipt
+stands obliges its whole peak, less what it owns, even when it owns nothing,
+so no newcomer is admitted into room its recovery needs.  And the group's
+replacement tokens reach the movers: a `transferring` record on a READY mover
+row whose bound tokens left is rebound to what the mover still holds plus the
+exact remainder from the holder, under the mover lock, only while the record
+is still `transferring` and the row still READY.  A claimed or consumed row
+keeps its refusal, and `funded_cover` is unchanged: the mover claims through
+its fence and takes no second stage charge.
+At claim time a row whose own `reserved` fence names its publication, with
+every bound token held by some holder, defers with `window_funding_pending`
+instead of paying its full demand.  A funding record or holder directory that
+cannot be read, or a funding record that is malformed, is unknown, not
+absent: the record exists and may still bind tokens, so the claim defers with
+`window_funding_unknown` and asks again.  The claim reads the record through
+`read_funding_evidence`, never the tolerant `read_funding`.  Only proven
+absence pays as before: no record, another state or publication, or bound
+tokens that are gone.
 Submission selects the prefix and suffix cuts by phase name, since an empty
 declared phase has no range.  A gang across tiers stays unsupported: its
 group is not reserved and the event `prelaunch-turn-unsupported` is filed.
@@ -6298,9 +6345,16 @@ journal, not operator descriptors.
 
 `pbresident dispatch SET_ID` retries action publication for an already-filed
 immutable body. It never republishes the set or acquires a second publication
-hold. Repeated dispatch attaches to a live copy generation; a resident host
-gets its descriptors refreshed without another copy action. An absent or
-interrupted copy can be re-driven through the existing movement retry policy.
+hold. Dispatch checks `lease_active` before action publication or descriptor updates.
+It refuses a released lease or a lease at its hard maximum.
+Ready or claimed rows with `resident_set` can extend an until lease before that maximum.
+
+Repeated dispatch attaches to a live copy generation for the same checkout snapshot.
+A changed checkout snapshot changes the action key and can queue another copy.
+The mover lock serializes copies; the second copy verifies the completed tree again.
+A resident host gets its descriptors refreshed without another copy action.
+An absent or interrupted copy can be re-driven through the existing movement retry policy.
+
 `pbresident renew SET_ID` appends an explicit until-date or campaign lease with
 a required hard maximum, bounded by the configured renewal ceiling. Neither
 command changes the immutable body or adds a seal/authority requirement.
@@ -6331,7 +6385,8 @@ manifest-subset inference (the design note section 3.3 supersedes its older
 lifecycle wording). Until leases may be extended by ready or claimed rows,
 but never past their hard maximum. Campaign leases end on release or maximum.
 An explicit `ResidentSets.renew` appends a new bounded lease without changing
-the body. Explicit Phase 1 readers take `local_resident.pin` and release that
+the body. It can reactivate a released set; live rows cannot cancel a release.
+Explicit Phase 1 readers take `local_resident.pin` and release that
 token only after their last read; a crashed reader pin stays until the existing
 broker scope attestation proves stop. Phase 2 will integrate container pins.
 Explicit renewals are capped at `now + renewal_ceiling_s`, a positive finite
@@ -11120,6 +11175,61 @@ The real gate re-checks
 everything before publishing; the probe only decides whether the room is
 worth reclaiming.
 
+**A waiter that produces no pressure says why (#1627).** `window_pressure`
+decides in many places that a waiter asks the tier for nothing, and until
+#1627 none of them left a record. On 2026-10-08 the stage tier held
+887 GiB in 178 holders of ended consumers while a strict consumer waited on
+native residency, and the loop evicted nothing for over an hour. Fourteen
+private-queue cases show the sweep evicting correctly once a waiter produces
+pressure, so the open question was what produced none. The function now takes
+an optional `skipped` list and appends one row per waiter or tier that asked
+for nothing, with the reason and the numbers the decision read. It changes no
+answer: the returned pressure is identical with and without the list.
+
+A row has `scope` (`waiter`, `tier` or `claim`), `consumer` (`None` for a
+tier), `tier_id` and `reason`. The waiter reasons are `unit-unsupported`,
+`cancelled`, `state-unreadable`, `commitment-refused` (with the decision
+`_commitment_decision` made: its reason, the capacity, held, evictable, queued,
+committed, footprint and growth numbers, the shortfall, the first eight of its
+`terms` with their total, and the census error when the census could not be
+read), `superseded`, and the three verdicts of
+`_relief_verdict`: `gate-refused` (the gate's answer is permanent, with
+`gate_reason`), `shortfall-exceeds-evictable` and `no-shortfall`. A relief
+that is asked for, and a gate that already admits, are not skips. The tier
+reasons are `output-owed-unreadable`, `ledger-unreadable`,
+`capacity-unknown`, `holders-unreadable`, and `no-evictable`, which is
+reported only when some waiter's current and its protected next need more
+than is free. Every verdict row carries capacity, held, free and evictable
+GiB, the queued and owed output terms, the protected next, and whether the
+output obligation is enforced, so a reader can reconcile the recorded decision
+with the gate. A `claim` row and a ram newcomer's row name their consumer like
+a stage waiter's. A tier row also says how the
+tier is held: `holders`, `live_holders`, `prelaunch_holders` and
+`receiptless_holders`, the last being holders whose receipt names no
+consumer, which this probe cannot count as evictable.
+
+The cycle files each row as a `window-pressure-skipped` event, once per change
+of reason. A standing wait is one line, not a line a cycle: only the reason,
+and a commitment refusal's own reason, decide a change. The memory is keyed by
+scope, consumer, tier and reason, so two verdicts for one tier are each
+remembered; keyed without the reason they overwrote each other and the one that
+lost was reported again every cycle. The numbers ride on the
+first line and on every change. A waiter or tier that stops being skipped is
+forgotten and is reported again if it returns. A waiter row is filed under
+its consumer. A tier row is filed for every planned consumer on the tier with
+`attributed_by: tier_id`, as other tier-level verdicts are. The memory is
+per process, so a restart reports each standing reason once more.
+
+`_admission_relief` now answers through `_relief_verdict`, which also says
+which of five ways its answer came out. This was a refactor first, committed
+with the same tests passing, before any reporting was added.
+
+Not every skip is reported. The ram leg's own skips (a ram window that is not
+planned for this consumer) and the per-leg `continue`s inside the stage walk
+leave no row. A waiter that is skipped for one of those reasons still looks
+like a waiter that asked for nothing and said nothing; that is a gap to close
+only if a log shows one.
+
 **A ready consumer's claim is also pressure (#901).** Once a ready consumer's
 leads hold their tokens, the claim's residency gate passes, and the next thing
 that refuses the claim is its own claim-time tier demand, such as a
@@ -14927,6 +15037,29 @@ the same one-cycle wait as `map_not_composed` and must read differently from it,
 because a queue that has stopped moving is diagnosed from which of the two it
 is sitting on. An adopted range files a fragment under its own mover key, so a
 window nobody had to copy satisfies this without a special case.
+
+A shared lead can make the map incomplete without making it stale (#1594). A
+lead another consumer sealed is a shared range (#1026): the tier loop's fan-out
+gives each reader its own fragment, for the entries the source material has
+dated so far, so a map can name every lead and hold only part of what the lead
+staged. A streaming consumer reads the rest lazily. A consumer whose filed plan
+declares a `resident_before_launch` prefix is promised the whole prefix before
+launch, so for each lead whose source fragment is filed under its share
+namespace the verdict compares the source's entries with the entries of the
+composed map, the document the consumer receives, and denies `map_incomplete`
+(reason `residency_map_incomplete`, naming the lead and the count) while any
+entry is missing. The consumer's own fragment is not the test: the fan-out can
+complete it a cycle before the loop recomposes the map from it. It is the same
+wait as `map_stale`: no host token is taken and no pass ages. A source fragment
+the reader cannot stat or parse, or an unreadable move receipt, is
+`map_unreadable` naming the path and the error, as the map's own read errors
+are; only a missing source fragment, the non-shared case, is skipped. An entry
+the material never dates keeps the consumer waiting, visibly, instead of
+launching and failing at the reader. Measured on action `e9fc9f1dbe8f`,
+2026-10-08: claimed on a map of one entry out of 899, failed on its first read,
+and its complete fragment was filed five seconds later. The source's key set is
+remembered by the fragment's size and mtime; the map is compared on every
+verdict, because it is the part that changes.
 
 ### A plan the coordinator cannot read
 
