@@ -19,6 +19,7 @@ def _dispatch_fixture(tmp_path, monkeypatch):
     import pbresident
     import test_a_stage_mover_declares_the_cpu_and_retries_it_owns as fixture
     store, record, spec = world(tmp_path)
+    monkeypatch.setattr(local_resident.time, "time", lambda: 120)
     queue = pool.PoolQueue(store.queue_root)
     tier = {"tier_id": "local:test-host", "host": "test-host", "mountpoint": spec["root"],
             "mover_python": "/usr/bin/python3", "mover_tools_root": "/generation/tools"}
@@ -75,6 +76,65 @@ def test_repeated_movement_dispatch_attaches_to_the_live_generation(tmp_path, mo
     assert len(list(queue.root.joinpath(pool.READY).glob("*.json"))) == 1
 
 
+@pytest.mark.parametrize("entrypoint", ["command", "publisher"])
+@pytest.mark.parametrize("expiry", ["released", "hard_max", "until"])
+def test_dispatch_refuses_inactive_lease_without_publication(tmp_path, monkeypatch, capsys, entrypoint, expiry):
+    import pbresident
+    store, record, spec, queue, tier, template = _dispatch_fixture(tmp_path, monkeypatch)
+    set_id = record["set_id"]
+    first = local_resident.publish_actions(template, store, set_id, [tier], policy_path="/policy.json")
+    movements = store.set_path(set_id).parent / "movements" / "test-host.json"
+    before = movements.read_bytes()
+    requests = set(template["cas"].root.rglob("*.json"))
+    ready = {path: path.read_bytes() for path in (queue.root / pool.READY).glob("*.json")}
+    if expiry == "released":
+        store.release(set_id, by="test", now=120)
+        now = 121
+    else:
+        now = 200 if expiry == "hard_max" else 150
+    if expiry != "until":
+        (queue.root / pool.READY / ("f" * 64 + ".json")).write_text(json.dumps({"resident_set": set_id}))
+        ready = {path: path.read_bytes() for path in (queue.root / pool.READY).glob("*.json")}
+    monkeypatch.setattr(local_resident.time, "time", lambda: now)
+    assert not local_resident.lease_active(store, set_id)
+    if entrypoint == "command":
+        assert pbresident.main(["--pool-root", str(queue.root), "dispatch", set_id,
+                               "--checkout", str(tmp_path), "--policy", "/changed-policy.json"]) == 2
+        assert "resident lease expired" in capsys.readouterr().err
+    else:
+        with pytest.raises(ValueError, match="resident lease expired"):
+            local_resident.publish_actions(template, store, set_id, [tier], policy_path="/changed-policy.json")
+    assert movements.read_bytes() == before
+    assert store.read_movements(set_id, "test-host") == first["test-host"]
+    assert set(template["cas"].root.rglob("*.json")) == requests
+    assert {path: path.read_bytes() for path in (queue.root / pool.READY).glob("*.json")} == ready
+
+@pytest.mark.parametrize("state", [pool.READY, pool.CLAIMED])
+@pytest.mark.parametrize("resident_host", [False, True])
+def test_dispatch_honors_live_reference_before_hard_max(tmp_path, monkeypatch, capsys, state, resident_host):
+    import pbresident
+    store, record, spec, queue, tier, template = _dispatch_fixture(tmp_path, monkeypatch)
+    set_id = record["set_id"]
+    if resident_host:
+        local_resident.copy(store, set_id, "test-host", spec, now=120)
+    reference = queue.item_path(state, "f" * 64)
+    reference.parent.mkdir(exist_ok=True)
+    reference.write_text(json.dumps({"resident_set": set_id}))
+    body = store.set_path(set_id).read_bytes()
+    lease_log = store.read_lease_log(set_id)
+    copy_state = store.copy_path(set_id, "test-host").read_bytes()
+    monkeypatch.setattr(local_resident.time, "time", lambda: 151)
+    assert pbresident.main(["--pool-root", str(queue.root), "dispatch", set_id,
+                           "--checkout", str(tmp_path), "--policy", "/policy.json"]) == 0
+    pair = json.loads(capsys.readouterr().out)["movements"]["test-host"]
+    assert queue.item_path(pool.READY, pair["copy"]["action_key"]).exists() is not resident_host
+    assert not queue.item_path(pool.READY, pair["evict"]["action_key"]).exists()
+    assert store.read_movements(set_id, "test-host") == pair
+    assert store.set_path(set_id).read_bytes() == body
+    assert store.read_lease_log(set_id) == lease_log
+    assert store.copy_path(set_id, "test-host").read_bytes() == copy_state
+
+
 def test_resident_dispatch_publishes_descriptors_without_another_copy(tmp_path, monkeypatch):
     import pbresident
     store, record, spec, queue, tier, template = _dispatch_fixture(tmp_path, monkeypatch)
@@ -126,6 +186,7 @@ def test_dispatch_builds_a_real_snapshot_and_publishes_verified_requests(tmp_pat
     import pbresident
     import pbrun
     store, record, spec = world(tmp_path)
+    monkeypatch.setattr(local_resident.time, "time", lambda: 120)
     checkout = tmp_path / "checkout"
     checkout.mkdir()
     (checkout / "source.txt").write_text("resident dispatch fixture\n")
@@ -148,3 +209,18 @@ def test_dispatch_builds_a_real_snapshot_and_publishes_verified_requests(tmp_pat
         assert cas.input_path(snapshot["input"]).is_file()
         assert request["params"]["placement"]["required_tags"] == ["test-host"]
     assert len(list(queue.root.joinpath(pool.READY).glob("*.json"))) == 1
+    key = rows["copy"]["action_key"]
+    generation = queue.item_path(pool.READY, key).read_bytes()
+    options = ["--pool-root", str(queue.root), "dispatch", record["set_id"],
+               "--checkout", str(checkout), "--policy", "/policy.json"]
+    assert pbresident.main(options) == 0
+    assert json.loads(capsys.readouterr().out)["movements"]["test-host"] == rows
+    assert queue.item_path(pool.READY, key).read_bytes() == generation
+    (checkout / "source.txt").write_text("changed resident dispatch fixture\n")
+    assert pbresident.main(options) == 0
+    changed = json.loads(capsys.readouterr().out)["movements"]["test-host"]
+    assert changed["copy"]["action_key"] != key
+    assert changed["evict"]["action_key"] != rows["evict"]["action_key"]
+    assert queue.item_path(pool.READY, key).read_bytes() == generation
+    assert queue.item_path(pool.READY, changed["copy"]["action_key"]).exists()
+    assert store.read_movements(record["set_id"], "test-host") == changed
