@@ -5154,6 +5154,20 @@ the local state while workers are alive. Before rolling back to shared CPU
 authority, also prove every snapshot publisher has exited: a delayed copy must
 not overwrite state that a legacy worker is again treating as authoritative.
 
+The box's admission directory is bounded by the box itself (#1542 item 1).
+Every ledger-and-host digest files a `.lock`, `.sweep`, `.adaptive-cpu-v1/` and,
+for the loops that use them, `.measurement-reader-v1`, `.guard` and
+`.preemption`. Once per hour (`PRUNE_INTERVAL_S`, claimed by the mtime of a
+`.prune` marker) `box_state` removes an idle digest whole: one whose newest write,
+inside `.adaptive-cpu-v1/` too, is older than seven days, or, past the newest 2048
+digests, older than one hour. It removes at most 512 per pass, and it never
+removes the caller's own digest, a digest whose `.lock` another process holds
+with `flock`, a symlink, an entry of another uid, or a name that is not
+`<64 hex>.<suffix>`. A missing file already means "no information", so the cost
+of a removed digest is one more sweep or a cold CPU estimate. The bounds are
+chosen, not measured. This does not name the writer of new digests; that is
+item 2, and a clear of live state is still not permitted.
+
 After releasing admission, a worker may start one independent snapshot
 publisher per host/ledger. A separate permanent local `publish.lock` is acquired
 nonblockingly and inherited only by that child across exec. No admission

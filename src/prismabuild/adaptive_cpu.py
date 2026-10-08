@@ -14,6 +14,8 @@ import json
 import math
 import os
 from pathlib import Path
+import re
+import shutil
 import socket
 import stat
 import statistics
@@ -552,7 +554,170 @@ def box_state(base):
         if info.st_mode & 0o077:
             # The chmod did not take.  Now there is nothing left to try.
             raise RuntimeError('unsafe PrismaBuild admission lock directory')
-    return directory, box_identity(base)
+    keep = box_identity(base)
+    prune_box_state_if_due(directory, keep)
+    return directory, keep
+
+
+#: What bounds the box's admission directory (#1542 item 1).  Every ledger-and-
+#: host identity files a digest here, and until now nothing removed one: on
+#: 2026-10-05 dl380g10's held 57,210 entries (about 183,600 inodes) and a full
+#: inode table stopped every CPU action there for 37 minutes.  A digest goes
+#: when nothing has written to it for ``PRUNE_AGE_S``, or, past the newest
+#: ``PRUNE_MAX_DIGESTS`` digests, when nothing has for ``PRUNE_MIN_AGE_S``.  A
+#: live loop rewrites its sweep marker and CPU sample every poll, so what is
+#: idle for the floor has no loop.  These are chosen bounds, not measured ones.
+PRUNE_AGE_S = 7 * 86400.0
+PRUNE_MIN_AGE_S = 3600.0
+PRUNE_MAX_DIGESTS = 2048
+#: One pass removes at most this many digests, so a box with a large backlog
+#: spends bounded time inside ``box_state`` and finishes over later passes.
+PRUNE_BATCH = 512
+PRUNE_INTERVAL_S = 3600.0
+#: A digest whose state holds more entries than this is never judged idle.
+_PRUNE_SCAN_CAP = 20000
+_PRUNE_MARKER = '.prune'
+_DIGEST_ENTRY = re.compile(r'^([0-9a-f]{64})\.')
+
+
+def _newest_write(path, uid):
+    """The newest mtime under ``path``, or ``None`` when it must not be judged.
+
+    ``None`` means a symlink, an entry of another uid, or more entries than a
+    pass is willing to read: all three keep the digest.
+    """
+
+    info = os.lstat(path)
+    if stat.S_ISLNK(info.st_mode) or info.st_uid != uid:
+        return None
+    newest = info.st_mtime
+    if not stat.S_ISDIR(info.st_mode):
+        return newest
+    stack, seen = [path], 0
+    while stack:
+        with os.scandir(stack.pop()) as entries:
+            for entry in entries:
+                seen += 1
+                if seen > _PRUNE_SCAN_CAP:
+                    return None
+                child = entry.stat(follow_symlinks=False)
+                if stat.S_ISLNK(child.st_mode) or child.st_uid != uid:
+                    return None
+                newest = max(newest, child.st_mtime)
+                if stat.S_ISDIR(child.st_mode):
+                    stack.append(entry.path)
+    return newest
+
+
+def _remove_digest(directory, digest, names, *, now, idle_floor_s):
+    """Remove one digest's whole state; ``False`` when it is not idle or not ours.
+
+    The ``.lock`` is taken with the loops' own nonblocking flock and held while
+    the rest goes: a lock a live loop holds is never unlinked, because that
+    would lapse the mutual exclusion it exists for.
+    """
+
+    uid = os.getuid()
+    newest = []
+    for name in names:
+        written = _newest_write(directory / name, uid)
+        if written is None:
+            return False
+        newest.append(written)
+    if now - max(newest) <= idle_floor_s:
+        return False
+    descriptor = None
+    try:
+        lock = directory / (digest + '.lock')
+        if lock.name in names:
+            descriptor = os.open(lock, os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC)
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        for name in names:
+            path = directory / name
+            try:
+                if stat.S_ISDIR(os.lstat(path).st_mode):
+                    shutil.rmtree(path)
+                else:
+                    os.unlink(path)
+            except FileNotFoundError:
+                pass
+        return True
+    except (BlockingIOError, OSError):
+        return False
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def prune_box_state(directory, keep, *, now=None, max_age_s=PRUNE_AGE_S,
+                    min_age_s=PRUNE_MIN_AGE_S, max_digests=PRUNE_MAX_DIGESTS,
+                    limit=PRUNE_BATCH):
+    """Remove idle digests from ``directory``, never ``keep``; return how many.
+
+    Names that are not ``<64 hex>.<suffix>`` are not this function's.  A missing
+    file is "no information" by this module's own rule, so removing an idle
+    digest costs at most one more sweep or one cold CPU estimate.
+    """
+
+    now = time.time() if now is None else now
+    directory = Path(directory)
+    groups = {}
+    with os.scandir(directory) as entries:
+        for entry in entries:
+            found = _DIGEST_ENTRY.match(entry.name)
+            if found and found.group(1) != keep:
+                groups.setdefault(found.group(1), []).append(entry.name)
+    ranked = []
+    for digest, names in groups.items():
+        try:
+            ranked.append((max(os.lstat(directory / name).st_mtime for name in names),
+                           digest))
+        except OSError:
+            continue
+    ranked.sort(reverse=True)
+    due = []
+    for rank, (newest, digest) in enumerate(ranked):
+        beyond = rank >= max_digests
+        if now - newest > (min_age_s if beyond else max_age_s):
+            due.append((digest, min_age_s if beyond else max_age_s))
+    removed = 0
+    for digest, floor in reversed(due):
+        if removed >= limit:
+            break
+        if _remove_digest(directory, digest, groups[digest], now=now,
+                          idle_floor_s=floor):
+            removed += 1
+    return removed
+
+
+def prune_box_state_if_due(directory, keep):
+    """``prune_box_state``, once per ``PRUNE_INTERVAL_S`` for the whole box.
+
+    The turn is claimed by the marker's mtime, so every loop of the box calls
+    this on every ``box_state`` and only one in the interval does the work.  Two
+    loops that both find it due prune twice, which removes nothing the first
+    did not.  Housekeeping never raises into admission.
+    """
+
+    now = time.time()
+    marker = Path(directory) / _PRUNE_MARKER
+    try:
+        if now - marker.lstat().st_mtime < PRUNE_INTERVAL_S:
+            return 0
+    except FileNotFoundError:
+        pass
+    except OSError:
+        return 0
+    try:
+        descriptor = os.open(marker, os.O_CREAT | os.O_WRONLY | os.O_NOFOLLOW
+                             | os.O_CLOEXEC, 0o600)
+        try:
+            os.utime(descriptor, (now, now))
+        finally:
+            os.close(descriptor)
+        return prune_box_state(directory, keep, now=now)
+    except OSError:
+        return 0
 
 
 def box_identity(base):
