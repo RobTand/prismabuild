@@ -123,3 +123,48 @@ def test_a_claim_while_the_recovery_transfers_is_not_charged_twice(
              else str(seen["got"]["action_key"])[-8:]}
     assert _tokens(queue, first) in (0, 2), state
     assert _free(queue) == free_before, state
+
+
+def test_a_claim_is_deferred_when_the_fence_custody_cannot_be_read(
+        tmp_path: Path, monkeypatch) -> None:
+    """Review of df8797cbe6: unreadable custody is unknown, never absent.
+
+    The recovery moves part of the fence and stops, leaving the record
+    ``reserved``.  A holder scan then fails.  A claim that read the failure as
+    "no pending fence" would pay its full demand from free while the mover
+    already holds part of its fence, and the recovery would add the rest.
+    """
+    queue, plan, unit, holder, first, row = _recovering(tmp_path)
+    free_before = _free(queue)
+    real = queue.transfer_tier_reservation_count
+
+    def part_then_stop(tier_id, source, target, count):
+        real(tier_id, source, target, 1)         # one of the two tokens moves
+        raise OSError("the recovery stopped after a partial transfer")
+
+    monkeypatch.setattr(queue, "transfer_tier_reservation_count", part_then_stop)
+    assert _recover(queue, plan, unit, holder, first, row).status == "deferred"
+    assert queue.read_funding(first, TIER)["state"] == "reserved"
+    assert _tokens(queue, first) == 1
+    monkeypatch.setattr(queue, "transfer_tier_reservation_count", real)
+
+    def unreadable(_ledger, _key):
+        raise OSError("a holder directory could not be listed")
+
+    real_held = pool.held_names_visible
+    monkeypatch.setattr(pool, "held_names_visible", unreadable)
+    got = queue.claim(tags=["dl380g10"], owner="w-unreadable")
+    state = {"claimed": None if got is None else str(got["action_key"])[-8:],
+             "free before": free_before, "free after": _free(queue),
+             "mover tokens": _tokens(queue, first)}
+    monkeypatch.setattr(pool, "held_names_visible", real_held)
+    assert got is None or got["action_key"] != first, state
+    assert _free(queue) == free_before, state
+    assert _tokens(queue, first) == 1, state
+
+    assert _recover(queue, plan, unit, holder, first, row).status == "published"
+    free_mid = _free(queue)
+    got = queue.claim(tags=["dl380g10"], owner="w-after")
+    assert got is not None and got["action_key"] == first
+    assert _free(queue) == free_mid
+    assert _tokens(queue, first) == 2
