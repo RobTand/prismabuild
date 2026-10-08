@@ -1663,10 +1663,11 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
           f"per poll (issue #16)", flush=True)
     print(f"[{host}] queue discovery bounded to {DISCOVERY_TIMEOUT_S:g}s "
           f"per poll (issue #16)", flush=True)
-    swept = sweep_own_dead_offer_tmp(queue.root / "workers", host)
-    if swept:
-        print(f"[{host}] swept {len(swept)} dead offer temporary file(s) "
-              f"(issue #1040)", flush=True)
+    # The dead-offer sweep (#1040) reads and removes files in the queue's
+    # ``workers/`` directory, so it runs after the first stale-generation
+    # fence below, never before: a loop that is about to exit for a newer
+    # runtime must not touch the queue first.
+    swept_dead_offers = False
     while True:
         if stop_requested():
             print(f"[{host}] shutdown requested; current action drained", flush=True)
@@ -1735,6 +1736,12 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
         if drift is not None:
             _refuse_moved_runtime(drift, host=host, boundary="poll top")
             return 0
+        if not swept_dead_offers:
+            swept_dead_offers = True
+            swept = sweep_own_dead_offer_tmp(queue.root / "workers", host)
+            if swept:
+                print(f"[{host}] swept {len(swept)} dead offer temporary "
+                      f"file(s) (issue #1040)", flush=True)
         gate = read_maintenance_gate()
         if gate is not None:
             post_park_marker(gate)
