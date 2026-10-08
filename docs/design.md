@@ -162,7 +162,19 @@ infrastructure does not certify a complete measurement census: `ready_items`
 still supplies an advisory, potentially skipping snapshot. Reservation-aware
 current-census admission (#1419) is implemented in the private
 `_measurement_reservation` domain boundary for capacity-backed claims and
-integrated with explicit fixture compatibility. The combined source qualification
+integrated with explicit fixture compatibility. The census skips, as a candidate, a READY record
+whose publication priority the queue itself cannot order (`PoolQueue._unorderable_queue_field`
+names `priority`; a record whose priority the queue can order and whose `passes` sidecar is
+unreadable is not skipped, because the queue reads `passes` as 0 and can still list and claim it.
+A record whose `published_unix` is unreadable is unorderable too, but it fails the strict
+publication identity check before the skip is reached, so it still refuses: a follow-up, not part
+of this change):
+it holds no tokens, runs nothing, is never claimed, and the queue already files it by name
+instead of raising (#1506). The skipped record still counts as a live gang member, so an
+elected gang keeps its host fences. A priority the queue can order (`5.5`, `True`, `"5"`)
+stays a refusal, because such a record can be claimed and reach the CLAIMED census. A CLAIMED
+record the census cannot read, any identity mismatch, and a missing census record still
+refuse. The combined source qualification
 at `e5abdd29291064f1efc228c3054ffed9b8a682b3` is independently verified and
 accepted by Astra (2026-10-02); its evidence is recorded below. **Deployment and
 end-to-end acceptance remain HOLD.** The owner's enforce-admission decision
@@ -4978,6 +4990,36 @@ transfer. The record binds valid retained mover tokens and the exact remaining
 group tokens. A deferred rotation moves no tokens. A partial transfer retains
 that generation, and a retry moves only its missing tokens. Foreign live
 records still refuse, and foreign spent recovery keeps its existing rule.
+A committed group whose census reads short with an empty holder lost its
+tokens to a path that wrote no release receipt (live, 2026-10-08: the PACT band
+source).  Its receipt still said committed, so the unit was never a newcomer
+again and no pass restored the tokens.  The writer now begins one acquisition
+for the deficit, the filed demand less the holder, bound mover and released
+counts, into the same holder, and the next pass settles it like any begun
+acquisition.  The intent is not recomputed.  No room files
+`prelaunch-begin-declined` and waits.  A committed group that is short with
+holder tokens still releases them first, as before, and tops up on the next
+pass.  Only the top-up and the settling of its handle are writer-only; the
+release in the committed-short path has never checked the writer and still
+does not.
+Two rules keep that recovery safe.  A live unit whose committed receipt
+stands obliges its whole peak, less what it owns, even when it owns nothing,
+so no newcomer is admitted into room its recovery needs.  And the group's
+replacement tokens reach the movers: a `transferring` record on a READY mover
+row whose bound tokens left is rebound to what the mover still holds plus the
+exact remainder from the holder, under the mover lock, only while the record
+is still `transferring` and the row still READY.  A claimed or consumed row
+keeps its refusal, and `funded_cover` is unchanged: the mover claims through
+its fence and takes no second stage charge.
+At claim time a row whose own `reserved` fence names its publication, with
+every bound token held by some holder, defers with `window_funding_pending`
+instead of paying its full demand.  A funding record or holder directory that
+cannot be read, or a funding record that is malformed, is unknown, not
+absent: the record exists and may still bind tokens, so the claim defers with
+`window_funding_unknown` and asks again.  The claim reads the record through
+`read_funding_evidence`, never the tolerant `read_funding`.  Only proven
+absence pays as before: no record, another state or publication, or bound
+tokens that are gone.
 Submission selects the prefix and suffix cuts by phase name, since an empty
 declared phase has no range.  A gang across tiers stays unsupported: its
 group is not reserved and the event `prelaunch-turn-unsupported` is filed.
@@ -6303,9 +6345,16 @@ journal, not operator descriptors.
 
 `pbresident dispatch SET_ID` retries action publication for an already-filed
 immutable body. It never republishes the set or acquires a second publication
-hold. Repeated dispatch attaches to a live copy generation; a resident host
-gets its descriptors refreshed without another copy action. An absent or
-interrupted copy can be re-driven through the existing movement retry policy.
+hold. Dispatch checks `lease_active` before action publication or descriptor updates.
+It refuses a released lease or a lease at its hard maximum.
+Ready or claimed rows with `resident_set` can extend an until lease before that maximum.
+
+Repeated dispatch attaches to a live copy generation for the same checkout snapshot.
+A changed checkout snapshot changes the action key and can queue another copy.
+The mover lock serializes copies; the second copy verifies the completed tree again.
+A resident host gets its descriptors refreshed without another copy action.
+An absent or interrupted copy can be re-driven through the existing movement retry policy.
+
 `pbresident renew SET_ID` appends an explicit until-date or campaign lease with
 a required hard maximum, bounded by the configured renewal ceiling. Neither
 command changes the immutable body or adds a seal/authority requirement.
@@ -6336,7 +6385,8 @@ manifest-subset inference (the design note section 3.3 supersedes its older
 lifecycle wording). Until leases may be extended by ready or claimed rows,
 but never past their hard maximum. Campaign leases end on release or maximum.
 An explicit `ResidentSets.renew` appends a new bounded lease without changing
-the body. Explicit Phase 1 readers take `local_resident.pin` and release that
+the body. It can reactivate a released set; live rows cannot cancel a release.
+Explicit Phase 1 readers take `local_resident.pin` and release that
 token only after their last read; a crashed reader pin stays until the existing
 broker scope attestation proves stop. Phase 2 will integrate container pins.
 Explicit renewals are capped at `now + renewal_ceiling_s`, a positive finite

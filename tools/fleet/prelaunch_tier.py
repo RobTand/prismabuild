@@ -493,9 +493,12 @@ def obligations(units: Sequence[Unit], held: Mapping[str, Mapping[str, int]],
     """The admitted declared windows' peak obligations per tier.
 
     A unit obliges when its holder or one of its leg movers owns
-    tokens now: its peak minus all it owns, never below zero. Units
-    that own nothing oblige nothing yet. Returns the per-tier sums
-    with one detail record per obliging unit for the logs.
+    tokens now, or its committed receipt stands: its peak minus all it
+    owns, never below zero. A committed unit that lost every token
+    still obliges its whole peak while its group recovers (#1637).
+    Units that own nothing and never committed oblige nothing yet.
+    Returns the per-tier sums with one detail record per obliging unit
+    for the logs.
     """
     totals: dict[str, int] = {}
     detail: dict[str, dict] = {}
@@ -505,7 +508,7 @@ def obligations(units: Sequence[Unit], held: Mapping[str, Mapping[str, int]],
         owns_holder = _held_count(held, unit.holder, kind) > 0
         owns_chunk = any(_held_count(held, leg["mover_key"], kind) > 0
                          for leg in unit.legs)
-        if not owns_holder and not owns_chunk:
+        if not owns_holder and not owns_chunk and not _committed(unit):
             continue
         owned = residency_plan.prelaunch_owned_gib(unit.plan, held,
                                                    unit.holder, kind)

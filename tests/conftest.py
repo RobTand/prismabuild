@@ -23,10 +23,12 @@ Two guards run on every test, and a third is opt-in:
     refuses the call itself. ``open``, ``os.listdir``, ``os.scandir``, the
     ``os`` calls that create, rename, remove, link or change an entry, and
     ``shutil.rmtree`` raise ``RuntimeError`` naming the event and the path when
-    that path lies under ``LIVE_ROOT``. The comparison is lexical and costs no
-    filesystem lookup, so the guard adds no NFS traffic of its own. The failing
-    test is the one that made the call, and its traceback names the path and
-    the line. A test that must read the store says so with
+    that path lies under ``LIVE_ROOT``. The comparison is lexical.
+    ``os.open`` supplies ``dir_fd`` through a wrapper because its audit event
+    omits that argument. The guard reads the descriptor path from local
+    ``/proc/self/fd`` without NFS traffic. Ordinary relative names use the cwd.
+    The traceback names the path and the call. A test that must read the
+    store says so with
     ``@pytest.mark.live_store(reason=...)``. What the hook cannot see:
     ``os.stat`` and ``os.access`` (CPython raises no audit event for them), and
     child processes, which start without the hook.
@@ -53,8 +55,10 @@ import math
 import stat
 import subprocess
 from collections.abc import Callable
+from functools import wraps
 from pathlib import Path, PurePosixPath
 import sys
+from threading import local
 
 import pytest
 
@@ -131,6 +135,30 @@ AUDITED_PATHS: dict[str, tuple[tuple[int, int | None], ...]] = {
 #: ``dir_fd`` values that mean "relative to the working directory".
 _CWD_DIR_FDS = (None, -1, getattr(os, "AT_FDCWD", -100))
 
+#: CPython omits dir_fd from open events. Keep it for the next native open
+#: event on this thread, then consume it before another audit hook can run.
+_OPEN_CONTEXT = local()
+
+
+def _install_os_open_guard() -> None:
+    native_open = os.open
+
+    @wraps(native_open)
+    def guarded_open(path, flags, mode=0o777, *, dir_fd=None):
+        if dir_fd is None:
+            return native_open(path, flags, mode)
+        path = os.fspath(path)
+        previous = getattr(_OPEN_CONTEXT, "pending", None)
+        _OPEN_CONTEXT.pending = (path, dir_fd)
+        try:
+            return native_open(path, flags, mode, dir_fd=dir_fd)
+        finally:
+            _OPEN_CONTEXT.pending = previous
+
+    os.open = guarded_open
+    if native_open in os.supports_dir_fd:
+        os.supports_dir_fd.add(guarded_open)
+
 #: How many callers currently let the hook through: the census, and a test
 #: marked ``live_store``.
 _live_access_depth = 0
@@ -155,20 +183,20 @@ class _LiveAccess:
 def _live_store_audit(event: str, args: tuple) -> None:
     """Refuse a call whose path lies under a guarded root.
 
-    One dict lookup for every event outside ``AUDITED_PATHS``, and string
-    work only for the rest: no ``stat``, no ``realpath``, nothing that would
-    itself look a name up on the mount. A relative path is absolutized
-    against ``os.getcwd()`` (the kernel answers that from its own dentry,
-    without an NFS lookup). A path relative to a ``dir_fd`` cannot be placed
-    lexically and is let through here: it is caught where its directory FD
-    was opened, which was an audited ``open`` of an absolute path or a
-    no-follow descent that raised ``NOFOLLOW_DIRECTORY_AUDIT_EVENT``. The
-    ``open`` event carries no ``dir_fd``, so an ``os.open(name, dir_fd=fd)``
-    is placed against the working directory; that can only err towards a
-    refusal, and only when the working directory is itself in the store.
+    The comparison stays lexical. Ordinary relative names use the cwd.
+    The os.open wrapper supplies the descriptor that CPython omits from its
+    open event. A local /proc/self/fd readlink supplies that descriptor's path.
+    Other descriptor-relative events retain the check at the descriptor's
+    original open or NOFOLLOW_DIRECTORY_AUDIT_EVENT.
     """
 
     spec = AUDITED_PATHS.get(event)
+    open_dir_fd = None
+    if event == "open":
+        pending = getattr(_OPEN_CONTEXT, "pending", None)
+        if pending is not None and args and args[0] == pending[0]:
+            _OPEN_CONTEXT.pending = None
+            open_dir_fd = pending[1]
     if spec is None or _live_access_depth:
         return
     for path_index, dir_fd_index in spec:
@@ -187,7 +215,12 @@ def _live_store_audit(event: str, args: tuple) -> None:
                     and args[dir_fd_index] not in _CWD_DIR_FDS):
                 continue
             try:
-                text = os.getcwd() + "/" + text
+                if event == "open" and open_dir_fd not in (
+                        None, getattr(os, "AT_FDCWD", -100)):
+                    base = os.readlink(f"/proc/self/fd/{open_dir_fd}")
+                else:
+                    base = os.getcwd()
+                text = base + "/" + text
             except OSError:
                 continue
         text = os.path.normpath("/" + text.lstrip("/"))
@@ -225,6 +258,7 @@ def pytest_configure(config: pytest.Config) -> None:
     # this module is configured again (a nested in-process pytest run).
     if not getattr(sys, "_prismabuild_live_store_hook", False):
         sys.addaudithook(_live_store_audit)
+        _install_os_open_guard()
         sys._prismabuild_live_store_hook = True  # type: ignore[attr-defined]
 
 
