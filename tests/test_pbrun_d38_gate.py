@@ -31,7 +31,7 @@ import d38_gate  # noqa: E402
 import pbrun  # noqa: E402
 
 from test_pbrun_detach import (  # noqa: E402,F401
-    _checkout, _one_json_line, _queue, fleet)
+    _checkout, _one_json_line, fleet)
 from test_slurm_lane import _submissions  # noqa: E402
 
 NAMESPACE = {"mode": "host", "cwd": "/work", "interpreter": "/usr/bin/python3",
@@ -64,10 +64,25 @@ def _isolated(monkeypatch, tmp_path):
                  "PRISMABUILD_READER_HELPER_ROOT"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(d38_gate, "now", lambda: NOW)
+    # The published runtime is not box-local; a test checkout is.  Without this
+    # every placement would be pinned to the Spark it was submitted from.
+    monkeypatch.setattr(pool, "is_box_local_path", lambda _path: False)
     decisions = tmp_path / "ceo-decisions"
     decisions.mkdir()
     monkeypatch.setattr(d38_gate, "DECISION_DIR", decisions)
     return decisions
+
+
+def _queue(tmp_path: Path) -> pool.PoolQueue:
+    """Two Sparks with a GPU and one x86 box, so each placement has an offer."""
+
+    queue = pool.PoolQueue(tmp_path / "pb-queue")
+    for host in ("sparky", "sparklina"):
+        queue.announce(host=host, tags=[host, "gb10"], has_gpu=True,
+                       capacity={"cpu": 4, "mem_gb": 16, "gpu": 1})
+    queue.announce(host="dl380g10", tags=["dl380g10", "x86"], has_gpu=False,
+                   capacity={"cpu": 8, "mem_gb": 32})
+    return queue
 
 
 def _argv(work: Path, *options: str, command=COMMAND) -> list[str]:
@@ -89,7 +104,10 @@ def _run(tmp_path, monkeypatch, work, *options, command=COMMAND) -> int:
     try:
         return int(pbrun.main() or 0)
     except SystemExit as exc:
-        return exc.code if isinstance(exc.code, int) else 1
+        if isinstance(exc.code, int):
+            return exc.code
+        print(exc.code, file=sys.stderr)      # a refusal's message, not lost
+        return 1
 
 
 def _seal(tmp_path, monkeypatch, work, *options, command=COMMAND):
@@ -248,14 +266,15 @@ def test_a_cpu_x86_publication_needs_no_evidence(
         tmp_path, monkeypatch, capsys) -> None:
     work = _checkout(tmp_path)
     _queue(tmp_path)
-    assert _run(tmp_path, monkeypatch, work, "--detach", "--tag", "x86") == 0
+    code = _run(tmp_path, monkeypatch, work, "--detach", "--tag", "x86")
+    assert code == 0, capsys.readouterr().err
     assert len(_ready(tmp_path)) == 1
 
 
 @pytest.mark.parametrize("options", [
     ("--tag", "gb10"),
     ("--tag", "sparklina"),
-    ("--host-class", "gb10"),
+    ("--host-class", "gb10", "--measurement"),
     ("--here",),
     ("--gpu", "--exclusive"),
 ], ids=["gb10-tag", "spark-tag", "host-class", "derived-pin", "exclusive"])
@@ -263,8 +282,10 @@ def test_every_gpu_intent_needs_evidence(
         tmp_path, monkeypatch, capsys, options) -> None:
     work = _checkout(tmp_path)
     _queue(tmp_path)
-    assert _run(tmp_path, monkeypatch, work, "--detach", *options) == 2
-    assert "D38 refuses GPU publication" in capsys.readouterr().err
+    code = _run(tmp_path, monkeypatch, work, "--detach", *options)
+    err = capsys.readouterr().err
+    assert code == 2, err
+    assert "D38 refuses GPU publication" in err
     assert _ready(tmp_path) == []
 
 
@@ -600,21 +621,35 @@ def test_a_live_attachment_needs_no_new_receipt(
 
 
 def test_a_cache_hit_needs_no_new_receipt(
-        tmp_path, monkeypatch, capsys, _isolated) -> None:
-    work, ns, target, _cas = _gpu_target(tmp_path, monkeypatch)
-    queue = pool.PoolQueue(tmp_path / "pb-queue")
-    _grant(_isolated, "dec-1008-000000-eeee", target)
-    assert _run(tmp_path, monkeypatch, work, "--gpu", "--detach",
-                "--d38-namespace", str(ns),
-                "--d38-exception", "dec-1008-000000-eeee") == 0
+        tmp_path, monkeypatch, capsys) -> None:
+    """A CAS hit publishes nothing, so it needs no evidence.
+
+    A private queue cannot run a GPU item (a claim needs a trusted broker
+    snapshot), so the hit is the CAS answering for exactly this job's key, at
+    the ``lookup`` the gate and pbrun both read.  Without the hit the same
+    submission is refused.
+    """
+
+    work, ns, target, cas = _gpu_target(tmp_path, monkeypatch)
+    options = ("--gpu", "--detach", "--d38-namespace", str(ns))
+    assert _run(tmp_path, monkeypatch, work, *options) == 2
     capsys.readouterr()
-    served = queue.serve_once(
-        tags=["sparky"], python=sys.executable, timeout_s=60.0,
-        capacity={"cpu": 4, "mem_gb": 16, "gpu": 1})
-    assert served is not None and served["status"] == "executed", served
-    assert _run(tmp_path, monkeypatch, work, "--gpu", "--detach",
-                "--d38-namespace", str(ns)) == 0
-    assert _one_json_line(capsys.readouterr())["status"] == "cache_hit"
+
+    real = type(cas).lookup
+
+    def lookup(self, action):
+        if str(action["action_key"]) == target["action_key"]:
+            return {"receipt_sha256": "e" * 64,
+                    "result": {"sha256": "f" * 64, "bytes": 1}}
+        return real(self, action)
+
+    monkeypatch.setattr(type(cas), "lookup", lookup)
+    code = _run(tmp_path, monkeypatch, work, *options)
+    out = capsys.readouterr()
+    assert code == 0, out.err
+    assert _one_json_line(out)["status"] == "cache_hit", out.err
+    assert _ready(tmp_path) == []
+    assert _audit(tmp_path, target["action_key"]) == []
 
 
 # --------------------------------------------------------------------------
