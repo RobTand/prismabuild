@@ -121,24 +121,54 @@ def _seal(tmp_path, monkeypatch, work, *options, command=COMMAND):
             prepared["template"]["cas"])
 
 
-def _preflight_action(checkout: Path, *, tag: str = "a", declared: bool = True,
-                      gpu: int = 0) -> dict:
+def _plan(target: dict, *, namespace: dict = NAMESPACE, images: tuple = (),
+          job: str | None = None, target_command: list | None = None,
+          cpu_command: list | None = None, differences: list | None = None) -> dict:
+    """The plan a producer files: the target it proves and how the CPU run differs."""
+
+    tc = list(target["params"]["command"] if target_command is None
+              else target_command)
+    cc = list(cpu_command) if cpu_command is not None else [
+        *tc[:-1], tc[-1] + " # cpu"]
+    return {"schema": d38_gate.PLAN_SCHEMA,
+            "target": {"job_identity_hash": job or target["action_key"],
+                       "image_digest": list(images),
+                       "namespace": _digest(namespace)},
+            "target_command": tc, "cpu_command": cc,
+            "differences": [len(tc) - 1] if differences is None
+            else list(differences)}
+
+
+def _preflight_action(cas, checkout: Path, target: dict, *, tag: str = "a",
+                      declared: bool = True, gpu: int = 0, plan_input: bool = True,
+                      plan: dict | None = None, digest: str | None = None,
+                      cuda_mask: bool = True, nvidia_none: bool = False) -> dict:
     """A sealed CPU action that declares itself a D38 producer run."""
 
     checkout.mkdir(parents=True, exist_ok=True)
     code = checkout / "task_code.py"
     if not code.exists():
         code.write_text("# closure member\n", encoding="utf-8")
+    plan = plan if plan is not None else _plan(target)
+    inputs, plan_digest = [], "ab" * 32
+    if plan_input:
+        entry, _ = cas.ingest_bytes(pb._canonical_file_bytes(plan),
+                                    input_id=d38_gate.PLAN_INPUT_ID)
+        inputs, plan_digest = [entry], str(entry["sha256"])
+    command = list(plan["cpu_command"])
     argv = movement_actions.standard_capture_argv(
-        ["/bin/echo", f"preflight-{tag}"], "pbrun_result.txt",
-        path_prefix="/opt/pb-tools")
+        command, "pbrun_result.txt", path_prefix="/opt/pb-tools")
     params: dict[str, object] = {
-        "command": ["/bin/echo", f"preflight-{tag}"],
-        "demand": {"cpu": 1, "mem_gb": 1, "gpu": gpu},
-    }
+        "command": command, "demand": {"cpu": 1, "mem_gb": 1, "gpu": gpu}}
     if declared:
         params[d38_gate.PRODUCER_PARAM] = {
-            "producer": d38_gate.PRODUCER_ID, "plan_sha256": "ab" * 32}
+            "producer": d38_gate.PRODUCER_ID,
+            "plan_sha256": digest or plan_digest}
+    variables = {"PATH": "/opt/pb-tools:/usr/bin:/bin"}
+    if cuda_mask:
+        variables["CUDA_VISIBLE_DEVICES"] = ""
+    if nvidia_none:
+        variables["NVIDIA_VISIBLE_DEVICES"] = "none"
     return pb.seal_action({
         "schema": pb.ACTION_SCHEMA_V2,
         "task": {"definition_id": "tests/d38-preflight",
@@ -146,11 +176,10 @@ def _preflight_action(checkout: Path, *, tag: str = "a", declared: bool = True,
                  "determinism": "deterministic", "artifact_family": "generic",
                  "artifact_kind": "generic", "argv": argv,
                  "working_directory": ".", "result_path": "pbrun_result.txt"},
-        "inputs": [],
+        "inputs": inputs,
         "code_closure": pb.build_code_closure(checkout, ["task_code.py"]),
         "params": params,
-        "environment": {"variables": {"PATH": "/opt/pb-tools:/usr/bin:/bin"},
-                        "toolchain": {}},
+        "environment": {"variables": variables, "toolchain": {}},
         "execution_scope": {"portability": "portable", "platform_key": None,
                             "host_class": None},
     })
@@ -174,11 +203,17 @@ def _body(target: dict, *, key: str, namespace: dict = NAMESPACE,
 
 def _publish_receipt(tmp_path: Path, cas, target: dict, *, tag: str = "a",
                      raw: str | None = None, declared: bool = True,
-                     gpu: int = 0, **body_options) -> str:
+                     gpu: int = 0, plan_input: bool = True,
+                     plan: dict | None = None, digest: str | None = None,
+                     cuda_mask: bool = True, nvidia_none: bool = False,
+                     **body_options) -> str:
     """Publish a preflight action and its result through the real CAS."""
 
     checkout = tmp_path / f"pf-checkout-{tag}"
-    action = _preflight_action(checkout, tag=tag, declared=declared, gpu=gpu)
+    action = _preflight_action(
+        cas, checkout, target, tag=tag, declared=declared, gpu=gpu,
+        plan_input=plan_input, plan=plan, digest=digest, cuda_mask=cuda_mask,
+        nvidia_none=nvidia_none)
     key = str(action["action_key"])
     body = _body(target, key=body_options.pop("key", key), **body_options)
     out = tmp_path / f"receipt-{tag}.json"
@@ -459,13 +494,62 @@ def _case_tampered(tmp_path, cas, target):
     return key
 
 
+def _case_no_plan_input(tmp_path, cas, target):
+    return _publish_receipt(tmp_path, cas, target, tag="noplan", plan_input=False)
+
+
+def _case_unrelated_entry_point(tmp_path, cas, target):
+    unrelated = _plan(target, cpu_command=["/bin/echo", "unrelated"],
+                      differences=[0, 1])
+    return _publish_receipt(tmp_path, cas, target, tag="unrelated", plan=unrelated)
+
+
+def _case_plan_for_another_job(tmp_path, cas, target):
+    return _publish_receipt(tmp_path, cas, target, tag="otherplan",
+                            plan=_plan(target, job="5" * 64))
+
+
+def _case_plan_for_another_command(tmp_path, cas, target):
+    return _publish_receipt(tmp_path, cas, target, tag="othercmd",
+                            plan=_plan(target, target_command=["/bin/true", "x"],
+                                       cpu_command=["/bin/true", "y"],
+                                       differences=[1]))
+
+
+def _case_plan_digest_mismatch(tmp_path, cas, target):
+    return _publish_receipt(tmp_path, cas, target, tag="baddigest", digest="9" * 64)
+
+
+def _case_plan_moves_the_entry_point(tmp_path, cas, target):
+    tc = list(target["params"]["command"])
+    return _publish_receipt(
+        tmp_path, cas, target, tag="moved",
+        plan=_plan(target, cpu_command=[tc[0], tc[1] + "-cpu", *tc[2:]],
+                   differences=[1]))
+
+
+def _case_undeclared_difference(tmp_path, cas, target):
+    tc = list(target["params"]["command"])
+    return _publish_receipt(
+        tmp_path, cas, target, tag="undeclared-diff",
+        plan=_plan(target, cpu_command=[*tc[:-1], "something else"],
+                   differences=[]))
+
+
+def _case_no_cuda_mask(tmp_path, cas, target):
+    return _publish_receipt(tmp_path, cas, target, tag="nomask", cuda_mask=False)
+
+
 CASES = [_case_missing, _case_other_job, _case_other_namespace,
          _case_other_images, _case_failed, _case_future, _case_expired,
          _case_expires_now, _case_wrong_action_key, _case_bad_host_class,
          _case_gb10_from_an_x86_producer, _case_malformed_json,
          _case_unknown_field, _case_duplicate_key, _case_nan,
          _case_oversized, _case_gpu_preflight, _case_undeclared_preflight,
-         _case_tampered]
+         _case_tampered, _case_no_plan_input, _case_unrelated_entry_point,
+         _case_plan_for_another_job, _case_plan_for_another_command,
+         _case_plan_digest_mismatch, _case_plan_moves_the_entry_point,
+         _case_undeclared_difference, _case_no_cuda_mask]
 
 
 @pytest.mark.parametrize("case", CASES, ids=lambda c: c.__name__[6:])
@@ -774,3 +858,101 @@ def test_a_release_re_checks_the_gate_for_a_record_an_old_client_filed(
     # gate, and nothing else, held it back.
     monkeypatch.setattr(d38_gate, "ENFORCE", False)
     assert len(de._released(de.dr.release_tick(queue))) == 1
+
+
+# --------------------------------------------------------------------------
+# A CPU-only gb10 proof is not rejected for the host's physical GPU
+# --------------------------------------------------------------------------
+
+def _spark_receipt() -> dict:
+    """What a gb10 worker attests: an ARM64 host that lists its GPU."""
+
+    return {"producer": {"evidence": {
+        "machine": "aarch64",
+        "accelerators": [{"kind": "nvidia", "compute_capability": "12.1"}]}}}
+
+
+def test_a_valid_cpu_only_gb10_proof_passes_though_its_host_lists_a_gpu(
+        tmp_path, monkeypatch) -> None:
+    work, ns, target, cas = _gpu_target(tmp_path, monkeypatch)
+    action = _preflight_action(cas, tmp_path / "gb10-pf", target,
+                               nvidia_none=True)
+    d38_gate.check_cpu_visibility(action, "gb10")
+    d38_gate.check_host_class(_spark_receipt(), "gb10")
+
+
+@pytest.mark.parametrize("options,host_class", [
+    ({"nvidia_none": False}, "gb10"),
+    ({"nvidia_none": True, "cuda_mask": False}, "gb10"),
+    ({"cuda_mask": False}, "x86"),
+], ids=["gb10-without-nvidia-none", "gb10-without-cuda-mask", "x86-without-cuda-mask"])
+def test_a_preflight_that_does_not_hide_the_devices_is_refused(
+        tmp_path, monkeypatch, options, host_class) -> None:
+    work, ns, target, cas = _gpu_target(tmp_path, monkeypatch)
+    action = _preflight_action(cas, tmp_path / "pf-vis", target, **options)
+    with pytest.raises(d38_gate.Refusal):
+        d38_gate.check_cpu_visibility(action, host_class)
+
+
+def test_a_host_class_lie_is_still_refused() -> None:
+    with pytest.raises(d38_gate.Refusal):
+        d38_gate.check_host_class(_spark_receipt(), "x86")
+
+
+# --------------------------------------------------------------------------
+# An exempt attachment can never become a new publication
+# --------------------------------------------------------------------------
+
+def test_an_attached_slurm_call_beside_a_live_pool_run_submits_nothing(
+        tmp_path, monkeypatch, capsys, _isolated, fleet) -> None:
+    """The reviewer's cross-transport hole: ``slurm_outcome`` excludes a pool
+    attachment and submits a new SLURM job."""
+
+    work, ns, target, _cas = _gpu_target(tmp_path, monkeypatch)
+    _grant(_isolated, "dec-1008-000000-xxxx", target)
+    assert _run(tmp_path, monkeypatch, work, "--gpu", "--detach",
+                "--d38-namespace", str(ns),
+                "--d38-exception", "dec-1008-000000-xxxx") == 0
+    capsys.readouterr()
+    code = _run(tmp_path, monkeypatch, work, "--gpu", "--transport", "slurm",
+                "--d38-namespace", str(ns))
+    assert _submissions(fleet) == [], capsys.readouterr().err
+    assert len(_ready(tmp_path)) == 1
+    assert len(_audit(tmp_path, target["action_key"])) == 1
+    assert code != 2 or "D38" in capsys.readouterr().err
+
+
+def test_a_generation_that_ends_before_publication_cannot_publish_without_evidence(
+        tmp_path, monkeypatch, capsys) -> None:
+    """The liveness read is stale by the time of publication: nothing is live,
+    and the earlier read must not stand in for authorization."""
+
+    work, ns, target, _cas = _gpu_target(tmp_path, monkeypatch)
+    live = {"transport": "pool", "generation": 1.0, "submission": None,
+            "job_id": None}
+    reads = iter([None])
+
+    def liveness(_queue, _key, **_kw):
+        return next(reads, live)
+
+    monkeypatch.setattr(pbrun, "bounded_attachment", liveness)
+    _run(tmp_path, monkeypatch, work, "--gpu", "--d38-namespace", str(ns))
+    assert _ready(tmp_path) == []
+    assert _audit(tmp_path, target["action_key"]) == []
+
+
+def test_an_attached_cache_hit_without_evidence_publishes_nothing(
+        tmp_path, monkeypatch, capsys) -> None:
+    work, ns, target, cas = _gpu_target(tmp_path, monkeypatch)
+    real = type(cas).lookup
+
+    def lookup(self, action):
+        if str(action["action_key"]) == target["action_key"]:
+            return {"receipt_sha256": "e" * 64,
+                    "result": {"sha256": "f" * 64, "bytes": 1}}
+        return real(self, action)
+
+    monkeypatch.setattr(type(cas), "lookup", lookup)
+    code = _run(tmp_path, monkeypatch, work, "--gpu", "--d38-namespace", str(ns))
+    assert code == 2, capsys.readouterr().err
+    assert _ready(tmp_path) == []
