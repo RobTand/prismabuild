@@ -749,6 +749,40 @@ def _fresh_binding(tier_id: str, mover: str, kind: str, consumer: str,
             "unix": time.time(), "published_unix": published}
 
 
+def _rebind_retained(queue: pool.PoolQueue, ledger: pool.ResourceLedger,
+                     tier_id: str, mover: str, kind: str, consumer: str,
+                     digest: str, start: int, end: int, published: float,
+                     gib: int, holder: str, tokens: list[str],
+                     held: set[str], rotate_from: str,
+                     ) -> tuple[str, set[str], set[str]] | PublishOutcome:
+    """Bind a mover's retained tokens and the group's exact remainder.
+
+    Returns the new generation with the retained and the bound token sets,
+    or the outcome that ends this pass.  Nothing moves before the rename.
+    """
+    if held - set(tokens):
+        return PublishOutcome("refused", ["prelaunch-mover-occupied"],
+                              None, 0)
+    prior = set(tokens) & held
+    try:
+        names = pool.held_names_visible(ledger, str(holder))
+    except (OSError, pool.PoolContractError, ValueError):
+        return PublishOutcome("deferred", ["prelaunch-unknown-evidence"],
+                              None, 0)
+    need = gib - len(prior)
+    kind_names = sorted(n for n in names if n.startswith(kind + "-"))
+    if need < 0 or len(kind_names) < need:
+        return PublishOutcome("short", ["prelaunch-funding-short"], None, 0)
+    bound = prior | set(kind_names[:need])
+    fresh = _fresh_binding(tier_id, mover, kind, consumer, digest,
+                           start, end, published, sorted(bound))
+    generation = _rotate_record(queue, mover, tier_id, rotate_from, fresh)
+    if generation is None:
+        return PublishOutcome("deferred", ["prelaunch-publish-deferred"],
+                              None, 0)
+    return (generation, prior, bound)
+
+
 def publish_chunk(queue: pool.PoolQueue, tier_id: str, unit: str, holder: str,
                   plan: Mapping[str, object], leg: Mapping[str, object],
                   mover_row_published_unix: float) -> PublishOutcome:
@@ -832,29 +866,13 @@ def publish_chunk(queue: pool.PoolQueue, tier_id: str, unit: str, holder: str,
             return PublishOutcome("deferred", ["prelaunch-unknown-evidence"],
                                   None, 0)
         if republished:
-            if held - set(tokens):
-                return PublishOutcome("refused", ["prelaunch-mover-occupied"],
-                                      None, 0)
-            prior = set(tokens) & held
-            # Bind retained tokens and the exact remainder before any rename.
-            try:
-                names = pool.held_names_visible(ledger, str(holder))
-            except (OSError, pool.PoolContractError, ValueError):
-                return PublishOutcome("deferred",
-                                      ["prelaunch-unknown-evidence"], None, 0)
-            need = gib - len(prior)
-            kind_names = sorted(n for n in names if n.startswith(kind + "-"))
-            if need < 0 or len(kind_names) < need:
-                return PublishOutcome("short", ["prelaunch-funding-short"],
-                                      None, 0)
-            bound = prior | set(kind_names[:need])
-            fresh = _fresh_binding(tier_id, mover, kind, consumer, digest,
-                                   start, end, published, sorted(bound))
-            generation = _rotate_record(queue, mover, tier_id, rotate_from,
-                                        fresh)
-            if generation is None:
-                return PublishOutcome("deferred",
-                                      ["prelaunch-publish-deferred"], None, 0)
+            rebound = _rebind_retained(
+                queue, ledger, tier_id, mover, kind, consumer, digest,
+                start, end, published, gib, holder, tokens, held,
+                rotate_from)
+            if isinstance(rebound, PublishOutcome):
+                return rebound
+            generation, prior, bound = rebound
             rotate_from = None
         else:
             if held:
