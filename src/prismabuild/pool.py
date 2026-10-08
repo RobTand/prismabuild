@@ -16636,6 +16636,53 @@ class PoolQueue:
             raise ValueError(f"tier commitment record {path.name} is not one")
         return record
 
+    def _window_fence_state(self, ledger: "ResourceLedger", tier_id: str,
+                            action_key: str,
+                            sealed: Mapping[str, object] | None) -> str | None:
+        """``"pending"``, ``"unknown"`` or ``None`` for this row's ``reserved`` fence.
+
+        A publication or a recovery files the generation first and moves the
+        tokens after.  A claim in that gap would pay its full demand and then
+        hold the fence on top of it (#1637).  ``"pending"``: the record names
+        this row's publication and every bound token is held by some holder.
+        ``"unknown"``: the funding record is unreadable or malformed, or a
+        holder directory could not be read.  The record exists and may still
+        bind tokens, so none of these proves the fence absent (see
+        :meth:`read_funding_evidence` and :func:`held_names_visible`), and the
+        claim defers and asks again.  ``None``: proven absent or stale -- no
+        record, another state or publication, or bound tokens that are gone --
+        and the claim pays as before, so nothing waits on a fence that cannot
+        arrive.
+        """
+        if not isinstance(sealed, Mapping):
+            return None
+        try:
+            status, record, _why = self.read_funding_evidence(
+                action_key, tier_id)
+        except (OSError, PoolContractError, ValueError):
+            return "unknown"
+        if status == "unknown":
+            return "unknown"
+        if status != "record" or record is None:
+            return None
+        if record.get("state") != "reserved":
+            return None
+        try:
+            if float(record["published_unix"]) != float(sealed["published_unix"]):
+                return None
+        except (KeyError, TypeError, ValueError):
+            return None
+        tokens = record.get("tokens")
+        if not isinstance(tokens, list) or not tokens:
+            return None
+        held: set[str] = set()
+        try:
+            for holder in ledger.held_keys():
+                held |= held_names_visible(ledger, holder)
+        except (OSError, PoolContractError, ValueError):
+            return "unknown"
+        return "pending" if {str(name) for name in tokens} <= held else None
+
     def _begin_tier_acquire(
         self, action_key: str, tier_demand: Mapping[str, Mapping[str, int]],
         handles: dict[str, str], funded: dict[str, dict[str, object]],
@@ -16858,6 +16905,13 @@ class PoolQueue:
                                 "demand": dict(needs)}
                     return {"tier_id": tier_id,
                             "reason": "output_funding_required_absent",
+                            "demand": dict(needs)}
+            if not any(covered.values()):
+                fence = self._window_fence_state(
+                    ledger, tier_id, action_key, sealed)
+                if fence is not None:
+                    return {"tier_id": tier_id,
+                            "reason": f"window_funding_{fence}",
                             "demand": dict(needs)}
             handle = ledger.begin_acquire(action_key, remainder)
             if handle is None:

@@ -470,6 +470,51 @@ def _rollback_receipt(queue: pool.PoolQueue, unit: str, tier_id: str,
                    ["unit", "holder", "tier_id", "demand_gib"])
 
 
+def _settle_handles(ledger: pool.ResourceLedger, holder: str,
+                    found: GroupCensus, events: list[str]) -> ReconcileOutcome:
+    """Commit each acquisition handle this writer owns or a dead one left."""
+    live = False
+    for handle, _, host, pid, _ in found.handles:
+        if _is_me(host, pid) or _is_dead(host, pid):
+            try:
+                moved = ledger.commit_acquire(str(holder), handle)
+            except (OSError, pool.PoolContractError, ValueError):
+                return ReconcileOutcome(
+                    "unknown", events + ["prelaunch-unknown-evidence"],
+                    False, found)
+            if moved > 0:
+                events.append("prelaunch-acquisition-committed")
+        else:
+            live = True
+    if live:
+        events.append("prelaunch-acquisition-in-flight")
+    return ReconcileOutcome("acquiring", events, False, found)
+
+
+def _top_up(ledger: pool.ResourceLedger, kind: str, holder: str,
+            demand: int, found: GroupCensus,
+            events: list[str]) -> ReconcileOutcome:
+    """Begin the acquisition of what a committed group lost.
+
+    The deficit is the demand less every token the census accounts for, so
+    the settled group is exactly the filed demand again and the intent is
+    never recomputed.  No room is a wait: the next pass asks again.
+    """
+    deficit = demand - (found.h + found.m + found.r)
+    try:
+        handle = ledger.begin_acquire(str(holder), {kind: deficit})
+    except (OSError, pool.PoolContractError, ValueError):
+        return ReconcileOutcome("unknown",
+                                events + ["prelaunch-unknown-evidence"],
+                                False, found)
+    if handle is None:
+        return ReconcileOutcome("short", events + ["prelaunch-begin-declined"],
+                                False, found)
+    return ReconcileOutcome("acquiring",
+                            events + ["prelaunch-group-topped-up"],
+                            False, found)
+
+
 def reconcile(queue: pool.PoolQueue, tier_id: str, unit: str, holder: str,
               demand_gib: int, chunk_movers: Sequence[str],
               *, writer_is_me: bool) -> ReconcileOutcome:
@@ -497,6 +542,10 @@ def reconcile(queue: pool.PoolQueue, tier_id: str, unit: str, holder: str,
                                 False, found)
     if committed is not None:
         state, authority = _accounted(found, demand)
+        if not authority and writer_is_me and found.p > 0:
+            return _settle_handles(ledger, holder, found, events)
+        if not authority and writer_is_me and state == "short" and found.h == 0:
+            return _top_up(ledger, kind, holder, demand, found, events)
         if authority:
             return ReconcileOutcome(state, events, True, found)
         try:
@@ -517,22 +566,7 @@ def reconcile(queue: pool.PoolQueue, tier_id: str, unit: str, holder: str,
         return ReconcileOutcome(passive, events + ["prelaunch-not-writer"],
                                 False, found)
     if found.p > 0:
-        live = False
-        for handle, _, host, pid, _ in found.handles:
-            if _is_me(host, pid) or _is_dead(host, pid):
-                try:
-                    moved = ledger.commit_acquire(str(holder), handle)
-                except (OSError, pool.PoolContractError, ValueError):
-                    return ReconcileOutcome(
-                        "unknown", events + ["prelaunch-unknown-evidence"],
-                        False, found)
-                if moved > 0:
-                    events.append("prelaunch-acquisition-committed")
-            else:
-                live = True
-        if live:
-            events.append("prelaunch-acquisition-in-flight")
-        return ReconcileOutcome("acquiring", events, False, found)
+        return _settle_handles(ledger, holder, found, events)
     if found.h == demand:
         try:
             result = _commit_receipt(queue, unit, tier_id, holder, demand)
@@ -670,10 +704,21 @@ def _birth_record(queue: pool.PoolQueue, tier_id: str, mover: str, kind: str,
     return str(generation) if isinstance(generation, str) else None
 
 
+def _row_is_ready(queue: pool.PoolQueue, mover: str) -> bool:
+    """True while the mover's row waits to be claimed, never once claimed."""
+    return (queue.item_path(pool.READY, mover).exists()
+            and not queue.item_path(pool.CLAIMED, mover).exists())
+
+
 def _rotate_record(queue: pool.PoolQueue, mover: str, tier_id: str,
-                   expect_generation: str, fresh: Mapping[str, object]
-                   ) -> str | None:
-    """Replace one generation under the mover lock; None on any loss."""
+                   expect_generation: str, fresh: Mapping[str, object],
+                   *, expect_state: str | None = None) -> str | None:
+    """Replace one generation under the mover lock; None on any loss.
+
+    ``expect_state`` also requires, under the lock a claim holds from its
+    tier acquire to its consumed-marking, that the record is in that state
+    and the row is still READY: a recovery never rotates a live claim.
+    """
     with queue.mover_transition_lock(mover, blocking=False) as acquired:
         if not acquired:
             return None
@@ -683,6 +728,10 @@ def _rotate_record(queue: pool.PoolQueue, mover: str, tier_id: str,
             return None
         if (status != "record" or current is None
                 or str(current.get("generation")) != expect_generation):
+            return None
+        if expect_state is not None and (
+                str(current.get("state")) != expect_state
+                or not _row_is_ready(queue, mover)):
             return None
         try:
             queue._rotate_funding_locked(dict(fresh),
@@ -715,10 +764,66 @@ def _fresh_binding(tier_id: str, mover: str, kind: str, consumer: str,
             "unix": time.time(), "published_unix": published}
 
 
+def _rebind_retained(queue: pool.PoolQueue, ledger: pool.ResourceLedger,
+                     tier_id: str, mover: str, kind: str, consumer: str,
+                     digest: str, start: int, end: int, published: float,
+                     gib: int, holder: str, tokens: list[str],
+                     held: set[str], rotate_from: str,
+                     expect_state: str | None = None,
+                     ) -> tuple[str, set[str], set[str]] | PublishOutcome:
+    """Bind a mover's retained tokens and the group's exact remainder.
+
+    Returns the new generation with the retained and the bound token sets,
+    or the outcome that ends this pass.  Nothing moves before the rename.
+    """
+    if held - set(tokens):
+        return PublishOutcome("refused", ["prelaunch-mover-occupied"],
+                              None, 0)
+    prior = set(tokens) & held
+    try:
+        names = pool.held_names_visible(ledger, str(holder))
+    except (OSError, pool.PoolContractError, ValueError):
+        return PublishOutcome("deferred", ["prelaunch-unknown-evidence"],
+                              None, 0)
+    need = gib - len(prior)
+    kind_names = sorted(n for n in names if n.startswith(kind + "-"))
+    if need < 0 or len(kind_names) < need:
+        return PublishOutcome("short", ["prelaunch-funding-short"], None, 0)
+    bound = prior | set(kind_names[:need])
+    fresh = _fresh_binding(tier_id, mover, kind, consumer, digest,
+                           start, end, published, sorted(bound))
+    generation = _rotate_record(queue, mover, tier_id, rotate_from, fresh,
+                                expect_state=expect_state)
+    if generation is None:
+        return PublishOutcome("deferred", ["prelaunch-publish-deferred"],
+                              None, 0)
+    return (generation, prior, bound)
+
+
 def publish_chunk(queue: pool.PoolQueue, tier_id: str, unit: str, holder: str,
                   plan: Mapping[str, object], leg: Mapping[str, object],
                   mover_row_published_unix: float) -> PublishOutcome:
-    """Hand one leg's tokens to its mover and bind them as its fence."""
+    """Hand one leg's tokens to its mover and bind them as its fence.
+
+    The mover lock is held from the holdings read to the ``transferring``
+    update.  A claim takes the same lock from its tier acquire to its
+    consumed-marking, so it can neither pay a second charge in the gap between
+    the rotation and the transfer nor spend a fence that is half moved (#1637).
+    A busy lock defers to the next pass.
+    """
+    mover = _leg_mover(leg)
+    with queue.mover_transition_lock(mover, blocking=False) as acquired:
+        if not acquired:
+            return PublishOutcome("deferred", ["prelaunch-publish-deferred"],
+                                  None, 0)
+        return _publish_chunk(queue, tier_id, unit, holder, plan, leg,
+                              mover_row_published_unix)
+
+
+def _publish_chunk(queue: pool.PoolQueue, tier_id: str, unit: str, holder: str,
+                   plan: Mapping[str, object], leg: Mapping[str, object],
+                   mover_row_published_unix: float) -> PublishOutcome:
+    """The publication itself, under the mover lock its caller holds."""
     from . import residency_plan as plans
     mover = _leg_mover(leg)
     start, end, gib = _leg_size(leg)
@@ -767,14 +872,26 @@ def publish_chunk(queue: pool.PoolQueue, tier_id: str, unit: str, holder: str,
         state = str(record.get("state"))
         if state in ("transferring", "consumed") and set(tokens) <= held:
             return PublishOutcome("already", [], generation, 0)
-        if state == "transferring" or state == "consumed":
-            return PublishOutcome("short", ["prelaunch-funding-short"],
-                                  generation, 0)
-        if state != "reserved":
-            return PublishOutcome("deferred", ["prelaunch-unknown-evidence"],
-                                  None, 0)
-        prior = set(tokens) & held
-        bound = set(tokens)
+        if state == "transferring" and _row_is_ready(queue, mover):
+            # A READY row whose bound tokens left (a recovered group): bind
+            # what it still holds and the group's exact remainder, and only
+            # while the record is still ``transferring`` under the lock (#1637).
+            rebound = _rebind_retained(
+                queue, ledger, tier_id, mover, kind, consumer, digest,
+                start, end, published, gib, holder, tokens, held,
+                generation, expect_state="transferring")
+            if isinstance(rebound, PublishOutcome):
+                return rebound
+            generation, prior, bound = rebound
+        else:
+            if state == "transferring" or state == "consumed":
+                return PublishOutcome("short", ["prelaunch-funding-short"],
+                                      generation, 0)
+            if state != "reserved":
+                return PublishOutcome("deferred",
+                                      ["prelaunch-unknown-evidence"], None, 0)
+            prior = set(tokens) & held
+            bound = set(tokens)
     elif record is not None:
         old = record.get("generation")
         rotate_from = str(old) if isinstance(old, str) else None
@@ -798,29 +915,13 @@ def publish_chunk(queue: pool.PoolQueue, tier_id: str, unit: str, holder: str,
             return PublishOutcome("deferred", ["prelaunch-unknown-evidence"],
                                   None, 0)
         if republished:
-            if held - set(tokens):
-                return PublishOutcome("refused", ["prelaunch-mover-occupied"],
-                                      None, 0)
-            prior = set(tokens) & held
-            # Bind retained tokens and the exact remainder before any rename.
-            try:
-                names = pool.held_names_visible(ledger, str(holder))
-            except (OSError, pool.PoolContractError, ValueError):
-                return PublishOutcome("deferred",
-                                      ["prelaunch-unknown-evidence"], None, 0)
-            need = gib - len(prior)
-            kind_names = sorted(n for n in names if n.startswith(kind + "-"))
-            if need < 0 or len(kind_names) < need:
-                return PublishOutcome("short", ["prelaunch-funding-short"],
-                                      None, 0)
-            bound = prior | set(kind_names[:need])
-            fresh = _fresh_binding(tier_id, mover, kind, consumer, digest,
-                                   start, end, published, sorted(bound))
-            generation = _rotate_record(queue, mover, tier_id, rotate_from,
-                                        fresh)
-            if generation is None:
-                return PublishOutcome("deferred",
-                                      ["prelaunch-publish-deferred"], None, 0)
+            rebound = _rebind_retained(
+                queue, ledger, tier_id, mover, kind, consumer, digest,
+                start, end, published, gib, holder, tokens, held,
+                rotate_from)
+            if isinstance(rebound, PublishOutcome):
+                return rebound
+            generation, prior, bound = rebound
             rotate_from = None
         else:
             if held:
