@@ -11120,6 +11120,61 @@ The real gate re-checks
 everything before publishing; the probe only decides whether the room is
 worth reclaiming.
 
+**A waiter that produces no pressure says why (#1627).** `window_pressure`
+decides in many places that a waiter asks the tier for nothing, and until
+#1627 none of them left a record. On 2026-10-08 the stage tier held
+887 GiB in 178 holders of ended consumers while a strict consumer waited on
+native residency, and the loop evicted nothing for over an hour. Fourteen
+private-queue cases show the sweep evicting correctly once a waiter produces
+pressure, so the open question was what produced none. The function now takes
+an optional `skipped` list and appends one row per waiter or tier that asked
+for nothing, with the reason and the numbers the decision read. It changes no
+answer: the returned pressure is identical with and without the list.
+
+A row has `scope` (`waiter`, `tier` or `claim`), `consumer` (`None` for a
+tier), `tier_id` and `reason`. The waiter reasons are `unit-unsupported`,
+`cancelled`, `state-unreadable`, `commitment-refused` (with the decision
+`_commitment_decision` made: its reason, the capacity, held, evictable, queued,
+committed, footprint and growth numbers, the shortfall, the first eight of its
+`terms` with their total, and the census error when the census could not be
+read), `superseded`, and the three verdicts of
+`_relief_verdict`: `gate-refused` (the gate's answer is permanent, with
+`gate_reason`), `shortfall-exceeds-evictable` and `no-shortfall`. A relief
+that is asked for, and a gate that already admits, are not skips. The tier
+reasons are `output-owed-unreadable`, `ledger-unreadable`,
+`capacity-unknown`, `holders-unreadable`, and `no-evictable`, which is
+reported only when some waiter's current and its protected next need more
+than is free. Every verdict row carries capacity, held, free and evictable
+GiB, the queued and owed output terms, the protected next, and whether the
+output obligation is enforced, so a reader can reconcile the recorded decision
+with the gate. A `claim` row and a ram newcomer's row name their consumer like
+a stage waiter's. A tier row also says how the
+tier is held: `holders`, `live_holders`, `prelaunch_holders` and
+`receiptless_holders`, the last being holders whose receipt names no
+consumer, which this probe cannot count as evictable.
+
+The cycle files each row as a `window-pressure-skipped` event, once per change
+of reason. A standing wait is one line, not a line a cycle: only the reason,
+and a commitment refusal's own reason, decide a change. The memory is keyed by
+scope, consumer, tier and reason, so two verdicts for one tier are each
+remembered; keyed without the reason they overwrote each other and the one that
+lost was reported again every cycle. The numbers ride on the
+first line and on every change. A waiter or tier that stops being skipped is
+forgotten and is reported again if it returns. A waiter row is filed under
+its consumer. A tier row is filed for every planned consumer on the tier with
+`attributed_by: tier_id`, as other tier-level verdicts are. The memory is
+per process, so a restart reports each standing reason once more.
+
+`_admission_relief` now answers through `_relief_verdict`, which also says
+which of five ways its answer came out. This was a refactor first, committed
+with the same tests passing, before any reporting was added.
+
+Not every skip is reported. The ram leg's own skips (a ram window that is not
+planned for this consumer) and the per-leg `continue`s inside the stage walk
+leave no row. A waiter that is skipped for one of those reasons still looks
+like a waiter that asked for nothing and said nothing; that is a gap to close
+only if a log shows one.
+
 **A ready consumer's claim is also pressure (#901).** Once a ready consumer's
 leads hold their tokens, the claim's residency gate passes, and the next thing
 that refuses the claim is its own claim-time tier demand, such as a
