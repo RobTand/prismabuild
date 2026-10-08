@@ -157,6 +157,15 @@ def _scan_publications(queue: PoolQueue) -> dict:
                 else:
                     queue.attempt_generation(record)  # strict publication identity
                     if type(record.get("priority", 0)) is not int:
+                        if state == pool.READY:
+                            # A READY record holds no tokens and runs nothing,
+                            # so its priority cannot make the census wrong, and
+                            # the queue already files such a record by name
+                            # instead of raising (``ready_items``).  Refusing
+                            # it denied every good claim on the host (#1506).
+                            # A CLAIMED one is a running incumbent, and one
+                            # the census cannot read is unknown: that refuses.
+                            continue
                         raise CensusUnavailable("unreadable publication priority")
                     rows.setdefault(key, []).append(record)
                     if state == pool.CLAIMED and not is_mark:
