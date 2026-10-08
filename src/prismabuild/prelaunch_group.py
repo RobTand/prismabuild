@@ -802,7 +802,26 @@ def publish_chunk(queue: pool.PoolQueue, tier_id: str, unit: str, holder: str,
                 return PublishOutcome("refused", ["prelaunch-mover-occupied"],
                                       None, 0)
             prior = set(tokens) & held
-            generation = None
+            # Bind retained tokens and the exact remainder before any rename.
+            try:
+                names = pool.held_names_visible(ledger, str(holder))
+            except (OSError, pool.PoolContractError, ValueError):
+                return PublishOutcome("deferred",
+                                      ["prelaunch-unknown-evidence"], None, 0)
+            need = gib - len(prior)
+            kind_names = sorted(n for n in names if n.startswith(kind + "-"))
+            if need < 0 or len(kind_names) < need:
+                return PublishOutcome("short", ["prelaunch-funding-short"],
+                                      None, 0)
+            bound = prior | set(kind_names[:need])
+            fresh = _fresh_binding(tier_id, mover, kind, consumer, digest,
+                                   start, end, published, sorted(bound))
+            generation = _rotate_record(queue, mover, tier_id, rotate_from,
+                                        fresh)
+            if generation is None:
+                return PublishOutcome("deferred",
+                                      ["prelaunch-publish-deferred"], None, 0)
+            rotate_from = None
         else:
             if held:
                 return PublishOutcome("refused", ["prelaunch-mover-occupied"],
@@ -898,21 +917,10 @@ def publish_chunk(queue: pool.PoolQueue, tier_id: str, unit: str, holder: str,
             return PublishOutcome("deferred", ["prelaunch-unknown-evidence"],
                                   generation, 0)
         fresh_names = sorted(n for n in current if n.startswith(kind + "-"))
-    if rotate_from is not None:
-        if len(fresh_names) != gib:
-            return PublishOutcome("short", ["prelaunch-funding-short"],
-                                  None, moved)
-        fresh = _fresh_binding(tier_id, mover, kind, consumer, digest,
-                               start, end, published, fresh_names)
-        generation = _rotate_record(queue, mover, tier_id, rotate_from, fresh)
-        if generation is None:
-            return PublishOutcome("deferred", ["prelaunch-publish-deferred"],
-                                  None, moved)
     if generation is None:
         return PublishOutcome("deferred", ["prelaunch-unknown-evidence"],
                               None, moved)
-    if (rotate_from is None and bound is not None
-            and not bound <= set(fresh_names)):
+    if bound is not None and not bound <= set(fresh_names):
         if len(fresh_names) != gib:
             return PublishOutcome("short", ["prelaunch-funding-short"],
                                   generation, moved)

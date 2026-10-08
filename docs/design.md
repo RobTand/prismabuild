@@ -4973,6 +4973,11 @@ the two must not read as a short group, which would drop authority and
 leave the record unrepaired.  A stage tier that no live consumer
 names still releases a group holder no live unit owns, under the same
 complete-census guard, so a withdrawn sole consumer returns its capacity.
+A same-consumer republication writes its reserved generation before token
+transfer. The record binds valid retained mover tokens and the exact remaining
+group tokens. A deferred rotation moves no tokens. A partial transfer retains
+that generation, and a retry moves only its missing tokens. Foreign live
+records still refuse, and foreign spent recovery keeps its existing rule.
 Submission selects the prefix and suffix cuts by phase name, since an empty
 declared phase has no range.  A gang across tiers stays unsupported: its
 group is not reserved and the event `prelaunch-turn-unsupported` is filed.
