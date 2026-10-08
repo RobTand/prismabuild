@@ -22,7 +22,7 @@ from prismabuild import pool  # noqa: E402
 from prismabuild import prelaunch_group as pg  # noqa: E402
 import tier_loop  # noqa: E402
 from test_prelaunch_group_reconcile_1594 import _hexkey, _queue  # noqa: E402
-from test_prelaunch_tier_module_1594 import _declared_plan, TIER  # noqa: E402
+from test_prelaunch_tier_module_1594 import _declared_plan, _publish_leg, TIER  # noqa: E402
 from test_prelaunch_tier_publish_1594 import (  # noqa: E402
     _declared_movers, _live, _stage)
 
@@ -199,3 +199,139 @@ def test_a_partial_transfer_resumes_from_the_bound_record(
         assert record["state"] == "transferring"
         assert record["consumer_action_key"] == second
         assert _holder_tokens(queue, mover) == 2, "a leg holds exactly its tokens"
+
+
+
+def _custody(queue):
+    ledger = queue.tier_ledger(TIER)
+    return {key: sorted(pool.held_names_visible(ledger, key))
+            for key in ledger.held_keys()}
+
+
+def _same_consumer_republication(tmp_path, retained):
+    """Publish a real window, then republish one leg with partial holdings."""
+    queue = _queue(tmp_path, stage_gib=32)
+    tiers = {TIER: _stage(queue, TIER)}
+    consumer = _hexkey("same-consumer")
+    specs = [("phase-a", 8, True, 2), ("phase-b", 4, False, 1)]
+    plan = _declared_plan(queue, consumer, specs, tag="same")
+    _live(queue, plan, consumer, specs)
+    unit, movers = _declared_movers(queue, consumer)
+    _publish_until_bound(queue, tiers, movers)
+    mover = movers[0]
+    old = queue.read_funding(mover, TIER)
+    assert old["state"] == "transferring"
+    ledger = queue.tier_ledger(TIER)
+    assert pool.held_names_visible(ledger, mover) == set(old["tokens"])
+    other = _hexkey("other-token-owner")
+    assert queue.transfer_tier_reservation_count(
+        TIER, mover, other, 4 - retained) == 4 - retained
+    assert ledger.acquire(unit.holder, {"stage_gib": 4 - retained})
+    prior = pool.held_names_visible(ledger, mover)
+    group = pool.held_names_visible(ledger, unit.holder)
+    assert len(prior) == retained and len(group) == 4 - retained
+    assert not group.intersection(old["tokens"])
+    queue.item_path(pool.READY, mover).unlink()
+    row = _publish_leg(queue, plan, mover)
+    assert row["published_unix"] != old["published_unix"]
+    leg = {**unit.legs[0], "mover_action_key": mover}
+    return queue, tiers, plan, unit, movers, leg, row, old, prior, group
+
+
+def _assert_republication(queue, plan, mover, row, old, bound, state):
+    record = queue.read_funding(mover, TIER)
+    assert record["generation"] != old["generation"], (
+        "same-consumer republication kept the older generation")
+    assert record["state"] == state
+    assert record["tokens"] == sorted(bound)
+    for name in ("consumer_action_key", "plan_sha256", "kind", "tier_id",
+                 "mover_action_key", "range_start_bytes", "range_end_bytes"):
+        assert record[name] == old[name]
+    assert record["consumer_action_key"] == plan["consumer_action_key"]
+    assert record["published_unix"] == row["published_unix"]
+    return record
+
+
+@pytest.mark.parametrize("retained", [0, 1])
+def test_same_consumer_deferred_rotation_preserves_exact_custody(
+        tmp_path, monkeypatch, retained):
+    queue, tiers, plan, unit, movers, leg, row, old, prior, group = (
+        _same_consumer_republication(tmp_path, retained))
+    mover = movers[0]
+    before = _custody(queue)
+    real = pg._rotate_record
+    monkeypatch.setattr(pg, "_rotate_record", lambda *args, **kwargs: None)
+    outcome = pg.publish_chunk(
+        queue, TIER, unit.unit, unit.holder, plan, leg, row["published_unix"])
+    assert outcome.status == "deferred"
+    assert _custody(queue) == before, (
+        "same-consumer deferred rotation changed token custody")
+    assert outcome.moved == 0
+    assert queue.read_funding(mover, TIER) == old
+    monkeypatch.setattr(pg, "_rotate_record", real)
+    seen = _publish_until_bound(queue, tiers, movers)
+    assert not [event for event in seen
+                if "prelaunch-mover-occupied" in str(event)]
+    bound = prior | group
+    _assert_republication(queue, plan, mover, row, old, bound, "transferring")
+    expected = {**before, mover: sorted(bound)}
+    expected.pop(unit.holder)
+    assert _custody(queue) == expected
+    replay = pg.publish_chunk(
+        queue, TIER, unit.unit, unit.holder, plan, leg, row["published_unix"])
+    assert replay.status == "already" and replay.moved == 0
+    assert _custody(queue) == expected
+
+
+@pytest.mark.parametrize("retained", [0, 1])
+def test_same_consumer_partial_transfer_resumes_exact_binding(
+        tmp_path, monkeypatch, retained):
+    queue, tiers, plan, unit, movers, leg, row, old, prior, group = (
+        _same_consumer_republication(tmp_path, retained))
+    mover = movers[0]
+    before = _custody(queue)
+    real = queue.transfer_tier_reservation_count
+    boundary = {}
+
+    def partial(tier_id, holder, destination, count):
+        boundary["record"] = queue.read_funding(destination, tier_id)
+        boundary["custody"] = _custody(queue)
+        boundary["requested"] = count
+        assert real(tier_id, holder, destination, 1) == 1
+        raise OSError("same-consumer transfer interrupted after one token")
+
+    monkeypatch.setattr(queue, "transfer_tier_reservation_count", partial)
+    outcome = pg.publish_chunk(
+        queue, TIER, unit.unit, unit.holder, plan, leg, row["published_unix"])
+    assert outcome.status == "deferred"
+    bound = prior | group
+    reserved = _assert_republication(
+        queue, plan, mover, row, old, bound, "reserved")
+    assert boundary["record"] == reserved
+    assert boundary["custody"] == before
+    assert boundary["requested"] == 4 - retained
+    landed = {sorted(group)[0]}
+    interrupted = {**before, mover: sorted(prior | landed),
+                   unit.holder: sorted(group - landed)}
+    assert _custody(queue) == interrupted
+    calls = []
+
+    def resume(tier_id, holder, destination, count):
+        calls.append((destination, count))
+        return real(tier_id, holder, destination, count)
+
+    monkeypatch.setattr(queue, "transfer_tier_reservation_count", resume)
+    seen = _publish_until_bound(queue, tiers, movers)
+    assert not [event for event in seen
+                if "prelaunch-mover-occupied" in str(event)]
+    final = _assert_republication(
+        queue, plan, mover, row, old, bound, "transferring")
+    assert final["generation"] == reserved["generation"]
+    assert calls == [(mover, 3 - retained)]
+    expected = {**before, mover: sorted(bound)}
+    expected.pop(unit.holder)
+    assert _custody(queue) == expected
+    replay = pg.publish_chunk(
+        queue, TIER, unit.unit, unit.holder, plan, leg, row["published_unix"])
+    assert replay.status == "already" and replay.moved == 0
+    assert _custody(queue) == expected
