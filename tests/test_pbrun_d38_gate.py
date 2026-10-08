@@ -36,7 +36,7 @@ from test_slurm_lane import _submissions  # noqa: E402
 
 NAMESPACE = {"mode": "host", "cwd": "/work", "interpreter": "/usr/bin/python3",
              "mounts": [], "prerequisites": []}
-COMMAND = ("/bin/bash", "-lc", "printf ok")
+COMMAND = ("/bin/cat", "seed.txt", "--device", "cuda")
 NOW = datetime.datetime(2026, 10, 8, 16, 30, tzinfo=datetime.timezone.utc)
 ZERO_KEY = "0" * 64
 
@@ -111,38 +111,62 @@ def _run(tmp_path, monkeypatch, work, *options, command=COMMAND) -> int:
         return 1
 
 
+CPU_CHANGE = {"flag": "--device", "from": "cuda", "to": "cpu"}
+
+
+def _entry(target: dict) -> dict:
+    """The entry point of a sealed target: interpreter and script, or module."""
+
+    tc = list(target["params"]["command"])
+    if len(tc) > 2 and tc[1] == "-m":
+        return {"kind": "module", "interpreter": tc[0], "target": tc[2]}
+    return {"kind": "script", "interpreter": tc[0], "target": tc[1]}
+
+
+def _register(monkeypatch, target: dict, *changes: dict) -> None:
+    """A reviewed invocation descriptor for this entry point (none ships)."""
+
+    entry = _entry(target)
+    key = f"{entry['kind']}:{entry['interpreter']}:{entry['target']}"
+    monkeypatch.setitem(d38_gate.INVOCATIONS, key,
+                        {"cpu_changes": list(changes or [CPU_CHANGE])})
+
+
 def _seal(tmp_path, monkeypatch, work, *options, command=COMMAND):
     """The action pbrun would seal for these options, published nowhere."""
 
     _prepare(tmp_path, monkeypatch)
     args = pbrun.parse_args(_argv(work, *options, command=command)[1:])
     prepared = pbrun.prepare_submission(args)
-    return (pbrun.seal_action_from_template(prepared["template"]),
-            prepared["template"]["cas"])
+    action = pbrun.seal_action_from_template(prepared["template"])
+    _register(monkeypatch, action)
+    return action, prepared["template"]["cas"]
 
 
 def _plan(target: dict, *, namespace: dict = NAMESPACE, images: tuple = (),
           job: str | None = None, target_command: list | None = None,
-          cpu_command: list | None = None, differences: list | None = None) -> dict:
-    """The plan a producer files: the target it proves and how the CPU run differs."""
+          cpu_command: list | None = None, changes: list | None = None,
+          entry: dict | None = None) -> dict:
+    """The plan a producer files: the entry point, and the typed CPU changes."""
 
     tc = list(target["params"]["command"] if target_command is None
               else target_command)
     cc = list(cpu_command) if cpu_command is not None else [
-        *tc[:-1], tc[-1] + " # cpu"]
+        "cpu" if token == "cuda" else token for token in tc]
     return {"schema": d38_gate.PLAN_SCHEMA,
             "target": {"job_identity_hash": job or target["action_key"],
                        "image_digest": list(images),
                        "namespace": _digest(namespace)},
+            "entry": entry or _entry(target),
             "target_command": tc, "cpu_command": cc,
-            "differences": [len(tc) - 1] if differences is None
-            else list(differences)}
+            "changes": [CPU_CHANGE] if changes is None else list(changes)}
 
 
 def _preflight_action(cas, checkout: Path, target: dict, *, tag: str = "a",
                       declared: bool = True, gpu: int = 0, plan_input: bool = True,
                       plan: dict | None = None, digest: str | None = None,
-                      cuda_mask: bool = True, nvidia_none: bool = False) -> dict:
+                      cuda_mask: bool = True, nvidia_none: bool = False,
+                      argv: list | None = None) -> dict:
     """A sealed CPU action that declares itself a D38 producer run."""
 
     checkout.mkdir(parents=True, exist_ok=True)
@@ -156,7 +180,7 @@ def _preflight_action(cas, checkout: Path, target: dict, *, tag: str = "a",
                                     input_id=d38_gate.PLAN_INPUT_ID)
         inputs, plan_digest = [entry], str(entry["sha256"])
     command = list(plan["cpu_command"])
-    argv = movement_actions.standard_capture_argv(
+    argv = argv or movement_actions.standard_capture_argv(
         command, "pbrun_result.txt", path_prefix="/opt/pb-tools")
     params: dict[str, object] = {
         "command": command, "demand": {"cpu": 1, "mem_gb": 1, "gpu": gpu}}
@@ -206,14 +230,14 @@ def _publish_receipt(tmp_path: Path, cas, target: dict, *, tag: str = "a",
                      gpu: int = 0, plan_input: bool = True,
                      plan: dict | None = None, digest: str | None = None,
                      cuda_mask: bool = True, nvidia_none: bool = False,
-                     **body_options) -> str:
+                     argv: list | None = None, **body_options) -> str:
     """Publish a preflight action and its result through the real CAS."""
 
     checkout = tmp_path / f"pf-checkout-{tag}"
     action = _preflight_action(
         cas, checkout, target, tag=tag, declared=declared, gpu=gpu,
         plan_input=plan_input, plan=plan, digest=digest, cuda_mask=cuda_mask,
-        nvidia_none=nvidia_none)
+        nvidia_none=nvidia_none, argv=argv)
     key = str(action["action_key"])
     body = _body(target, key=body_options.pop("key", key), **body_options)
     out = tmp_path / f"receipt-{tag}.json"
@@ -502,7 +526,7 @@ def _case_no_plan_input(tmp_path, cas, target):
 
 def _case_unrelated_entry_point(tmp_path, cas, target):
     unrelated = _plan(target, cpu_command=["/bin/echo", "unrelated"],
-                      differences=[0, 1])
+                      changes=[])
     return _publish_receipt(tmp_path, cas, target, tag="unrelated", plan=unrelated)
 
 
@@ -515,7 +539,7 @@ def _case_plan_for_another_command(tmp_path, cas, target):
     return _publish_receipt(tmp_path, cas, target, tag="othercmd",
                             plan=_plan(target, target_command=["/bin/true", "x"],
                                        cpu_command=["/bin/true", "y"],
-                                       differences=[1]))
+                                       changes=[]))
 
 
 def _case_plan_digest_mismatch(tmp_path, cas, target):
@@ -526,8 +550,7 @@ def _case_plan_moves_the_entry_point(tmp_path, cas, target):
     tc = list(target["params"]["command"])
     return _publish_receipt(
         tmp_path, cas, target, tag="moved",
-        plan=_plan(target, cpu_command=[tc[0], tc[1] + "-cpu", *tc[2:]],
-                   differences=[1]))
+        plan=_plan(target, cpu_command=[tc[0], tc[1] + "-cpu", *tc[2:]]))
 
 
 def _case_undeclared_difference(tmp_path, cas, target):
@@ -535,7 +558,39 @@ def _case_undeclared_difference(tmp_path, cas, target):
     return _publish_receipt(
         tmp_path, cas, target, tag="undeclared-diff",
         plan=_plan(target, cpu_command=[*tc[:-1], "something else"],
-                   differences=[]))
+                   changes=[]))
+
+
+def _case_a_change_the_registry_does_not_list(tmp_path, cas, target):
+    tc = list(target["params"]["command"])
+    other = {"flag": "--device", "from": "cuda", "to": "something-else"}
+    return _publish_receipt(
+        tmp_path, cas, target, tag="unlisted-change",
+        plan=_plan(target, cpu_command=[*tc[:-1], "something-else"],
+                   changes=[other]))
+
+
+def _case_changed_input_argument(tmp_path, cas, target):
+    tc = list(target["params"]["command"])
+    return _publish_receipt(
+        tmp_path, cas, target, tag="inputarg",
+        plan=_plan(target, cpu_command=[tc[0], "other-input.txt", *tc[2:-1], "cpu"]))
+
+
+def _case_shell_program(tmp_path, cas, target):
+    """The program is slot 2 of a shell: no descriptor can identify it."""
+    shell = ["/bin/bash", "-lc", "printf unrelated"]
+    return _publish_receipt(
+        tmp_path, cas, target, tag="shell",
+        plan=_plan(target, target_command=shell, cpu_command=shell, changes=[],
+                   entry={"kind": "script", "interpreter": "/bin/bash",
+                          "target": "-lc"}))
+
+
+def _case_unrelated_task_argv(tmp_path, cas, target):
+    """Correct plan and params, but the task executes something else."""
+    return _publish_receipt(tmp_path, cas, target, tag="argv",
+                            argv=["/bin/true", "unrelated"])
 
 
 def _case_no_cuda_mask(tmp_path, cas, target):
@@ -551,7 +606,9 @@ CASES = [_case_missing, _case_other_job, _case_other_namespace,
          _case_tampered, _case_no_plan_input, _case_unrelated_entry_point,
          _case_plan_for_another_job, _case_plan_for_another_command,
          _case_plan_digest_mismatch, _case_plan_moves_the_entry_point,
-         _case_undeclared_difference, _case_no_cuda_mask]
+         _case_undeclared_difference, _case_a_change_the_registry_does_not_list,
+         _case_changed_input_argument, _case_shell_program,
+         _case_unrelated_task_argv, _case_no_cuda_mask]
 
 
 @pytest.mark.parametrize("case", CASES, ids=lambda c: c.__name__[6:])
@@ -580,7 +637,7 @@ def test_a_changed_job_invalidates_the_old_receipt(
     key = _publish_receipt(tmp_path, cas, target)
     assert _run(tmp_path, monkeypatch, work, "--gpu", "--detach",
                 "--d38-namespace", str(ns), "--d38-receipt", key,
-                command=("/bin/bash", "-lc", "printf changed")) == 2
+                command=("/bin/cat", "seed.txt", "--device", "cpu")) == 2
     assert _ready(tmp_path) == []
 
 
@@ -958,3 +1015,65 @@ def test_an_attached_cache_hit_without_evidence_publishes_nothing(
     code = _run(tmp_path, monkeypatch, work, "--gpu", "--d38-namespace", str(ns))
     assert code == 2, capsys.readouterr().err
     assert _ready(tmp_path) == []
+
+
+# --------------------------------------------------------------------------
+# The invocation contract: the entry point is identified, not guessed
+# --------------------------------------------------------------------------
+
+MODULE = ("/usr/bin/python3", "-m", "gpu_harness", "--device", "cuda")
+
+
+def test_a_module_entry_point_with_a_listed_cpu_change_is_authorized(
+        tmp_path, monkeypatch, capsys) -> None:
+    work = _checkout(tmp_path)
+    _queue(tmp_path)
+    ns = _namespace_file(tmp_path)
+    target, cas = _seal(tmp_path, monkeypatch, work, "--gpu",
+                        "--d38-namespace", str(ns), command=MODULE)
+    key = _publish_receipt(tmp_path, cas, target)
+    code = _run(tmp_path, monkeypatch, work, "--gpu", "--detach",
+                "--d38-namespace", str(ns), "--d38-receipt", key,
+                command=MODULE)
+    assert code == 0, capsys.readouterr().err
+    assert len(_ready(tmp_path)) == 1
+
+
+def test_a_changed_module_is_refused(tmp_path, monkeypatch, capsys) -> None:
+    work = _checkout(tmp_path)
+    _queue(tmp_path)
+    ns = _namespace_file(tmp_path)
+    target, cas = _seal(tmp_path, monkeypatch, work, "--gpu",
+                        "--d38-namespace", str(ns), command=MODULE)
+    other = ["/usr/bin/python3", "-m", "unrelated_module", "--device", "cpu"]
+    key = _publish_receipt(tmp_path, cas, target, plan=_plan(
+        target, cpu_command=other))
+    assert _run(tmp_path, monkeypatch, work, "--gpu", "--detach",
+                "--d38-namespace", str(ns), "--d38-receipt", key,
+                command=MODULE) == 2
+    assert _ready(tmp_path) == []
+
+
+def test_a_receipt_for_an_entry_point_with_no_reviewed_descriptor_is_refused(
+        tmp_path, monkeypatch, capsys) -> None:
+    """No descriptor ships, so no receipt authorizes anything until a harness
+    owner adds a reviewed one: exception-only, as the producer is not built."""
+
+    work, ns, target, cas = _gpu_target(tmp_path, monkeypatch)
+    key = _publish_receipt(tmp_path, cas, target)
+    monkeypatch.setattr(d38_gate, "INVOCATIONS", {})
+    assert _run(tmp_path, monkeypatch, work, "--gpu", "--detach",
+                "--d38-namespace", str(ns), "--d38-receipt", key) == 2
+    assert "reviewed invocation descriptor" in capsys.readouterr().err
+    assert _ready(tmp_path) == []
+
+
+def test_the_shipped_registry_is_empty() -> None:
+    import subprocess
+
+    shipped = subprocess.run(
+        [sys.executable, "-c",
+         "import sys; sys.path[:0] = ['src', 'tools/fleet'];"
+         "import d38_gate; print(len(d38_gate.INVOCATIONS))"],
+        cwd=REPOSITORY, capture_output=True, text=True)
+    assert shipped.stdout.strip() == "0", shipped.stderr
