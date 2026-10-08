@@ -414,7 +414,8 @@ WITHHOLD_CARRYING_REASONS = frozenset({
 #: so no token moves until the plan matches the manifest (#1594).
 RESIDENCY_REFUSAL_STATES = ("lead_not_resident", "lead_unpinned", "map_not_composed",
                             "map_stale", "map_unreadable", "plan_unreadable",
-                            "ram_epoch_stale", "prelaunch_undeclared")
+                            "ram_epoch_stale", "prelaunch_undeclared",
+                            "map_incomplete")
 
 #: Pending-lead statuses (``residency_verdict``'s ``pending``) that a later
 #: poll can still see land: a lead with no ending yet (``absent``), and a lead
@@ -5729,6 +5730,10 @@ class PoolQueue:
         #: answer never changes and the request is read once per row.
         self._prelaunch_row_manifests: dict[
             tuple[str, str], tuple[str, Mapping[str, object] | None]] = {}
+        #: ``(source fragment path, mtime_ns, size)`` to the entry keys the
+        #: source holds (:meth:`_shared_vouch_gap`); bounded, rebuilt on any
+        #: change of the source.
+        self._vouch_keys_memo: dict[tuple[str, int, int], frozenset[str]] = {}
         #: The last claim pass's transition holds (#1029), or ``None`` before
         #: the first pass: :meth:`_TransitionHolds.summary`.
         self.last_claim_pass: dict[str, object] | None = None
@@ -18148,6 +18153,10 @@ class PoolQueue:
                     "missing_leads": missing,
                     "generation": document.get("generation"),
                     "leads": [str(lead) for lead in leads]}
+        if isinstance(key, str):
+            incomplete = self._shared_vouch_gap(key, leads, composed, document)
+            if incomplete is not None:
+                return incomplete
         # A ram overlay is resident only within the epoch it landed under
         # (#640).  tmpfs empties on reboot while the map survives, so a map
         # still naming ram paths is compared against the epoch the ram tier
@@ -18172,6 +18181,90 @@ class PoolQueue:
                         "leads": [str(lead) for lead in leads]}
         return {"state": "resident", "leads": [str(lead) for lead in leads],
                 "map_path": str(composed)}
+
+    def _shared_vouch_gap(self, key: str, leads: Sequence[object],
+                          composed: Path, document: Mapping[str, object],
+                          ) -> dict[str, object] | None:
+        """``map_incomplete`` when a declared prefix would be admitted on part of its vouch.
+
+        A lead another consumer sealed is a shared range (#1026), and the tier
+        loop's fan-out gives this consumer a fragment of its own for the
+        entries the source material has dated so far.  So the composed map can
+        name every lead and still hold only part of what the lead staged: the
+        gate above checks leads, not entries.  A streaming consumer reads the
+        rest lazily and loses nothing.  A declared prefix is promised whole
+        before launch, and its reader refuses an entry nothing vouches for.
+        On 2026-10-08 a consumer of 899 declared entries was claimed on a
+        map of one and failed on its first read; the complete fragment was
+        filed five seconds later (#1594).
+
+        The comparison is against the composed map, because that is the
+        document the consumer receives: the fan-out can complete the
+        consumer's fragment a cycle before :func:`compose_map` rewrites the
+        map from it.  Only a consumer whose filed plan declares a prefix asks.
+        Only a lead whose source fragment is filed under its share namespace
+        is compared: where there is none, the mover's own fragment is the
+        vouch.  A source this reader cannot read is not an answer either way,
+        so it is ``map_unreadable``, as the map's own read errors are.  The
+        source's key set is remembered by its size and mtime.
+        """
+
+        from . import residency_plan
+
+        if not residency_plan.filed_prelaunch_phases(self, key):
+            return None
+        root = self.residency_fragment_root()
+        mapped = document.get("entries")
+        mapped = mapped if isinstance(mapped, Mapping) else {}
+        all_leads = [str(lead) for lead in leads]
+
+        def unreadable(what: str, exc: Exception) -> dict[str, object]:
+            return {"state": "map_unreadable", "map_path": str(composed),
+                    "error": f"{what}: {exc!r}", "leads": all_leads}
+
+        unvouched: dict[str, int] = {}
+        for lead in all_leads:
+            try:
+                receipt = self.move_record(lead)
+            except (OSError, ValueError, PoolContractError) as exc:
+                return unreadable(f"move receipt of {lead}", exc)
+            if not isinstance(receipt, Mapping):
+                continue
+            try:
+                namespace = residency_plan.share_namespace(
+                    str(receipt["manifest_sha256"]), str(receipt["tier_id"]),
+                    int(receipt["range_start_bytes"]),  # type: ignore[call-overload]
+                    int(receipt["range_end_bytes"]))  # type: ignore[call-overload]
+            except (KeyError, TypeError, ValueError):
+                continue
+            source = residency_map.fragment_path(root, namespace, lead)
+            try:
+                info = source.stat()
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                return unreadable(str(source), exc)
+            memo_key = (str(source), info.st_mtime_ns, info.st_size)
+            keys = self._vouch_keys_memo.get(memo_key)
+            if keys is None:
+                try:
+                    entries = json.loads(source.read_text()).get("entries")
+                    if not isinstance(entries, dict):
+                        raise ValueError("the fragment has no entries mapping")
+                except (OSError, ValueError, AttributeError) as exc:
+                    return unreadable(str(source), exc)
+                keys = frozenset(entries)
+                if len(self._vouch_keys_memo) >= 64:
+                    self._vouch_keys_memo.clear()
+                self._vouch_keys_memo[memo_key] = keys
+            gap = sum(1 for entry in keys if entry not in mapped)
+            if gap:
+                unvouched[lead] = gap
+        if not unvouched:
+            return None
+        return {"state": "map_incomplete", "map_path": str(composed),
+                "missing": sum(unvouched.values()), "unvouched": unvouched,
+                "leads": all_leads}
 
     def _residency_plan_refusal(self, consumer_action_key: object) -> str | None:
         """Why this consumer's frozen plan will not validate, or ``None``.
