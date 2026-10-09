@@ -5082,10 +5082,207 @@ FAILED or WITHDRAWN, including a one-attempt member the reaper failed after a lo
 lease, so a sibling that is already running is withdrawn rather than left waiting
 in its collective.
 
-**Priority rule.** A gang fences only against strictly lower priority. Equal or
-higher priority work can still take a fenced host; that is the existing priority
-semantics. Run window gangs (Goal 1 EXL3/PACT, Goal 2 served A/Bs) at priority 10,
-with routine work at 0 or below.
+**Priority rule.** A gang fences strictly lower priority work from the moment a
+member's host elects. Work of the gang's own priority is untouched while the gang
+is young. Once the gang has waited longer than `GANG_RESERVE_AFTER_S` (ten
+minutes) since its first member was published, it RESERVES its elected member's
+declared demand on each elected host (#1579): a new equal-priority row is admitted
+only if, in every dimension the member declares, `held + row + reserved <=
+capacity`, with `held` and `capacity` read from the host's resource ledger under
+host admission. Otherwise it is denied as `deferred_for_gang_reservation`, and the
+denial names each dimension and its shortfall. The rule never changes running work.
+The arithmetic uses the census row, the actual claim demand, and the host ledger.
+The claim demand includes any export allowance for a producer.
+The bounded census also projects movement identities from requests it already reads.
+It reads no plan and does not trace prerequisites.
+Bootstrap precedence needs one additional bounded census before admission.
+A reservation shortfall never becomes a loan.
+The existing lower-priority backfill rule remains unchanged.
+
+Unknown is consuming, never exempt. A candidate that omits `cpu` or `mem_gb`, that
+declares `cpu` as zero (`adaptive_cpu` reads that as unbounded CPU use), or whose
+demand does not read, counts as the whole host in that dimension. An omitted `gpu` is
+zero unless the row sets `needs_gpu`, and so is any other omitted ledger dimension
+such as `spool_gb`. A member whose demand does not read reserves the whole host. A host
+ledger that does not read denies the row for the pass.
+
+Only a READY member reserves. The census records `member_state` for the exact publication.
+A CLAIMED member already holds ledger tokens. A terminal member holds no tokens.
+Neither state reserves more demand or suspends measurement precedence.
+The lower-priority fence lasts until the gang ends.
+
+A member that reserves anything on a host and leaves its `cpu` or `mem_gb` out, or
+declares `cpu` as zero, is unknown in that dimension, as a candidate row is: it
+reserves all of it. A member that declares no host dimension at all reserves nothing
+there. The reservation drains a host for the member: a row is admitted only if the
+member would still fit beside it right now, in every dimension the member declares. A
+row that asks nothing of a reserved dimension is therefore still held while running work
+occupies that dimension. A gang that cannot start because a sibling host is away or busy
+keeps its elected hosts reserved, as it keeps them fenced against strictly lower
+priority. Withdraw the gang to release them. Never held: the gang's own members and any gang's (two gangs of one priority
+are ordered by `rank`), higher priority, a verified publication canary slot (its
+own next-free-safe-boundary contract) and the two roles PrismaBuild itself assigns.
+
+**Where the reservation applies (#1659).** The host needs two proofs:
+
+- `runtime_publication.live_authority` verifies a mature copy of the process's generation.
+- `movement_drained` verifies that no live, unqualified movement row can run on this host.
+
+Copy age alone does not prove drain completion. READY time has no execution deadline.
+The bounded census includes READY, CLAIMED, and transition records.
+An unqualified movement row keeps the host on main's fallback until that row ends.
+This rule covers retained tools, older generations, and the previous non-isolated sealer.
+The host evaluates tags and GPU requirements with its existing placement predicate.
+A CLAIMED row belongs to its recorded host.
+Each pass reads a complete census under host admission.
+Later candidates retain known movement obligations and refresh member state and demand.
+A successful claim ends the pass. The next pass reads new publications.
+Measurement election and bootstrap precedence use the same proof.
+
+A missing, stale, or fresh copy also keeps main's fallback.
+The fallback preserves the lower-priority fence and adds no equal-priority reservation.
+It grants no movement role and bypasses no resource limit.
+It does not change a sealed action or refuse a payload launch.
+
+**The two roles.** `returns_capacity` marks a node whose whole job is to give
+capacity back: a stage or RAM egress (`stage_release.py`), a produced export
+(`produced_export.py`) or a resident evict (`local_resident.py`). `serves_residency`
+marks a stage mover or RAM promotion a residency consumer waits on (`stage_move.py`,
+`ram_promote.py`, carrying its residency range). A role needs a tool spelled in a
+protected copy, and only a tier that announces the protected tool root seals one. Today
+that is `tier_loop.py` (the stage and RAM tiers). The local tier loop announces its own
+directory, so a local resident evict carries no role yet. Neither role is a declaration. `PoolQueue.publish` refuses
+both names in a sealed action and derives the role from the node's EXECUTED identity
+(`movement_actions.capacity_role`), from the sealed definition alone and reading no
+file of the publishing box. `task.argv` must equal exactly the bash capture wrapper
+that `seal_movement_action` builds around `params.command` and `task.result_path`
+(`captured_command`), so `params.command` is what runs. The task must carry the
+`MOVEMENT_TASK` fields and the execution scope must be `MOVEMENT_EXECUTION_SCOPE`.
+The sealed environment must be exactly the movement launch (`movement_environment`
+plus the sealer's Docker ownership), so no `BASH_ENV`, `PYTHONPATH` or other startup
+hook reaches the wrapper. The interpreter must be the root-owned `/usr/bin/python3`
+run isolated (`-I` at `command[1]`), so no user-site startup code runs before the
+protected tool. The script must be spelled as a tool of a protected copy
+(`/opt/prismabuild/movement-generations/<generation>/tools[/fleet]/<name>`), never a
+retained-store path or an alias. The demand is the small one the node is sealed with:
+a returner uses at most one CPU and one GiB and tier kinds only, a mover carries its
+residency range, and neither role permits a GPU. A resident returner needs one literal
+`--operation evict`; duplicate, equals and abbreviated forms stay ordinary.
+`recompute` is not a condition.
+
+The row records the role and the tool it was derived for (`movement_script`). The host
+that enforces the reservation decides whether the mark stands
+(`movement_actions.authorized_role`): the tool must be a member of a protected copy
+that host holds. That means root custody through every path component, a publication
+record bound to the copy's receipt, the member's digest from that receipt, and a
+spelled path that is the member itself and not a link to it. A mark with no such tool
+exempts nothing: a hand-written row, a tool of a generation this host lacks, an
+altered file. The publishing box needs no copy of its own; the control seat that
+seals movers does not have to be enrolled.
+
+**Protected copies.** The copy of a generation lives under
+`/opt/prismabuild/movement-generations/<generation>`. It holds every member of the
+generation's receipt, byte for byte, with the receipt itself and
+`MOVEMENT_PUBLICATION.json`, which binds the generation to the SHA-256 of
+`RUNTIME_VERSION.json`. Root owns every path component, and no component is writable
+by group or other, so a submitter and an ordinary store owner can neither create nor
+alter a copy. Copies are append-only and are made without executing a byte of them.
+A mover that runs from the copy imports from the copy, so its imports are as
+protected as the tool.
+
+**Publication without a person.** No root step runs per generation.
+An administrator enrolls each host once with `tools/fleet/install_movement_publisher.sh --approval-key HEX`.
+The installer puts `runtime_publication.py` and `digest_primitives.py` under the root-owned `/opt/prismabuild`.
+It installs root-owned settings, a mode-0400 verification secret, and `prismabuild-movement-publish.timer`.
+The secret path is `/etc/prismabuild/movement-approval.key`.
+The timer calls `runtime_publication.converge` once a minute.
+The program reads the live runtime pointer from the enrolled store.
+It requires publisher approval before it creates a copy.
+The `<generation>.approval` sibling contains an HMAC of the trusted receipt digest.
+`publish_runtime.py` constructs the receipt bytes and retains their digest in memory.
+Its signer consumes that digest, not a receipt read from the exposed store.
+A replacement generation therefore cannot obtain approval for its replacement bytes.
+The timer verifies the exposed receipt and every member against that approval.
+The root program uses the standard-library digest owner beside its installed source.
+Isolated Python imports that owner only from the installed directory.
+The publisher and root program preserve the existing receipt and signature formats.
+
+The dedicated publisher account holds its 0600 secret outside submitter and store-owner accounts.
+A same-account key is refused. An administrator approves the account and enrolls each host once.
+Each later publication needs no person or root command.
+The timer copies only the approved live generation.
+Older workers retain copies from previous publications.
+The unit records `published`, `current`, or `error` in `/var/lib/prismabuild-movement-publish/status.json`.
+A publication error preserves main's fallback. The next timer pass can retry.
+
+**Tool roots.** A box that holds the copy of its tier loop's generation announces the
+copy's tool directory as `mover_tools_root` (`tier_loop.announced_tools_root`); a box
+without it announces its own directory, as before. The announcement is rebuilt each
+cycle. A submitter on another box seals exactly the path the tier announced
+(`movement_tools`), and `seal_movement_action` never swaps in a path from the sealing
+box. A mover is therefore launched from a file that its own box has. A box that lacks
+the copy gets ordinary paths and no launch refusal. A produced export runs on its
+producer's own host, so the producer seals it from its own host's copy when it holds
+one (`produced_spool.export_tool`). A change of `mover_tools_root` is a new tier
+announcement, and the shared-range registry already replaces a registration sealed
+against another announcement.
+
+Residual and limits. A caller can choose arguments for a genuine protected tool within its demand limits.
+Queue writers remain trusted, as they are for priority.
+A queue writer can pair a valid protected path with another action.
+The submission API cannot do this.
+
+A retained path never grants a role. Its bytes remain mutable to ordinary store owners.
+An unqualified movement row suspends reservation on each host that can run it.
+A stream of such rows can delay reservation without a fixed bound.
+This conservative fallback avoids a prerequisite deadlock without trusting mutable code.
+New movements use the protected tool root after its tier announces that root.
+
+Protected copies are append-only. An administrator must retain every copy that a sealed row still names.
+Role exemptions retain CPU, memory, GPU, and tier admission.
+The role check adds no launch refusal under D32.
+The change modifies no allocator or kernel path under D41.
+
+CEO decision `dec-1009-062221-f41c` requires publication authority outside
+submitters and ordinary store owners. The decision of 2026-10-09 for PR #1584 removes
+the person from each generation: no per-generation manual root step; if root is needed
+it is a one-time install per host that an administrator applies once; a missing, stale
+or fresh copy falls back to the behaviour of main and never deadlocks a gang. The
+authority is the publisher approval sibling from the dedicated publisher account (see
+"Publication without a person"): root copies only what that account approved, after
+checking every member against the receipt. A same-account signing key is refused. No
+deployment or live gang qualification is claimed here. D45 remains active. SC-01 remains
+PB-owned admission. SC-02 remains PB-owned movement. ID-08 still requires separate
+runtime deployment evidence; source support does not prove deployment.
+
+An incomplete movement environment produces an ordinary row. This rule also applies
+when both Docker ownership keys are present. `PATH`, `LANG` and `LC_ALL` must all
+exist before the classifier compares their values.
+
+On a host that holds the copy, a host is never both withheld for a waiting
+measurement and reserved for a gang:
+once the gang's ten minutes elapse the reservation wins on that host over a
+measurement of the gang's priority or lower. That measurement's fence and withhold,
+including a carried withhold (one that snapshots a drain deadline), are suspended
+there, it does not elect on the host, and a gang member past the bound is not held
+back behind it, so the member can elect. A strictly HIGHER-priority measurement keeps
+its place ahead of the gang and still elects and withholds: that is the priority
+order, not a reservation exception (gangs may run at a priority above routine work,
+and under D45 at 0, so only a ship-window measurement outranks them). A suspended
+measurement row stays READY and withholds again once the gang has started and no
+READY gang reserves the host. Main's fallback also preserves measurement precedence.
+These source tests do not prove a live gang start-time bound.
+Legacy drain time and unrelated movement traffic can extend the wait.
+
+Known limit: the roles are exempt from the arithmetic but not unbounded in effect.
+A stream of unrelated movers or releases on a member host can each delay the gang by
+one run, and token-bounded movers do not prove that the gang progresses in every
+configuration: the tier ledger can still refuse a mover whose tokens are held by work
+that waits on the gang. The reservation bounds what new ordinary work can take; it
+does not make the tier's own accounting live. A returner or mover published by an
+older generation has the same role only when its sealed definition and protected copy qualify.
+Otherwise, its live movement row preserves main's fallback until it ends.
+Before 2026-10-06, equal-priority singles could refill both Sparks while a gang waited fourteen minutes.
 
 **Mixed generations.** An old worker offers no `gang-v1` and ignores `gangs/`, so
 it never claims a member. During a rolling publish it may not honour a gang

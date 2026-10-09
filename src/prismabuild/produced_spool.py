@@ -23,7 +23,7 @@ import stat
 import time
 
 from . import core, movement_actions, pool, produced_output as po, reader_lease
-from . import adaptive_cpu, filesystem_capacity, storage_tiers
+from . import adaptive_cpu, filesystem_capacity, resource_scope, runtime_publication, storage_tiers
 
 API_VERSION = 1
 ROOT_ENV = "PRISMABUILD_PRODUCED_SPOOL_ROOT"
@@ -435,6 +435,20 @@ class ExportPacer:
                                        if seconds > 0 else None)}
 
 
+def export_tool() -> Path:
+    """The ``produced_export.py`` an export of this producer runs (#1659).
+
+    An export runs on its producer's own host (``tags=[self.host]``), so this
+    host's protected copy of the generation is the copy the executing host has,
+    and the export is sealed from it: the bytes then cannot change under it, and
+    a gang's reservation can tell it from other work.  Without the copy the
+    export is sealed from the generation as before and carries no movement role.
+    """
+    tool = Path(__file__).resolve().parents[2] / "tools" / "fleet" / "produced_export.py"
+    return runtime_publication.protected_counterpart(
+        tool, retained_store=resource_scope.RETAINED_GENERATION_STORE) or tool
+
+
 class ProducedSpool:
     def __init__(self, queue, instance, template, *, cas_root, root,
                  max_bytes=32 << 30):
@@ -646,8 +660,7 @@ class ProducedSpool:
                 self.queue, self.request, self.owner, extra_inputs=[manifest_input])
             if not templated.get("ok"):
                 raise SpoolError(str(templated))
-            tool = Path(__file__).resolve().parents[2] / "tools" / "fleet" / "produced_export.py"
-            command = ["/usr/bin/python3", str(tool), "--queue", str(self.queue.root),
+            command = ["/usr/bin/python3", str(export_tool()), "--queue", str(self.queue.root),
                        "--manifest", str(manifest_path), "--manifest-sha256", manifest_input["sha256"]]
             demand = dict(adaptive_cpu.EXPORT_DEMAND)
             # Opted in, the pool write enters under a reservation on the tier
