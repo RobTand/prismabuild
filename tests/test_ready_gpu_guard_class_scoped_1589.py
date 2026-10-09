@@ -906,3 +906,49 @@ def test_a_funded_candidate_pays_its_full_cost(tmp_path, monkeypatch):
     assert held["kept_for"] == "class_scoped_cpu_projected_cpu_cost", held
     assert held["holder_cost"] == 2.0 and held["gpu_cost"] == 4.0
 
+
+# --- review 6: the replay counts in-flight claiming.* reservations (P1 at cbd2705) ---
+
+
+def test_an_in_flight_borrowing_sibling_counts_against_the_gpu_rows_headroom(
+        tmp_path, monkeypatch, host):
+    """The replay counts a claiming.* reservation at its declared cost, like the owner.
+
+    A sibling admission in flight holds 2 physical CPU tokens but declares 4:
+    it borrows 2 proven-idle CPUs, as a real borrower does.  The owner's
+    projected-cost rule charges the declared 4 to pending; the replay skipped
+    claiming.* directories and charged 0, so a 2-CPU class row beside the 4-CPU
+    GPU row on 8 CPUs passed (0 + 2 + 4 <= 8) and then kept the GPU row out
+    (4 + 2 + 4 > 8).  Tokens alone cannot tell: 6 free minus 2 still leaves the
+    GPU room of 4.  Now the replay charges the declared 4, the class row waits
+    for the GPU row, and it follows once the sibling lands.
+    """
+    rig = _adaptive_fleet(tmp_path, monkeypatch, host)
+    queue, publish, claim = rig["queue"], rig["publish"], rig["claim"]
+    gpu_key = publish(_key("gpu"), gpu=True, tags=["gb10"],
+                      resources={"cpu": 4, "gpu": 1, "mem_gb": 8})
+    ledger = queue.ledger()
+    ledger.configure_cpu_tiers(rig["tiers"])
+    ledger.ensure_capacity(rig["capacity"])
+    handle = ledger.begin_acquire(
+        _key("sibling"), {"cpu": 4, "mem_gb": 4},
+        adaptive={"declared_cpu": 4, "preferred_borrow": 2,
+                  "borrowable_cpus": list(range(8))},
+        cpu_tiers=rig["tiers"])
+    assert handle is not None and handle.startswith(pool.ACQUIRING_PREFIX), handle
+    base = adaptive_cpu.local_state_base(ledger.base)
+    adaptive_cpu.write_json(base / "jobs.json", {})
+    probe = adaptive_cpu.Controller(ledger, rig["tiers"])
+    probe._host_sample = {"sampled_unix": rig["clock"][0], "busy_cpus": 0.0,
+                          "cpu_count": 8, "interval_s": 1.0}
+    costs = pool.PoolQueue._class_scoped_holder_costs(ledger, probe)
+    assert costs is not None, costs
+    assert costs["active"] == 4.0 and costs["pending"] == 4.0, costs
+    class_key = publish(_key("class"), tags=["gb10"], resources={"cpu": 2, "mem_gb": 4}, priority=1)
+    run = claim()
+    assert run is not None and run["action_key"] == gpu_key, run
+    assert queue.item_path(pool.READY, class_key).exists()
+    assert _denial(queue, class_key)["reason"] == "deferred_for_ready_gpu_row"
+    ledger.abandon_acquire(handle)
+    rig["tick"]()
+    assert claim()["action_key"] == class_key

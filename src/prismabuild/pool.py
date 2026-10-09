@@ -19748,7 +19748,10 @@ class PoolQueue:
         ``MIN_INTERVAL_S`` to ``MAX_INTERVAL_S`` prices a rate (``cpu * 1.25``);
         a shorter delta reuses the cached rate the owner's own decision just
         priced, and anything else charges the full reservation to ``pending``
-        too, against the fresh host busy baseline.  Measurement holders are not
+        too, against the fresh host busy baseline.  Every directory the owner's
+        scan counts is counted here, in-flight ``claiming.*`` reservations
+        included, at the declared cost the owner charges them (a borrowing
+        sibling declares more than the physical tokens it holds).  Measurement holders are not
         priced here: a measurement on the box refuses the GPU row on its own, and the
         exemption must not price what it cannot share.  ``None`` when any term
         does not read -- unknown costs are unknown, never zero -- and when
@@ -19786,8 +19789,14 @@ class PoolQueue:
             for holder in ledger.held_dir.iterdir():
                 if not holder.is_dir() or holder.name.startswith(storage_tiers.RAM_HOST_MEMORY_PREFIX):
                     continue
-                if holder.name.startswith(ACQUIRING_PREFIX):
-                    continue
+                # No acquiring skip: the owner counts an in-flight ``claiming.*``
+                # reservation in the same scan (``adaptive_cpu.decision``), at its
+                # declared cost.  A borrowing sibling holds fewer physical tokens
+                # than it declares, so skipping it understates ``pending`` and lets
+                # a class row pass that then keeps the GPU row out.  A claiming
+                # directory has no telemetry under its own handle name, so it
+                # always charges its full reservation to ``pending`` -- the same
+                # answer the owner's own decision reads.
                 meta = cpu_admission.read_json(holder / cpu_admission.METADATA)
                 physical = len(list(holder.glob("cpu-*")))
                 reserved = meta.get("declared_cpu", physical)

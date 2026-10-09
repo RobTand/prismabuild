@@ -5132,8 +5132,8 @@ every holder's conservative cost from its reservation and fresh local telemetry
 host CPU count. Holder costs use the owner's interval rule: the rate comes from
 this interval's telemetry delta against the controller's cached previous record,
 never a lifetime average, so a quiet past cannot hide a busy present; a holder
-without a valid interval charges its full reservation, and unknown costs hold the row. A funded row still pays its full sealed demand, not its token remainder: the owner charges a funded holder's reservation in full while its rate is unknown. A busy incumbent, an unattributed starter, and a second class
-holder each count; unknown costs hold the row. Without a controller there is no
+without a valid interval charges its full reservation, and unknown costs hold the row. A funded row still pays its full sealed demand, not its token remainder: the owner charges a funded holder's reservation in full while its rate is unknown. A busy incumbent, an unattributed starter, a second class
+holder, and an in-flight (`claiming.*`) reservation each count at the declared cost the owner's own rule charges (a borrowing sibling declares more than the physical tokens it holds); unknown costs hold the row. Without a controller there is no
 projected-cost gate, so the token fit stands alone. What the replay proves is
 bounded: the projected-cost gate at this sample. Later samples, learned costs,
 host pressure, and the GPU row's own later gates still decide its own claim, so
