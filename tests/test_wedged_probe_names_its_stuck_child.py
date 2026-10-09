@@ -70,3 +70,51 @@ def test_wedged_sample_names_the_stuck_child_state_and_wchan(tmp_path, monkeypat
                 os.waitpid(pid, 0)
             except (ChildProcessError, OSError):
                 pass
+
+
+def test_timed_out_sample_names_its_stuck_child_when_still_outstanding(tmp_path, monkeypatch):
+    """The refusing sample itself carries the cause, not only the next one.
+
+    Refs #1398: the 2026-09-30 refusal was `timed_out`, not `wedged`.
+    When the timed-out child is still outstanding after bounded reaping,
+    that sample must carry its kernel state and wchan at its own time.
+    """
+    real_kill = os.kill
+    monkeypatch.setattr(os, "kill", lambda pid, sig: None)
+    sampler = mount_latency.MountSampler(
+        str(tmp_path), host="timed-out-child-fixture", probe=_sleeping_probe,
+        deadline_s=0.3, repeats=1, lock_dir=tmp_path / "locks",
+    )
+    pid = None
+    try:
+        first = sampler._run_probe()
+        assert first["status"] == "timed_out"
+        pid = sampler._outstanding_pid
+        assert pid is not None and pid > 0
+        assert first["outstanding_pid"] == pid
+        assert isinstance(first["child_state"], str) and first["child_state"]
+        assert isinstance(first["child_wchan"], str) and first["child_wchan"]
+        assert first["child_state"] in ("S", "D", "R", "T", "t")
+
+        line = mount_latency.one_line({
+            "host": "timed-out-child-fixture",
+            "probe": first,
+            "mount": {"transport": "test"},
+        })
+        assert "child=" in line
+
+        sink = io.StringIO()
+        mount_latency._emit({"probe": first}, sink)
+        text = sink.getvalue()
+        assert "SET timed_out = 1" in text
+        assert "stuck_child" in text
+    finally:
+        if pid is not None:
+            try:
+                real_kill(pid, 9)
+            except OSError:
+                pass
+            try:
+                os.waitpid(pid, 0)
+            except (ChildProcessError, OSError):
+                pass
