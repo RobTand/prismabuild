@@ -1,0 +1,592 @@
+{
+ "completion": {
+  "accepted": false,
+  "issue_must_remain_open": true,
+  "reason": "Worker-loss recovery and durable cleanup retry remain unqualified. The x86 scratch prerequisite needs separate provisioning. The approved SDK6 remains unpublished.",
+  "sdk6_contract_decision": "approved additive: dec-1009-090451-62a1",
+  "runtime_publication_authority": "The decision approves no deployment. pb-integrator owns publication.",
+  "qualification_authority": "The CEO approves isolated x86 qualification only. No live worker service fault is authorized."
+ },
+ "actions": [
+  {
+   "action_key": "bafc1442725d6c263fe7a03e2698f15201949a1ac954fbfb499d527e4879a72f",
+   "attempt_history": [
+    {
+     "attempt": 1,
+     "outcome": "attempts/bafc1442725d6c263fe7a03e2698f15201949a1ac954fbfb499d527e4879a72f/21d1c10f28406ce4314c3a82b769e1a58e3dd4d075f2f1172621d4889796116a/00000001.json"
+    }
+   ],
+   "cas_claim": "36d09e440eae347b5d9575f9cddfb62509dc4b0652ceb4db8d0b605c6d9d66ae",
+   "cleanup_export": {
+    "empty": true,
+    "ok": true,
+    "released": true,
+    "settled": true,
+    "stop_reason": "executed",
+    "stopped": true
+   },
+   "demand": {
+    "cpu": 1,
+    "mem_gb": 2,
+    "spool_gb": 2
+   },
+   "finished_host": "sparky",
+   "leaf": "/home/rob/tmp/ig1360-temp/prismabuild-ephemeral/14da6c3dd7c9945910d2dacc1b0c31d12f94110bafcd4d69a1ce5997810cecc8/bafc1442725d6c263fe7a03e2698f15201949a1ac954fbfb499d527e4879a72f/21d1c10f28406ce4314c3a82b769e1a58e3dd4d075f2f1172621d4889796116a/7e4deaeb5a224745b0cfe2350e43e76d/row-temp",
+   "lifetime_record": {
+    "entries": [
+     {
+      "cleaned": true,
+      "lifetime": "ephemeral"
+     },
+     {
+      "cleaned": true,
+      "lifetime": "persistent"
+     }
+    ],
+    "registration_complete": true
+   },
+   "returncode": 0,
+   "scenario": "normal",
+   "stderr_log": {
+    "bytes": 43,
+    "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+   },
+   "stdout_log": {
+    "bytes": 3604,
+    "sha256": "3897afc36a257302ce7bddfdf3847ed43167001d579840bb644bca943bd7f590"
+   },
+   "terminal": "done"
+  },
+  {
+   "action_key": "ac6e8e0b06a3a9d1d8a7ea452f4bc3732cd7af9339fdbaca287db43df6d3b09c",
+   "attempt_history": [
+    {
+     "attempt": 1,
+     "outcome": "attempts/ac6e8e0b06a3a9d1d8a7ea452f4bc3732cd7af9339fdbaca287db43df6d3b09c/67dfbde73c1900e40b7fbef54cf7a0e8fa6bc5f0ba2a20c5437c963cde5818b4/00000001.json"
+    }
+   ],
+   "cas_claim": null,
+   "demand": {
+    "cpu": 1,
+    "mem_gb": 2,
+    "spool_gb": 2
+   },
+   "finished_host": "sparky",
+   "lifetime_record": {
+    "entries": [
+     {
+      "cleaned": true,
+      "lifetime": "ephemeral"
+     },
+     {
+      "cleaned": true,
+      "lifetime": "persistent"
+     }
+    ],
+    "registration_complete": true
+   },
+   "returncode": 1,
+   "scenario": "failed",
+   "stderr_log": {
+    "bytes": 831,
+    "sha256": "dff36998a80fb5341c06709cce5209643d07d5b8d7c62b6d5dc843de2797829a"
+   },
+   "stdout_log": {
+    "bytes": 645,
+    "sha256": "390bd1f01a24e1cb6288ced89fa455b4daa9d6468db03e60999ae8a626823ec6"
+   },
+   "terminal": "failed"
+  },
+  {
+   "action_key": "ff7f5ba50f8e06a86158c66017438a5e4c4f1af5ea05d0ba4bfef4cda5b3a4e5",
+   "attempt_history": [
+    {
+     "attempt": 1,
+     "outcome": "attempts/ff7f5ba50f8e06a86158c66017438a5e4c4f1af5ea05d0ba4bfef4cda5b3a4e5/f717f8449338529d19d12a597c72224fc9629d4ccc6b9286787d4551e501a0df/00000001.json"
+    }
+   ],
+   "cas_claim": "64ac0935dfcd132248fa703f1a415f4091d360b064226889d8edc7a1f007704e",
+   "demand": {
+    "cpu": 1,
+    "mem_gb": 2,
+    "spool_gb": 2
+   },
+   "descendant_returncode": -9,
+   "finished_host": "sparky",
+   "lifetime_record": {
+    "entries": [
+     {
+      "cleaned": true,
+      "lifetime": "ephemeral"
+     },
+     {
+      "cleaned": true,
+      "lifetime": "persistent"
+     }
+    ],
+    "registration_complete": true
+   },
+   "returncode": 0,
+   "scenario": "sigkill-child",
+   "stderr_log": {
+    "bytes": 43,
+    "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+   },
+   "stdout_log": {
+    "bytes": 4340,
+    "sha256": "184662ef1a46eb26fcb64e290266529b964e9563fd7a4efb62f0eb78452ee1d2"
+   },
+   "terminal": "done"
+  },
+  {
+   "action_key": "892e859c9e7dccee180df30f282610f616c726b035f7d2ad1b640e50fc5c699f",
+   "attempt_history": [
+    {
+     "attempt": 1,
+     "outcome": "attempts/892e859c9e7dccee180df30f282610f616c726b035f7d2ad1b640e50fc5c699f/2d8be8da8a6499f31cfd7c57db309afcc749af2f36275f68f7dda49c1c6676d1/00000001.json"
+    }
+   ],
+   "cas_claim": "c388b8a6022f060c925f5a9285afba0803301411eb1b839e8979f642972b19ba",
+   "demand": {
+    "cpu": 1,
+    "mem_gb": 2,
+    "spool_gb": 2
+   },
+   "finished_host": "sparky",
+   "guard_target": "/home/rob/tmp/ig1360-cache/guard-target.txt",
+   "guard_target_survived": true,
+   "lifetime_record": {
+    "entries": [
+     {
+      "cleaned": true,
+      "lifetime": "ephemeral"
+     },
+     {
+      "cleaned": true,
+      "lifetime": "persistent"
+     }
+    ],
+    "registration_complete": true
+   },
+   "returncode": 0,
+   "scenario": "failing-cleanup-guard",
+   "stderr_log": {
+    "bytes": 43,
+    "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+   },
+   "stdout_log": {
+    "bytes": 4656,
+    "sha256": "d59317b78d5ff94a17a39f4f220c7575d58c020f974ac9acef2b18083b1d91df"
+   },
+   "terminal": "done"
+  },
+  {
+   "action_key": "1f978957a3b4be25096728bb083e9e4aa3b3ce514f6344d3f781f67f71cbd6a5",
+   "attempt_history": [
+    {
+     "attempt": 1,
+     "outcome": "attempts/1f978957a3b4be25096728bb083e9e4aa3b3ce514f6344d3f781f67f71cbd6a5/0eb4478045f6fbd75d0cb73e96e55dc6b3f59b151ad379418929291ccb9af2f1/00000001.json"
+    }
+   ],
+   "cas_claim": null,
+   "cleanup_export": {
+    "empty": true,
+    "ok": true,
+    "released": true,
+    "settled": true,
+    "stop_reason": "execution client disconnected or sent unexpected data",
+    "stopped": true
+   },
+   "demand": {
+    "cpu": 1,
+    "mem_gb": 2,
+    "spool_gb": 2
+   },
+   "finished_host": "sparky",
+   "killed_launcher_pids": [
+    3599938,
+    3599953
+   ],
+   "leaf": "/home/rob/tmp/ig1360-temp/prismabuild-ephemeral/14da6c3dd7c9945910d2dacc1b0c31d12f94110bafcd4d69a1ce5997810cecc8/1f978957a3b4be25096728bb083e9e4aa3b3ce514f6344d3f781f67f71cbd6a5/0eb4478045f6fbd75d0cb73e96e55dc6b3f59b151ad379418929291ccb9af2f1/f0c649731a314c6aa993ca28cebc531e/row-temp",
+   "lifetime_record": {
+    "entries": [
+     {
+      "cleaned": true,
+      "lifetime": "ephemeral"
+     },
+     {
+      "cleaned": true,
+      "lifetime": "persistent"
+     }
+    ],
+    "registration_complete": true
+   },
+   "max_attempts": 1,
+   "rendezvous": "/mnt/shared/pb-qualification/ig1360-launcher-2",
+   "retry_safe": true,
+   "returncode": -9,
+   "scenario": "launcher-victim",
+   "stderr_log": {
+    "bytes": 43,
+    "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+   },
+   "stdout_log": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+   },
+   "terminal": "failed"
+  },
+  {
+   "action_key": "07ebc04a84b81fa6f4e714637fc1d98000e7205cfedc06e685a90b3349df30ff",
+   "attempt_history": [
+    {
+     "attempt": 1,
+     "outcome": "attempts/07ebc04a84b81fa6f4e714637fc1d98000e7205cfedc06e685a90b3349df30ff/d8cae81fb4b391dc4592eda7150eaa0f0d9a4c036f411d7fcaff686e3c31c1da/00000001.json"
+    }
+   ],
+   "cas_claim": "8f8e429c04aea0ab5fd4dac710a0e43805535ec567202b4f91a143ccd273de6f",
+   "demand": {
+    "cpu": 1,
+    "mem_gb": 2,
+    "spool_gb": 2
+   },
+   "finished_host": "sparky",
+   "killed_launcher_pids": [
+    3599938,
+    3599953
+   ],
+   "lifetime_record": {
+    "entries": [
+     {
+      "cleaned": true,
+      "lifetime": "ephemeral"
+     },
+     {
+      "cleaned": true,
+      "lifetime": "persistent"
+     }
+    ],
+    "registration_complete": true
+   },
+   "returncode": 0,
+   "scenario": "launcher-killer",
+   "stderr_log": {
+    "bytes": 43,
+    "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+   },
+   "stdout_log": {
+    "bytes": 4693,
+    "sha256": "6f17024866e4f75c37ef7398e4f86428bdb98d6f849aed69528997dbad4e4f84"
+   },
+   "terminal": "done",
+   "victim": "1f978957a3b4be25096728bb083e9e4aa3b3ce514f6344d3f781f67f71cbd6a5"
+  }
+ ],
+ "filesystem": {
+  "probe_action": "2ab6172c67a285375a2fd78ebc234eece6c62030d069674561a60c1d5f63189a",
+  "root": "/home/rob/tmp",
+  "statx_mask": "0x1f3f",
+  "type": "ext2/ext3"
+ },
+ "issue": "https://github.com/RobTand/prismabuild/issues/1360",
+ "negative_evidence": [
+  {
+   "action_key": "d9975060a50c91ad80a85df0195355b6def8495f40b47922697d4c679e1ad310",
+   "exception": "FileNotFoundError(2, 'No such file or directory')",
+   "meaning": "registration refuses a missing declared root before launch; the payload never runs",
+   "registration_complete": false,
+   "terminal": "failed"
+  },
+  {
+   "action_key": "f2446c651e9d11f7abf5e35b9c40a6595b0e26b00673857dcbde5cef3c09d465",
+   "meaning": "harness rendezvous-path defect, not production behavior; resubmitted as ig1360-launcher-2",
+   "terminal": "failed"
+  }
+ ],
+ "note": "This record supplies partial deployment evidence, not completion acceptance. It does not prove worker loss or injected cleanup/record recovery. Keep #1360 open.",
+ "probe": {
+  "action_key": "a866e8ccd61df17f768d05db122a2a163e8ea04b7f79e3e667df679416eadfad",
+  "meaning": "first successful versioned registration and cleanup on the published runtime",
+  "terminal": "done"
+ },
+ "published_runtime": {
+  "commit": "c8daa1be416cd4d7fe8a8e55c49924ab33c4de39",
+  "generation": "c8daa1be416c-1791512870-55b0e8c72f6b",
+  "sdk_version": 5
+ },
+ "pull_request": 1675,
+ "roots": {
+  "action_key": "ab4d41b6362d7a3e3b979f87293d93109ec0a75d8ee134576a896e3cd5c91824",
+  "cache": "/home/rob/tmp/ig1360-cache",
+  "temp": "/home/rob/tmp/ig1360-temp"
+ },
+ "schema": "pb1360.scratch_lifetime_deployment.v1",
+ "source_parent": "5db23c868cf492896deaef57c571e7c0cd879123",
+ "still_open": [
+  "worker-process loss with reaped lease and successor retry on the same host",
+  "reboot and cross-host recovery",
+  "cleanup-error and record-commit fault injection with capacity retention",
+  "pb-integrator publication of the approved additive SDK6",
+  "supervisor-owned measured x86 scratch offer for admitted lifetime scenarios",
+  "PQ #1091 cache sizing and GPU acceptance",
+  "power-loss durability"
+ ],
+ "suite": [
+  {
+   "action_key": "d7cccfdbfd9eb136cc5aa3c3b9079887b45322e7f4133e92b42296af37180d3e",
+   "collected": 5,
+   "files": [
+    "tests/test_qualify_scratch_lifetime.py"
+   ],
+   "passed": 5
+  }
+ ],
+ "takeover_correction": {
+  "reviewed_predecessor": "7b6a13f11db4979a4adf23fe38854804a9838d58",
+  "signal_contract": "Verify start ticks and command arguments around pidfd_open. Signal only verified handles. Close every handle. Refuse unreadable or changed identities.",
+  "historical_signal_limit": "The six earlier scenarios used a numeric-PID qualifier. Their cleanup observations do not prove safe process signals.",
+  "x86_offer": {
+   "source": "pbmcp.pb_status",
+   "generated_unix": 1791534772.4387088,
+   "complete": true,
+   "host": "dl380g10",
+   "capacity": {"cpu": 80, "mem_gb": 96, "gpu": 0},
+   "scratch_lifetime_v1": true,
+   "spool_gb": "absent",
+   "decision": "Do not synthesize capacity or retag CPU scenarios to a Spark."
+  },
+  "repro": {
+   "action_key": "fabc2290ea5ae9f44f6df71521f2aef7f5ad540a0174073c3aeb460fbe1698f5",
+   "terminal": "failed",
+   "returncode": 1,
+   "collected": 11,
+   "failed": 6,
+   "passed": 5,
+   "primary_failure": "The qualifier used a numeric PID signal.",
+   "fixture_limit": "Two cases also saw child exec races. The corrected fixture waits for the child ready marker.",
+   "stdout_sha256": "82f774d99793b3fa5d0ffbeaea43127ad404c6be8fbb49f5ff0beddadf71258a",
+   "cas_receipt_present": false
+  },
+  "tests": [
+   {
+    "action_key": "5cfcea2e1b9275c4bad68d1d229208e09079dc89475dc6485b160e5cc32ec34e",
+    "file": "tests/test_qualify_scratch_lifetime.py",
+    "collected": 12,
+    "passed": 12,
+    "skipped": 0,
+    "terminal": "done",
+    "returncode": 0,
+    "claim_sha256": "e93150434a2a55ee4966640cbee4587e331d25c2cdd1699ffa8c2ec7721025e9",
+    "receipt_sha256": "e36f9d539e39e7d0429bd3dd2a6b0b958c59cf51fd84b8b7e3b89fab9db66887",
+    "payload_sha256": "47370227626f43255ef064d4c1369f7f5e3b9a0994ff8f889dc7eb608becbdab",
+    "claim_receipt_payload_checks": "passed",
+    "worker_attestation_verification": "not checked by pb_verify_claim"
+   },
+   {
+    "action_key": "284a0a2d5f16acb4cf9607df72bd3f76163e35c3b1bd5b5a91219085a0b7359b",
+    "file": "tests/test_scratch_lifetime_sdk_contract.py",
+    "collected": 16,
+    "passed": 16,
+    "skipped": 0,
+    "terminal": "done",
+    "returncode": 0,
+    "claim_sha256": "e2f4d70cd2189dbc29f269202842945a7a45978c81da22f63a74ab4dc7e04cf6",
+    "receipt_sha256": "facd93450b5abcdf2c0988734304e8e9f1eca7f45b505f5bbbec6df464ea2ec8",
+    "payload_sha256": "a5086ece3022c70bb3dfc130c7f9428a9756a945037f52c4c9bfad3883a49b5f",
+    "claim_receipt_payload_checks": "passed",
+    "worker_attestation_verification": "not checked by pb_verify_claim"
+   }
+  ],
+  "smoke": {
+   "action_key": "fd3e5310104f4cc0d2cf0a09b7f951134a14fe1596c6f2ef315d8ce50b9e8490",
+   "scenario": "owned-launcher-pidfd-smoke",
+   "host": "dl380g10",
+   "terminal": "done",
+   "returncode": 0,
+   "owned_inert_launcher_returncode": -9,
+   "exited_target_refused": true,
+   "live_pool_mutation": false,
+   "claim_sha256": "1832917a7cff09b720d9132528fd07e05ef56331f9f4467c1facb03b45db59cd",
+   "payload_sha256": "64cae8e45daedf085f791102c88b5e3d7c0c99d8b7e8e8e958346fe6a69be12e",
+   "claim_receipt_payload_checks": "passed",
+   "worker_attestation_verification": "not checked by pb_verify_claim",
+   "limit": "This smoke proves the process signal path. It does not qualify worker-loss cleanup or durable cleanup retry."
+  }
+ },
+ "revision_prerequisites": {
+  "retained_head": "18c29990e78102b8c1d01149a50e7dd0d18614b9",
+  "scope": "This revision records prerequisite evidence. It changes no production cleanup, public SDK, filesystem policy, or worker offer.",
+  "history": {
+   "ceo_history_read": true,
+   "prior_plan": "The 2026-10-01 plan preserved SDK3 and selected a versioned worker input. PR1463 supplied the existing cleanup owner.",
+   "decision": "Retain that owner and the observed cleanup evidence. Do not repeat the finalizer, signal tests, or historical launcher scenarios.",
+   "sdk6_limit": "The earlier worker-input plan does not authorize new SDK6 Python exports."
+  },
+  "decision_request": {
+   "id": "dec-1009-090451-62a1",
+   "state": "approved",
+   "authority": "CEO decision delivered in this session for dec-1009-090451-62a1.",
+   "decision": "Option 1. SDK6 must be additive: SDK5 consumers keep working unchanged. Qualify it only in isolation on x86. This approves no deployment and no closure. pb-integrator owns the publication. Keep #1360 open until every criterion passes.",
+   "deployment_authorized": false,
+   "closure_authorized": false,
+   "publication_owner": "pb-integrator",
+   "remaining_prerequisite": "The measured x86 scratch offer remains absent."
+  },
+  "x86_offer": {
+   "source": "pbmcp.pb_status",
+   "generated_unix": 1791536642.9147854,
+   "complete": true,
+   "host": "dl380g10",
+   "capacity": {"cpu": 80, "disk_metadata": 0, "gpu": 0, "mem_gb": 96},
+   "scratch_lifetime_v1": true,
+   "spool_gb": "absent",
+   "configuration": "tools/fleet/fleet_boxes.json: dl380g10 has no local_disk or --spool-gb."
+  },
+  "probe": {
+   "action_key": "ee950a85ee9da0d2f87d0e02641dbb2af1bb1b313da6155f0f6ad5043197d478",
+   "host": "dl380g10",
+   "runtime_generation": "c8daa1be416c-1791512870-55b0e8c72f6b",
+   "sdk_version": 5,
+   "demand": {"cpu": 1, "mem_gb": 1},
+   "tags": ["interpreter-path-v1", "x86"],
+   "terminal": "done",
+   "returncode": 0,
+   "attempts": 1,
+   "root": "/tmp",
+   "filesystem": {"device": "51", "filesystem": "9640701706127043701", "filesystem_type": "tmpfs", "root_inode": "1"},
+   "birth_ns": 1791307004462329351,
+   "lifetime_refusal": "scratch filesystem type not supported: tmpfs",
+   "spool_refusal": "spool root is not a known local disk filesystem",
+   "supervisor_verdict": ["refuse", "local_disk /tmp is not a usable local disk: spool root is not a known local disk filesystem"],
+   "claim_sha256": "20de4bd3850b89a07695ac1260c1aef775c041004bf265b789bb1c878b261dae",
+   "receipt_sha256": "901a161693a1c8ae2a288c7c97e1056ee7487c1e5b359495ea2ada12b62563b6",
+   "payload_sha256": "5adc670b84ee340ad687665ad20e15b68598ee46a8ea20aaebca5bd9bc27afdc",
+   "stdout_sha256": "68e14db15e82dfaef3b644610445325b943dd14fb5b0ddc76339803b3375d3d0",
+   "stderr_sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c",
+   "claim_receipt_payload_checks": "passed",
+   "worker_attestation_verification": "not checked by pb_verify_claim",
+   "containment": {"stopped": true, "empty": true, "settled": true, "released": true},
+   "directory_mutations": false,
+   "payload_queue_mutations": false,
+   "scaffold_removed": true,
+   "limit": "The probe proves the current filesystem refusals. It does not qualify directory cleanup or scratch charge retention."
+  },
+  "blocking_prerequisite": {
+   "title": "[P2] Provision disk-backed x86 scratch for lifetime qualification",
+   "repository": "prismabuild",
+   "kind": "chore",
+   "scope": "Provide an operator-approved, measured local disk mount beneath /tmp and its supervisor configuration. Do not implement another cleanup owner.",
+   "release_check": "The published x86 worker offers measured spool_gb and qualified roots beneath /tmp. The unchanged lifetime and spool guards accept their descriptors.",
+   "search": "The open issue search for scratch found no separate x86 provisioning issue."
+  },
+  "remaining_qualification": [
+   "Admit worker-loss recovery through the existing exact-host cleanup owner.",
+   "Inject cleanup and record-commit errors with durable pending state and retained charge.",
+   "Prove no payload reexecution, no duplicate release, and predecessor isolation from retry and successor directories.",
+   "Record safe-path refusal scenarios and persistent-cache survival on the qualified published runtime."
+  ],
+  "requirement_status": {
+   "SC-01": {"target": "PB owns cleanup.", "implemented": "The existing pool owner remains unchanged.", "deployed": "Historical normal and launcher cleanup only."},
+   "SM-01": {"target": "Containment and durable outcomes precede release or retry.", "implemented": "PR1463 supplies source fixtures.", "deployed": "Worker-loss and record-fault qualification remain absent."},
+   "INV-07": {"target": "Required cleanup settles before capacity release.", "implemented": "The source cleanup barrier remains unchanged.", "deployed": "Injected cleanup retry and single release remain unqualified."},
+   "ACC-04": {"target": "Crash recovery preserves attempt identity.", "implemented": "Exact-owner source cases exist.", "deployed": "Worker-loss recovery remains unqualified."},
+   "DUR-01": {"target": "State the storage durability limit.", "implemented": "The existing process-crash contract applies.", "deployed": "No power-loss evidence exists."}
+  }
+ },
+ "approved_sdk6_compatibility": {
+  "decision_request": "dec-1009-090451-62a1",
+  "source_parent": "1b498daa74d7a294200332e4c1728f00f385add0",
+  "scope": "Isolated x86 API and legacy behavior checks. No production directory, worker service, or runtime publication changed.",
+  "smoke": {
+   "action_key": "b4e28cac15b82539441020d28203ffb509320b39353277298241c8abb2b40b48",
+   "host": "dl380g10",
+   "terminal": "done",
+   "returncode": 0,
+   "sdk5_source_sha256": "40b4f5cc88b18ea127eeb9325e7f03d954adcd0e4b6cdceda25ceda8a9f352c9",
+   "sdk5_exports_preserved": 84,
+   "callable_signatures_preserved": 52,
+   "constants_preserved": 26,
+   "legacy_claim_reads": "passed",
+   "legacy_nondestructive_namespace": "passed",
+   "legacy_receipt_refusal": "passed",
+   "sdk6_added_names": ["SCRATCH_LIFETIME_DECLARATIONS_ENV", "SCRATCH_LIFETIME_FIELD", "SCRATCH_LIFETIME_RECORD_SCHEMA_V1", "SCRATCH_LIFETIME_SELECTION_SCHEMA_V1", "SCRATCH_LIFETIME_TAG", "build_scratch_lifetime_selection"],
+   "claim_sha256": "32c658558ab4f45ce9f1c705870cc5f9a9c7d540f8c0cabedc21fe59d0980c6e",
+   "receipt_sha256": "bad7671e53ae0d2d7ebfa0d8596ec85614c579d181775fc6b82186c9331241d0",
+   "payload_sha256": "5ec0cb8a986cc51db903f6a913f84dbd2a89578ea220cffa8413dc2b8eef27e7",
+   "scaffold_removed": true
+  },
+  "suite": [
+   {
+    "action_key": "e1be6ee1e1cc2e83489fb8ac28703911b77c6273270737acfa89a04373ba622e",
+    "file": "tests/test_client_sdk_surface.py",
+    "collected": 171,
+    "ran": 171,
+    "passed": 171,
+    "skipped": 0,
+    "claim_sha256": "9a18f5d716ca5185ce14757d69f456c94a733c7d5f0613093c413db51a59251b",
+    "receipt_sha256": "6ee9b07253a4bfe8e9a9ff281f1f0c0bad27bd3c111c8bca2ebc97f2de0ed22d",
+    "payload_sha256": "9b73b35f34fc1b760cf7072e71b724179056f860c9f22c4ba6b41bcb84772bd5"
+   },
+   {
+    "action_key": "28de31f1d4d4980ddf0f8c36dcb59bf955996805a916266eef3f5e10adeaedf4",
+    "file": "tests/test_ephemeral_scratch_namespace.py",
+    "collected": 78,
+    "ran": 78,
+    "passed": 78,
+    "skipped": 0,
+    "claim_sha256": "84881021fdd3e2a2c29a89e009eaf6da1a43f05e17630186302b10cf74c71cc1",
+    "receipt_sha256": "bed6990d0588fc1fefbf5200ec77a15d2f049a7d9453ee6a8b39bb93947b1fba",
+    "payload_sha256": "15cde63d7b9e274770b1494e17ec22878a87f3fd4aa505e343245c8fb5c8436b"
+   },
+   {
+    "action_key": "385ca2b7db005f5e55fb5dd23a860225760c5b3d2654fd810ca51fc973d68832",
+    "file": "tests/test_scratch_lifetime_selection.py",
+    "collected": 29,
+    "ran": 29,
+    "passed": 29,
+    "skipped": 0,
+    "claim_sha256": "137b7e19d2edd93805c6640034125a875cb76be50c528faad8a88b48e9fe85a1",
+    "receipt_sha256": "110394ba9e4e41bd65e2c8327486edb05fc39ad1abfb67fd9ab463ccebd5ed59",
+    "payload_sha256": "1761268952561dfb699f26e0e6bbeac8caad5e19e2d8269c7c5897d616ebf20a"
+   }
+  ],
+  "suite_totals": {"actions": 3, "collected": 278, "ran": 278, "passed": 278, "skipped": 0},
+  "verification": {
+   "all_actions_terminal": true,
+   "receipt_census_complete": true,
+   "green_actions": 4,
+   "pending_actions": 0,
+   "claim_receipt_payload_checks": "All four claims passed with payload hashing.",
+   "worker_attestation_verification": "not checked by pb_verify_claim",
+   "containment": "All four scopes were stopped, empty, settled, and released.",
+   "runtime_publication": false,
+   "live_service_mutation": false
+  },
+  "limit": "The checks preserve the exercised SDK5 contract. They do not establish full producer compatibility, SDK6 deployment, worker-loss cleanup, or durable cleanup retry."
+ },
+ "verification": [
+  {
+   "action_key": "7ba12c3a0ebdbccb5c7e10409a61ffe2ec2cd2edfab01d1105cee57b44aa01ca",
+   "cache_marker_survived": true,
+   "leaf_absent": true,
+   "root_survived": true,
+   "scenario": "normal"
+  },
+  {
+   "action_key": "c681b849a19ff2d9c0b3065990fa4bc6fbb915c65e22f41b9f2579090763a113",
+   "cache_marker_survived": true,
+   "guard_target_survived": true,
+   "leaf_absent": true,
+   "scenarios": [
+    "failed",
+    "sigkill-child",
+    "failing-cleanup-guard"
+   ]
+  },
+  {
+   "action_key": "bd03e0519010dd0bc8736e43bf1bc79970a400f1593f1ee3d9f5bfabf9ca5ef4",
+   "leaf_absent": true,
+   "scenario": "launcher-victim"
+  }
+ ]
+}

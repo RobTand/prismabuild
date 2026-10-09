@@ -30,6 +30,7 @@ __all__ = [
     "Unit",
     "declared_units",
     "reserve_pass",
+    "intent_chunks",
     "publish_declared",
     "obligations",
     "is_admitted",
@@ -349,7 +350,7 @@ def declared_units(queue, tiers, consumers) -> list[Unit]:
     return units
 
 
-def _intent_chunks(unit: Unit) -> list[dict]:
+def intent_chunks(unit: Unit) -> list[dict]:
     """The write-ahead chunk entries for one unit's declared legs."""
     digest = residency_plan.plan_sha256(unit.plan)
     consumer = str(unit.plan.get("consumer_action_key"))
@@ -359,6 +360,11 @@ def _intent_chunks(unit: Unit) -> list[dict]:
              "stage_gib": int(leg["stage_gib"]),
              "plan_sha256": digest, "consumer_action_key": consumer}
             for leg in unit.legs]
+
+
+def _intent_chunks(unit: Unit) -> list[dict]:
+    """The write-ahead chunk entries for one unit's declared legs."""
+    return intent_chunks(unit)
 
 
 def _unit_event(unit: Unit, tier_id: str, name: str, **fields) -> dict:
@@ -395,12 +401,25 @@ def reserve_pass(queue, tier_id: str, units: Sequence[Unit], *, admitted,
         outcome = prelaunch_group.reconcile(
             queue, tier_id, unit.unit, unit.holder, unit.demand_gib, movers,
             writer_is_me=writer_is_me)
+        if (outcome.decline_reason is not None
+                and outcome.need_gib is not None
+                and "prelaunch-begin-declined" in outcome.events):
+            prelaunch_group.record_decline(
+                queue, unit.unit, tier_id, outcome.need_gib,
+                outcome.decline_reason)
         for name in outcome.events:
-            events.append(_unit_event(unit, tier_id, name,
-                                      state=outcome.state))
+            fields: dict = {"state": outcome.state}
+            if outcome.need_gib is not None and name in (
+                    "prelaunch-group-begun", "prelaunch-begin-declined",
+                    "prelaunch-group-topped-up"):
+                fields["need_gib"] = outcome.need_gib
+            if (outcome.decline_reason is not None and name in (
+                    "prelaunch-begin-declined",)):
+                fields["reason"] = outcome.decline_reason
+                fields["declined"] = bool(outcome.declined)
+            events.append(_unit_event(unit, tier_id, name, **fields))
         authority[unit.unit] = bool(outcome.authority)
     return (events, authority)
-
 
 def _live_mover_row(queue, mover_key: str) -> tuple[dict | None, bool]:
     """One published mover row, preferring ready over claimed.

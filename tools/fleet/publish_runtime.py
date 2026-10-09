@@ -239,6 +239,10 @@ EXCLUDED: tuple[tuple[str, str], ...] = (
      "paired queue-recovery qualification actors run from an isolated "
      "checkout through pbcampaign against a fresh private queue root; "
      "not an operator command for a box without a checkout"),
+    ("qualify_scratch_lifetime.py",
+     "scratch-lifetime deployment qualification actors (#1360) run from "
+     "a submitted checkout through pbrun on a disk-offering worker; "
+     "not an operator command for a box without a checkout"),
     ("admission_shared_io.py",
      "a measurement harness for the admission critical section, run from a "
      "checkout through pbrun against a private queue root; a box with no "

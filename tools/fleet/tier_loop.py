@@ -7743,6 +7743,50 @@ def _protect_tier_advances(queue: pool.PoolQueue,
             "census_unknown": census_unknown}
 
 
+def _settle_live_row(queue: pool.PoolQueue,
+                     mover: str) -> dict[str, object] | None:
+    """One live ready or claimed row, or None when the key has none."""
+    for state in (pool.READY, pool.CLAIMED):
+        row = pool.read_queue_record(queue.item_path(state, mover))
+        if isinstance(row, Mapping):
+            return dict(row)
+    return None
+
+
+def _settle_terminal_is_stale(queue: pool.PoolQueue, mover: str,
+                              live_row: Mapping[str, object]) -> bool | None:
+    """Whether every terminal record predates one live row: stale, live, unknown.
+
+    True when each readable done/failed record finished before the live
+    row published: the terminal belongs to an earlier generation and the
+    live republication keeps its fence (#1690). False when any record
+    proves the live attempt itself ended. None when nothing proves the
+    order, and the caller settles as before.
+    """
+    try:
+        row_published = float(live_row.get("published_unix"))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    seen = False
+    for state in (pool.DONE, pool.FAILED):
+        try:
+            ended = pool._read_json(queue.item_path(state, mover))
+        except (OSError, pool.PoolContractError):
+            return None
+        if ended is None:
+            continue
+        if not isinstance(ended, Mapping):
+            return None
+        seen = True
+        try:
+            finished = float(ended.get("finished_unix"))  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return None
+        if finished >= row_published:
+            return False
+    return True if seen else None
+
+
 def _settle_terminal_fence(queue: pool.PoolQueue, ledger, *, tier_id: str,
                            mover_role: str, consumer: str | None,
                            mover: str) -> list[dict[str, object]]:
@@ -7757,11 +7801,13 @@ def _settle_terminal_fence(queue: pool.PoolQueue, ledger, *, tier_id: str,
     ``tier_funding`` proof is that attempt's fence-or-bytes, never free
     credit.  Anything else releases only on an exact name match between the
     bound tokens and what the mover holds; the record always closes.
+    A terminal record filed before the live row's own publication is an
+    earlier generation: the live republication keeps its fence (#1690).
     Unreadable terminal, proof, or holder evidence defers with the record
     named and leaves recoverable authority intact -- absence of proof is
     never proof of absence.  Takes the mover's transition lock
-    non-blocking (a live claim wins, this defers), so both call sites are
-    safe locked or not.
+    non-blocking (a live claim wins, this defers), so both call sites
+    are safe locked or not.
     """
 
     events: list[dict[str, object]] = []
@@ -7786,6 +7832,7 @@ def _settle_terminal_fence(queue: pool.PoolQueue, ledger, *, tier_id: str,
             if state in ("consumed", "released"):
                 return events
             try:
+                live_row = _settle_live_row(queue, mover)
                 terminal = (queue.item_path(pool.DONE, mover).exists()
                             or queue.item_path(pool.FAILED, mover).exists()
                             or queue.item_path(
@@ -7798,6 +7845,13 @@ def _settle_terminal_fence(queue: pool.PoolQueue, ledger, *, tier_id: str,
                 return events
             if not terminal:
                 return events
+            if live_row is not None:
+                try:
+                    stale = _settle_terminal_is_stale(queue, mover, live_row)
+                except (OSError, pool.PoolContractError, ValueError):
+                    stale = None
+                if stale is True:
+                    return events
             bound = record.get("tokens")
             bound_names = (set(str(name) for name in bound)
                            if isinstance(bound, list) and bound else set())
@@ -9216,7 +9270,49 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
         # Bounded by the consumer's refill horizon as well as by room and the
         # run-ahead budget (#903): a leg past it publishes on the cycle the
         # consumer's progress brings it inside, and not before.
+        decline_reason_now: str | None = None
         if prelaunch_unit is not None:
+            # One computation with the begin (#1690): the deficit this
+            # cycle's begin event just asked for wins; before any begin,
+            # the deficit against the unit's own legs. The reserve pass
+            # runs first and the taken tokens sit in a private handle,
+            # so a fresh census would read need zero beside begun 41.
+            # A decline this same cycle names its cause at once; an
+            # older journaled decline stands when this cycle asked
+            # nothing new, so the stall never lags the reservation.
+            need_now = None
+            began_now = False
+            for event in published:
+                if (event.get("unit") == prelaunch_unit.unit
+                        and event.get("tier_id") == tier_id):
+                    if event.get("event") in ("prelaunch-group-begun",
+                                              "prelaunch-group-topped-up"):
+                        began_now = True
+                        asked = event.get("need_gib")
+                        if isinstance(asked, int) and asked >= 0:
+                            need_now = asked
+                        break
+                    if event.get("event") == "prelaunch-begin-declined":
+                        asked = event.get("need_gib")
+                        if isinstance(asked, int) and asked >= 0:
+                            need_now = asked
+                        cause = event.get("reason")
+                        if isinstance(cause, str) and cause:
+                            decline_reason_now = cause
+                        break
+            if need_now is None:
+                try:
+                    need_now = prelaunch_group.prospective_need_gib(
+                        queue, tier_id, prelaunch_unit.unit,
+                        prelaunch_unit.holder, prelaunch_unit.demand_gib,
+                        prelaunch_tier.intent_chunks(prelaunch_unit),
+                        [leg["mover_key"] for leg in prelaunch_unit.legs])
+                except (OSError, pool.PoolContractError, ValueError):
+                    need_now = None
+            if (need_now is not None and need_now > 0
+                    and decline_reason_now is None and not began_now):
+                decline_reason_now = prelaunch_group.latest_decline_reason(
+                    queue, prelaunch_unit.unit, tier_id)
             decision = residency_plan.window(
                 plan, accepted_phase=consumer["accepted_phase"],  # type: ignore[arg-type]
                 free_gib=int(free), capacity_gib=int(capacity),
@@ -9224,7 +9320,8 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
                 withdrawn=sorted(cancelled),
                 horizon_end_bytes=horizon_of(consumer, plan, tier_id),
                 prelaunch_held=bool(
-                    prelaunch_authority.get(prelaunch_unit.unit)))
+                    prelaunch_authority.get(prelaunch_unit.unit)),
+                prelaunch_need_gib=need_now)
         else:
             decision = residency_plan.window(
                 plan, accepted_phase=consumer["accepted_phase"],  # type: ignore[arg-type]
@@ -9239,7 +9336,7 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
             # window printed was ``tier-cycle``.  Not a claim denial -- the
             # consumer is not denied, it is running and reporting nothing.  A
             # superseded window does not stall: nothing is waiting to publish.
-            published.append({"event": "window-stalled", "consumer": key,
+            event: dict[str, object] = {"event": "window-stalled", "consumer": key,
                               # A stall names every field; a missing one files
                               # as None here, never as a KeyError (#1594).
                               **{field: stall.get(field) for field in (
@@ -9247,7 +9344,13 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
                                   "blocked_phase", "blocked_gib", "runahead_gib",
                                   "runahead_budget_gib", "free_gib",
                                   "capacity_gib", "reason", "waiting_for")},
-                              "chunk_index": stall.get("chunk_index")})
+                              "chunk_index": stall.get("chunk_index"),
+                              "need_gib": stall.get("need_gib")}
+            # A declined begin names its real cause here too (#1690): the
+            # stall must not read as a room shortage when the lock refused.
+            if decline_reason_now is not None:
+                event["decline_reason"] = decline_reason_now
+            published.append(event)
         by_name = {str(entry["name"]): entry for entry in plan["phases"]
                    if isinstance(entry, Mapping)}
         # A superseded plan publishes its egresses -- cleanup the consumer has

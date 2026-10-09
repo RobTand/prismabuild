@@ -49,6 +49,7 @@ sys.path.insert(0, str(ROOT / "tools" / "fleet"))
 
 from prismabuild import movement_actions, pool, storage_tiers  # noqa: E402
 import pb_gc  # noqa: E402
+import stage_move  # noqa: E402
 import tier_loop  # noqa: E402
 
 #: The queue-root kind this requirement adds, spelled as the other kinds are.
@@ -694,17 +695,12 @@ def _version(path: Path) -> tuple[int, int, int, int, int]:
 
 
 def _filesystem_type(path: Path) -> str | None:
-    """The mount table's type for the filesystem ``path`` lives on."""
+    """The type the complete trust resolver names for ``path`` (#1506)."""
+
 
     info = os.stat(path)
-    wanted = f"{os.major(info.st_dev)}:{os.minor(info.st_dev)}"
-    with open("/proc/self/mountinfo") as stream:
-        for line in stream:
-            fields = line.split()
-            if len(fields) > 2 and fields[2] == wanted and " - " in line:
-                tail = line.split(" - ", 1)[1].split()
-                return tail[0] if tail else None
-    return None
+    return stage_move._object_filesystem_type(
+        info, path=path, follow_symlinks=False)
 
 
 #: Filesystems whose directory times come from this kernel's clock, which the
@@ -980,9 +976,11 @@ def test_a_steady_reading_cycle_reuses_the_validated_checkpoint(
     recognizable local mount, e.g. a private tmpfs via ``TMPDIR``).
     """
 
-    assert _filesystem_type(tmp_path) in LOCAL_CLOCK, (
-        f"{_filesystem_type(tmp_path)} keeps no trusted stamp; run this on a "
-        f"local-clock filesystem (TMPDIR)")
+    info = os.stat(tmp_path)
+    assert stage_move._object_filesystem_type(
+        info, path=tmp_path, follow_symlinks=False) in LOCAL_CLOCK, (
+        f"{stage_move._object_filesystem_type(info, path=tmp_path)} keeps no "
+        f"trusted stamp; run this on a local-clock filesystem (TMPDIR)")
 
     loop = _Loop(tmp_path)
     queue = loop.queue
@@ -1064,7 +1062,6 @@ def test_a_tampered_projection_after_a_warm_cache_is_never_reused(
     projection binding must catch.
     """
 
-    import stage_move
 
     loop = _Loop(tmp_path)
     queue = loop.queue
@@ -1075,7 +1072,10 @@ def test_a_tampered_projection_after_a_warm_cache_is_never_reused(
     _sweep(_survey(queue))
     loop.cycle()                       # warm the cache
 
-    monkeypatch.setattr(stage_move, "_filesystem_type", lambda _device: None)
+    monkeypatch.setattr(
+        stage_move, "_object_filesystem_type",
+        lambda info, *, path=None, descriptor=None,
+        follow_symlinks=True: None)
     checkpoint = queue.mover_retirement_checkpoint_path()
     body = json.loads(checkpoint.read_text())
     body["entries"][key]["projection"]["disk_pacing"][

@@ -217,7 +217,10 @@ def test_tmpdir_option_gains_no_basetemp(tmp_path: Path, monkeypatch) -> None:
     command = _dispatch(tmp_path, monkeypatch, ["--tmpdir", worker_path])
     program = command[command.index("-c") + 1]
     assert shard_environment(command)["TMPDIR"] == worker_path
-    assert "--basetemp" not in program
+    # No sealed root: the attempt default derives under TMPDIR, and the
+    # sealed root's own refusal string stays out of the program.
+    assert "_pb_run_and_clean_attempt_base" in program
+    assert "pbtest: cannot use requested --basetemp:" not in program
 
 
 def test_unsupported_pytest_options_stay_refused(
