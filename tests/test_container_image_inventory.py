@@ -2,9 +2,10 @@
 
 The inventory is the evidence a claim refuses on (#714), so the two things
 that matter are that a short or failed read is *unknown* rather than empty,
-and that the reference forms stay distinct: a ``sha256:`` image ID, a
-``repository@sha256:`` manifest digest and a ``content:sha256:`` content
-reference are different identities even when their hex collides.  The cache
+and that the qualified forms stay exact: a ``repository@sha256:`` manifest
+digest and a ``content:sha256:`` content reference match only themselves,
+while a bare ``sha256:`` image ID also reads the digest part of any
+RepoDigest (decided 2026-10-05; the two-store fact of #805).  The cache
 hardening is the review's other half: a corrupt, future-dated, foreign-owned
 or symlinked record must never become a positive admission.
 
@@ -192,8 +193,9 @@ def test_a_mutable_or_malformed_reference_is_refused(bad):
         ci.normalize_refs([bad])
 
 
-def test_the_three_forms_with_the_same_hex_are_not_aliases():
-    assert ci.missing([ID_A], [REF_A]) == (ID_A,)
+def test_the_bare_id_reads_a_repo_digest_but_the_qualified_forms_stay_exact():
+    assert ci.missing([ID_A], [REF_A]) == ()
+    assert ci.satisfied(ID_A, [REF_A]) is True
     assert ci.missing([REF_A], [ID_A]) == (REF_A,)
     assert ci.missing([CONTENT_A], [ID_A, REF_A]) == (CONTENT_A,)
     assert ci.missing([ID_A], [CONTENT_A]) == (ID_A,)
