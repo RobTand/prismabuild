@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shlex
 import sys
 import subprocess
 import tempfile
@@ -881,3 +882,115 @@ def test_a_stage_parent_substitution_cannot_move_a_referenced_copy(fleet, monkey
     assert got["complete"] is False
     assert got["entries_moved"] == 1
     assert (relocated / target.name).read_bytes() == good
+
+
+CLI_RECLAIM_KEY = "a" * 64
+CLI_RESTORE_KEY = "b" * 64
+
+
+@pytest.fixture()
+def own_key_unset(monkeypatch):
+    """A direct run names its key by flag, never by the shard's own."""
+    monkeypatch.delenv(pb.ACTION_KEY_ENV, raising=False)
+
+
+def _cli_args(fleet, *extra: str) -> list[str]:
+    queue, stage, mount, _quarantine, _good = fleet
+    return ["--pool-root", str(queue.root), "--tier-id", TIER,
+            "--stage-root", str(stage), "--mount-prefix", str(mount), *extra]
+
+
+def test_the_cli_dry_run_prints_the_receipt_in_the_owners_spelling(
+        fleet, capsys, tmp_path, own_key_unset) -> None:
+    queue, stage, mount, _quarantine, good = fleet
+    receipt_file = tmp_path / "receipt.json"
+
+    code = stage_reclaim.main(_cli_args(
+        fleet, "--receipt", str(receipt_file), "--action-key", CLI_RECLAIM_KEY))
+    printed = capsys.readouterr().out
+
+    got = json.loads(printed)
+    assert code == 0 and got["applied"] is False
+    assert got["entries_paired"] == len(NAMES)
+    # One line in the digest owner's sorted spelling, not a private encoding.
+    assert printed == pb.sorted_json(got) + "\n"
+    assert json.loads(receipt_file.read_text()) == got
+    # A dry run files no movement receipt, even when it knows its own key.
+    assert queue.move_record(CLI_RECLAIM_KEY) is None
+    for name in NAMES:
+        assert _staged(stage, mount, name).read_bytes() == good
+
+
+def test_the_cli_applies_and_its_printed_restore_command_restores(
+        fleet, capsys, own_key_unset) -> None:
+    queue, stage, mount, quarantine, good = fleet
+
+    code = stage_reclaim.main(_cli_args(
+        fleet, "--apply", "--run-id", "cli-run", "--action-key",
+        CLI_RECLAIM_KEY, "--quarantine-root", str(quarantine)))
+    applied = json.loads(capsys.readouterr().out)
+
+    assert code == 0 and applied["entries_moved"] == len(NAMES)
+    filed = queue.move_record(CLI_RECLAIM_KEY)
+    assert filed is not None and filed["event"] == stage_reclaim.RECLAIM_EVENT
+    for name in NAMES:
+        assert not _staged(stage, mount, name).exists()
+    # The advertised restore command is a real invocation of this CLI.
+    command = shlex.split(applied["restore_command"])
+    assert Path(command[1]).name == "stage_reclaim.py"
+    code = stage_reclaim.main(command[2:] + ["--action-key", CLI_RESTORE_KEY])
+    restored = json.loads(capsys.readouterr().out)
+    assert code == 0 and restored["entries_restored"] == len(NAMES)
+    assert queue.move_record(CLI_RESTORE_KEY)["event"] == (
+        "stage-source-mark-restored")
+    for name in NAMES:
+        assert _staged(stage, mount, name).read_bytes() == good
+
+
+def test_the_cli_refuses_an_apply_without_a_quarantine_root(
+        fleet, capsys, own_key_unset) -> None:
+    _queue, stage, mount, _quarantine, good = fleet
+
+    code = stage_reclaim.main(_cli_args(fleet, "--apply"))
+    got = json.loads(capsys.readouterr().out)
+
+    assert code == 1 and got["complete"] is False
+    assert got["skipped"] == "apply needs a quarantine root"
+    for name in NAMES:
+        assert _staged(stage, mount, name).read_bytes() == good
+
+
+@pytest.mark.parametrize("flag", ["--receipt", "--memo-out"])
+def test_the_cli_refuses_an_output_inside_the_stage(
+        fleet, capsys, own_key_unset, flag) -> None:
+    _queue, stage, _mount, _quarantine, _good = fleet
+
+    with pytest.raises(SystemExit) as stopped:
+        stage_reclaim.main(_cli_args(fleet, flag, str(stage / "out.json")))
+
+    assert stopped.value.code == 2
+    assert "outside the stage" in capsys.readouterr().err
+    assert not (stage / "out.json").exists()
+
+
+def test_the_cli_restore_needs_a_quarantine_root(
+        fleet, capsys, own_key_unset) -> None:
+    with pytest.raises(SystemExit) as stopped:
+        stage_reclaim.main(_cli_args(fleet, "--restore", "cli-run"))
+
+    assert stopped.value.code == 2
+    assert "--restore needs --quarantine-root" in capsys.readouterr().err
+
+
+def test_the_cli_help_explains_every_flag_and_renders(capsys) -> None:
+    with pytest.raises(SystemExit) as stopped:
+        stage_reclaim.main(["--help"])
+
+    shown = capsys.readouterr().out
+    assert stopped.value.code == 0
+    # argparse wraps the help, so compare with the whitespace collapsed.
+    assert "(default 64.0)" in " ".join(shown.split())
+    for flag in ("--pool-root", "--action-key", "--tier-id", "--stage-root",
+                 "--max-read-gib", "--cas-root", "--residency-root",
+                 "--receipt"):
+        assert flag in shown

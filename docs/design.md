@@ -14895,6 +14895,11 @@ The default dry run lists every candidate with an original path, extent,
 SHA-256 and proof receipt, or a refusal reason. It changes no stage bytes,
 xattrs or file times. Explicit receipt and memo outputs must remain outside
 the stage. A dry run does not file a movement receipt in the queue.
+The command prints its receipt as one line of sorted JSON in the digest
+owner's spelling, and `--receipt` also writes an indented copy. Its helpers
+use the owner's `new_sha256` and `sorted_json` profiles, so the duplication
+ratchet gains no raw digest site. The command ships in the published runtime
+generation, because dl380g10 has no checkout to run it from.
 
 A range name, `<rel>.pbrange/<offset>-<size>`, identifies the original at
 `<mount_prefix>/<rel>`, with extent `[offset, offset+size)`. Historical mover
