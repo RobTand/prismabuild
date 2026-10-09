@@ -589,9 +589,9 @@ def test_a_fresh_read_that_disagrees_blocks_the_teardown(gang_fleet, monkeypatch
     real = queue.residency_verdict
     calls = []
 
-    def verdict(item):
+    def verdict(item, **kwargs):
         calls.append(item["action_key"])
-        result = real(item)
+        result = real(item, **kwargs)
         if len(calls) % 2 == 0:  # the confirming re-read sees the lead running
             result = dict(result, pending=[{"lead": lead, "status": "claimed"}])
         return result
@@ -683,9 +683,9 @@ def test_a_failed_confirming_read_restarts_the_window(
     real = queue.residency_verdict
     calls = []
 
-    def verdict(item):
+    def verdict(item, **kwargs):
         calls.append(item["action_key"])
-        result = real(item)
+        result = real(item, **kwargs)
         if len(calls) % 2 == 0:  # the confirming re-read fails
             raise OSError("stale handle")
         return result
@@ -716,10 +716,10 @@ def test_a_failed_first_verdict_read_restarts_the_window(
     clock[0] += 2 * _gang.TERMINAL_CONFIRM_S
     real = queue.residency_verdict
 
-    def verdict(item):
+    def verdict(item, **kwargs):
         if item.get("action_key") == first:
             raise OSError("stale handle")
-        return real(item)
+        return real(item, **kwargs)
 
     monkeypatch.setattr(queue, "residency_verdict", verdict)
     assert gclaim("sparklina") is None
@@ -764,3 +764,251 @@ def test_a_live_reading_whose_mark_survives_restarts_the_window(
     clock[0] += 2 * _gang.TERMINAL_CONFIRM_S
     assert gclaim("sparklina") is None
     assert _gang.teardown(queue, group) is not None
+
+
+@pytest.mark.parametrize("state", [pool.READY, pool.CLAIMED])
+@pytest.mark.parametrize("refresh_fails", [False, True])
+def test_cached_live_misses_do_not_confirm_an_aged_terminal_mark(
+        gang_fleet, monkeypatch, tmp_path, state, refresh_fails):
+    """A later generation survives cached misses and failed directory refreshes."""
+    import os
+
+    queue, clock, gclaim, denial, group, first, second, lead = _fail_lead_and_mark(
+        gang_fleet, monkeypatch, tmp_path, "cached-live-gang")
+    clock[0] += 2 * _gang.TERMINAL_CONFIRM_S
+    queue.publish(action_key=lead, cas_root=str(queue.root / "cas"),
+                  checkout_root=str(queue.root / "co"),
+                  worker_script=str(queue.root / "worker.py"),
+                  resources={"cpu": 1, "mem_gb": 1, STAGE_KIND: 2},
+                  residency={**_consumer_block([]),
+                             "range_start_bytes": 0, "range_end_bytes": 2 * GIB},
+                  max_attempts=1, retry_safe=False, tags=["elsewhere"])
+    if state == pool.CLAIMED:
+        claimed = queue.claim(capacity={"cpu": 8, "mem_gb": 16}, tags=["elsewhere"])
+        assert claimed is not None and claimed["action_key"] == lead
+    live_path = queue.item_path(state, lead)
+    real_read = pool._read_json
+    real_open = os.open
+    real_listdir = os.listdir
+    real_confirm = queue._gang_terminal_confirmed
+    proving = False
+
+    def confirm(*args, **kwargs):
+        nonlocal proving
+        proving = True
+        try:
+            return real_confirm(*args, **kwargs)
+        finally:
+            proving = False
+
+    def cached_read(path, **kwargs):
+        if path == live_path:
+            return None
+        return real_read(path, **kwargs)
+
+    def open_directory(path, flags, *args, **kwargs):
+        if proving and refresh_fails and Path(path) == live_path.parent and flags & os.O_DIRECTORY:
+            raise OSError("directory refresh failed")
+        return real_open(path, flags, *args, **kwargs)
+
+    def list_directory(path):
+        if proving and refresh_fails and Path(path) == live_path.parent:
+            raise OSError("directory refresh failed")
+        return real_listdir(path)
+
+    with monkeypatch.context() as fault:
+        fault.setattr(queue, "_gang_terminal_confirmed", confirm)
+        fault.setattr(pool, "_read_json", cached_read)
+        fault.setattr(os, "open", open_directory)
+        fault.setattr(os, "listdir", list_directory)
+        assert gclaim("sparklina") is None
+        assert _gang.teardown(queue, group) is None, "uncertain absence must not end the gang"
+        assert queue.item_path(pool.READY, first).exists()
+        assert queue.item_path(pool.READY, second).exists()
+
+    if state == pool.READY:
+        claimed = queue.claim(capacity={"cpu": 8, "mem_gb": 16}, tags=["elsewhere"])
+        assert claimed is not None and claimed["action_key"] == lead
+    queue.record_move(lead, {
+        "consumer_action_key": first, "tier_id": TIER,
+        "stage_root": str(tmp_path / "stage"), "manifest_sha256": MANIFEST,
+        "range_start_bytes": 0, "range_end_bytes": 2 * GIB,
+        "bytes_staged": 2 * GIB, "complete": True})
+    queue.finish(lead, status="executed")
+    _compose_map(monkeypatch, queue, first, [lead])
+    assert gclaim("sparky") is None
+    assert gclaim("sparklina") == first, denial(first, "sparklina")
+    assert gclaim("sparky") == second, denial(second, "sparky")
+
+
+@pytest.mark.parametrize("reading", ["initial", "confirming", "live"])
+@pytest.mark.parametrize("restart", [False, True])
+def test_failed_unlink_and_replacement_require_a_new_confirmation_window(
+        gang_fleet, monkeypatch, tmp_path, reading, restart):
+    """Recovery cannot use an aged mark after both reset operations fail."""
+    queue, clock, gclaim, denial, group, first, second, lead = _fail_lead_and_mark(
+        gang_fleet, monkeypatch, tmp_path, "reset-failure-gang")
+    clock[0] += 2 * _gang.TERMINAL_CONFIRM_S
+    mark_path = _gang.terminal_mark_path(queue, group, first)
+    old_mark = mark_path.read_bytes()
+    real_verdict = queue.residency_verdict
+    real_write = pool._write_json_atomic
+    calls = 0
+
+    def verdict(item, **kwargs):
+        nonlocal calls
+        calls += 1
+        result = real_verdict(item, **kwargs)
+        if reading == "initial" or (reading == "confirming" and calls == 2):
+            raise OSError("verdict read failed")
+        if reading == "live":
+            return dict(result, pending=[{"lead": lead, "status": "claimed"}])
+        return result
+
+    def write(path, record):
+        if path == mark_path:
+            raise OSError("mark replacement failed")
+        return real_write(path, record)
+
+    with monkeypatch.context() as fault:
+        fault.setattr(queue, "residency_verdict", verdict)
+        fault.setattr(_gang, "clear_terminal", lambda *args: False)
+        fault.setattr(pool, "_write_json_atomic", write)
+        assert gclaim("sparklina") is None
+        assert _gang.teardown(queue, group) is None
+        assert mark_path.read_bytes() == old_mark, "the reset failure must retain the old bytes"
+
+    if restart:
+        recovered = pool.PoolQueue(queue.root)
+        monkeypatch.setattr(queue, "_gang_terminal_confirmed",
+                            recovered._gang_terminal_confirmed)
+    clock[0] += 1
+    assert gclaim("sparklina") is None
+    assert _gang.teardown(queue, group) is None, "recovery must start a new window"
+    clock[0] += _gang.TERMINAL_CONFIRM_S - 1
+    assert gclaim("sparklina") is None
+    assert _gang.teardown(queue, group) is None
+    clock[0] += 1
+    assert gclaim("sparklina") is None
+    assert _gang.teardown(queue, group) is not None
+    queue.sweep_gangs()
+    assert queue.item_path(pool.WITHDRAWN, first).exists()
+    assert queue.item_path(pool.WITHDRAWN, second).exists()
+
+
+def test_a_future_terminal_timestamp_restarts_confirmation(
+        gang_fleet, monkeypatch, tmp_path):
+    """A future timestamp cannot supply elapsed confirmation time."""
+    queue, clock, gclaim, denial, group, first, second, lead = _fail_lead_and_mark(
+        gang_fleet, monkeypatch, tmp_path, "future-mark-gang")
+    path = _gang.terminal_mark_path(queue, group, first)
+    mark = json.loads(path.read_text())
+    mark["first_seen_unix"] = clock[0] + 10 * _gang.TERMINAL_CONFIRM_S
+    pool._write_json_atomic(path, mark)
+    assert gclaim("sparklina") is None
+    assert _gang.teardown(queue, group) is None
+    clock[0] += _gang.TERMINAL_CONFIRM_S - 1
+    assert gclaim("sparklina") is None
+    assert _gang.teardown(queue, group) is None
+    clock[0] += 1
+    assert gclaim("sparklina") is None
+    assert _gang.teardown(queue, group) is not None
+
+
+@pytest.mark.parametrize("directory", [pool.READY, pool.DONE, pool.MOVERS])
+def test_a_failed_refresh_under_the_lead_lock_restarts_confirmation(
+        gang_fleet, monkeypatch, tmp_path, directory):
+    """The final proof cannot convert a failed refresh into terminal absence."""
+    from contextlib import contextmanager
+    import os
+
+    queue, clock, gclaim, denial, group, first, second, lead = _fail_lead_and_mark(
+        gang_fleet, monkeypatch, tmp_path, "locked-refresh-gang")
+    clock[0] += 2 * _gang.TERMINAL_CONFIRM_S
+    real_lock = queue._transition_locked
+    real_listdir = os.listdir
+    real_open = os.open
+    locked = False
+    target = queue.root / directory
+
+    @contextmanager
+    def transition(key, **kwargs):
+        nonlocal locked
+        with real_lock(key, **kwargs) as acquired:
+            if key == lead and acquired:
+                locked = True
+            try:
+                yield acquired
+            finally:
+                if key == lead:
+                    locked = False
+
+    def list_directory(path):
+        if locked and Path(path) == target:
+            raise OSError("proof directory refresh failed")
+        return real_listdir(path)
+
+    def open_directory(path, flags, *args, **kwargs):
+        if locked and Path(path) == target and flags & os.O_DIRECTORY:
+            raise OSError("proof directory refresh failed")
+        return real_open(path, flags, *args, **kwargs)
+
+    with monkeypatch.context() as fault:
+        fault.setattr(queue, "_transition_locked", transition)
+        fault.setattr(os, "listdir", list_directory)
+        fault.setattr(os, "open", open_directory)
+        assert gclaim("sparklina") is None
+        assert _gang.teardown(queue, group) is None
+        assert not _gang.terminal_mark_path(queue, group, first).exists()
+    clock[0] += 1
+    assert gclaim("sparklina") is None
+    assert _gang.teardown(queue, group) is None
+    clock[0] += _gang.TERMINAL_CONFIRM_S
+    assert gclaim("sparklina") is None
+    assert _gang.teardown(queue, group) is not None
+
+
+@pytest.mark.parametrize("fault_directory", [None, "holder", "receipt"])
+def test_fresh_pin_proof_preserves_a_resident_gang(
+        gang_fleet, monkeypatch, tmp_path, fault_directory):
+    """A stale unpinned verdict cannot destroy current resident bytes."""
+    import os
+
+    queue, clock, publish, finish, gclaim, denial, members = gang_fleet
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    lead = _hexkey("pinned-proof-lead")
+    group, (first, second) = members("pinned-proof", residency=_consumer_block([lead]))
+    queue.mint_tier_capacity(TIER, {"stage_gib": 8})
+    _stage_lead(queue, clock, monkeypatch, lead, first, stage)
+    _compose_map(monkeypatch, queue, first, [lead])
+    real_pin = queue._lead_is_pinned
+
+    def cached_pin(residency, key, **kwargs):
+        if not kwargs.get("fresh"):
+            return False
+        return real_pin(residency, key, **kwargs)
+
+    with monkeypatch.context() as stale:
+        stale.setattr(queue, "_lead_is_pinned", cached_pin)
+        assert gclaim("sparklina") is None
+        assert denial(first, "sparklina")["reason"] == "residency_lead_terminal"
+        clock[0] += 2 * _gang.TERMINAL_CONFIRM_S
+        real_listdir = os.listdir
+        target = (queue.tier_ledger(TIER).held_dir if fault_directory == "holder"
+                  else queue.move_path(lead).parent if fault_directory == "receipt"
+                  else None)
+
+        def list_directory(path):
+            if target is not None and Path(path) == target:
+                raise OSError("pin directory refresh failed")
+            return real_listdir(path)
+
+        stale.setattr(os, "listdir", list_directory)
+        assert gclaim("sparklina") is None
+        assert _gang.teardown(queue, group) is None
+        assert queue.item_path(pool.READY, first).exists()
+        assert queue.item_path(pool.READY, second).exists()
+    assert gclaim("sparky") is None
+    assert gclaim("sparklina") == first, denial(first, "sparklina")
+    assert gclaim("sparky") == second, denial(second, "sparky")

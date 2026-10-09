@@ -4676,32 +4676,36 @@ directly -- `pbgang` refuses this shape -- or any other submitter's row) is
 planned by the manifest planner (#1247) off its own sealed request and is
 then gated by its filed plan exactly like an explicit one, reaching its map at
 launch through the declared-manifest branch of `residency_map_environment`.
-Operational consequence: a window whose movers are slow drains its already-
-elected siblings' hosts for the whole mover time. If a member's leads all end
-terminally (`residency_lead_terminal`: failed, withdrawn, dropped, unpinned or
-bound to another manifest) the claim pass that confirms it tears the gang down
-(#1543): the siblings are withdrawn and their fences released, because nothing
-will repair that member and gang elections never expire. One terminal reading
-is not enough, since a lead mid-requeue (READY to CLAIMED) reads as ended for a
-moment and teardown is permanent. The first reading writes a durable mark,
-`gangs/<group>/terminal-<member>.json`, holding a signature of every pending
-lead's state records and generations; any pass that reads the member live
-again clears it. The gang is torn down by a pass that finds the mark at least
-`TERMINAL_CONFIRM_S` (120 s) old with the same signature and then proves the
-verdict once more under the leads' transition locks, in lead-key order and
-without waiting, and files the one-shot `teardown.json` there before it
-releases them; a requeue that won first reads live in that proof, and one
-that starts after it waits until the commit. A busy lock, a changed
-signature, a failed read or a mark stamped in the future restarts the wait.
-No pass blocks, and the one-shot `teardown.json` is the gang-level arbiter.
-The siblings are withdrawn after the leads' locks are released. A
-lead re-queued after teardown does not bring the gang back, so submit the
-movers before the gang.
-A refused plan (`plan_unreadable`, `plan_superseded`) is not covered: the gang
-sweep tears a gang down only on an UNSUCCESSFUL member, which a READY member
-never is, so that wait lasts until the gang is withdrawn. Size
-`--residency` windows with that fence in mind, submit the movers before the
-gang, and withdraw the gang when a member's residency can no longer land.
+Slow movers keep fences on the hosts that their gang siblings elect.
+The claim pass tears down a gang after it confirms `residency_lead_terminal`.
+This denial covers failed, withdrawn, dropped, unpinned, and manifest-mismatched leads.
+The sweep withdraws all members and releases their fences (#1543).
+
+The first terminal observation writes `gangs/<group>/terminal-<member>.json`.
+The mark contains a signature of each pending lead's records and generations.
+An unchanged signature must persist for `TERMINAL_CONFIRM_S` (120 seconds).
+A live verdict clears the mark.
+A changed signature, failed read, busy lock, or future timestamp starts a new window.
+
+The final proof takes every relevant lead's transition lock without a wait, in lead-key order.
+It refreshes directory names and reopens positive records before it checks live generations, the verdict, and pin state.
+A failed refresh, unreadable listed record, or live lead prevents teardown.
+The proof writes the one-shot `teardown.json` before it releases these locks.
+The caller withdraws siblings only after it releases every lead lock.
+A requeue after teardown cannot restore the gang.
+
+The queue checks mark reads and removals with the same strict directory refresh.
+If unlink and replacement both fail, the queue retains a reset obligation.
+It cannot confirm that member until the reset succeeds.
+A new queue instance resets inherited evidence before use.
+This restart costs a new confirmation window but prevents an old mark from bypassing a failed reset.
+
+Plan refusals (`plan_unreadable`, `plan_superseded`) remain outside this change.
+A READY member with a plan refusal still holds its siblings' fences until withdrawal.
+Issue #1543 remains open for that scope.
+Submit movers before the gang.
+Withdraw the gang when its member's plan cannot become resident.
+These source changes do not establish deployment or a live-queue qualification.
 
 Per member host, inside the ordinary claim pass:
 

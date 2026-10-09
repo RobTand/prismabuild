@@ -2657,6 +2657,21 @@ def _read_json_bounded(
     return value
 
 
+def _read_json_confirmed(path: Path, *, max_bytes: int | None = None) -> dict[str, object] | None:
+    """Read after an error-visible directory refresh; never trust a cached miss."""
+    names = os.listdir(path.parent)
+    if path.name not in names:
+        return None
+    # A listed name that cannot be read is uncertain, not absent. Reopen
+    # positive records too; the best-effort poll reader is not commit proof.
+    raw = pb._read_regular_file_nofollow(
+        path, where="terminal proof record", replaced_leaf=True, max_bytes=max_bytes)
+    value = pb._decode_strict_json(raw, where="terminal proof record")
+    if not isinstance(value, dict):
+        raise PoolContractError(f"terminal proof record is not an object: {path}")
+    return value
+
+
 def _finite_generation(value: object) -> float | None:
     """A record's generation as a finite float, or ``None``.
 
@@ -5544,6 +5559,9 @@ class PoolQueue:
         #: without a GPU (#1262): evidence for the denial, never a timer.
         self._cpu_host_yields: dict[tuple[str, str], float] = {}
         self._claim_denial_bases: dict[str, Path] = {}
+        # An unseen member must reset inherited evidence. Failed resets stay
+        # owed until storage accepts them; a restart cannot inherit eligibility.
+        self._gang_terminal_resets: dict[tuple[str, str], bool] = {}
         #: The last claim pass's transition holds (#1029), or ``None`` before
         #: the first pass: :meth:`_TransitionHolds.summary`.
         self.last_claim_pass: dict[str, object] | None = None
@@ -8083,7 +8101,7 @@ class PoolQueue:
     def move_path(self, action_key: str) -> Path:
         return self.root / MOVERS / f"{action_key}.json"
 
-    def move_record(self, action_key: str) -> dict[str, object] | None:
+    def move_record(self, action_key: str, *, fresh: bool = False) -> dict[str, object] | None:
         """What one movement node staged or released, if it has filed it.
 
         Either receipt :meth:`record_move` files: a mover's, or an egress's
@@ -8106,18 +8124,30 @@ class PoolQueue:
         """
 
         path = self.move_path(action_key)
-        try:
-            os.lstat(path)
-            present = True
-        except FileNotFoundError:
-            present = False
-        record = _read_json_fresh(path)       # malformed JSON raises, as before
+        if fresh:
+            record = _read_json_confirmed(path)
+            present = record is not None
+        else:
+            try:
+                os.lstat(path)
+                present = True
+            except FileNotFoundError:
+                present = False
+            record = _read_json_fresh(path)       # malformed JSON raises, as before
         if record is not None:
             if record.get("schema") in POOL_MOVEMENT_RECEIPT_SCHEMAS:
                 return record
             return None
         if present:
             return None           # present but empty/unknown: no stale fallback
+        if fresh:
+            # Retirement directories are optional. Refresh their parent before
+            # accepting absence, then refresh both mutable checkpoint records
+            # and content-addressed archive names before recovery reads them.
+            directories = os.listdir(self.root)
+            for name in (MOVERS_RETIRED, MOVERS_ARCHIVE):
+                if name in directories:
+                    os.listdir(self.root / name)
         return self.recover_archived_move(action_key)
 
     def mover_retirement_checkpoint_path(self) -> Path:
@@ -17390,7 +17420,7 @@ class PoolQueue:
 
     def _unless_requeued(self, lead: str, entry: dict[str, object],
                          ended: Mapping[str, object] | None,
-                         wanted: object = None) -> dict[str, object]:
+                         wanted: object = None, *, fresh: bool = False) -> dict[str, object]:
         """``entry``, or the lead's live requeue when it is newer than ``ended`` (#1186).
 
         A stage mover's key is its range's content address, so a range that
@@ -17422,8 +17452,9 @@ class PoolQueue:
             return float(stamp)
 
         before = generation(ended)
+        read_record = _read_json_confirmed if fresh else _read_json
         for state in (CLAIMED, READY):
-            live = _read_json(self.item_path(state, lead))
+            live = read_record(self.item_path(state, lead))
             if not isinstance(live, Mapping):
                 continue
             after = generation(live)
@@ -17445,7 +17476,7 @@ class PoolQueue:
                     "replaces": replaced}
         return entry
 
-    def _superseded_status_of(self, action_key: str) -> str | None:
+    def _superseded_status_of(self, action_key: str, *, fresh: bool = False) -> str | None:
         """The newest drop filed for this key, or ``None`` if it was never dropped.
 
         ``_file_superseded`` writes ``<key>.<unix>.<kind>.json`` under
@@ -17457,8 +17488,15 @@ class PoolQueue:
         """
 
         newest: tuple[str, str] | None = None
-        for path in _glob(self.superseded_dir(), f"{action_key}.*.json"):
-            record = _read_json(path)
+        directory = self.superseded_dir()
+        if fresh:
+            paths = [directory / name for name in os.listdir(directory)
+                     if fnmatch.fnmatchcase(name, f"{action_key}.*.json")]
+        else:
+            paths = _glob(directory, f"{action_key}.*.json")
+        read_record = _read_json_confirmed if fresh else _read_json
+        for path in paths:
+            record = read_record(path)
             if not isinstance(record, Mapping):
                 continue
             status = record.get("status")
@@ -17488,7 +17526,8 @@ class PoolQueue:
         except (OSError, ValueError, TypeError, PoolContractError) as exc:
             return {"unreadable": True, "error": str(exc)}
 
-    def residency_verdict(self, item: Mapping[str, object]) -> dict[str, object]:
+    def residency_verdict(self, item: Mapping[str, object], *,
+                          fresh: bool = False) -> dict[str, object]:
         """Whether this item's declared bytes are resident, and why not.
 
         ``not_requested`` when an item has no residency request; the verdict is
@@ -17499,6 +17538,9 @@ class PoolQueue:
         *other* manifest resident has made none of this consumer's bytes
         resident.  Both are traps a deterministic descriptor invites, because
         it is what lets a consumer bind a mover's result before the mover runs.
+
+        ``fresh`` requires error-visible record and pin reads for terminal
+        gang proof. Ordinary admission retains its existing read policy.
         """
 
         residency = item.get("residency")
@@ -17522,13 +17564,15 @@ class PoolQueue:
             return {"state": "no_leads"}
         wanted = residency.get("manifest_sha256")
         pending: list[dict[str, object]] = []
+        read_record = _read_json_confirmed if fresh else _read_json
+        proof = {"fresh": True} if fresh else {}
         for lead in leads:
-            record = _read_json(self.item_path(DONE, str(lead)))
+            record = read_record(self.item_path(DONE, str(lead)))
             status = record.get("status") if isinstance(record, Mapping) else None
             if status == "executed":
                 declared = self._residency_manifest_of(record)
                 if wanted is None or declared is None or declared == wanted:
-                    if self._lead_is_pinned(residency, str(lead)):
+                    if self._lead_is_pinned(residency, str(lead), **proof):
                         continue
                     # ``executed`` is not residency once tokens are pinned.  A
                     # mover that moved nothing, or that refused for an overrun,
@@ -17539,7 +17583,7 @@ class PoolQueue:
                     # mover whose bytes an egress has since deleted.
                     pending.append(self._unless_requeued(
                         str(lead), {"lead": str(lead), "status": "unpinned"},
-                        record, wanted))
+                        record, wanted, **proof))
                     continue
                 # The pool cannot open the manifest -- it holds records, not
                 # the CAS -- but it holds both blocks, and two blocks naming
@@ -17548,11 +17592,11 @@ class PoolQueue:
                     str(lead), {"lead": str(lead), "status": "manifest_mismatch",
                                 "declared_manifest_sha256": declared,
                                 "expected_manifest_sha256": str(wanted)},
-                    record, wanted))
+                    record, wanted, **proof))
                 continue
             ended = record
             if status is None:
-                if self._lead_was_adopted(residency, str(lead)):
+                if self._lead_was_adopted(residency, str(lead), **proof):
                     # No terminal record because it never ran: this range was
                     # already on the tier and the coordinator handed it the
                     # tokens instead of publishing a copy (#598).  Checked
@@ -17570,18 +17614,18 @@ class PoolQueue:
                 # No drop policy is implied for the consumer: the item stays
                 # ready, exactly as it does while its mover is still queued.
                 for state in (FAILED, WITHDRAWN):
-                    ended = _read_json(self.item_path(state, str(lead)))
+                    ended = read_record(self.item_path(state, str(lead)))
                     if isinstance(ended, Mapping):
                         status = str(ended.get("status") or state)
                         break
                 else:
                     ended = None
-                    status = self._superseded_status_of(str(lead))
+                    status = self._superseded_status_of(str(lead), **proof)
             if status is None:
                 pending.append({"lead": str(lead), "status": "absent"})
                 continue
             pending.append(self._unless_requeued(
-                str(lead), {"lead": str(lead), "status": status}, ended, wanted))
+                str(lead), {"lead": str(lead), "status": status}, ended, wanted, **proof))
         if pending:
             # Two denials, because they mean different things to whoever reads
             # them: a lead that has not finished may still finish, while a lead
@@ -17728,7 +17772,8 @@ class PoolQueue:
                             on_unreadable=refusals.append)
         return repr(refusals[0]) if refusals else None
 
-    def _lead_was_adopted(self, residency: Mapping[str, object], lead: str) -> bool:
+    def _lead_was_adopted(self, residency: Mapping[str, object], lead: str, *,
+                          fresh: bool = False) -> bool:
         """Did this lead take over a range that was already on the tier (#598)?
 
         An adopted mover is never published and never claimed, so it files no
@@ -17745,7 +17790,8 @@ class PoolQueue:
         manifest is a trap the binding invites rather than an impossibility.
         """
 
-        receipt = self.move_record(str(lead))
+        proof = {"fresh": True} if fresh else {}
+        receipt = self.move_record(str(lead), **proof)
         if not isinstance(receipt, Mapping):
             return False
         if not receipt.get(MOVE_ADOPTED_FROM_FIELD):
@@ -17758,9 +17804,10 @@ class PoolQueue:
         tier_id = residency.get("tier_id")
         if tier_id is not None and receipt.get("tier_id") != tier_id:
             return False
-        return self._lead_is_pinned(residency, str(lead))
+        return self._lead_is_pinned(residency, str(lead), **proof)
 
-    def _lead_is_pinned(self, residency: Mapping[str, object], lead: str) -> bool:
+    def _lead_is_pinned(self, residency: Mapping[str, object], lead: str, *,
+                        fresh: bool = False) -> bool:
         """Does this finished lead still hold tokens for the bytes it staged?
 
         Contained, and ``True`` on a read failure that is not a missing
@@ -17775,6 +17822,19 @@ class PoolQueue:
             # Nothing to check against.  A block that declares leads without a
             # tier predates the pin and is read as it was before.
             return True
+        if fresh:
+            ledger = self.tier_ledger(tier_id)
+            # A missing holder counts only after its parent lists it absent.
+            # Unlike holder_tokens' tolerant glob, every listing error raises.
+            if lead not in os.listdir(ledger.held_dir):
+                return False
+            if not any("-" in name for name in os.listdir(ledger.held_dir / lead)):
+                return False
+            if _read_json_confirmed(self.item_path(CLAIMED, lead)) is not None:
+                return False
+            receipt = self.move_record(lead, fresh=True)
+            return (isinstance(receipt, Mapping) and receipt.get("complete") is True
+                    and not receipt.get("refusal") and receipt.get("tier_id") == tier_id)
         try:
             if not self.tier_ledger(tier_id).holder_tokens(lead):
                 return False
@@ -21008,7 +21068,7 @@ class PoolQueue:
                         # A read that failed, not a verdict: it must not
                         # confirm an earlier terminal reading, so the wait
                         # starts over on the next pass (#1583 review).
-                        self._gang_reset_terminal(item, key)
+                        self._gang_clear_terminal(item, key)
                     # A read that failed, not a verdict: this host's live
                     # withhold for the row holds for the pass (#1143).
                     carried = carry_withhold(item, key)
@@ -24943,47 +25003,20 @@ class PoolQueue:
         return str(declared["group"]) if declared else None
 
     def _gang_clear_terminal(self, item: Mapping[str, object], key: str) -> bool:
-        """Member ``key`` reads live: forget any terminal reading of it (#1543).
-
-        ``True`` when no mark survives.  A live reading whose mark cannot
-        be removed is not a reset: the mark is replaced with an empty
-        signature instead, so the next terminal reading restarts the
-        window rather than confirming the old one (#1583 review, second
-        round).
-        """
+        """Reset terminal evidence, and retain the obligation if storage refuses."""
         from . import _gang
+        group = self._gang_member_group(item)
+        if group is None:
+            return True
+        identity = (group, key)
+        self._gang_terminal_resets[identity] = True
         try:
-            group = self._gang_member_group(item)
-            if group is None:
-                return True
-            if _gang.clear_terminal(self, group, key):
-                return True
-            _gang.note_terminal(self, group, key, "", now=_now())
-            return False
-        except (_gang.GangContractError, OSError, ValueError, pb.PrismaBuildError):
-            try:
-                group = self._gang_member_group(item)
-                if group is not None:
-                    _gang.note_terminal(self, group, key, "", now=_now())
-            except (_gang.GangContractError, OSError, ValueError, pb.PrismaBuildError):
-                pass
-            return False
-
-    def _gang_reset_terminal(self, item: Mapping[str, object], key: str) -> None:
-        """An uncertain reading ends the wait: the next pass starts over (#1543).
-
-        A failed confirmation read is not a terminal reading, so the mark
-        it would have confirmed must not survive to confirm a later pass.
-        A mark that cannot be read or removed is replaced on the next
-        terminal reading, which restarts the window there.
-        """
-        from . import _gang
-        try:
-            group = self._gang_member_group(item)
-            if group is not None and not _gang.clear_terminal(self, group, key):
+            if not _gang.clear_terminal(self, group, key):
                 _gang.note_terminal(self, group, key, "", now=_now())
         except (_gang.GangContractError, OSError, ValueError, pb.PrismaBuildError):
-            pass
+            return False
+        self._gang_terminal_resets[identity] = False
+        return True
 
     def _terminal_signature(self, residency: Mapping[str, object]) -> str | None:
         """The leads' endings and generations behind a terminal reading.
@@ -25004,8 +25037,10 @@ class PoolQueue:
             lead = str(entry.get("lead"))
             seen = []
             for state in (READY, CLAIMED, DONE, FAILED, WITHDRAWN):
-                record = _read_json_fresh(self.item_path(state, lead))
+                record = _read_json_confirmed(self.item_path(state, lead))
                 if isinstance(record, Mapping):
+                    if state in (READY, CLAIMED):
+                        return None
                     seen.append([state, record.get("published_unix"),
                                  record.get("finished_unix"),
                                  record.get("withdrawn_unix"), record.get("status")])
@@ -25045,9 +25080,14 @@ class PoolQueue:
         group: str | None = None
         try:
             group = self._gang_member_group(item)
+            if group is not None and self._gang_terminal_resets.get((group, key), True):
+                if not self._gang_clear_terminal(item, key):
+                    return False
             signature = self._terminal_signature(residency)
             leads = self._terminal_leads(residency)
             if group is None or signature is None or not leads:
+                if group is not None:
+                    self._gang_clear_terminal(item, key)
                 return False
             if not _gang.note_terminal(self, group, key, signature, now=_now()):
                 return False
@@ -25056,21 +25096,28 @@ class PoolQueue:
                     acquired = held.enter_context(
                         self._transition_locked(lead, blocking=False))
                     if not acquired:
-                        self._gang_reset_terminal(item, key)
+                        self._gang_clear_terminal(item, key)
                         return False
-                fresh = self.residency_verdict(item)
-                if self._terminal_signature(fresh) != signature:
-                    self._gang_reset_terminal(item, key)
+                # No live row can cross this proof/commit boundary. Failed
+                # refreshes and listed-but-unreadable records end the window.
+                for lead in leads:
+                    for state in (READY, CLAIMED):
+                        if _read_json_confirmed(self.item_path(state, lead)) is not None:
+                            self._gang_clear_terminal(item, key)
+                            return False
+                fresh = self.residency_verdict(item, fresh=True)
+                if (fresh["state"] not in ("lead_not_resident", "lead_unpinned")
+                        or fresh.get("plan_superseded") is not None
+                        or self._terminal_signature(fresh) != signature):
+                    self._gang_clear_terminal(item, key)
                     return False
                 return self._gang_teardown_mark(
                     item,
                     reason=f"member {key[:12]} cannot start: residency_lead_terminal",
                     by=key)
-        except (_gang.GangContractError, OSError, PoolContractError, pb.PrismaBuildError):
+        except (_gang.GangContractError, OSError, ValueError, pb.PrismaBuildError):
             if group is not None:
-                with suppress(_gang.GangContractError, OSError, ValueError,
-                              pb.PrismaBuildError):
-                    _gang.note_terminal(self, group, key, "", now=_now())
+                self._gang_clear_terminal(item, key)
             return False
 
     @_serialized_key

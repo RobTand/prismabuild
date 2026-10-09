@@ -291,9 +291,11 @@ def note_terminal(queue, group: str, key: str, signature: str, *, now: float,
     member's row lock, so a member's mark has one writer.
     """
     path = terminal_mark_path(queue, group, key)
+    from . import pool
+    path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        mark = _gang_read(path)
-    except (GangContractError, OSError, ValueError):
+        mark = pool._read_json_confirmed(path, max_bytes=MAX_RECORD_BYTES)
+    except (GangContractError, OSError, ValueError, core.PrismaBuildError):
         mark = None
     stamp = mark.get("first_seen_unix") if isinstance(mark, Mapping) else None
     if (signature and isinstance(mark, Mapping) and mark.get("schema") == TERMINAL_SCHEMA
@@ -301,8 +303,6 @@ def note_terminal(queue, group: str, key: str, signature: str, *, now: float,
             and isinstance(stamp, (int, float)) and not isinstance(stamp, bool)
             and 0 <= now - float(stamp)):
         return now - float(stamp) >= confirm_s
-    from . import pool
-    path.parent.mkdir(parents=True, exist_ok=True)
     pool._write_json_atomic(path, {"schema": TERMINAL_SCHEMA, "group": group,
                                    "member": key, "signature": signature,
                                    "first_seen_unix": float(now)})
@@ -317,14 +317,14 @@ def clear_terminal(queue, group: str, key: str) -> bool:
     must not treat the live reading as a reset of the confirmation
     window (#1583 review, second round).
     """
+    from . import pool
     path = terminal_mark_path(queue, group, key)
     try:
+        if group not in os.listdir(root(queue)):
+            return True
         path.unlink(missing_ok=True)
-    except OSError:
-        return False
-    try:
-        return not path.exists()
-    except OSError:
+        return pool._read_json_confirmed(path, max_bytes=MAX_RECORD_BYTES) is None
+    except (OSError, core.PrismaBuildError):
         return False
 
 
