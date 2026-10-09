@@ -84,22 +84,23 @@ def test_setup_and_cycles_touch_only_the_private_root(tmp_path):
         "record = {'code': code, 'attempts': attempts, 'box': box,\n"
         "          'box_files': sorted(p.name for p in Path(box).iterdir()) if Path(box).is_dir() else []}\n"
         "Path(result).write_text(json.dumps(record))\n")
-    work = Path("/home/rob/tmp/pb1542-r13-test") / ("bench-work-%d" % os.getpid())
-    if work.exists():
-        import shutil
-        shutil.rmtree(work)
-    work.mkdir(parents=True)
     env = dict(os.environ)
     env.pop("PRISMABUILD_BOX_STATE_ROOT", None)
     env["PYTHONPATH"] = str(ROOT / "src") + os.pathsep + str(ROOT / "tools" / "fleet") + os.pathsep + str(ROOT / "tests")
-    completed = subprocess.run([sys.executable, str(child), str(ROOT / "tools" / "fleet" / "bench_tier_cycle_r13.py"),
-                                str(work), str(result_path)], cwd=tmp_path, env=env, capture_output=True, text=True, timeout=600)
-    assert result_path.exists(), completed.stdout[-2000:] + completed.stderr[-2000:]
-    record = json.loads(result_path.read_text())
-    assert record["code"] == 0, completed.stderr[-2000:]
-    assert record["attempts"] == [], record["attempts"]
-    assert record["box_files"], "the bench filed no admission state in its work directory"
-    assert any(name.endswith(".lock") for name in record["box_files"]), record["box_files"]
+    # The bench refuses /tmp; keep its work and output in private RAM scratch.
+    with tempfile.TemporaryDirectory(prefix="pb1542-r13-test-", dir="/dev/shm") as parent:
+        work = Path(parent) / "work"
+        work.mkdir()
+        completed = subprocess.run([sys.executable, str(child), str(ROOT / "tools" / "fleet" / "bench_tier_cycle_r13.py"),
+                                    str(work), str(result_path)], cwd=tmp_path, env=env, capture_output=True, text=True, timeout=600)
+        assert result_path.exists(), completed.stdout[-2000:] + completed.stderr[-2000:]
+        record = json.loads(result_path.read_text())
+        assert record["code"] == 0, completed.stderr[-2000:]
+        assert record["attempts"] == [], record["attempts"]
+        assert record["box_files"], "the bench filed no admission state in its work directory"
+        assert any(name.endswith(".lock") for name in record["box_files"]), record["box_files"]
+    assert not work.exists(), "the R13 test left its work directory behind"
+    assert not Path(parent).exists(), "the R13 test left its temporary parent behind"
 
 
 @pytest.fixture
