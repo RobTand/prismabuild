@@ -20,7 +20,12 @@ jobs:
             const escaped = repo.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
             const pattern = new RegExp(`\\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?|refs?|references?)\\s+(?:https://github\\.com/${escaped}/issues/|${escaped}#|#)([1-9][0-9]*)\\b`, 'gi');
             const numbers = [...new Set([...body.matchAll(pattern)].map(m => Number(m[1])))];
+            const branch = pull.head.ref;
+            const branchExempt = branch.startsWith('ig/') || branch.startsWith('release')
+              || Date.parse(pull.created_at) < Date.parse('2026-10-09T17:00:00Z');
+            const branchMatch = /^prismabuild-([1-9][0-9]*)(-[a-z0-9][a-z0-9-]*)?$/.exec(branch);
             for (const issue_number of numbers) {
+              if (!branchExempt && (!branchMatch || issue_number !== Number(branchMatch[1]))) continue;
               try {
                 const {data} = await github.rest.issues.get({...context.repo, issue_number});
                 if (!data.pull_request) {
@@ -30,6 +35,16 @@ jobs:
               } catch (error) {
                 if (error.status !== 404) throw error;
               }
+            }
+            if (!branchExempt) {
+              const expected = numbers.length > 0 ? `prismabuild-${numbers[0]}`
+                : branchMatch ? `prismabuild-${branchMatch[1]}` : 'prismabuild-<issue>';
+              core.setFailed(
+                'This pull request violates the branch naming rule (rule 12). '
+                + `Use prismabuild-<issue> or prismabuild-<issue>-<word>, for example ${expected}. `
+                + 'The body must reference the branch issue number with "Refs #NUMBER" or a supported keyword. '
+                + 'The reference must name an actual issue in this repository.');
+              return;
             }
             const query = `query($owner: String!, $repo: String!, $number: Int!) {
               repository(owner: $owner, name: $repo) {
