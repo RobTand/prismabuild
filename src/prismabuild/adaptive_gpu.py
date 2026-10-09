@@ -375,6 +375,7 @@ def _held_gpu_caps_gib(holders: list) -> tuple[list[dict[str, object]], float]:
         caps.append({"action_key": name, "gpu_cap_gib": gib})
     return caps, total
 
+
 def _unified_gpu_charge_gib(
     holders: list, budget: object,
 ) -> tuple[list[dict[str, object]], float, float] | None:

@@ -4023,6 +4023,7 @@ host `--demand mem_gb=M`. The two memory domains have different accounting:
 | Memory domain | Budget contract |
 |---|---|
 | `shared_system` (GB10) | `mem_gb` covers aggregate physical DRAM used by the action. The GPU budget limits its GPU subset; omitting it defaults that cap to `mem_gb`. Admission charges held GPU caps against the host offer: a new cap plus held caps must fit the offer. CPU and GPU allocation bounds are reconciled by the broker because CUDA allocations are not reliably charged to the cgroup. |
+| `discrete` | Host RAM and VRAM are independent reservations. `mem_gb` limits host memory, while `--gpu-memory-gb` limits VRAM and defaults to `mem_gb` when omitted. Both budgets must fit; unused RAM does not provide VRAM capacity. |
 
 For example, `--gpu --demand mem_gb=32 --gpu-memory-gb=8` reserves 32 GiB host
 RAM and 8 GiB VRAM on a discrete device; on GB10 it permits 32 GiB aggregate
