@@ -340,8 +340,10 @@ def test_2000_names_of_one_dead_owner_list_the_forest_once(
     assert held["calls"] >= NAMES, held
     assert holds == held["calls"], (holds, held)
     # What the lock covered of the forest is its fingerprint, once per hold at
-    # most, and nothing more: no listing, no read, no second pass.
-    assert set(locked) <= set(FINGERPRINT_OPS), locked
+    # most, and nothing more: no read, no second pass. Listings are counted
+    # above: churn may file a few, never a per-name pass.
+    assert set(locked) - {"list"} <= set(FINGERPRINT_OPS), locked
+    assert locked.get("list", 0) <= _CHURN_SLACK, locked
     assert sum(locked.values()) <= holds * per_hold + _CHURN_SLACK * per_hold, (
         locked, holds, per_hold)
 
