@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import shlex
+import shutil
 import sys
 import subprocess
 import tempfile
@@ -982,7 +983,7 @@ def test_the_cli_restore_needs_a_quarantine_root(
     assert "--restore needs --quarantine-root" in capsys.readouterr().err
 
 
-def test_the_tool_ships_with_the_published_generation() -> None:
+def test_the_tool_runs_from_only_the_published_generation(tmp_path) -> None:
     """dl380g10 has no checkout, so only a published tool can run there."""
     import publish_runtime
 
@@ -990,9 +991,19 @@ def test_the_tool_ships_with_the_published_generation() -> None:
     assert "stage_reclaim.py" in publish_runtime.FLEET_SCRIPTS
     assert "stage_reclaim.py" not in {
         name for name, _reason in publish_runtime.EXCLUDED}
-    for layout in ("tools", "tools/fleet"):
-        assert f"{layout}/stage_reclaim.py" in manifest
     assert publish_runtime._unshipped_imports(manifest) == []
+    release = tmp_path / "release"
+    for name in manifest:
+        target = release / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(publish_runtime._source_for(name), target)
+    for layout in ("tools", "tools/fleet"):
+        shown = subprocess.run(
+            [sys.executable, str(release / layout / "stage_reclaim.py"),
+             "--help"],
+            cwd=tmp_path, capture_output=True, text=True, timeout=120)
+        assert shown.returncode == 0, shown.stderr
+        assert "--quarantine-root" in shown.stdout
 
 
 def test_the_cli_help_explains_every_flag_and_renders(capsys) -> None:
