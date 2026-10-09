@@ -1356,18 +1356,40 @@ reads `status: failed` with the same reason, and `expired_phase` names the
 phase that ran out of time. `reservation.attempt_release_audit` returns the
 deadline only when all ten phases are enforced and ended in time.
 
-The same contract is what lets a lower-priority action run on a host that a
+The same contract can let a lower-priority action run on a host that a
 measurement is draining: its bound is the deadline, and it may run only if the
-deadline falls strictly before the measurement's original opportunity. A gang
-member, an action that declares scratch, or a box without the capability reads
-UNKNOWN and waits as before.
+deadline falls strictly before the measurement's original opportunity. That
+takes a person's recorded acceptance of the settlement assumption below.
+Without one, every candidate reads UNKNOWN and waits as before. A gang member,
+an action that declares scratch, or a box without the capability reads UNKNOWN
+in any case.
 
-Read the limits as well. The bound holds while the kernel, the broker and the
-shared mount answer promptly. A call that never returns, or the death of the worker,
-leaves the attempt holding its tokens until settlement is proved, and its audit
-reads UNKNOWN. No timer releases anything. A retry-safe action that a fence
-stops and that has attempts left returns to `ready`, but the same deadline
-refuses its next claim; submit one attempt, which is the `pbrun` default.
+Read the limits as well. Payload stop, termination, cleanup, scope settlement
+and the return of the host tokens use the last 120 s, and they end in time only
+while the kernel, the broker, the disk and the shared mount answer promptly. No
+component bounds those answers. A call that never returns, or the death of the
+worker, leaves the attempt holding its tokens until settlement is proved, its
+audit reads UNKNOWN, and the measurement that waits starts later. No timer
+releases anything. A retry-safe action that a fence stops and that has
+attempts left returns to `ready`, but the same deadline refuses its next
+claim; submit one attempt, which is the `pbrun` default.
+
+That limit is a risk to the fleet's measurements, so a person decides whether
+to accept it. The decision is a record in the queue root
+(`lifetime-fence/acceptance.json`) with the exact statement, the person and the
+explicit authority they cite:
+
+```
+python -m prismabuild.lifetime_acceptance status
+python -m prismabuild.lifetime_acceptance accept --by NAME --authority REF
+python -m prismabuild.lifetime_acceptance revoke
+```
+
+`--queue` names another queue root. An agent never runs `accept` on its own
+judgment, and the authority must point at the person's instruction. A record for
+another statement, for example after the reserve changes, does not apply. A
+revoke takes effect at the next admission pass and touches no running attempt
+and no held token.
 
 A submission that declares `--progress-phase NAME=SECONDS` (also spelled
 `--progress NAME=SECONDS`, repeatable in the order the work does them) is

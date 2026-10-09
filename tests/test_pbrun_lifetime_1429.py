@@ -89,3 +89,5 @@ def test_help_states_the_contract_and_its_limits(monkeypatch, capsys):
     assert f"payload {pb.LIFETIME_RELEASE_RESERVE_S:g} s before that deadline" in text
     assert "The payload budget (--timeout-s) is separate and unchanged" in text
     assert "never on a timer" in text
+    assert "only while the kernel, the broker, the disk and the shared mount answer promptly" in text
+    assert "only after a person has recorded their acceptance" in text

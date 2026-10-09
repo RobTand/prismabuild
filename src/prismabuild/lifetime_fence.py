@@ -19,17 +19,24 @@ records the phase end beside that mechanism as it runs
 (:class:`AttemptLog`), and a phase counts as enforced only when it ends
 before its bound. The audit (:func:`release_bound`) reads those records back.
 Admission (:func:`prospective_bound`) is finite only when every phase is
-bounded for the candidate's shape; a phase that is not names its reason and
-the verdict is UNKNOWN.
+bounded for the candidate; a phase that is not names its reason and the
+verdict is UNKNOWN.
 
-What the bound is not. It is the bound of this control flow when the kernel,
-the broker, the local disk and the shared mount answer promptly. The reserve
-is sized for answers that take seconds, not for the sum of every worst-case
-timeout. A system call that never returns is outside it. Such an attempt keeps its tokens, its audit
-reads UNKNOWN, and a delay can still reach the measurement. Once the original
-opportunity has passed, no later bound precedes it, so one overrun does not
-admit further backfill. A timer never returns capacity; only the proved
-settlement does. The payload stop kills the payload; it releases nothing.
+What bounds a phase. A phase of basis :data:`CONTROL` ends before its bound
+because the worker's own code reads the clock and refuses. A phase of basis
+:data:`PROMPT` is different: it ends inside the reserve only while the kernel,
+the broker, the local disk and the shared mount answer promptly, and no
+component bounds those answers. A task in uninterruptible sleep survives the
+kill, and the scope stays populated. PrismaBuild never returns tokens on a
+timer, so settlement that is not proved keeps them, and a delay can still
+reach the measurement that waits. That is :data:`ASSUMPTION`. It is a weaker
+promise than a verified maximum, so it is not the contract's to grant: a
+person accepts it (:mod:`prismabuild.lifetime_acceptance`), and until a
+recorded acceptance exists every :data:`PROMPT` phase reads UNKNOWN and no
+candidate backfills. A system call that never returns is outside the bound
+either way. Once the original opportunity has passed, no later bound precedes
+it, so one overrun does not admit further backfill. The payload stop kills
+the payload; it releases nothing.
 
 Validation lives in :mod:`prismabuild.core` beside the other sealed params,
 so ``validate_action`` refuses an unreadable fence at seal time. This module
@@ -76,13 +83,21 @@ STOP = "stop"
 #: A phase that must end before ``deadline_unix``.
 RELEASE = "release"
 
+#: The worker's own code reads the clock and refuses; no outside answer is
+#: needed for the phase to end before its bound.
+CONTROL = "control-flow"
+#: The phase ends before its bound only while the kernel, the broker, the
+#: local disk and the shared mount answer promptly (:data:`ASSUMPTION`).
+PROMPT = "prompt-answer"
+
 
 class Component(NamedTuple):
-    """One applicable phase, its bound and the mechanism that enforces it."""
+    """One applicable phase: its bound, its enforcing mechanism and its basis."""
 
     phase: str
     bound: str
     mechanism: str
+    basis: str
 
 
 #: The contract: every phase from admission to resource release, in order.
@@ -90,23 +105,44 @@ class Component(NamedTuple):
 #: from a path without that mechanism (an uncontained run has no scope to
 #: stop or settle) can never read as enforced.
 COMPONENTS = (
-    Component("admission", STOP, "claim-gate"),
-    Component("checkout", STOP, "deadline-bounded-checkout"),
-    Component("readiness", STOP, "launch-gate"),
-    Component("prelaunch", STOP, "launch-gate"),
-    Component("payload", RELEASE, "stop-alarm"),
-    Component("credited_waits", RELEASE, "absolute-stop-clock"),
-    Component("termination", RELEASE, "scope-stop"),
-    Component("cleanup", RELEASE, "fail-closed-cleanup"),
-    Component("scope_settlement", RELEASE, "exact-scope-proof"),
-    Component("resource_release", RELEASE, "release-after-proof"),
+    Component("admission", STOP, "claim-gate", CONTROL),
+    Component("checkout", STOP, "deadline-bounded-checkout", CONTROL),
+    Component("readiness", STOP, "launch-gate", CONTROL),
+    Component("prelaunch", STOP, "launch-gate", CONTROL),
+    Component("payload", RELEASE, "stop-alarm", PROMPT),
+    Component("credited_waits", RELEASE, "absolute-stop-clock", CONTROL),
+    Component("termination", RELEASE, "scope-stop", PROMPT),
+    Component("cleanup", RELEASE, "fail-closed-cleanup", PROMPT),
+    Component("scope_settlement", RELEASE, "exact-scope-proof", PROMPT),
+    Component("resource_release", RELEASE, "release-after-proof", PROMPT),
 )
 PHASES = tuple(component.phase for component in COMPONENTS)
 #: Phases the execution supervisor records while the attempt runs.
 EXECUTION_PHASES = PHASES[:7]
 #: Phases ``finish`` records after the run, from settlement evidence.
 SETTLEMENT_PHASES = PHASES[7:]
+#: Phases that end before their bound only on a prompt outside answer.
+PROMPT_PHASES = tuple(
+    component.phase for component in COMPONENTS if component.basis == PROMPT)
 _COMPONENT = {component.phase: component for component in COMPONENTS}
+
+#: What a person accepts to let a candidate's deadline stand as its release
+#: bound. The record of the acceptance holds this text, so another reserve or
+#: another wording is another decision, and an older record stops applying.
+ASSUMPTION = (
+    "The payload stop, termination, cleanup, scope settlement and resource "
+    f"release end within {RELEASE_RESERVE_S:g} seconds of the stop instant "
+    "only while the kernel, the broker, the local disk and the shared mount "
+    "answer promptly. No component bounds those answers. A call that never "
+    "returns keeps the host tokens, and the measurement that waits then "
+    "starts after its opportunity."
+)
+#: Why a :data:`PROMPT` phase reads UNKNOWN until the assumption is accepted.
+UNACCEPTED = (
+    "no component bounds this phase: it ends in time only while the kernel, "
+    "the broker, the disk and the shared mount answer promptly, and no "
+    "person has accepted that assumption"
+)
 
 
 def _finite_seconds(value: object) -> float | None:
@@ -204,15 +240,21 @@ def attempt_identity(record: Mapping[str, object]) -> dict[str, object]:
 
 
 def components_support(
-    *, gang: bool = False, scratch: bool = False,
+    *, gang: bool = False, scratch: bool = False, assumption_accepted: bool = False,
 ) -> dict[str, str | None]:
     """Per phase: ``None`` when the shape is bounded, else why it is UNKNOWN.
 
-    A shape the contract does not cover names the phase it leaves unfenced.
-    A shape not listed here runs the same bounded path as any other.
+    A :data:`PROMPT` phase has no verified maximum. It reads bounded only when
+    a person has accepted :data:`ASSUMPTION` (``assumption_accepted``), so the
+    default is UNKNOWN. A shape the contract does not cover names the phase it
+    leaves unfenced, and that reason replaces the generic one. A shape not
+    listed here runs the same bounded path as any other.
     """
 
     support: dict[str, str | None] = {phase: None for phase in PHASES}
+    if not assumption_accepted:
+        for phase in PROMPT_PHASES:
+            support[phase] = UNACCEPTED
     if gang:
         support["admission"] = (
             "a gang member waits on sibling claims that no fence bounds")
@@ -231,7 +273,8 @@ def prospective_bound(
     """The prospective release bound for backfill, or ``None`` when UNKNOWN.
 
     Finite only when the clock is readable, the stop instant is still ahead,
-    and every phase of the contract is bounded (:func:`components_support`).
+    and every phase of the contract is bounded (:func:`components_support`),
+    which for a :data:`PROMPT` phase takes a person's recorded acceptance.
     A phase missing from ``components`` or carrying a reason is UNKNOWN, so
     one unfenced component makes the whole verdict UNKNOWN.
     """

@@ -31,6 +31,7 @@ from lifetime_fixtures_1429 import (  # noqa: E402
     TASK_SLEEPS,
     WORKER,
     Broker,
+    accept_assumption,
     alive,
     claim,
     claim_on_host,
@@ -105,13 +106,19 @@ def _phases(outcome):
 
 
 def test_a_candidate_that_meets_the_contract_backfills_before_the_opportunity(fleet):
-    """The positive case: a finite bound strictly before the original opportunity."""
+    """The positive case: a finite bound strictly before the original opportunity.
+
+    It takes the contract, the candidate's shape and a person's recorded
+    acceptance of the settlement assumption; the first two are not enough.
+    """
 
     queue, clock, readings, sample, publish, tick, claim_row, denial = fleet
     incumbent, measurement, original_end, snapshot = _bounded_measurement_wait(fleet)
     key = publish_fenced(fleet, "enforced-backfill", fence_s=FENCE_S)
     row = pool._read_json(queue.item_path(pool.READY, key))
     assert isinstance(row, dict)
+    assert reservation.candidate_release_bound(queue, row) == "UNKNOWN"
+    accept_assumption(queue)
     bound = reservation.candidate_release_bound(queue, row)
     assert bound == row["lifetime_deadline_unix"]
     assert bound < original_end

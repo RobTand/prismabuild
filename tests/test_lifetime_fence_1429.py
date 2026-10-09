@@ -19,9 +19,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "src"), str(ROOT / "tools" / "fleet")]
 sys.path[:0] = [str(ROOT / "tests")]
 from prismabuild import _measurement_reservation as reservation  # noqa: E402
-from prismabuild import adaptive_gpu, core as pb, lifetime_fence, local_scratch, pool  # noqa: E402
+from prismabuild import (  # noqa: E402
+    adaptive_gpu, core as pb, lifetime_acceptance, lifetime_fence, local_scratch, pool)
 from lifetime_fixtures_1429 import (  # noqa: E402
     FENCE_S,
+    accept_assumption,
     claim as claim_fenced,
     claim_on_host,
     fenced_queue,
@@ -108,18 +110,48 @@ def test_the_phase_table_names_every_applicable_phase_once():
     for component in lifetime_fence.COMPONENTS:
         assert component.bound in (lifetime_fence.STOP, lifetime_fence.RELEASE)
         assert component.mechanism
+        assert component.basis in (lifetime_fence.CONTROL, lifetime_fence.PROMPT)
+    # The phases before the launch and the credited waits end because the
+    # worker reads the clock. Every phase that needs the kernel, the broker,
+    # the disk or the mount to answer inside the reserve is named here, so a
+    # new phase cannot join the table as bounded by default.
+    assert lifetime_fence.PROMPT_PHASES == (
+        "payload", "termination", "cleanup", "scope_settlement", "resource_release")
+    assert set(lifetime_fence.PHASES) - set(lifetime_fence.PROMPT_PHASES) == {
+        "admission", "checkout", "readiness", "prelaunch", "credited_waits"}
 
 
 def _support(**overrides):
-    support = lifetime_fence.components_support()
+    """The support of a candidate whose person accepted the assumption."""
+
+    support = lifetime_fence.components_support(assumption_accepted=True)
     support.update(overrides)
     return support
+
+
+def test_a_phase_that_needs_a_prompt_answer_is_unknown_until_a_person_accepts():
+    kwargs = dict(published_unix=1000.0, fence_s=300.0, now_unix=1100.0)
+    # The default is fail closed: nothing accepts the assumption by itself.
+    default = lifetime_fence.components_support()
+    assert default == {
+        phase: lifetime_fence.UNACCEPTED if phase in lifetime_fence.PROMPT_PHASES else None
+        for phase in lifetime_fence.PHASES}
+    assert lifetime_fence.prospective_bound(components=default, **kwargs) is None
+    accepted = lifetime_fence.components_support(assumption_accepted=True)
+    assert accepted == {phase: None for phase in lifetime_fence.PHASES}
+    assert lifetime_fence.prospective_bound(components=accepted, **kwargs) == 1300.0
+    # The statement a person accepts names the reserve it is about.
+    assert f"{lifetime_fence.RELEASE_RESERVE_S:g} seconds" in lifetime_fence.ASSUMPTION
+    # A shape the contract does not cover keeps its own reason beside the generic one.
+    scratch = lifetime_fence.components_support(scratch=True)
+    assert scratch["cleanup"] != lifetime_fence.UNACCEPTED and scratch["cleanup"]
+    assert scratch["payload"] == lifetime_fence.UNACCEPTED
 
 
 def test_a_finite_prospective_bound_needs_every_phase_bounded():
     kwargs = dict(published_unix=1000.0, fence_s=300.0, now_unix=1100.0)
     stop = lifetime_fence.clock(published_unix=1000.0, fence_s=300.0).stop_unix
-    assert lifetime_fence.components_support() == {p: None for p in lifetime_fence.PHASES}
+    assert _support() == {p: None for p in lifetime_fence.PHASES}
     assert lifetime_fence.prospective_bound(components=_support(), **kwargs) == 1300.0
     # The stop instant still ahead is part of the verdict; at it, UNKNOWN.
     assert lifetime_fence.prospective_bound(
@@ -140,12 +172,15 @@ def test_a_finite_prospective_bound_needs_every_phase_bounded():
     for broken in ({"published_unix": None}, {"fence_s": None}, {"fence_s": 100.0}):
         assert lifetime_fence.prospective_bound(
             components=_support(), **{**kwargs, **broken}) is None
-    # Shapes the contract does not cover name the phase they leave unfenced.
-    assert lifetime_fence.components_support(gang=True)["admission"]
-    assert lifetime_fence.components_support(scratch=True)["cleanup"]
+    # Shapes the contract does not cover name the phase they leave unfenced,
+    # even for a person who accepted the assumption.
+    accepted = {"assumption_accepted": True}
+    assert lifetime_fence.components_support(gang=True, **accepted)["admission"]
+    assert lifetime_fence.components_support(scratch=True, **accepted)["cleanup"]
     for shape in ({"gang": True}, {"scratch": True}):
         assert lifetime_fence.prospective_bound(
-            components=lifetime_fence.components_support(**shape), **kwargs) is None
+            components=lifetime_fence.components_support(**shape, **accepted),
+            **kwargs) is None
 
 
 def _audit(record):
@@ -296,6 +331,32 @@ def test_unfenced_candidate_holds_the_reserved_host(fleet):
     assert queue.item_path(pool.READY, candidate).exists()
 
 
+def test_without_a_recorded_acceptance_a_fenced_candidate_reads_unknown(fleet):
+    # No component bounds termination, cleanup, settlement or the return of
+    # the tokens: they end in time only while the kernel, the broker, the disk
+    # and the shared mount answer promptly. A person must accept that
+    # assumption before it can enable timed backfill, and until then even a
+    # candidate whose deadline precedes the opportunity reads UNKNOWN.
+    queue, clock, readings, sample, publish, tick, claim, denial = fleet
+    incumbent, measurement, original_end, snapshot = _bounded_measurement_wait(fleet)
+    key = publish_fenced(fleet, "fenced-without-acceptance")
+    row = pool._read_json(queue.item_path(pool.READY, key))
+    assert row["lifetime_deadline_unix"] < original_end
+    bound, support = reservation.candidate_release_verdict(queue, row)
+    assert bound is None, "a finite bound was read with no recorded acceptance"
+    assert reservation.candidate_release_bound(queue, row) == "UNKNOWN"
+    assert {phase for phase, reason in support.items() if reason} == set(
+        lifetime_fence.PROMPT_PHASES)
+    _observe_real_sharing_permission(fleet, key)
+    assert claim_on_host(fleet) is None
+    assert denial(key)["reason"] in (
+        "deferred_for_measurement_reservation", "deferred_behind_withheld_row")
+    assert queue.item_path(pool.READY, key).exists()
+    assert queue.ledger().held_keys() == [incumbent]
+    _assert_holder_unchanged(queue, incumbent, snapshot)
+    assert queue.item_path(pool.READY, measurement).exists()
+
+
 def test_candidate_release_bound_reads_unknown_without_fence(fleet):
     queue, clock, readings, sample, publish, tick, claim, denial = fleet
     incumbent, measurement, original_end, snapshot = _bounded_measurement_wait(fleet)
@@ -309,7 +370,7 @@ def test_candidate_release_bound_reads_unknown_without_fence(fleet):
     assert bound == "UNKNOWN"
 
 
-def test_ready_row_carries_the_sealed_clock_and_reads_a_finite_bound(fleet):
+def test_ready_row_carries_the_sealed_clock_and_reads_a_finite_bound_once_accepted(fleet):
     queue, clock, readings, sample, publish, tick, claim, denial = fleet
     incumbent, measurement, original_end, snapshot = _bounded_measurement_wait(fleet)
     key = publish_fenced(fleet, "fenced-ready-candidate")
@@ -320,16 +381,60 @@ def test_ready_row_carries_the_sealed_clock_and_reads_a_finite_bound(fleet):
     assert row.get("lifetime_deadline_unix") == row["published_unix"] + FENCE_S
     assert lifetime_fence.LIFETIME_TAG in (row.get("tags") or [])
     assert "claimed_unix" not in row
+    # The clock and the shape alone are not enough: a person has not accepted yet.
+    bound, support = reservation.candidate_release_verdict(queue, row)
+    assert bound is None
+    assert set(phase for phase, reason in support.items() if reason) == set(
+        lifetime_fence.PROMPT_PHASES)
+    accept_assumption(queue)
     bound, support = reservation.candidate_release_verdict(queue, row)
     assert bound == row["lifetime_deadline_unix"]
     assert support == {phase: None for phase in lifetime_fence.PHASES}
     assert reservation.candidate_release_bound(queue, row) == bound
+    # The decision is a person's to withdraw, and admission follows at once.
+    assert lifetime_acceptance.withdraw_acceptance(queue.root) is True
+    assert reservation.candidate_release_bound(queue, row) == "UNKNOWN"
+
+
+def test_a_withdrawn_acceptance_stops_the_next_backfill(fleet):
+    queue, clock, readings, sample, publish, tick, claim, denial = fleet
+    incumbent, measurement, original_end, snapshot = _bounded_measurement_wait(fleet)
+    key = publish_fenced(fleet, "fenced-then-withdrawn")
+    accept_assumption(queue)
+    _observe_real_sharing_permission(fleet, key)
+    lifetime_acceptance.withdraw_acceptance(queue.root)
+    assert claim_on_host(fleet) is None
+    assert denial(key)["reason"] in (
+        "deferred_for_measurement_reservation", "deferred_behind_withheld_row")
+    assert queue.item_path(pool.READY, key).exists()
+    assert queue.ledger().held_keys() == [incumbent]
+    _assert_holder_unchanged(queue, incumbent, snapshot)
+    # The decision is a person's again, and the same candidate backfills.
+    accept_assumption(queue)
+    _observe_real_sharing_permission(fleet, key)
+    assert claim_on_host(fleet) == key, denial(key)
+
+
+def test_an_acceptance_of_another_statement_does_not_enable_backfill(fleet, monkeypatch):
+    queue, clock, readings, sample, publish, tick, claim, denial = fleet
+    incumbent, measurement, original_end, snapshot = _bounded_measurement_wait(fleet)
+    key = publish_fenced(fleet, "fenced-other-statement")
+    with monkeypatch.context() as other:
+        other.setattr(lifetime_fence, "ASSUMPTION", "Another statement, another decision.")
+        accept_assumption(queue)
+    row = pool._read_json(queue.item_path(pool.READY, key))
+    assert reservation.candidate_release_bound(queue, row) == "UNKNOWN"
+    _observe_real_sharing_permission(fleet, key)
+    assert claim_on_host(fleet) is None
+    assert queue.item_path(pool.READY, key).exists()
+    _assert_holder_unchanged(queue, incumbent, snapshot)
 
 
 def test_a_candidate_whose_stop_instant_has_passed_reads_unknown_and_never_claims(fleet):
     queue, clock, readings, sample, publish, tick, claim, denial = fleet
     incumbent, measurement, original_end, snapshot = _bounded_measurement_wait(fleet)
     key = publish_fenced(fleet, "fenced-expired-candidate")
+    accept_assumption(queue)
     row = pool._read_json(queue.item_path(pool.READY, key))
     tick(row["lifetime_deadline_unix"] - lifetime_fence.RELEASE_RESERVE_S - clock[0] + 0.5)
     stale = pool._read_json(queue.item_path(pool.READY, key))
@@ -358,6 +463,7 @@ def test_a_scratch_declaring_candidate_reads_unknown_in_its_cleanup_phase(fleet)
     declaration = json.dumps([{"root_env": "PB_SCRATCH_ROOT", "name": "work"}])
     key = publish_fenced(fleet, "declares-scratch",
                          extra_variables={local_scratch.DECLARATIONS_ENV: declaration})
+    accept_assumption(queue)
     row = pool._read_json(queue.item_path(pool.READY, key))
     bound, support = reservation.candidate_release_verdict(queue, row)
     assert bound is None
@@ -372,6 +478,7 @@ def test_a_gang_member_reads_unknown_in_its_admission_phase_and_never_claims(fle
     queue, clock, readings, sample, publish, tick, claim, denial = fleet
     incumbent, measurement, original_end, snapshot = _bounded_measurement_wait(fleet)
     key = publish_fenced(fleet, "fenced-gang-member")
+    accept_assumption(queue)
     path = queue.item_path(pool.READY, key)
     row = pool._read_json(path)
     assert reservation.candidate_release_verdict(queue, row)[0] is not None
@@ -397,6 +504,7 @@ def _opportunity_case(fleet, delta):
     key = publish_fenced(fleet, f"fenced-{delta}", fence_s=fence_s)
     row = pool._read_json(queue.item_path(pool.READY, key))
     assert row["lifetime_deadline_unix"] == original_end + delta
+    accept_assumption(queue)
     _observe_real_sharing_permission(fleet, key)
     return key, incumbent, measurement, original_end, snapshot
 
@@ -445,6 +553,7 @@ def test_once_the_opportunity_has_passed_no_later_bound_admits_backfill(fleet):
     incumbent, measurement, original_end, snapshot = _bounded_measurement_wait(fleet)
     tick(original_end - clock[0] + 1.0)
     key = publish_fenced(fleet, "fenced-after-the-opportunity")
+    accept_assumption(queue)
     row = pool._read_json(queue.item_path(pool.READY, key))
     assert row["lifetime_deadline_unix"] > original_end
     _observe_real_sharing_permission(fleet, key)

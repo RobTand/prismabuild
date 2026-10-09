@@ -75,7 +75,9 @@ scope settlement and resource release. The contract is separate from
 holds while the kernel, the broker and the shared mount answer; a blocked call
 keeps the tokens until settlement is proved, and no timer returns them. Only
 a box that offers the `lifetime-fence-v1` capability claims such an action.
-See `docs/design.md`, "Lifetime contract v1".
+Such an action runs ahead of a waiting measurement only after a person has
+recorded acceptance of that limit; an agent never records it. See
+`docs/design.md`, "Lifetime contract v1".
 
 An action that can say when it commits work need not be bounded by elapsed
 time at all. Declare the phases it walks and the quiet each one is allowed --

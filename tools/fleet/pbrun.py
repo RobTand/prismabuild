@@ -7486,16 +7486,21 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
                          "here when it would cut this request short) also "
                          "applies. Queue waiting is bounded by --wait-s")
     ap.add_argument("--lifetime-s", type=float, default=None,
-                    help="opt-in sealed lifetime contract (#1429): every phase "
-                         "from admission to resource release ends within this "
-                         f"many seconds of publication ({pb.LIFETIME_MIN_FENCE_S:g} s "
-                         f"to {pb.LIFETIME_MAX_FENCE_S:g} s). The worker stops the "
-                         f"payload {pb.LIFETIME_RELEASE_RESERVE_S:g} s before that "
-                         "deadline, whatever the payload budget has credited, and "
-                         "records per-phase evidence. The payload budget "
-                         "(--timeout-s) is separate and unchanged. A blocked system "
-                         "call is outside the bound; tokens return only on proved "
-                         "settlement, never on a timer")
+                    help="opt-in sealed lifetime contract (#1429): the deadline "
+                         "is publication plus this many seconds "
+                         f"({pb.LIFETIME_MIN_FENCE_S:g} s to {pb.LIFETIME_MAX_FENCE_S:g} s). "
+                         f"The worker stops the payload {pb.LIFETIME_RELEASE_RESERVE_S:g} s "
+                         "before that deadline, whatever the payload budget has "
+                         "credited, launches nothing from that instant, and records "
+                         "per-phase evidence. The payload budget (--timeout-s) is "
+                         "separate and unchanged. Termination, cleanup, settlement "
+                         "and release end inside the deadline only while the kernel, "
+                         "the broker, the disk and the shared mount answer promptly. "
+                         "A blocked system call is outside the bound; tokens return "
+                         "only on proved settlement, never on a timer. The pool runs "
+                         "such an action ahead of a waiting measurement only after a "
+                         "person has recorded their acceptance of that limit "
+                         "(python -m prismabuild.lifetime_acceptance)")
     ap.add_argument("--progress-phase", "--progress", action="append", default=None,
                     metavar="NAME=SECONDS",
                     help="declare one phase of this action and the quiet it is "

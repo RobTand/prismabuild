@@ -21,7 +21,8 @@ sys.path[:0] = [str(ROOT / "src"), str(ROOT / "tools" / "fleet")]
 sys.path[:0] = [str(ROOT / "tests")]
 import resource_broker  # noqa: E402
 from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
-from prismabuild import core as pb, lifetime_fence, pool, resource_scope  # noqa: E402
+from prismabuild import (  # noqa: E402
+    core as pb, lifetime_acceptance, lifetime_fence, pool, resource_scope)
 from test_pool import _test_checkout_snapshot  # noqa: E402
 
 #: A fence the new seal and the old one both accept. The tests move a
@@ -182,6 +183,14 @@ def claim_on_host(fleet, host: str = "sparklina"):
         cpu_tiers={"preferred": list(range(20)), "fallback": []}, adaptive_cpu=True,
         tags=["gb10", host, lifetime_fence.LIFETIME_TAG])
     return None if result is None else result["action_key"]
+
+
+def accept_assumption(queue) -> dict:
+    """Record a person's acceptance in the queue root, as the command does."""
+
+    return lifetime_acceptance.record_acceptance(
+        queue.root, accepted_by="a test person",
+        authority="the lifetime fixtures record this decision")
 
 
 def good_log(published_unix: float = 1000.0, fence_s: float = FENCE_S,

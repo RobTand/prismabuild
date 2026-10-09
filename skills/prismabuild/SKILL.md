@@ -176,8 +176,11 @@ resources, not only the payload. The worker stops the payload 120 s before
 `published + N`, whatever `--timeout-s` has credited, and files per-phase
 evidence. Use it for short work that may run ahead of a waiting measurement:
 the pool admits such work only when its deadline falls strictly before that
-measurement's original opportunity. It never returns resources on a timer. A
-call that never returns keeps its tokens until settlement is proved.
+measurement's original opportunity, and only after a person has recorded
+acceptance of the settlement assumption (`python -m
+prismabuild.lifetime_acceptance`; an agent never records it, and without it the
+work waits as before). It never returns resources on a timer. A call that never
+returns keeps its tokens until settlement is proved.
 
 ### Emit committed units from any loop longer than a few minutes
 

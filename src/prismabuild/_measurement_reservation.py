@@ -4,7 +4,10 @@ The existing passes sidecar carries one host election per publication. A complet
 read is refreshed under measurement transition keys and host admission; directory
 absence alone never retires an election. Payload deadlines are opportunity
 metadata only. Only a candidate that seals the lifetime contract has a
-prospective admission-to-release bound (:mod:`prismabuild.lifetime_fence`, #1429).
+prospective admission-to-release bound (:mod:`prismabuild.lifetime_fence`, #1429),
+and only after a person has accepted the contract's assumption
+(:mod:`prismabuild.lifetime_acceptance`): no component bounds how long
+settlement takes, so until then every candidate reads UNKNOWN.
 """
 from __future__ import annotations
 
@@ -818,16 +821,20 @@ def candidate_release_verdict(
     READY row's own publication projection agrees with it, the row requires
     the capability that enforces it (so only a box that offers it can claim
     the row), the stop instant is still ahead, and every phase is bounded for
-    this candidate's shape.  ``support`` names
-    each phase and, where one is UNKNOWN, why.  The sealed payload timeout
-    alone is opportunity metadata, never a release bound.
+    this candidate's shape.  A phase that ends in time only on a prompt answer
+    from the kernel, the broker, the disk and the mount has no verified
+    maximum: it is bounded only while the queue holds a person's recorded
+    acceptance of that assumption, so without one the verdict is UNKNOWN for
+    every candidate.  ``support`` names each phase and, where one is UNKNOWN,
+    why.  The sealed payload timeout alone is opportunity metadata, never a
+    release bound.
 
     A finished attempt's filed evidence audits that attempt from the archive;
     it never becomes a new attempt's guarantee, and a successor is never
     judged by its predecessor.
     """
 
-    from . import lifetime_fence
+    from . import lifetime_acceptance, lifetime_fence
     from . import pool as pool_mod
 
     def unknown(reason: str) -> tuple[None, dict[str, str | None]]:
@@ -857,7 +864,8 @@ def candidate_release_verdict(
         variables = action["environment"]["variables"]
         support = lifetime_fence.components_support(
             gang=row.get("gang") is not None,
-            scratch=bool(variables.get(local_scratch.DECLARATIONS_ENV)))
+            scratch=bool(variables.get(local_scratch.DECLARATIONS_ENV)),
+            assumption_accepted=lifetime_acceptance.assumption_accepted(queue.root))
         bound = lifetime_fence.prospective_bound(
             published_unix=row.get("published_unix"), fence_s=fence["fence_s"],
             components=support, now_unix=pool_mod._now())
