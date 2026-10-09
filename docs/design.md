@@ -15735,15 +15735,24 @@ A pool write is therefore paid for in displaced mover reads. The ledger that
 already prices mover reads, `fill_mb_s_pool_side@<tier>`, is the one an
 export reserves from.
 
-**Off by default.** The price below is not measured, so the reservation and
-the pace are both opt-in. A producer turns them on by setting
-`PRISMABUILD_PRODUCED_SPOOL_PACED_EXPORT=1` in its sealed environment. When
-the variable is absent, empty, or `0`, every export is sealed exactly as it
-was before #747, so publishing a runtime that carries the pacer changes no
-live export. Any other value is refused when the spool is built.
-`submit_group(..., paced=True|False)` overrides the producer's setting for
-one group, so an A/B can interleave paced and unpaced exports from one
-producer. A replay keeps whatever the first submission sealed.
+**On by default for a declared spool (#905 Phase 1).** A producer that
+declares a spool bound, `PRISMABUILD_PRODUCED_SPOOL_MAX_BYTES`, is paced by
+default: at new submission `pbrun` seals
+`PRISMABUILD_PRODUCED_SPOOL_PACED_EXPORT=1` beside the bound, in the same
+normalization that seals the host window (`pbrun.normalize_spool_declaration`),
+before the ownership and stamp fingerprints are taken. An explicit `=1` is
+the same contract; `=0` beside a declared bound is refused by name with the
+same "drop the bound to declare no spool" guidance, because an unpaced
+declared spool writes at line rate over the movers sharing its tier; any
+other value is refused. A submission that declares no bound seals exactly as
+before. The price below is still unmeasured, so this default stays unmerged
+until the Phase 0 A/B on #905 passes. Already-sealed requests are immutable:
+when the variable is absent, empty, or `0` in a sealed environment, every
+export runs exactly as it did before #747, and `ProducedSpool` refuses any
+other value when the spool is built. `submit_group(..., paced=True|False)`
+overrides the producer's setting for one group, so an A/B can interleave
+paced and unpaced exports from one producer. A replay keeps whatever the
+first submission sealed.
 
 **Reservation.** A new opted-in export must resolve a fill price for the
 batch's prewrite tier. `ProducedSpool.submit_group` seals
