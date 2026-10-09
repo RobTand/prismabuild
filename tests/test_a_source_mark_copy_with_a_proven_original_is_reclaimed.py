@@ -758,8 +758,8 @@ def test_a_forged_memo_cannot_authorize_a_differing_original(fleet):
     stage_reclaim.write_memo_file(memo, [{
         "stage_rel": str(target.relative_to(stage)),
         "sha256": hashlib.sha256(good).hexdigest(),
-        "stage_identity": stage_reclaim._file_identity(target.stat()),
-        "original_identity": stage_reclaim._file_identity((mount / NAMES[0]).stat()),
+        "stage_identity": stage_reclaim._stat_fence(target.stat()),
+        "original_identity": stage_reclaim._stat_fence((mount / NAMES[0]).stat()),
         "original_path": str(mount / NAMES[0]), "offset": 0, "size": SIZE}])
     got = _reclaim(fleet, apply=True, run_id="forged-memo", memo_path=memo)
     assert got["complete"] is False
