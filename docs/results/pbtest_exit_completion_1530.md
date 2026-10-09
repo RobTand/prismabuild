@@ -36,6 +36,17 @@ Each native thread limit was one. The regression suite used `/tmp`.
   The receipt digest is `1bdff29cba16fccf72c99e1ccb4c43d8e24085fdbed9dfadfd9e08c9d8605670`.
   The payload digest is `6e14a577d56af71a7f601deedca4d8b52879d59a8ecf105493c7ba84c91f75aa`.
   A direct SHA-256 check matched the payload address.
+- Integrated revision run: `6475502474853c96f398308946887883915feb8af225e6c54719b0f8793251d6`.
+  The branch first merged main commit `6e5aaee1f4c2dda85842fc9acd7ab067ad4850f2`.
+  The merge retained the scratch guidance and the live-store guard instructions.
+  The accepted code, regression assertions, and unbuffered child output stayed unchanged.
+  The sealed snapshot names merge commit `fdb1e7b0d7e578317cfe32685e0302c3dde84ab9` as its parent.
+  All 101 affected tests passed, with no skips, in 28.27 seconds on dl380g10.
+  The cases exercise blocked exit hooks and console and JSON reports in both worker modes.
+
+  The receipt digest is `36a03af5142635786f7e97588cf5cb9e92d7548eb433e772a7b952b269798b83`.
+  The payload digest is `113b3afe8a82e7ed30b64d4b6bb82193429f0805cc5138712738f9adba4c516b`.
+  A direct SHA-256 check matched the payload address.
 
 ## Pool-scratch reproduction
 
