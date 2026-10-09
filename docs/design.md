@@ -5113,9 +5113,11 @@ fence for the same tier and range, or a done `executed` record that
 covers the chunk on the tier. The fresh begin asks the ledger only for
 the deficit, the demand less all coverage, and commits when holder plus
 shared cover the demand. The window's `blocked_gib` and the begin's
-`need_gib` come from that one computation: the stall carries the need,
-and a declined begin files its need with the ledger's own shortage
-reason instead of a bare `unreserved`.
+`need_gib` come from one computation: the stall's blocked amount is the
+deficit itself, read from this cycle's begin event when the reserve pass
+began, else from the same prospective census the begin will use. A
+declined begin journals its need with the ledger's own shortage reason,
+and the stall carries that cause beside the wait reason.
 A committed group whose census reads short with an empty holder lost its
 tokens to a path that wrote no release receipt (live, 2026-10-08: the PACT band
 source).  Its receipt still said committed, so the unit was never a newcomer

@@ -34,7 +34,9 @@ __all__ = [
     "GROUP_DIR", "TURN_DIR", "HOLDER_PREFIX",
     "GroupCensus", "ReconcileOutcome", "PublishOutcome", "TakeTurn",
     "tier_digest", "phase_digest", "holder_name", "group_dir",
-    "file_intent", "census", "incremental_need_gib", "reconcile",
+    "file_intent", "census", "incremental_need_gib",
+    "prospective_need_gib", "reconcile",
+    "record_decline", "latest_decline_reason",
     "publish_chunk", "release_unit", "has_holdings",
     "turn_ticket", "current_turn", "take_turn", "record_reserved",
     "finish_turn",
@@ -99,7 +101,10 @@ class ReconcileOutcome:
     #: The tokens the begin asked for, when it began or declined.
     need_gib: int | None = None
     #: Why a declined begin could not reserve (ledger shortage, cause).
+    #: Set on every declined begin, never only on capacity refusals.
     decline_reason: str | None = None
+    #: True when the reservation itself refused (lock busy, no room).
+    declined: bool = False
 
 
 @dataclass
@@ -262,6 +267,41 @@ def standing_intent(queue: pool.PoolQueue, unit: str, tier_id: str) -> dict | No
     status, record, _ = _read_receipt(group_dir(queue, unit, tier_id)
                                       / "intent.json")
     return record if status == "record" else None
+
+
+DECLINE_SCHEMA = "prismabuild.prelaunch_group_declined.v1"
+
+
+def record_decline(queue: pool.PoolQueue, unit: str, tier_id: str,
+                   need_gib: int, reason: str) -> None:
+    """Journal why the latest begin declined, for the window to report.
+
+    The reserve pass writes this beside the declined event, so a stall
+    filed on a later cycle still names the real cause. Best effort:
+    a journal that will not write never breaks the reservation.
+    """
+    payload = {"schema": DECLINE_SCHEMA, "unit": str(unit),
+               "tier_id": str(tier_id), "need_gib": int(need_gib),
+               "reason": str(reason), "declined_unix": time.time()}
+    try:
+        _write_json_atomic(group_dir(queue, unit, tier_id) / "declined.json",
+                           payload)
+    except (OSError, pool.PoolContractError, ValueError):
+        return
+
+
+def latest_decline_reason(queue: pool.PoolQueue, unit: str,
+                          tier_id: str) -> str | None:
+    """The journaled cause of the latest declined begin, or None."""
+    try:
+        status, record, _ = _read_receipt(group_dir(queue, unit, tier_id)
+                                          / "declined.json")
+    except (OSError, pool.PoolContractError, ValueError):
+        return None
+    if status != "record" or record is None:
+        return None
+    reason = record.get("reason")
+    return str(reason) if isinstance(reason, str) and reason else None
 
 
 def _check_demand(demand_gib: object) -> int:
@@ -458,6 +498,63 @@ def _held_or_unknown(ledger: pool.ResourceLedger, key: str,
     except (OSError, pool.PoolContractError, ValueError):
         found.funding_unknown.append(key)
         return None
+
+
+def prospective_need_gib(queue: pool.PoolQueue, tier_id: str, unit: str,
+                         holder: str, demand_gib: int,
+                         chunks: Sequence[Mapping[str, object]],
+                         chunk_movers: Sequence[str]) -> int | None:
+    """The deficit against a not-yet-filed intent, or None when unknown.
+
+    The window runs before the reserve pass files this cycle's intent, so
+    it cannot read the census the begin will use. It builds the same
+    computation from the unit's own legs: the demand less the holder,
+    the bound mover tokens and the shared pinned coverage the census
+    would count. None when any evidence will not read.
+    """
+    demand = _check_demand(demand_gib)
+    movers = _check_movers(chunk_movers)
+    checked = _check_chunks(list(chunks))
+    intent = {"chunks": checked}
+    kind = storage_tiers.capacity_kind_of(tier_id)
+    ledger = queue.tier_ledger(tier_id)
+    found = GroupCensus(holder=str(holder), demand_gib=demand)
+    try:
+        found.h = int(ledger.holder_tokens(str(holder)).get(kind, 0))
+    except (OSError, pool.PoolContractError, ValueError):
+        return None
+    try:
+        found.handles = ledger.acquisitions_of(str(holder))
+        found.p = sum(int(count) for _, _, _, _, count in found.handles)
+    except (OSError, pool.PoolContractError, ValueError):
+        return None
+    for mover in movers:
+        try:
+            status, record, _ = queue.read_funding_evidence(mover, tier_id)
+        except (OSError, pool.PoolContractError, ValueError):
+            return None
+        if status != "record" or record is None:
+            if status == "unknown":
+                return None
+            _count_shared_pinned(queue, ledger, kind, mover, intent,
+                                 tier_id, found)
+            continue
+        if (str(record.get("state")) not in ("reserved", "transferring",
+                                             "consumed")
+                or not _chunk_binds(intent, record, mover)):
+            _count_shared_pinned(queue, ledger, kind, mover, intent,
+                                 tier_id, found)
+            continue
+        held = _held_or_unknown(ledger, mover, found)
+        if held is None:
+            return None
+        tokens = record.get("tokens")
+        if not isinstance(tokens, list):
+            return None
+        found.m += len({str(name) for name in tokens} & held)
+    if found.funding_unknown:
+        return None
+    return incremental_need_gib(found, demand)
 
 
 def census(queue: pool.PoolQueue, tier_id: str, unit: str, holder: str,
@@ -657,7 +754,8 @@ def _top_up(ledger: pool.ResourceLedger, kind: str, holder: str,
     if handle is None:
         return ReconcileOutcome("short", events + ["prelaunch-begin-declined"],
                                 False, found, need_gib=deficit,
-                                decline_reason=_shortage_reason(ledger))
+                                decline_reason=_shortage_reason(ledger),
+                                declined=True)
     return ReconcileOutcome("acquiring",
                             events + ["prelaunch-group-topped-up"],
                             False, found)
@@ -799,7 +897,8 @@ def reconcile(queue: pool.PoolQueue, tier_id: str, unit: str, holder: str,
         events.append("prelaunch-begin-declined")
         return ReconcileOutcome("unreserved", events, False, found,
                                 need_gib=need,
-                                decline_reason=_shortage_reason(ledger))
+                                decline_reason=_shortage_reason(ledger),
+                                declined=True)
     # The begun acquisition owns the deficit in its private handle, so the
     # census this pass reports is read again after the begin: the gate reads
     # need from it, and the tokens have already left free.

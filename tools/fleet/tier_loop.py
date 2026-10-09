@@ -8943,18 +8943,34 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
         # Bounded by the consumer's refill horizon as well as by room and the
         # run-ahead budget (#903): a leg past it publishes on the cycle the
         # consumer's progress brings it inside, and not before.
+        decline_reason_now: str | None = None
         if prelaunch_unit is not None:
+            # One computation with the begin (#1690): the deficit this
+            # cycle's begin event just asked for wins; before any begin,
+            # the deficit against the unit's own legs. The reserve pass
+            # runs first and the taken tokens sit in a private handle,
+            # so a fresh census would read need zero beside begun 41.
             need_now = None
-            try:
-                census_now = prelaunch_group.census(
-                    queue, tier_id, prelaunch_unit.unit,
-                    prelaunch_unit.holder, prelaunch_unit.demand_gib,
-                    [leg["mover_key"] for leg in prelaunch_unit.legs])
-                if not census_now.unknown and not census_now.funding_unknown:
-                    need_now = prelaunch_group.incremental_need_gib(
-                        census_now, prelaunch_unit.demand_gib)
-            except (OSError, pool.PoolContractError, ValueError):
-                need_now = None
+            for event in published:
+                if (event.get("event") == "prelaunch-group-begun"
+                        and event.get("unit") == prelaunch_unit.unit
+                        and event.get("tier_id") == tier_id):
+                    asked = event.get("need_gib")
+                    if isinstance(asked, int) and asked >= 0:
+                        need_now = asked
+                    break
+            if need_now is None:
+                try:
+                    need_now = prelaunch_group.prospective_need_gib(
+                        queue, tier_id, prelaunch_unit.unit,
+                        prelaunch_unit.holder, prelaunch_unit.demand_gib,
+                        prelaunch_tier.intent_chunks(prelaunch_unit),
+                        [leg["mover_key"] for leg in prelaunch_unit.legs])
+                except (OSError, pool.PoolContractError, ValueError):
+                    need_now = None
+            if need_now is not None and need_now > 0:
+                decline_reason_now = prelaunch_group.latest_decline_reason(
+                    queue, prelaunch_unit.unit, tier_id)
             decision = residency_plan.window(
                 plan, accepted_phase=consumer["accepted_phase"],  # type: ignore[arg-type]
                 free_gib=int(free), capacity_gib=int(capacity),
@@ -8978,7 +8994,7 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
             # window printed was ``tier-cycle``.  Not a claim denial -- the
             # consumer is not denied, it is running and reporting nothing.  A
             # superseded window does not stall: nothing is waiting to publish.
-            published.append({"event": "window-stalled", "consumer": key,
+            event: dict[str, object] = {"event": "window-stalled", "consumer": key,
                               # A stall names every field; a missing one files
                               # as None here, never as a KeyError (#1594).
                               **{field: stall.get(field) for field in (
@@ -8987,7 +9003,12 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
                                   "runahead_budget_gib", "free_gib",
                                   "capacity_gib", "reason", "waiting_for")},
                               "chunk_index": stall.get("chunk_index"),
-                              "need_gib": stall.get("need_gib")})
+                              "need_gib": stall.get("need_gib")}
+            # A declined begin names its real cause here too (#1690): the
+            # stall must not read as a room shortage when the lock refused.
+            if decline_reason_now is not None:
+                event["decline_reason"] = decline_reason_now
+            published.append(event)
         by_name = {str(entry["name"]): entry for entry in plan["phases"]
                    if isinstance(entry, Mapping)}
         # A superseded plan publishes its egresses -- cleanup the consumer has

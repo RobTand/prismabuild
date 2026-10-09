@@ -3164,13 +3164,20 @@ def window(plan: Mapping[str, object], *, accepted_phase: str | None,
                    and str(leg["mover_row"]["action_key"]) not in already]  # type: ignore[index]
         if pending:
             from . import window_credit as _credit
+            # One computation serves the window and the begin (#1690): the
+            # stall's blocked amount is the group's own deficit when known,
+            # never a second sum beside it. Without the need the pending
+            # sum stands, so callers that pass no need read as before.
+            blocked = (int(prelaunch_need_gib)
+                       if prelaunch_need_gib is not None
+                       else sum(int(leg["stage_gib"]) for leg in pending))
             stall = {
                 "consumer_action_key": plan["consumer_action_key"],
                 "tier_id": plan["tier_id"],
                 "accepted_phase": accepted_phase,
                 "reading_phase": current_name,
                 "blocked_phase": str(pending[0]["phase"]),
-                "blocked_gib": sum(int(leg["stage_gib"]) for leg in pending),
+                "blocked_gib": blocked,
                 "runahead_gib": runahead,
                 "runahead_budget_gib": budget,
                 "free_gib": int(free_gib),
