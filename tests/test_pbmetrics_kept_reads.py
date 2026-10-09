@@ -129,7 +129,12 @@ class FsProbe:
 
     ``listings`` are ``scandir``/``listdir`` calls, ``stats`` every ``stat``
     and ``lstat`` (including a directory entry's first ``stat``), and
-    ``opens`` every ``open``, ``io.open`` and ``os.open``.  On the NFS
+    ``opens`` every ``open``, ``io.open`` and ``os.open`` of a record file.
+    The trusted-stamp check opens directories with ``O_PATH`` on filesystems
+    whose device the mount table does not list; a directory probe is a local
+    kernel observation, not a record read, and is not counted.  Each trust
+    check also re-stats the directory it verifies there (two stats per
+    directory, not one), while a mount-listed device costs one.  On the NFS
     mount each is at least one LOOKUP or GETATTR unless the client answers
     it from its attribute cache, so their sum is the lookup count #1020
     measures.  The exporter's read of its own ``/proc/self/status`` (its
@@ -181,6 +186,9 @@ class FsProbe:
             return real["lstat"](path, *args, **kwargs)
 
         def os_open(path, *args, **kwargs):
+            flags = args[0] if args else kwargs.get("flags", 0)
+            if isinstance(flags, int) and (flags & os.O_PATH):
+                return real["os_open"](path, *args, **kwargs)
             self.opens.append(os.fspath(path))
             return real["os_open"](path, *args, **kwargs)
 
@@ -510,7 +518,7 @@ def _require_trusted(root: Path) -> None:
 
 
 def test_idle_scrape_reads_no_record_and_lists_no_directory(live_shaped):
-    """The second scrape of an unchanged queue costs one lstat per directory."""
+    """The second scrape of an unchanged queue re-stats each directory only."""
 
     _require_trusted(live_shaped)
     cache = pbmetrics.MetricsCache(live_shaped, 0.0, WINDOW_S, LIMIT)
@@ -530,7 +538,8 @@ def test_idle_scrape_reads_no_record_and_lists_no_directory(live_shaped):
     assert not_directories == [], (
         f"{len(not_directories)} stats of records on an unchanged queue, e.g. "
         f"{Counter(Path(p).parent.name for p in not_directories).most_common(5)}")
-    assert len(probe.stats) <= directories_under(live_shaped)
+    probed = stage_move._filesystem_type(os.stat(live_shaped).st_dev) is None
+    assert len(probe.stats) <= (2 if probed else 1) * directories_under(live_shaped)
     assert probe.namespace_stats, "retention must still check its current namespace"
 
 

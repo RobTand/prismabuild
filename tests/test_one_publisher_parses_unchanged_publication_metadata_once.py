@@ -100,7 +100,9 @@ class _Work:
     ``builtins.open``, ``io.open`` (which is the same object in CPython and
     is what ``Path.open``/``Path.read_bytes`` call) and ``os.open``.  The
     wrapper is installed under both ``open`` names, so one call is counted
-    once, not twice.
+    once, not twice.  Only regular metadata files count: the trusted-stamp
+    check opens directories with ``O_PATH`` on filesystems whose device the
+    mount table does not list, and a directory probe is not a metadata read.
 
     ``assert_live`` refuses a window in which an instrument saw nothing at
     all: a counter that silently stopped counting must fail a case, never
@@ -129,6 +131,9 @@ class _Work:
             return real_open(file, *args, **kwargs)
 
         def counted_os_open(path, *args, **kwargs):
+            flags = args[0] if args else kwargs.get("flags", 0)
+            if isinstance(flags, int) and (flags & os.O_PATH):
+                return real_os_open(path, *args, **kwargs)
             note(path)
             return real_os_open(path, *args, **kwargs)
 

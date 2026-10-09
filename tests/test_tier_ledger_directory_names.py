@@ -39,7 +39,10 @@ def _names(reader: stage_release.DirectoryRecords):
 def ledger(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     if stage_move._COARSE_REALTIME is None:
         pytest.fail("ledger stamp qualification requires Linux's coarse clock")
-    monkeypatch.setattr(stage_move, "_filesystem_type", lambda _device: "tmpfs")
+    monkeypatch.setattr(
+        stage_move, "_object_filesystem_type",
+        lambda info, *, path=None, descriptor=None,
+        follow_symlinks=True: "tmpfs")
     queue = pool.PoolQueue(tmp_path / "queue")
     queue.ensure_layout()
     ledger = queue.tier_ledger(TIER)
@@ -142,8 +145,10 @@ def test_a_warm_ledger_is_not_kept_after_filesystem_trust_leaves(
         assert _view(held) == (4, 3, 1)
         assert _view(held) == (4, 3, 1)
         listed, kept = reader.listed, reader.kept
-        monkeypatch.setattr(stage_move, "_filesystem_type",
-                            lambda _device: filesystem)
+        monkeypatch.setattr(
+            stage_move, "_object_filesystem_type",
+            lambda info, *, path=None, descriptor=None,
+            follow_symlinks=True: filesystem)
         assert _view(held) == (4, 3, 1)
         assert _view(held) == (4, 3, 1)
         assert reader.listed > listed
@@ -196,7 +201,10 @@ def test_an_unreadable_namespace_cannot_authorize_minting(
                      "holder": held.held_dir / MOVER,
                      "minted": held.minted_dir}[namespace]
         # Refuse the warm stamp before injecting the actual listing failure.
-        monkeypatch.setattr(stage_move, "_filesystem_type", lambda _device: "nfs4")
+        monkeypatch.setattr(
+            stage_move, "_object_filesystem_type",
+            lambda info, *, path=None, descriptor=None,
+            follow_symlinks=True: "nfs4")
         real = os.listdir
 
         def unreadable(path):
@@ -272,7 +280,10 @@ def test_an_optional_dead_namespace_never_hides_an_unknown_parent_or_child(
     elif failure == "child":
         dead.mkdir()
     _settle()
-    monkeypatch.setattr(stage_move, "_filesystem_type", lambda _device: "nfs4")
+    monkeypatch.setattr(
+        stage_move, "_object_filesystem_type",
+        lambda info, *, path=None, descriptor=None,
+        follow_symlinks=True: "nfs4")
     real = os.listdir
     target = held.minted_dir if failure == "parent" else dead
 
