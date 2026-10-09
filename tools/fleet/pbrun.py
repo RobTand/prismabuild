@@ -2153,7 +2153,7 @@ def producer_allowance_room_refusal(queue, action: Mapping[str, object]) -> str 
         f"({basis}), for {need} GiB against the largest recorded box total "
         f"of {best} GiB. Its exports could never run beside it. Declare at "
         f"most {best - slots * int(cpu_admission.EXPORT_DEMAND.get('mem_gb', 0))} "
-        f"GiB, or wait for a larger box. Nothing was sealed or published.")
+        f"GiB, or wait for a larger box. No runnable submission was published.")
 
 
 def placement_capacity_notice(queue, intent: Mapping[str, object]) -> str:

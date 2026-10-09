@@ -30,6 +30,8 @@ from pathlib import Path
 import time
 from types import SimpleNamespace
 
+import pytest
+
 import test_prepaid_writer_integration as fx
 import test_produced_spool as sp
 from prismabuild import adaptive_cpu, core, pool, produced_output as po
@@ -431,26 +433,33 @@ def test_stale_owner_telemetry_does_not_project_the_export_against_its_owner(
     _assert_on_allowance(spool, export_key)
 
 
-def test_a_spool_producer_whose_allowance_does_not_fit_is_refused_with_numbers(
-        tmp_path, monkeypatch) -> None:
-    """A producer that fits only without its export allowance is refused
-    (#1571): running it would strand every export behind ``token_shortage``
-    while it holds the whole pool, which is the 2026-10-06 forward shape
-    (mem_gb 104 of 104 with 1 GiB dependents). The denial names the
-    demand, the allowance, and the box total, and a drain resolves it."""
-
-    spool, _cas = _publish_producer(tmp_path, demand={"cpu": 10, "mem_gb": 104})
+@pytest.mark.parametrize(("demand", "measured_slots"), [
+    ({"cpu": 10, "mem_gb": 104}, None),
+    ({"cpu": 20, "mem_gb": 100}, None),
+    ({"cpu": 10, "mem_gb": 100}, 5),
+], ids=["memory-total", "cpu-total", "measured-memory-overflow"])
+def test_a_published_producer_that_fits_without_its_allowance_still_claims(
+        tmp_path, monkeypatch, demand, measured_slots) -> None:
+    """Preserve #985 for published producers, including learned slot counts."""
+    published, _cas = _publish_producer(tmp_path, demand=demand)
+    queue, owner = published.queue, published.owner
+    if measured_slots is not None:
+        rates = {po.template_sha256(published.template): {
+            "landing_s": [float(measured_slots)], "spacing_s": [1.]}}
+        base = adaptive_cpu.local_state_base(queue.ledger().base)
+        adaptive_cpu.write_json(base / adaptive_cpu.EXPORT_RATES, rates)
+        row = pool._read_json(queue.item_path(pool.READY, owner))
+        assert adaptive_cpu.producer_allowance(row, rates)["slots"] == measured_slots
     _sample(monkeypatch, psi=0.)
-    assert spool.queue.claim(owner="spool-producer", capacity=CAPACITY,
-                             cpu_tiers=CPU_TIERS, adaptive_cpu=True) is None
-    assert spool.queue.item_path(pool.READY, spool.owner).exists()
-    assert not spool.queue.item_path(pool.CLAIMED, spool.owner).exists()
-    refused = _denial(spool.queue, spool.owner)
-    assert refused["reason"] in ("producer_allowance_does_not_fit",
-                                 "producer_allowance_does_not_fit_withholding",
-                                 "producer_allowance_does_not_fit_starved"), refused
-    assert refused["evidence"]["allowance"] == {"cpu": 1, "mem_gb": 1}, refused
-    assert refused["evidence"]["capacity_total"] == CAPACITY, refused
+    claimed = queue.claim(owner="spool-producer", capacity=CAPACITY,
+                          cpu_tiers=CPU_TIERS, adaptive_cpu=True)
+    assert claimed is not None and claimed["action_key"] == owner
+    assert not queue.item_path(pool.READY, owner).exists()
+    allocation = _meta(queue, owner)["allocation"]
+    assert len(set(allocation["preferred"] + allocation["fallback"])) == demand["cpu"]
+    assert _tokens(queue, owner, "cpu") == demand["cpu"]
+    assert _tokens(queue, owner, "mem_gb") == demand["mem_gb"]
+    assert queue.passes(owner) == 0
 
 
 def test_the_allowance_is_derived_only_from_a_sealed_spool_root(tmp_path) -> None:

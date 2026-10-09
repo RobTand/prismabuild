@@ -290,6 +290,44 @@ def test_the_room_is_the_demand_the_claim_charges_with_its_export_allowance(
     assert queue.item_path(pool.READY, shard).exists()
 
 
+@pytest.mark.parametrize(("demand", "measured_slots"), [
+    ({"cpu": 20, "gpu": 1, "mem_gb": 100}, None),
+    ({"cpu": 9, "gpu": 1, "mem_gb": 100}, 5),
+], ids=["cpu-total", "measured-memory-overflow"])
+def test_a_gpu_producers_room_and_claim_omit_an_allowance_that_exceeds_capacity(
+        queue, clock, idle_host, tmp_path, monkeypatch, demand, measured_slots):
+    """A busy producer keeps only the room its next claim actually charges."""
+    claim = _claimer(queue, adaptive=True)
+    key, cas_root, checkout = _sealed(tmp_path, "producer-boundary", variables={
+        adaptive_cpu.SPOOL_ROOT_ENV: str(tmp_path / "spool")})
+    producer = _publish(queue, clock, key, demand,
+                        cas_root=cas_root, checkout_root=checkout)
+    # Use the produced-output reference from the existing room fixture.
+    path = queue.item_path(pool.READY, producer)
+    row = json.loads(path.read_text())
+    row["produced_output"] = {"schema": "prismabuild.produced_output_ref.v1",
+                             "template_id": "fixture", "template_sha256": "0" * 64}
+    path.write_text(json.dumps(row))
+    if measured_slots is not None:
+        rates = {"0" * 64: {"landing_s": [float(measured_slots)], "spacing_s": [1.]}}
+        base = adaptive_cpu.local_state_base(queue.ledger().base)
+        adaptive_cpu.write_json(base / adaptive_cpu.EXPORT_RATES, rates)
+        assert adaptive_cpu.producer_allowance(row, rates)["slots"] == measured_slots
+    shard = _publish(queue, clock, _key("shard"), SHARD)
+    with _lock_busy(queue, monkeypatch, producer):
+        assert claim() is None
+    denied = _denial(queue, shard)
+    assert denied["reason"] == "deferred_for_ready_gpu_row"
+    assert denied["evidence"]["room"] == demand
+    assert claim() == producer
+    assert queue.ledger().holder_tokens(producer) == demand
+    meta = adaptive_cpu.read_json(
+        queue.ledger().held_dir / producer / adaptive_cpu.METADATA)
+    allocation = meta["allocation"]
+    assert len(set(allocation["preferred"] + allocation["fallback"])) == demand["cpu"]
+    assert queue.passes(producer) == 0
+
+
 # -- CPU fill is kept --------------------------------------------------------
 
 

@@ -5694,8 +5694,8 @@ of the producer's own affinity and recorded in its holder metadata as
 `dependent_allowance` (`slots`, `cpus`, `mem_gb`); the tokens stay under the
 producer, so nothing else is admitted onto them and the producer pays for the
 room while it is idle. An unbounded-CPU producer receives no allowance.
-A producer whose allowance exceeds total capacity now refuses its claim
-with `producer_allowance_does_not_fit` (#1571); it does not run without room.
+A published producer that fits only without its allowance runs without it (#985).
+Its exports use free tokens through ordinary admission.
 
 Before publication, `pbrun` compares a spool producer's memory demand plus its
 export allowance against eligible recorded host capacities (#1571).
@@ -5704,6 +5704,9 @@ It refuses incompatible declarations and states the required and available GiB.
 A producer that declares 104 GiB cannot reserve a 1 GiB export allowance
 on a host with 104 memory tokens. Missing capacity evidence does not establish
 incompatibility; claim admission still enforces physical token limits.
+The submission check uses memory and declared slots, or the one-slot default.
+It does not predict host-local learned slot counts or change the #985 claim policy.
+A larger learned allowance cannot permanently refuse an already-published producer.
 
 
 **Export rates per declared family (#1126).** The key is the template's
