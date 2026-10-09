@@ -54,10 +54,12 @@ def test_sdk_selection_builder_matches_pool_intent(tmp_path):
     }
     sealed = {**variables,
               client.SCRATCH_LIFETIME_DECLARATIONS_ENV: json.dumps(selection)}
-    assert (local_scratch._scratch_lifetime_selections(sealed)
-            == local_scratch._scratch_lifetime_selections(
-                {**variables, local_scratch.DECLARATIONS_ENV:
-                 json.dumps(selection)}))
+    assert local_scratch._scratch_lifetime_selections(sealed) == [
+        {"root_env": "TEMP_ROOT", "name": "row-temp", "lifetime": "ephemeral",
+         "max_env": "TEMP_MAX", "root": str(tmp_path / "temporary"), "max_bytes": 1024},
+        {"root_env": "CACHE_ROOT", "name": "compile", "lifetime": "persistent",
+         "max_env": "CACHE_MAX", "root": str(tmp_path / "persistent"), "max_bytes": 2048},
+    ]
 
 
 @pytest.mark.parametrize("entries", [
@@ -82,26 +84,30 @@ def test_sdk_selection_builder_refuses_pool_byte_bound():
         client.build_scratch_lifetime_selection(oversized)
 
 
-def test_sdk_selection_builder_output_fits_pool_parser(tmp_path):
+def test_sdk_selection_byte_boundary_matches_sealed_parser(tmp_path):
+    entry = {"root_env": "R", "name": "row-temp", "lifetime": "ephemeral"}
+    minimal = json.dumps(
+        {"schema": client.SCRATCH_LIFETIME_SELECTION_SCHEMA_V1, "entries": [entry]},
+        sort_keys=True, separators=(",", ":"))
+    root_env = "R" * (16 * 1024 - len(minimal.encode("utf-8")) + 1)
+    entry = {**entry, "root_env": root_env}
+    selection = client.build_scratch_lifetime_selection([entry])
+    encoded = json.dumps(selection, sort_keys=True, separators=(",", ":"))
+    assert len(encoded.encode("utf-8")) == 16 * 1024
     variables = {
-        local_scratch.PAIRS_ENV: "TEMP_ROOT:TEMP_MAX,CACHE_ROOT:CACHE_MAX",
-        "TEMP_ROOT": str(tmp_path / "temporary"), "TEMP_MAX": "1024",
-        "CACHE_ROOT": str(tmp_path / "persistent"), "CACHE_MAX": "2048",
+        local_scratch.PAIRS_ENV: f"{root_env}:TEMP_MAX",
+        root_env: str(tmp_path / "temporary"), "TEMP_MAX": "1024",
+        client.SCRATCH_LIFETIME_DECLARATIONS_ENV: encoded,
     }
-    selection = client.build_scratch_lifetime_selection([
-        {"root_env": "TEMP_ROOT", "name": "row-temp",
-         "lifetime": "ephemeral"},
-        {"root_env": "CACHE_ROOT", "name": "compile",
-         "lifetime": "persistent"},
-    ])
-    sealed = {**variables,
-              client.SCRATCH_LIFETIME_DECLARATIONS_ENV: json.dumps(selection)}
-    assert len(json.dumps(
-        selection, sort_keys=True, separators=(",", ":")).encode("utf-8")) <= 16 * 1024
-    assert (local_scratch._scratch_lifetime_selections(sealed)
-            == local_scratch._scratch_lifetime_selections(
-                {**variables, local_scratch.DECLARATIONS_ENV:
-                 json.dumps(selection)}))
+    assert local_scratch._scratch_lifetime_selections(variables) == [
+        {**entry, "max_env": "TEMP_MAX", "root": str(tmp_path / "temporary"),
+         "max_bytes": 1024},
+    ]
+    with pytest.raises(local_scratch.LocalScratchError, match="16 KiB"):
+        client.build_scratch_lifetime_selection([{**entry, "root_env": root_env + "R"}])
+    with pytest.raises(local_scratch.LocalScratchError, match="16 KiB"):
+        local_scratch._scratch_lifetime_selections({
+            **variables, client.SCRATCH_LIFETIME_DECLARATIONS_ENV: encoded + " "})
 
 
 def test_sdk_selection_builder_empty_is_opt_out():

@@ -32,6 +32,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from contextlib import ExitStack
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 from prismabuild import client, local_scratch, pool  # noqa: E402
@@ -111,6 +112,33 @@ def _launcher_victim(args, key: str, leaf: Path, result: dict) -> int:
     raise SystemExit("victim survived its kill window; killer never acted")
 
 
+def _launcher_pidfd(pid: int, victim: str) -> int:
+    """Pin one verified launcher incarnation, with no numeric signal fallback."""
+    import signal
+    if (not callable(getattr(os, "pidfd_open", None))
+            or not callable(getattr(signal, "pidfd_send_signal", None))):
+        raise SystemExit("launcher qualification requires pidfd support")
+    descriptor = None
+    pinned = False
+    try:
+        ticks = pool._contained_worker_start_ticks(pid)
+        argv = pool._process_cmdline(pid)
+        if (ticks is None or not argv or victim.encode() not in b"\0".join(argv)
+                or b"run-local" not in argv):
+            raise ValueError("process identity is unavailable or foreign")
+        descriptor = os.pidfd_open(pid, 0)
+        if (pool._contained_worker_start_ticks(pid) != ticks
+                or pool._process_cmdline(pid) != argv):
+            raise ValueError("process identity changed around pidfd open")
+        pinned = True
+        return descriptor
+    except (OSError, ValueError) as exc:
+        raise SystemExit(f"refusing launcher {pid}: {exc}") from exc
+    finally:
+        if descriptor is not None and not pinned:
+            os.close(descriptor)
+
+
 def _launcher_killer(args, key: str, result: dict) -> int:
     import signal
     import time
@@ -132,26 +160,24 @@ def _launcher_killer(args, key: str, result: dict) -> int:
     launchers = pool.find_launcher_pids(victim)
     if not launchers:
         raise SystemExit("killer found no live victim launcher")
-    for pid in launchers:
-        try:
-            with open(f"/proc/{pid}/cmdline", "rb") as handle:
-                raw = handle.read()
-        except OSError:
-            continue
-        if victim.encode() not in raw or b"run-local" not in raw:
-            raise SystemExit(f"refusing pid {pid}: cmdline no longer matches")
-    (directory / "kill-intent.json").write_text(json.dumps({
-        "victim": victim, "launcher_pids": launchers,
-        "killer": key, "host": result["host"],
-    }, sort_keys=True) + "\n", encoding="utf-8")
-    time.sleep(5)
-    killed = []
-    for pid in launchers:
-        try:
-            os.kill(pid, signal.SIGKILL)
-            killed.append(pid)
-        except ProcessLookupError:
-            pass
+    with ExitStack() as handles:
+        targets = []
+        for pid in launchers:
+            descriptor = _launcher_pidfd(pid, victim)
+            handles.callback(os.close, descriptor)
+            targets.append((pid, descriptor))
+        (directory / "kill-intent.json").write_text(json.dumps({
+            "victim": victim, "launcher_pids": launchers,
+            "killer": key, "host": result["host"],
+        }, sort_keys=True) + "\n", encoding="utf-8")
+        time.sleep(5)
+        killed = []
+        for pid, descriptor in targets:
+            try:
+                signal.pidfd_send_signal(descriptor, signal.SIGKILL)
+                killed.append(pid)
+            except ProcessLookupError:
+                pass
     (directory / "kill-done.json").write_text(json.dumps({
         "victim": victim, "killed": killed, "killer": key,
     }, sort_keys=True) + "\n", encoding="utf-8")

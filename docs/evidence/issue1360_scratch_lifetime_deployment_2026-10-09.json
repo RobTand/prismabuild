@@ -1,4 +1,12 @@
 {
+ "completion": {
+  "accepted": false,
+  "issue_must_remain_open": true,
+  "reason": "Worker-loss recovery and durable cleanup retry remain unqualified. SDK6 requires a person's explicit public contract decision.",
+  "sdk6_contract_decision": "pending",
+  "runtime_publication_authority": "not granted to this correction",
+  "qualification_authority": "No authority permits this worker to stop a live fleet worker service."
+ },
  "actions": [
   {
    "action_key": "bafc1442725d6c263fe7a03e2698f15201949a1ac954fbfb499d527e4879a72f",
@@ -295,7 +303,7 @@
    "terminal": "failed"
   }
  ],
- "note": "Deployment evidence for the versioned lifetime contract. It does not claim worker-process loss, reboot, cross-host recovery, power-loss durability, PQ cache sizing, or GPU acceptance.",
+ "note": "This record supplies partial deployment evidence, not completion acceptance. It does not prove worker loss or injected cleanup/record recovery. Keep #1360 open.",
  "probe": {
   "action_key": "a866e8ccd61df17f768d05db122a2a163e8ea04b7f79e3e667df679416eadfad",
   "meaning": "first successful versioned registration and cleanup on the published runtime",
@@ -318,6 +326,8 @@
   "worker-process loss with reaped lease and successor retry on the same host",
   "reboot and cross-host recovery",
   "cleanup-error and record-commit fault injection with capacity retention",
+  "explicit public contract decision for the proposed SDK6 exports",
+  "supervisor-owned measured x86 scratch offer for admitted lifetime scenarios",
   "PQ #1091 cache sizing and GPU acceptance",
   "power-loss durability"
  ],
@@ -331,6 +341,78 @@
    "passed": 5
   }
  ],
+ "takeover_correction": {
+  "reviewed_predecessor": "7b6a13f11db4979a4adf23fe38854804a9838d58",
+  "signal_contract": "Verify start ticks and command arguments around pidfd_open. Signal only verified handles. Close every handle. Refuse unreadable or changed identities.",
+  "historical_signal_limit": "The six earlier scenarios used a numeric-PID qualifier. Their cleanup observations do not prove safe process signals.",
+  "x86_offer": {
+   "source": "pbmcp.pb_status",
+   "generated_unix": 1791534772.4387088,
+   "complete": true,
+   "host": "dl380g10",
+   "capacity": {"cpu": 80, "mem_gb": 96, "gpu": 0},
+   "scratch_lifetime_v1": true,
+   "spool_gb": "absent",
+   "decision": "Do not synthesize capacity or retag CPU scenarios to a Spark."
+  },
+  "repro": {
+   "action_key": "fabc2290ea5ae9f44f6df71521f2aef7f5ad540a0174073c3aeb460fbe1698f5",
+   "terminal": "failed",
+   "returncode": 1,
+   "collected": 11,
+   "failed": 6,
+   "passed": 5,
+   "primary_failure": "The qualifier used a numeric PID signal.",
+   "fixture_limit": "Two cases also saw child exec races. The corrected fixture waits for the child ready marker.",
+   "stdout_sha256": "82f774d99793b3fa5d0ffbeaea43127ad404c6be8fbb49f5ff0beddadf71258a",
+   "cas_receipt_present": false
+  },
+  "tests": [
+   {
+    "action_key": "5cfcea2e1b9275c4bad68d1d229208e09079dc89475dc6485b160e5cc32ec34e",
+    "file": "tests/test_qualify_scratch_lifetime.py",
+    "collected": 12,
+    "passed": 12,
+    "skipped": 0,
+    "terminal": "done",
+    "returncode": 0,
+    "claim_sha256": "e93150434a2a55ee4966640cbee4587e331d25c2cdd1699ffa8c2ec7721025e9",
+    "receipt_sha256": "e36f9d539e39e7d0429bd3dd2a6b0b958c59cf51fd84b8b7e3b89fab9db66887",
+    "payload_sha256": "47370227626f43255ef064d4c1369f7f5e3b9a0994ff8f889dc7eb608becbdab",
+    "claim_receipt_payload_checks": "passed",
+    "worker_attestation_verification": "not checked by pb_verify_claim"
+   },
+   {
+    "action_key": "284a0a2d5f16acb4cf9607df72bd3f76163e35c3b1bd5b5a91219085a0b7359b",
+    "file": "tests/test_scratch_lifetime_sdk_contract.py",
+    "collected": 16,
+    "passed": 16,
+    "skipped": 0,
+    "terminal": "done",
+    "returncode": 0,
+    "claim_sha256": "e2f4d70cd2189dbc29f269202842945a7a45978c81da22f63a74ab4dc7e04cf6",
+    "receipt_sha256": "facd93450b5abcdf2c0988734304e8e9f1eca7f45b505f5bbbec6df464ea2ec8",
+    "payload_sha256": "a5086ece3022c70bb3dfc130c7f9428a9756a945037f52c4c9bfad3883a49b5f",
+    "claim_receipt_payload_checks": "passed",
+    "worker_attestation_verification": "not checked by pb_verify_claim"
+   }
+  ],
+  "smoke": {
+   "action_key": "fd3e5310104f4cc0d2cf0a09b7f951134a14fe1596c6f2ef315d8ce50b9e8490",
+   "scenario": "owned-launcher-pidfd-smoke",
+   "host": "dl380g10",
+   "terminal": "done",
+   "returncode": 0,
+   "owned_inert_launcher_returncode": -9,
+   "exited_target_refused": true,
+   "live_pool_mutation": false,
+   "claim_sha256": "1832917a7cff09b720d9132528fd07e05ef56331f9f4467c1facb03b45db59cd",
+   "payload_sha256": "64cae8e45daedf085f791102c88b5e3d7c0c99d8b7e8e8e958346fe6a69be12e",
+   "claim_receipt_payload_checks": "passed",
+   "worker_attestation_verification": "not checked by pb_verify_claim",
+   "limit": "This smoke proves the process signal path. It does not qualify worker-loss cleanup or durable cleanup retry."
+  }
+ },
  "verification": [
   {
    "action_key": "7ba12c3a0ebdbccb5c7e10409a61ffe2ec2cd2edfab01d1105cee57b44aa01ca",

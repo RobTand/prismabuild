@@ -4255,6 +4255,11 @@ cache roots in separate charged ROOT/MAX pairs, and seal this selection:
 ]}
 ```
 
+The proposed SDK6 builder returns this object.
+Its public contract decision remains pending; the cited runtime uses SDK5.
+Use `json.dumps(selection, sort_keys=True, separators=(",", ":"))` to seal compact JSON.
+The pool counts all raw UTF-8 bytes, including whitespace, against the 16 KiB limit.
+
 Pass that JSON as `PRISMABUILD_EPHEMERAL_SCRATCH_DECLARATIONS`. PB derives the
 worker capability requirement, registers a private ephemeral leaf before
 launch and cleans it only after exact stopped-attempt proof. The existing
@@ -4279,6 +4284,13 @@ victim/killer); every terminal record shows a complete registration with
 both entries cleaned, and follow-up actions prove the leaves absent with
 roots, persistent markers and the guard target intact. See
 `docs/evidence/issue1360_scratch_lifetime_deployment_2026-10-09.json`.
+
+This record supplies partial evidence only. Keep #1360 open.
+Worker-loss recovery and injected cleanup/record failures remain unqualified on the published runtime.
+The historical launcher qualifier used numeric PIDs after a delay.
+The corrected qualifier requires Linux pidfds and verifies process identity before any signal.
+Its CPU smoke targets an owned inert process, not a live worker service.
+The current x86 offer advertises no `spool_gb`; obtain a supervisor-owned measured scratch offer before lifetime scenarios.
 
 ### Write outputs that a later action reads
 

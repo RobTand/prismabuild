@@ -1646,6 +1646,11 @@ exposes the generation-bound scratch lifetime contract (Refs #1360): the
 `scratch-lifetime-v1` capability tag, its selection/record schemas, its claim
 field, its sealed variable, and a builder for the sealed selection. Earlier
 exports and capability tags remain available.
+
+The SDK6 additions are proposed for this branch.
+They require a person's explicit public contract decision before acceptance.
+The published generation in the #1360 record uses SDK5.
+
 `tests/test_client_sdk_surface.py` pins everything the SDK exports: the set of
 names, each callable's parameters (name, kind, default), each constant's value,
 and, for each re-exported name, that it is the internal object itself. An
@@ -16545,18 +16550,24 @@ exact versioned object, never silently upgrading a legacy naming array:
 ```
 
 Every pair is sealed and charged through the existing `spool_gb` host ledger.
-The bounded parser and the SDK builder use the same limits (16 KiB canonical
-selection bytes, 64 entries), reject unknown fields, duplicate selections and
-overlapping ephemeral/persistent roots, and never infer a lifetime from a
-variable name. ROOT/MAX is a reservation, not a filesystem quota. Persistent entries convey no directory/deletion identity;
-PB neither creates nor traverses their paths. Ordinary persistent Triton and
-Inductor caches therefore remain producer-owned and must be separately bounded.
+The builder and parser allow 64 entries.
+The builder limits compact canonical selection bytes to 16 KiB.
+The pool limits raw UTF-8 input bytes to 16 KiB, including whitespace.
+Use `json.dumps(selection, sort_keys=True, separators=(",", ":"))` for the sealed input.
+Other JSON encodings can exceed the raw input limit.
+Both paths reject unknown fields and duplicate selections.
+
+The pool also rejects overlapping ephemeral/persistent roots and never infers a lifetime from a variable name.
+ROOT/MAX is a reservation, not a filesystem quota.
+Persistent entries convey no directory/deletion identity; PB neither creates nor traverses their paths.
+Persistent Triton and Inductor caches remain producer-owned and need separate write bounds.
 
 Pool publication derives the `scratch-lifetime-v1` worker requirement from
 nonempty versioned intent and refuses inadequate sealed scratch funding. Old
 workers do not offer it. The source worker loop offers this code capability;
 this is not evidence of a deployed runtime generation or PQ workload acceptance.
-SDK6 adds the `scratch-lifetime-v1` tag and the sealed selection builder; other exports, signatures and legacy arrays remain unchanged.
+The proposed SDK6 adds the capability tag and the selection builder.
+Other exports, signatures and legacy arrays remain unchanged.
 
 `PoolQueue._record_scratch_lifetimes` uses the existing transition lock and
 contained prelaunch owner. It files `prismabuild.scratch_lifetime_record.v1` in
@@ -16639,6 +16650,20 @@ claim and leaf. See
 `evidence/issue1360_scratch_lifetime_deployment_2026-10-09.json`. Worker loss
 with successor retry, reboot/cross-host recovery, injected cleanup/record
 faults with capacity retention, and PQ sizing/GPU acceptance remain open.
+
+Keep #1360 open.
+The evidence does not establish worker-loss recovery or durable cleanup retry on a published runtime.
+The historical launcher qualifier used numeric PIDs after a delay.
+Its observed cleanup remains historical evidence, not proof of safe process signals.
+The corrected qualifier verifies start ticks and command arguments around `pidfd_open`.
+It uses `pidfd_send_signal` and closes every handle.
+
+Unreadable or changed identities refuse the operation before any signal.
+The admitted CPU smoke checks only an owned inert launcher, not loss of a live fleet worker.
+The x86 offer observed on 2026-10-09 includes `scratch-lifetime-v1` but no `spool_gb`.
+Do not substitute synthetic capacity or a Spark tag for a measured x86 scratch offer.
+A supervisor must supply the measured offer and authorize an isolated worker for recovery qualification.
+No runtime publication, worker service restart or public contract approval occurred in this correction.
 
 **Still open.**
 
