@@ -519,36 +519,38 @@ action key, publication generation, host, priority, election epoch and original
 finite deadline) is ONLY selector-opportunity metadata, never proof that preparation, checkpoint
 credits, cleanup or physical resources finish by then. An unfenced timed
 backfill candidate remains UNKNOWN, including five-second payloads (#1429).
-The opt-in sealed lifetime fence (`params.lifetime`,
-`prismabuild.action_lifetime.v1`, 60 s to 7 days) is the one separately
-versioned all-applicable-phase bound: admission, checkout, readiness,
-prelaunch, payload including credited waits, termination, cleanup, scope
-settlement and resource release, or UNKNOWN for each unfenced component.
-Publish stamps one absolute, non-creditable deadline at publication
-(`published_unix + fence_s`), before any claim and before any resource
-moves, and projects the sealed seconds plus the deadline onto the READY
-row. Claim verifies the projection against the sealed request, refuses
-expired fences and fenced gang members, and carries the deadline onto
-the claim. The worker enforces it across the phases it runs: checkout
-expiry fails before launch, scope setup rechecks before launch, the
-payload wait loop kills past it with the `lifetime_fence` verdict
-before the payload budget rung, and checkpoint I/O credits the payload
-budget only, never the fence. Each enforced phase files its measured
-end and the operation that proved it. Cleanup, scope settlement and
-resource release file no worker record; `finish` proves each one after
-the run and retains the claim on any unproven settlement. Admission
-reads a prospective bound from the READY row -- sealed fence, row
-stamp, supported tag, unexpired fence -- and a measurement's wait
-holds back only work that cannot prove release before its
-opportunity; the census gate rechecks the election before any claim.
-Timed backfill is granted only strictly before the original
-opportunity; equality and later bounds refuse, and capacity and
-isolation gates stay in force. A finished attempt's filed evidence
-audits that attempt from the archive; it never becomes a successor's
-guarantee. The payload
-budget keeps its existing semantics and credited waits; no timer
-expiry returns capacity. Only a loop that offers the fence tag
-claims fenced work.
+The opt-in sealed contract uses `params.lifetime` and
+`prismabuild.action_lifetime.v1`. Its duration is 60 seconds to 7 days.
+Publication stamps one absolute deadline, `published_unix + fence_s`,
+before resource admission. The worker never credits or extends this deadline.
+The separate payload budget retains its existing credited waits.
+
+**Target:** every applicable phase must support prospective release before
+this deadline. The phases are admission, checkout, readiness, prelaunch,
+payload, credited waits, termination, cleanup, scope settlement, and resource release.
+An unfenced component returns UNKNOWN. A capability tag proves clock support only.
+It does not prove a release guarantee.
+
+**Implemented source:** publication seals and projects the clock.
+Claim verifies the projection against the request and refuses expired deadlines.
+Refusal after reservation commit uses the existing custody-aware rollback.
+Refusal after lease publication also removes the unstarted claim and lease.
+The worker checks the deadline after checkout, before launch, and during payload supervision.
+Its completion records report `enforced: false` for unfenced operations.
+The component records state UNKNOWN and identify each current enforcement gap.
+
+Checkout, checkpoint I/O, broker settlement, and ledger I/O can exceed the deadline.
+Finalization still retains resources until settlement evidence permits release.
+An observed phase end does not prove a prospective limit.
+The archive reader verifies the attempt, logs, publication, owner, and scope identity.
+No wall timer returns tokens or promises kernel or NFS reclamation.
+
+**Qualification:** no current candidate proves a finite prospective release bound.
+The timed-backfill gate therefore remains closed for these candidates.
+A verified bound must strictly precede the original opportunity.
+Equality and later bounds refuse; capacity and isolation gates remain unchanged.
+Whole-lifetime enforcement and positive timed-backfill qualification remain owed under #1429.
+These source changes establish no deployment or campaign completion.
 
 Discover potential measurement generations and elected sidecars outside H;
 acquire the sorted transition keys of the measurements **elected for this host**

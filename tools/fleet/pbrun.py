@@ -4241,12 +4241,11 @@ def require_progress_scope(*, progress: Mapping[str, object] | None,
 
 
 def require_lifetime_scope(*, lifetime_s: float | None, transport: str) -> None:
-    """Refuse a lifetime fence on a transport with nothing to enforce it.
+    """Refuse the lifetime clock on a transport that does not support it.
 
-    The fence is the pull-queue worker's: only a loop that offers the
-    fence tag enforces it across every phase.  The SLURM lane has no
-    such enforcement, so sealing the fence there would admit an action
-    on a bound nothing keeps.  Refused where the submitter watches.
+    The pool worker checks the clock and records component evidence.
+    Unfenced lifecycle operations still return UNKNOWN.
+    The SLURM lane does not support this versioned contract.
     """
 
     if lifetime_s is not None and transport != "pool":
@@ -7402,14 +7401,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
                          "here when it would cut this request short) also "
                          "applies. Queue waiting is bounded by --wait-s")
     ap.add_argument("--lifetime-s", type=float, default=None,
-                    help="opt-in sealed lifetime fence in seconds from publication, "
-                         "enforced across admission, checkout, readiness, prelaunch, "
-                         "payload, credited waits and termination, with cleanup, scope "
-                         "settlement and resource release audited at finish (60 s to "
-                         "7 days). Unlike --timeout-s, which bounds only the payload, "
-                         "a verified fence before the original opportunity "
-                         "permits timed backfill (#1429). Absent, the action "
-                         "is unfenced and every release bound reads UNKNOWN")
+                    help="opt-in sealed absolute deadline from publication "
+                         "(60 s to 7 days). The payload budget retains its credits. "
+                         "The worker checks this separate deadline and records "
+                         "lifecycle evidence. Unfenced components return UNKNOWN. "
+                         "Current operations do not prove bounded resource release "
+                         "and cannot qualify positive timed backfill (#1429)")
     ap.add_argument("--progress-phase", "--progress", action="append", default=None,
                     metavar="NAME=SECONDS",
                     help="declare one phase of this action and the quiet it is "

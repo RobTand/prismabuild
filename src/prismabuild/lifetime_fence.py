@@ -5,25 +5,14 @@ Checkout runs before its deadline starts, checkpoint I/O and other waits
 credit it, and cleanup settles after it. It never proves that capacity
 returns by any wall time.
 
-This module seals one absolute, non-creditable, versioned bound instead.
-A submitter opts in with ``params.lifetime``. ``fence_deadline`` is the
-single enforcement clock: the queue stamps it at publication from
-``published_unix`` plus the sealed fence, before any worker claims the
-row and before any resource moves. Every phase the worker runs --
-checkout, readiness, prelaunch, payload including credited waits,
-termination, cleanup, scope settlement, resource release -- must
-conclude before it. Nothing credits it, pauses it, or extends it.
-Admission grants timed backfill only on a verified prospective bound
-strictly before the original opportunity. Every unfenced component
-reads ``UNKNOWN``. Expired timers never return capacity; only proved
-settlement does.
+The queue stamps one absolute, non-creditable deadline at publication.
+The worker checks this deadline without changing the separate payload budget.
+These checks do not bound synchronous lifecycle calls or physical reclamation.
+The component records name these limits and return UNKNOWN.
 
-The prospective predicate (:func:`prospective_bound`) is what timed
-backfill reads: support is a sealed, versioned declaration plus
-claim-time enforcement, not a completion record. A finished attempt's
-filed evidence audits whether the fence held; it never becomes a new
-attempt's guarantee. A successor reads the same sealed bound from its
-own publication stamp.
+Timed backfill requires prospective enforcement for every applicable phase.
+A capability tag or a completed attempt cannot supply this proof.
+Expired timers never return capacity; only proved settlement does.
 
 Validation lives in :mod:`prismabuild.core` beside the other sealed
 params, so ``validate_action`` refuses an unreadable fence at seal time.
@@ -54,12 +43,9 @@ EVIDENCE_SCHEMA_V1 = "prismabuild.action_lifetime_evidence.v1"
 #: budget's ``execution_deadline`` so a reader tells which bound fired.
 FENCE_TERMINATION_REASON = "lifetime_fence"
 
-#: Phases the fence enforces with a bounded stop. A component outside
-#: this list is unfenced by definition and answers ``UNKNOWN``.
-#: Cleanup, scope settlement and resource release are not here: their
-#: proof is filed by ``finish`` after the worker runs, so they audit
-#: the attempt instead of gating the prospective bound.
-ENFORCED_PHASES = (
+#: Phases whose completion the execution supervisor observes.
+#: A deadline check after a synchronous call does not bound that call.
+EXECUTION_PHASES = (
     "admission",
     "checkout",
     "readiness",
@@ -68,16 +54,52 @@ ENFORCED_PHASES = (
     "credited_waits",
     "termination",
 )
-#: Phases whose settlement proof ``finish`` files after the run. Each
-#: record cites its own cleanup or release evidence; a bound backed by
-#: these reads only from the attempt archive, never from a live claim.
-AUDITED_PHASES = (
+#: Phases whose completion the existing finalization path observes.
+SETTLEMENT_PHASES = (
     "cleanup",
     "scope_settlement",
     "resource_release",
 )
-#: Every phase the contract names, enforced or audited.
-PHASES = ENFORCED_PHASES + AUDITED_PHASES
+PHASES = EXECUTION_PHASES + SETTLEMENT_PHASES
+
+#: No current lifecycle path proves prospective release by the deadline.
+#: Keep the reason beside each phase, not in a scheduler heuristic.
+_UNFENCED_COMPONENTS = {
+    "admission": "queue and reservation I/O has no absolute deadline",
+    "checkout": "Git and tree removal have no shared absolute deadline",
+    "readiness": "readiness and allocation I/O has no absolute deadline",
+    "prelaunch": "scope creation and launch I/O has no absolute deadline",
+    "payload": "synchronous supervisor I/O can delay the deadline check",
+    "credited_waits": "checkpoint I/O has no absolute deadline",
+    "termination": "a stop request cannot bound kernel process settlement",
+    "cleanup": "container and export cleanup has no absolute deadline",
+    "scope_settlement": "kernel and broker settlement can remain unknown",
+    "resource_release": "ledger return I/O has no absolute deadline",
+}
+
+
+def phase_enforcement() -> dict[str, dict[str, object]]:
+    """Report current enforcement limits for each applicable component."""
+
+    return {
+        phase: {"verdict": "UNKNOWN", "enforced": False,
+                "reason": reason, "evidence": None}
+        for phase, reason in _UNFENCED_COMPONENTS.items()
+    }
+
+
+def attempt_identity(record: Mapping[str, object]) -> dict[str, object]:
+    """Bind evidence to the publication, owner, and exact resource scope."""
+
+    scope = record.get("resource_scope") or record.get("resource_scope_intent")
+    scope = scope if isinstance(scope, Mapping) else {}
+    return {
+        **{field: record.get(field) for field in (
+            "action_key", "published_unix", "claimed_by",
+            "claimed_unix", "claimed_host")},
+        "nonce": scope.get("nonce"),
+        "scope_id": scope.get("scope_id"),
+    }
 
 #: Shortest fence the contract seals, in seconds. A shorter fence
 #: cannot cover checkout, termination and settlement evidence.
@@ -124,17 +146,17 @@ def _finite_number(value: object) -> float | None:
 def fence_deadline(*, published_unix: object, fence_s: object) -> float | None:
     """The absolute wall-clock bound, or ``None`` when UNKNOWN.
 
-    One addition, never credited: ``published_unix + fence_s``. The
-    publication stamp exists before any claim, so admission reads a
-    prospective bound from the READY row itself. Both ends must be
-    finite numbers. Anything else answers ``None``.
+    The publication stamp exists before resource admission.
+    This arithmetic defines the clock, not a verified release guarantee.
+    Invalid or non-finite endpoints return UNKNOWN.
     """
 
     published = _finite_number(published_unix)
     fence = _finite_number(fence_s)
     if published is None or fence is None or fence <= 0:
         return None
-    return published + fence
+    deadline = published + fence
+    return deadline if math.isfinite(deadline) else None
 
 
 def prospective_bound(
@@ -144,19 +166,17 @@ def prospective_bound(
     supported: object,
     now_unix: object,
 ) -> float | None:
-    """The verified prospective release bound, or ``None`` when UNKNOWN.
+    """Return UNKNOWN unless every applicable phase has prospective enforcement.
 
-    A finite bound needs a finite publication stamp, a sealed fence, a
-    supported enforcement declaration for this exact clock, and a fence
-    that has not expired yet. ``supported`` is the queue's own answer
-    that the claiming box enforces the versioned contract; a missing
-    tag, an unreadable row, a fenced gang member, or any unsupported
-    shape answers ``None``. Callers render that as ``UNKNOWN`` and
-    hold resources.
+    ``supported`` establishes clock support only. It does not prove release.
+    The current lifecycle has unfenced synchronous calls in every phase.
+    Completion records cannot turn those calls into prospective enforcement.
     """
 
     bound = fence_deadline(published_unix=published_unix, fence_s=fence_s)
-    if bound is None or supported is not True:
+    components = phase_enforcement()
+    if (bound is None or supported is not True
+            or any(components[phase]["enforced"] is not True for phase in PHASES)):
         return None
     now = _finite_number(now_unix)
     if now is None or now >= bound:
@@ -166,29 +186,25 @@ def prospective_bound(
 
 def release_bound(
     *,
-    claimed_unix: object = None,
-    published_unix: object = None,
+    published_unix: object,
     fence_s: object,
     evidence: Mapping[str, object] | None,
 ) -> float | None:
     """The audited release bound of one finished attempt, or ``None``.
 
-    A finished attempt proves the fence held only when every named
-    phase -- enforced and audited -- carries a record that names the
-    evidence schema, carries ``enforced`` true, cites its enforcement
-    proof, and records the phase end at or before the fence deadline.
-    The deadline is publication-anchored; ``claimed_unix`` is accepted
-    only as a legacy alias and never moves it. A missing phase, a
-    failed phase, an end past the deadline, or absent evidence answers
-    ``None``. Admission never calls this for a new attempt: it audits
-    a finished one from the attempt archive.
+    Every phase must cite enforcement and a measured end within the deadline.
+    A completion observation alone does not establish enforcement.
+    This audit does not supply a prospective bound for another attempt.
     """
 
-    anchor = published_unix if published_unix is not None else claimed_unix
-    bound = fence_deadline(published_unix=anchor, fence_s=fence_s)
+    bound = fence_deadline(published_unix=published_unix, fence_s=fence_s)
     if bound is None or not isinstance(evidence, Mapping):
         return None
     if evidence.get("schema") != EVIDENCE_SCHEMA_V1:
+        return None
+    if (evidence.get("published_unix") != published_unix
+            or evidence.get("fence_s") != fence_s
+            or evidence.get("deadline_unix") != bound):
         return None
     phases = evidence.get("phases")
     if not isinstance(phases, Mapping):

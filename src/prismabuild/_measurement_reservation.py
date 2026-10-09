@@ -810,14 +810,11 @@ def admission_census(queue: PoolQueue, ledger: ResourceLedger, controller):
 def candidate_release_bound(queue: "PoolQueue", item: Mapping[str, object]) -> object:
     """The candidate's verified prospective release bound, or ``"UNKNOWN"``.
 
-    A finite bound needs the opt-in sealed lifetime fence (#1429): the
-    sealed seconds, the READY row's own publication stamp, and supported
-    enforcement of the versioned clock on this box. The sealed payload
-    timeout alone is opportunity metadata, never a release bound.
-    Anything unfenced, unsupported, or expired answers ``"UNKNOWN"``
-    and holds the host. A finished attempt's filed evidence audits
-    that attempt from the archive; it never becomes a new attempt's
-    guarantee, and a successor is never judged by its predecessor.
+    The sealed deadline and tag establish clock support, not bounded release.
+    Every applicable phase also needs prospective enforcement.
+    Current lifecycle operations contain unfenced synchronous calls.
+    These candidates remain UNKNOWN and cannot take an elected host.
+    A finished attempt never supplies enforcement for its successor.
     """
 
     from . import lifetime_fence
@@ -901,6 +898,8 @@ def attempt_release_audit(
                 terminal.get("schema") == lifetime_fence.EVIDENCE_SCHEMA_V1
                 and terminal.get("fence_s") == evidence.get("fence_s")
                 and terminal.get("deadline_unix") == evidence.get("deadline_unix")
+                and terminal.get("claim") == evidence.get("claim")
+                and terminal.get("published_unix") == evidence.get("published_unix")
                 and isinstance(phases, Mapping)
                 and isinstance(release, Mapping)
             ):
@@ -918,27 +917,27 @@ def _archived_lifetime_evidence(queue: "PoolQueue", record: Mapping[str, object]
     """The lifetime evidence the attempt archive filed, if any."""
 
     try:
-        history = record.get("attempt_history")
-        if not isinstance(history, list) or not history:
+        from . import lifetime_fence
+        from . import pool as pool_mod
+        if record.get("schema") != pool_mod.POOL_OUTCOME_SCHEMA_V1:
             return None
-        link = history[-1]
-        if not isinstance(link, Mapping):
+        outcomes = queue.attempt_outcomes(record)
+        if not outcomes:
             return None
-        path = link.get("outcome")
-        if not isinstance(path, str) or not path:
+        attempt = outcomes[-1]
+        if attempt.get("disposition") not in {pool_mod.DONE, pool_mod.FAILED}:
             return None
-        attempt = core._decode_strict_json(
-            core._read_regular_file_nofollow(
-                queue.root / path,
-                where="pool attempt record", max_bytes=MAX_RECORD_BYTES),
-            where="pool attempt record")
-        if not isinstance(attempt, Mapping):
+        if any(attempt.get(field) != record.get(field) for field in (
+                "action_key", "published_unix", "claimed_by", "claimed_unix", "claimed_host")):
             return None
         detail = attempt.get("detail")
         if not isinstance(detail, Mapping):
             return None
         evidence = detail.get("lifetime_evidence")
-        return evidence if isinstance(evidence, Mapping) else None
+        if (not isinstance(evidence, Mapping)
+                or evidence.get("claim") != lifetime_fence.attempt_identity(record)):
+            return None
+        return evidence
     except (OSError, ValueError, core.PrismaBuildError, KeyError, TypeError):
         return None
 

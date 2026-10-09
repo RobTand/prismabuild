@@ -171,15 +171,11 @@ ACTION_RESIDENCY_ENV = (ACTION_KEY_ENV, RESIDENCY_MAP_ENV, QUEUE_ROOT_ENV,
 #: store is answered by a receipt filed under the other bound.
 LIFETIME_PARAM = "lifetime"
 LIFETIME_SCHEMA_V1 = "prismabuild.action_lifetime.v1"
-#: The placement tag a worker offers when it enforces the lifetime fence,
-#: and which the submitter requires of any action that declares one.  Same
-#: shape and reason as :data:`PROGRESS_TAG`: an old loop reads no lifetime
-#: and must never claim fenced work, so item tags must already be a subset
-#: of the worker's.  Versioned with the fence schema on purpose.
+#: The capability for the lifetime clock and evidence contract.
+#: It does not certify prospective release or physical reclamation.
+#: Old workers cannot read this version and must not claim these actions.
 LIFETIME_TAG = "lifetime-fence-v1"
-#: Shortest and longest fence the contract seals, in seconds.  A shorter
-#: fence cannot cover checkout, termination and settlement evidence; a
-#: longer one is not an admission planning bound.
+#: Accepted clock durations. These limits do not certify resource release.
 LIFETIME_MIN_FENCE_S = 60.0
 LIFETIME_MAX_FENCE_S = 7 * 24 * 3600.0
 #: The sealed request key that declares the progress contract, and the two

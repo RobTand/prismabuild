@@ -7398,13 +7398,9 @@ class PoolQueue:
             # A hint checked against the sealed ``params.gang`` at claim.
             item["gang"] = declared_gang
         if sealed_fence_s is not None:
-            # The sealed bound and its absolute deadline, projected onto
-            # the row where the publication stamp is written: before any
-            # claim, before any resource moves. Admission reads the
-            # prospective bound from this READY row; claim and the worker
-            # re-derive the same number from the sealed request plus the
-            # row's own stamp. Absent, the item is byte-identical to
-            # before the contract existed.
+            # Project the sealed clock before admission.
+            # This deadline does not prove prospective release.
+            # Claim and execution verify it against the sealed request.
             from . import lifetime_fence as _publish_fence
             item["lifetime_fence_s"] = sealed_fence_s
             item["lifetime_deadline_unix"] = (
@@ -19578,19 +19574,19 @@ class PoolQueue:
             float(checked) if contained else float(tokens_returned_unix))
         return {
             "cleanup": {
-                "enforced": True,
+                "enforced": False,
                 "evidence": "container-cleanup-complete",
                 "ended_unix": settled_end,
             },
             "scope_settlement": {
-                "enforced": True,
+                "enforced": False,
                 "evidence": (
                     f"scope-proof:{nonce}" if contained
                     else "uncontained-no-scope"),
                 "ended_unix": settled_end,
             },
             "resource_release": {
-                "enforced": True,
+                "enforced": False,
                 "evidence": "ledger-returned",
                 "ended_unix": float(tokens_returned_unix),
             },
@@ -19604,15 +19600,11 @@ class PoolQueue:
         container_cleanup: Mapping[str, object],
         scope_cleanup: Mapping[str, object],
     ) -> None:
-        """File the audited fence phases ``finish`` proved, if it proved them.
+        """File observed cleanup and scope settlement for this exact attempt.
 
-        Runs after container cleanup completed and before the attempt
-        archive publishes. A fenced run whose worker filed its enforced
-        phases gains the cleanup and scope-settlement records here,
-        each citing its own completed verdict. The release record
-        waits for the ledger return below. A run with no worker
-        evidence, a fence kill, or unproven settlement files nothing
-        more -- the audit then reads UNKNOWN.
+        These records cite completed verdicts, not prospective enforcement.
+        The release record waits for the ledger return.
+        Missing observations leave the release audit UNKNOWN.
         """
 
         evidence = finished_detail.get("lifetime_evidence")
@@ -19624,15 +19616,16 @@ class PoolQueue:
         from . import lifetime_fence as _finish_fence
         if evidence.get("schema") != _finish_fence.EVIDENCE_SCHEMA_V1:
             return
-        for phase in _finish_fence.ENFORCED_PHASES:
+        for phase in _finish_fence.EXECUTION_PHASES:
             entry = phases.get(phase)
             if (
                 not isinstance(entry, Mapping)
-                or entry.get("enforced") is not True
                 or entry.get("evidence") in (None, "", [], {})
                 or type(entry.get("ended_unix")) not in (int, float)
             ):
                 return
+        if evidence.get("claim") != _finish_fence.attempt_identity(record):
+            return
         if evidence.get("published_unix") != record.get("published_unix"):
             return
         if evidence.get("fence_s") != record.get("lifetime_fence_s"):
@@ -19657,15 +19650,10 @@ class PoolQueue:
     ) -> None:
         """File the release record after the ledger return, if proved.
 
-        Runs after ``_release_reservation``. The ledger must hold no
-        host token for the key on the holder's box; a key that keeps
-        tier occupancy still releases its host capacity, which is
-        what the fence bounds. An unproven return files nothing and
-        the audit reads UNKNOWN. The record lands on the terminal
-        row beside the attempt link, never inside the immutable
-        attempt, so the archive keeps the evidence the attempt had
-        when it concluded and the release proof stays dated after
-        the return it describes.
+        Record observed host token return, not a whole-lifetime guarantee.
+        Retained tier occupancy does not prove resource release.
+        The terminal row carries this observation after the immutable attempt.
+        The archive retains its original evidence and logs.
         """
 
         detail = record.get("detail")
@@ -19681,16 +19669,17 @@ class PoolQueue:
         if evidence.get("schema") != _release_fence.EVIDENCE_SCHEMA_V1:
             return
         for phase in (
-            *_release_fence.ENFORCED_PHASES, "cleanup", "scope_settlement",
+            *_release_fence.EXECUTION_PHASES, "cleanup", "scope_settlement",
         ):
             entry = phases.get(phase)
             if (
                 not isinstance(entry, Mapping)
-                or entry.get("enforced") is not True
                 or entry.get("evidence") in (None, "", [], {})
                 or type(entry.get("ended_unix")) not in (int, float)
             ):
                 return
+        if evidence.get("claim") != _release_fence.attempt_identity(record):
+            return
         try:
             held = (
                 str(action_key) in self.ledger(holder).held_keys()
@@ -19701,7 +19690,7 @@ class PoolQueue:
             return
         merged = dict(phases)
         merged["resource_release"] = {
-            "enforced": True,
+            "enforced": False,
             "evidence": "ledger-returned",
             "ended_unix": _now(),
         }
@@ -23301,27 +23290,36 @@ class PoolQueue:
                 claimed["claimed_unix"] = _now()
                 claimed["claimed_host"] = socket.gethostname()
                 claimed["served_from"] = "canonical"
-                fence_claimed = _sealed_lifetime_fence(claimed)
-                if fence_claimed is not None:
-                    # Carry the publication-anchored deadline onto the
-                    # claim: the worker enforces the number admission
-                    # read from the READY row, re-derived here from the
-                    # sealed seconds plus the row's own publication
-                    # stamp. A mismatch, a missing stamp, or an expired
-                    # fence refuses the claim -- the checks above run
-                    # on the scan's copy, and the rename may have moved
-                    # a replaced generation.
-                    from . import lifetime_fence as _claim_fence
-                    expected = _claim_fence.fence_deadline(
-                        published_unix=claimed.get("published_unix"),
-                        fence_s=fence_claimed)
-                    if (expected is None
-                            or claimed.get("lifetime_fence_s") != fence_claimed
-                            or claimed.get("lifetime_deadline_unix") != expected
-                            or _now() >= expected):
-                        raise PoolContractError(
-                            "lifetime-fenced claim does not carry its "
-                            "publication deadline")
+                try:
+                    fence_claimed = _sealed_lifetime_fence(claimed)
+                    if pb.LIFETIME_TAG in claimed.get("tags", []) and fence_claimed is None:
+                        raise PoolContractError("sealed lifetime request disappeared after commit")
+                    if fence_claimed is not None:
+                        from . import lifetime_fence as _claim_fence
+                        expected = _claim_fence.fence_deadline(
+                            published_unix=claimed.get("published_unix"),
+                            fence_s=fence_claimed)
+                        current = _read_json(dst)
+                        if (expected is None or current is None
+                                or current.get("published_unix") != moved.get("published_unix")
+                                or current.get("lifetime_fence_s") != fence_claimed
+                                or current.get("lifetime_deadline_unix") != expected):
+                            _unwind_funded_claim("lifetime_fence_mismatch", {
+                                "checked": "after_commit",
+                                "expected_deadline": expected,
+                            }, post_persist=False)
+                            continue
+                        if _now() >= expected:
+                            _unwind_funded_claim("lifetime_fence_expired", {
+                                "checked": "after_commit",
+                                "deadline_unix": expected,
+                            }, post_persist=False)
+                            continue
+                except (OSError, ValueError, pb.PrismaBuildError) as exc:
+                    _unwind_funded_claim("lifetime_fence_unreadable", {
+                        "checked": "after_commit", "error": str(exc),
+                    }, post_persist=False)
+                    continue
                 if ledger is not None and cpu_tiers is not None and demand.get("cpu", 0):
                     claimed["cpu_allocation"] = ledger.cpu_allocation(key, cpu_tiers)
                 if adaptive_gpu is not None:
@@ -23533,6 +23531,13 @@ class PoolQueue:
                         "tier_expected_tokens": tier_wanted,
                         "adaptive_cpu": adaptive is not None,
                         "adaptive_gpu": adaptive_gpu is not None,
+                    }, post_persist=True)
+                    continue
+                if fence_claimed is not None and _now() >= expected:
+                    # No payload exists. Use the same custody-aware rollback
+                    # as a lease failure, including funded tier reservations.
+                    _unwind_funded_claim("lifetime_fence_expired", {
+                        "checked": "after_lease", "deadline_unix": expected,
                     }, post_persist=True)
                     continue
                 if tier_funded:
@@ -26554,10 +26559,11 @@ class PoolQueue:
             resolved = self.resolve_prewarm_reference(warmed)
             if resolved is not None:
                 finished_detail.setdefault("prewarm", resolved)
-        finished_detail["container_cleanup"] = container_cleanup
-        self._complete_lifetime_evidence(
-            finished_detail, record,
-            container_cleanup=container_cleanup, scope_cleanup=scope_cleanup)
+        if record.get("lifetime_fence_s") is not None:
+            finished_detail["container_cleanup"] = container_cleanup
+            self._complete_lifetime_evidence(
+                finished_detail, record,
+                container_cleanup=container_cleanup, scope_cleanup=scope_cleanup)
         record.update(
             {
                 "schema": POOL_OUTCOME_SCHEMA_V1,
@@ -28048,7 +28054,7 @@ class PoolQueue:
                     "lifetime-fenced execution does not carry its "
                     "publication deadline")
         with _execution_checkout(item) as checkout_root:
-            if fence_deadline_wall is not None and _now() > fence_deadline_wall:
+            if fence_deadline_wall is not None and _now() >= fence_deadline_wall:
                 fence_checkout_proof = "checkout-exceeded-fence"
                 outcome = {
                     "status": "failed",
@@ -28092,6 +28098,12 @@ class PoolQueue:
                 "published_unix": item.get("published_unix"),
                 "deadline_unix": fence_deadline_wall,
             }
+        if fence_s is not None:
+            from . import lifetime_fence
+            outcome["lifetime_fence"]["components"] = lifetime_fence.phase_enforcement()
+            evidence = outcome.get("lifetime_evidence")
+            if isinstance(evidence, dict):
+                evidence["claim"] = lifetime_fence.attempt_identity(item)
         outcome.update(budget.as_record())
         # ``execution_timeout_ceiling_s`` is what bounded the *deadline*, and
         # under the progress contract nothing did.  This says what the box's
@@ -28370,7 +28382,7 @@ class PoolQueue:
             return {"returncode": None, "stdout": "", "stderr": "",
                     "elapsed_s": _now() - started, "argv": argv,
                     "cpu_allocation": allocation, **barrier}
-        if fence_deadline_wall is not None and _now() > fence_deadline_wall:
+        if fence_deadline_wall is not None and _now() >= fence_deadline_wall:
             # The fence expired during admission or checkout -- before
             # any payload existed. Fail closed without launching: the
             # payload budget never saw this run, and finish files no
@@ -28434,7 +28446,7 @@ class PoolQueue:
             # Scope setup completed above; recheck before launch. A
             # slow broker call cannot move the fence, so expiry here
             # fails closed without starting a payload.
-            if _now() > fence_deadline_wall:
+            if _now() >= fence_deadline_wall:
                 return {
                     "status": "failed",
                     "returncode": None,
@@ -28832,15 +28844,11 @@ class PoolQueue:
                         # The fence rung: absolute, non-creditable, and
                         # checked before the payload deadline below. The
                         # checkpoint credits above moved only the payload
-                        # deadline; this bound never moves. Same bounded
-                        # stop as the payload path, but its own verdict so
-                        # a reader tells which bound fired. The lease is
-                        # not refreshed during any of it, as on that path.
-                        # The synchronous observation above runs first and
-                        # can stall: a fenced action that wedges inside it
-                        # ends late, but the audit then proves the miss --
-                        # the phase end lands past the deadline and the
-                        # verdict reads UNKNOWN rather than finite.
+                        # deadline; this absolute clock never moves.
+                        # The stop path retains its own termination verdict.
+                        # Synchronous observation can delay this check.
+                        # No prospective release proof follows from the timer.
+                        # Settlement must still prove that resources can return.
                         if scope is not None:
                             scope.terminate_owned(
                                 lifetime_fence.FENCE_TERMINATION_REASON)
@@ -29124,18 +29132,9 @@ class PoolQueue:
         if profile is not None:
             outcome["profile"] = profile
         if fence_deadline_wall is not None:
-            # The worker enforced the fence across the phases it ran:
-            # admission, checkout, readiness, prelaunch, payload with
-            # its credited waits, and termination. Each carries its
-            # measured end and the operation that proved it. Cleanup,
-            # scope settlement and resource release run later inside
-            # ``finish``; the worker files no record for them here,
-            # and the audit reads UNKNOWN until ``finish`` proves
-            # each one or fails closed by retaining the claim.
-            # ``credited_waits`` ends with the payload: the waits
-            # credit the payload budget only, and the fence never
-            # moves for them, so the observation that measured the
-            # last wait is the evidence this phase ended in time.
+            # These records prove observed completion, not prospective limits.
+            # Synchronous I/O can prevent the next deadline check.
+            # Finalization records its own observations after settlement.
             phase_end = _now()
             ends = dict(fence_phase_ends)
             proofs = dict(fence_phase_proofs)
@@ -29152,11 +29151,11 @@ class PoolQueue:
                 "deadline_unix": fence_deadline_wall,
                 "phases": {
                     phase: {
-                        "enforced": True,
+                        "enforced": False,
                         "evidence": proofs[phase],
                         "ended_unix": ends[phase],
                     }
-                    for phase in lifetime_fence.ENFORCED_PHASES
+                    for phase in lifetime_fence.EXECUTION_PHASES
                 },
             }
         return ending(outcome)
