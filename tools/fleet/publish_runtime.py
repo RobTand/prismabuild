@@ -885,6 +885,138 @@ def _shape_gate_line(record: dict[str, object]) -> str:
             f"(tables {', '.join(map(str, record.get('tables') or ()))})")
 
 
+def _roster_option_names(args: object) -> set[str]:
+    """The ``--`` option names ``args`` declares, without values.
+
+    Only the names matter: a value that moves (``--mem-gb 96`` to
+    ``--mem-gb 104``) keeps the capability, while a name that vanishes
+    (``--gang-admission``) removes it.  Both spellings of a valued
+    option count as the same name (``--python X`` and ``--python=X``).
+    A bare ``--`` token ends the options, as it does on a command
+    line; anything after it is a positional, not an option.
+    """
+
+    names: set[str] = set()
+    if not isinstance(args, list):
+        return names
+    for arg in args:
+        if not isinstance(arg, str):
+            continue
+        if arg == "--":
+            break
+        if not arg.startswith("--") or len(arg) == 2:
+            continue
+        names.add(arg.split("=", 1)[0])
+    return names
+
+
+def _dropped_roster_options(live: object, candidate: object) -> dict[str, list[str]]:
+    """Option names ``candidate`` drops per box, keyed by roster key (#1664).
+
+    Every box the live roster declares is compared under its own key;
+    an alias answers for the box's placement tags, never for its
+    options, so the same key must carry the same names in both
+    rosters.  A box the candidate adds starts fresh, and a box it
+    removes is the barrier roster's refusal, not this gate's: the
+    names are compared only where both rosters declare the box.
+    """
+
+    dropped: dict[str, list[str]] = {}
+    live_boxes = live.get("boxes") if isinstance(live, dict) else None
+    candidate_boxes = (candidate.get("boxes") if isinstance(candidate, dict)
+                       else None)
+    if not isinstance(live_boxes, dict) or not isinstance(candidate_boxes, dict):
+        return dropped
+    for key in sorted(live_boxes):
+        live_entry = live_boxes[key]
+        candidate_entry = candidate_boxes.get(key)
+        if not isinstance(live_entry, dict) or not isinstance(candidate_entry, dict):
+            continue
+        missing = sorted(_roster_option_names(live_entry.get("args"))
+                         - _roster_option_names(candidate_entry.get("args")))
+        if missing:
+            dropped[key] = missing
+    return dropped
+
+
+def _live_roster() -> dict | None:
+    """The live generation's roster, or ``None`` when there is none to keep.
+
+    The comparison reads the sealed generation the live pointer names,
+    not a mirror copy beside it: a stale ``fleet_boxes.json`` next to
+    ``repo`` caused the 2026-10-09 gang outage by answering for a
+    generation that still carried the flag.  A bootstrap with no live
+    pointer, a legacy directory runtime, or a generation that predates
+    the roster has no live names to preserve, so it passes.
+    """
+
+    try:
+        if not MIRROR.is_symlink():
+            return None
+        live = MIRROR.resolve(strict=True)
+    except OSError:
+        return None
+    if not live.is_dir() or live.name.startswith("."):
+        return None
+    for member in ("tools/fleet/fleet_boxes.json", "tools/fleet_boxes.json"):
+        try:
+            text = (live / member).read_text()
+        except OSError:
+            continue
+        try:
+            document = json.loads(text)
+        except ValueError:
+            return None
+        if isinstance(document, dict):
+            return document
+    return None
+
+
+def _candidate_roster() -> dict:
+    """The roster this publication would publish, or refuse."""
+
+    try:
+        document = json.loads(
+            (CHECKOUT / "tools" / "fleet" / "fleet_boxes.json").read_text())
+    except (OSError, ValueError) as exc:
+        raise SystemExit(f"cannot read the candidate roster: {exc}") from exc
+    if not isinstance(document, dict):
+        raise SystemExit("cannot read the candidate roster: not a JSON object")
+    return document
+
+
+def _roster_option_record(args) -> dict[str, object] | None:
+    """Refuse a candidate that drops a live ``--`` option name (#1664).
+
+    The check runs inside the publication lock, before anything is
+    staged, and reads the sealed live generation the pointer names.
+    An explicit override names who removes the option and why; both
+    are recorded in the receipt with the dropped names.  A bootstrap
+    with no live generation, or a live generation without a roster,
+    has nothing to preserve and passes with no record.
+    """
+
+    live = _live_roster()
+    if live is None:
+        return None
+    dropped = _dropped_roster_options(live, _candidate_roster())
+    if not dropped:
+        return None
+    by = args.drop_roster_option_by
+    reason = args.drop_roster_option_reason
+    if by is None or reason is None:
+        lines = [f"{key}: {', '.join(names)}" for key, names in dropped.items()]
+        raise SystemExit(
+            "refusing to publish: the candidate roster drops a -- option "
+            "the live generation declares (#1664): "
+            + "; ".join(lines) + ". Nothing was published and the live "
+            "runtime still points where it did. Pass "
+            "--drop-roster-option-by WHO --drop-roster-option-reason WHY "
+            "to remove the option on purpose; both are recorded in the "
+            "generation's receipt.")
+    return {"by": by.strip(), "reason": reason.strip(), "dropped": dropped}
+
+
 def _canary_driver_path() -> Path:
     """Where crew A's driver (issue #688 deliverable 1) is expected."""
 
@@ -1941,6 +2073,18 @@ def main() -> int:
              "recorded in the generation's receipt and printed by the rollout "
              "canary.",
     )
+    ap.add_argument(
+        "--drop-roster-option-by", metavar="WHO", default=None,
+        help="who removes a live roster -- option on purpose; required "
+             "together with --drop-roster-option-reason, and both are "
+             "recorded in the generation's receipt (#1664).",
+    )
+    ap.add_argument(
+        "--drop-roster-option-reason", metavar="REASON", default=None,
+        help="why the candidate roster drops a live -- option; required "
+             "together with --drop-roster-option-by, and both are recorded "
+             "in the generation's receipt (#1664).",
+    )
     args = ap.parse_args()
     if not math.isfinite(args.barrier_wait_s) or args.barrier_wait_s < 0:
         ap.error("--barrier-wait-s must be finite and nonnegative")
@@ -1969,6 +2113,18 @@ def main() -> int:
                  "generation keeps the gate record it was published with")
     if args.shape_gate_waiver is not None and not args.shape_gate_waiver.strip():
         ap.error("--shape-gate-waiver requires a nonblank reason")
+    override = (args.drop_roster_option_by, args.drop_roster_option_reason)
+    if (override[0] is None) != (override[1] is None):
+        ap.error("--drop-roster-option-by and --drop-roster-option-reason "
+                 "are required together")
+    if override[0] is not None and not override[0].strip():
+        ap.error("--drop-roster-option-by requires a nonblank name")
+    if override[1] is not None and not override[1].strip():
+        ap.error("--drop-roster-option-reason requires a nonblank reason")
+    if args.activate_generation and override[0] is not None:
+        ap.error("an existing generation keeps the roster record it was "
+                 "published with; the roster override judges a fresh "
+                 "publication only")
     if args.dry_run:
         return _run_publication(args)
     with _publication_lock():
@@ -2044,9 +2200,10 @@ def _run_publication(args) -> int:
             f"canary requested but no driver at {_canary_driver_path()}: "
             "nothing was published and the live runtime still points where it did."
         )
-    # The last refusal before anything is written: the gate reads the fleet's
-    # records, and an earlier refusal is cheaper to hear first.
+    # The last refusals before anything is written: the gates read the
+    # fleet's records, and an earlier refusal is cheaper to hear first.
     shape_gate = _shape_gate_record(args, commit=commit, dirty=dirty)
+    roster_override = _roster_option_record(args)
     if args.rollout == "rolling":
         print(f"rollout rolling: {rollout_reason}")
     print(_shape_gate_line(shape_gate),
@@ -2124,7 +2281,10 @@ def _run_publication(args) -> int:
             # How this commit passed the pre-publish shape gate (#987): the
             # verified gate run, or the waiver and its reason.
             "shape_gate": shape_gate,
-            "generation": generation_name,
+            # Present only when the roster drops a live -- option name on
+            # purpose (#1664): who removed it, why, and which names per box.
+            **({"roster_option_override": roster_override}
+               if roster_override is not None else {}),
             "published_unix": time.time(),
             "published_by": socket.gethostname(),
             "files": published,

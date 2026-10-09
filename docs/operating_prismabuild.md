@@ -3404,6 +3404,18 @@ Publication refuses rather than guesses:
     back if the install fails. A caller can be refused in that narrow
     interval. It can never read a mixed generation.
 *   **A live `repo` that is neither a directory nor a symlink** is refused.
+*   **A candidate roster that drops a `--` option the live generation
+    declares for any box** is refused before anything is staged (#1664).
+    Only option names are compared, so a value that moves (`--mem-gb 96`
+    to `--mem-gb 104`) passes while a name that vanishes
+    (`--gang-admission`) refuses. A box is compared under its own roster
+    key; an alias (`gx10-6b77` / `sparklina`) answers for placement tags,
+    never for options. The live roster is read from the sealed generation
+    the pointer names, not from a mirror copy beside it. To remove an
+    option on purpose, pass `--drop-roster-option-by WHO` with
+    `--drop-roster-option-reason WHY`; both are recorded in
+    `RUNTIME_VERSION.json` beside the dropped names. Rollback restores a
+    sealed generation and takes neither flag.
 
 A staged generation's import probe disables bytecode writes, so validation
 does not add unlisted cache files before the generation is sealed.
