@@ -1028,6 +1028,62 @@ except (OSError, ValueError) as _pb_exc:
 _pb_sys.argv[2:2] = ["--basetemp", _pb_derived]
 """
 
+#: The worker-only source every shard runs before anything else (#1542). It
+#: gives the attempt its own pytest base temp under the sealed ``TMPDIR``:
+#: ``<tmpdir>/pbtest-<action-key12>/<attempt>/pytest``. An explicit sealed
+#: ``--basetemp`` keeps its existing meaning and owns its own namespace;
+#: this default never touches it. The worker removes only this attempt's
+#: directory after pytest exits 0, and keeps it on a non-zero exit, as
+#: ``tmp_path_retention_policy=failed`` does. Expiry of kept directories
+#: is out of scope. ``TMPDIR`` itself is the sealed scratch placement and
+#: the compiler cache context; it is never removed.
+ATTEMPT_TEMP_PROGRAM = """\
+import os as _pb_os
+import shutil as _pb_shutil
+import sys as _pb_sys
+import tempfile as _pb_tempfile
+import uuid as _pb_uuid
+
+
+def _pb_run_and_clean_attempt_base(_pb_run):
+    return _pb_run()
+
+
+_pb_tmpdir = _pb_os.environ.get("TMPDIR", "")
+_pb_key = _pb_os.environ.get("PRISMABUILD_ACTION_KEY", "")
+_pb_attempt = _pb_os.environ.get("PRISMABUILD_ACTION_NONCE", "")
+if _pb_attempt and (len(_pb_attempt) != 32 or any(
+        character not in "0123456789abcdef" for character in _pb_attempt)):
+    raise SystemExit(
+        "pbtest: PRISMABUILD_ACTION_NONCE is not a 32-hex attempt identity")
+if (_pb_tmpdir and _pb_key and "/" not in _pb_key
+        and _pb_key not in (".", "..")):
+    if not _pb_attempt:
+        _pb_attempt = _pb_uuid.uuid4().hex
+    _pb_owned = _pb_os.path.join(_pb_tmpdir, "pbtest-" + _pb_key[:12], _pb_attempt, "pytest")
+    try:
+        _pb_os.makedirs(_pb_owned, exist_ok=True)
+        with _pb_tempfile.TemporaryFile(dir=_pb_owned):
+            pass
+    except (OSError, ValueError) as _pb_exc:
+        raise SystemExit("pbtest: cannot use the attempt base temp: " + str(_pb_exc))
+    _pb_sys.argv[2:2] = ["--basetemp", _pb_owned]
+
+
+    def _pb_run_and_clean_attempt_base(_pb_run):
+        _pb_code = _pb_run()
+        if int(_pb_code) == 0:
+            _pb_shutil.rmtree(_pb_os.path.dirname(_pb_owned), ignore_errors=True)
+            try:
+                _pb_os.rmdir(_pb_os.path.dirname(_pb_os.path.dirname(_pb_owned)))
+            except OSError:
+                pass
+        return _pb_code
+
+
+"""
+
+
 
 
 
@@ -1070,8 +1126,22 @@ def shard_entry(python: str, checkout: Path, *, tmpdir: str | None = None,
         # The derivation runs before every other guard: it is the worker's
         # refusal point for an unusable or unowned sealed root (#1469), and
         # the sealed root travels inside this program, so a different root
-        # is a different sealed request.
+        # is a different sealed request. An explicit root keeps its meaning;
+        # the attempt default below never runs beside it.
         program = BASETEMP_PROGRAM.replace("@ROOT@", repr(basetemp)) + program
+    else:
+        # No sealed root: the attempt owns ``<tmpdir>/pbtest-<key12>/<nonce>/pytest``
+        # and the worker removes that directory after exit 0. The wrapper
+        # defines the cleanup beside the exit call, so the derivation and
+        # the removal cannot drift apart.
+        program = program.replace(
+            'raise SystemExit(load("pbtest_outcomes").main(',
+            'raise SystemExit(_pb_run_and_clean_attempt_base(lambda: load("pbtest_outcomes").main(',
+            1).replace(
+            'collection_source=SOURCES["pbtest_collection"]))',
+            'collection_source=SOURCES["pbtest_collection"])))',
+            1)
+        program = ATTEMPT_TEMP_PROGRAM + program
     if tmpdir is not None:
         # Explicit scratch placement must refuse on the worker rather than let
         # tempfile silently choose another filesystem. The default entry stays

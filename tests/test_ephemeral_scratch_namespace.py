@@ -2,7 +2,8 @@
 
 These CPU fixtures exercise the public SDK against a sealed request and a
 contained fixture queue. No payload, broker, cleanup, or live directory runs.
-A namespace is not a finalizer, filesystem quota, or deletion authority.
+A namespace is not a finalizer, filesystem quota, or deletion authority. The
+versioned lifetime capability lives beside this naming slice in the SDK.
 """
 from __future__ import annotations
 
@@ -231,8 +232,9 @@ def test_incomplete_claim_does_not_default_to_identity(scratch, field, value):
         _bind(scratch)
 
 
-def test_no_full_lifetime_capability_is_advertised():
-    assert "scratch-lifetime-v1" not in client.CAPABILITIES
+def test_naming_slice_carries_no_deletion_authority_but_sdk_advertises_lifetime():
+    assert client.SCRATCH_LIFETIME_TAG in client.CAPABILITIES
+    assert client.SCRATCH_LIFETIME_TAG == "scratch-lifetime-v1"
 
 
 def test_namespace_uses_existing_submission_generation_recipe(scratch):

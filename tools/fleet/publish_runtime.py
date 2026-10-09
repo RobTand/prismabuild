@@ -102,6 +102,8 @@ FLEET_SCRIPTS = (
     # consumers filed with ``pbrun --after`` once their producers commit
     # (#913).  A generation without it is a tier loop that cannot start.
     "deferred_release.py",
+    # The tier role imports this helper for stage byte and token reports (#1555).
+    "stage_rounding.py",
     # ...and manifest_promotion.py, which the tier loop imports to promote
     # manifest rows' residency plans (#1252).  Generation 9098f84c872b shipped
     # without it and the tier role crash-looped at import (#1284);
@@ -231,6 +233,10 @@ EXCLUDED: tuple[tuple[str, str], ...] = (
     ("qualify_claim_recovery.py",
      "paired queue-recovery qualification actors run from an isolated "
      "checkout through pbcampaign against a fresh private queue root; "
+     "not an operator command for a box without a checkout"),
+    ("qualify_scratch_lifetime.py",
+     "scratch-lifetime deployment qualification actors (#1360) run from "
+     "a submitted checkout through pbrun on a disk-offering worker; "
      "not an operator command for a box without a checkout"),
     ("admission_shared_io.py",
      "a measurement harness for the admission critical section, run from a "

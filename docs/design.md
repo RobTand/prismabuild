@@ -249,7 +249,42 @@ opens remain (actions 8c9e1d2bd5f4 and 8550ef5bc4ab). On the NFS export a
 listing is at least one READDIR, and a per-key lookup is a LOOKUP unless
 the client's dentry cache answers it.
 
-The standalone `bench_claim_pass` command uses an owned temporary admission directory under `/tmp` when `PRISMABUILD_BOX_STATE_ROOT` is absent or empty. It sets the environment value before `build_and_poll` imports `pool` and retains the directory across both synchronous polls. It restores the prior environment value and removes only the owned directory after the call. A nonempty explicit override remains unchanged. The count-only branch returns before work or scope creation. Production roots and admission policy remain unchanged.
+The standalone `bench_claim_pass` command uses an owned temporary admission directory under `/tmp` when `PRISMABUILD_BOX_STATE_ROOT` is absent or empty. It sets the environment value before `build_and_poll` imports `pool` and retains the directory across both synchronous polls. It restores the prior environment value and removes only the owned directory after the call. A nonempty explicit override remains unchanged. The count-only branch returns before work or scope creation. Production roots and admission policy stay unchanged.
+
+Digest origin records name each genuinely new admission entry's writer (#1542). `box_state` files `<digest>.origin.json` once, with `O_EXCL`, only when the digest owns no state yet. The record holds the resolved queue root, hostname, pid, `argv[0]` and creation time. A second call for the same digest keeps the first record. An entry that already owns state when the code first sees it keeps no record: it is a legacy entry. A census groups digests by `(queue_root, hostname, argv0)`; an entry without a record is a legacy entry. Nothing invents an origin. A missing file elsewhere stays "no information", as before.
+
+The R13 bench binds admission state to `<work>/box-state` before queue use in both parent and child processes (#1542).
+`bind_private_box_state` preserves a nonempty explicit override.
+The `--tiny-shape` flag builds a minimal queue for isolation tests.
+Unresolved claims and census fences remain in the work directory after the run.
+
+R13 requires a new or empty work directory.
+`_prepare_work_directory` proves an existing directory empty through a complete top-level census.
+The bench refuses a nonempty or unreadable directory before queue use or output creation.
+The refusal names the work directory and leaves every entry unchanged.
+This rule preserves claims, census markers, guard files, and claim-denial records without assumptions about settlement.
+The bench never deletes state from a prior run; neither `finish` nor child exit permits removal.
+
+Maintenance-only prune removes eligible idle admission entries (#1542).
+`survey_box_state` lists candidates; `prune_box_state` applies them; `prove_box_quiescent` proves the box quiet.
+An entry includes every file or directory whose name starts with `<digest>.`.
+Lock-only, sweep-only, and preemption-only entries need no adaptive CPU directory.
+The survey uses the newest timestamp across every sibling and its descendants.
+Unreadable state stays.
+
+The default is a dry run.
+Candidates must be at least seven days old and must not belong to a configured queue root.
+The default removal bound is 100 entries per pass; the 5,000-entry target prioritizes older eligible entries.
+An absent roots list, missing queue, or incomplete queue evidence keeps every entry and refuses apply.
+An unheld `.sweep` or `.preemption` file alone does not establish activity.
+Admission still probes only its own digest paths, without a directory census.
+
+Before apply, stop every relevant user and bar new openers under the acknowledged maintenance hold.
+Apply also requires no live worker loop, live scope, or unresolved claim, with complete queue evidence.
+Every `.lock`, `.preemption`, `.sweep`, and `.guard` file must pass a non-blocking `flock` probe.
+Configured roots and unresolved census readers stay.
+Age and count select candidates; neither permits unsafe removal.
+Deletion while workers run remains prohibited; no rename or unlink of a held inode establishes safety.
 
 Each claim pass times its per-key transition-lock holds (#1029): every lock
 the pass acquires is timed on `time.monotonic()` from acquisition to the end
@@ -1660,14 +1695,23 @@ through its public interfaces. Those are the fleet tools (`pbrun`, `pbtest`,
 internal. It can change in any release, and a client that imports it takes on
 that risk alone.
 
-**Versioning.** `client.SDK_VERSION` names the contract; it is `5`.
+**Versioning.** `client.SDK_VERSION` names the contract; it is `6`.
 Version 2 adds nondestructive ephemeral scratch naming; version 3 adds durable
 sealed declaration evidence before pool payload launch (Refs #1360); version 4
 adds the bounded verified action-result read and the standard-capture command
 binding (#1446). Version 5 adds the opt-in native producer context from the
-selected immutable attempt and exact execution receipt (#1481). The generic
-result mapping remains unchanged when the new requirement is false. Earlier
+selected immutable attempt and exact execution receipt (#1481). Version 6
+exposes the generation-bound scratch lifetime contract (Refs #1360): the
+`scratch-lifetime-v1` capability tag, its selection/record schemas, its claim
+field, its sealed variable, and a builder for the sealed selection. Earlier
 exports and capability tags remain available.
+
+The CEO approved additive SDK6 in decision `dec-1009-090451-62a1`.
+SDK5 consumers must keep their existing behavior.
+Qualification is limited to isolated x86 work.
+The decision authorizes no deployment or issue closure; pb-integrator owns publication.
+The published generation in the #1360 record still uses SDK5.
+
 `tests/test_client_sdk_surface.py` pins everything the SDK exports: the set of
 names, each callable's parameters (name, kind, default), each constant's value,
 and, for each re-exported name, that it is the internal object itself. An
@@ -1681,7 +1725,7 @@ generation. A client imports `prismabuild.client` from `<root>/src`, so the
 SDK and the runtime that launched the action are one generation. The variable
 names the generation root, never `src`; the client appends `src` itself.
 
-**The surface (version 5).**
+**The surface (version 6).**
 
 | Area | Names |
 |---|---|
@@ -1691,6 +1735,7 @@ names the generation root, never `src`; the client appends `src` itself.
 | Produced output | `declared_template`, `validate_template`, `bind_declared_instance`, `declare_instance`, `admit_instance`, `validate_instance`, `instance_dir`, `checked_instance_maxima`, `owner_demand_terms`, `admit_funded_window`, `refill_window`, `require_prewrite`, `abort_prewrite`, `validate_descriptor`, `output_manifest_sha256`, `batch_namespace`, `output_fragment_root`, `publish_prepaid_batch`, `commit_batch`, `commit_origin_batch`, `retire_batch`, `reclaim_origin`, `recover_batches`, `due_mover_rows`, `materialization_state`, `ensure_batch_materialized`, `safe_release_instance`, `release_produced_instance`, `TEMPLATE_SCHEMA_V1`, `DESCRIPTOR_SCHEMA_V2` |
 | Residency maps | `validate_residency_map`, `read_residency_map`, `read_residency_fragments`, `compose_residency_map`, `write_residency_map`, `residency_map_key`, `ResidencyMapError`, `RESIDENCY_MAP_ENV`, `RESIDENCY_MAP_SCHEMA_V1`, `RESIDENCY_MAP_FRAGMENT_SCHEMA_V1`, `RESIDENCY_LANDING_SCHEMA_V1`, `LANDING_STATES` |
 | Ephemeral scratch naming (no lifetime capability) | `bind_ephemeral_scratch`, `ephemeral_scratch_path`, `EPHEMERAL_SCRATCH_SCHEMA_V1`, `LocalScratchError` |
+| Generation-bound scratch lifetime (`scratch-lifetime-v1`) | `build_scratch_lifetime_selection`, `SCRATCH_LIFETIME_TAG`, `SCRATCH_LIFETIME_SELECTION_SCHEMA_V1`, `SCRATCH_LIFETIME_RECORD_SCHEMA_V1`, `SCRATCH_LIFETIME_FIELD`, `SCRATCH_LIFETIME_DECLARATIONS_ENV` |
 | Receipts | `cas_receipt_self_check`, `RECEIPT_REFUSALS`, `CAS_RECEIPT_SCHEMA_V3`, `WORKER_ATTESTATION_SCHEMA_V2` |
 | Verified action results (`verified-action-result-v1`; native context `native-producer-context-v1`) | `read_verified_action_result`, `bind_standard_capture_command`, `ActionResultError`, `ACTION_RESULT_SCHEMA_V1`, `VERIFIED_ACTION_RESULT_TAG`, `NATIVE_PRODUCER_CONTEXT_SCHEMA_V1`, `NATIVE_PRODUCER_CONTEXT_TAG` |
 | Identifiers and digests | `ID_PATTERN`, `ENV_NAME_PATTERN`, `canonical_sha256` |
@@ -1789,11 +1834,13 @@ that are not internal: `produced_output.batch_record` and `batch_records`
 `progress-v1`, `decomposition-v1` (`pbcampaign` can decompose a logical
 request, #517/#518), and `verified-action-result-v1` (the bounded
 verified-result read, #1446), plus `native-producer-context-v1` (strict selected
-producer provenance, #1481). A client asks for a capability by tag, never by
-probing files or function names. The surface test fails if a tag is advertised
-without the code behind it. The SDK's scratch additions are naming only:
-`CAPABILITIES` does **not** advertise `scratch-lifetime-v1` or any scratch
-cleanup capability. SDK version 2 is not evidence of a deployed finalizer.
+producer provenance, #1481) and `scratch-lifetime-v1` (the generation-bound
+scratch lifetime contract, Refs #1360). A client asks for a capability by tag,
+never by probing files or function names. The surface test fails if a tag is
+advertised without the code behind it. The SDK's scratch naming additions
+grant no deletion authority; the versioned pool input below supplies the
+opt-in lifetime contract. A naming-only client is not evidence of a deployed
+finalizer.
 
 ### Generated files in a pbrun checkout
 
@@ -5105,13 +5152,31 @@ transfer. The record binds valid retained mover tokens and the exact remaining
 group tokens. A deferred rotation moves no tokens. A partial transfer retains
 that generation, and a retry moves only its missing tokens. Foreign live
 records still refuse, and foreign spent recovery keeps its existing rule.
+A group that shares chunk movers with pinned movers of earlier consumers
+counts those pins as shared coverage beside its own holder, handles,
+bound mover tokens and released counts (#1690). A shared pin is a mover
+that still holds the intent's whole span under a live `transferring`
+fence for the same tier and range, or a done `executed` record that
+covers the chunk on the tier. The fresh begin asks the ledger only for
+the deficit, the demand less all coverage, and commits when holder plus
+shared cover the demand. The window's `blocked_gib` and the begin's
+`need_gib` come from one computation: the stall's blocked amount is the
+deficit itself. The window reads this cycle's fresh begin or recovery
+event when the reserve pass begins. Otherwise, it uses the prospective census.
+A successful recovery returns its requested amount before acquisition changes the census.
+The window reports that amount and omits any previous decline cause. A
+declined begin journals its need with the ledger's own shortage reason,
+and the stall carries that cause beside the wait reason. A contended
+mutation lock names `mutation_lock_busy`, never a capacity shortage.
+A republished mover keeps its fence: the terminal settle skips a key
+whose terminal records all finished before its live row published.
 A committed group whose census reads short with an empty holder lost its
 tokens to a path that wrote no release receipt (live, 2026-10-08: the PACT band
 source).  Its receipt still said committed, so the unit was never a newcomer
-again and no pass restored the tokens.  The writer now begins one acquisition
-for the deficit, the filed demand less the holder, bound mover and released
-counts, into the same holder, and the next pass settles it like any begun
-acquisition.  The intent is not recomputed.  No room files
+again and no pass restored the tokens. The writer begins one acquisition
+for the deficit under the same holder. The deficit subtracts holder tokens,
+bound mover tokens, shared pins and released counts from the filed demand.
+The next pass settles the acquisition. The intent remains immutable. No room files
 `prelaunch-begin-declined` and waits.  A committed group that is short with
 holder tokens still releases them first, as before, and tops up on the next
 pass.  Only the top-up and the settling of its handle are writer-only; the
@@ -8847,7 +8912,24 @@ receipt; its bytes are already subtracted from `available`) and **in flight**
 release; its bytes are not). The ledger's supply is minted as **writable +
 landed** (`tier_loop.landed_and_in_flight`), and the record announces
 `writable_gib`, `landed_gib`, `in_flight_gib`, `held_gib` and
-`capacity_basis: "zfs available + landed"`.
+`capacity_basis: "zfs available + landed"`, with `landed_bytes`,
+`in_flight_bytes`, `in_flight_unknown_gib`, `landed_rounding_gib`
+(`landed_gib` minus whole GiB in `landed_bytes`) and
+`in_flight_rounding_gib` beside them. The in-flight waste is
+(`in_flight_gib` minus `in_flight_unknown_gib`) minus whole GiB in
+`in_flight_bytes`, clamped at zero. Landed bytes come from complete
+receipts; in-flight bytes come from each holder's sealed plan range
+(`end_bytes - start_bytes` of its leg, read by mover key), never from
+landed bytes, which are zero while a mover copies. A holder no filed
+plan names reports under `in_flight_unknown_gib`, never as waste:
+unknown tokens stay in the `in_flight_gib` admission deduction but
+leave the waste number. Landed rounding costs no free capacity: the
+same tokens it holds it also adds to the supply, so free stays
+`floor(available / GiB)` minus in-flight tokens.
+
+The runtime publisher includes `stage_rounding.py` in both tool layouts.
+The tier role can report these fields from the published generation without a source checkout.
+CPU tests start each published tier command from an isolated consumer directory.
 
 Both simpler formulas failed on `prismabuild-stage:dl380g10` on 2026-09-18.
 `available` alone counted every landed GiB twice -- free fell as
@@ -12737,6 +12819,122 @@ wait yet: the owner's barrier and window waits must call
 `declare_export_wait` with their outstanding export keys and
 `clear_export_wait` when they end (owed on the PrismaQuant side).
 
+### A coordinator's wait on queued children is not quiet (#1666)
+
+The D44 coordinator needs about 396,000 s. No loop grants that, and the
+progress contract removes the total limit only while a committed count
+advances. The coordinator is itself an executing action while its native
+children wait in the queue behind priority queues. That wait has no finite
+bound, but the worker clamps each phase's stall allowance at the loop
+ceiling (3,600 s on dl380g10). Any finite allowance ends the coordinator as
+`no_progress` during a long queue wait, although nothing has stalled.
+
+**The declaration.** The coordinator's submission declares the batch it
+awaits as a sealed value: the parent key, the plan key, and the
+controller-state directory whose accepted members name the awaited
+children (`progress_awaited_batch`,
+`prismabuild.progress_awaited_batch.v1`,
+`pbrun --awaited-batch PARENT:PLAN:STATE`). It is valid only with progress
+phases on pool transport. A sealed declaration without progress, or on the
+SLURM lane, is refused at submit; a sealed request whose keys do not read
+is refused at seal. A coordinator that declares an awaited batch requires
+the `progress-queued-child-v1` worker tag (`core.QUEUED_CHILD_TAG`): a
+worker without it cannot claim the row, so an older loop never ends a
+valid queue wait as `no_progress`. No seal or identity wall is added
+(D32), and the scientific and native limits stay unchanged.
+
+**The verdict.** The worker samples the awaited set on the heartbeat
+cadence and judges each interval since the last look. It credits an
+eligible interval through the same mark as every other exemption
+(`ProgressWatch._credit`), from the prior sample's monotonic start, so
+an interval is credited once. The credit covers an interval of quiet
+only when it verifies exact membership: every counted child's sealed
+request names that parent and plan under `params.logical_batch`, its
+ordinal equals its position in the stored publication's
+`child_action_keys`, and its task set equals the stored plan's partition
+there. A child with other keys, with no `logical_batch`, with a foreign
+ordinal or task set, or with an unreadable sealed request earns none. A
+first sighting is a baseline and earns no credit; a child live at both
+ends of the interval is carried and credits only that interval's span.
+A replacement child is a new baseline.
+A blocked interval earns nothing and receives no later credit.
+A child that ends keeps the credit its verified intervals earned.
+The `no_progress` rung judges only the interval since the last sample.
+The credit uses the shared `_credit` arithmetic and adds no threshold.
+
+Both endpoints must have valid custody and no unresolved missing member.
+Recovery establishes a new valid sample but grants no credit across the refused endpoint.
+The next fully eligible interval can receive credit.
+
+**The awaited set.** The controller's accepted members define the SDK-confirmed admitted or attached set.
+The worker uses the closed typed projection `CONTROLLER_CUSTODY_SCHEMA_V1`
+(`prismabuild.d44_controller_custody.v1`) for the fixed `fa37751` routed writer.
+`wave-state.json` requires `waves`.
+Each wave requires exactly `wave` (integer), `closed` (boolean), and `members` (list).
+Each member requires `batch` (nonempty string) and `key` (64-hex action key).
+The member can also have `published_unix` (finite nonnegative number).
+The state accepts these optional fields:
+
+| Field | Type |
+| --- | --- |
+| `pending_submission` | An object with exactly `batch` (nonempty string) and `key` (64-hex action key) |
+| `last_completion` | An object from the native completion reader |
+| `wait_reason` | A string |
+| `last_disk_check` | An object with exactly `action_key` (64-hex) and `evidence` (an object from the disk checker) |
+| `disk_checks` | A list of `last_disk_check` objects |
+
+These fields are diagnostic metadata or intent, not admission or progress proof.
+Their types come from `next_wave.py` at `fa3775151f77dc713fd78882daf6e147ab471243`.
+Unknown fields refuse the whole read and appear by name in the progress observation.
+The projection version resides in PrismaBuild; the controller files need no new schema field.
+`sub-keys.txt` requires one `<batch> <key>` pair per complete line.
+The reader checks the union of both files for conflicts.
+A key in only one file is a candidate and earns no credit.
+Two batches for one key, or two keys for one batch, refuse the whole read.
+Only matching records in both files confirm a member.
+An accepted member that becomes a candidate retains custody but earns no credit.
+Every confirmed member is validated
+against the stored plan and publication read from the coordinator's CAS
+through the native validators. A missing or unreadable stored plan or
+publication refuses the credit. A child that is only prepared or in
+`pending_submission` earns no credit: that records intent only and
+proves no queue admission. A stored child request, or membership in the
+plan, does not prove queued work either. An accepted key stays in the
+set across unreadable documents, unreadable sealed requests and worker
+restarts, until the controller's own state stops naming it; queue rows
+never add or drop a member. While a member stays missing the verdict
+carries it and refuses the credit, so a live sibling cannot cover for
+it. With no awaited child ready or claimed (all terminal), or an
+awaited child whose record is missing or unreadable and has no verified
+durable CAS result, the coordinator ends `no_progress` at its allowance.
+A missing queue record with a verified durable result is treated as
+durable, not as missing. Cleanup tombstones and late-finish leaves keep
+their owner-defined custody and are neither credited nor released. A
+claimed child that exceeds its own ceiling or stalls is ended as before.
+The credit moves only the coordinator's deadline and changes no child's
+deadline.
+
+**Records.** The progress observation carries `queued_child_wait_exempt_s`
+and `queued_child_wait`: every awaited child with its verified state,
+ordinal and membership keys. A `no_progress` ending's `stall.credited_s`
+carries `queued_child_wait`.
+
+**The reporter.** A reporter runs beside the coordinator (`prismabuild.durable_child_reporter`).
+It reports one unit per distinct child after the native CAS verifies the receipt, result blob digest, and exact manifest membership.
+The parent and plan must match.
+The sealed ordinal must equal the publication slot.
+The sealed task set must equal the plan partition.
+The manifest must answer exactly that task set.
+
+The reporter requires `controller_state` and reads the same closed custody projection.
+Prepared children, pending intent, and single-file candidates count zero, even with a verified durable result.
+The reporter does not require a queue record for a confirmed durable child.
+A child with several tasks still counts one unit.
+Children already durable at start are a verified baseline and count zero.
+
+A non-verifying child, queue waits, admission, logs, and heartbeats count zero.
+The reporter reports through `prismabuild.progress.commit` only.
+
 ### Every leg has a row, and a blocked reader moves its horizon (#1018)
 
 Until #1018 the landing record listed an unpublished leg only inside its
@@ -13756,6 +13954,29 @@ the output funding record first. For a key it funds on this tier:
   keeping it is not a cache (#598).
 - **Unknown** otherwise, and kept. An absent producer is unknown, not dead: no
   outcome record is not an ending (#798).
+
+**A never-started output intent has a separate rollback (#1555).**
+The tier cycle scans output funding records on every pass.
+It takes the mover's transition lock before each fresh safety check.
+The producer attempt must be dead, and the mover must be withdrawn, not ready or claimed.
+The bound prewrite paths must all be absent.
+Unreadable evidence retains the reservation.
+The pool's existing nonexecution proof also refuses committed batches, terminals, staged bytes, and live leases.
+
+The token files and the funding record are separate stores.
+The cycle releases tokens first through `release_tier_holder`.
+It checks the holder with `held_names_visible`, which reports read faults instead of an empty holder.
+Only then does `_release_never_started_funding_locked` mark a `transferring` record as `released`.
+A release error or a partial release leaves the marker unchanged.
+A fault after token release leaves an empty holder with a `transferring` marker.
+The next pass repeats the safety checks and completes the rollback.
+
+A previous `released` marker with held tokens needs the same proof before token release.
+The owner census retains that intent until its holder is empty.
+This preserves the prewrite record that supplies the absence proof through release faults.
+An absent or unreadable prewrite record still refuses repair.
+Complete ranges and partial produced outputs keep their existing charge rules.
+This repair adds no seal, identity barrier, or admission policy.
 
 The same question fixes the opposite exposure. A completed produced mover's
 receipt names its batch namespace, not a queue action, and its fragment is in
@@ -16749,18 +16970,24 @@ exact versioned object, never silently upgrading a legacy naming array:
 ```
 
 Every pair is sealed and charged through the existing `spool_gb` host ledger.
-The bounded parser uses the naming limits (16 KiB, 64 entries), rejects unknown
-fields, duplicate selections and overlapping ephemeral/persistent roots, and
-never infers a lifetime from a variable name. ROOT/MAX is a reservation, not a
-filesystem quota. Persistent entries convey no directory/deletion identity;
-PB neither creates nor traverses their paths. Ordinary persistent Triton and
-Inductor caches therefore remain producer-owned and must be separately bounded.
+The builder and parser allow 64 entries.
+The builder limits compact canonical selection bytes to 16 KiB.
+The pool limits raw UTF-8 input bytes to 16 KiB, including whitespace.
+Use `json.dumps(selection, sort_keys=True, separators=(",", ":"))` for the sealed input.
+Other JSON encodings can exceed the raw input limit.
+Both paths reject unknown fields and duplicate selections.
+
+The pool also rejects overlapping ephemeral/persistent roots and never infers a lifetime from a variable name.
+ROOT/MAX is a reservation, not a filesystem quota.
+Persistent entries convey no directory/deletion identity; PB neither creates nor traverses their paths.
+Persistent Triton and Inductor caches remain producer-owned and need separate write bounds.
 
 Pool publication derives the `scratch-lifetime-v1` worker requirement from
 nonempty versioned intent and refuses inadequate sealed scratch funding. Old
 workers do not offer it. The source worker loop offers this code capability;
 this is not evidence of a deployed runtime generation or PQ workload acceptance.
-SDK4 exports, signatures, legacy arrays and SDK `CAPABILITIES` remain unchanged.
+The approved SDK6 adds the capability tag and the selection builder.
+Other exports, signatures and legacy arrays remain unchanged.
 
 `PoolQueue._record_scratch_lifetimes` uses the existing transition lock and
 contained prelaunch owner. It files `prismabuild.scratch_lifetime_record.v1` in
@@ -16814,17 +17041,73 @@ record; retry shaping strips it.
 
 File fsync and atomic record publication use the existing process-crash storage
 contract, not new NFS/server power-loss qualification (DUR-01). CPU tempdir fault
-fixtures qualify only the source behavior. Deployment, real worker-crash/cross-
-host recovery, real PQ Stage A/B sizing and persistent-cache bounds remain owed;
-no live scratch, model bytes, serving gate or GPU workload is changed here.
+fixtures qualify only the source behavior. The deployment record below covers
+normal, failed, descendant-SIGKILL and launcher-SIGKILL cleanup on one live
+worker; worker-process loss, reboot/cross-host recovery, fault-injected retry,
+real PQ Stage A/B sizing and persistent-cache bounds remain owed. No model
+bytes, serving gate or GPU workload is changed here.
 
 Final source-only security review repaired exact tombstone and widowed-lease
 ownership recovery. The changed-source integrated campaign passed711 distinct
 tests across34 files with0 skips; all20 PB-planned shards and the four-file
 compile have authenticated SDK4/Core receipts and raw snapshot bindings.
 See `evidence/issue1360_scratch_final_source_acceptance_2026-10-03.json`.
-This completes the source review gate only; #1360 and the deployment/crash/PQ
-workload obligations above remain open.
+That record completes the source review gate only.
+
+Deployment evidence (2026-10-09): six admitted CPU-only lifetime actions ran
+on published generation `c8daa1be416c-1791512870-55b0e8c72f6b` (commit
+`c8daa1be416cd4d7fe8a8e55c49924ab33c4de39`, SDK5 pool code): normal, failed,
+SIGKILLed-descendant, symlink-guard, launcher-victim (returncode -9) and
+launcher-killer scenarios on sparky. Each row carried sealed 1-GiB
+TEMP/CACHE pairs (`spool_gb` 2) and the pool derived the
+`scratch-lifetime-v1` placement tag. Every terminal record shows a complete
+registration with both entries cleaned. Follow-up actions on the same host
+prove each ephemeral leaf absent, the declared roots intact, the persistent
+markers intact, and the symlink guard target intact without being followed.
+The victim's export verdict shows a stopped, empty, settled scope. The
+harness is `tools/fleet/qualify_scratch_lifetime.py`; it reads only its own
+claim and leaf. See
+`evidence/issue1360_scratch_lifetime_deployment_2026-10-09.json`. Worker loss
+with successor retry, reboot/cross-host recovery, injected cleanup/record
+faults with capacity retention, and PQ sizing/GPU acceptance remain open.
+
+Keep #1360 open.
+The evidence does not establish worker-loss recovery or durable cleanup retry on a published runtime.
+The historical launcher qualifier used numeric PIDs after a delay.
+Its observed cleanup remains historical evidence, not proof of safe process signals.
+The corrected qualifier verifies start ticks and command arguments around `pidfd_open`.
+It uses `pidfd_send_signal` and closes every handle.
+
+Unreadable or changed identities refuse the operation before any signal.
+The admitted CPU smoke checks only an owned inert launcher, not loss of a live fleet worker.
+The x86 offer observed on 2026-10-09 includes `scratch-lifetime-v1` but no `spool_gb`.
+Do not substitute synthetic capacity or a Spark tag for a measured x86 scratch offer.
+A supervisor must supply the measured scratch offer.
+The CEO permits only isolated x86 qualification; no live worker service fault is authorized.
+No runtime publication or worker service restart occurred.
+
+The admitted x86 probe `ee950a85ee9d` used published generation `c8daa1be416c-1791512870-55b0e8c72f6b`.
+It observed immutable creation time on `/tmp`, but the lifetime and spool guards refused its `tmpfs` filesystem.
+The supervisor also refused a proposed `/tmp` disk offer.
+The roster has no `local_disk` or `--spool-gb` for dl380g10.
+This is a separate deployment prerequisite, not a missing finalizer.
+
+Provide a qualified disk-backed mount beneath `/tmp` through an operator-approved provisioning change.
+Measure its capacity through the existing supervisor before an action reserves it.
+Do not add `tmpfs` to the disk policy or reuse the HDD pool to bypass this prerequisite.
+The CEO approved option 1 in decision `dec-1009-090451-62a1`.
+SDK6 must remain additive, and qualification must stay in isolation on x86.
+This decision approves no deployment or closure.
+pb-integrator owns publication.
+The measured scratch prerequisite remains open.
+
+Admitted smoke `b4e28cac15b8` compared SDK6 with the published SDK5 client.
+It preserved all 84 earlier exports, 52 callable signatures, and 26 constants.
+It exercised legacy claim reads, nondestructive scratch paths, and receipt refusals against SDK6 internals.
+The three-file compatibility run passed all 278 collected cases with no skips.
+Its actions are `e1be6ee1e1cc` (171 cases), `28de31f1d4d4` (78 cases) and `385ca2b7db00` (29 cases).
+The evidence record keeps their full keys, receipts and payload digests.
+These checks establish the exercised compatibility, not full consumer or crash-recovery acceptance.
 
 **Still open.**
 
