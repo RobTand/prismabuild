@@ -7379,6 +7379,11 @@ class PoolQueue:
             if role is not None:
                 item[role.role] = True
                 item[movement_actions.ROLE_SCRIPT_FIELD] = role.script
+            else:
+                retained = movement_actions.retained_pre_copy_candidate(
+                    sealed_request, demand, residency=residency_block)
+                if retained is not None:
+                    item[movement_actions.RETAINED_SCRIPT_FIELD] = retained
         if declared_requirements is not None:
             # The claim-relevant projection of the sealed params (#1495):
             # what a claim gate reads, no more -- the full capability
@@ -22093,6 +22098,9 @@ class PoolQueue:
                                     now=reservation_now, held=reservation_held,
                                     capacity=reservation_capacity, exempt=role_exempt,
                                     authority=movement_authority())
+                            if gang_blocked is not None and "reservation" in gang_blocked and not role_exempt:
+                                if self._retained_pre_copy_exempt(item):
+                                    gang_blocked = None
                             if gang_blocked is not None:
                                 self.record_denial(item, "deferred_for_gang_reservation", {
                                     "withheld_for": gang_blocked["action_key"],
@@ -25646,6 +25654,29 @@ class PoolQueue:
             },
         )
         return self.attempt_path(archived, attempt)
+
+    def _retained_pre_copy_exempt(self, item: Mapping[str, object]) -> bool:
+        """Whether a retained-path mover queued before the copy may run (#1659)."""
+        try:
+            from . import movement_actions
+            if movement_actions.retained_hint_exempt(item):
+                return True
+            cas_root = str(item.get("cas_root"))
+            action_key = str(item.get("action_key"))
+            action = _sealed_action_request(cas_root, action_key, max_bytes=4 * 1024 * 1024)
+            if not isinstance(action, dict):
+                return False
+            demand = item.get("resources")
+            residency = item.get("residency")
+            if not isinstance(demand, dict):
+                return False
+            if residency is not None and not isinstance(residency, dict):
+                return False
+            return movement_actions.retained_pre_copy_exempt(
+                item, action, demand, residency)
+        except (OSError, ValueError, TypeError, KeyError, pb.PrismaBuildError):
+            return False
+
 
     def _gang_member_past_reservation_bound(self, item: Mapping[str, object], *,
                                             authority: bool) -> bool:

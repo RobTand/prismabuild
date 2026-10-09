@@ -124,6 +124,8 @@ def _scan_publications(queue: PoolQueue) -> dict:
     selected: dict[str, dict] = {}
     opportunities: dict[str, dict] = {}
     count = 0
+    ready_versions: set[tuple[str, float]] = set()
+    claimed_versions: set[tuple[str, float]] = set()
     for state in (pool.READY, pool.CLAIMED, "passes"):
         directory = queue.root / state
         try:
@@ -177,9 +179,22 @@ def _scan_publications(queue: PoolQueue) -> dict:
                             # CLAIMED one stays strict too: a running
                             # incumbent the census cannot read is unknown.
                             unorderable.setdefault(key, []).append(record)
+                            try:
+                                ready_versions.add((key, float(record.get("published_unix", math.nan))))
+                            except (TypeError, ValueError):
+                                pass
                             continue
                         raise CensusUnavailable("unreadable publication priority")
                     rows.setdefault(key, []).append(record)
+                    try:
+                        version = (key, float(record.get("published_unix", math.nan)))
+                    except (TypeError, ValueError):
+                        version = None
+                    if version is not None:
+                        if state == pool.CLAIMED and not is_mark:
+                            claimed_versions.add(version)
+                        elif state == pool.READY:
+                            ready_versions.add(version)
                     if state == pool.CLAIMED and not is_mark:
                         # Every claimed action is an incumbent; only a sealed
                         # deadline contributes a finite opportunity (#1419).
@@ -233,7 +248,8 @@ def _scan_publications(queue: PoolQueue) -> dict:
             "opportunities": opportunities, "keys": sorted(set(measurements) | set(selected)),
             "gang_elections": _gang_elections(
                 queue, {key: rows.get(key, []) + unorderable.get(key, [])
-                        for key in rows.keys() | unorderable.keys()}, count)}
+                        for key in rows.keys() | unorderable.keys()}, count,
+                ready_versions=ready_versions, claimed_versions=claimed_versions)}
 
 
 def _member_demand(rows: dict[str, list[dict]], record: dict, key: str) -> dict | None:
@@ -257,7 +273,27 @@ def _member_demand(rows: dict[str, list[dict]], record: dict, key: str) -> dict 
     return None
 
 
-def _gang_elections(queue: PoolQueue, rows: dict[str, list[dict]], count: int) -> dict:
+def _elected_member_state(record: dict, key: str, *, ready_versions: set, claimed_versions: set) -> str:
+    """Whether the elected member is pending, running, or terminal (#1659)."""
+    published = None
+    for member in record.get("members", []):
+        if isinstance(member, dict) and member.get("action_key") == key:
+            try:
+                published = float(member.get("published_unix", math.nan))
+            except (TypeError, ValueError):
+                published = None
+            break
+    if published is None or not math.isfinite(published):
+        return "terminal"
+    if (key, published) in claimed_versions:
+        return "claimed"
+    if (key, published) in ready_versions:
+        return "ready"
+    return "terminal"
+
+
+def _gang_elections(queue: PoolQueue, rows: dict[str, list[dict]], count: int, *,
+                    ready_versions: set | None = None, claimed_versions: set | None = None) -> dict:
     """Live gang host elections (#1517), read in the same bounded child.
 
     A gang election fences its host while any member row of a gang without a
@@ -274,6 +310,8 @@ def _gang_elections(queue: PoolQueue, rows: dict[str, list[dict]], count: int) -
     except FileNotFoundError:
         return {}  # gang admission was never used on this pool
     found: dict[str, dict] = {}
+    ready = ready_versions if ready_versions is not None else set()
+    claimed = claimed_versions if claimed_versions is not None else set()
     try:
         with entries:
             for entry in entries:
@@ -296,7 +334,9 @@ def _gang_elections(queue: PoolQueue, rows: dict[str, list[dict]], count: int) -
                     found[election["action_key"]] = {
                         "group": group, "index": index, "action_key": election["action_key"],
                         "host": election["host"], "priority": election["priority"], "rank": rank,
-                        "demand": _member_demand(rows, record, election["action_key"])}
+                        "demand": _member_demand(rows, record, election["action_key"]),
+                        "member_state": _elected_member_state(
+                            record, election["action_key"], ready_versions=ready, claimed_versions=claimed)}
     except _gang.GangContractError as exc:
         raise CensusUnavailable(str(exc)) from exc
     return found
@@ -553,6 +593,9 @@ def reserves_after(first_published: object, now: float, *, authority: bool) -> b
 
 def _gang_reserves(chosen: dict, now: float, authority: bool) -> bool:
     """Whether the gang behind election ``chosen`` reserves its host (:func:`reserves_after`)."""
+    state = chosen.get("member_state", "ready")
+    if state not in ("ready", None):
+        return False
     rank = chosen.get("rank")
     return reserves_after(rank[1] if isinstance(rank, list) and len(rank) == 3 else None, now,
                           authority=authority)

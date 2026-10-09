@@ -715,6 +715,29 @@ def _seal_generation(root: Path) -> None:
             path.chmod(PUBLISHED_FILE_MODE)
     root.chmod(PUBLISHED_DIRECTORY_MODE)
 
+def _sign_movement_approval(generation: Path) -> None:
+    """Write the movement-role publisher approval sibling (#1659).
+
+    Best effort: without the publisher's host-local signing secret there is
+    no approval, enrolled hosts publish no protected copy, and the fleet keeps
+    the behaviour it had before roles existed.  A store writer without the
+    secret cannot forge it for tampered bytes.
+    """
+    try:
+        import hashlib as _hashlib
+        import hmac as _hmac
+        key_path = Path.home() / ".config" / "prismabuild" / "movement-approval.key"
+        secret = key_path.read_text(encoding="utf-8").strip()
+        if not __import__("re").fullmatch(r"[0-9a-f]{64}", secret):
+            return
+        raw = (generation / "RUNTIME_VERSION.json").read_bytes()
+        digest = _hashlib.sha256(raw).hexdigest()
+        tag = _hmac.new(bytes.fromhex(secret), digest.encode("utf-8"), _hashlib.sha256).hexdigest()
+        sibling = generation.parent / f"{generation.name}.approval"
+        sibling.write_text(tag + "\n", encoding="utf-8")
+    except (OSError, ValueError):
+        return
+
 
 def _unseal_tree(root: Path) -> None:
     """Undo ``_seal_generation`` on a tree that is still private to us."""
@@ -2135,6 +2158,7 @@ def _run_publication(args) -> int:
         _fsync_directory(stage)
         os.replace(stage, generation)
         _fsync_directory(store)
+        _sign_movement_approval(generation)
         if args.stage_only:
             print(json.dumps({"state": "staged", "generation": generation_name,
                               "path": str(generation), "activated": False,

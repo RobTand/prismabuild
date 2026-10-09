@@ -281,6 +281,9 @@ def test_a_box_announces_its_protected_tool_root_only_when_it_holds_the_copy(
 
 # --- the root unit: publication without a person -----------------------------------
 
+TEST_APPROVAL_SECRET = "ab" * 32
+
+
 @pytest.fixture
 def enrolled(tmp_path, monkeypatch, publication_store):
     """The enrolled store, its live pointer and the root unit's settings."""
@@ -289,6 +292,10 @@ def enrolled(tmp_path, monkeypatch, publication_store):
     pointer.symlink_to(source)
     config = {"runtime": str(pointer), "generation_store": str(source.parent),
               "status": str(tmp_path / "state" / "status.json")}
+    monkeypatch.setattr(publication, "_read_approval_key",
+                        lambda: bytes.fromhex(TEST_APPROVAL_SECRET))
+    tag = publication.approval_hmac(digest(source), bytes.fromhex(TEST_APPROVAL_SECRET))
+    (source.parent / f"{source.name}{publication.APPROVAL_SUFFIX}").write_text(tag + "\n")
     return source, pointer, config
 
 
@@ -313,6 +320,8 @@ def test_a_new_live_generation_is_published_without_a_person_and_the_old_copy_st
     source, pointer, config = enrolled
     newer = retained_generation(source.parent, "d" * 12 + "-1791400000-" + "e" * 12,
                                 commit="d" * 40)
+    tag = publication.approval_hmac(digest(newer), bytes.fromhex(TEST_APPROVAL_SECRET))
+    (newer.parent / f"{newer.name}{publication.APPROVAL_SUFFIX}").write_text(tag + "\n")
     with as_root(monkeypatch):
         assert publication.converge(config)["generation"] == source.name
         pointer.unlink()
@@ -321,6 +330,33 @@ def test_a_new_live_generation_is_published_without_a_person_and_the_old_copy_st
     assert (result["state"], result["generation"]) == ("published", newer.name)
     assert sorted(entry.name for entry in publication_store.iterdir() if not entry.name.startswith(".")) == \
         sorted([source.name, newer.name])
+
+def test_the_root_unit_refuses_a_live_generation_without_a_publisher_approval(
+        enrolled, monkeypatch, publication_store):
+    """Review fd78197 finding 3: a store writer cannot approve its own bytes."""
+    source, pointer, config = enrolled
+    (source.parent / f"{source.name}{publication.APPROVAL_SUFFIX}").unlink()
+    with as_root(monkeypatch):
+        result = publication.converge(config)
+    assert result["state"] == "error" and "approval" in result["error"], result
+    assert not (publication_store / source.name).exists()
+
+
+def test_the_root_unit_refuses_tampered_bytes_with_an_old_approval(
+        enrolled, monkeypatch, publication_store):
+    """An approval binds the receipt digest: changed bytes get no copy."""
+    from movement_publication_support import unseal as _unseal
+    source, pointer, config = enrolled
+    with as_root(monkeypatch):
+        assert publication.converge(config)["state"] == "published"
+    _unseal(source.parent)
+    receipt = source / "RUNTIME_VERSION.json"
+    receipt.chmod(0o644)
+    receipt.write_text(receipt.read_text().replace("c" * 40, "9" * 40))
+    receipt.chmod(0o444)
+    with as_root(monkeypatch):
+        result = publication.converge(config)
+    assert result["state"] == "error", result
 
 
 @pytest.mark.parametrize("fault", ["outside-the-store", "not-a-generation", "no-pointer", "differing-copy"])

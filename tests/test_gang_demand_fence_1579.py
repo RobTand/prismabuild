@@ -62,6 +62,24 @@ def test_a_large_cpu_row_is_held_by_the_memory_the_member_needs():
     assert held is not None and held["reservation"] == {"mem_gb": 44}
 
 
+
+def test_a_running_member_reserves_nothing():
+    """A CLAIMED member already holds its demand in the ledger (#1659)."""
+    census = _census()
+    for election in census["gang_elections"].values():
+        election["member_state"] = "claimed"
+    assert _blocked(_row(resources={"cpu": 1, "mem_gb": 1}), census=census) is None
+    assert reservation.reservation_priority_on(census, host="sparky", now=OLD, authority=True) is None
+
+
+def test_a_terminal_member_reserves_nothing_not_the_whole_host():
+    """A finished member holds nothing: no whole-host reservation (#1659)."""
+    census = _census(demand=None)
+    for election in census["gang_elections"].values():
+        election["member_state"] = "terminal"
+    assert _blocked(_row(resources={"cpu": 1, "mem_gb": 1}), census=census) is None
+    assert reservation.reservation_priority_on(census, host="sparky", now=OLD, authority=True) is None
+
 def test_a_small_row_that_fits_beside_the_member_is_admitted():
     assert _blocked(_row(), held={"cpu": 2, "mem_gb": 10}) is None
 

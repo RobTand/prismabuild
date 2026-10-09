@@ -3490,31 +3490,40 @@ work, so a receipt written there proves integrity and not authority.
 
 **Enrollment is one step per host, once.** There is no root step per generation and no
 person in the publication loop. An administrator runs this on each fleet host that
-claims work, with the host's authorized root administration method:
+claims work, with the host's authorized root administration method. Generate one
+64-hex secret once and keep it: the publisher signs with it, every host verifies with it.
 
 ```bash
+python3 -c "import secrets; print(secrets.token_hex(32))" > /tmp/movement-approval.key
+chmod 0600 /tmp/movement-approval.key
+# On the publisher host, as the publishing user (host-local, never shared):
+mkdir -p ~/.config/prismabuild
+cp /tmp/movement-approval.key ~/.config/prismabuild/movement-approval.key
+chmod 0600 ~/.config/prismabuild/movement-approval.key
 pb_enrollment_dir=$(mktemp -d /tmp/pb-movement-enrollment.XXXXXX)
 cp /mnt/shared/prismabuild-fleet/repo/tools/fleet/install_movement_publisher.sh \
    /mnt/shared/prismabuild-fleet/repo/src/prismabuild/runtime_publication.py "$pb_enrollment_dir/"
-sudo bash "$pb_enrollment_dir/install_movement_publisher.sh"
+sudo bash "$pb_enrollment_dir/install_movement_publisher.sh" --approval-key-file /tmp/movement-approval.key
 ```
 
 Stage both files on local storage as the publishing user, so NFS root squash stays on.
 The installer puts `runtime_publication.py` under the root-owned `/opt/prismabuild`,
 writes `/etc/prismabuild/movement-publish.json` (the live runtime pointer, the
-generation store and the status file) and enables `prismabuild-movement-publish.timer`.
+generation store and the status file), writes the verification secret root-only
+(`/etc/prismabuild/movement-approval.key`, 0400) and enables `prismabuild-movement-publish.timer`.
 It refuses an install under an ancestor that has no root custody.
 
 **What the timer does.** Once a minute, `runtime_publication.py` reads the live runtime
-pointer. When the generation it names has no copy on this host, the unit copies every
-member of the generation's receipt, byte for byte and without executing any of it, into
-`/opt/prismabuild/movement-generations/<generation>`. It checks each member against the
-receipt, writes `MOVEMENT_PUBLICATION.json`, seals the copy and renames it into place.
-Copies are append-only. Each new live generation therefore gets its copy within about a
-minute of the pointer moving, with no one present. This is the delegation that
-[the client upgrader](client_upgrade.md) already makes: root copies what the store's
-live pointer names. The receipt proves copy consistency, not who published; keep access
-to publish generations with the principals that administer these hosts.
+pointer. When the generation it names has no copy on this host, it first checks the
+publisher approval sibling (`<generation>.approval` in the store, the HMAC of the receipt
+digest). `tools/fleet/publish_runtime.py` writes that sibling automatically after each
+publication from its host-local signing secret. Without a valid approval there is no
+copy. It then copies every member of the generation's receipt, byte for byte and without
+executing any of it, into `/opt/prismabuild/movement-generations/<generation>`. It checks
+each member against the receipt, writes `MOVEMENT_PUBLICATION.json` (with `published_unix`),
+seals the copy and renames it into place. Copies are append-only. Each approved live
+generation therefore gets its copy within about a minute of the pointer moving, with no
+one present. A store writer without the secret cannot approve its own bytes.
 
 **Check a host.**
 

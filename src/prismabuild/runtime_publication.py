@@ -28,6 +28,7 @@ import fcntl
 import functools
 import hashlib
 import json
+import math
 import os
 from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
@@ -45,6 +46,13 @@ RUNTIME_SCHEMA = "prismaquant.prismabuild.runtime_version.v1"
 STATUS_SCHEMA = "prismabuild.movement-publication-status.v1"
 #: The enrolled host's root-owned settings (written once by the installer).
 DEFAULT_CONFIG = Path("/etc/prismabuild/movement-publish.json")
+#: The publisher approval that binds a generation's bytes to its publisher
+#: (#1659): a sibling ``<generation>.approval`` file in the enrolled store
+#: holds the HMAC of the receipt digest.  Without a valid approval the timer
+#: publishes nothing (fallback to main, never deadlock).
+APPROVAL_SUFFIX = ".approval"
+#: Where the enrolled host holds the verification secret (root-only, 0400).
+APPROVAL_KEY_PATH = Path("/etc/prismabuild/movement-approval.key")
 #: The movement tool every tool root carries; its copy stands for the root.
 PROBE_TOOL = "stage_release.py"
 _DIGEST = re.compile(r"[0-9a-f]{64}")
@@ -201,6 +209,7 @@ def publish_generation(source: Path, *, receipt_sha256: str) -> Path:
             (stage / PUBLICATION_RECORD).write_text(json.dumps({
                 "schema": PUBLICATION_SCHEMA, "generation": source.name,
                 "receipt_sha256": receipt_sha256,
+                "published_unix": time.time(),
             }, sort_keys=True) + "\n", encoding="utf-8")
             for entry in stage.rglob("*"):
                 if entry.is_file():
@@ -226,6 +235,62 @@ def publish_generation(source: Path, *, receipt_sha256: str) -> Path:
         finally:
             if stage.exists():
                 _sweep_staging(store)
+
+
+def _read_approval_key() -> bytes:
+    """The verification secret from its root-only file (#1659)."""
+    import hmac as _hmac_mod
+    path = APPROVAL_KEY_PATH
+    if not _protected_path(path):
+        raise PermissionError(f"{path} has no root custody")
+    info = path.stat()
+    if info.st_uid != 0 or info.st_mode & 0o077:
+        raise PermissionError(f"{path} must be root-owned 0400")
+    raw = _regular_bytes(path).decode("utf-8").strip()
+    if _DIGEST.fullmatch(raw) is None:
+        raise ValueError("movement approval key is not 64 hex")
+    return bytes.fromhex(raw)
+
+
+def approval_hmac(receipt_sha256: str, key: bytes) -> str:
+    """The approval tag for ``receipt_sha256`` under ``key`` (#1659)."""
+    import hmac as _hmac_mod
+    return _hmac_mod.new(key, receipt_sha256.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def _valid_approval(store: Path, generation: str, digest: str) -> bool:
+    """Whether the enrolled store holds a valid publisher approval (#1659)."""
+    import hmac as _hmac_mod
+    try:
+        key = _read_approval_key()
+        sibling = store / f"{generation}{APPROVAL_SUFFIX}"
+        tag = sibling.read_text(encoding="utf-8").strip()
+        if _DIGEST.fullmatch(tag) is None:
+            return False
+        expected = approval_hmac(digest, key)
+        return _hmac_mod.compare_digest(tag, expected)
+    except (OSError, ValueError, TypeError, PermissionError):
+        return False
+
+
+def sign_approval(generation_dir: Path, *, key_path: Path | None = None) -> Path:
+    """Write the publisher approval sibling for ``generation_dir`` (#1659).
+
+    The publisher runs this after publishing a generation, with its host-local
+    signing secret (0600, not shared).  Fleet agents without the secret cannot
+    forge it for tampered bytes.
+    """
+    source = Path(generation_dir).resolve(strict=True)
+    raw = _regular_bytes(source / "RUNTIME_VERSION.json")
+    digest = hashlib.sha256(raw).hexdigest()
+    key_file = key_path if key_path is not None else Path.home() / ".config" / "prismabuild" / "movement-approval.key"
+    secret = key_file.read_text(encoding="utf-8").strip()
+    if _DIGEST.fullmatch(secret) is None:
+        raise ValueError("movement signing key is not 64 hex")
+    tag = approval_hmac(digest, bytes.fromhex(secret))
+    sibling = source.parent / f"{source.name}{APPROVAL_SUFFIX}"
+    sibling.write_text(tag + "\n", encoding="utf-8")
+    return sibling
 
 
 def _write_status(path: Path, record: Mapping[str, object]) -> None:
@@ -261,6 +326,10 @@ def converge(config: Mapping[str, object], *, now: float | None = None) -> dict[
             raise ValueError("the live runtime is not a generation of the enrolled store")
         result["generation"] = live.name
         digest = hashlib.sha256(_regular_bytes(live / "RUNTIME_VERSION.json")).hexdigest()
+        if not _valid_approval(store, live.name, digest):
+            raise PermissionError(
+                "the live generation has no valid publisher approval; "
+                "a store writer cannot approve its own bytes")
         try:
             publish_generation(live, receipt_sha256=digest)
             result["state"] = "published"
@@ -355,6 +424,21 @@ def _published_root(root: Path) -> tuple[dict, str] | None:
             return None
         _ROOTS[key] = (_receipt(raw, root.name), digest)
     return _ROOTS[key]
+
+def protected_published_unix(generation: str) -> float | None:
+    """When the protected copy of ``generation`` was published, else ``None``."""
+    try:
+        record_path = PROTECTED_GENERATION_STORE / generation / PUBLICATION_RECORD
+        if not _protected_path(record_path):
+            return None
+        authority = json.loads(_regular_bytes(record_path))
+        published = authority.get("published_unix")
+        if (isinstance(published, (int, float)) and not isinstance(published, bool)
+                and math.isfinite(published) and published > 0):
+            return float(published)
+        return None
+    except (OSError, ValueError, TypeError):
+        return None
 
 
 def published_member(path: Path) -> Path | None:

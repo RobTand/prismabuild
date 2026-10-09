@@ -68,7 +68,8 @@ def _seal(queue, tmp_path, name, *, script=None, extra_params=None, extra_comman
             {"portability": "portable", "platform_key": None, "host_class": None})
     else:
         tool = tool or _tool(generation, script)
-        command = [python or ma.MOVEMENT_PYTHON, tool, "--pool-root", str(queue.root), *extra_command]
+        command = [python or ma.MOVEMENT_PYTHON, *ma.MOVEMENT_PYTHON_ARGS, tool,
+                   "--pool-root", str(queue.root), *extra_command]
         task_argv = [ma.SEALED_ARGV0, "--noprofile", "--norc", "-c", ma.captured_command(command, name)]
         task_fields, execution_scope = dict(ma.MOVEMENT_TASK), dict(ma.MOVEMENT_EXECUTION_SCOPE)
         sealed_variables = {"variables": dict(ma.movement_environment(command)), "toolchain": {}}
@@ -195,10 +196,8 @@ def test_a_mover_sealed_from_a_protected_tool_root_gets_its_role(gang_fleet, sto
     action = ma.seal_movement_action(
         template, command=[python, egress, "--pool-root", str(queue.root)],
         demand=SMALL, tags=["sparky"], log_name=f"release-{layout}.log")
-    assert action["params"]["command"][1] == str(store / layout / "stage_release.py")
-    cas.publish_action_request(action)
-    _enqueue(queue, clock, action["action_key"], cas, checkout, resources=SMALL)
-    assert _roles(queue, action["action_key"]) == ["returns_capacity"]
+    assert action["params"]["command"][1:1 + len(ma.MOVEMENT_PYTHON_ARGS)] == list(ma.MOVEMENT_PYTHON_ARGS)
+    assert action["params"]["command"][1 + len(ma.MOVEMENT_PYTHON_ARGS)] == str(store / layout / "stage_release.py")
 
 
 def test_the_sealing_host_having_the_copy_does_not_change_the_path_the_executing_host_runs(
@@ -218,7 +217,7 @@ def test_the_sealing_host_having_the_copy_does_not_change_the_path_the_executing
     action = ma.seal_movement_action(
         template, command=[python, egress, "--pool-root", str(queue.root)],
         demand=SMALL, tags=["sparky"], log_name="partial.log")
-    assert action["params"]["command"][1] == str(announced / "stage_release.py")
+    assert action["params"]["command"][1 + len(ma.MOVEMENT_PYTHON_ARGS)] == str(announced / "stage_release.py")
     assert action["task"]["argv"][-1].count(str(store)) == 0
     cas.publish_action_request(action)
     _enqueue(queue, clock, action["action_key"], cas, checkout, resources=SMALL)
@@ -781,3 +780,82 @@ def test_a_measurement_class_gang_member_is_not_blocked_by_its_own_reservation(g
                 started.add(claimed)
     assert started == {first, second}, (started, denial(second, "sparky"), denial(other, "sparky"))
     assert queue.item_path(pool.READY, other).exists()
+
+
+def test_a_running_member_reserves_nothing_more_than_its_ledger_hold(gang_fleet, tmp_path):
+    """Review fd78197 finding 1: a running member already holds its demand."""
+    queue, clock, publish, finish, gclaim, denial, members = gang_fleet
+    incumbents, group, (first, second) = _wait_gang(publish, gclaim, members, clock, "running")
+    clock[0] += reservation.GANG_RESERVE_AFTER_S + 1
+    for host in HOSTS:
+        finish(incumbents[host], host)
+    started = set()
+    for _ in range(3):
+        for host in HOSTS:
+            claimed = gclaim(host)
+            if claimed is not None:
+                started.add(claimed)
+    assert started == {first, second}, (started, denial(first, "sparklina"), denial(second, "sparky"))
+    small = _publish_sealed(queue, tmp_path, clock, "small-beside-running", script=None, resources=SMALL)
+    assert gclaim("sparky") == small, denial(small, "sparky")
+
+
+def test_a_finished_member_with_a_live_sibling_reserves_nothing(gang_fleet, tmp_path):
+    """Review fd78197 finding 1: a terminal member holds nothing, not the whole host."""
+    queue, clock, publish, finish, gclaim, denial, members = gang_fleet
+    incumbents, group, (first, second) = _wait_gang(publish, gclaim, members, clock, "finished")
+    clock[0] += reservation.GANG_RESERVE_AFTER_S + 1
+    for host in HOSTS:
+        finish(incumbents[host], host)
+    started = set()
+    for _ in range(3):
+        for host in HOSTS:
+            claimed = gclaim(host)
+            if claimed is not None:
+                started.add(claimed)
+    assert started == {first, second}, (started, denial(first, "sparklina"), denial(second, "sparky"))
+    finish(first, "sparklina")
+    assert _gang.elections(queue, group, 2)[0]["host"] == "sparklina"
+    idle = _publish_sealed(queue, tmp_path, clock, "idle-host-row", script=None, resources=SMALL,
+                           tags=("sparklina",))
+
+
+def test_a_retained_mover_queued_before_the_copy_runs_after_it_arrives(
+        gang_fleet, store, retained, monkeypatch, tmp_path):
+    """Review fd78197 finding 2: the copy arrival must not hold the gang's own mover."""
+    from movement_publication_support import approve as _approve, unseal as _unseal
+    queue, clock, publish, finish, gclaim, denial, members = gang_fleet
+    away = store.with_name(store.name + ".away")
+    store.rename(away)
+    mover, cas, checkout, need, first, second = _whole_cpu_gang(
+        gang_fleet, monkeypatch, tmp_path, _tool(retained, "stage_move.py"))
+    _enqueue(queue, clock, mover, cas, checkout, resources=need, residency=RANGE)
+    assert _roles(queue, mover) == []
+    assert queue.item_path(pool.READY, mover).exists()
+    clock[0] += reservation.GANG_RESERVE_AFTER_S + 1
+    _unseal(retained.parent)
+    _approve(retained, monkeypatch)
+    _run_the_mover_and_start_the_gang(gang_fleet, monkeypatch, tmp_path, mover, cas, checkout,
+                                      need, first, second, role=None, published=True)
+
+
+def test_a_protected_tool_without_isolated_python_gets_no_role(gang_fleet, store, tmp_path):
+    """Review fd78197 finding 4: user-site startup code must not reach the tool."""
+    queue, clock, *_ = gang_fleet
+    template, cas, checkout = _template(queue, tmp_path)
+    python, mover, egress = ma.movement_tools(_tier(store / "tools" / "fleet"))
+    action = ma.seal_movement_action(
+        template, command=[python, egress, "--pool-root", str(queue.root)],
+        demand=SMALL, tags=["sparky"], log_name="isolated.log")
+    assert action["params"]["command"][1] == "-I"
+    assert ma.capacity_role(action, SMALL, residency=None) is not None
+    bare = dict(action)
+    bare_command = [python, egress, "--pool-root", str(queue.root)]
+    bare_params = dict(action["params"])
+    bare_params["command"] = bare_command
+    bare["params"] = bare_params
+    bare_task = dict(action["task"])
+    bare_task["argv"] = [ma.SEALED_ARGV0, "--noprofile", "--norc", "-c",
+                         ma.captured_command(bare_command, "isolated.log")]
+    bare["task"] = bare_task
+    assert ma.capacity_role(bare, SMALL, residency=None) is None
