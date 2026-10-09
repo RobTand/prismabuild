@@ -1696,11 +1696,16 @@ under the failed-only retention policy instead of failing in the fixture itself.
 Only `tmp_path` is removed per test. A directory made with `tmp_path_factory.mktemp`,
 and the directory of any failing test, lasts as long as the session's base temporary
 directory. Without `--basetemp` each attempt owns its base temp (#1542):
-`<tmpdir>/pbtest-<action-key12>/<attempt>/pytest`, where `tmpdir` is the
-default `/home/rob/tmp` or the `--tmpdir` directory when one is given. The
-worker removes only that attempt's directory after pytest exits 0, and keeps
-it on a non-zero exit, as the failed-only retention policy does. Expiry of
-kept directories is out of scope. With `--basetemp root` pytest does not
+`<tmpdir>/pb-<mkdtemp suffix>/pytest`, where `tmpdir` is the
+default `/home/rob/tmp` or the `--tmpdir` directory when one is given.
+`mkdtemp` creates each directory exclusively with mode 0700. It retries name
+collisions; it does not truncate an action key or an attempt identity.
+The standard eight-character suffix leaves an 86-byte socket path under
+`/home/rob/tmp`, with `popen-gw0`, a 30-character test name plus its counter,
+and a 12-character file name (#1709).
+The worker removes only that attempt's directory after pytest exits 0.
+It keeps the directory on a non-zero exit, as the failed-only retention policy does.
+Expiry of kept directories is out of scope. With `--basetemp root` pytest does not
 remove the directory at the end of the session: it deletes and recreates
 the root at the start of the next session that uses that path, so a leftover
 root has to be cleaned by whoever sealed it.

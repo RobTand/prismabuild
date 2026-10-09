@@ -2043,6 +2043,14 @@ Surface report names expand `{shard}` or receive `.shard-N` before the final
 suffix. Expanded arguments and GPU budgets enter the ordinary sealed action
 identity through `pbrun`; no second dispatcher or placement policy is added.
 
+Without a sealed `--basetemp`, each shard creates an exclusive attempt directory
+with `tempfile.mkdtemp(prefix="pb-", dir=TMPDIR)` (#1709).
+pytest receives its `pytest` child as the base temp.
+The short name leaves room for xdist worker directories and AF_UNIX sockets.
+No action key or attempt identity is truncated to create this namespace.
+Exit 0 removes only this attempt directory; a nonzero exit retains it.
+The sealed `TMPDIR` and explicit `--basetemp` contracts stay unchanged.
+
 `--pytest-args '["--pbtest-trace"]'` opts into interrupted-shard diagnostics
 (#1455, Refs #1421). The existing outcome controller flushes one
 `pbtest-trace: ` JSON line per test start and completed setup/call/teardown
