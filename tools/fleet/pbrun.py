@@ -4241,10 +4241,9 @@ def require_progress_scope(*, progress: Mapping[str, object] | None,
 
 
 def require_lifetime_scope(*, lifetime_s: float | None, transport: str) -> None:
-    """Refuse the lifetime clock on a transport that does not support it.
+    """Refuse the lifetime contract on a transport that does not support it.
 
-    The pool worker checks the clock and records component evidence.
-    Unfenced lifecycle operations still return UNKNOWN.
+    The pool worker enforces the contract and records per-phase evidence.
     The SLURM lane does not support this versioned contract.
     """
 
@@ -7401,12 +7400,16 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
                          "here when it would cut this request short) also "
                          "applies. Queue waiting is bounded by --wait-s")
     ap.add_argument("--lifetime-s", type=float, default=None,
-                    help="opt-in sealed absolute deadline from publication "
-                         "(60 s to 7 days). The payload budget retains its credits. "
-                         "The worker checks this separate deadline and records "
-                         "lifecycle evidence. Unfenced components return UNKNOWN. "
-                         "Current operations do not prove bounded resource release "
-                         "and cannot qualify positive timed backfill (#1429)")
+                    help="opt-in sealed lifetime contract (#1429): every phase "
+                         "from admission to resource release ends within this "
+                         f"many seconds of publication ({pb.LIFETIME_MIN_FENCE_S:g} s "
+                         f"to {pb.LIFETIME_MAX_FENCE_S:g} s). The worker stops the "
+                         f"payload {pb.LIFETIME_RELEASE_RESERVE_S:g} s before that "
+                         "deadline, whatever the payload budget has credited, and "
+                         "records per-phase evidence. The payload budget "
+                         "(--timeout-s) is separate and unchanged. A blocked system "
+                         "call is outside the bound; tokens return only on proved "
+                         "settlement, never on a timer")
     ap.add_argument("--progress-phase", "--progress", action="append", default=None,
                     metavar="NAME=SECONDS",
                     help="declare one phase of this action and the quiet it is "

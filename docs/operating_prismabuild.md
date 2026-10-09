@@ -1329,6 +1329,46 @@ execution time is never reset, and waits for the payload still consume the
 remaining budget. This does not detect or discount kernel stalls inside a
 payload or a blocked subprocess wait, and does not bound checkpoint I/O itself.
 
+#### Lifetime contract (`--lifetime-s`)
+
+`--timeout-s` is a payload budget. It starts after checkout and scope setup,
+credits checkpoint waits, and ends before cleanup, so it says nothing about
+when the action's resources come back. `pbrun --lifetime-s N` seals a separate
+contract (`prismabuild.action_lifetime.v1`, 180 s to 7 days, pool transport
+only; SLURM refuses it). The contract changes the action key, and only a box
+that offers the `lifetime-fence-v1` capability claims the action, so a box from
+before the contract never does.
+
+The clock starts at publication, before resource admission, and nothing
+credits it. The deadline is `published + N`. The stop instant is 120 s before
+it. The pool refuses to launch from the stop instant, and an alarm on a thread
+of its own stops the payload there at the latest, even while the supervisor
+waits on shared I/O. Termination, cleanup, scope settlement and the return of
+the host tokens use the last 120 s. The payload budget keeps its own rules and
+credits beside it.
+
+Every attempt files `lifetime_evidence` in its detail
+(`prismabuild.action_lifetime_evidence.v1`). Each of the ten phases records
+the mechanism that bounded it, the instant it ended, its bound and whether it
+counts as enforced. The terminal row adds the release phase. A fence stop reads
+`status: timeout` with `termination_reason: lifetime_fence`. A refused launch
+reads `status: failed` with the same reason, and `expired_phase` names the
+phase that ran out of time. `reservation.attempt_release_audit` returns the
+deadline only when all ten phases are enforced and ended in time.
+
+The same contract is what lets a lower-priority action run on a host that a
+measurement is draining: its bound is the deadline, and it may run only if the
+deadline falls strictly before the measurement's original opportunity. A gang
+member, an action that declares scratch, or a box without the capability reads
+UNKNOWN and waits as before.
+
+Read the limits as well. The bound holds while the kernel, the broker and the
+shared mount answer. A call that never returns, or the death of the worker,
+leaves the attempt holding its tokens until settlement is proved, and its audit
+reads UNKNOWN. No timer releases anything. A retry-safe action that a fence
+stops and that has attempts left returns to `ready`, but the same deadline
+refuses its next claim; submit one attempt, which is the `pbrun` default.
+
 A submission that declares `--progress-phase NAME=SECONDS` (also spelled
 `--progress NAME=SECONDS`, repeatable in the order the work does them) is
 bounded instead by how long it goes without

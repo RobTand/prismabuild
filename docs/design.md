@@ -519,38 +519,90 @@ action key, publication generation, host, priority, election epoch and original
 finite deadline) is ONLY selector-opportunity metadata, never proof that preparation, checkpoint
 credits, cleanup or physical resources finish by then. An unfenced timed
 backfill candidate remains UNKNOWN, including five-second payloads (#1429).
-The opt-in sealed contract uses `params.lifetime` and
-`prismabuild.action_lifetime.v1`. Its duration is 60 seconds to 7 days.
-Publication stamps one absolute deadline, `published_unix + fence_s`,
-before resource admission. The worker never credits or extends this deadline.
-The separate payload budget retains its existing credited waits.
 
-**Target:** every applicable phase must support prospective release before
-this deadline. The phases are admission, checkout, readiness, prelaunch,
-payload, credited waits, termination, cleanup, scope settlement, and resource release.
-An unfenced component returns UNKNOWN. A capability tag proves clock support only.
-It does not prove a release guarantee.
+**Lifetime contract v1 (#1429).** A submitter opts in with `params.lifetime`
+(`prismabuild.action_lifetime.v1`, `pbrun --lifetime-s`, `fence_s` from 180
+seconds to 7 days). The declaration is part of the action key. Only a box that
+offers the `lifetime-fence-v1` capability can claim the action. The tag says
+the box enforces this contract. It does not say that the kernel or the shared
+mount will answer.
 
-**Implemented source:** publication seals and projects the clock.
-Claim verifies the projection against the request and refuses expired deadlines.
-Refusal after reservation commit uses the existing custody-aware rollback.
-Refusal after lease publication also removes the unstarted claim and lease.
-The worker checks the deadline after checkout, before launch, and during payload supervision.
-Its completion records report `enforced: false` for unfenced operations.
-The component records state UNKNOWN and identify each current enforcement gap.
+*Clock.* Publication stamps `deadline_unix = published_unix + fence_s` before
+any resource moves. By the deadline every phase of the attempt has ended and
+the host tokens are back. The stop instant is `deadline_unix - 120 s`. The 120
+seconds are `RELEASE_RESERVE_S`, a constant of contract v1; another reserve is
+another version. Nothing launches from the stop instant, and the worker stops
+the payload there at the latest. Nothing credits, pauses or extends either
+instant. The separate payload budget (`execution_timeout_s`) keeps its credited
+waits and its disclaimers.
 
-Checkout, checkpoint I/O, broker settlement, and ledger I/O can exceed the deadline.
-Finalization still retains resources until settlement evidence permits release.
-An observed phase end does not prove a prospective limit.
-The archive reader verifies the attempt, logs, publication, owner, and scope identity.
-No wall timer returns tokens or promises kernel or NFS reclamation.
+*Phases.* Each phase has one bound and one enforcing mechanism. A phase is
+`enforced` only when the worker filed it under that mechanism and it ended
+before its bound.
 
-**Qualification:** no current candidate proves a finite prospective release bound.
-The timed-backfill gate therefore remains closed for these candidates.
-A verified bound must strictly precede the original opportunity.
-Equality and later bounds refuse; capacity and isolation gates remain unchanged.
-Whole-lifetime enforcement and positive timed-backfill qualification remain owed under #1429.
-These source changes establish no deployment or campaign completion.
+| Phase | Ends before | Enforcing mechanism |
+|---|---|---|
+| admission | stop instant | `claim-gate`: the claim refuses at the stop instant and rolls back an unstarted claim with its reservation |
+| checkout | stop instant | `deadline-bounded-checkout`: each Git call and the link check end before the stop instant; the tree removal ends before the deadline |
+| readiness | stop instant | `launch-gate` |
+| prelaunch | stop instant | `launch-gate`, after the scope exists |
+| payload | deadline | `stop-alarm`: a thread of its own stops the payload at the stop instant, whatever the supervisor's I/O is doing |
+| credited waits | deadline | `absolute-stop-clock`: a credit moves the payload budget and never the stop instant |
+| termination | deadline | `scope-stop`: the broker stops the exact scope, then the process-group ladder follows |
+| cleanup | deadline | `fail-closed-cleanup`: an incomplete cleanup keeps the claim and its tokens |
+| scope settlement | deadline | `exact-scope-proof`: the broker's token-gated export verdict proves the scope stopped and empty |
+| resource release | deadline | `release-after-proof`: the host ledger no longer holds the key |
+
+A run without a scope has no scope to stop or settle. Its termination and
+scope-settlement phases carry no mechanism and read unenforced.
+
+*Evidence and audit.* The worker files `prismabuild.action_lifetime_evidence.v1`
+for each attempt. It holds the clock, the attempt identity (key, publication,
+owner, claim stamp, scope nonce and scope id) and, per phase, `enforced`,
+`mechanism`, `evidence`, `bound_unix` and `ended_unix`. The immutable attempt
+archive keeps the execution and settlement phases beside the original result
+and logs. The terminal row adds the release phase after the ledger return.
+`attempt_release_audit` reads only the exact attempt. It answers the deadline
+only when every phase is enforced under its mechanism and ended before its
+bound. Anything else is UNKNOWN. A live claim, a READY row or a successor never
+answers for an attempt.
+
+*Admission.* `candidate_release_bound` is finite only when the sealed request
+carries the contract, the READY row carries the same clock, the claiming box
+offers the capability, the stop instant is still ahead, and every phase is
+bounded for the candidate's shape. The bound is the deadline. A gang member
+leaves admission unfenced, because it waits on sibling claims. An action that
+declares scratch leaves cleanup unfenced, because scratch removal has no
+deadline. One unfenced phase makes the whole verdict UNKNOWN, and
+`candidate_release_verdict` names the phase. Timed backfill needs the bound
+strictly before the original opportunity. Equality and later bounds refuse. The
+capacity, isolation and measurement gates stay unchanged beside this answer.
+
+*What the bound is not.* The bound holds when the kernel, the broker, the local
+disk and the shared mount answer. A system call that never returns is outside
+it, and so is the death of the worker process. Such an attempt keeps its tokens
+until settlement is proved, its audit reads UNKNOWN, and a delay can still
+reach the measurement. Once the original opportunity has passed, every later
+bound is later than it, so one overrun admits no more backfill. No timer
+returns tokens. The payload stop kills the payload and releases nothing, and it
+does not make kernel or NFS reclamation immediate.
+
+*Retry.* A payload the fence stops ends as a `timeout` attempt with
+`termination_reason: lifetime_fence`. The same deadline refuses a later claim,
+so a retry-safe action with attempts left stays `ready` and no box takes it.
+`pbrun` submits one attempt unless the caller asks for retries.
+
+*Rollout.* **Target:** the contract above. **Implemented source:** publication
+seals and projects the clock. Claim, the launch gates, the stop alarm, the
+bounded checkout, the evidence and the audit enforce it. `finish` completes the
+record from the broker's settlement proof. Custody is unchanged. SM-01
+(containment and a durable attempt terminal before release), INV-01 (one
+release helper for box and tier tokens), ID-02 (a nonce and a scope per
+attempt) and INV-08 (single adoption) keep their requirements, and this change
+waives none of them. **Deployed:** nothing. A source merge alone does not
+establish deployed support (ID-08). Positive timed backfill needs a runtime
+generation whose loops offer the tag, and live qualification on a real box is
+still owed.
 
 Discover potential measurement generations and elected sidecars outside H;
 acquire the sorted transition keys of the measurements **elected for this host**

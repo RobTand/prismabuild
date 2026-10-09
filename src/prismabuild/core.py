@@ -171,12 +171,17 @@ ACTION_RESIDENCY_ENV = (ACTION_KEY_ENV, RESIDENCY_MAP_ENV, QUEUE_ROOT_ENV,
 #: store is answered by a receipt filed under the other bound.
 LIFETIME_PARAM = "lifetime"
 LIFETIME_SCHEMA_V1 = "prismabuild.action_lifetime.v1"
-#: The capability for the lifetime clock and evidence contract.
-#: It does not certify prospective release or physical reclamation.
-#: Old workers cannot read this version and must not claim these actions.
+#: The capability of a box that enforces the lifetime contract v1: the stop
+#: alarm, the deadline-aware checkout and the per-phase evidence.  It is never
+#: a promise of physical reclamation.  Old workers cannot read this version
+#: and must not claim these actions.
 LIFETIME_TAG = "lifetime-fence-v1"
-#: Accepted clock durations. These limits do not certify resource release.
-LIFETIME_MIN_FENCE_S = 60.0
+#: The part of every fence kept for termination, cleanup, scope settlement and
+#: resource release.  The payload is stopped this long before the deadline.
+#: A different reserve is a different contract version.
+LIFETIME_RELEASE_RESERVE_S = 120.0
+#: Accepted fence durations: the reserve plus at least one minute to run in.
+LIFETIME_MIN_FENCE_S = LIFETIME_RELEASE_RESERVE_S + 60.0
 LIFETIME_MAX_FENCE_S = 7 * 24 * 3600.0
 #: The sealed request key that declares the progress contract, and the two
 #: schema names that version it.  ``PROGRESS_PARAM`` is sealed into the action
@@ -8999,6 +9004,7 @@ __all__ = [
     "LIFETIME_PARAM",
     "LIFETIME_SCHEMA_V1",
     "LIFETIME_TAG",
+    "LIFETIME_RELEASE_RESERVE_S",
     "LIFETIME_MIN_FENCE_S",
     "LIFETIME_MAX_FENCE_S",
     "action_lifetime",

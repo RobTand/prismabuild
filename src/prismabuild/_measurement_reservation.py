@@ -807,54 +807,68 @@ def admission_census(queue: PoolQueue, ledger: ResourceLedger, controller):
         yield census
 
 
-def candidate_release_bound(queue: "PoolQueue", item: Mapping[str, object]) -> object:
-    """The candidate's verified prospective release bound, or ``"UNKNOWN"``.
+def candidate_release_verdict(
+    queue: "PoolQueue", item: Mapping[str, object],
+) -> tuple[float | None, dict[str, str | None]]:
+    """The candidate's prospective release bound and the phases behind it (#1429).
 
-    The sealed deadline and tag establish clock support, not bounded release.
-    Every applicable phase also needs prospective enforcement.
-    Current lifecycle operations contain unfenced synchronous calls.
-    These candidates remain UNKNOWN and cannot take an elected host.
-    A finished attempt never supplies enforcement for its successor.
+    Returns ``(bound, support)``.  ``bound`` is the sealed lifetime contract's
+    release deadline, finite only when the opt-in contract is sealed, the
+    READY row's own publication projection agrees with it, the claiming box
+    offers the capability that enforces it, the stop instant is still ahead,
+    and every phase is bounded for this candidate's shape.  ``support`` names
+    each phase and, where one is UNKNOWN, why.  The sealed payload timeout
+    alone is opportunity metadata, never a release bound.
+
+    A finished attempt's filed evidence audits that attempt from the archive;
+    it never becomes a new attempt's guarantee, and a successor is never
+    judged by its predecessor.
     """
 
     from . import lifetime_fence
     from . import pool as pool_mod
+
+    def unknown(reason: str) -> tuple[None, dict[str, str | None]]:
+        return None, {phase: reason for phase in lifetime_fence.PHASES}
+
     try:
         key = str(item.get("action_key") or "")
         cas_root = item.get("cas_root")
         if not key or cas_root is None:
-            return "UNKNOWN"
-        request = Path(str(cas_root)) / "requests" / key[:2] / f"{key}.json"
-        action = core.validate_action(core._decode_strict_json(
-            core._read_regular_file_nofollow(
-                request, where="pool action request",
-                max_bytes=MAX_RECORD_BYTES),
-            where="pool action request"))
-        if action.get("action_key") != key:
-            return "UNKNOWN"
-        fence = core.action_lifetime(action)
-        fence_s = fence.get("fence_s") if fence is not None else None
-        if fence is None or fence_s is None:
-            return "UNKNOWN"
+            return unknown("the candidate names no sealed request")
+        action = pool_mod._sealed_action_request(
+            cas_root, key, max_bytes=MAX_RECORD_BYTES)
+        fence = None if action is None else core.action_lifetime(action)
+        if fence is None:
+            return unknown("the candidate seals no lifetime contract")
         row = pool_mod._read_json(queue.item_path(pool_mod.READY, key))
         if not isinstance(row, Mapping) or row.get("action_key") != key:
-            return "UNKNOWN"
+            return unknown("the candidate is not a READY row")
         if row.get("published_unix") != item.get("published_unix"):
-            return "UNKNOWN"
-        supported = (
-            lifetime_fence.LIFETIME_TAG in (row.get("tags") or [])
-            and row.get("gang") is None
-            and _projected_fence_matches(row, fence_s)
-            and row.get("lifetime_deadline_unix") == lifetime_fence.fence_deadline(
-                published_unix=row.get("published_unix"), fence_s=fence_s))
+            return unknown("the READY row is another publication")
+        if (lifetime_fence.LIFETIME_TAG not in (row.get("tags") or [])
+                or not _projected_fence_matches(row, fence["fence_s"])
+                or row.get("lifetime_deadline_unix") != lifetime_fence.fence_deadline(
+                    published_unix=row.get("published_unix"),
+                    fence_s=fence["fence_s"])):
+            return unknown("the READY row does not carry the sealed clock")
+        variables = action["environment"]["variables"]
+        support = lifetime_fence.components_support(
+            gang=row.get("gang") is not None,
+            scratch=bool(variables.get(local_scratch.DECLARATIONS_ENV)))
         bound = lifetime_fence.prospective_bound(
-            published_unix=row.get("published_unix"), fence_s=fence_s,
-            supported=supported, now_unix=pool_mod._now())
-        if bound is None:
-            return "UNKNOWN"
-        return float(bound)
+            published_unix=row.get("published_unix"), fence_s=fence["fence_s"],
+            components=support, now_unix=pool_mod._now())
+        return bound, support
     except (OSError, ValueError, core.PrismaBuildError, KeyError, TypeError):
-        return "UNKNOWN"
+        return unknown("the candidate's sealed request is unreadable")
+
+
+def candidate_release_bound(queue: "PoolQueue", item: Mapping[str, object]) -> object:
+    """The candidate's prospective release bound, or ``"UNKNOWN"``."""
+
+    bound, _support = candidate_release_verdict(queue, item)
+    return "UNKNOWN" if bound is None else float(bound)
 
 
 def _projected_fence_matches(row: Mapping[str, object], fence_s: object) -> bool:
@@ -875,40 +889,31 @@ def attempt_release_audit(
     """The audited bound of one finished attempt, or ``None`` when unproven.
 
     Read only from the finished record of the exact generation and
-    attempt named: the attempt archive carries the enforced phases
-    plus cleanup and scope settlement, and the terminal row beside
-    the attempt link carries the release record dated after the
-    ledger return. A live claim, a READY row, or a successor's row
-    never answers here. ``None`` renders as ``UNKNOWN``.
+    attempt named: the attempt archive carries the execution phases plus
+    cleanup and scope settlement, and the terminal row beside the attempt
+    link carries the release record dated after the ledger return.  A live
+    claim, a READY row, or a successor's row never answers here.  ``None``
+    renders as ``UNKNOWN``.
     """
 
     from . import lifetime_fence
     try:
-        evidence = _archived_lifetime_evidence(queue, record)
-        if not isinstance(evidence, Mapping):
+        archived = lifetime_fence.AttemptLog.from_record(
+            _archived_lifetime_evidence(queue, record))
+        if archived is None:
             return None
-        terminal = record.get("lifetime_evidence")
-        if isinstance(terminal, Mapping):
-            phases = evidence.get("phases")
-            terminal_phases = terminal.get("phases")
-            release = (
-                terminal_phases.get("resource_release")
-                if isinstance(terminal_phases, Mapping) else None)
-            if (
-                terminal.get("schema") == lifetime_fence.EVIDENCE_SCHEMA_V1
-                and terminal.get("fence_s") == evidence.get("fence_s")
-                and terminal.get("deadline_unix") == evidence.get("deadline_unix")
-                and terminal.get("claim") == evidence.get("claim")
-                and terminal.get("published_unix") == evidence.get("published_unix")
-                and isinstance(phases, Mapping)
-                and isinstance(release, Mapping)
-            ):
-                merged = dict(phases)
-                merged["resource_release"] = release
-                evidence = {**dict(evidence), "phases": merged}
+        terminal = lifetime_fence.AttemptLog.from_record(
+            record.get("lifetime_evidence"))
+        release = None if terminal is None else terminal.phases.get("resource_release")
+        # The terminal row adds only the release phase, and only for the very
+        # attempt the archive describes.
+        if (terminal is not None and release is not None
+                and terminal.clock == archived.clock
+                and terminal.claim == archived.claim):
+            archived.phases["resource_release"] = release
         return lifetime_fence.release_bound(
             published_unix=record.get("published_unix"),
-            fence_s=evidence.get("fence_s"), evidence=evidence)
+            fence_s=archived.clock.fence_s, evidence=archived.as_record())
     except (OSError, ValueError, core.PrismaBuildError, KeyError, TypeError):
         return None
 
@@ -948,9 +953,9 @@ def timed_backfill_permitted(
     """Whether this candidate may backfill before the blocking election.
 
     Returns ``(allowed, candidate_bound)``.  The candidate needs a
-    verified finite release bound strictly before the election's
-    opportunity; equality and later bounds refuse.  Capacity and
-    isolation gates stay in force beside this answer.
+    prospective release bound strictly before the election's opportunity;
+    equality and later bounds refuse.  Capacity and isolation gates stay in
+    force beside this answer.
     """
 
     from . import lifetime_fence

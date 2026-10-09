@@ -1,6 +1,9 @@
-"""Real queue regressions for the second lifetime-fence correction."""
-from __future__ import annotations
+"""Claim custody and owner isolation under the lifetime contract (#1429).
 
+A refusal after the reservation committed must return the unstarted claim's
+tokens, and a stale owner must never touch a live successor.
+"""
+from __future__ import annotations
 
 import subprocess
 import sys
@@ -8,35 +11,12 @@ import sys
 import pytest
 
 from prismabuild import core as pb, lifetime_fence, pool
-from test_lifetime_fence_1429 import (
-    _claim_fenced,
-    _claim_fenced_on_host,
-    _fenced_queue,
-    _publish_fenced_candidate,
-    fleet,
-)
-from test_measurement_reservation_backfill_1419 import (
-    _assert_holder_unchanged,
-    _bounded_measurement_wait,
-    _observe_real_sharing_permission,
-)
-
-
-def test_unbounded_lifecycle_cannot_backfill_a_live_reservation(fleet):
-    queue, clock, readings, sample, publish, tick, claim, denial = fleet
-    incumbent, measurement, opportunity, snapshot = _bounded_measurement_wait(fleet)
-    key = _publish_fenced_candidate(fleet, "unbounded-lifecycle")
-    _observe_real_sharing_permission(fleet, key)
-    assert _claim_fenced_on_host(fleet) is None
-    assert queue.item_path(pool.READY, key).exists()
-    assert queue.item_path(pool.READY, measurement).exists()
-    assert queue.ledger().held_keys() == [incumbent]
-    _assert_holder_unchanged(queue, incumbent, snapshot)
+from lifetime_fixtures_1429 import FENCE_S, claim as claim_fenced, fenced_queue
 
 
 @pytest.mark.parametrize("fault", ["expired", "mismatched", "unreadable", "missing"])
 def test_refusal_after_commit_returns_unstarted_claim_resources(tmp_path, monkeypatch, fault):
-    queue, action = _fenced_queue(tmp_path, "open('result','w').write('ok')\n")
+    queue, action = fenced_queue(tmp_path)
     key = action["action_key"]
     ready_path = queue.item_path(pool.READY, key)
     before = ready_path.read_bytes()
@@ -65,7 +45,7 @@ def test_refusal_after_commit_returns_unstarted_claim_resources(tmp_path, monkey
         return count
 
     monkeypatch.setattr(pool.ResourceLedger, "commit_acquire", commit)
-    monkeypatch.setattr(pool, "_now", lambda: real_now() + (120 if jumped[0] else 0))
+    monkeypatch.setattr(pool, "_now", lambda: real_now() + (FENCE_S if jumped[0] else 0))
     claimed = queue.queue.claim(capacity={"cpu": 8, "mem_gb": 16},
                                 tags=[lifetime_fence.LIFETIME_TAG])
     assert claimed is None
@@ -78,11 +58,11 @@ def test_refusal_after_commit_returns_unstarted_claim_resources(tmp_path, monkey
         assert ready_path.read_bytes() == before
     else:
         assert pool._read_json(ready_path)["lifetime_deadline_unix"] == (
-            pool._read_json(ready_path)["published_unix"] + 61)
+            pool._read_json(ready_path)["published_unix"] + FENCE_S + 1)
 
 
 def test_expiry_during_lease_write_rolls_back_persisted_claim(tmp_path, monkeypatch):
-    queue, action = _fenced_queue(tmp_path, "print('unstarted')\n")
+    queue, action = fenced_queue(tmp_path)
     key = action["action_key"]
     before = queue.item_path(pool.READY, key).read_bytes()
     real_write = queue.write_lease
@@ -94,7 +74,7 @@ def test_expiry_during_lease_write_rolls_back_persisted_claim(tmp_path, monkeypa
         expired[0] = True
 
     monkeypatch.setattr(queue, "write_lease", write)
-    monkeypatch.setattr(pool, "_now", lambda: real_now() + (120 if expired[0] else 0))
+    monkeypatch.setattr(pool, "_now", lambda: real_now() + (FENCE_S if expired[0] else 0))
     assert queue.queue.claim(capacity={"cpu": 8, "mem_gb": 16},
                              tags=[lifetime_fence.LIFETIME_TAG]) is None
     assert queue.item_path(pool.READY, key).read_bytes() == before
@@ -105,11 +85,11 @@ def test_expiry_during_lease_write_rolls_back_persisted_claim(tmp_path, monkeypa
 
 
 def test_stale_owner_cannot_release_or_renew_a_live_successor(tmp_path):
-    queue, action = _fenced_queue(tmp_path, "print('owner proof')\n")
-    first = _claim_fenced(queue)
+    queue, action = fenced_queue(tmp_path, max_attempts=3)
+    first = claim_fenced(queue)
     key = first["action_key"]
     queue.finish(key, status="failed", detail={"returncode": 1}, claim_snapshot=first)
-    successor = _claim_fenced(queue)
+    successor = claim_fenced(queue)
     process = subprocess.Popen(
         [sys.executable, "-c", "import time; print('successor', flush=True); time.sleep(30)"],
         start_new_session=True, stdout=subprocess.PIPE, text=True)
