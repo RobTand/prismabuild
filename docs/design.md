@@ -581,6 +581,30 @@ pass, never become an empty census. Parent retains M/H only through the actual
 publication after the last refresh is not instantaneously fenced: the guarantee
 begins at canonical host election, with no hidden publisher participation.
 
+**Census reuse within one claim pass (#1571).** The first candidate takes two
+complete scans: discovery before host admission and refresh under admission.
+Later candidates take the reader guard, sorted nonblocking M keys, and host
+admission, in that order. Their owned child reads only pass sidecars and exact
+live gang members. No refresh starts without the guard or replaces unresolved
+reader ownership.
+
+The refresh compares complete selections, including their generation, host,
+priority, and timestamps. New or replacement selections immediately fence this
+host. Stored measurement elections remain fenced through claims and retirement;
+only a complete census proves their retirement. Gang elections require an exact
+live member generation, so completed gangs do not fence the host.
+
+Both readers use the 4096-record cap. The complete read has a five-second
+budget; election refresh has a two-second budget. Any census refusal ends
+census attempts for this pass, including busy guards and refresh timeouts.
+The next pass retries. A vanished publication causes at most three complete
+scans within the existing child deadline. A refresh never falls back to complete
+scans for each later candidate.
+
+This source change retains PB admission authority (SC-01), movement authority
+(SC-02), and token settlement requirements (INV-07). It establishes no runtime
+deployment or campaign completion.
+
 An incumbent with no declared finite deadline (`pbrun` without `--timeout-s`,
 or a progress-governed action) does not void the election: requiring one left
 most live hosts unelected, so once the bounded attention above lapsed a
@@ -4750,6 +4774,33 @@ existing generation keeps the gate record it was published with.
 `PB_SHAPE_GATE_WAIVER` through to both its dry-run preflight and its
 publish.
 
+### The roster option gate (#1664)
+
+A generation built from main dropped `--gang-admission` from both Spark
+worker shapes, and the supervisor adopts the new generation's roster at
+re-exec, so it spawned Spark loops without the flag until the sealed
+generation was edited by hand.  A fresh publication therefore compares
+the candidate `fleet_boxes.json` with the live generation's roster
+before the live pointer moves, inside the publication lock and before
+anything is staged.  A candidate that drops any `--` option name the
+live roster declares for any box is refused; the live pointer and the
+previous generation are untouched.  A box the candidate removes, or
+reshapes without a usable `args` list, drops every live name it
+declared; the gate fails closed rather than reading a missing entry
+as "no options".  Only names are compared: values may move, aliases
+answer for placement tags rather than options, and a box is compared
+under its own roster key.  The live roster is read from the sealed
+generation the pointer names, never from a mirror copy beside it.
+`--drop-roster-option-by WHO` with `--drop-roster-option-reason WHY`
+removes an option on purpose; both are recorded in
+`RUNTIME_VERSION.json` as `roster_option_override` with the dropped
+names per box.  The receipt keeps every adoption field it carried:
+`generation` still names the generation, so the supervisor and the
+barrier qualification read it as before.  Rollback restores a sealed
+generation and takes neither flag.  No seal or identity contract
+changes: the gate reads the same roster and receipt every generation
+already carries.
+
 The harness's own tests, `tests/test_the_campaign_shape_harness.py`, run in
 the ordinary suite on a small shape of the same kind.  One of them puts the
 pre-#965 byte-cut splitter back into the driver and requires the gate to
@@ -4810,14 +4861,43 @@ directly -- `pbgang` refuses this shape -- or any other submitter's row) is
 planned by the manifest planner (#1247) off its own sealed request and is
 then gated by its filed plan exactly like an explicit one, reaching its map at
 launch through the declared-manifest branch of `residency_map_environment`.
-Operational consequence: a window whose movers are slow drains its already-
-elected siblings' hosts for the whole mover time, and the wait does not end on
-its own if a lead ends terminally (`residency_lead_terminal`) or the plan is
-refused (`plan_unreadable`, `plan_superseded`): gang elections never expire,
-and the gang sweep tears a gang down only on an UNSUCCESSFUL member, which a
-READY member never is -- the wait lasts until the gang is withdrawn. Size
-`--residency` windows with that fence in mind, submit the movers before the
-gang, and withdraw the gang when a member's residency can no longer land.
+Slow movers keep fences on the hosts that their gang siblings elect.
+The claim pass tears down a gang after it confirms `residency_lead_terminal`.
+This denial covers failed, withdrawn, dropped, unpinned, and manifest-mismatched leads.
+The sweep withdraws all members and releases their fences (#1543).
+
+The first terminal observation writes `gangs/<group>/terminal-<member>.json`.
+The mark contains a signature of each pending lead's records and generations.
+An unchanged signature must persist for `TERMINAL_CONFIRM_S` (120 seconds).
+A live verdict clears the mark.
+A changed signature, failed read, busy lock, or future timestamp starts a new window.
+
+The final proof takes every relevant lead's transition lock without a wait, in lead-key order.
+It refreshes directory names and reopens positive records before it checks live generations, the verdict, and pin state.
+A failed refresh, unreadable listed record, or live lead prevents teardown.
+The proof writes the one-shot `teardown.json` before it releases these locks.
+The caller withdraws siblings only after it releases every lead lock.
+A requeue after teardown cannot restore the gang.
+
+The queue checks mark reads and removals with the same strict directory refresh.
+If unlink and replacement both fail, the queue retains a reset obligation.
+It cannot confirm that member until the reset succeeds.
+A new queue instance resets inherited evidence before use.
+This restart costs a new confirmation window but prevents an old mark from bypassing a failed reset.
+
+Only `lead_not_resident` and `lead_unpinned` can start or confirm a teardown.
+Every other verdict state ends the window and clears the mark.
+This includes the shape refusal `prelaunch_undeclared`, `map_unreadable`, `map_incomplete`, and any state added later.
+The shape check (#1594) answers before the leads are read, so it blocks the proof at the confirming read too.
+A prelaunch gang defers each election while a sibling's verdict is unresolved (`deferred_for_gang_prelaunch`).
+A dead member therefore holds no fence there, and the teardown still ends the gang.
+
+Plan refusals (`plan_unreadable`, `plan_superseded`) remain outside this change.
+A READY member with a plan refusal still holds its siblings' fences until withdrawal.
+Issue #1543 remains open for that scope.
+Submit movers before the gang.
+Withdraw the gang when its member's plan cannot become resident.
+These source changes do not establish deployment or a live-queue qualification.
 
 Per member host, inside the ordinary claim pass:
 
@@ -5704,8 +5784,21 @@ before that keeps no allowance. The last `k` CPUs the claim takes are kept out
 of the producer's own affinity and recorded in its holder metadata as
 `dependent_allowance` (`slots`, `cpus`, `mem_gb`); the tokens stay under the
 producer, so nothing else is admitted onto them and the producer pays for the
-room while it is idle. A producer with unbounded CPU demand, or one that fits
-the box only without the allowance, is claimed without it, as before.
+room while it is idle. An unbounded-CPU producer receives no allowance.
+A published producer that fits only without its allowance runs without it (#985).
+Its exports use free tokens through ordinary admission.
+
+Before publication, `pbrun` compares a spool producer's memory demand plus its
+export allowance against eligible recorded host capacities (#1571).
+It uses declared export slots, or one slot when none are declared.
+It refuses incompatible declarations and states the required and available GiB.
+A producer that declares 104 GiB cannot reserve a 1 GiB export allowance
+on a host with 104 memory tokens. Missing capacity evidence does not establish
+incompatibility; claim admission still enforces physical token limits.
+The submission check uses memory and declared slots, or the one-slot default.
+It does not predict host-local learned slot counts or change the #985 claim policy.
+A larger learned allowance cannot permanently refuse an already-published producer.
+
 
 **Export rates per declared family (#1126).** The key is the template's
 digest unless the template declares `export_rate_family`, an identifier by
@@ -5913,9 +6006,12 @@ No OS update is disabled and no deliberate PrismaBuild upgrade is changed.
 
 Worker-loop count supplies enough claimants to exercise this admission policy
 without becoming a second scheduler. `fleet_boxes.json` declares an automatic
-floor. Above that floor the supervisor sizes on the claims the box is holding:
-the target is the loops with a lease or a running child, plus the loops whose
-local process state is unreadable, plus a fixed idle reserve, bounded by a
+floor. Above that floor, the supervisor uses the larger protected count from
+the current and previous claim censuses (#1571). Each count includes active
+claims, workers with children, and workers whose local state is unknown.
+The target adds the fixed idle reserve. This rule prevents repeated process
+stops and starts when claim counts alternate. A sustained decrease permits
+a shrink after one further tick. The target remains bounded by the
 housekeeping ceiling derived from visible CPU and memory. Ready work does not
 enter the sizing law. A ready record does not say why work is waiting, so it
 cannot distinguish a box with no free poller from a box whose pollers cannot
@@ -14918,6 +15014,92 @@ failure; every refusal lands before the first unlink.
 `tests/test_a_retired_heads_orphaned_cache_is_recovered_by_identity.py`
 holds each rule as a focused case, with the staged copies and originals
 asserted intact after every refusal.
+
+### Reclaim of source-mark-only copies with digest-proven originals (#1636)
+
+Routine `reconcile` still leaves `source_mark_only` copies. The separate
+operator command, `tools/fleet/stage_reclaim.py`, does not change that contract.
+Automatic pressure reclaim remains outside this scope. Live apply still needs
+CEO approval and sufficient quarantine capacity.
+
+The default dry run lists every candidate with an original path, extent,
+SHA-256 and proof receipt, or a refusal reason. It changes no stage bytes,
+xattrs or file times. Explicit receipt and memo outputs must remain outside
+the stage. A dry run does not file a movement receipt in the queue.
+The command prints its receipt as one line of sorted JSON in the digest
+owner's spelling, and `--receipt` also writes an indented copy. Its helpers
+use the owner's `new_sha256` and `sorted_json` profiles, so the duplication
+ratchet gains no raw digest site. The command ships in the published runtime
+generation, because dl380g10 has no checkout to run it from.
+
+A range name, `<rel>.pbrange/<offset>-<size>`, identifies the original at
+`<mount_prefix>/<rel>`, with extent `[offset, offset+size)`. Historical mover
+receipts are not required. The original must be a regular file outside the
+stage with the complete extent. A missing, short, differing or unpaired
+original never permits a move.
+
+The initial proof hashes both exact extents outside the stage lock.
+No-follow descriptors bind each read to a regular file. Device, inode,
+mode, size, mtime and ctime fence its identity. `O_NOATIME` preserves access
+times; an unavailable permission refuses the read instead of a mutable fallback.
+The proof receipt binds both identities, paths, extent and content digest.
+Its canonical JSON digest identifies the proof, not a historical receipt.
+
+`--max-read-gib` bounds payload reads, including unsuccessful proof attempts.
+The receipt reports the full dry-run estimate and reserved read budgets.
+Metadata reads remain outside this payload budget. Apply reserves five reads
+per byte without a memo, or three with a valid memo. `--memo-out` records
+dry-run digests. Apply can reuse them only while both identities remain equal.
+The memo never authorizes removal alone: apply hashes the original again.
+
+Fresh checks under the stage ownership lock protect these references:
+
+- Every fragment, composed map, material record and reader pin.
+- Ready or claimed consumers, including their sealed manifest declarations.
+- Ready or claimed movers and promotion source handoffs.
+- Movement receipts, retired receipts and residency plans.
+- Held ledger keys, whose scope must be readable.
+- The produced-output lane.
+
+An unreadable reference record refuses the pass. The final reference census
+also covers references that appear during the quarantine copy. Identity
+checks run again immediately before removal.
+
+Apply requires `--apply`, a new `--run-id`, and `--quarantine-root`.
+The quarantine root must exist outside the stage on another device.
+Its available space must cover the batch. Path checks reject symlink
+components and device changes below either approved root.
+Each copy reaches quarantine through a private temporary file.
+The command fsyncs its bytes, checks its digest and commits its directory.
+It preserves xattrs, permissions, atime and mtime.
+
+The command fsyncs a write-ahead journal before each stage unlink.
+It then commits the stage directory. No payload is discarded: the verified
+quarantine copy remains. Both the journal and final manifest name its proof,
+metadata and executable restore command. New directory entries receive
+fsync before a later record can depend on them.
+
+`--restore RUN_ID` combines the manifest with all complete journal entries.
+A torn final journal append cannot hide earlier committed moves.
+Restore checks the digest and sets metadata on a temporary before publication.
+It refuses conflicting destinations, symlinks and conflicting restore records.
+A repeated restore leaves an identical file unchanged. A normal read can
+change atime; that alone does not create a destination conflict.
+
+The next tier mint reads the dataset's `available` value. Reclaim does
+not edit or release ledger tokens. The integrated test retains an existing
+holder, observes refusal before reclaim, and admits the same demand after
+the real supply mint.
+
+`tests/test_a_source_mark_copy_with_a_proven_original_is_reclaimed.py`
+covers paired, unpaired, differing and referenced copies. It also covers
+source changes, forged memos, read budgets, process exits and restore.
+The CLI smoke scenario uses private `/tmp` and `/dev/shm` fixtures.
+These checks qualify process interruption, not storage power loss.
+SM-02, INV-01 and INV-07 retain their wider target obligations.
+No deployment or complete workload proof is claimed for those requirements.
+DUR-01 still requires a separate storage-policy qualification; `sync=disabled`
+does not prove power-loss durability.
 
 ### How the map reaches the consumer
 
