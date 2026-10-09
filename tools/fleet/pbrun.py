@@ -2001,23 +2001,28 @@ def parse_progress_phases(
 
 
 def parse_awaited_batch(declared: str | None) -> dict[str, object] | None:
-    """Turn ``--awaited-batch PARENT:PLAN`` into a sealed declaration (#1666).
+    """Turn ``--awaited-batch PARENT:PLAN:STATE`` into a sealed declaration (#1666).
 
-    Both halves are 64-hex action identities: the parent the campaign cut
-    and the plan that fixed the children's membership. Refused at the
+    The first two halves are 64-hex action identities: the parent the
+    campaign cut and the plan that fixed the children's membership. The
+    third names the controller-state directory whose accepted members
+    the worker reads under an exact shape check. Refused at the
     terminal, before anything seals, like the progress phases beside it.
     """
 
     if declared is None:
         return None
-    parent, sep, plan = str(declared).partition(":")
-    if not sep or not parent or not plan:
+    parts = str(declared).split(":")
+    if len(parts) != 3 or not all(part.strip() for part in parts):
         raise SystemExit(
-            "pbrun: --awaited-batch must be PARENT:PLAN, two 64-hex keys")
+            "pbrun: --awaited-batch must be PARENT:PLAN:STATE, two 64-hex "
+            "keys and the controller-state directory")
+    parent, plan, state = (part.strip() for part in parts)
     try:
         return pb.validate_awaited_batch({
             "schema": pb.AWAITED_BATCH_SCHEMA_V1,
-            "parent_key": parent.strip(), "plan_key": plan.strip()})
+            "parent_key": parent, "plan_key": plan,
+            "controller_state": state})
     except pb.ActionContractError as exc:
         raise SystemExit(f"pbrun: {exc}") from None
 
@@ -7409,9 +7414,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
                     help="allow progress phases to repeat; each phase gets one "
                          "allowance between increases in cumulative committed "
                          "units. Requires --progress-phase and cyclic-capable workers")
-    ap.add_argument("--awaited-batch", default=None, metavar="PARENT:PLAN",
+    ap.add_argument("--awaited-batch", default=None, metavar="PARENT:PLAN:STATE",
                     help="declare the decomposed batch this coordinator awaits, "
-                         "as parent and plan keys separated by a colon. Valid "
+                         "as parent and plan keys and the controller-state "
+                         "directory, separated by colons. Valid "
                          "only with --progress-phase on pool transport: the "
                          "worker's stall watch credits quiet while a verified "
                          "awaited child is ready or claimed (#1666)")

@@ -12625,49 +12625,67 @@ ceiling (3,600 s on dl380g10). Any finite allowance ends the coordinator as
 `no_progress` during a long queue wait, although nothing has stalled.
 
 **The declaration.** The coordinator's submission declares the batch it
-awaits as a sealed value: the parent key and the plan key
-(`progress_awaited_batch`, `prismabuild.progress_awaited_batch.v1`,
-`pbrun --awaited-batch PARENT:PLAN`). It is valid only with progress phases
-on pool transport. A sealed declaration without progress, or on the SLURM
-lane, is refused at submit; a sealed request whose keys do not read is
-refused at seal. A coordinator that declares an awaited batch requires the
-`progress-queued-child-v1` worker tag (`core.QUEUED_CHILD_TAG`): a worker
-without it cannot claim the row, so an older loop never ends a valid queue
-wait as `no_progress`. No seal or identity wall is added (D32), and the
-scientific and native limits stay unchanged.
+awaits as a sealed value: the parent key, the plan key, and the
+controller-state directory whose accepted members name the awaited
+children (`progress_awaited_batch`,
+`prismabuild.progress_awaited_batch.v1`,
+`pbrun --awaited-batch PARENT:PLAN:STATE`). It is valid only with progress
+phases on pool transport. A sealed declaration without progress, or on the
+SLURM lane, is refused at submit; a sealed request whose keys do not read
+is refused at seal. A coordinator that declares an awaited batch requires
+the `progress-queued-child-v1` worker tag (`core.QUEUED_CHILD_TAG`): a
+worker without it cannot claim the row, so an older loop never ends a
+valid queue wait as `no_progress`. No seal or identity wall is added
+(D32), and the scientific and native limits stay unchanged.
 
-**The verdict.** When the `no_progress` rung finds the coordinator quiet, it
-asks `PoolQueue.queued_child_wait_verdict` and credits an exempt verdict
-through the same mark as every other exemption (`ProgressWatch._credit`), so
-an interval is credited once. The credit covers an interval of quiet only
-when it verifies exact membership: every counted child's sealed request
-names that parent and plan under `params.logical_batch`, its ordinal equals
-its position in the stored publication's `child_action_keys`, and its task
-set equals the stored plan's partition there. A child with other keys, with
-no `logical_batch`, with a foreign ordinal or task set, or with an
-unreadable sealed request earns none. A first sighting is a baseline and
-earns no credit; a child live at both ends of the interval is carried and
-credits. A replacement child is a new baseline. The rung credits through
-the shared `_credit` arithmetic and invents no threshold.
+**The verdict.** The worker samples the awaited set on the heartbeat
+cadence and judges each interval since the last look. It credits an
+eligible interval through the same mark as every other exemption
+(`ProgressWatch._credit`), from the prior sample's monotonic start, so
+an interval is credited once. The credit covers an interval of quiet
+only when it verifies exact membership: every counted child's sealed
+request names that parent and plan under `params.logical_batch`, its
+ordinal equals its position in the stored publication's
+`child_action_keys`, and its task set equals the stored plan's partition
+there. A child with other keys, with no `logical_batch`, with a foreign
+ordinal or task set, or with an unreadable sealed request earns none. A
+first sighting is a baseline and earns no credit; a child live at both
+ends of the interval is carried and credits only that interval's span. A
+replacement child is a new baseline. A blocked interval earns nothing and
+is never refunded later. A child that ends keeps the credit its verified
+intervals earned. The `no_progress` rung judges only the interval since
+the last sample. The credit uses the shared `_credit` arithmetic and
+invents no threshold.
 
 **The awaited set.** The set of awaited children is the SDK-confirmed
-admitted or attached set, validated against the stored plan and publication
-read from the coordinator's CAS through the native validators. A missing or
-unreadable stored plan or publication refuses the credit. A child that is
-only prepared or in `pending_submission` earns no credit: that records
-intent only and proves no queue admission. A stored child request, or
-membership in the plan, does not prove queued work either. The scan retains
-custody: a member stays in the set while its row is missing or unreadable,
-and while it stays missing the verdict carries it and refuses the credit,
-so a live sibling cannot cover for it. With no awaited child ready or
-claimed (all terminal), or an awaited child whose record is missing or
-unreadable and has no verified durable CAS result, the coordinator ends
-`no_progress` at its allowance. A missing queue record with a verified
-durable result is treated as durable, not as missing. Cleanup tombstones
-and late-finish leaves keep their owner-defined custody and are neither
-credited nor released. A claimed child that exceeds its own ceiling or
-stalls is ended as before. The credit moves only the coordinator's deadline
-and changes no child's deadline.
+admitted or attached set: the controller's own accepted members, read
+from the sealed controller-state directory under an exact shape check
+(`wave-state.json` holds exactly `waves`, each wave exactly `closed`,
+`members` and `wave`, each member exactly `batch` and a 64-hex `key`;
+`sub-keys.txt` holds one `<batch> <key>` pair per line). A child is
+awaited only when both files name its key with the same batch; a key in
+one file only earns no credit. An unreadable file, an unknown shape, a
+missing or malformed member, a key outside the plan, or any read that
+fails refuses the credit rather than guessing. Every member is validated
+against the stored plan and publication read from the coordinator's CAS
+through the native validators. A missing or unreadable stored plan or
+publication refuses the credit. A child that is only prepared or in
+`pending_submission` earns no credit: that records intent only and
+proves no queue admission. A stored child request, or membership in the
+plan, does not prove queued work either. An accepted key stays in the
+set across unreadable documents, unreadable sealed requests and worker
+restarts, until the controller's own state stops naming it; queue rows
+never add or drop a member. While a member stays missing the verdict
+carries it and refuses the credit, so a live sibling cannot cover for
+it. With no awaited child ready or claimed (all terminal), or an
+awaited child whose record is missing or unreadable and has no verified
+durable CAS result, the coordinator ends `no_progress` at its allowance.
+A missing queue record with a verified durable result is treated as
+durable, not as missing. Cleanup tombstones and late-finish leaves keep
+their owner-defined custody and are neither credited nor released. A
+claimed child that exceeds its own ceiling or stalls is ended as before.
+The credit moves only the coordinator's deadline and changes no child's
+deadline.
 
 **Records.** The progress observation carries `queued_child_wait_exempt_s`
 and `queued_child_wait`: every awaited child with its verified state,

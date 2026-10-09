@@ -213,9 +213,10 @@ POOL_CONTENTION_SCHEMA_V1 = "prismabuild.progress_pool_contention.v1"
 #: bare copy grace, so a mover that declares it requires the tag.
 POOL_CONTENTION_TAG = "progress-pool-contention-v1"
 #: The sealed request key a coordinator declares beside its progress policy
-#: (#1666): the batch it awaits, as parent and plan keys. Sealed into the
-#: action key: a coordinator the worker credits is a different action from
-#: one it does not.
+#: (#1666): the batch it awaits, as parent and plan keys, and the
+#: controller-state directory whose accepted members name the awaited
+#: children. Sealed into the action key: a coordinator the worker credits
+#: is a different action from one it does not.
 AWAITED_BATCH_PARAM = "progress_awaited_batch"
 AWAITED_BATCH_SCHEMA_V1 = "prismabuild.progress_awaited_batch.v1"
 #: Offered by a worker whose stall check credits a coordinator's wait on its
@@ -8555,19 +8556,26 @@ def validate_awaited_batch(
     credits quiet on exactly these terms, and a field it does not read
     would be a promise nobody keeps. Both keys name sealed decomposition
     identities: the parent the campaign cut and the plan that fixed the
-    children's membership.
+    children's membership. The controller-state directory names the
+    custody the worker reads: the controller's own accepted members,
+    under an exact shape check, never a queue scan.
     """
 
     if not isinstance(value, Mapping) or set(value) != {
-            "schema", "parent_key", "plan_key"}:
-        _fail(f"{where} must declare exactly schema, parent_key and plan_key")
+            "schema", "parent_key", "plan_key", "controller_state"}:
+        _fail(f"{where} must declare exactly schema, parent_key, plan_key "
+              "and controller_state")
     if value["schema"] != AWAITED_BATCH_SCHEMA_V1:
         _fail(f"{where}.schema must be {AWAITED_BATCH_SCHEMA_V1!r}")
+    state = value["controller_state"]
+    if not isinstance(state, str) or not state.startswith("/") or "\x00" in state:
+        _fail(f"{where}.controller_state must be an absolute path")
     return {"schema": AWAITED_BATCH_SCHEMA_V1,
             "parent_key": _sha256(value["parent_key"],
                                   where=f"{where}.parent_key"),
             "plan_key": _sha256(value["plan_key"],
-                                where=f"{where}.plan_key")}
+                                where=f"{where}.plan_key"),
+            "controller_state": state}
 
 
 def action_awaited_batch(action: Mapping[str, object]) -> dict[str, object] | None:

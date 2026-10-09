@@ -1090,6 +1090,17 @@ STAGE_OWNERSHIP_HOLDERS = "stage-ownership-holders"
 STAGE_OWNERSHIP_HOLDER_SCHEMA_V1 = "prismabuild.stage_ownership_holder.v1"
 #: A holder record is a few fields; anything larger is not one.
 MAX_STAGE_OWNERSHIP_HOLDER_BYTES = 4096
+#: The two files a coordinator's controller-state directory holds (#1666):
+#: the accepted-members state and its append journal. The worker reads
+#: these two names only, under the exact shape check the D44 decision
+#: fixes, and refuses every other shape without credit.
+CONTROLLER_WAVE_STATE = "wave-state.json"
+CONTROLLER_SUB_KEYS = "sub-keys.txt"
+#: The largest controller custody read. A 287-child run states two short
+#: lines per child; a megabyte bounds abuse without bounding the run.
+MAX_CONTROLLER_CUSTODY_BYTES = 1024 * 1024
+#: A journal line that is longer than this is malformed, not a member.
+MAX_CONTROLLER_JOURNAL_LINE_BYTES = 4096
 
 #: Tier resources that price a transfer *rate* rather than occupancy, and so
 #: are returned the moment a copy ends even when its bytes stay on the device.
@@ -2011,7 +2022,9 @@ class ProgressWatch:
 
         ``verdict`` is :meth:`PoolQueue.queued_child_wait_verdict`'s answer,
         kept for the record whatever it says. Same arithmetic as
-        :meth:`exempt_staged_wait`.
+        :meth:`exempt_staged_wait`: the interval runs from the prior
+        sample's monotonic start, so each verified sample interval
+        credits once and a blocked gap never refunds.
         """
 
         self.queued_child_wait = dict(verdict)
@@ -10921,20 +10934,23 @@ class PoolQueue:
         """Whether a quiet coordinator waits on a declared queued child (#1666).
 
         ``awaited`` is the coordinator's sealed ``progress_awaited_batch``:
-        the parent and plan keys whose children credit its quiet. Every
+        the parent and plan keys whose children credit its quiet, and the
+        controller-state directory whose accepted members name them. Every
         counted child verifies exact membership: its sealed request names
         that parent and plan, its ordinal equals its position in the stored
         publication's ``child_action_keys``, and its task set equals the
         stored plan's partition there. A child with other keys, with no
         ``logical_batch``, or with an unreadable sealed request earns none.
 
-        ``admitted`` is the SDK-confirmed admitted or attached set: each
-        member maps a child key to its submission record. Only members of
-        the set are judged; a child that is only prepared or recorded as
-        intent earns no credit. A missing queue record with a verified
-        durable CAS result reads as durable, not as missing. Cleanup
-        tombstones and late-finish leaves keep their owner-defined custody
-        and are neither credited nor released.
+        ``admitted`` is the SDK-confirmed admitted or attached set, read
+        from the controller's own state by
+        :meth:`_awaited_child_submissions`: each member maps a child key
+        to its submission record. Only members of the set are judged; a
+        child that is only prepared or recorded as intent earns no
+        credit. A missing queue record with a verified durable CAS result
+        reads as durable, not as missing. Cleanup tombstones and
+        late-finish leaves keep their owner-defined custody and are
+        neither credited nor released.
 
         The interval rule matches the staged-wait credit: the rung credits
         only the quiet both ends agree on. A first sighting is a baseline
@@ -10973,16 +10989,33 @@ class PoolQueue:
         children: list[dict[str, object]] = []
         missing: list[str] = []
         live = False
-        since: float | None = None
         for child_key in sorted(members):
             entry: dict[str, object] = {"key": child_key}
+            record = members[child_key]
+            refusal = (record.get("custody_refused")  # type: ignore[union-attr]
+                       if isinstance(record, Mapping) else None)
+            if isinstance(refusal, str) and refusal:
+                # The custody reader refused this look: the member stays
+                # in the verdict and blocks the credit, even when its
+                # queue row is live. The credit never rests on a guess.
+                entry.update({"state": "unknown", "evidence": "none",
+                              "detail": f"controller custody refused: {refusal}"})
+                entry["ordinal"] = slots.get(child_key)
+                missing.append(child_key)
+                children.append(entry)
+                continue
             link, detail = self._queued_child_link(
                 child_key, cas_root=cas_root, parent_key=parent_key,
                 plan_key=plan_key, plan=plan_doc, publication=index)
             if link is None:
+                # The controller named a key the sealed batch cannot bind:
+                # custody says awaited, membership says nothing verifiable.
+                # It stays in the verdict and blocks the credit, like any
+                # missing member: a live sibling cannot cover for it.
                 entry.update({"state": "foreign", "evidence": "none"})
                 if detail:
                     entry["detail"] = detail
+                missing.append(child_key)
                 children.append(entry)
                 continue
             state, evidence_detail = self._queued_child_queue_state(
@@ -11014,10 +11047,6 @@ class PoolQueue:
                 else:
                     entry["evidence"] = "carried"
                     live = True
-                    stamp = self._queued_child_queue_stamp(child_key, state)
-                    if stamp is not None and (
-                            since is None or stamp < since):
-                        since = stamp
             elif state == "durable":
                 entry["evidence"] = "durable"
                 entry["ordinal"] = slots.get(child_key)
@@ -11037,12 +11066,16 @@ class PoolQueue:
             "missing": missing,
             "parent_key": parent_key, "plan_key": plan_key,
             "checked_unix": moment}
-        if since is not None:
-            # The wait's start, the way a staged-wait record's since_unix
-            # dates its wait: the earliest a credited child queued. The
-            # rung credits from the later of this, the last real advance
-            # and the last exemption, through the shared _credit mark.
-            verdict["since_unix"] = since
+        # The credited interval is the two samples' span, not a queue
+        # stamp: the rung credits from the prior sample's monotonic
+        # start (`since_monotonic` on the verdict, carried from the last
+        # heartbeat look) through the shared _credit mark, so an
+        # interval a missing member blocked is never refunded later.
+        earlier = (prior or {}).get("sample_monotonic")  # type: ignore[union-attr]
+        if (verdict["exempt"] and isinstance(earlier, (int, float))
+                and not isinstance(earlier, bool)
+                and math.isfinite(float(earlier))):
+            verdict["since_monotonic"] = float(earlier)
         if not verdict["exempt"]:
             if missing:
                 verdict["reason"] = (
@@ -11152,20 +11185,6 @@ class PoolQueue:
         except (OSError, ValueError) as exc:
             return "unknown", repr(exc)
 
-    def _queued_child_queue_stamp(self, child_key: str, state: str) -> float | None:
-        """When a queued child entered its row, or ``None`` if unreadable."""
-
-        try:
-            row = _read_json(self.item_path(state, child_key))
-        except (OSError, ValueError, PoolContractError):
-            return None
-        if not isinstance(row, Mapping):
-            return None
-        stamp = row.get("published_unix" if state == READY else "claimed_unix")
-        if isinstance(stamp, bool) or not isinstance(stamp, (int, float)):
-            return None
-        value = float(stamp)
-        return value if math.isfinite(value) else None
 
     def _awaited_batch_membership(
             self, cas_root: object, *, parent_key: str, plan_key: str,
@@ -11245,93 +11264,194 @@ class PoolQueue:
     ) -> dict[str, dict[str, object]]:
         """The SDK-confirmed admitted or attached set for one batch (#1666).
 
-        The coordinator's submission declares the batch it awaits; the
-        admitted or attached child set comes from the SDK-confirmed record.
-        ``pending_submission`` records intent only and proves no queue
-        admission. A stored child request, or membership in the plan, does
-        not prove queued work either: only a live ready or claimed row, a
-        terminal ending, or a verified durable CAS result joins the set.
-        Future prepared plan entries earn no credit.
+        The coordinator's sealed declaration names the controller-state
+        directory; the admitted or attached child set comes from the
+        controller's own state there, read under an exact shape check.
+        Anything else gives no credit: an unreadable file, an unknown
+        shape, a missing or malformed member, a key outside the plan, or
+        any read that fails refuses the credit rather than guessing. A
+        key named in only one of the two files earns no credit until
+        campaign defines the reconciliation. ``pending_submission``
+        records intent only and proves no queue admission. A stored
+        child request, or membership in the plan, does not prove queued
+        work either. Future prepared plan entries earn no credit.
 
-        The scan retains custody: ``retained`` is the previous call's set,
-        and a member stays in the set when its row is missing or unreadable
-        unless a verified durable CAS result retires it as durable. A live
-        sibling never covers for a missing member: the verdict carries the
+        ``retained`` is the previous call's set. An accepted key stays
+        in the set across unreadable membership documents, unreadable
+        sealed requests and worker restarts, until the controller's own
+        state stops naming it. Queue rows never add or drop a member:
+        they only show what an accepted child does. A live sibling
+        never covers for a missing member: the verdict carries the
         retained key and refuses the credit while it stays missing.
         """
 
-        cas_root = item.get("cas_root")
         parent_key = str(awaited.get("parent_key") or "")
         plan_key = str(awaited.get("plan_key") or "")
+        state_dir = awaited.get("controller_state")
+        keep = {str(key): dict(value)
+                for key, value in dict(
+                    retained if isinstance(retained, Mapping) else {}).items()
+                if _is_hex64(key)}
+        custody, refusal = self._awaited_controller_custody(
+            state_dir, parent_key=parent_key, plan_key=plan_key)
+        if custody is None:
+            # Refusal, no credit: carry the retained keys so the verdict
+            # names them as missing rather than dropping custody behind
+            # a live sibling, and the rung refuses the whole interval.
+            # The mark tells the verdict the custody did not confirm
+            # them this look: live rows cannot credit through it.
+            return {key: {**value, "custody_refused": refusal}
+                    for key, value in keep.items()}
         members: dict[str, dict[str, object]] = {}
-        if not parent_key or not plan_key:
-            return members
-        keep = (dict(retained) if isinstance(retained, Mapping) else {})
-        membership = self._awaited_batch_membership(
-            cas_root, parent_key=parent_key, plan_key=plan_key,
-            members=keep)
-        plan_doc = membership["plan"]
-        index = membership["publication"]
-        for state in (READY, CLAIMED):
-            try:
-                names = os.listdir(self.dir(state))
-            except OSError:
-                continue
-            for name in names:
-                if not name.endswith(".json") or len(name) != 69:
-                    continue
-                child_key = name[:-5]
-                if child_key in members:
-                    continue
-                link, _ = self._queued_child_link(
-                    child_key, cas_root=cas_root, parent_key=parent_key,
-                    plan_key=plan_key, plan=plan_doc, publication=index)
-                if link is None:
-                    continue
-                try:
-                    row = _read_json(self.item_path(state, child_key))
-                except (OSError, ValueError, PoolContractError):
-                    members[child_key] = dict(keep.get(child_key) or {})
-                    continue
-                if row is None:
-                    members[child_key] = dict(keep.get(child_key) or {})
-                elif isinstance(row, Mapping):
-                    members[child_key] = dict(row)
-        for state in (DONE, FAILED, WITHDRAWN):
-            try:
-                names = os.listdir(self.dir(state))
-            except OSError:
-                continue
-            for name in names:
-                if not name.endswith(".json") or len(name) != 69:
-                    continue
-                child_key = name[:-5]
-                if child_key in members:
-                    continue
-                link, _ = self._queued_child_link(
-                    child_key, cas_root=cas_root, parent_key=parent_key,
-                    plan_key=plan_key, plan=plan_doc, publication=index)
-                if link is None:
-                    continue
-                try:
-                    row = _read_json(self.item_path(state, child_key))
-                except (OSError, ValueError, PoolContractError):
-                    members[child_key] = dict(keep.get(child_key) or {})
-                    continue
-                if row is None:
-                    members[child_key] = dict(keep.get(child_key) or {})
-                elif isinstance(row, Mapping):
-                    members[child_key] = dict(row)
-        for child_key in sorted(keep):
-            if child_key in members:
-                continue
-            link, _ = self._queued_child_link(
-                child_key, cas_root=cas_root, parent_key=parent_key,
-                plan_key=plan_key, plan=plan_doc, publication=index)
-            if link is None:
-                continue
-            members[child_key] = dict(keep[child_key])
+        for child_key in sorted(custody):
+            if child_key in keep:
+                members[child_key] = dict(keep[child_key])
+            else:
+                members[child_key] = {"batch": custody[child_key]}
+        # The controller's state is the set's only writer: a key it
+        # stops naming leaves the set with it. Nothing here re-adds a
+        # key the custody reader drops.
         return members
+
+    def _awaited_controller_custody(
+            self, state_dir: object, *, parent_key: str, plan_key: str,
+    ) -> tuple[dict[str, str] | None, str]:
+        """Accepted members from the controller's own state, or the refusal.
+
+        Reads ``wave-state.json`` and ``sub-keys.txt`` under the exact
+        shape check the D44 decision fixes (dec-1009-073628-af15): the
+        state holds exactly ``waves``, each wave exactly ``closed``,
+        ``members`` and ``wave``, each member exactly ``batch`` and a
+        64-hex ``key``; the journal holds one ``<batch> <key>`` pair per
+        line with a 64-hex key. A child is awaited only when both files
+        name its key with the same batch. Returns ``(members, "")`` with
+        ``{key: batch}``, or ``(None, reason)`` on any refusal.
+        """
+
+        if not parent_key or not plan_key:
+            return None, "the declaration names no parent or plan"
+        if not isinstance(state_dir, str) or not state_dir:
+            return None, "the declaration names no controller state"
+        root = Path(state_dir)
+        if not root.is_absolute() or ".." in root.parts:
+            return None, "the controller state is not an absolute path"
+        try:
+            state_raw = pb._read_regular_file_nofollow(
+                root / CONTROLLER_WAVE_STATE, where="controller wave state",
+                max_bytes=MAX_CONTROLLER_CUSTODY_BYTES, replaced_leaf=True)
+        except FileNotFoundError:
+            return None, f"{CONTROLLER_WAVE_STATE} is missing"
+        except (OSError, pb.ActionContractError, pb.CASTamperError,
+                pb.CASUnavailableError, pb.ReplacedRecordError) as exc:
+            return None, f"{CONTROLLER_WAVE_STATE} is unreadable: {type(exc).__name__}"
+        try:
+            state_value = pb._decode_strict_json(
+                state_raw, where="controller wave state")
+        except (pb.ActionContractError, RecursionError):
+            return None, f"{CONTROLLER_WAVE_STATE} is not JSON"
+        state_members, reason = self._awaited_wave_members(state_value)
+        if state_members is None:
+            return None, reason
+        try:
+            journal_raw = pb._read_regular_file_nofollow(
+                root / CONTROLLER_SUB_KEYS, where="controller journal",
+                max_bytes=MAX_CONTROLLER_CUSTODY_BYTES, replaced_leaf=True)
+        except FileNotFoundError:
+            return None, f"{CONTROLLER_SUB_KEYS} is missing"
+        except (OSError, pb.ActionContractError, pb.CASTamperError,
+                pb.CASUnavailableError, pb.ReplacedRecordError) as exc:
+            return None, f"{CONTROLLER_SUB_KEYS} is unreadable: {type(exc).__name__}"
+        journal_members, reason = self._awaited_journal_members(journal_raw)
+        if journal_members is None:
+            return None, reason
+        members: dict[str, str] = {}
+        for key, batch in state_members.items():
+            if journal_members.get(key) == batch:
+                members[key] = batch
+        # A key named in only one of the two files earns no credit: the
+        # reconciliation is undefined until campaign defines it, so the
+        # credit never rests on one file's word alone.
+        return members, ""
+
+    @staticmethod
+    def _awaited_wave_members(
+            value: object) -> tuple[dict[str, str] | None, str]:
+        """Accepted ``{key: batch}`` from ``wave-state.json``, or the refusal."""
+
+        if not isinstance(value, Mapping) or set(value) != {"waves"}:
+            return None, (
+                f"{CONTROLLER_WAVE_STATE} must hold exactly waves")
+        waves = value["waves"]
+        if not isinstance(waves, list):
+            return None, f"{CONTROLLER_WAVE_STATE} waves is not a list"
+        members: dict[str, str] = {}
+        for position, wave in enumerate(waves):
+            where = f"{CONTROLLER_WAVE_STATE} waves[{position}]"
+            if not isinstance(wave, Mapping) or set(wave) != {
+                    "closed", "members", "wave"}:
+                return None, (
+                    f"{where} must hold exactly closed, members and wave")
+            if type(wave["wave"]) is not int or type(wave["closed"]) is not bool:
+                return None, f"{where} wave is not an integer or closed is not a boolean"
+            entries = wave["members"]
+            if not isinstance(entries, list):
+                return None, f"{where} members is not a list"
+            for index, entry in enumerate(entries):
+                at = f"{where} members[{index}]"
+                if not isinstance(entry, Mapping) or set(entry) != {"batch", "key"}:
+                    return None, (
+                        f"{at} must hold exactly batch and key")
+                batch = entry["batch"]
+                key = entry["key"]
+                if type(batch) is not str or not batch:
+                    return None, f"{at} batch is not a non-empty string"
+                if batch == "pending_submission":
+                    # Intent only: the controller records the batch it
+                    # means to submit, which proves no queue admission.
+                    continue
+                if not _is_hex64(key):
+                    return None, f"{at} key is not a 64-hex action key"
+                assert isinstance(key, str)
+                if key in members and members[key] != batch:
+                    return None, (
+                        f"{at} names {key[:12]} for another batch")
+                members[key] = batch
+        return members, ""
+
+    @staticmethod
+    def _awaited_journal_members(
+            raw: bytes) -> tuple[dict[str, str] | None, str]:
+        """Accepted ``{key: batch}`` from ``sub-keys.txt``, or the refusal."""
+
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            return None, f"{CONTROLLER_SUB_KEYS} is not UTF-8 text"
+        members: dict[str, str] = {}
+        for number, line in enumerate(text.splitlines(), start=1):
+            if not line.strip():
+                continue
+            if len(line.encode("utf-8")) > MAX_CONTROLLER_JOURNAL_LINE_BYTES:
+                return None, (
+                    f"{CONTROLLER_SUB_KEYS} line {number} is too long")
+            parts = line.split()
+            if len(parts) != 2:
+                return None, (
+                    f"{CONTROLLER_SUB_KEYS} line {number} "
+                    "is not a batch and key pair")
+            batch, key = parts
+            if batch == "pending_submission":
+                continue
+            if not _is_hex64(key):
+                return None, (
+                    f"{CONTROLLER_SUB_KEYS} line {number} "
+                    "key is not a 64-hex action key")
+            if key in members and members[key] != batch:
+                return None, (
+                    f"{CONTROLLER_SUB_KEYS} line {number} "
+                    f"names {key[:12]} for another batch")
+            members[key] = batch
+        return members, ""
 
     def _queued_child_finish_marked(self, child_key: str) -> bool:
         """Whether a finish mark holds this key's claim aside (#1666)."""
@@ -11370,12 +11490,17 @@ class PoolQueue:
     def _sample_queued_child_wait(
             self, item: Mapping[str, object], key: str, watch: "ProgressWatch",
             progress: "ProgressPolicy | None", *, now: float) -> None:
-        """Sample the awaited set on the heartbeat cadence (#1666).
+        """Sample the awaited set on the heartbeat cadence, and credit it (#1666).
 
-        Records verified live samples independently of the credit verdict,
-        so the rung's two-sample rule sees both ends of each interval. The
-        sample credits nothing: it only stores the verdict as the next
-        look's prior through the shared _credit mark at the rung.
+        Judges the interval since the last look, credits an eligible one
+        through the shared _credit mark, and stores the verdict as the
+        next look's prior. A first sighting is a baseline and earns no
+        credit; a child live at both ends carries and credits only this
+        interval's span, from the prior sample's monotonic start. A
+        blocked interval earns nothing and is never refunded later: the
+        shared mark and the monotonic start bound every credit. A child
+        that ends keeps the credit its verified intervals earned; the
+        rung below judges only the interval since the last sample.
         """
 
         if progress is None or progress.awaited_batch is None:
@@ -11384,7 +11509,8 @@ class PoolQueue:
             retained = None
             if isinstance(watch.queued_child_wait, Mapping):
                 retained = {
-                    str(entry.get("key")): {}
+                    str(entry.get("key")): (
+                        dict(entry) if isinstance(entry, Mapping) else {})
                     for entry in watch.queued_child_wait.get("children") or ()  # type: ignore[union-attr]
                     if isinstance(entry, Mapping)
                     and _is_hex64(entry.get("key"))}
@@ -11398,10 +11524,22 @@ class PoolQueue:
                 now=_now())
         except (OSError, ValueError, PoolContractError):
             return
-        # The sample, not the credit: exempt or not, this verdict becomes
-        # the rung's prior, so a child live at both ends carries. The
-        # shared _credit mark still grants no double credit.
-        watch.queued_child_wait = dict(verdict)
+        verdict["sample_monotonic"] = float(now)
+        # The sample and the credit: an eligible interval credits now,
+        # through the shared mark, bounded by the prior sample's start.
+        # Exempt or not, this verdict becomes the rung's prior, so a
+        # child live at both ends carries and a blocked gap never
+        # refunds. The shared _credit mark still grants no double credit.
+        if verdict.get("exempt") and isinstance(
+                verdict.get("since_monotonic"), (int, float)):
+            try:
+                watch.exempt_queued_child_wait(
+                    verdict, now=float(now),
+                    since_monotonic=float(verdict["since_monotonic"]))  # type: ignore[arg-type]
+            except (TypeError, ValueError, OverflowError):
+                watch.queued_child_wait = dict(verdict)
+        else:
+            watch.queued_child_wait = dict(verdict)
 
     def _export_landed_bytes(self, request: Mapping[str, object], cas_root: object
                              ) -> tuple[int | None, int | None, str]:
@@ -28832,8 +28970,12 @@ class PoolQueue:
                             # A coordinator waiting on its declared queued
                             # children, one of which is ready or claimed, is
                             # waiting on admission rather than stuck (#1666).
-                            # At the rung only, like the staged wait, and
-                            # credited through the same mark.
+                            # The heartbeat cadence already credited each
+                            # eligible sample interval; the rung judges only
+                            # the interval since the last sample, bounded by
+                            # its monotonic start, and credited through the
+                            # same mark. A blocked gap never refunds, and a
+                            # child that ended keeps its earned credit.
                             queued_checkpoint = time.monotonic()
                             try:
                                 awaited = (progress.awaited_batch
@@ -28859,12 +29001,20 @@ class PoolQueue:
                                 queued = {"exempt": False, "children": [],
                                           "reason": f"unreadable: {exc!r}"}
                             if queued is not None:
-                                now_unix = _now()
-                                since = float(queued.get("since_unix") or now_unix)
-                                watch.exempt_queued_child_wait(
-                                    queued, now=queued_checkpoint,
-                                    since_monotonic=queued_checkpoint
-                                    - max(0.0, now_unix - since))
+                                queued = dict(queued)
+                                queued["sample_monotonic"] = float(queued_checkpoint)
+                                earlier = queued.get("since_monotonic")
+                                if (queued.get("exempt") and isinstance(
+                                        earlier, (int, float))
+                                        and not isinstance(earlier, bool)):
+                                    watch.exempt_queued_child_wait(
+                                        queued, now=queued_checkpoint,
+                                        since_monotonic=float(earlier))
+                                else:
+                                    # A blocked or first look still becomes
+                                    # the prior: it carries the custody and
+                                    # blocks a later refund of this gap.
+                                    watch.queued_child_wait = dict(queued)
                             spent = time.monotonic() - queued_checkpoint
                             watch.shift(spent)
                             if deadline is not None:

@@ -174,9 +174,40 @@ def _queue(tmp_path: Path, cas) -> AdmittedQueueFixture:
         default_demand={"cpu": 1, "mem_gb": 1})
 
 
-def _coordinator(tmp_path: Path, cas, plan, *, seconds: float):
+def _controller_state(tmp_path: Path, children, *, name: str = "controller-state"):
+    """An isolated controller-state directory naming these children."""
+
+    state = tmp_path / name
+    state.mkdir(parents=True, exist_ok=True)
+    waves = {"waves": [{
+        "wave": 1, "closed": False,
+        "members": [
+            {"batch": f"child-{ordinal:05d}",
+             "key": child["action_key"]}
+            for ordinal, child in enumerate(children)]}]}
+    (state / "wave-state.json").write_text(json.dumps(waves))
+    (state / "sub-keys.txt").write_text("".join(
+        f"child-{ordinal:05d} {child['action_key']}\n"
+        for ordinal, child in enumerate(children)))
+    return state
+
+
+def _awaited(plan, state: Path) -> dict:
+    return {"schema": pb.AWAITED_BATCH_SCHEMA_V1,
+            "parent_key": plan["parent_key"], "plan_key": plan["plan_key"],
+            "controller_state": str(state)}
+
+
+def _admitted(queue, cas, plan, state: Path, *, retained=None):
+    item = {"action_key": "c" * 64, "cas_root": str(cas.root)}
+    return queue._awaited_child_submissions(
+        item, awaited=_awaited(plan, state), retained=retained)
+
+
+def _coordinator(tmp_path: Path, cas, plan, children, *, seconds: float):
     """One claimed coordinator that declares the awaited batch."""
 
+    state = _controller_state(tmp_path, children)
     checkout = tmp_path / "coordinator-src"
     checkout.mkdir()
     (checkout / "task.py").write_text(
@@ -195,10 +226,7 @@ def _coordinator(tmp_path: Path, cas, plan, *, seconds: float):
         "code_closure": pb.build_code_closure(checkout, ["task.py"]),
         "params": {
             pb.PROGRESS_PARAM: policy,
-            pb.AWAITED_BATCH_PARAM: {
-                "schema": pb.AWAITED_BATCH_SCHEMA_V1,
-                "parent_key": plan["parent_key"],
-                "plan_key": plan["plan_key"]}},
+            pb.AWAITED_BATCH_PARAM: _awaited(plan, state)},
         "environment": {"variables": {}, "toolchain": {}},
         "execution_scope": {
             "portability": "portable", "platform_key": None,
@@ -214,7 +242,7 @@ def _coordinator(tmp_path: Path, cas, plan, *, seconds: float):
     claimed = queue.claim()
     assert claimed is not None, "the coordinator must claim before its child publishes"
     assert claimed["action_key"] == action["action_key"], claimed
-    return queue, claimed
+    return queue, claimed, state
 
 
 def test_a_child_with_other_keys_earns_no_credit(tmp_path: Path) -> None:
@@ -249,11 +277,10 @@ def test_a_child_with_other_keys_earns_no_credit(tmp_path: Path) -> None:
     queue.publish(
         action_key=foreign["action_key"], cas_root=cas.root,
         checkout_root=checkout, worker_script="/bin/true")
-    item = {"action_key": "c" * 64, "cas_root": str(cas.root)}
-    awaited = {"schema": pb.AWAITED_BATCH_SCHEMA_V1,
-               "parent_key": plan["parent_key"], "plan_key": plan["plan_key"]}
-    admitted = queue._awaited_child_submissions(item, awaited=awaited)
-    assert admitted == {}
+    state = _controller_state(tmp_path, [children[0]], name="controller-foreign")
+    awaited = _awaited(plan, state)
+    admitted = _admitted(queue, cas, plan, state)
+    assert set(admitted) == {children[0]["action_key"]}, admitted
     verdict = queue.queued_child_wait_verdict(
         "c" * 64, cas_root=str(cas.root), awaited=awaited,
         admitted={foreign["action_key"]: {}})
@@ -289,8 +316,8 @@ def test_a_child_with_no_logical_batch_earns_no_credit(tmp_path: Path) -> None:
     queue.publish(
         action_key=plain["action_key"], cas_root=cas.root,
         checkout_root=checkout, worker_script="/bin/true")
-    awaited = {"schema": pb.AWAITED_BATCH_SCHEMA_V1,
-               "parent_key": plan["parent_key"], "plan_key": plan["plan_key"]}
+    state = _controller_state(tmp_path, [children[0]], name="controller-plain")
+    awaited = _awaited(plan, state)
     verdict = queue.queued_child_wait_verdict(
         "c" * 64, cas_root=str(cas.root), awaited=awaited,
         admitted={plain["action_key"]: {}})
@@ -304,8 +331,8 @@ def test_an_unreadable_child_request_earns_no_credit(tmp_path: Path) -> None:
     cas, plan, children = _batch(tmp_path)
     queue = _queue(tmp_path, cas)
     missing = "d" * 64
-    awaited = {"schema": pb.AWAITED_BATCH_SCHEMA_V1,
-               "parent_key": plan["parent_key"], "plan_key": plan["plan_key"]}
+    state = _controller_state(tmp_path, [children[0]], name="controller-missing")
+    awaited = _awaited(plan, state)
     verdict = queue.queued_child_wait_verdict(
         "c" * 64, cas_root=str(cas.root), awaited=awaited,
         admitted={missing: {}})
@@ -328,8 +355,8 @@ def test_a_child_with_a_foreign_ordinal_earns_no_credit(tmp_path: Path) -> None:
     wrong.pop("action_key", None)
     sealed = pb.seal_action({k: v for k, v in wrong.items() if k != "action_key"})
     cas.publish_action_request(sealed)
-    awaited = {"schema": pb.AWAITED_BATCH_SCHEMA_V1,
-               "parent_key": plan["parent_key"], "plan_key": plan["plan_key"]}
+    state = _controller_state(tmp_path, [children[0]], name="controller-ordinal")
+    awaited = _awaited(plan, state)
     verdict = queue.queued_child_wait_verdict(
         "c" * 64, cas_root=str(cas.root), awaited=awaited,
         admitted={sealed["action_key"]: {}})
@@ -350,8 +377,8 @@ def test_a_child_with_foreign_tasks_earns_no_credit(tmp_path: Path) -> None:
     wrong.pop("action_key", None)
     sealed = pb.seal_action({k: v for k, v in wrong.items() if k != "action_key"})
     cas.publish_action_request(sealed)
-    awaited = {"schema": pb.AWAITED_BATCH_SCHEMA_V1,
-               "parent_key": plan["parent_key"], "plan_key": plan["plan_key"]}
+    state = _controller_state(tmp_path, [children[0]], name="controller-tasks")
+    awaited = _awaited(plan, state)
     verdict = queue.queued_child_wait_verdict(
         "c" * 64, cas_root=str(cas.root), awaited=awaited,
         admitted={sealed["action_key"]: {}})
@@ -364,7 +391,8 @@ def test_a_coordinator_survives_a_queue_wait_past_twice_its_allowance(
     """Quiet past twice the allowance, with a ready child, is not ended."""
 
     cas, plan, children = _batch(tmp_path)
-    queue, item = _coordinator(tmp_path, cas, plan, seconds=2.5)
+    queue, item, _state = _coordinator(
+        tmp_path, cas, plan, [children[0]], seconds=2.5)
     checkout = tmp_path / "held-src"
     checkout.mkdir()
     (checkout / "t.py").write_text("x")
@@ -386,7 +414,8 @@ def test_a_coordinator_ends_no_progress_with_no_awaited_child_ready(
     """With no awaited child ready or claimed, the allowance still ends it."""
 
     cas, plan, children = _batch(tmp_path)
-    queue, item = _coordinator(tmp_path, cas, plan, seconds=30.0)
+    queue, item, _state = _coordinator(
+        tmp_path, cas, plan, [children[0]], seconds=30.0)
     outcome = queue.execute(item, timeout_s=30.0, heartbeat_s=0.05,
                             timeout_grace_s=0.2)
     assert outcome["status"] == "timeout", outcome
@@ -399,7 +428,8 @@ def test_a_coordinator_ends_no_progress_once_the_child_is_terminal(
     """Survival during the wait, then expiry once nothing is queued."""
 
     cas, plan, children = _batch(tmp_path)
-    queue, item = _coordinator(tmp_path, cas, plan, seconds=30.0)
+    queue, item, _state = _coordinator(
+        tmp_path, cas, plan, [children[0]], seconds=30.0)
     checkout = tmp_path / "held-src"
     checkout.mkdir()
     (checkout / "t.py").write_text("x")
@@ -445,24 +475,24 @@ def test_a_first_sighting_is_a_baseline_and_earns_no_credit(
     queue.publish(
         action_key=children[0]["action_key"], cas_root=cas.root,
         checkout_root=checkout, worker_script="/bin/true")
-    awaited = {"schema": pb.AWAITED_BATCH_SCHEMA_V1,
-               "parent_key": plan["parent_key"], "plan_key": plan["plan_key"]}
-    admitted = queue._awaited_child_submissions(
-        {"action_key": "c" * 64, "cas_root": str(cas.root)}, awaited=awaited)
+    state = _controller_state(tmp_path, [children[0]], name="controller-baseline")
+    awaited = _awaited(plan, state)
+    admitted = _admitted(queue, cas, plan, state)
+    assert set(admitted) == {children[0]["action_key"]}, admitted
     first = queue.queued_child_wait_verdict(
         "c" * 64, cas_root=str(cas.root), awaited=awaited,
         admitted=admitted, prior=None)
     assert first["exempt"] is False
     assert first["children"][0]["evidence"] == "baseline"
+    first["sample_monotonic"] = 100.0
     second = queue.queued_child_wait_verdict(
         "c" * 64, cas_root=str(cas.root), awaited=awaited,
-        admitted=queue._awaited_child_submissions(
-            {"action_key": "c" * 64, "cas_root": str(cas.root)},
-            awaited=awaited, retained={
-                key: {} for key in admitted}),
+        admitted=_admitted(queue, cas, plan, state, retained={
+            key: {} for key in admitted}),
         prior=first)
     assert second["exempt"] is True
     assert second["children"][0]["evidence"] == "carried"
+    assert second["since_monotonic"] == 100.0
 
 
 def test_a_replacement_child_is_a_new_baseline(tmp_path: Path) -> None:
@@ -477,12 +507,12 @@ def test_a_replacement_child_is_a_new_baseline(tmp_path: Path) -> None:
     queue.publish(
         action_key=children[0]["action_key"], cas_root=cas.root,
         checkout_root=checkout, worker_script="/bin/true")
-    awaited = {"schema": pb.AWAITED_BATCH_SCHEMA_V1,
-               "parent_key": plan["parent_key"], "plan_key": plan["plan_key"]}
-    item = {"action_key": "c" * 64, "cas_root": str(cas.root)}
+    state = _controller_state(
+        tmp_path, [children[0], children[1]], name="controller-replace")
+    awaited = _awaited(plan, state)
     first = queue.queued_child_wait_verdict(
         "c" * 64, cas_root=str(cas.root), awaited=awaited,
-        admitted=queue._awaited_child_submissions(item, awaited=awaited),
+        admitted=_admitted(queue, cas, plan, state),
         prior=None)
     assert first["exempt"] is False
     queue.withdraw(children[0]["action_key"], by="test-replace")
@@ -491,19 +521,20 @@ def test_a_replacement_child_is_a_new_baseline(tmp_path: Path) -> None:
         checkout_root=checkout, worker_script="/bin/true")
     replacement = queue.queued_child_wait_verdict(
         "c" * 64, cas_root=str(cas.root), awaited=awaited,
-        admitted=queue._awaited_child_submissions(item, awaited=awaited),
+        admitted=_admitted(queue, cas, plan, state),
         prior=first)
     assert replacement["exempt"] is False
     live = [entry for entry in replacement["children"]
             if entry["key"] == children[1]["action_key"]]
     assert live and live[0]["evidence"] == "baseline", replacement
+    replacement["sample_monotonic"] = 200.0
     carried = queue.queued_child_wait_verdict(
         "c" * 64, cas_root=str(cas.root), awaited=awaited,
-        admitted=queue._awaited_child_submissions(
-            item, awaited=awaited,
-            retained={children[1]["action_key"]: {}}),
+        admitted=_admitted(queue, cas, plan, state,
+                           retained={children[1]["action_key"]: {}}),
         prior=replacement)
     assert carried["exempt"] is True
+    assert carried["since_monotonic"] == 200.0
 
 
 def test_a_missing_admitted_child_blocks_a_live_sibling(tmp_path: Path) -> None:
@@ -521,14 +552,14 @@ def test_a_missing_admitted_child_blocks_a_live_sibling(tmp_path: Path) -> None:
     queue.publish(
         action_key=children[1]["action_key"], cas_root=cas.root,
         checkout_root=checkout, worker_script="/bin/true")
-    awaited = {"schema": pb.AWAITED_BATCH_SCHEMA_V1,
-               "parent_key": plan["parent_key"], "plan_key": plan["plan_key"]}
-    item = {"action_key": "c" * 64, "cas_root": str(cas.root)}
-    admitted = queue._awaited_child_submissions(item, awaited=awaited)
+    state = _controller_state(
+        tmp_path, [children[0], children[1]], name="controller-missing-sibling")
+    awaited = _awaited(plan, state)
+    admitted = _admitted(queue, cas, plan, state)
     assert len(admitted) == 2, admitted
     queue.item_path(pool.READY, children[1]["action_key"]).unlink()
-    retained = queue._awaited_child_submissions(
-        item, awaited=awaited, retained={key: {} for key in admitted})
+    retained = _admitted(queue, cas, plan, state, retained={
+        key: {} for key in admitted})
     assert children[1]["action_key"] in retained, retained
     verdict = queue.queued_child_wait_verdict(
         "c" * 64, cas_root=str(cas.root), awaited=awaited,
@@ -552,8 +583,8 @@ def test_an_older_worker_cannot_claim_an_awaited_coordinator(
     (checkout / "task.py").write_text("print('ok')\n")
     policy = {"schema": pb.PROGRESS_POLICY_SCHEMA_V1,
               "phases": [{"name": "run", "grace_s": 60.0}]}
-    awaited = {"schema": pb.AWAITED_BATCH_SCHEMA_V1,
-               "parent_key": plan["parent_key"], "plan_key": plan["plan_key"]}
+    state = _controller_state(tmp_path, [children[0]], name="controller-capable")
+    awaited = _awaited(plan, state)
     action = pb.seal_action({
         "schema": pb.ACTION_SCHEMA_V2,
         "task": {
@@ -606,8 +637,8 @@ def test_a_missing_child_with_a_verified_result_is_durable(tmp_path: Path) -> No
     # Remove the terminal record: the queue no longer names the child, but
     # the CAS still verifies its durable result.
     queue.item_path(pool.DONE, children[0]["action_key"]).unlink()
-    awaited = {"schema": pb.AWAITED_BATCH_SCHEMA_V1,
-               "parent_key": plan["parent_key"], "plan_key": plan["plan_key"]}
+    state = _controller_state(tmp_path, [children[0]], name="controller-durable")
+    awaited = _awaited(plan, state)
     verdict = queue.queued_child_wait_verdict(
         "c" * 64, cas_root=str(cas.root), awaited=awaited,
         admitted={children[0]["action_key"]: {}})
@@ -777,7 +808,8 @@ def test_awaited_batch_needs_progress_phases(tmp_path: Path) -> None:
             "code_closure": pb.build_code_closure(checkout, ["t.py"]),
             "params": {"progress_awaited_batch": {
                 "schema": pb.AWAITED_BATCH_SCHEMA_V1,
-                "parent_key": "a" * 64, "plan_key": "b" * 64}},
+                "parent_key": "a" * 64, "plan_key": "b" * 64,
+                "controller_state": str(tmp_path / "controller-state")}},
             "environment": {"variables": {}, "toolchain": {}},
             "execution_scope": {
                 "portability": "portable", "platform_key": None,
@@ -803,9 +835,9 @@ def test_a_cleanup_tombstone_is_neither_credited_nor_released(
         children[0]["action_key"], expect=claimed)
     assert mine and tombstone is not None
     try:
-        awaited = {"schema": pb.AWAITED_BATCH_SCHEMA_V1,
-                   "parent_key": plan["parent_key"],
-                   "plan_key": plan["plan_key"]}
+        state = _controller_state(
+            tmp_path, [children[0]], name="controller-tombstone")
+        awaited = _awaited(plan, state)
         verdict = queue.queued_child_wait_verdict(
             "c" * 64, cas_root=str(cas.root), awaited=awaited,
             admitted={children[0]["action_key"]: dict(claimed)})
@@ -906,16 +938,298 @@ def test_a_child_with_three_tasks_counts_one_unit(tmp_path: Path) -> None:
 
 
 def test_a_pending_only_child_earns_no_credit(tmp_path: Path) -> None:
-    """Intent without a queue row is not admission and earns nothing."""
+    """Intent without controller acceptance is not admission and earns nothing."""
 
     cas, plan, children = _batch(tmp_path)
     queue = _queue(tmp_path, cas)
-    awaited = {"schema": pb.AWAITED_BATCH_SCHEMA_V1,
-               "parent_key": plan["parent_key"], "plan_key": plan["plan_key"]}
-    item = {"action_key": "c" * 64, "cas_root": str(cas.root)}
-    # Prepared but never published: the admitted set is empty.
-    assert queue._awaited_child_submissions(item, awaited=awaited) == {}
+    state = _controller_state(tmp_path, [], name="controller-pending")
+    (state / "wave-state.json").write_text(json.dumps({"waves": [{
+        "wave": 1, "closed": False,
+        "members": [{"batch": "pending_submission",
+                     "key": children[0]["action_key"]}]}]}))
+    (state / "sub-keys.txt").write_text(
+        f"pending_submission {children[0]['action_key']}\n")
+    awaited = _awaited(plan, state)
+    # Intent only, in both files: the admitted set stays empty.
+    assert _admitted(queue, cas, plan, state) == {}
     verdict = queue.queued_child_wait_verdict(
         "c" * 64, cas_root=str(cas.root), awaited=awaited, admitted={})
     assert verdict["exempt"] is False
     assert verdict["children"] == []
+
+def test_an_unreadable_wave_state_refuses_the_credit(tmp_path: Path) -> None:
+    """A missing custody file carries custody and credits nothing."""
+
+    cas, plan, children = _batch(tmp_path)
+    queue = _queue(tmp_path, cas)
+    checkout = tmp_path / "held-src"
+    checkout.mkdir()
+    (checkout / "t.py").write_text("x")
+    queue.publish(
+        action_key=children[0]["action_key"], cas_root=cas.root,
+        checkout_root=checkout, worker_script="/bin/true")
+    state = _controller_state(tmp_path, [children[0]], name="controller-unreadable")
+    awaited = _awaited(plan, state)
+    admitted = _admitted(queue, cas, plan, state)
+    assert set(admitted) == {children[0]["action_key"]}, admitted
+    (state / "wave-state.json").unlink()
+    custody, refusal = queue._awaited_controller_custody(
+        str(state), parent_key=plan["parent_key"], plan_key=plan["plan_key"])
+    assert custody is None and "missing" in refusal
+    retained = _admitted(queue, cas, plan, state, retained={
+        key: {} for key in admitted})
+    assert set(retained) == {children[0]["action_key"]}, retained
+    verdict = queue.queued_child_wait_verdict(
+        "c" * 64, cas_root=str(cas.root), awaited=awaited,
+        admitted=retained,
+        prior={"sample_monotonic": 100.0, "children": [{
+            "key": children[0]["action_key"], "state": pool.READY,
+            "evidence": "baseline", "ordinal": 0,
+            "parent_key": plan["parent_key"],
+            "plan_key": plan["plan_key"]}]})
+    assert verdict["exempt"] is False
+    assert "since_monotonic" not in verdict
+
+
+def test_an_unknown_custody_shape_refuses_the_credit(tmp_path: Path) -> None:
+    """An extra key, field, type or non-hex key refuses the credit."""
+
+    cas, plan, children = _batch(tmp_path)
+    queue = _queue(tmp_path, cas)
+    state = _controller_state(tmp_path, [children[0]], name="controller-shape")
+    shapes = [
+        {"waves": [], "schema": "extra"},
+        {"waves": [{"wave": 1, "closed": False, "members": [],
+                    "extra": 1}]},
+        {"waves": [{"wave": 1, "closed": False, "members": [
+            {"batch": "child-00000", "key": children[0]["action_key"],
+             "extra": 1}]}]},
+        {"waves": [{"wave": "1", "closed": False, "members": []}]},
+        {"waves": [{"wave": 1, "closed": False, "members": [
+            {"batch": "child-00000", "key": "not-hex"}]}]},
+    ]
+    for shape in shapes:
+        (state / "wave-state.json").write_text(json.dumps(shape))
+        custody, refusal = queue._awaited_controller_custody(
+            str(state), parent_key=plan["parent_key"],
+            plan_key=plan["plan_key"])
+        assert custody is None and refusal, shape
+    (state / "wave-state.json").write_text(json.dumps({"waves": [{
+        "wave": 1, "closed": False, "members": [
+            {"batch": "child-00000",
+             "key": children[0]["action_key"]}]}]}))
+    (state / "sub-keys.txt").write_text("child-00000 not-hex\n")
+    custody, refusal = queue._awaited_controller_custody(
+        str(state), parent_key=plan["parent_key"], plan_key=plan["plan_key"])
+    assert custody is None and "64-hex" in refusal
+
+
+def test_a_key_in_one_custody_file_earns_no_credit(tmp_path: Path) -> None:
+    """A member the journal does not confirm is not awaited."""
+
+    cas, plan, children = _batch(tmp_path)
+    queue = _queue(tmp_path, cas)
+    assert len(children) >= 2, "the batch needs two children for this"
+    state = _controller_state(
+        tmp_path, [children[0], children[1]], name="controller-split")
+    (state / "sub-keys.txt").write_text(
+        f"child-00000 {children[0]['action_key']}\n")
+    custody, refusal = queue._awaited_controller_custody(
+        str(state), parent_key=plan["parent_key"], plan_key=plan["plan_key"])
+    assert refusal == ""
+    assert custody == {children[0]["action_key"]: "child-00000"}, custody
+    assert set(_admitted(queue, cas, plan, state)) == {
+        children[0]["action_key"]}
+
+
+def test_a_member_outside_the_plan_earns_no_credit(tmp_path: Path) -> None:
+    """A custody key the sealed batch cannot bind blocks the credit."""
+
+    cas, plan, children = _batch(tmp_path)
+    queue = _queue(tmp_path, cas)
+    checkout = tmp_path / "held-src"
+    checkout.mkdir()
+    (checkout / "t.py").write_text("x")
+    queue.publish(
+        action_key=children[0]["action_key"], cas_root=cas.root,
+        checkout_root=checkout, worker_script="/bin/true")
+    outsider = "f" * 64
+    state = _controller_state(tmp_path, [children[0]], name="controller-outside")
+    (state / "wave-state.json").write_text(json.dumps({"waves": [{
+        "wave": 1, "closed": False, "members": [
+            {"batch": "child-00000", "key": children[0]["action_key"]},
+            {"batch": "child-00999", "key": outsider}]}]}))
+    with open(state / "sub-keys.txt", "a") as handle:
+        handle.write(f"child-00999 {outsider}\n")
+    awaited = _awaited(plan, state)
+    admitted = _admitted(queue, cas, plan, state)
+    assert set(admitted) == {children[0]["action_key"], outsider}, admitted
+    verdict = queue.queued_child_wait_verdict(
+        "c" * 64, cas_root=str(cas.root), awaited=awaited,
+        admitted=admitted,
+        prior={"sample_monotonic": 100.0, "children": [{
+            "key": children[0]["action_key"], "state": pool.READY,
+            "evidence": "baseline", "ordinal": 0,
+            "parent_key": plan["parent_key"],
+            "plan_key": plan["plan_key"]}]})
+    assert verdict["exempt"] is False
+    assert verdict["missing"] == [outsider], verdict
+
+
+def test_an_initially_absent_member_blocks_a_live_sibling(tmp_path: Path) -> None:
+    """Custody names the absent child before any queue row does."""
+
+    cas, plan, children = _batch(tmp_path)
+    queue = _queue(tmp_path, cas)
+    assert len(children) >= 2, "the batch needs two children for this"
+    checkout = tmp_path / "held-src"
+    checkout.mkdir()
+    (checkout / "t.py").write_text("x")
+    queue.publish(
+        action_key=children[0]["action_key"], cas_root=cas.root,
+        checkout_root=checkout, worker_script="/bin/true")
+    state = _controller_state(
+        tmp_path, [children[0], children[1]], name="controller-absent")
+    awaited = _awaited(plan, state)
+    admitted = _admitted(queue, cas, plan, state)
+    assert set(admitted) == {
+        children[0]["action_key"], children[1]["action_key"]}, admitted
+    verdict = queue.queued_child_wait_verdict(
+        "c" * 64, cas_root=str(cas.root), awaited=awaited,
+        admitted=admitted,
+        prior={"sample_monotonic": 100.0, "children": [{
+            "key": children[0]["action_key"], "state": pool.READY,
+            "evidence": "baseline", "ordinal": 0,
+            "parent_key": plan["parent_key"],
+            "plan_key": plan["plan_key"]}]})
+    assert verdict["exempt"] is False
+    assert verdict["missing"] == [children[1]["action_key"]], verdict
+
+
+def test_an_unreadable_retained_request_stays_missing(tmp_path: Path) -> None:
+    """A request that stops reading stays in the verdict, not foreign-covered."""
+
+    cas, plan, children = _batch(tmp_path)
+    queue = _queue(tmp_path, cas)
+    assert len(children) >= 2, "the batch needs two children for this"
+    checkout = tmp_path / "held-src"
+    checkout.mkdir()
+    (checkout / "t.py").write_text("x")
+    queue.publish(
+        action_key=children[0]["action_key"], cas_root=cas.root,
+        checkout_root=checkout, worker_script="/bin/true")
+    queue.publish(
+        action_key=children[1]["action_key"], cas_root=cas.root,
+        checkout_root=checkout, worker_script="/bin/true")
+    state = _controller_state(
+        tmp_path, [children[0], children[1]], name="controller-request")
+    awaited = _awaited(plan, state)
+    admitted = _admitted(queue, cas, plan, state)
+    assert set(admitted) == {
+        children[0]["action_key"], children[1]["action_key"]}, admitted
+    request_path = (cas.root / "requests" / children[1]["action_key"][:2]
+                    / f"{children[1]['action_key']}.json")
+    request_path.unlink()
+    retained = _admitted(queue, cas, plan, state, retained={
+        key: {} for key in admitted})
+    assert set(retained) == {
+        children[0]["action_key"], children[1]["action_key"]}, retained
+    verdict = queue.queued_child_wait_verdict(
+        "c" * 64, cas_root=str(cas.root), awaited=awaited,
+        admitted=retained,
+        prior={"sample_monotonic": 100.0, "children": [{
+            "key": children[0]["action_key"], "state": pool.READY,
+            "evidence": "baseline", "ordinal": 0,
+            "parent_key": plan["parent_key"],
+            "plan_key": plan["plan_key"]}]})
+    assert verdict["exempt"] is False
+    assert verdict["missing"] == [children[1]["action_key"]], verdict
+
+
+def test_a_terminal_transition_keeps_its_earned_credit(tmp_path: Path) -> None:
+    """Intervals credited before the child ends stay credited."""
+
+    cas, plan, children = _batch(tmp_path)
+    queue = _queue(tmp_path, cas)
+    checkout = tmp_path / "held-src"
+    checkout.mkdir()
+    (checkout / "t.py").write_text("x")
+    queue.publish(
+        action_key=children[0]["action_key"], cas_root=cas.root,
+        checkout_root=checkout, worker_script="/bin/true")
+    state = _controller_state(
+        tmp_path, [children[0]], name="controller-terminal")
+    awaited = _awaited(plan, state)
+    admitted = _admitted(queue, cas, plan, state)
+    first = queue.queued_child_wait_verdict(
+        "c" * 64, cas_root=str(cas.root), awaited=awaited,
+        admitted=admitted, prior=None)
+    assert first["exempt"] is False
+    first["sample_monotonic"] = 100.0
+    watch = pool.ProgressWatch(
+        tmp_path / "progress.json", "t" * 32,
+        pool.ProgressPolicy(
+            phases=(pool.ProgressPhase("run", 60.0, None),),
+            ceiling_s=None, awaited_batch=awaited),
+        started=90.0)
+    second = queue.queued_child_wait_verdict(
+        "c" * 64, cas_root=str(cas.root), awaited=awaited,
+        admitted=_admitted(queue, cas, plan, state), prior=first)
+    assert second["exempt"] is True
+    credit = watch.exempt_queued_child_wait(
+        second, now=110.0, since_monotonic=second["since_monotonic"])
+    assert credit == 10.0
+    assert watch.queued_child_wait_exempt_s == 10.0
+    queue.withdraw(children[0]["action_key"], by="test-terminal-credit")
+    second["sample_monotonic"] = 110.0
+    third = queue.queued_child_wait_verdict(
+        "c" * 64, cas_root=str(cas.root), awaited=awaited,
+        admitted=_admitted(queue, cas, plan, state), prior=second)
+    assert third["exempt"] is False
+    watch.queued_child_wait = dict(third)
+    assert watch.queued_child_wait_exempt_s == 10.0
+
+
+def test_a_blocked_interval_never_refunds(tmp_path: Path) -> None:
+    """A gap a missing member blocked starts no credit before it clears."""
+
+    cas, plan, children = _batch(tmp_path)
+    queue = _queue(tmp_path, cas)
+    assert len(children) >= 2, "the batch needs two children for this"
+    checkout = tmp_path / "held-src"
+    checkout.mkdir()
+    (checkout / "t.py").write_text("x")
+    queue.publish(
+        action_key=children[0]["action_key"], cas_root=cas.root,
+        checkout_root=checkout, worker_script="/bin/true")
+    state = _controller_state(
+        tmp_path, [children[0], children[1]], name="controller-blocked")
+    awaited = _awaited(plan, state)
+    watch = pool.ProgressWatch(
+        tmp_path / "progress.json", "t" * 32,
+        pool.ProgressPolicy(
+            phases=(pool.ProgressPhase("run", 60.0, None),),
+            ceiling_s=None, awaited_batch=awaited),
+        started=90.0)
+    first = queue.queued_child_wait_verdict(
+        "c" * 64, cas_root=str(cas.root), awaited=awaited,
+        admitted=_admitted(queue, cas, plan, state), prior=None)
+    assert first["exempt"] is False
+    assert first["missing"] == [children[1]["action_key"]], first
+    assert "since_monotonic" not in first
+    first["sample_monotonic"] = 100.0
+    watch.queued_child_wait = dict(first)
+    queue.publish(
+        action_key=children[1]["action_key"], cas_root=cas.root,
+        checkout_root=checkout, worker_script="/bin/true")
+    second = queue.queued_child_wait_verdict(
+        "c" * 64, cas_root=str(cas.root), awaited=awaited,
+        admitted=_admitted(queue, cas, plan, state),
+        prior=watch.queued_child_wait)
+    # The newly live child is a baseline on its first look, so this
+    # interval cannot credit: the blocked gap earns nothing, and only a
+    # later interval with a carried child can, from its own start.
+    entries = {entry["key"]: entry for entry in second["children"]}
+    assert entries[children[1]["action_key"]]["evidence"] == "baseline"
+    assert watch.queued_child_wait_exempt_s == 0.0
+
