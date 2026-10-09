@@ -490,12 +490,13 @@ def _whole_cpu_gang(gang_fleet, monkeypatch, tmp_path, mover_tool):
 
 
 def _run_the_mover_and_start_the_gang(gang_fleet, monkeypatch, tmp_path, mover, cas, checkout,
-                                      need, first, second, *, role):
+                                      need, first, second, *, role, published=False):
     from test_gang_residency_members import _compose_map
     queue, clock, publish, finish, gclaim, denial, members = gang_fleet
     stage = tmp_path / "stage"
     stage.mkdir()
-    _enqueue(queue, clock, mover, cas, checkout, resources=need, residency=RANGE)
+    if not published:
+        _enqueue(queue, clock, mover, cas, checkout, resources=need, residency=RANGE)
     assert _roles(queue, mover) == ([role] if role else [])
     assert gclaim("sparky") == mover, denial(mover, "sparky")
     queue.record_move(mover, {
@@ -550,6 +551,29 @@ def _lose_the_copy(kind, retained, monkeypatch, tmp_path):
         receipt.chmod(0o644)
         receipt.write_text(receipt.read_text().replace("c" * 40, "9" * 40))
         receipt.chmod(0o444)
+
+
+def test_a_mark_derived_on_a_box_without_the_copy_is_honoured_on_the_box_that_has_it(
+        gang_fleet, store, monkeypatch, tmp_path):
+    """The control seat seals and publishes without being enrolled; the claiming host decides.
+
+    The mover is published while the protected copy is away from this filesystem (the publishing
+    box has none).  Its mark comes from the sealed definition alone.  The copy is back where the
+    claiming host looks, so the aged whole-CPU gang starts through that mover.
+    """
+    queue, clock, publish, finish, gclaim, denial, members = gang_fleet
+    mover, cas, checkout, need, first, second = _whole_cpu_gang(
+        gang_fleet, monkeypatch, tmp_path, _tool(store, "stage_move.py"))
+    away = store.with_name(store.name + ".away")
+    store.rename(away)
+    try:
+        assert runtime_publication.published_member(store / "tools" / "fleet" / "stage_move.py") is None
+        _enqueue(queue, clock, mover, cas, checkout, resources=need, residency=RANGE)
+    finally:
+        away.rename(store)
+    assert _roles(queue, mover) == ["serves_residency"]
+    _run_the_mover_and_start_the_gang(gang_fleet, monkeypatch, tmp_path, mover, cas, checkout,
+                                      need, first, second, role="serves_residency", published=True)
 
 
 @pytest.mark.parametrize("missing", ["absent", "stale", "other-receipt"])
