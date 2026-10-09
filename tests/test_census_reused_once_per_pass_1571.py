@@ -21,7 +21,8 @@ fleet = fleet_fixture
 
 CAPACITY = {"cpu": 20, "gpu": 1, "mem_gb": 120}
 TIERS = {"preferred": list(range(20)), "fallback": []}
-CANDIDATES = 6
+CANDIDATES = 80
+SIDECARS = 600
 
 
 def test_a_free_fence_scans_once_per_pass_not_twice_per_candidate(
@@ -30,6 +31,10 @@ def test_a_free_fence_scans_once_per_pass_not_twice_per_candidate(
     monkeypatch.setattr(adaptive_cpu, "BOX_STATE_ROOT", tmpfs_state / "box-state")
     holder = publish("reuse-holder", priority=10, cpu=2, gpu=0, mem_gb=112)
     assert claim() == holder
+    # Concluded, unelected sidecars remain valid census input until the
+    # bounded sweep removes them. They must not force a full scan per row.
+    for index in range(SIDECARS):
+        queue.record_pass(f"{index:064x}")
     keys = [publish(f"reuse-candidate-{index}", priority=-10,
                     cpu=2, gpu=0, mem_gb=16)
             for index in range(CANDIDATES)]
@@ -47,6 +52,8 @@ def test_a_free_fence_scans_once_per_pass_not_twice_per_candidate(
     assert queue.claim(
         capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True,
         has_gpu=True, tags=["gb10", "sparklina"], ready=records) is None
+    assert all(queue.passes(key) == 1 for key in keys), (
+        "every candidate must reach its resource decision, not a census refusal")
 
     assert len(scans) == 2, (
         "one locked census is two scans (discovery plus refresh); "

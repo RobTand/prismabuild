@@ -33,7 +33,6 @@ REFRESH_SECTION = "measurement-election-refresh-v1"
 #: contract: an abandonable owned child with durable reader ownership,
 #: and a refusal -- never a stall -- past the budget (#1571 review).
 REFRESH_BUDGET_S = 2.0
-MAX_REFRESH_RECORDS = 512
 MAX_RECORDS = 4096
 MAX_RECORD_BYTES = 4 * 1024 * 1024
 MAX_FENCE_BYTES = 4096
@@ -289,15 +288,10 @@ def _gang_elections(queue: PoolQueue, rows: dict[str, list[dict]], count: int) -
 def _scan_election_refresh(queue: PoolQueue) -> dict:
     """Changed elections only; called only by the read-only refresh child.
 
-    A small census: the passes sidecars that carry a canonical selection
-    plus the live-member proof each gang election needs. A reused census
-    holds everything else already. Gang liveness is proved exactly as in
-    :func:`_gang_elections`: a member row still READY or CLAIMED at the
-    member's exact generation, else the election is not live. Records
-    cap at ``MAX_REFRESH_RECORDS``: a fleet that outgrows a refresh
-    refuses it, and the pass reads fresh. A sidecar that vanishes
-    between listing and reading is the queue race :func:`_capture`
-    already names, not an outage.
+    Read pass sidecars and exact live gang members, not the full queue.
+    Use the complete census record cap. A refresh refusal ends admission
+    for this pass; it must not trigger complete scans for later candidates.
+    A vanished sidecar is not retirement authority.
     """
     from . import _gang
     from . import pool as pool_mod
@@ -307,13 +301,13 @@ def _scan_election_refresh(queue: PoolQueue) -> dict:
             entry.name for entry in os.scandir(_gang.root(queue)))
     except FileNotFoundError:
         gang_names = []
+    count += len(gang_names)
+    if count > MAX_RECORDS:
+        raise CensusUnavailable("measurement refresh record cap exceeded")
     groups: dict[str, dict] = {}
     for name in gang_names:
         if not name.endswith(".json") or name.startswith("."):
             continue
-        count += 1
-        if count > MAX_REFRESH_RECORDS:
-            raise CensusUnavailable("measurement refresh record cap exceeded")
         group = name[:-5]
         record = _gang.read_group(queue, group)
         if record is None or _gang.teardown(queue, group) is not None:
@@ -324,13 +318,13 @@ def _scan_election_refresh(queue: PoolQueue) -> dict:
             entry.name for entry in os.scandir(queue.root / pool_mod.PASSES))
     except FileNotFoundError:
         pass_names = []
+    count += len(pass_names)
+    if count > MAX_RECORDS:
+        raise CensusUnavailable("measurement refresh record cap exceeded")
     selections: dict[str, dict] = {}
     for name in pass_names:
         if not name.endswith(".json") or not pool_mod._is_hex64(name[:-5]):
             continue
-        count += 1
-        if count > MAX_REFRESH_RECORDS:
-            raise CensusUnavailable("measurement refresh record cap exceeded")
         try:
             record = _read(queue.root / pool_mod.PASSES / name)
         except PublicationDisappeared:
@@ -352,7 +346,7 @@ def _scan_election_refresh(queue: PoolQueue) -> dict:
             rows: list = []
             for state in (pool_mod.READY, pool_mod.CLAIMED):
                 count += 1
-                if count > MAX_REFRESH_RECORDS:
+                if count > MAX_RECORDS:
                     raise CensusUnavailable("measurement refresh record cap exceeded")
                 row = _read(queue.item_path(state, key), optional=True)
                 if row is None:
@@ -368,7 +362,7 @@ def _scan_election_refresh(queue: PoolQueue) -> dict:
         except _gang.GangContractError as exc:
             raise CensusUnavailable(str(exc)) from exc
         count += len(found)
-        if count > MAX_REFRESH_RECORDS:
+        if count > MAX_RECORDS:
             raise CensusUnavailable("measurement refresh record cap exceeded")
         live = [member for member in record["members"]
                 if any(float(row["published_unix"]) == member["published_unix"]
@@ -457,16 +451,7 @@ class CensusReader:
                         if remaining is None or remaining <= 0:
                             raise CensusUnavailable("measurement census reader busy") from None
                         time.sleep(min(FENCE_POLL_S, remaining))
-                marker = self.directory / self.name
-                previous = _read(marker, optional=True, limit=MAX_FENCE_BYTES)
-                if previous is not None:
-                    ownership = reader.ReaderOwnership.from_record(previous)
-                    if ownership.section not in (READ_SECTION, REFRESH_SECTION):
-                        raise CensusUnavailable("retained measurement census reader unresolved")
-                    if reader.reader_liveness(
-                            ownership, pool_identity=self.pool_identity,
-                            section=ownership.section) != "settled":
-                        raise CensusUnavailable("retained measurement census reader unresolved")
+                self._check_settled_reader()
             except (OSError, ValueError, core.PrismaBuildError, reader.ReaderOwnershipUnavailable,
                     local_scratch.LocalScratchError) as exc:
                 raise CensusUnavailable(str(exc)) from exc
@@ -480,40 +465,35 @@ class CensusReader:
                 os.close(lock)
             os.close(directory)
 
+    def _check_settled_reader(self) -> None:
+        """Refuse live or unknown ownership while the caller holds the guard."""
+        previous = _read(self.directory / self.name, optional=True, limit=MAX_FENCE_BYTES)
+        if previous is None:
+            return
+        ownership = reader.ReaderOwnership.from_record(previous)
+        if (ownership.section not in (READ_SECTION, REFRESH_SECTION)
+                or reader.reader_liveness(
+                    ownership, pool_identity=self.pool_identity,
+                    section=ownership.section) != "settled"):
+            raise CensusUnavailable("retained measurement census reader unresolved")
+
     def capture(self) -> dict:
         if self._held is not None:
             return self._census(self._held[0])
         with self.held():
             return self._census(self._held[0])
 
-    def _spawn_owned(self, directory: int | None, section: str, read, budget_s: float) -> dict:
-        """One owned bounded read of the shared queue (#1571 review).
-
-        The same contract :meth:`_census` uses: the child runs only
-        after its exact process/boot and pool/read identity is durable
-        in parent-owned local storage, the parent abandons it past the
-        budget, and a retained child refuses the next fence take until
-        its ownership settles. The refresh reuses the held census
-        fence's directory when the caller holds it, else its own take.
-        """
+    def _spawn_owned(self, directory: int, section: str, read, budget_s: float) -> dict:
+        """Start an owned child only under the guard, after exact settlement."""
+        if self._held is None or directory != self._held[0]:
+            raise CensusUnavailable("measurement reader requires its guard")
         try:
+            self._check_settled_reader()
             abandoned: list[dict] = []
             def persist(ownership: reader.ReaderOwnership) -> None:
                 payload = core._canonical_bytes(ownership.to_record())
                 if len(payload) > MAX_FENCE_BYTES:
                     raise CensusUnavailable("census ownership exceeds local cap")
-                if directory is None:
-                    marker = self.directory / self.name
-                    temporary = self.directory / (self.name + ".writing")
-                    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL
-                                         | os.O_NOFOLLOW, 0o600)
-                    try:
-                        reader._write_reader_payload(descriptor, payload)
-                        os.fsync(descriptor)
-                    finally:
-                        os.close(descriptor)
-                    os.replace(temporary, marker)
-                    return
                 temporary = self.name + ".writing"
                 descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                                      0o600, dir_fd=directory)
@@ -539,26 +519,20 @@ class CensusReader:
             raise CensusUnavailable(str(exc)) from exc
 
     def refresh_elections(self) -> dict:
-        """Changed elections through the owned-reader contract (#1571 review).
+        """Refresh elections under the reader guard, M, and host admission.
 
-        Runs under the elected measurement keys of this host plus host
-        admission, exactly like the refresh read :func:`locked_census`
-        runs there -- but through an abandonable owned child on a small
-        budget, never a direct shared read. The caller holds no fence
-        here (reuse skips it), so the marker write cannot use the held
-        fence descriptor; path opens stay safe because the constructor
-        and :meth:`held` already proved this directory local, private,
-        and owned by this user. A timeout or a retained child refuses
-        the reuse: the pass reads fresh, and the next fence take still
-        waits for the retained ownership to settle.
+        The caller takes the guard before M and H. Exact reader settlement
+        precedes each child. A failed or retained read refuses the pass.
         """
+        if self._held is None:
+            raise CensusUnavailable("measurement refresh requires reader guard")
         value = self._spawn_owned(
-            self._held[0] if self._held is not None else None,
+            self._held[0],
             REFRESH_SECTION, lambda: _scan_election_refresh(self.queue),
             REFRESH_BUDGET_S)
         if (set(value) != {"selections", "gang_elections"}
                 or not all(isinstance(value[field], dict) for field in value)
-                or len(value["selections"]) + len(value["gang_elections"]) > MAX_REFRESH_RECORDS):
+                or len(value["selections"]) + len(value["gang_elections"]) > MAX_RECORDS):
             raise CensusUnavailable("incomplete measurement refresh reply")
         for key, chosen in value["selections"].items():
             checked = selection({FIELD: chosen})
@@ -597,18 +571,14 @@ class PassCensus:
     inside one held reader fence, and the refresh runs while the pass
     holds host admission and the elected measurement keys of this host.
     Reuse keeps the first successful census for the rest of the pass:
-    later candidates re-take those locks and refresh only the small
-    election sources through a bounded owned child, never the fence or
-    the full scan.
+    later candidates take the reader guard before M and H, then refresh
+    only election sources through an owned child. No reuse performs a
+    complete publication scan.
 
-    Reuse ends where authority may have changed: this pass claims a row,
-    elects a gang member on this host, or elects a measurement on this
-    host; or a sibling loop's claim, gang election, or measurement
-    election lands under a later candidate. Each of those is found by a
-    fresh read, under that candidate's transition lock, before its
-    rename. A change that cannot retire authority -- a denial, a pass
-    count, a withhold -- changes nothing. A refusal is never reused: it
-    ends the census for the pass as before.
+    Each refresh detects new and replacement elections under host admission.
+    Stored measurement elections remain conservative through claims and
+    retirement. Only a complete census proves their retirement. A refusal
+    ends this pass; the next pass starts with a complete census.
     """
 
     def __init__(self, queue: PoolQueue, ledger: ResourceLedger, controller):
@@ -638,7 +608,7 @@ class PassCensus:
         self._selections = dict(census.get("selections") or {})
         self._gang_elections = dict(census.get("gang_elections") or {})
 
-    def _refresh_dynamic_elections(self, census_reader: CensusReader) -> bool:
+    def _refresh_dynamic_elections(self, census_reader: CensusReader) -> None:
         """Refresh live elections through a bounded owned child (#1571).
 
         Run only while the elected measurement keys of this host and
@@ -649,11 +619,9 @@ class PassCensus:
         -- the unsafe direction. So every reuse re-reads the small
         election sources through the same owned-reader contract as a
         census: an abandonable child, durable reader ownership, a
-        small budget, and a record cap. A timeout or a retained child
-        refuses the reuse, and the caller reads fresh; host admission
-        is never held past the budget. Election writers elect only
-        under host admission (#1517), so a completed refresh reads a
-        stable election state and the candidate then holds it.
+        small budget, and the census record cap. A timeout or retained child
+        refuses this pass. Election writers hold host admission (#1517).
+        A completed refresh reads a stable election state for this host.
 
         Merge errs toward fencing. A changed or new measurement
         selection joins the stored selections and elections at once:
@@ -667,16 +635,10 @@ class PassCensus:
         live-member proof from the same child read: a group whose
         members all left READY/CLAIMED -- a completed gang that files
         no teardown -- contributes no fence, exactly as in
-        :func:`_gang_elections`. A malformed election record fails
-        closed: the stored census is dropped and the caller reads
-        fresh. ``False`` means just that.
+        :func:`_gang_elections`. An unreadable election refuses the pass.
         """
         assert self._census is not None
-        try:
-            refreshed = census_reader.refresh_elections()
-        except CensusUnavailable:
-            self.invalidate()
-            return False
+        refreshed = census_reader.refresh_elections()
         selections = dict(self._selections or {})
         elections = dict((self._census.get("elections") or {}))
         for key, chosen in refreshed["selections"].items():
@@ -690,30 +652,20 @@ class PassCensus:
         self._census = current
         self._gang_elections = dict(refreshed["gang_elections"])
         self._selections = selections
-        return True
 
     def acquire(self, census_reader: CensusReader | None = None) -> ExitStack | None:
-        """Take the locks a reused census needs, without a scan (#1571).
+        """Take the reader guard, sorted M keys, then host admission.
 
-        The reader fence and the full queue scan stay untouched. Only
-        the elected measurement keys of this host plus host admission
-        are re-taken, exactly as :func:`locked_census` takes them for a
-        fresh read. Returns the lock stack the caller holds across
-        the candidate, or ``None`` when the locks did not come. A
-        busy elected key is recorded for :meth:`reused` to keep as a
-        live election, the conservative reading :func:`locked_census`
-        already uses. The live-election refresh runs under these
-        same locks through a bounded owned child: election writers
-        elect only under host admission (#1517), so a completed
-        refresh yields a stable state while the candidate holds it.
+        A busy elected key stays fenced. A busy reader refuses before M
+        or H. Any setup failure closes the complete lock stack.
         """
         if self._census is None:
             return None
-        from . import pool as pool_mod
         owned_reader = census_reader if census_reader is not None else CensusReader(
             self._queue, self._ledger)
         held = ExitStack()
         try:
+            held.enter_context(owned_reader.held())
             busy: set[str] = set()
             here = self._ledger.base.name
             for key in sorted(self._selections or {}):
@@ -725,15 +677,10 @@ class PassCensus:
                     busy.add(key)
             held.enter_context(
                 self._queue._admission_lock(self._controller))
-        except pool_mod.cpu_admission.AdmissionBusy:
+            self._refresh_dynamic_elections(owned_reader)
+        except BaseException:
             held.close()
-            return None
-        except OSError:
-            held.close()
-            return None
-        if not self._refresh_dynamic_elections(owned_reader):
-            held.close()
-            return None
+            raise
         self._busy = busy
         return held
 
@@ -821,21 +768,20 @@ def pass_admission_census(pass_census: PassCensus, queue: PoolQueue,
     reader fence plus the discovery scan outside host admission and
     the refresh scan under it, holding the elected measurement keys
     of this host and host admission for its body. That census is
-    stored, and every later candidate re-takes those locks -- never
-    the fence or the full scan -- and refreshes only the small
-    election sources through a bounded owned child.
+    stored. Each later candidate takes the reader guard before M and H,
+    and refreshes election sources without a complete scan.
 
-    The locks are held for the whole candidate body either way, so a
-    gang election, gang ready mark, or measurement election the body
-    writes on this host serializes against the next candidate's
-    lock take, exactly as today. A refusal is never stored: it ends
-    the census for the pass as before, and the next pass reads
-    fresh. Where authority may have changed -- this pass's own
-    claim, gang election, or measurement election -- the caller
-    invalidates the stored census and the next candidate reads
-    fresh.
+    The candidate holds these locks through resource reservation. Elections
+    on this host therefore serialize against its refresh. A refusal ends
+    this pass, and the next pass reads fresh. A successful claim returns
+    from the pass; no later candidate consumes its old census.
     """
-    reused = pass_census.acquire()
+    try:
+        reused = pass_census.acquire()
+    except CensusUnavailable as exc:
+        pass_census.invalidate()
+        yield {"unavailable": str(exc)}
+        return
     if reused is not None:
         with reused:
             yield pass_census.reused()

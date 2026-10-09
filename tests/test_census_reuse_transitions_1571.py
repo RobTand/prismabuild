@@ -18,6 +18,7 @@ import time
 import pytest
 
 from prismabuild import _gang, _measurement_reservation as reservation
+from prismabuild import _bounded_reader as reader
 from prismabuild import adaptive_cpu, adaptive_gpu, core as pb, pool
 
 from test_census_tmpfs_state_1451 import (  # noqa: F401  (fixtures)
@@ -102,50 +103,62 @@ def test_a_replacement_election_between_candidates_still_fences_lower_priority(
 
 def test_a_slow_refresh_refuses_reuse_and_releases_host_admission(
         fleet, tmpfs_state, monkeypatch):
-    """A stalled shared read ends the reuse inside its budget."""
+    """An actual read timeout refuses once and releases host admission."""
     queue, clock, readings, sample, publish, tick, claim, denial = fleet
     monkeypatch.setattr(adaptive_cpu, "BOX_STATE_ROOT", tmpfs_state / "box-state")
     holder = publish("slow-refresh-holder", priority=10, cpu=2, gpu=0, mem_gb=112)
     assert claim() == holder
-    first = publish("slow-refresh-first", priority=-10, timeout_s=600,
-                    cpu=2, gpu=0, mem_gb=16)
-    second = publish("slow-refresh-second", priority=-10, timeout_s=600,
-                     cpu=2, gpu=0, mem_gb=16)
-    rows = [pool._read_json(queue.item_path(pool.READY, key))
-            for key in (first, second)]
-    real_read = reservation._read
-    refreshes = []
+    keys = [publish(f"slow-refresh-{index}", priority=-10, timeout_s=600,
+                    cpu=2, gpu=0, mem_gb=16) for index in range(3)]
+    rows = [pool._read_json(queue.item_path(pool.READY, key)) for key in keys]
+    fifo = tmpfs_state / "refresh.fifo"
+    reached = tmpfs_state / "refresh-entered"
+    os.mkfifo(fifo)
 
-    def slow_read(path, **kwargs):
-        if str(path).endswith(".json") and "/passes/" in str(path):
-            time.sleep(0.05)
-        return real_read(path, **kwargs)
+    def blocked_refresh(_queue):
+        reached.write_bytes(b"entered")
+        with fifo.open("rb") as stream:
+            stream.read()
+        raise AssertionError("the fixture must not release this read")
 
-    real_refresh = reservation.CensusReader.refresh_elections
+    replies = []
+    real_bounded = reader.bounded
 
-    def counted_refresh(self):
-        refreshes.append(1)
-        return real_refresh(self)
+    def observed_bounded(section, *args, **kwargs):
+        started = time.monotonic()
+        reply = real_bounded(section, *args, **kwargs)
+        if section == reservation.REFRESH_SECTION:
+            replies.append((reply, time.monotonic() - started))
+        return reply
 
-    monkeypatch.setattr(reservation, "_read", slow_read)
-    monkeypatch.setattr(reservation.CensusReader, "refresh_elections", counted_refresh)
+    scans = []
+    real_census = reservation.CensusReader._census
+
+    def counted_census(self, directory):
+        scans.append(1)
+        return real_census(self, directory)
+
+    monkeypatch.setattr(reservation, "_scan_election_refresh", blocked_refresh)
+    monkeypatch.setattr(reader, "bounded", observed_bounded)
+    monkeypatch.setattr(reservation.CensusReader, "_census", counted_census)
     monkeypatch.setattr(reservation, "REFRESH_BUDGET_S", 0.2)
-    started = time.monotonic()
     result = queue.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True,
                          has_gpu=True, tags=["gb10", "sparklina"], ready=rows)
-    elapsed = time.monotonic() - started
     assert result is None
-    # The first candidate stores the census; the slow refresh refuses the
-    # reuse inside its budget, the pass reads fresh, and both gated rows
-    # stay READY -- never admitted on a partial read, never wedged.
-    assert len(refreshes) >= 1, "one refresh ran and timed out"
-    assert elapsed < 0.2 + 2 * reservation.READ_BUDGET_S + 15, (
-        f"a stalled refresh must not hold the pass: {elapsed:.1f}s")
+    assert reached.read_bytes() == b"entered"
+    assert len(replies) == 1
+    reply, elapsed = replies[0]
+    assert reply["status"] == "timed_out" and reply["started"] is True, reply
+    assert elapsed < 1.5, elapsed
+    assert len(scans) == 2, "a refresh timeout must not start another full census"
+    for key in keys[1:]:
+        refused = denial(key)
+        assert refused["reason"] == "measurement_census_unavailable", refused
+        assert "timed_out" in refused["evidence"]["unavailable"], refused
     controller = adaptive_cpu.Controller(queue.ledger("sparklina"), TIERS)
     with controller.locked():
-        pass
-    for key in (first, second):
-        assert queue.item_path(pool.READY, key).exists(), key
+        assert queue.ledger("sparklina").held_keys() == [holder]
+    assert all(queue.item_path(pool.READY, key).exists() for key in keys)
 
 
 def test_a_completed_gang_fences_nothing_on_reuse(gang_fleet, monkeypatch):
@@ -177,15 +190,61 @@ def test_a_completed_gang_fences_nothing_on_reuse(gang_fleet, monkeypatch):
     assert len(_gang.elections(queue, group, 2)) == 2
 
     monkeypatch.setattr(pool.socket, "gethostname", lambda: "sparklina")
+    holder = publish("completed-gang-holder", priority=10, timeout_s=600,
+                     cpu=2, gpu=0, mem_gb=112, tags=["sparklina"])
+    assert gclaim("sparklina") == holder
     probe = publish("completed-gang-probe", priority=-10, timeout_s=600,
-                    cpu=1, gpu=0, mem_gb=1, tags=["sparklina"])
+                    cpu=1, gpu=0, mem_gb=16, tags=["sparklina"])
     follower = publish("completed-gang-follower", priority=-10, timeout_s=600,
                        cpu=1, gpu=0, mem_gb=1, tags=["sparklina"])
     rows = [pool._read_json(queue.item_path(pool.READY, key))
             for key in (probe, follower)]
+    refreshes = []
+    real_refresh = reservation.CensusReader.refresh_elections
+
+    def observed_refresh(self):
+        refreshed = real_refresh(self)
+        refreshes.append(refreshed)
+        return refreshed
+
+    monkeypatch.setattr(reservation.CensusReader, "refresh_elections", observed_refresh)
     result = queue.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True,
                          has_gpu=True, tags=["gb10", "sparklina", _gang.TAG],
                          ready=rows)
-    assert result is not None, denial(probe, "sparklina")
-    assert result["action_key"] == probe, denial(probe, "sparklina")
-    assert queue.ledger("sparklina").held_keys() == [probe]
+    assert len(refreshes) == 1, "the follower must reach election refresh"
+    assert refreshes[0]["gang_elections"] == {}
+    assert queue.item_path(pool.READY, probe).exists()
+    assert result is not None, denial(follower, "sparklina")
+    assert result["action_key"] == follower
+    assert set(queue.ledger("sparklina").held_keys()) == {holder, follower}
+
+
+def test_retirement_and_a_sibling_claim_do_not_clear_a_reused_election(fleet):
+    """A pass keeps a retired election until a complete census proves retirement."""
+    queue, clock, readings, sample, publish, tick, claim, denial = fleet
+    holder, measurement, opportunity, snapshot = _bounded_measurement_wait(fleet)
+    chosen = _chosen(queue, measurement)
+    controller = adaptive_cpu.Controller(queue.ledger(), TIERS)
+    saved = reservation.PassCensus(queue, queue.ledger(), controller)
+    with reservation.locked_census(queue, queue.ledger(), controller) as census:
+        saved.store(census)
+    queue.finish(holder, status="executed")
+    tick(11)
+    assert claim() == measurement
+    stack = saved.acquire()
+    assert stack is not None
+    with stack:
+        assert saved.reused()["elections"][measurement] == chosen
+        assert queue.ledger().held_keys() == [measurement]
+    queue.finish(measurement, status="executed")
+    lower = publish("retired-election-follower", priority=-10, gpu=0, mem_gb=1)
+    row = pool._read_json(queue.item_path(pool.READY, lower))
+    stack = saved.acquire()
+    assert stack is not None
+    with stack:
+        assert reservation.blocking_selection(
+            saved.reused(), row, host="sparklina", funded_by=None) == chosen
+    with reservation.locked_census(queue, queue.ledger(), controller) as census:
+        assert measurement not in census["elections"]
+        assert reservation.blocking_selection(
+            census, row, host="sparklina", funded_by=None) is None

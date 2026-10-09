@@ -581,6 +581,30 @@ pass, never become an empty census. Parent retains M/H only through the actual
 publication after the last refresh is not instantaneously fenced: the guarantee
 begins at canonical host election, with no hidden publisher participation.
 
+**Census reuse within one claim pass (#1571).** The first candidate takes two
+complete scans: discovery before host admission and refresh under admission.
+Later candidates take the reader guard, sorted nonblocking M keys, and host
+admission, in that order. Their owned child reads only pass sidecars and exact
+live gang members. No refresh starts without the guard or replaces unresolved
+reader ownership.
+
+The refresh compares complete selections, including their generation, host,
+priority, and timestamps. New or replacement selections immediately fence this
+host. Stored measurement elections remain fenced through claims and retirement;
+only a complete census proves their retirement. Gang elections require an exact
+live member generation, so completed gangs do not fence the host.
+
+Both readers use the 4096-record cap. The complete read has a five-second
+budget; election refresh has a two-second budget. Any census refusal ends
+census attempts for this pass, including busy guards and refresh timeouts.
+The next pass retries. A vanished publication causes at most three complete
+scans within the existing child deadline. A refresh never falls back to complete
+scans for each later candidate.
+
+This source change retains PB admission authority (SC-01), movement authority
+(SC-02), and token settlement requirements (INV-07). It establishes no runtime
+deployment or campaign completion.
+
 An incumbent with no declared finite deadline (`pbrun` without `--timeout-s`,
 or a progress-governed action) does not void the election: requiring one left
 most live hosts unelected, so once the bounded attention above lapsed a
@@ -5669,8 +5693,18 @@ before that keeps no allowance. The last `k` CPUs the claim takes are kept out
 of the producer's own affinity and recorded in its holder metadata as
 `dependent_allowance` (`slots`, `cpus`, `mem_gb`); the tokens stay under the
 producer, so nothing else is admitted onto them and the producer pays for the
-room while it is idle. A producer with unbounded CPU demand, or one that fits
-the box only without the allowance, is claimed without it, as before.
+room while it is idle. An unbounded-CPU producer receives no allowance.
+A producer whose allowance exceeds total capacity now refuses its claim
+with `producer_allowance_does_not_fit` (#1571); it does not run without room.
+
+Before publication, `pbrun` compares a spool producer's memory demand plus its
+export allowance against eligible recorded host capacities (#1571).
+It uses declared export slots, or one slot when none are declared.
+It refuses incompatible declarations and states the required and available GiB.
+A producer that declares 104 GiB cannot reserve a 1 GiB export allowance
+on a host with 104 memory tokens. Missing capacity evidence does not establish
+incompatibility; claim admission still enforces physical token limits.
+
 
 **Export rates per declared family (#1126).** The key is the template's
 digest unless the template declares `export_rate_family`, an identifier by
@@ -5878,9 +5912,12 @@ No OS update is disabled and no deliberate PrismaBuild upgrade is changed.
 
 Worker-loop count supplies enough claimants to exercise this admission policy
 without becoming a second scheduler. `fleet_boxes.json` declares an automatic
-floor. Above that floor the supervisor sizes on the claims the box is holding:
-the target is the loops with a lease or a running child, plus the loops whose
-local process state is unreadable, plus a fixed idle reserve, bounded by a
+floor. Above that floor, the supervisor uses the larger protected count from
+the current and previous claim censuses (#1571). Each count includes active
+claims, workers with children, and workers whose local state is unknown.
+The target adds the fixed idle reserve. This rule prevents repeated process
+stops and starts when claim counts alternate. A sustained decrease permits
+a shrink after one further tick. The target remains bounded by the
 housekeeping ceiling derived from visible CPU and memory. Ready work does not
 enter the sizing law. A ready record does not say why work is waiting, so it
 cannot distinguish a box with no free poller from a box whose pollers cannot
