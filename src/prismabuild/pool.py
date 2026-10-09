@@ -7371,7 +7371,9 @@ class PoolQueue:
             # movement scripts, spelled as a tool of a protected copy, and its
             # small sealed demand.  The row records the tool the mark was
             # derived for; the host that enforces a reservation checks that
-            # tool against its own copy (``authorized_role``).  ``recompute``
+            # tool against its own mature copy (``authorized_role``).
+            # A retained-store path never derives a role: those bytes are
+            # mutable to ordinary store owners (#1659).  ``recompute``
             # is no part of it.
             from . import movement_actions
             role = movement_actions.capacity_role(
@@ -7379,11 +7381,6 @@ class PoolQueue:
             if role is not None:
                 item[role.role] = True
                 item[movement_actions.ROLE_SCRIPT_FIELD] = role.script
-            else:
-                retained = movement_actions.retained_pre_copy_candidate(
-                    sealed_request, demand, residency=residency_block)
-                if retained is not None:
-                    item[movement_actions.RETAINED_SCRIPT_FIELD] = retained
         if declared_requirements is not None:
             # The claim-relevant projection of the sealed params (#1495):
             # what a claim gate reads, no more -- the full capability
@@ -22056,8 +22053,14 @@ class PoolQueue:
                                     "selection": census_blocked, "candidate_release_bound": "UNKNOWN"})
                                 continue
                             # A role mark exempts the row only if this host holds
-                            # a protected copy of the tool the row names (#1579).
-                            # Asked only when an election could hold the row.
+                            # a mature protected copy of the tool the row names
+                            # (#1579, #1659). Asked only when an election could
+                            # hold the row. A retained-store path never exempts:
+                            # those bytes are mutable to ordinary store owners,
+                            # so they stay ordinary held rows. Pre-copy rows
+                            # progress because a fresh copy grants no authority
+                            # until it matures (``live_authority``), and the host
+                            # keeps the behaviour of main meanwhile.
                             role_exempt = (bool(census.get("gang_elections"))
                                            and movement_actions.authorized_role(item))
                             gang_blocked = (None if serves_incumbent else
@@ -22098,9 +22101,6 @@ class PoolQueue:
                                     now=reservation_now, held=reservation_held,
                                     capacity=reservation_capacity, exempt=role_exempt,
                                     authority=movement_authority())
-                            if gang_blocked is not None and "reservation" in gang_blocked and not role_exempt:
-                                if self._retained_pre_copy_exempt(item):
-                                    gang_blocked = None
                             if gang_blocked is not None:
                                 self.record_denial(item, "deferred_for_gang_reservation", {
                                     "withheld_for": gang_blocked["action_key"],
@@ -25655,35 +25655,13 @@ class PoolQueue:
         )
         return self.attempt_path(archived, attempt)
 
-    def _retained_pre_copy_exempt(self, item: Mapping[str, object]) -> bool:
-        """Whether a retained-path mover queued before the copy may run (#1659)."""
-        try:
-            from . import movement_actions
-            if movement_actions.retained_hint_exempt(item):
-                return True
-            cas_root = str(item.get("cas_root"))
-            action_key = str(item.get("action_key"))
-            action = _sealed_action_request(cas_root, action_key, max_bytes=4 * 1024 * 1024)
-            if not isinstance(action, dict):
-                return False
-            demand = item.get("resources")
-            residency = item.get("residency")
-            if not isinstance(demand, dict):
-                return False
-            if residency is not None and not isinstance(residency, dict):
-                return False
-            return movement_actions.retained_pre_copy_exempt(
-                item, action, demand, residency)
-        except (OSError, ValueError, TypeError, KeyError, pb.PrismaBuildError):
-            return False
-
 
     def _gang_member_past_reservation_bound(self, item: Mapping[str, object], *,
                                             authority: bool) -> bool:
         """Whether ``item`` is a gang member whose gang reserves its hosts now (#1579).
 
-        The gang has waited past the reservation bound, and this host holds the
-        protected copy (``authority``) that makes the reservation apply at all.
+        The gang has waited past the reservation bound, and this host holds a
+        mature protected copy (``authority``) that makes the reservation apply.
         """
         from . import _gang, _measurement_reservation as measurement_reservation
         if not isinstance(item.get("gang"), Mapping):

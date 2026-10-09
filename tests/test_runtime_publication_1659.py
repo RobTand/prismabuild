@@ -192,11 +192,13 @@ def test_a_tool_is_spelled_as_a_member_of_the_protected_store_or_it_is_not(publi
 
 def test_a_host_with_the_copy_of_its_generation_has_authority(
         tmp_path, monkeypatch, publication_store):
+    import time as _time
     source = source_generation(tmp_path)
     monkeypatch.setattr(publication, "executing_generation", lambda: source)
     assert publication.live_authority() is False, "no copy yet"
     approve(source, monkeypatch)
-    assert publication.live_authority() is True
+    assert publication.live_authority() is False, "a fresh copy is not mature"
+    assert publication.live_authority(now=_time.time() + 700) is True
 
 
 def test_a_checkout_has_no_authority(monkeypatch, publication_store):
@@ -207,13 +209,15 @@ def test_a_checkout_has_no_authority(monkeypatch, publication_store):
 def test_a_copy_of_another_generation_gives_no_authority(
         tmp_path, monkeypatch, publication_store):
     """Stale: the copy of the last generation does not cover the one this process runs."""
+    import time as _time
     old = source_generation(tmp_path)
     approve(old, monkeypatch)
     live = retained_generation(tmp_path / "runtime-generations", "d" * 12 + "-1791400000-" + "e" * 12)
     monkeypatch.setattr(publication, "executing_generation", lambda: live)
     assert publication.live_authority() is False
     approve(live, monkeypatch)
-    assert publication.live_authority() is True
+    assert publication.live_authority() is False, "a fresh copy is not mature"
+    assert publication.live_authority(now=_time.time() + 700) is True
 
 
 def test_a_copy_made_from_other_bytes_gives_no_authority(
@@ -222,12 +226,15 @@ def test_a_copy_made_from_other_bytes_gives_no_authority(
     source = source_generation(tmp_path)
     approve(source, monkeypatch)
     monkeypatch.setattr(publication, "executing_generation", lambda: source)
-    assert publication.live_authority() is True
+    import time as _time
+    mature = _time.time() + 700
+    assert publication.live_authority(now=mature) is True
     unseal(source.parent)
     receipt = source / "RUNTIME_VERSION.json"
     receipt.chmod(0o644)
     receipt.write_text(receipt.read_text().replace("c" * 40, "d" * 40))
     receipt.chmod(0o444)
+    assert publication.live_authority(now=mature) is False
     assert publication.live_authority() is False
 
 
@@ -236,13 +243,17 @@ def test_authority_follows_the_copy_as_it_changes(tmp_path, monkeypatch, publica
     source = source_generation(tmp_path)
     protected = approve(source, monkeypatch)
     monkeypatch.setattr(publication, "executing_generation", lambda: source)
-    assert publication.live_authority() is True
+    import time as _time
+    mature = _time.time() + 700
+    assert publication.live_authority() is False, "a fresh copy is not mature"
+    assert publication.live_authority(now=mature) is True
     if fault == "writable-store":
         publication_store.chmod(0o777)
     else:
         protected.chmod(0o755)
         (protected / (publication.PUBLICATION_RECORD if fault == "record"
                       else "RUNTIME_VERSION.json")).unlink()
+    assert publication.live_authority(now=mature) is False
     assert publication.live_authority() is False
 
 
@@ -485,3 +496,79 @@ def test_the_settings_the_installer_writes_pass_the_programs_validation(
     path.write_text(json.dumps(config))
     path.chmod(0o644)
     assert publication._read_config(path) == config
+
+def test_a_fresh_copy_grants_no_authority_until_it_matures(
+        tmp_path, monkeypatch, publication_store):
+    """Review 305cadf finding 2: pre-copy retained rows drain first."""
+    import time as _time
+    source = source_generation(tmp_path)
+    monkeypatch.setattr(publication, "executing_generation", lambda: source)
+    approve(source, monkeypatch)
+    birth = publication.protected_published_unix(source.name)
+    assert birth is not None
+    assert publication.live_authority(now=birth + 1) is False
+    assert publication.live_authority(
+        now=birth + publication.PROTECTED_COPY_MATURITY_S + 1) is True
+    assert publication.live_authority(now=_time.time() + 700) is True
+
+
+def test_a_copy_without_a_publication_time_counts_as_mature(
+        tmp_path, monkeypatch, publication_store):
+    """Copies published before the maturity bound existed keep authority."""
+    import time as _time
+    source = source_generation(tmp_path)
+    monkeypatch.setattr(publication, "executing_generation", lambda: source)
+    approve(source, monkeypatch)
+    monkeypatch.setattr(publication, "protected_published_unix", lambda name: None)
+    assert publication.live_authority() is True
+    assert publication.live_authority(now=_time.time()) is True
+
+
+def test_sign_approval_refuses_a_same_account_key(tmp_path, monkeypatch):
+    """Review 305cadf finding 3: a store writer cannot approve its own bytes."""
+    source = source_generation(tmp_path)
+    key = tmp_path / "signing.key"
+    key.write_text("ab" * 32 + "\n")
+    key.chmod(0o600)
+    with pytest.raises(PermissionError, match="shares its account"):
+        publication.sign_approval(source, key_path=key)
+    assert not (source.parent / f"{source.name}{publication.APPROVAL_SUFFIX}").exists()
+
+
+def test_sign_approval_refuses_a_group_readable_key(tmp_path, monkeypatch):
+    source = source_generation(tmp_path)
+    key = tmp_path / "signing.key"
+    key.write_text("ab" * 32 + "\n")
+    key.chmod(0o640)
+    with pytest.raises(PermissionError, match="0600"):
+        publication.sign_approval(source, key_path=key)
+
+
+def test_sign_approval_accepts_a_dedicated_publisher_key(tmp_path, monkeypatch):
+    """A separate publisher principal approves; the timer then copies."""
+    source = source_generation(tmp_path)
+    key = tmp_path / "signing.key"
+    key.write_text("ab" * 32 + "\n")
+    key.chmod(0o600)
+
+    class _Stat:
+        def __init__(self, uid, mode):
+            self.st_uid = uid
+            self.st_mode = mode
+
+    real_stat = Path.stat
+
+    def fake_stat(self, *args, **kwargs):
+        info = real_stat(self, *args, **kwargs)
+        if self == key:
+            return _Stat(50001, info.st_mode)
+        if self == source.parent:
+            return _Stat(50002, info.st_mode)
+        return info
+
+    monkeypatch.setattr(Path, "stat", fake_stat)
+    monkeypatch.setattr(publication.os, "geteuid", lambda: 50001)
+    sibling = publication.sign_approval(source, key_path=key)
+    assert sibling.is_file()
+    expected = publication.approval_hmac(digest(source), bytes.fromhex("ab" * 32))
+    assert sibling.read_text().strip() == expected

@@ -579,10 +579,12 @@ def reserves_after(first_published: object, now: float, *, authority: bool) -> b
     """Whether a gang first published at ``first_published`` reserves its hosts at ``now``.
 
     Two things hold: the gang has waited past :data:`GANG_RESERVE_AFTER_S`,
-    and this host holds the protected copy of its runtime
+    and this host holds a mature protected copy of its runtime
     (``runtime_publication.live_authority``).  Without that copy nothing a gang
     waits on (a stage mover, an egress) can be told from other work, so the
     reservation would hold the gang's own movers and the gang could not start.
+    A fresh copy also grants no authority until it matures, so pre-copy rows
+    that execute mutable retained bytes (which never get a role) drain first.
     The host then keeps what it had before the reservation: the fence against
     strictly lower priority, and nothing more.
     """
@@ -605,10 +607,10 @@ def reservation_priority_on(census: dict, *, host: str, now: float, authority: b
     """The highest priority among gangs that reserve ``host`` now, else ``None``.
 
     A gang reserves a host once its wait passed the bound, on a host that holds
-    the protected copy (``authority``, :func:`reserves_after`).  The reservation
-    wins over a measurement of the gang's priority or lower there: the
-    measurement's fence and withhold are suspended and it does not elect.  A
-    strictly HIGHER-priority measurement keeps its place ahead of the gang;
+    a mature protected copy (``authority``, :func:`reserves_after`).  The
+    reservation wins over a measurement of the gang's priority or lower there:
+    the measurement's fence and withhold are suspended and it does not elect.
+    A strictly HIGHER-priority measurement keeps its place ahead of the gang;
     that is the priority order, not a reservation exception (#1579).
     """
     reserving = [chosen["priority"] for chosen in census.get("gang_elections", {}).values()
@@ -673,11 +675,11 @@ def gang_blocking(census: dict, item: dict, *, host: str, group: str | None,
     """What a live gang election does to ``item`` on its host (#1517, #1579).
 
     Strictly lower priority is fenced from election, as before.  Equal
-    priority is not touched while the gang is young, or on a host without the
-    protected copy that lets a reservation tell PrismaBuild's movement nodes
-    from other work (``authority``, :func:`reserves_after`; absent means
-    without).  Past
-    :data:`GANG_RESERVE_AFTER_S`, on a host that holds the copy, the gang
+    priority is not touched while the gang is young, or on a host without a
+    mature protected copy that lets a reservation tell PrismaBuild's movement
+    nodes from other work (``authority``, :func:`reserves_after`; absent means
+    without, including a fresh copy that has not matured).  Past
+    :data:`GANG_RESERVE_AFTER_S`, on a host that holds a mature copy, the gang
     RESERVES its elected member's declared demand on the host, and a row is
     admitted only if the reservation survives it
     (:func:`reservation_shortfall`).  Never held: the gang's own members and
@@ -686,11 +688,11 @@ def gang_blocking(census: dict, item: dict, *, host: str, group: str | None,
     movement node PrismaBuild itself sealed (a stage or RAM egress, an export,
     a resident evict, a stage mover, a RAM promotion): the running action, and
     through it the gang, waits on those.  The caller decides ``exempt`` from
-    the row's mark and its own host's protected copy
-    (``movement_actions.authorized_role``); a mark alone never exempts.  Any
-    other row is held by its demand.  Higher priority is never held.  The
-    returned election carries ``reservation`` (the shortfall) when it is this
-    rule that holds.
+    the row's mark and its own host's mature protected copy
+    (``movement_actions.authorized_role``); a mark alone never exempts, and a
+    retained-store path never exempts.  Any other row is held by its demand.
+    Higher priority is never held.  The returned election carries
+    ``reservation`` (the shortfall) when it is this rule that holds.
     """
     now = time.time() if now is None else now
     for key, chosen in sorted(census.get("gang_elections", {}).items()):

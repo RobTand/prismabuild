@@ -110,16 +110,15 @@ MOVEMENT_EXECUTION_SCOPE = {"portability": "portable", "platform_key": None,
 #: the gang, waits on them.  Nothing here is a flag a submitter can declare:
 #: ``PoolQueue.publish`` refuses both names in a sealed action and derives the
 #: role from the node's executed identity (:func:`capacity_role`).  The mark is
-#: honoured only on a host that holds a protected copy of the tool the row
-#: names (:func:`authorized_role`), so a host judges what it enforces.
+#: honoured only on a host that holds a mature protected copy of the tool the
+#: row names (:func:`authorized_role`), so a host judges what it enforces. A row
+#: that executes retained-store bytes never gets a role: those bytes are mutable
+#: to ordinary store owners, so exempting them would exempt arbitrary code.
 #: The row field that names the tool a role mark was derived for.
 ROLE_SCRIPT_FIELD = "movement_script"
 PRODUCED_EXPORT_SCRIPT = "produced_export.py"
 LOCAL_RESIDENT_SCRIPT = "local_resident.py"
 CAPACITY_ROLE_FIELDS = ("returns_capacity", "serves_residency")
-#: The row field that names a retained tool a pre-copy mover was sealed from
-#: (#1659): no role mark, only a hint the enforcing host times against its copy.
-RETAINED_SCRIPT_FIELD = "retained_movement_script"
 
 
 class CapacityRole(NamedTuple):
@@ -145,143 +144,6 @@ MOVEMENT_PYTHON_ARGS = ("-I",)
 #: is a movement launch: an extra ``BASH_ENV``, ``PYTHONPATH`` or startup hook
 #: would run submitter code around the published tool.
 MOVEMENT_EXTRA_ENVIRONMENT = ("PRISMABUILD_CONTAINER_OWNER", "PRISMABUILD_CONTAINER_MARKER")
-
-#: How late a row may be published after its protected copy and still count as
-#: sealed before the copy arrived (#1659): clock skew plus one tier cycle.
-#: A row published later names the protected copy directly, so only this
-#: bounded window can exempt a retained path.
-PRE_COPY_SKEW_S = 120.0
-
-
-def retained_pre_copy_candidate(action: Mapping[str, object], demand: Mapping[str, object], *,
-                                residency: Mapping[str, object] | None) -> str | None:
-    """The retained tool a pre-copy mover names, else ``None`` (#1659).
-
-    The same executed identity :func:`capacity_role` requires, except the
-    script names the retained store rather than a protected copy: the wrapper,
-    task fields, scope, environment, isolated interpreter, small demand and
-    residency/evict shape all hold.  A post-copy sealer names the protected
-    twin, so a retained path names a mover sealed before the copy arrived
-    (or a forgery in the bounded window, which the caller times).
-    """
-    from . import runtime_publication
-    params = action.get("params")
-    task = action.get("task")
-    if not isinstance(params, Mapping) or not isinstance(task, Mapping):
-        return None
-    command = params.get("command")
-    if (not isinstance(command, list) or len(command) < 3
-            or not all(isinstance(part, str) for part in command)
-            or not isinstance(demand, Mapping) or demand.get("gpu")):
-        return None
-    if (command[0] != MOVEMENT_PYTHON
-            or command[1:1 + len(MOVEMENT_PYTHON_ARGS)] != list(MOVEMENT_PYTHON_ARGS)):
-        return None
-    script_index = 1 + len(MOVEMENT_PYTHON_ARGS)
-    script_path = command[script_index]
-    if runtime_publication.spelled_member(script_path):
-        return None
-    result_path = task.get("result_path")
-    if (not isinstance(result_path, str)
-            or task.get("argv") != [SEALED_ARGV0, "--noprofile", "--norc", "-c",
-                                    captured_command(command, result_path)]
-            or any(task.get(name) != value for name, value in MOVEMENT_TASK.items())
-            or action.get("execution_scope") != MOVEMENT_EXECUTION_SCOPE
-            or not _movement_environment_ok(action, command)):
-        return None
-    try:
-        from . import resource_scope
-        retained_store = Path(resource_scope.RETAINED_GENERATION_STORE)
-        resolved = Path(script_path).resolve(strict=True)
-        store = retained_store.resolve(strict=True)
-        relative = resolved.relative_to(store)
-    except (OSError, ValueError, TypeError):
-        return None
-    if len(relative.parts) < 3 or relative.parts[1] != "tools":
-        return None
-    script = Path(script_path).name
-    if script in (STAGE_MOVER_SCRIPT, RAM_PROMOTE_SCRIPT):
-        if isinstance(residency, Mapping) and "range_start_bytes" in residency:
-            return script_path
-        return None
-    evict = script == LOCAL_RESIDENT_SCRIPT and _local_resident_evict(command)
-    if script not in (STAGE_RELEASE_SCRIPT, PRODUCED_EXPORT_SCRIPT) and not evict:
-        return None
-    for kind, count in demand.items():
-        if type(count) is not int or count < 0:
-            return None
-        if kind == "cpu" and count > 1 or kind == "mem_gb" and count > 1:
-            return None
-        if kind not in ("cpu", "mem_gb") and "@" not in str(kind):
-            return None
-    return script_path
-
-def retained_pre_copy_exempt(item: Mapping[str, object], action: Mapping[str, object],
-                             demand: Mapping[str, object],
-                             residency: Mapping[str, object] | None) -> bool:
-    """Whether a retained-path mover queued before the copy may run (#1659).
-
-    The mover was sealed from the retained store before its host held the
-    protected twin, so it carries no role mark.  Once the copy arrives the
-    reservation would otherwise hold it by demand beside a whole-CPU member,
-    and the gang it serves could never start.  The exemption needs all of:
-    the retained candidate shape, a protected counterpart this host holds,
-    and a row published no later than the copy plus skew.  Later retained
-    rows name the protected twin directly, so the window is bounded.
-    """
-    from pathlib import Path as _Path
-    try:
-        from . import resource_scope, runtime_publication
-        retained = retained_pre_copy_candidate(action, demand, residency=residency)
-        if retained is None:
-            return False
-        counterpart = runtime_publication.protected_counterpart(
-            _Path(retained), retained_store=_Path(resource_scope.RETAINED_GENERATION_STORE))
-        if counterpart is None:
-            return False
-        try:
-            generation = counterpart.resolve(strict=True).relative_to(
-                runtime_publication.PROTECTED_GENERATION_STORE).parts[0]
-        except (OSError, ValueError, TypeError):
-            return False
-        birth = runtime_publication.protected_published_unix(generation)
-        if birth is None:
-            return True
-        published = item.get("published_unix")
-        if (not isinstance(published, (int, float)) or isinstance(published, bool)
-                or not math.isfinite(published)):
-            return False
-        return float(published) <= float(birth) + PRE_COPY_SKEW_S
-    except (OSError, ValueError, TypeError, KeyError):
-        return False
-
-def retained_hint_exempt(item: Mapping[str, object]) -> bool:
-    """Whether the row's retained hint names a pre-copy mover that may run (#1659)."""
-    from pathlib import Path as _Path
-    try:
-        from . import resource_scope, runtime_publication
-        retained = item.get(RETAINED_SCRIPT_FIELD)
-        if not isinstance(retained, str) or not retained.startswith("/"):
-            return False
-        counterpart = runtime_publication.protected_counterpart(
-            _Path(retained), retained_store=_Path(resource_scope.RETAINED_GENERATION_STORE))
-        if counterpart is None:
-            return False
-        try:
-            generation = counterpart.resolve(strict=True).relative_to(
-                runtime_publication.PROTECTED_GENERATION_STORE).parts[0]
-        except (OSError, ValueError, TypeError):
-            return False
-        birth = runtime_publication.protected_published_unix(generation)
-        if birth is None:
-            return True
-        published = item.get("published_unix")
-        if (not isinstance(published, (int, float)) or isinstance(published, bool)
-                or not math.isfinite(published)):
-            return False
-        return float(published) <= float(birth) + PRE_COPY_SKEW_S
-    except (OSError, ValueError, TypeError, KeyError):
-        return False
 
 
 def _movement_environment_ok(action: Mapping[str, object], command: list) -> bool:

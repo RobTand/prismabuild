@@ -4973,20 +4973,24 @@ pass. Never held: the gang's own members and any gang's (two gangs of one priori
 are ordered by `rank`), higher priority, a verified publication canary slot (its
 own next-free-safe-boundary contract) and the two roles PrismaBuild itself assigns.
 
-**Where the reservation applies (#1659).** Only on a host that holds the protected
-copy of the runtime generation its process runs (`runtime_publication.live_authority`).
-A host without that copy keeps what it had before the reservation: the fence against
-strictly lower priority, and nothing more. Equal-priority work is not held, and the
-measurement precedence below does not apply. This is the behaviour of main, and it is
-the rule for every way the copy can be missing: the host is not enrolled, the copy of
-a new generation has not arrived yet, the process is not a published generation (a
-checkout), or the copy was made from other bytes than the generation's receipt. The
-reason is liveness. The reservation spares the movement nodes that the gang waits on
-(below). A host can tell those nodes from other work only through the copy. A host
-without it that held rows by demand would hold the gang's own stage movers and egress
-beside a member that takes every CPU, and that gang could never start. A skipped
-publication step must never deadlock a gang, so a missing or stale copy falls back to
-main and adds no refusal.
+**Where the reservation applies (#1659).** Only on a host that holds a mature
+protected copy of the runtime generation its process runs
+(`runtime_publication.live_authority`). A host without that copy keeps what it
+had before the reservation: the fence against strictly lower priority, and
+nothing more. Equal-priority work is not held, and the measurement precedence
+below does not apply. This is the behaviour of main, and it is the rule for
+every way the copy can be missing: the host is not enrolled, the copy of a new
+generation has not arrived yet, the process is not a published generation (a
+checkout), or the copy was made from other bytes than the generation's receipt.
+A fresh copy also grants no authority until it is older than
+`PROTECTED_COPY_MATURITY_S` (600 s, one gang-wait period): pre-copy rows sealed
+from the retained store execute mutable bytes and never get a role, so holding
+them would deadlock the gang they serve. The host keeps the behaviour of main
+until the copy matures, so those rows drain first. The reason is liveness. The
+reservation spares the movement nodes that the gang waits on (below). A host can
+tell those nodes from other work only through a mature copy. A skipped
+publication step must never deadlock a gang, so a missing, stale or fresh copy
+falls back to main and adds no refusal.
 
 **The two roles.** `returns_capacity` marks a node whose whole job is to give
 capacity back: a stage or RAM egress (`stage_release.py`), a produced export
@@ -5040,16 +5044,19 @@ enrolled once, by an administrator, with `tools/fleet/install_movement_publisher
 `runtime_publication.converge`: it reads the live runtime pointer of the enrolled
 generation store, and when the generation it names has no copy here, it checks the
 publisher approval sibling (`<generation>.approval` in the store, the HMAC of the
-receipt digest under the shared secret). The publisher (`tools/fleet/publish_runtime.py`)
-writes that sibling automatically from its host-local signing secret after each
-publication, with no person. Without a valid approval there is no copy. It publishes
-only that live generation. A host that still runs an older generation has that copy
-from when it was live. The unit writes `/var/lib/prismabuild-movement-publish/status.json`
-(`published`, `current` or `error`, with the generation and the reason). An error leaves
-the host without a copy, which is the fallback above, and the next minute tries again.
-A store writer without the secret cannot approve its own bytes: it can place a
-generation, a receipt or a tool in the store, and it can move the live pointer, but
-without the publisher HMAC no copy follows and no role follows.
+receipt digest under the publisher secret). The publisher principal
+(`tools/fleet/publish_runtime.py`, run as the dedicated publisher account with its
+0600 signing secret in its own home) writes that sibling automatically after each
+publication, with no person. The signing secret must live under an account that
+does not own the runtime store: a same-account key is refused, so a store writer
+cannot approve its own bytes. Without a valid approval there is no copy. It
+publishes only that live generation. A host that still runs an older generation has
+that copy from when it was live. A fresh copy grants no reservation authority until
+it matures (`PROTECTED_COPY_MATURITY_S`). The unit writes
+`/var/lib/prismabuild-movement-publish/status.json` (`published`, `current` or
+`error`, with the generation and the reason). An error leaves the host without a
+copy, which is the fallback above, and the next minute tries again. A person (Rob
+or the CEO) approves the dedicated publisher account once, not per generation.
 
 **Tool roots.** A box that holds the copy of its tier loop's generation announces the
 copy's tool directory as `mover_tools_root` (`tier_loop.announced_tools_root`); a box
@@ -5069,28 +5076,29 @@ hand-written READY row cannot obtain the exemption without a protected tool path
 verifies on the enforcing host, but it can pair that path with another action. Only a
 pending member reserves: a running member already holds its demand in the ledger, and
 a terminal member holds nothing, so neither reserves (the strictly-lower fence stays).
-A movement node sealed from the retained store before its host held the copy carries
-no role mark but a retained hint. While a reservation is active it may still run when
-its protected twin exists here and its row predates the copy plus skew
-(`retained_pre_copy_exempt`): the gang's own prerequisite movers therefore complete
-and the gang starts. Later retained rows name the protected twin directly, so the
-window is bounded. A complete copy is about 27 MB per generation, and the store only
-grows. Removing an old copy is an administrator's act, and a copy that a sealed row
-still names must stay. Role exemptions retain real CPU, memory, GPU and tier ledger
-admission, so required movers use free capacity even when the gang reserves every CPU.
-The role check is a scheduling classification. It adds no launch refusal under D32 and
-changes no allocator or kernel path under D41.
+No retained-store path ever exempts: those bytes are mutable to ordinary store owners,
+so a retained mover is an ordinary held row once its host's copy matures. A fresh copy
+grants no authority until it matures, so pre-copy rows (with or without isolated
+Python, including movers sealed by the previous sealer) drain first and the gang
+starts through them. After the bound new movers must seal from the protected twin.
+A complete copy is about 27 MB per generation, and the store only grows. Removing an
+old copy is an administrator's act, and a copy that a sealed row still names must stay.
+Role exemptions retain real CPU, memory, GPU and tier ledger admission, so required
+movers use free capacity even when the gang reserves every CPU. The role check is a
+scheduling classification. It adds no launch refusal under D32 and changes no
+allocator or kernel path under D41.
 
 CEO decision `dec-1009-062221-f41c` requires publication authority outside
 submitters and ordinary store owners. The decision of 2026-10-09 for PR #1584 removes
 the person from each generation: no per-generation manual root step; if root is needed
-it is a one-time install per host that an administrator applies once; a missing or
-stale copy falls back to the behaviour of main and never deadlocks a gang. The
-authority is the publisher HMAC sibling (see "Publication without a person"): root
-copies only what the publisher approved, after checking every member against the
-receipt. No deployment or live gang qualification is claimed here. D45 remains active. SC-01 remains PB-owned
-admission. SC-02 remains PB-owned movement. ID-08 still requires separate runtime
-deployment evidence; source support does not prove deployment.
+it is a one-time install per host that an administrator applies once; a missing, stale
+or fresh copy falls back to the behaviour of main and never deadlocks a gang. The
+authority is the publisher approval sibling from the dedicated publisher account (see
+"Publication without a person"): root copies only what that account approved, after
+checking every member against the receipt. A same-account signing key is refused. No
+deployment or live gang qualification is claimed here. D45 remains active. SC-01 remains
+PB-owned admission. SC-02 remains PB-owned movement. ID-08 still requires separate
+runtime deployment evidence; source support does not prove deployment.
 
 An incomplete movement environment produces an ordinary row. This rule also applies
 when both Docker ownership keys are present. `PATH`, `LANG` and `LC_ALL` must all

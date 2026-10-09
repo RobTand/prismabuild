@@ -53,6 +53,16 @@ DEFAULT_CONFIG = Path("/etc/prismabuild/movement-publish.json")
 APPROVAL_SUFFIX = ".approval"
 #: Where the enrolled host holds the verification secret (root-only, 0400).
 APPROVAL_KEY_PATH = Path("/etc/prismabuild/movement-approval.key")
+ #: How long a protected copy must exist before a gang reservation applies on
+ #: that host (#1659): one gang-wait period. A copy that just arrived may have
+ #: pre-copy rows still queued from the retained store (sealed before the copy,
+ #: with or without isolated Python). Those rows execute mutable retained bytes,
+ #: so they never get a role. The reservation stays off while they drain, and
+ #: the host keeps the behaviour of main. After this bound any remaining
+ #: retained row is held by demand like other ordinary work, which forces new
+ #: movers to seal from the protected twin. A copy without a publication time
+ #: (published before this bound existed) counts as mature.
+ PROTECTED_COPY_MATURITY_S = 600.0
 #: The movement tool every tool root carries; its copy stands for the root.
 PROBE_TOOL = "stage_release.py"
 _DIGEST = re.compile(r"[0-9a-f]{64}")
@@ -276,15 +286,34 @@ def _valid_approval(store: Path, generation: str, digest: str) -> bool:
 def sign_approval(generation_dir: Path, *, key_path: Path | None = None) -> Path:
     """Write the publisher approval sibling for ``generation_dir`` (#1659).
 
-    The publisher runs this after publishing a generation, with its host-local
-    signing secret (0600, not shared).  Fleet agents without the secret cannot
-    forge it for tampered bytes.
+    The publisher principal runs this after publishing a generation, with its
+    dedicated signing secret (0600, owned by the publisher account, not shared).
+    The secret must live under a publisher-only account that ordinary
+    submitters and store owners cannot read: a key in the same account that
+    owns the runtime store does not separate authority and is refused here, so
+    a same-user forgery gets no approval and enrolled hosts keep the behaviour
+    of main. Fleet agents without the publisher secret cannot forge an approval
+    for tampered bytes. The deployment contract names the publisher account;
+    a person (Rob or the CEO) approves that principal once, not per generation.
     """
     source = Path(generation_dir).resolve(strict=True)
     raw = _regular_bytes(source / "RUNTIME_VERSION.json")
     digest = hashlib.sha256(raw).hexdigest()
     key_file = key_path if key_path is not None else Path.home() / ".config" / "prismabuild" / "movement-approval.key"
-    secret = key_file.read_text(encoding="utf-8").strip()
+    info = key_file.stat()
+    if info.st_mode & 0o077:
+        raise PermissionError("movement signing key must be 0600 or stricter")
+    if info.st_uid != os.geteuid():
+        raise PermissionError("movement signing key must belong to the publisher account")
+    try:
+        store = source.parent.resolve(strict=True)
+        if info.st_uid == store.stat().st_uid:
+            raise PermissionError(
+                "movement signing key shares its account with the runtime store; "
+                "use the dedicated publisher account")
+    except OSError as exc:
+        raise PermissionError("movement signing key store is unreadable") from exc
+    secret = _regular_bytes(key_file).decode("utf-8").strip()
     if _DIGEST.fullmatch(secret) is None:
         raise ValueError("movement signing key is not 64 hex")
     tag = approval_hmac(digest, bytes.fromhex(secret))
@@ -484,8 +513,8 @@ def executing_generation() -> Path | None:
     return _own_generation()
 
 
-def live_authority() -> bool:
-    """Whether this host holds the protected copy of the generation this process runs.
+def live_authority(*, now: float | None = None) -> bool:
+    """Whether this host holds a mature protected copy of the generation this process runs.
 
     The reservation of a waiting gang (#1579) holds work by its demand and
     spares only the movement nodes PrismaBuild itself seals.  Those nodes can
@@ -493,6 +522,13 @@ def live_authority() -> bool:
     Where it does not (the host is not enrolled, the copy of a new generation
     has not arrived, the process is not a published generation) nothing a gang
     waits on can be told apart, so the reservation does not apply.
+
+    A copy that just arrived does not yet authorize a reservation either
+    (#1659): pre-copy rows sealed from the retained store (with or without
+    isolated Python) execute mutable bytes and never get a role, so holding
+    them would deadlock the gang they serve. The host keeps the behaviour of
+    main until the copy is older than :data:`PROTECTED_COPY_MATURITY_S`. A copy
+    without a publication time counts as mature.
     """
     root = executing_generation()
     if root is None:
@@ -502,8 +538,14 @@ def live_authority() -> bool:
         published = _published_root(copy)
         # The copy was made from these receipt bytes, not from a generation
         # that merely has this name.
-        return (published is not None
-                and published[1] == _receipt_sha256(root / "RUNTIME_VERSION.json"))
+        if (published is None
+                or published[1] != _receipt_sha256(root / "RUNTIME_VERSION.json")):
+            return False
+        birth = protected_published_unix(root.name)
+        if birth is None:
+            return True
+        moment = time.time() if now is None else float(now)
+        return bool(math.isfinite(moment) and moment - float(birth) > PROTECTED_COPY_MATURITY_S)
     except (OSError, ValueError, TypeError):
         return False
 

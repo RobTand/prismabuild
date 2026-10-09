@@ -4,17 +4,20 @@
 # After this runs, the host copies each live runtime generation into the
 # root-owned /opt/prismabuild/movement-generations by itself, once a minute,
 # with no person and no root step per generation.  The copy needs a publisher
-# approval sibling (HMAC of the receipt digest) that only the publisher can
-# write: give this installer the 64-hex verification secret once
-# (``--approval-key HEX`` or ``--approval-key-file PATH``).  A generation
-# without a valid approval gets no copy, and the host keeps the behaviour it
-# had before the reservation, and nothing is refused.
+# approval sibling (HMAC of the receipt digest) that only the dedicated
+# publisher account can write: give this installer the 64-hex verification
+# secret once (``--approval-key HEX`` or ``--approval-key-file PATH``).
+# A generation without a valid approval gets no copy, and the host keeps the
+# behaviour it had before the reservation, and nothing is refused.  A fresh copy
+# grants no reservation authority until it matures (600 s), so pre-copy retained
+# rows drain first.
 #
 # Like the client upgrader (docs/client_upgrade.md), this delegates one act to
-# the publisher of the generation store: root copies what the store's live
-# pointer names, after checking every member against the receipt. The receipt
-# proves copy consistency, not publisher authenticity, so access to publish
-# generations must stay with the principals that administer these hosts.
+# the dedicated publisher account: root copies what that account approved, after
+# checking every member against the receipt. The receipt proves copy consistency,
+# not publisher authenticity, so the signing secret must live under an account
+# that does not own the runtime store (0600, publisher-only). A person approves
+# that principal once.
 #
 # Stage this file and runtime_publication.py on local storage as the
 # publishing user (NFS root squash stays on), then run it as root:

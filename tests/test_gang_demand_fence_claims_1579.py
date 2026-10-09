@@ -50,12 +50,14 @@ def _tool(generation, script):
 
 
 def _seal(queue, tmp_path, name, *, script=None, extra_params=None, extra_command=(), python=None,
-          argv=None, scope=None, task_over=None, tool=None, generation=None, variables=None):
+          argv=None, scope=None, task_over=None, tool=None, generation=None, variables=None,
+          isolated=True):
     """Seal one action; a genuine movement node when ``script`` and ``tool`` are given.
 
     The shape is exactly ``movement_actions.seal_movement_action``'s: the bash capture wrapper as
     ``task.argv``, the movement task fields, the movement execution scope, the fleet python and
     the movement environment.  Each keyword spoils one part of it, for the look-alike cases.
+    ``isolated=False`` seals the previous sealer's shape without ``-I`` (review 305cadf).
     """
     checkout = tmp_path / "checkout"
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
@@ -68,7 +70,8 @@ def _seal(queue, tmp_path, name, *, script=None, extra_params=None, extra_comman
             {"portability": "portable", "platform_key": None, "host_class": None})
     else:
         tool = tool or _tool(generation, script)
-        command = [python or ma.MOVEMENT_PYTHON, *ma.MOVEMENT_PYTHON_ARGS, tool,
+        isolated_args = list(ma.MOVEMENT_PYTHON_ARGS) if isolated else []
+        command = [python or ma.MOVEMENT_PYTHON, *isolated_args, tool,
                    "--pool-root", str(queue.root), *extra_command]
         task_argv = [ma.SEALED_ARGV0, "--noprofile", "--norc", "-c", ma.captured_command(command, name)]
         task_fields, execution_scope = dict(ma.MOVEMENT_TASK), dict(ma.MOVEMENT_EXECUTION_SCOPE)
@@ -465,16 +468,18 @@ def test_a_young_gang_does_not_hold_equal_priority_work(gang_fleet, tmp_path):
     assert gclaim("sparky") == small
 
 
-def _whole_cpu_gang(gang_fleet, monkeypatch, tmp_path, mover_tool):
+def _whole_cpu_gang(gang_fleet, monkeypatch, tmp_path, mover_tool, *, isolated=True):
     """A gang whose first member takes every CPU, aged past the bound, and its stage mover.
 
     Member 1 takes all 20 CPUs on sparky and waits there.  Member 0's residency lead is a stage
     mover (4 CPUs, 8 GiB, tier tokens) that runs on sparky, sealed with ``mover_tool``.
+    ``isolated=False`` seals the mover as the previous sealer did, without ``-I``.
     """
     from test_gang_residency_members import _consumer_block
     queue, clock, publish, finish, gclaim, denial, members = gang_fleet
     need = {"cpu": 4, "mem_gb": 8, STAGE_KIND: 2}
-    mover, cas, checkout = _seal(queue, tmp_path, "mover", script="stage_move.py", tool=mover_tool)
+    mover, cas, checkout = _seal(queue, tmp_path, "mover", script="stage_move.py", tool=mover_tool,
+                                 isolated=isolated)
     incumbents = _busy_both(publish, gclaim)
     group, (first, second) = members("whole-cpu", priority=-10, member_cpu=20,
                                      residency=_consumer_block([mover]))
@@ -578,9 +583,12 @@ def test_a_mark_derived_on_a_box_without_the_copy_is_honoured_on_the_box_that_ha
 @pytest.mark.parametrize("missing", ["absent", "stale", "other-receipt"])
 def test_a_host_without_the_copy_of_its_generation_has_no_authority(
         store, retained, monkeypatch, tmp_path, missing):
-    assert runtime_publication.live_authority() is True
+    import time as _time
+    assert runtime_publication.live_authority() is False, "a fresh copy is not mature"
+    assert runtime_publication.live_authority(now=_time.time() + 700) is True
     _lose_the_copy(missing, retained, monkeypatch, tmp_path)
     assert runtime_publication.live_authority() is False
+    assert runtime_publication.live_authority(now=_time.time() + 700) is False
 
 
 @pytest.mark.parametrize("missing", ["absent", "stale", "other-receipt"])
@@ -818,11 +826,11 @@ def test_a_finished_member_with_a_live_sibling_reserves_nothing(gang_fleet, tmp_
     assert _gang.elections(queue, group, 2)[0]["host"] == "sparklina"
     idle = _publish_sealed(queue, tmp_path, clock, "idle-host-row", script=None, resources=SMALL,
                            tags=("sparklina",))
+    assert gclaim("sparklina") == idle, denial(idle, "sparklina")
 
-
-def test_a_retained_mover_queued_before_the_copy_runs_after_it_arrives(
+def test_a_retained_mover_queued_before_the_copy_runs_while_the_copy_is_fresh(
         gang_fleet, store, retained, monkeypatch, tmp_path):
-    """Review fd78197 finding 2: the copy arrival must not hold the gang's own mover."""
+    """Review 305cadf finding 2: a fresh copy grants no authority, so the gang starts."""
     from movement_publication_support import approve as _approve, unseal as _unseal
     queue, clock, publish, finish, gclaim, denial, members = gang_fleet
     away = store.with_name(store.name + ".away")
@@ -835,8 +843,55 @@ def test_a_retained_mover_queued_before_the_copy_runs_after_it_arrives(
     clock[0] += reservation.GANG_RESERVE_AFTER_S + 1
     _unseal(retained.parent)
     _approve(retained, monkeypatch)
+    assert runtime_publication.live_authority() is False, "a fresh copy is not mature"
     _run_the_mover_and_start_the_gang(gang_fleet, monkeypatch, tmp_path, mover, cas, checkout,
                                       need, first, second, role=None, published=True)
+
+def test_a_mutated_retained_tool_and_import_without_a_new_receipt_stays_ordinary(
+        gang_fleet, store, retained, monkeypatch, tmp_path):
+    """Review 305cadf finding 1: mutable retained bytes never exempt, even with a mature copy."""
+    from movement_publication_support import unseal as _unseal
+    queue, clock, publish, finish, gclaim, denial, members = gang_fleet
+    _unseal(retained.parent)
+    tool = retained / "tools" / "fleet" / "stage_move.py"
+    tool.chmod(0o644)
+    tool.write_text("# tampered mover\n")
+    tool.chmod(0o444)
+    helper = retained / "src" / "prismabuild" / "helper.py"
+    helper.chmod(0o644)
+    helper.write_text("VALUE = 2\n")
+    helper.chmod(0o444)
+    mover, cas, checkout, need, first, second = _whole_cpu_gang(
+        gang_fleet, monkeypatch, tmp_path, str(tool))
+    _enqueue(queue, clock, mover, cas, checkout, resources=need, residency=RANGE)
+    assert _roles(queue, mover) == [], "a retained path derives no role"
+    assert gclaim("sparky") is None
+    held = denial(mover, "sparky")
+    assert held["reason"] in REASONS, held
+    assert "reservation" in held["evidence"]["gang_election"], held
+
+
+def test_a_mover_sealed_by_the_previous_sealer_runs_while_the_copy_is_fresh(
+        gang_fleet, store, retained, monkeypatch, tmp_path):
+    """Review 305cadf finding 2: the upgrade must not deadlock existing prerequisite movers."""
+    from movement_publication_support import approve as _approve, unseal as _unseal
+    queue, clock, publish, finish, gclaim, denial, members = gang_fleet
+    away = store.with_name(store.name + ".away")
+    store.rename(away)
+    try:
+        mover, cas, checkout, need, first, second = _whole_cpu_gang(
+            gang_fleet, monkeypatch, tmp_path, _tool(retained, "stage_move.py"), isolated=False)
+    finally:
+        away.rename(store)
+    _enqueue(queue, clock, mover, cas, checkout, resources=need, residency=RANGE)
+    assert _roles(queue, mover) == [], "the previous sealer lacks isolated Python"
+    clock[0] += reservation.GANG_RESERVE_AFTER_S + 1
+    _unseal(retained.parent)
+    _approve(retained, monkeypatch)
+    assert runtime_publication.live_authority() is False, "a fresh copy is not mature"
+    _run_the_mover_and_start_the_gang(gang_fleet, monkeypatch, tmp_path, mover, cas, checkout,
+                                      need, first, second, role=None, published=True)
+
 
 
 def test_a_protected_tool_without_isolated_python_gets_no_role(gang_fleet, store, tmp_path):
