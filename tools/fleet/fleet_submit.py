@@ -54,7 +54,7 @@ sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
 from runtime_paths import generation_root  # noqa: E402
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
-from prismabuild import container_images, core as pb, pool, slurm_lane  # noqa: E402
+from prismabuild import container_images, core as pb, local_dependencies, pool, slurm_lane  # noqa: E402
 
 TRANSPORTS = ("pool", "slurm")
 DEFAULT_TRANSPORT_ENV = "PRISMABUILD_TRANSPORT"
@@ -386,6 +386,16 @@ def submit(
                 sealed_params["container_images"]))
         except ValueError as exc:
             raise SubmitRefused(f"{key[:12]}: container_images: {exc}") from None
+    dependency_fields = {}
+    if isinstance(sealed_params, Mapping):
+        for field in ("local_dependencies", "dependency_queries"):
+            if field in sealed_params:
+                try:
+                    dependency_fields[field] = local_dependencies.normalize(sealed_params[field])
+                except ValueError as exc:
+                    raise SubmitRefused(f"{key[:12]}: {exc}") from None
+    if dependency_fields.get("local_dependencies") and transport != "pool":
+        raise SubmitRefused(f"{key[:12]}: local_dependencies require the pool claim-time check")
     if image_refs and transport != "pool":
         raise SubmitRefused(
             f"{key[:12]}: this action declares container image "
@@ -414,6 +424,7 @@ def submit(
             max_attempts=max_attempts,
             retry_safe=retry_safe,
             container_images=image_refs or None,
+            **dependency_fields,
         )
         return Submission(transport="pool", where=path, action_key=key)
 

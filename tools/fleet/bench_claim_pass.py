@@ -17,8 +17,11 @@ Run under ``strace -f -e trace=%file,getdents64 -o TRACE``; then
 directory opens (each is one listing: on NFS, one or more READDIR) and
 path lookups of per-key names (on NFS, each is a LOOKUP unless the dentry is
 cached and still valid).
-"""
 
+A standalone run binds a temporary host-local admission root before the
+first source import, unless a nonempty explicit value exists. The
+count-only branch returns before that scope exists.
+"""
 from __future__ import annotations
 
 import argparse
@@ -147,8 +150,23 @@ def main() -> int:
             count(args.count, args.work, poll)
         return 0
     args.work.mkdir(parents=True, exist_ok=False)
-    build_and_poll(args.checkout, args.work, args.ready, args.claimed,
-                   args.passes)
+    prior = os.environ.get("PRISMABUILD_BOX_STATE_ROOT")
+    if prior:
+        build_and_poll(args.checkout, args.work, args.ready, args.claimed,
+                       args.passes)
+        return 0
+    import tempfile
+    with tempfile.TemporaryDirectory(prefix="bench-claim-pass-",
+                                     dir="/tmp") as owned:
+        os.environ["PRISMABUILD_BOX_STATE_ROOT"] = owned
+        try:
+            build_and_poll(args.checkout, args.work, args.ready, args.claimed,
+                           args.passes)
+        finally:
+            if prior is None:
+                del os.environ["PRISMABUILD_BOX_STATE_ROOT"]
+            else:
+                os.environ["PRISMABUILD_BOX_STATE_ROOT"] = prior
     return 0
 
 

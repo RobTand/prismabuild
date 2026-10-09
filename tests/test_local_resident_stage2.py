@@ -9,6 +9,10 @@ from prismabuild import pool, resident_sets
 from test_local_resident_mover import world
 from test_resident_sets_records import publish
 
+from local_resident_space import roomy_disk  # noqa: F401
+
+pytestmark = pytest.mark.usefixtures("roomy_disk")
+
 
 def finished_attempt(tmp_path):
     from admitted_queue_fixture import AdmittedQueueFixture

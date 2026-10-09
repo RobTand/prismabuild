@@ -48,6 +48,8 @@ TRACE_OPTION = "--pbtest-trace"
 TRACE_PREFIX = "pbtest-trace: "
 TRACE_SCHEMA = "prismabuild.pbtest_trace.v1"
 TRACE_NODEID_MAX_BYTES = 4096
+COMPLETION_PREFIX = "pbtest-completion: "
+COMPLETION_SCHEMA = "prismabuild.pbtest_completion.v1"
 
 # xdist forwards selected IDs but neither successful collection reports nor
 # pytest_deselected to its controller. This tiny worker plugin returns only
@@ -224,23 +226,68 @@ REPORT_FIELDS = ("nodeid", "when", "category", "reason", "location")
 def parse(output: str) -> dict | None:
     """The last outcome record in a shard's output, or ``None``.
 
-    ``None`` means the shard printed none: pytest never reached the end of
-    its session, or the shard did not run through this module.  A record
-    with another schema is not this reader's to interpret, and is ``None``
-    too, so a reader never mistakes a foreign shape for an empty one.
+    ``None`` means the shard printed no final outcomes. Exit hooks can block
+    this record after the selected tests finish. Completion evidence uses a
+    separate record and cannot replace final outcomes.
     """
 
+    return _parse_record(output, PREFIX, SCHEMA)
+
+
+def _parse_record(output: str, prefix: str, schema: str) -> dict | None:
     for line in reversed((output or "").splitlines()):
-        if not line.startswith(PREFIX):
+        if not line.startswith(prefix):
             continue
         try:
-            record = json.loads(line[len(PREFIX):])
+            record = json.loads(line[len(prefix):])
         except ValueError:
             return None
-        if isinstance(record, dict) and record.get("schema") == SCHEMA:
+        if isinstance(record, dict) and record.get("schema") == schema:
             return record
         return None
     return None
+
+
+def completion(output: str) -> dict:
+    """Verify selected-test completion, not final outcomes or process exit."""
+    record = _parse_record(output, COMPLETION_PREFIX, COMPLETION_SCHEMA)
+    if record is None:
+        return {"status": "unknown", "problems": ["no valid test completion record"]}
+    lists = ("collected", "teardown_finished", "outcome_nodeids")
+    flags = ("collection_complete", "collect_only", "collection_errors",
+             "duplicate_teardown")
+    if (any(not isinstance(record.get(key), list)
+            or any(not isinstance(nodeid, str) or not nodeid
+                   for nodeid in record[key]) for key in lists)
+            or any(type(record.get(key)) is not bool for key in flags)):
+        return {"status": "unknown", "problems": ["invalid test completion record"]}
+    collected = record["collected"]
+    selected = set(collected)
+    finished = set(record["teardown_finished"])
+    outcomes = set(record["outcome_nodeids"])
+    missing = sorted(selected - finished)
+    missing_outcomes = sorted(selected - outcomes)
+    unexpected = sorted((finished | outcomes) - selected)
+    problems = []
+    if not record["collection_complete"]:
+        problems.append("collection is incomplete or inconsistent")
+    if record["collect_only"] or not collected:
+        problems.append("no selected test execution")
+    if record["collection_errors"]:
+        problems.append("collection errors leave the population incomplete")
+    if len(selected) != len(collected):
+        problems.append("duplicate collected node IDs")
+    if record["duplicate_teardown"]:
+        problems.append("duplicate teardown reports")
+    if missing:
+        problems.append("selected tests have no completed teardown")
+    if missing_outcomes:
+        problems.append("selected tests have no observed outcome")
+    if unexpected:
+        problems.append("reports name tests outside the selected population")
+    return {**record, "status": "incomplete" if problems else "complete",
+            "missing_teardown": missing, "missing_outcomes": missing_outcomes,
+            "unexpected_nodeids": unexpected, "problems": problems}
 
 
 def reconcile(record: dict, counts: dict[str, int] | None,
@@ -360,6 +407,11 @@ def main(argv: list[str] | None = None, *, preflight=None,
             self.written = False
             self.selection_views = []
             self.last_record = None
+            self.teardown_finished: set[str] = set()
+            self.duplicate_teardown = False
+            self.worker_collections: dict[str, list[str]] = {}
+            self.expected_workers = 0
+            self.completion_written = False
 
         def pytest_configure(self, config) -> None:
             self.config = config
@@ -377,9 +429,12 @@ def main(argv: list[str] | None = None, *, preflight=None,
                 "reported_unix": time.time(),
                 **fields,
             }, separators=(",", ":"))
+            self.emit(line)
+
+        def emit(self, line: str) -> None:
             # The terminal writer owns the stream outside pytest's capture.
             # Direct stdout writes can be captured with the dying test and
-            # never reach the pool log. Flush each bounded event explicitly.
+            # never reach the pool log. Flush each record explicitly.
             terminal = self.config.pluginmanager.getplugin("terminalreporter")
             if terminal is not None:
                 # Another hook may just have printed a progress dot. Start
@@ -391,6 +446,43 @@ def main(argv: list[str] | None = None, *, preflight=None,
                       if capture is not None else nullcontext()):
                     sys.stdout.write(line + "\n")
                     sys.stdout.flush()
+
+        def emit_completion(self, *, session_finished: bool = False) -> None:
+            if self.completion_written:
+                return
+            collected = self.collected
+            if not session_finished and (
+                    collected is None or not collected
+                    or len(self.teardown_finished) < len(collected)):
+                return
+            collection_complete = collected is not None
+            if self.expected_workers:
+                collection_complete = (
+                    len(self.worker_collections) == self.expected_workers
+                    and all(ids == collected
+                            for ids in self.worker_collections.values()))
+            record = {
+                "schema": COMPLETION_SCHEMA,
+                "collection_complete": collection_complete,
+                "collect_only": bool(self.config.getoption("collectonly", False)),
+                "collection_errors": any(row[1:3] == ["collect", "error"]
+                                         for row in self.reports),
+                "collected": collected or [],
+                "teardown_finished": sorted(self.teardown_finished),
+                "duplicate_teardown": self.duplicate_teardown,
+                "outcome_nodeids": sorted(
+                    {row[0] for row in self.reports if row[1] != "collect"}
+                    | {row[0] for row in self.uncounted}),
+            }
+            line = COMPLETION_PREFIX + json.dumps(record, separators=(",", ":"))
+            if session_finished or completion(line)["status"] == "complete":
+                self.emit(line)
+                self.completion_written = True
+
+        @pytest.hookimpl(hookwrapper=True, tryfirst=True)
+        def pytest_sessionfinish(self, session, exitstatus):
+            self.emit_completion(session_finished=True)
+            yield
 
         def pytest_runtest_logstart(self, nodeid, location) -> None:
             self.trace("start", nodeid)
@@ -424,6 +516,10 @@ def main(argv: list[str] | None = None, *, preflight=None,
         def pytest_collection_finish(self, session) -> None:
             self.collected = [item.nodeid for item in session.items]
 
+        @pytest.hookimpl(optionalhook=True)
+        def pytest_xdist_setupnodes(self, config, specs) -> None:
+            self.expected_workers = len(specs)
+
         def pytest_deselected(self, items) -> None:
             self.deselected.extend(item.nodeid for item in items)
 
@@ -433,6 +529,7 @@ def main(argv: list[str] | None = None, *, preflight=None,
             # collects the whole population and reports its IDs here.
             if self.collected is None:
                 self.collected = list(ids)
+            self.worker_collections[node.gateway.id] = list(ids)
 
         @pytest.hookimpl(optionalhook=True)
         def pytest_testnodedown(self, node, error) -> None:
@@ -450,7 +547,9 @@ def main(argv: list[str] | None = None, *, preflight=None,
                 self.reports.append([report.nodeid, "collect", "skipped",
                                      skip_reason(report), self.location(report)])
 
+        @pytest.hookimpl(hookwrapper=True, tryfirst=True)
         def pytest_runtest_logreport(self, report) -> None:
+            yield
             self.trace("phase", report.nodeid, when=report.when,
                        outcome=report.outcome,
                        worker=getattr(report, "worker_id", None),
@@ -479,20 +578,24 @@ def main(argv: list[str] | None = None, *, preflight=None,
             status = self.config.hook.pytest_report_teststatus(
                 report=report, config=self.config)
             category = status[0] if status else ""
-            if not category:
-                return  # a passing setup or teardown: the summary counts nothing
-            if not getattr(report, "count_towards_summary", True):
-                # The terminal leaves it out of the summary line, so the
-                # record's counts do too; it still shows the test ran.
-                self.uncounted.append([report.nodeid, report.when, category])
-                return
-            reason = location = None
-            if category == "skipped":
-                reason, location = skip_reason(report), self.location(report)
-            elif hasattr(report, "wasxfail"):
-                reason = str(report.wasxfail or "") or None
-            self.reports.append([report.nodeid, report.when, category,
-                                 reason, location])
+            if category:
+                if not getattr(report, "count_towards_summary", True):
+                    # Uncounted reports still establish that the test ran.
+                    self.uncounted.append([report.nodeid, report.when, category])
+                else:
+                    reason = location = None
+                    if category == "skipped":
+                        reason, location = skip_reason(report), self.location(report)
+                    elif hasattr(report, "wasxfail"):
+                        reason = str(report.wasxfail or "") or None
+                    self.reports.append([report.nodeid, report.when, category,
+                                         reason, location])
+            if report.when == "teardown":
+                if report.nodeid in self.teardown_finished:
+                    self.duplicate_teardown = True
+                self.teardown_finished.add(report.nodeid)
+                # xdist can wait for a worker's exit before sessionfinish.
+                self.emit_completion()
 
         def record(self) -> str:
             config = self.config

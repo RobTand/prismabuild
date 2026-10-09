@@ -60,6 +60,11 @@ def scoped(tmp_path, monkeypatch, request):
     monkeypatch.setattr(resource_scope.ResourceScope, 'sample', sample)
     monkeypatch.setattr(pool.cpu_admission, 'record_completion',
                         lambda *args: calls.append('learn'))
+    # The fake worker below replaces the global ``subprocess.Popen``; a claim
+    # that records diagnostics starts the adaptive snapshot publisher, which is
+    # a ``Popen`` too, and must not reach it (#1594 review: a load flake).
+    monkeypatch.setattr(pool.cpu_admission.adaptive_snapshot, 'publish',
+                        lambda *args, **kw: None)
     return queue, item, calls
 
 

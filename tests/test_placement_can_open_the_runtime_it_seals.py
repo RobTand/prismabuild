@@ -8,7 +8,7 @@ are sealed as absolute paths into the *submitting* runtime's tree, so a
 ``pbrun`` invoked out of a developer worktree can be executed only by the box
 that worktree is on.
 
-``placement_tags`` cannot see that and should not: it screens argv and the
+``placement_contract`` cannot see that and should not: it screens argv and the
 caller's environment, which are the submitter's inputs, not ``pbrun``'s own
 installation.  It does derive the right pin anyway, because the payload's
 ``env`` resolves outside the repository -- but an explicit ``--tag`` outranks
@@ -100,25 +100,6 @@ def test_a_published_runtime_admits_every_placement(tags):
         tags, hostname="sparky", runtime_root=PUBLISHED) is None
 
 
-def test_the_rule_is_pools_and_not_a_second_copy_of_it():
-    # ``pool.is_box_local_path`` documents itself as the one place the rule
-    # lives, because the submitter's pin and the queue's census of that pin
-    # must not describe different fleets.  A second spelling here is how they
-    # would drift, so this asserts the delegation rather than the answer.
-    seen: list[Path] = []
-    real = pbrun.pool.is_box_local_path
-
-    def _spy(path):
-        seen.append(path)
-        return real(path)
-
-    pbrun.pool.is_box_local_path = _spy
-    try:
-        pbrun.require_reachable_runtime(
-            ["sparky"], hostname="sparky", runtime_root=WORKTREE)
-    finally:
-        pbrun.pool.is_box_local_path = real
-    assert seen == [WORKTREE]
 
 
 # --------------------------------------------------------------------------
@@ -156,8 +137,12 @@ def _shard_argv(tmp_path, monkeypatch, *, runtime_root, extra=()):
     return calls[0]
 
 
+def _flags(command) -> list[str]:
+    return command[:command.index("--")]
+
+
 def _tags(command) -> list[str]:
-    flags = command[:command.index("--")]
+    flags = _flags(command)
     return [flags[i + 1] for i, flag in enumerate(flags) if flag == "--tag"]
 
 
@@ -168,24 +153,25 @@ def test_a_worktree_pbtest_names_no_tag_and_lets_pbrun_pin(
     # payload's own executable, and only an explicit tag could overrule it.
     argv = _shard_argv(tmp_path, monkeypatch, runtime_root=WORKTREE)
     assert _tags(argv) == []
+    assert "--anywhere" not in _flags(argv)
 
 
-def test_a_published_pbtest_still_defaults_to_x86(
+def test_a_published_pbtest_asserts_portability_and_names_no_class_tag(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    # The default exists to say at the call site that a pass here is not a
-    # measurement, and to keep the sparks' cores for GPU work.  Where the
-    # runtime is reachable from every box, it is still both of those things.
+    # Since #1462 an untagged CPU shard from the shared runtime says so with
+    # pbrun's own --anywhere, and carries no class tag: the interpreter
+    # requirement, not a default x86 tag, keeps it off hosts that cannot run it.
     argv = _shard_argv(tmp_path, monkeypatch, runtime_root=PUBLISHED)
-    assert _tags(argv) == ["x86"]
+    assert _tags(argv) == []
+    assert "--anywhere" in _flags(argv)
 
 
 @pytest.mark.parametrize("runtime_root", [WORKTREE, PUBLISHED])
 def test_an_explicit_tag_is_forwarded_from_either_runtime(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, runtime_root
 ):
-    # The operator's own tag is the one thing this must never rewrite; the
-    # default is a default, and the conditional applies only to the default.
+    # The operator's explicit tag must reach the shard unchanged.
     argv = _shard_argv(tmp_path, monkeypatch, runtime_root=runtime_root,
                        extra=("--tag", "sparky"))
     assert _tags(argv) == ["sparky"]

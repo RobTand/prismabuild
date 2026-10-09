@@ -50,6 +50,12 @@ class NegativeLookupCache:
         cache = self
 
         def revalidate(directory) -> None:
+            # An integer is a directory descriptor: ``shutil.rmtree`` walks by
+            # descriptor on current Pythons, and pytest's tmp_path cleanup does
+            # it while this wrapper is still installed (#1506, as #1588).  A
+            # descriptor names no path whose absence could be forgotten.
+            if isinstance(directory, int):
+                return
             cache.revalidations += 1
             held = os.path.normpath(os.fspath(directory))
             cache.remembered_absent = {

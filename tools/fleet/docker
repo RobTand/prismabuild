@@ -7,16 +7,51 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import math
 import re
+import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 
 
 OWNER_ENV = "PRISMABUILD_CONTAINER_OWNER"
 MARKER_ENV = "PRISMABUILD_CONTAINER_MARKER"
 LABEL = "prismabuild.action"
 SCOPE_LABEL = "prismabuild.scope"
+
+#: One label per shim invocation: a random nonce that names the container THIS
+#: call created.  The owner label names the action, and an action may run
+#: several containers at once, so a stop that must touch exactly one container
+#: cannot use it alone (#1599).  Callers may not set it.
+SHIM_LABEL = "prismabuild.shim"
+
+#: Termination is relayed to the real client (#1599).  A guard that stops a
+#: workload sends TERM to this process, and the container belongs to the
+#: daemon, so a shim that only waits ends without stopping it.  The signals
+#: the shim forwards, the grace the workload gets before the container is
+#: killed, and the wait for the client to follow.  The defaults sit inside the
+#: five seconds the campaign guard allows between TERM and its own KILL; an
+#: action that runs its own escalation may lengthen them, never past the cap.
+RELAYED_SIGNALS = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
+GRACE_ENV = "PRISMABUILD_DOCKER_STOP_GRACE_S"
+KILL_WAIT_ENV = "PRISMABUILD_DOCKER_STOP_KILL_WAIT_S"
+DEFAULT_GRACE_S, MAX_GRACE_S = 1.5, 30.0
+DEFAULT_KILL_WAIT_S, MAX_KILL_WAIT_S = 0.5, 10.0
+#: The ownership query, the kill and the check afterwards share this tail after
+#: the grace, and each daemon call is also capped on its own, so a hung daemon
+#: cannot stretch the stop: 1.5 s grace + 2.5 s tail = 4 s, inside five.
+STOP_TAIL_S = 2.5
+DAEMON_CALL_S = 0.8
+#: Returned instead of 128+signal when a stop was NOT proved (the container
+#: still runs, the daemon could not be asked, or it is not this attempt's).
+STOP_FAILED_EXIT = 125
+#: A stop is proved by an affirmative terminal state, or by the daemon's own
+#: "No such object".  "created" has Running=false but can still be started.
+TERMINAL_STATES = frozenset({"exited", "dead"})
+RECEIPT_SCHEMA = "prismabuild.docker_stop_receipt.v1"
 SCOPE_RE = re.compile(r"prismabuild-job[a-f0-9]{32}\.slice")
 
 #: A second label naming the SLURM job this container was created inside.
@@ -288,7 +323,7 @@ def _label_values(argv: list[str]):
 
 def _has_reserved_label(argv: list[str]) -> bool:
     for value in _label_values(argv):
-        if value.split("=", 1)[0] in {LABEL, JOB_LABEL, SCOPE_LABEL}:
+        if value.split("=", 1)[0] in {LABEL, JOB_LABEL, SCOPE_LABEL, SHIM_LABEL}:
             return True
     return False
 
@@ -370,6 +405,8 @@ def _container_options(argv: list[str], *, memory_limit: int | None = None) -> t
                     break  # Explicit short boolean value, left for Docker to validate.
         if name in {"--label", "-l"}:
             options.extend(["--label", value])
+        if name == "--cidfile":
+            options.extend(["--cidfile", value])
         if memory_limit is not None and name == "--oom-score-adj":
             try:
                 adjustment = int(value)
@@ -606,6 +643,322 @@ def _container_intent(scope: str, *, ticket: str | None = None) -> dict:
         raise Refused(f"cannot register container creation with the PB resource broker: {exc}") from exc
 
 
+def _bounded_seconds(name: str, default: float, maximum: float) -> float:
+    """A positive, finite, capped number of seconds from the environment."""
+    raw = os.environ.get(name, "")
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    if not math.isfinite(value) or value <= 0:
+        return default
+    return min(value, maximum)
+
+
+def _stop_grace() -> float:
+    return _bounded_seconds(GRACE_ENV, DEFAULT_GRACE_S, MAX_GRACE_S)
+
+
+def _kill_wait() -> float:
+    return _bounded_seconds(KILL_WAIT_ENV, DEFAULT_KILL_WAIT_S, MAX_KILL_WAIT_S)
+
+
+def _daemon(real: str, global_options: list[str], environment: dict, args: list[str],
+            *, timeout: float):
+    """One bounded call to the real client: ``(code, stdout, stderr)``.
+
+    ``code`` is None when the call could not run or ran out of time, which is
+    never an empty answer.
+    """
+    if timeout <= 0.05:
+        return None, "", ""
+    try:
+        done = subprocess.run([real, *global_options, *args], env=environment,
+                              capture_output=True, text=True, check=False,
+                              timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired):
+        return None, "", ""
+    return done.returncode, done.stdout, done.stderr
+
+
+def _owned_by_this_attempt(row: dict, owner: str, scope, nonce: str) -> bool:
+    """The existing ownership contract (see ``_owned_exec``), plus this call's nonce."""
+    labels = (row.get("Config") or {}).get("Labels") or {}
+    if labels.get(LABEL) != owner or labels.get(SHIM_LABEL) != nonce:
+        return False
+    if scope is not None:
+        if (labels.get(SCOPE_LABEL) != scope[0]
+                or (row.get("HostConfig") or {}).get("CgroupParent") != scope[0]):
+            return False
+    return True
+
+
+def _final_state(row: dict | None, state: str) -> dict:
+    info = (row or {}).get("State") or {}
+    running = bool(info.get("Running")) if state == "present" else None
+    return {"found": state == "present", "inspect": state, "running": running,
+            "status": info.get("Status"), "exit_code": info.get("ExitCode"),
+            "oom_killed": info.get("OOMKilled"),
+            "finished_at": info.get("FinishedAt")}
+
+
+def _write_receipt(path: Path, receipt: dict) -> None:
+    """Atomic and best-effort: a receipt that cannot be written never changes the stop."""
+    try:
+        temporary = path.with_name(path.name + f".tmp{os.getpid()}")
+        temporary.write_text(json.dumps(receipt) + "\n", encoding="utf-8")
+        os.replace(temporary, path)
+    except OSError:
+        pass
+
+
+class _Stop:
+    """One stop: every daemon call and wait shares one absolute deadline (#1599).
+
+    The deadline is the first signal plus the grace plus a tail that covers the
+    ownership query, the kill and the check afterwards.  The defaults sum to
+    four seconds, inside the five a guard may allow between TERM and its own
+    KILL, and no single daemon call may outlast what remains.
+    """
+
+    def __init__(self, real, global_options, environment, grace, tail):
+        self.real, self.global_options, self.environment = real, global_options, environment
+        self.grace_end = time.monotonic() + grace
+        self.hard_end = self.grace_end + tail
+
+    def left(self) -> float:
+        return self.hard_end - time.monotonic()
+
+    def call(self, args):
+        return _daemon(self.real, self.global_options, self.environment, args,
+                       timeout=min(DAEMON_CALL_S, self.left()))
+
+    def container_id(self, cidfile: Path, nonce: str):
+        """The id of the container THIS call created, and how it was found.
+
+        The cidfile is the client's own record of the id.  When it is absent
+        the call's own label finds the container: the nonce names this call and
+        no other.  A failed query is "unreadable", never "no container".
+        """
+        try:
+            text = cidfile.read_text(encoding="utf-8").strip()
+        except OSError:
+            text = ""
+        if re.fullmatch(r"[0-9a-f]{12,64}", text):
+            return text, "cidfile"
+        code, out, _ = self.call(["ps", "-aq", "--no-trunc", "--filter",
+                                  f"label={SHIM_LABEL}={nonce}"])
+        if code != 0:
+            return None, "unreadable"
+        found = [line for line in out.split() if re.fullmatch(r"[0-9a-f]{12,64}", line)]
+        return (found[0], "label") if len(found) == 1 else (None, None)
+
+    def inspect(self, cid: str):
+        """``(state, row)``: present, absent or unreadable.
+
+        Absent needs the daemon's own "No such object": a connection or
+        permission failure is unreadable, and unreadable is never a stop.
+        """
+        code, out, err = self.call(["inspect", cid])
+        if code is None:
+            return "unreadable", None
+        if code != 0:
+            absent = re.search(r"no such (object|container)", err, re.I) is not None
+            return ("absent" if absent else "unreadable"), None
+        try:
+            rows = json.loads(out)
+        except ValueError:
+            return "unreadable", None
+        if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict):
+            return "unreadable", None
+        return "present", rows[0]
+
+    def kill(self, cid: str, name: str) -> bool:
+        """True only when Docker accepted the signal."""
+        code, _, _ = self.call(["kill", "--signal", name, cid])
+        return code == 0
+
+    def remove(self, cid: str) -> bool:
+        """True only when Docker accepted removing this exact container.
+
+        Used for a container that was created but not started: a start request
+        the client already sent can still complete at the daemon, and a removed
+        container cannot start.
+        """
+        code, _, _ = self.call(["rm", "-f", cid])
+        return code == 0
+
+
+def _run_relayed(real: str, args: list[str], environment: dict, *, owner: str,
+                 scope, global_options: list[str], nonce: str, cidfile: Path,
+                 receipt_path: Path) -> int:
+    """Run the real client; on TERM, INT or HUP stop the workload it started (#1599).
+
+    The handlers are installed BEFORE the client starts and stay armed until
+    the receipt is written, so no signal in the launch window or during the
+    stop is lost or ends the shim early.  The first signal goes to the client,
+    which relays it to the container's main process.  After the grace the exact
+    container this call created, shown by ``inspect`` to carry the owner label,
+    the call's nonce and, when scoped, the scope label and cgroup parent, is
+    killed; a refused kill is retried and never recorded as a kill.  The shim
+    then checks the daemon until the container is proved stopped or absent, or
+    until the one absolute deadline.  It returns 128+signal only when a stop is
+    proved.  Anything else (a container still running, a daemon that cannot be
+    asked, a container that is not this attempt's) returns STOP_FAILED_EXIT and
+    a receipt that says so: a guard must never read "terminated" while the
+    workload lives.  Nothing is stopped by name.
+    """
+    received: list[tuple[int, float]] = []
+
+    def note(number, _frame):
+        received.append((number, time.time()))
+
+    previous = {number: signal.signal(number, note) for number in RELAYED_SIGNALS}
+    try:
+        grace, kill_wait = _stop_grace(), _kill_wait()
+        escalation = {"container_killed": False, "client_killed": False,
+                      "kill_rejected": 0, "container_removed": False,
+                      "remove_rejected": 0}
+        started = time.time()
+        child = subprocess.Popen([real, *args], env=environment)
+        stop = None
+        forwarded = 0
+        first_unix = None
+        while child.poll() is None:
+            while forwarded < len(received):
+                number, at = received[forwarded]
+                forwarded += 1
+                if stop is None:
+                    first_unix = at
+                    stop = _Stop(real, global_options, environment, grace, STOP_TAIL_S)
+                    _write_receipt(receipt_path, {
+                        "schema": RECEIPT_SCHEMA, "owner": owner, "nonce": nonce,
+                        "outcome": "signalled", "container_id": None,
+                        "signals": [{"signal": int(n), "at_unix": t} for n, t in received],
+                        "grace_s": grace, "kill_wait_s": kill_wait})
+                try:
+                    child.send_signal(number)
+                except OSError:
+                    pass
+            if stop is not None and time.monotonic() >= stop.grace_end:
+                break
+            time.sleep(0.02)
+        if not received:
+            return child.returncode if child.returncode is not None else 1
+        if stop is None:           # the client ended just as the signal landed
+            first_unix = received[0][1]
+            stop = _Stop(real, global_options, environment, grace, STOP_TAIL_S)
+
+        cid = found_by = None
+        if child.poll() is None:
+            # The client outlived the grace: stop the exact container first.
+            cid, found_by = stop.container_id(cidfile, nonce)
+            if cid is not None:
+                state, row = stop.inspect(cid)
+                if state == "present" and _owned_by_this_attempt(row, owner, scope, nonce):
+                    if stop.kill(cid, "KILL"):
+                        escalation["container_killed"] = True
+                    else:
+                        escalation["kill_rejected"] += 1
+            wait_until = min(time.monotonic() + kill_wait, stop.hard_end)
+            while child.poll() is None and time.monotonic() < wait_until:
+                time.sleep(0.02)
+            if child.poll() is None:
+                child.kill()
+                escalation["client_killed"] = True
+                try:
+                    child.wait(timeout=max(0.05, min(0.5, stop.left())))
+                except subprocess.TimeoutExpired:
+                    pass
+        code = child.returncode
+
+        # The client is gone.  Make sure the container is: poll the daemon to
+        # the deadline, relaying the signal first and the kill once the grace
+        # has passed, and call it stopped only on a successful query.
+        if cid is None:
+            cid, found_by = stop.container_id(cidfile, nonce)
+            # An empty answer is not proof that no container will exist: a
+            # create request the client already sent can still complete at the
+            # daemon after the client is gone.  Keep watching for the call's
+            # label until the deadline, and stop whatever appears.
+            while cid is None and found_by is None and stop.left() > 0.3:
+                time.sleep(0.2)
+                cid, found_by = stop.container_id(cidfile, nonce)
+        outcome = "unknown" if found_by == "unreadable" else "creation_unresolved"
+        final = {"found": False, "inspect": None, "running": None}
+        if cid is not None:
+            relayed = False
+            last_seen = None        # the last successful observation of a live container
+            last_open = None        # ... of a container whose start or removal is unresolved
+            while True:
+                state, row = stop.inspect(cid)
+                final = _final_state(row, state)
+                status = final["status"]
+                if state == "present":
+                    last_seen = final if final["running"] else None
+                    last_open = (final if (not final["running"]
+                                           and status not in TERMINAL_STATES) else None)
+                if state == "absent":
+                    outcome = ("killed" if (escalation["container_killed"]
+                                            or escalation["container_removed"])
+                               else "stopped")
+                    break
+                if state == "present":
+                    if not _owned_by_this_attempt(row, owner, scope, nonce):
+                        outcome = "not_owned"
+                        break
+                    if not final["running"] and status in TERMINAL_STATES:
+                        # Proved only by an affirmative terminal state.  Not
+                        # running is not enough: "created" has Running=false and
+                        # an accepted start request can still complete.
+                        outcome = ("killed" if escalation["container_killed"]
+                                   else "stopped")
+                        break
+                    if final["running"]:
+                        if not relayed:
+                            relayed = True
+                            stop.kill(cid, signal.Signals(received[0][0]).name[3:])
+                        elif time.monotonic() >= stop.grace_end:
+                            if stop.kill(cid, "KILL"):
+                                escalation["container_killed"] = True
+                            else:
+                                escalation["kill_rejected"] += 1
+                    elif status == "created" and time.monotonic() >= stop.grace_end:
+                        # Created and not started: remove this exact container
+                        # so a late start cannot land.
+                        if stop.remove(cid):
+                            escalation["container_removed"] = True
+                        else:
+                            escalation["remove_rejected"] += 1
+                if stop.left() <= 0.05:
+                    # Last seen running and never proved stopped is still_running,
+                    # even when the final query ran out of time; a container left
+                    # created or in an unknown state is start_unresolved; a
+                    # container that was never successfully inspected is unknown.
+                    seen = last_seen or last_open
+                    if state != "present" and seen is not None:
+                        final = dict(seen, stale=True)
+                    outcome = ("still_running" if last_seen is not None
+                               else "start_unresolved" if last_open is not None
+                               else "unknown")
+                    break
+                time.sleep(0.1)
+        proved = outcome in ("stopped", "killed")
+        _write_receipt(receipt_path, {
+            "schema": RECEIPT_SCHEMA, "owner": owner, "nonce": nonce,
+            "scope": scope[0] if scope else None,
+            "container_id": cid, "found_by": found_by, "outcome": outcome,
+            "signals": [{"signal": int(n), "at_unix": t} for n, t in received],
+            "started_unix": started, "finished_unix": time.time(),
+            "client_exit_code": code, "grace_s": grace, "kill_wait_s": kill_wait,
+            "stop_tail_s": STOP_TAIL_S, "escalation": escalation,
+            "container_final": final, "stop_proved": proved})
+        return 128 + int(received[0][0]) if proved else STOP_FAILED_EXIT
+    finally:
+        for number, handler in previous.items():
+            signal.signal(number, handler)
+
+
 def main() -> int:
     argv = sys.argv[1:]
     owner = os.environ.get(OWNER_ENV, "")
@@ -701,6 +1054,7 @@ def main() -> int:
     marker = Path(marker_raw)
     marker.parent.mkdir(parents=True, exist_ok=True)
     descriptor = os.open(marker, os.O_RDWR | os.O_CREAT, 0o644)
+    cid_directory = None
     try:
         # Held until the Docker CLI returns or this action is killed.  Cleanup
         # acquires the same lock before querying the daemon, so it cannot race
@@ -710,6 +1064,7 @@ def main() -> int:
         os.write(descriptor, owner.encode() + b"\n")
         os.fsync(descriptor)
         labels = ["--label", f"{LABEL}={owner}"]
+        nonce = os.urandom(16).hex()
         job = _slurm_job_id()
         if job:
             labels += ["--label", f"{JOB_LABEL}={job}"]
@@ -722,11 +1077,28 @@ def main() -> int:
             limit = int(memory_options[-1]) if memory_options else limit
             containment = ["--cgroup-parent", unit, "--memory", str(limit),
                            "--memory-swap", str(limit)]
+        labels += ["--label", f"{SHIM_LABEL}={nonce}"]
+        # The client's own record of the container id, for the stop path.  A
+        # cidfile the caller named is theirs and is kept; ours is made fresh,
+        # because Docker refuses a cidfile that exists, and is removed after.
+        caller_cidfile = [options[i + 1] for i, token in enumerate(options)
+                          if token == "--cidfile" and i + 1 < len(options)]
+        if caller_cidfile:
+            cidfile, cid_option = Path(caller_cidfile[-1]), []
+        else:
+            cid_directory = Path(tempfile.mkdtemp(prefix="pbdocker-cid-"))
+            cidfile = cid_directory / "cid"
+            cid_option = ["--cidfile", str(cidfile)]
         labelled = [*global_options, *sub[:relative], *labels, *containment,
-                    "--cpuset-cpus", cpuset, *creation]
+                    "--cpuset-cpus", cpuset, *cid_option, *creation]
         try:
             ticket = _container_intent(scope[0])["ticket"] if scope else None
-            result = subprocess.run([real, *labelled], env=environment, check=False)
+            receipt_path = marker.with_name(f"{marker.name}.stop-{nonce[:12]}.json")
+            result = subprocess.CompletedProcess(
+                [real, *labelled], _run_relayed(
+                    real, labelled, environment, owner=owner, scope=scope,
+                    global_options=global_options, nonce=nonce, cidfile=cidfile,
+                    receipt_path=receipt_path))
             # Only CLI success proves the daemon operation settled. A nonzero
             # exit can follow a connection failure after daemon acceptance.
             # Retain its pending ticket (also for an ordinary user-command
@@ -739,6 +1111,8 @@ def main() -> int:
             return 125
     finally:
         os.close(descriptor)
+        if cid_directory is not None:
+            shutil.rmtree(cid_directory, ignore_errors=True)
 
 
 if __name__ == "__main__":

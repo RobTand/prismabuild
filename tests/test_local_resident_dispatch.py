@@ -1,8 +1,14 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from prismabuild import pool
 from test_resident_sets_records import source
+
+from local_resident_space import roomy_disk  # noqa: F401
+
+pytestmark = pytest.mark.usefixtures("roomy_disk")
 
 
 def test_publish_dispatches_host_movers_after_record_publication(tmp_path, monkeypatch, capsys):
@@ -42,6 +48,7 @@ def test_published_pairs_queue_only_copy_and_retain_egress_for_owner(tmp_path, m
     from test_resident_sets_records import publish
     import test_a_stage_mover_declares_the_cpu_and_retries_it_owns as fixture
     store, record = publish(tmp_path)
+    monkeypatch.setattr(local_resident.time, "time", lambda: 120)
     class Cas:
         root = tmp_path / "cas"
         def publish_action_request(self, action):

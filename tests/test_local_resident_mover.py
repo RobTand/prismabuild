@@ -6,6 +6,10 @@ import pytest
 from prismabuild import pool, resident_sets
 from test_resident_sets_records import publish
 
+from local_resident_space import roomy_disk  # noqa: F401
+
+pytestmark = pytest.mark.usefixtures("roomy_disk")
+
 
 def world(tmp_path):
     store, record = publish(tmp_path)

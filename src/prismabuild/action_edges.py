@@ -76,12 +76,13 @@ _PUBLICATION_KEYS = frozenset({
 #: Publication options a deferred record may carry beyond the required set:
 #: the reader's declaration (#909), whether its stage ranges are shared
 #: with other consumers of the same manifest (#1026), and a scheduling-only
-#: priority reason (#1249). Optional so that a
+#: priority reason (#1249), and the D38 preflight evidence the release checks
+#: again against the sealed key (#1639). Optional so that a
 #: record filed before they existed still reads, and is released with no
 #: declaration and with sharing at its default.
 _OPTIONAL_PUBLICATION_KEYS = frozenset({
     "residency_prefetch_depth_gib", "residency_read_mb_s", "residency_share",
-    "priority_reason",
+    "priority_reason", "d38_receipt", "d38_exception",
 })
 
 
@@ -595,20 +596,17 @@ def read_supersession(queue_root: str | Path, old: str
     return value
 
 
-def file_supersession(queue, old: str, *, new: str, new_kind: str
-                      ) -> dict[str, object]:
-    """File that ``new`` replaces ``old``; refuse unless ``old`` has ended.
+def check_supersession(queue, old: str, *, new: str, new_kind: str
+                       ) -> dict[str, object]:
+    """Everything :func:`file_supersession` would refuse, and nothing written (#1585).
 
-    A key may be superseded once its latest generation is ``failed`` or
-    ``withdrawn``: a key that succeeded, or still runs, has nothing to be
-    replaced.  A pending id may be superseded while it is unreleased.  The
-    record is first-writer: a second, different successor refuses, and the
-    same successor finds its own record.
-
-    Once filed, a supersession is followed unconditionally.  If ``old`` is
-    later run again and succeeds, edges still read ``new``: every consumer of
-    "the producer" reads the same bytes, whenever it is released.  A link
-    that would close a loop of supersessions refuses.
+    A submitter that must still do fallible work before its replacement can
+    publish asks here first, so the cheap refusals (``old`` has not ended, a
+    loop, a different successor already on file) come before any of that work,
+    and files the record only at the moment it publishes.  An immutable record
+    that names a key which never published cannot be corrected: the corrected
+    submission is another key and conflicts, and following the record finds
+    nothing.  Returns the record that filing would write.
     """
 
     old = _hex64(old, where="--supersedes")
@@ -643,7 +641,33 @@ def file_supersession(queue, old: str, *, new: str, new_kind: str
         seen.add(current)
     record = {"schema": SUPERSESSION_SCHEMA_V1, "old": old, "new": new,
               "new_kind": new_kind}
-    _file(supersession_path(queue.root, old), record, where="supersession")
+    filed = read_supersession(queue.root, old)
+    if filed is not None and (filed.get("new") != new
+                              or filed.get("new_kind") != new_kind):
+        raise ActionEdgeError(
+            f"supersession of {old[:12]} conflicts with the immutable record "
+            f"already filed, which names {str(filed.get('new'))[:12]}")
+    return record
+
+
+def file_supersession(queue, old: str, *, new: str, new_kind: str
+                      ) -> dict[str, object]:
+    """File that ``new`` replaces ``old``; refuse unless ``old`` has ended.
+
+    A key may be superseded once its latest generation is ``failed`` or
+    ``withdrawn``: a key that succeeded, or still runs, has nothing to be
+    replaced.  A pending id may be superseded while it is unreleased.  The
+    record is first-writer: a second, different successor refuses, and the
+    same successor finds its own record.
+
+    Once filed, a supersession is followed unconditionally.  If ``old`` is
+    later run again and succeeds, edges still read ``new``: every consumer of
+    "the producer" reads the same bytes, whenever it is released.  A link
+    that would close a loop of supersessions refuses.
+    """
+
+    record = check_supersession(queue, old, new=new, new_kind=new_kind)
+    _file(supersession_path(queue.root, record["old"]), record, where="supersession")
     return record
 
 

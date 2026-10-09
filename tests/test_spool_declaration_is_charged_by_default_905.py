@@ -56,7 +56,9 @@ def _build(work: Path, fleet: Path, monkeypatch, *extra: str, transport: str = "
     monkeypatch.setattr(pbrun, "SH", fleet)
     monkeypatch.setattr(socket, "gethostname", lambda: "sparky")
     args = pbrun.parse_args([
-        "--cwd", str(work), "--detach", "--transport", transport, *extra,
+        "--cwd", str(work), "--detach", "--transport", transport,
+        # The declared scratch paths are not on this box; the class owns them.
+        "--tag", "sparky", *extra,
         "--", "/bin/bash", "-lc", "true",
     ])
     return pbrun.prepare_submission(args)["template"]

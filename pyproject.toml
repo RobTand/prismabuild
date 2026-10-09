@@ -26,5 +26,7 @@ where = ["src"]
 testpaths = ["tests"]
 # A passing test's tmp_path is removed when it ends, so a long shard on a small
 # or inode-limited scratch (a RAM tmpfs) holds only its failing tests' files.
-# pbtest refuses a command-line -o, so the setting lives in the sealed checkout.
+# pbtest forwards a command-line -o for this one key only (once, as all, failed
+# or none) and refuses every other -o key, so the default lives in the sealed
+# checkout.
 tmp_path_retention_policy = "failed"

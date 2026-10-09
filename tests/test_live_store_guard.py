@@ -428,11 +428,14 @@ def guarded(tmp_path: Path, monkeypatch) -> Path:
 
     live = _store(tmp_path / "guarded-live")
     (live / "pb-queue/done/old.json").write_text("{}")
-    monkeypatch.setattr(conftest, "GUARDED", conftest._guarded_roots(live))
-    yield live
-    # The refusals below were expected; do not let the swallowed-refusal
-    # check fail the test that asked for them.
-    conftest.REFUSALS.clear()
+    # Restore the real roots before pytest removes the scratch store.
+    with monkeypatch.context() as patch:
+        patch.setattr(conftest, "GUARDED", conftest._guarded_roots(live))
+        try:
+            yield live
+        finally:
+            # These tests expect refusals from the scratch store.
+            conftest.REFUSALS.clear()
 
 
 _REFUSED_CALLS = {
@@ -485,10 +488,121 @@ def test_each_audited_call_under_the_store_is_refused_before_it_runs(
 
 def test_a_relative_path_is_placed_against_the_working_directory(
         guarded: Path, monkeypatch) -> None:
+    # Restore the cwd before pytest removes the scratch directory.
+    original = os.getcwd()
     monkeypatch.chdir(guarded.parent)
-    with pytest.raises(RuntimeError, match=str(guarded / "pb-queue/done/r.json")):
-        open("guarded-live/pb-queue/done/r.json", "w")
-    assert not (guarded / "pb-queue/done/r.json").exists()
+    try:
+        with pytest.raises(RuntimeError, match=str(guarded / "pb-queue/done/r.json")):
+            open("guarded-live/pb-queue/done/r.json", "w")
+        assert not (guarded / "pb-queue/done/r.json").exists()
+    finally:
+        os.chdir(original)
+
+
+@pytest.mark.parametrize("kwargs", [{}, {"dir_fd": None}])
+def test_os_open_without_a_directory_descriptor_uses_the_cwd(
+        guarded: Path, monkeypatch, kwargs) -> None:
+    original = os.getcwd()
+    monkeypatch.chdir(guarded.parent)
+    target = guarded / "pb-queue/done/cwd.json"
+    try:
+        with pytest.raises(RuntimeError, match=str(target)):
+            descriptor = os.open(
+                "guarded-live/pb-queue/done/cwd.json",
+                os.O_WRONLY | os.O_CREAT, **kwargs,
+            )
+            os.close(descriptor)
+        assert not target.exists()
+    finally:
+        os.chdir(original)
+
+
+@pytest.mark.parametrize("flags", [os.O_RDONLY, os.O_WRONLY | os.O_TRUNC])
+@pytest.mark.parametrize("name_type", [str, bytes, Path])
+def test_a_descriptor_relative_open_into_the_store_is_refused(
+        guarded: Path, tmp_path: Path, monkeypatch, flags: int, name_type) -> None:
+    target = guarded / "pb-queue/done/old.json"
+    with conftest._LiveAccess():
+        directory = os.open(target.parent, os.O_RDONLY | os.O_DIRECTORY)
+    original = os.getcwd()
+    monkeypatch.chdir(tmp_path)
+    try:
+        name = b"old.json" if name_type is bytes else name_type("old.json")
+        with pytest.raises(RuntimeError, match=str(target)):
+            descriptor = os.open(name, flags, dir_fd=directory)
+            os.close(descriptor)
+        with conftest._LiveAccess():
+            assert target.read_text() == "{}"
+    finally:
+        os.chdir(original)
+        os.close(directory)
+
+
+def test_a_descriptor_relative_open_outside_the_store_ignores_the_cwd(
+        guarded: Path, tmp_path: Path, monkeypatch) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "old.json").write_text("outside bytes")
+    directory = os.open(outside, os.O_RDONLY | os.O_DIRECTORY)
+    original = os.getcwd()
+    monkeypatch.chdir(guarded / "pb-queue/done")
+    try:
+        descriptor = os.open("old.json", os.O_RDONLY, dir_fd=directory)
+        with os.fdopen(descriptor) as handle:
+            assert handle.read() == "outside bytes"
+        assert conftest.REFUSALS == []
+    finally:
+        os.chdir(original)
+        os.close(directory)
+
+
+def test_an_absolute_open_ignores_the_directory_descriptor(
+        guarded: Path, tmp_path: Path, monkeypatch) -> None:
+    outside = tmp_path / "outside.json"
+    outside.write_text("absolute bytes")
+    directory = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    original = os.getcwd()
+    monkeypatch.chdir(guarded)
+    try:
+        with pytest.raises(RuntimeError, match=str(guarded)):
+            descriptor = os.open(
+                guarded / "pb-queue/done/old.json", os.O_RDONLY, dir_fd=directory,
+            )
+            os.close(descriptor)
+        conftest.REFUSALS.clear()
+        descriptor = os.open(outside, os.O_RDONLY, dir_fd=directory)
+        with os.fdopen(descriptor) as handle:
+            assert handle.read() == "absolute bytes"
+    finally:
+        os.chdir(original)
+        os.close(directory)
+
+
+def test_pytest_removes_scratch_directories_with_descriptor_relative_opens(
+        tmp_path: Path) -> None:
+    live, result = _child_session(tmp_path, (
+        "import os\nfrom pathlib import Path\nimport conftest\nimport pytest\n"
+        "from _pytest.pathlib import rm_rf\n"
+        "@pytest.fixture\n"
+        "def cleanup(tmp_path_factory):\n"
+        "    scratch = tmp_path_factory.mktemp('cleanup')\n"
+        "    (scratch / 'scratch-live').mkdir()\n"
+        "    original = os.getcwd()\n"
+        "    os.chdir(Path(os.environ['PRISMABUILD_TEST_LIVE_ROOT']).parent)\n"
+        "    try:\n"
+        "        yield\n"
+        "        rm_rf(scratch)\n"
+        "        assert not scratch.exists()\n"
+        "        assert conftest.REFUSALS == []\n"
+        "    finally:\n"
+        "        os.chdir(original)\n"
+        "def test_cleanup(cleanup):\n"
+        "    pass\n"
+    ))
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    assert "1 passed" in result.stdout, output
+    assert live.is_dir()
 
 
 def test_calls_outside_the_store_pass(guarded: Path, tmp_path: Path) -> None:
@@ -505,16 +619,29 @@ def test_a_sibling_whose_name_extends_the_root_is_not_the_store(
         tmp_path: Path, monkeypatch) -> None:
     live = tmp_path / "live"
     live.mkdir()
-    monkeypatch.setattr(conftest, "GUARDED", conftest._guarded_roots(live))
-    (tmp_path / "live-2").mkdir()
-    (tmp_path / "live-2/ok.json").write_text("{}")
-    assert os.listdir(tmp_path / "live-2") == ["ok.json"]
+    with monkeypatch.context() as patch:
+        patch.setattr(conftest, "GUARDED", conftest._guarded_roots(live))
+        (tmp_path / "live-2").mkdir()
+        (tmp_path / "live-2/ok.json").write_text("{}")
+        assert os.listdir(tmp_path / "live-2") == ["ok.json"]
 
 
 @pytest.mark.live_store(reason="proves the marker lets a test through")
 def test_a_marked_test_is_let_through(guarded: Path) -> None:
     assert "old.json" in os.listdir(guarded / "pb-queue/done")
     assert conftest.REFUSALS == []
+
+
+@pytest.mark.live_store(reason="proves descriptor-relative opens retain the exemption")
+def test_a_marked_descriptor_relative_open_is_let_through(guarded: Path) -> None:
+    directory = os.open(guarded / "pb-queue/done", os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        descriptor = os.open("old.json", os.O_RDONLY, dir_fd=directory)
+        with os.fdopen(descriptor) as handle:
+            assert handle.read() == "{}"
+        assert conftest.REFUSALS == []
+    finally:
+        os.close(directory)
 
 
 def test_a_cas_directory_walk_is_refused_at_the_descent(guarded: Path) -> None:

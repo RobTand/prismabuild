@@ -69,7 +69,7 @@ _PUBLISH_LOCK_DEPTH = 0
 _PUBLISH_LOCK_PID: int | None = None
 #: Published as ``tools/<name>`` *and* ``tools/fleet/<name>``.
 FLEET_SCRIPTS = (
-    "docker", "pbrun.py", "pbtest.py", "pbtest_outcomes.py", "pbtest_collection.py", "pbtest_pins.py", "pbtest_capabilities.py", "require_pool.py", "worker_loop.py", "worker.py",
+    "docker", "pbrun.py", "d38_gate.py", "pbtest.py", "pbtest_outcomes.py", "pbtest_collection.py", "pbtest_pins.py", "pbtest_capabilities.py", "require_pool.py", "worker_loop.py", "worker.py",
     "seal_and_publish.py",
     "publish_runtime.py", "pool_reset.py", "runtime_paths.py", "supervise.py",
     "role_log_identity.py", "migrate_role_logs.py",
@@ -163,6 +163,16 @@ FLEET_SCRIPTS = (
     # missing from this list is a tool no box can run, so the gang canary could
     # not start from a published generation.
     "pbgang.py",
+    # tier_loop.py imports prelaunch_tier unconditionally (#1594).  A published
+    # script that imports a tools module the publication lacks makes the
+    # publisher refuse every generation, so the module ships.
+    "prelaunch_tier.py",
+    # pbrun imports pbevidence unconditionally (#1598).  A published script that
+    # imports a tools module the publication lacks makes the publisher refuse
+    # every generation, so the tool ships even for commands that never use
+    # --target-evidence.  It also runs as a normal action on a worker of the
+    # class, where it prints the evidence packet.
+    "pbevidence.py",
     # Explicit plan-first banked-checkout recovery runs on the owning host.
     "pbrecover_checkout.py",
     # The reconcile, for the same reason: the endings it files are the ones
@@ -204,6 +214,11 @@ EXCLUDED: tuple[tuple[str, str], ...] = (
      "a read-only profile of the census a finish pays, run from a checkout "
      "through pbrun against a view of a queue's funding directory; it is a "
      "record of one measurement rather than an operator command"),
+    ("qualify_docker_stop.py",
+     "the #1599 real-container stop proof, run from a checkout inside an "
+     "admitted action on a box with Docker; it starts the checkout's own shim "
+     "beside it, so it is a qualification of one source tree and not an "
+     "operator command for a box without a checkout"),
     ("qualify_rollout.py",
      "paired rollout qualification actors use submitted checkouts and a fresh "
      "private shared root; their simulated host services are not an operator "

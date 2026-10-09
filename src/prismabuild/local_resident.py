@@ -217,6 +217,8 @@ def movement_action(template, store, set_id, tier, *, policy_path, operation, so
 def publish_actions(template, store, set_id, tiers, *, policy_path):
     """Publish copies now and retain host-pinned egress rows for lease expiry."""
     record = store.read(set_id)
+    if not lease_active(store, set_id):
+        raise ValueError("resident lease expired")
     queue = pool.PoolQueue(store.queue_root)
     cas = template["cas"]
     by_host = {tier["host"]: tier for tier in tiers if tier.get("tier_id", "").startswith("local:")}
