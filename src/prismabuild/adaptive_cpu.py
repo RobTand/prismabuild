@@ -618,7 +618,9 @@ def _record_box_origin_if_new(directory, digest, base):
                   'queue_root': resolved, 'hostname': socket.gethostname(),
                   'pid': os.getpid(), 'argv0': sys.argv[0] if sys.argv else '',
                   'created_unix': time.time()}
-        raw = json.dumps(record, sort_keys=True).encode()
+        # Read back with ``json.loads`` only; nothing hashes these bytes, so
+        # the literal's key order is enough and no canonical encoding is owed.
+        raw = json.dumps(record).encode()
         written = 0
         while written < len(raw):
             count = os.write(descriptor, raw[written:])
