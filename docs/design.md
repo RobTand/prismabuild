@@ -6376,9 +6376,16 @@ journal, not operator descriptors.
 
 `pbresident dispatch SET_ID` retries action publication for an already-filed
 immutable body. It never republishes the set or acquires a second publication
-hold. Repeated dispatch attaches to a live copy generation; a resident host
-gets its descriptors refreshed without another copy action. An absent or
-interrupted copy can be re-driven through the existing movement retry policy.
+hold. Dispatch checks `lease_active` before action publication or descriptor updates.
+It refuses a released lease or a lease at its hard maximum.
+Ready or claimed rows with `resident_set` can extend an until lease before that maximum.
+
+Repeated dispatch attaches to a live copy generation for the same checkout snapshot.
+A changed checkout snapshot changes the action key and can queue another copy.
+The mover lock serializes copies; the second copy verifies the completed tree again.
+A resident host gets its descriptors refreshed without another copy action.
+An absent or interrupted copy can be re-driven through the existing movement retry policy.
+
 `pbresident renew SET_ID` appends an explicit until-date or campaign lease with
 a required hard maximum, bounded by the configured renewal ceiling. Neither
 command changes the immutable body or adds a seal/authority requirement.
@@ -6409,7 +6416,8 @@ manifest-subset inference (the design note section 3.3 supersedes its older
 lifecycle wording). Until leases may be extended by ready or claimed rows,
 but never past their hard maximum. Campaign leases end on release or maximum.
 An explicit `ResidentSets.renew` appends a new bounded lease without changing
-the body. Explicit Phase 1 readers take `local_resident.pin` and release that
+the body. It can reactivate a released set; live rows cannot cancel a release.
+Explicit Phase 1 readers take `local_resident.pin` and release that
 token only after their last read; a crashed reader pin stays until the existing
 broker scope attestation proves stop. Phase 2 will integrate container pins.
 Explicit renewals are capped at `now + renewal_ceiling_s`, a positive finite
@@ -16794,3 +16802,68 @@ selection reconstructs missing/corrupt views; corrected descendant heads remain
 eligible. Unowned replacements are retained for explicit recovery rather than
 removed. Supported once retains no hold/view. Original failed evidence survives
 cleanup, and deployment still requires separate coordinator acceptance.
+
+
+## D38 preflight gate (#1639)
+
+D38 requires a CPU dry run before a new or changed GPU job.  `tools/fleet/d38_gate.py`
+is the consumer side and `pbrun.py` calls it once, in the shared submission path, after
+the target is sealed and before any new runnable work is published, on the pool and SLURM
+transports alike.  It reads evidence only; nothing asks a model whether evidence exists.
+
+A publication has GPU intent when its final sealed demand has `gpu` above zero, a required
+tag (derived host pins included) is `gb10`, `sparky` or `sparklina`, or `--host-class` is
+`gb10`.  A `--preflight` token, an environment variable or `--gpu` with zero demand exempts
+nothing.
+
+**Evidence.**  `--d38-namespace PATH` seals the digest of a namespace descriptor into the
+job's params before the key is computed, so a changed namespace is a changed job; absent,
+keys are byte-identical to before.  `--d38-receipt KEY` names a preflight action.  Its
+content-verified CAS receipt must exist before publication, and its `fleet.d38.preflight.v1`
+result (strict JSON, 64 KiB, no duplicate keys or NaN) must bind this job identity, normalized
+images and namespace, say `pass`, not be future-dated and not have expired.  The preflight
+action must also carry its target plan as a verified CAS input (`d38-plan`, schema
+`fleet.d38.plan.v1`) whose digest is the one the action declares.  The plan names the target
+(identity, images, namespace), the entry point, the target command (which must be this job's
+command), the CPU command (which must be the preflight action's command) and a list of typed
+CPU changes.  The entry point is a `script` (`[interpreter, script, *args]`) or a `module`
+(`[interpreter, "-m", module, *args]`); nothing parses a shell, and a target that starts with `-`
+(`bash -lc "..."`, any launcher whose program sits in a later slot) is refused as opaque.  A
+reviewed invocation descriptor (`d38_gate.INVOCATIONS`, keyed `kind:interpreter:target`) lists
+the CPU changes that entry point allows, each `{flag, from, to}`; the CPU arguments must equal
+the target's arguments with exactly the plan's listed changes applied, so a changed program,
+module, input or check argument is a difference no descriptor lists.  No descriptor ships, so no
+receipt authorizes a job until a harness owner adds a reviewed one, and the scoped exception is
+the only path.  What the worker executes is `task.argv`, not the descriptive `params.command`:
+the preflight's `task.argv` must be the standard captured-log recipe of its declared command
+(`action_result.bind_standard_capture_command`), so an unrelated task cannot present a passing
+receipt.  A receipt with no plan, an unrelated entry point, a plan for another job, an unlisted
+change or an unrelated task is refused.  Device hiding is read from what the preflight action sealed:
+`CUDA_VISIBLE_DEVICES` empty, and `NVIDIA_VISIBLE_DEVICES=none` for a gb10 proof.  The worker's
+host accelerator inventory is not task visibility: a CPU-only gb10 container still has the
+Spark's GPU in its host evidence, so the check reads the sealed environment and keeps only the
+host-class (machine) check on the evidence.  `--d38-exception DECISION_ID` reads a CEO decision
+whose `grant.d38_exception` binds the exact job, images, namespace and expiry; it waives D38
+only, never together with a receipt.  Either way an immutable event is written under
+`pb-queue/d38-audit/<job hash>/` before the publication, and a failed write refuses.  The CAS
+action request is written before authorization, so the guarantee is that no new runnable work is
+published, not that nothing is written.
+
+**No exemption by liveness.**  The gate has no early return for a cache hit or a live run:
+whether a publication creates new work is decided inside the queue, and a liveness read taken
+earlier goes stale (and `slurm_outcome` submits a new job even when a pool run is live).  Without
+evidence, `pbrun` publishes and submits nothing.  Attached, it may only wait on a live pool run it
+can see, whatever transport was asked for, or refuse with exit 2.  A live SLURM job, and an
+attached cache hit, are refused without evidence: stricter than "needs no receipt", and a
+detached submission still answers a cache hit or a live attachment without publishing.
+
+A deferred (`--after`) submission has no job identity until its producer ends, so no receipt or
+grant can bind it.  GPU intent is refused at registration, and the release checks the sealed key
+again for a record an older client filed (the two flags ride in its publication options, as
+optional keys so older records still read).  Deferred GPU work needs a separate design.
+
+The producer (`--d38-plan`, `--d38-preflight-for`), a supported grant issuer, `pbgang` member
+flags and retiring old installed clients are later changes; until the producer lands a GPU job
+is publishable only through a scoped exception, and enforcement must not be published before
+them.  `d38_gate.ENFORCE` is the one switch; it is a module attribute that no flag or environment
+variable reaches, and only the existing test suite turns it off.

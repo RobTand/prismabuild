@@ -43,15 +43,25 @@ The owning host must have announced its local tier tools and capacity.
 
 If publication files its body but action dispatch fails, do not republish the
 same manifest: `pbresident.py --pool-root QUEUE dispatch SET_ID --checkout
-CHECKOUT --policy POLICY` retries dispatch using that existing set. The
-command returns movement rows as JSON, attaches to already-live copy actions,
-and queues no new copy for a host whose copy is resident. Use a bounded Git
-checkout explicitly when the current directory is too large to snapshot.
+CHECKOUT --policy POLICY` retries dispatch using that existing set.
+The command checks the lease before action publication or movement descriptor updates.
+It refuses released leases and leases at their hard maximum.
+Ready or claimed rows with `resident_set` can extend an until lease before that maximum.
+
+The command returns movement rows as JSON.
+It attaches to already-live copy actions for the same checkout snapshot.
+A changed checkout snapshot changes the action key and can queue another copy.
+The mover lock serializes copies; the second copy verifies the completed tree again.
+Dispatch queues no new copy for a host whose copy is resident.
+Use a bounded Git checkout explicitly when the current directory is too large to snapshot.
 
 `pbresident.py --pool-root QUEUE renew SET_ID --lease-until DATE --hard-max
 DATE --policy POLICY --by OPERATOR` appends a new lease without modifying
 the set body. Use `--campaign NAME` instead of `--lease-until` if needed.
 The policy ceiling applies to the new hard maximum relative to renewal time.
+
+An explicit renewal can reactivate a released set.
+Live rows cannot cancel a release or extend a lease past its hard maximum.
 
 `pbresident.py --pool-root QUEUE adopt SET_ID --host HOST --source DIRECTORY`
 queues a verified same-filesystem adoption on the owning host; it does not

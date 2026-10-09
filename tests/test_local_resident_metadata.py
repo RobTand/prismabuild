@@ -15,6 +15,7 @@ pytestmark = pytest.mark.usefixtures("roomy_disk")
 def _publication(tmp_path, monkeypatch, store, set_id, spec, operation):
     import pbresident
     import test_a_stage_mover_declares_the_cpu_and_retries_it_owns as fixture
+    monkeypatch.setattr(local_resident.time, "time", lambda: 120)
 
     class Cas:
         root = tmp_path / "cas"
