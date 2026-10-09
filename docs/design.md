@@ -16687,6 +16687,8 @@ Admitted smoke `b4e28cac15b8` compared SDK6 with the published SDK5 client.
 It preserved all 84 earlier exports, 52 callable signatures, and 26 constants.
 It exercised legacy claim reads, nondestructive scratch paths, and receipt refusals against SDK6 internals.
 The three-file compatibility run passed all 278 collected cases with no skips.
+Its actions are `e1be6ee1e1cc` (171 cases), `28de31f1d4d4` (78 cases) and `385ca2b7db00` (29 cases).
+The evidence record keeps their full keys, receipts and payload digests.
 These checks establish the exercised compatibility, not full consumer or crash-recovery acceptance.
 
 **Still open.**

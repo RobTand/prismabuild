@@ -550,6 +550,7 @@
     "payload_sha256": "1761268952561dfb699f26e0e6bbeac8caad5e19e2d8269c7c5897d616ebf20a"
    }
   ],
+  "suite_totals": {"actions": 3, "collected": 278, "ran": 278, "passed": 278, "skipped": 0},
   "verification": {
    "all_actions_terminal": true,
    "receipt_census_complete": true,

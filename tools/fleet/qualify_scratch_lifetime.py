@@ -1,18 +1,20 @@
 """Qualify generation-bound scratch lifetime on admitted workers (#1360).
 
-Run through the published pbrun on a host-class-qualified worker with sealed
-scratch pairs and a versioned lifetime selection. The pool registers the
+Run through the published pbrun on an x86 worker that announces measured
+scratch capacity, with sealed scratch pairs and a versioned lifetime
+selection. Do not place these CPU scenarios on a Spark. The pool registers the
 ephemeral leaf before launch and cleans it only after exact stopped-attempt
 proof. The harness asserts that lifecycle from inside the payload and from
 the published terminal record.
 
-Usage (one scenario per submission; roots must already exist on the worker):
+Usage (one scenario per submission; roots must already exist on the worker
+and lie on its supervisor-measured local disk, never on tmpfs):
 
   python3 /mnt/shared/prismabuild-fleet/repo/tools/pbrun.py \\
-    --cwd <checkout> --tag sparky --cpus 1 --demand mem_gb=2 \\
-    --env IG1360_TEMP_ROOT=/home/rob/tmp/ig1360-temp \\
+    --cwd <checkout> --tag x86 --cpus 1 --demand mem_gb=2 \\
+    --env IG1360_TEMP_ROOT=<disk-root>/ig1360-temp \\
     --env IG1360_TEMP_MAX=1073741824 \\
-    --env IG1360_CACHE_ROOT=/home/rob/tmp/ig1360-cache \\
+    --env IG1360_CACHE_ROOT=<disk-root>/ig1360-cache \\
     --env IG1360_CACHE_MAX=1073741824 \\
     --env PRISMABUILD_LOCAL_SCRATCH_PAIRS=IG1360_TEMP_ROOT:IG1360_TEMP_MAX,IG1360_CACHE_ROOT:IG1360_CACHE_MAX \\
     --env PRISMABUILD_EPHEMERAL_SCRATCH_DECLARATIONS='<selection>' \\
@@ -44,11 +46,20 @@ def _harness(argv=None):
                         choices=["normal", "failed", "sigkill-child", "failing-cleanup-guard",
                                  "launcher-victim", "launcher-killer"],
                         help="lifecycle path this payload exercises")
-    parser.add_argument("--temp-root-env", required=True)
-    parser.add_argument("--temp-name", required=True)
-    parser.add_argument("--cache-root-env", required=True)
-    parser.add_argument("--cache-name", required=True)
-    parser.add_argument("--queue-root", default="/mnt/shared/prismabuild-fleet/pb-queue")
+    parser.add_argument("--temp-root-env", required=True,
+                        help="environment variable that holds the sealed root of the "
+                             "ephemeral row-temporary scratch pair")
+    parser.add_argument("--temp-name", required=True,
+                        help="declared name of the ephemeral leaf beneath that root")
+    parser.add_argument("--cache-root-env", required=True,
+                        help="environment variable that holds the persistent cache root; "
+                             "the harness writes a marker there that cleanup must keep")
+    parser.add_argument("--cache-name", required=True,
+                        help="name prefix of the marker file written to the persistent "
+                             "cache root")
+    parser.add_argument("--queue-root", default="/mnt/shared/prismabuild-fleet/pb-queue",
+                        help="pull-queue root that holds this action's claimed record; "
+                             "the harness reads only its own claim")
     parser.add_argument("--rendezvous-root", default="/mnt/shared/pb-qualification",
                         help="shared directory for launcher kill rendezvous files")
     parser.add_argument("--rendezvous-id", default="",
@@ -104,8 +115,8 @@ def _launcher_victim(args, key: str, leaf: Path, result: dict) -> int:
     (directory / "victim-ready.json").write_text(json.dumps({
         "action_key": key, "host": result["host"], "leaf": str(leaf),
         "launcher_pids": launchers, "ready_unix": time.time(),
-    }, sort_keys=True) + "\n", encoding="utf-8")
-    print(json.dumps({**result, "launcher_pids": launchers}, sort_keys=True))
+    }) + "\n", encoding="utf-8")
+    print(json.dumps({**result, "launcher_pids": launchers}))
     deadline = time.monotonic() + 540
     while time.monotonic() < deadline:
         time.sleep(2)
@@ -169,7 +180,7 @@ def _launcher_killer(args, key: str, result: dict) -> int:
         (directory / "kill-intent.json").write_text(json.dumps({
             "victim": victim, "launcher_pids": launchers,
             "killer": key, "host": result["host"],
-        }, sort_keys=True) + "\n", encoding="utf-8")
+        }) + "\n", encoding="utf-8")
         time.sleep(5)
         killed = []
         for pid, descriptor in targets:
@@ -180,9 +191,9 @@ def _launcher_killer(args, key: str, result: dict) -> int:
                 pass
     (directory / "kill-done.json").write_text(json.dumps({
         "victim": victim, "killed": killed, "killer": key,
-    }, sort_keys=True) + "\n", encoding="utf-8")
+    }) + "\n", encoding="utf-8")
     print(json.dumps({**result, "victim": victim, "killed_launcher_pids": killed,
-                      "victim_leaf": ready.get("leaf")}, sort_keys=True))
+                      "victim_leaf": ready.get("leaf")}))
     return 0
 
 
@@ -218,7 +229,7 @@ def main(argv=None) -> int:
         "sdk_version": client.SDK_VERSION,
         "capability": client.SCRATCH_LIFETIME_TAG,
     }
-    print(json.dumps(result, sort_keys=True))
+    print(json.dumps(result))
     if args.scenario == "failed":
         return 3
     if args.scenario == "sigkill-child":
@@ -234,7 +245,7 @@ def main(argv=None) -> int:
                 child.kill()
         result["sigkilled_descendant_pid"] = child.pid
         result["sigkilled_descendant_returncode"] = child.returncode
-        print(json.dumps(result, sort_keys=True))
+        print(json.dumps(result))
         return 0
     if args.scenario == "failing-cleanup-guard":
         # Plant a symlink inside the owned leaf. Production cleanup must
@@ -247,7 +258,7 @@ def main(argv=None) -> int:
         link.symlink_to(foreign)
         result["guard_link"] = str(link)
         result["guard_target"] = str(foreign)
-        print(json.dumps(result, sort_keys=True))
+        print(json.dumps(result))
         return 0
     if args.scenario == "launcher-victim":
         return _launcher_victim(args, key, leaf, result)
