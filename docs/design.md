@@ -2050,6 +2050,35 @@ has `skipped: null`, which means its skip reasons are unknown, not that nothing
 was skipped. The recorder changes every shard's command, so receipts from
 before it are not cache hits for shards after it.
 
+Each shard also emits `pbtest-completion: {json}` before exit hooks can block
+the final outcomes (#1530). Its schema is `prismabuild.pbtest_completion.v1`.
+The recorder flushes this separate record after the last selected test reports
+teardown. For an incomplete session, it emits the available evidence at entry
+to `pytest_sessionfinish`. An xdist controller checks every worker's collection
+before it can report complete tests.
+
+The JSON report field `test_completion.status` is `complete`, `incomplete`,
+or `unknown`. Complete tests require a nonempty, unique selected population,
+an observed outcome for each test, and a teardown report for each test.
+Collection errors, inconsistent worker collections, duplicate teardown reports,
+and reports outside the selected population prevent complete status.
+Missing or invalid records give unknown status. Collection-only runs do not
+establish complete test execution.
+
+A timeout without a summary states `TESTS COMPLETE; PROCESS DID NOT EXIT`
+only when this completion record verifies the selected population.
+Otherwise, it states `TEST COMPLETION UNVERIFIED` and retains unknown coverage.
+
+The JSON field `timed_out` identifies an observed pbrun timeout with a nonzero
+return code. If a final summary exists, the console keeps its counts and
+adds the same completion notice beside it.
+
+Completion does not prove final outcomes, assigned-file reconciliation, or a
+successful process exit. Progress dots, `[100%]`, and trace events establish
+none of these facts. The green gate still requires exit zero, a final pytest
+summary, and reconciled final outcomes.
+
+
 `pbtest` reconciles every shard by node ID (#941). Each shard's receipt entry
 carries `reconciliation`: its collected tests matched against the outcomes its
 recorder saw, and its record's counts matched against its summary line. A
@@ -2080,6 +2109,8 @@ outcomes equal tests, plus outcomes at collection, plus extra phases.
 For a failed shard, the human report prints its full output, including the
 pytest failure section; the pool also retains the action's immutable attempt
 stdout log. The `--json` entry contains that output without truncation.
+For a pool-scratch exit stack and bounded tmpfs guidance, see
+[the #1530 evidence record](results/pbtest_exit_completion_1530.md).
 
 `pbtest` names every shard's full action key (#1012). `pbrun`'s pool
 submission line (`queued` or `attached to`) carries the full key, and every
