@@ -154,13 +154,7 @@ def run_reporter(
             reporter.commit()
         if stop_after_s is not None and time.monotonic() - started >= stop_after_s:
             return reporter
-        if stop_after_s is None and not fresh:
-            time.sleep(max(0.1, float(poll_s)))
-            continue
-        if stop_after_s is None:
-            time.sleep(max(0.1, float(poll_s)))
-            continue
-        time.sleep(0.0)
+        time.sleep(max(0.1, float(poll_s)))
 
 
 def reporter_state_path(progress_path: str | Path) -> str:
