@@ -102,6 +102,39 @@ _COUNTED = {
     "lock_order": [(po, "_output_prefix_lock_order")],
 }
 
+#: The admission state binding this bench owns, under its work directory.
+#: Every ``PoolQueue`` below touches host admission through
+#: ``adaptive_cpu.box_state``, keyed on the queue root, so with no explicit
+#: ``PRISMABUILD_BOX_STATE_ROOT`` the bench mints a fresh digest set in the
+#: fleet's own directory. Binding it here keeps parent and child inside
+#: ``<work>/box-state``. Nothing here disposes through ``finish``: that path
+#: needs a token, socket and cgroup the bench never records, so unresolved
+#: claims and census fences survive the run inside the work directory.
+BOX_STATE_ENV = "PRISMABUILD_BOX_STATE_ROOT"
+BOX_STATE_SUBDIR = "box-state"
+
+
+def bind_private_box_state(work):
+    """Point admission state at ``<work>/box-state``; keep an explicit root.
+
+    Returns the bound root as a string. An explicit nonempty
+    ``PRISMABUILD_BOX_STATE_ROOT`` passes through untouched. The directory
+    is created so late binders never mint it under the fleet root. Call
+    before the first queue use in both parent and child processes.
+    """
+    explicit = os.environ.get(BOX_STATE_ENV)
+    if explicit:
+        return explicit
+    root = Path(work).resolve() / BOX_STATE_SUBDIR
+    root.mkdir(parents=True, exist_ok=True)
+    os.environ[BOX_STATE_ENV] = str(root)
+    try:
+        from prismabuild import adaptive_cpu
+        adaptive_cpu.BOX_STATE_ROOT = Path(str(root))
+    except ImportError:
+        pass
+    return str(root)
+
 #: The sampler's own reads, taken before the counter wraps anything, so the
 #: thread's reads are never counted as the cycle's.
 _RAW_OPEN = builtins.open
@@ -351,6 +384,7 @@ def build_write_only_scopes(queue: pool.PoolQueue, root: Path, *,
 
 def run_cycles(args) -> int:
     work = Path(args.work).resolve()
+    bind_private_box_state(work)
     setup = json.loads((work / "setup.json").read_text())
     bench_tier_cycle.HOST = setup["host"]
     host = setup["host"]
@@ -579,6 +613,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="write-only handoff scopes to install (#992): "
                              "consumed origin-only batches whose succeeded "
                              "producer declared no consumer (the live 39)")
+    parser.add_argument("--tiny-shape", action="store_true",
+                        help="minimal queue shape for isolation tests: no "
+                             "noise rows, so the setup claim lands at once")
     parser.add_argument("--write-only-batches", type=int, default=33,
                         help="consumed batches per write-only scope")
     parser.add_argument("--write-only-paths", type=int, default=120,
@@ -623,6 +660,7 @@ def main(argv: list[str] | None = None) -> int:
         shutil.rmtree(work)
     work.mkdir(parents=True)
     out.mkdir(parents=True, exist_ok=True)
+    bind_private_box_state(work)
 
     # The tier record must name this box, as the live one names the tier
     # host, so the in-process egress is the one taken.
@@ -641,6 +679,13 @@ def main(argv: list[str] | None = None) -> int:
         files_per_range=64, ready_noise=30, claimed_noise=28,
         dead_owner_pairs=args.dead_owner_pairs,
         dead_entries=args.dead_entries)
+    if getattr(args, "tiny_shape", False):
+        shape_args = argparse.Namespace(
+            empty_dirs=0, small_dirs=0, big_fragments="",
+            produced_fragment_dirs=0, done=0, failed=0, withdrawn=0,
+            receipts=0, passes=0, live_consumers=0, phases=1,
+            files_per_range=1, ready_noise=0, claimed_noise=0,
+            dead_owner_pairs=0, dead_entries=args.dead_entries)
     built = time.monotonic()
     shape = bench_tier_cycle.build_queue(queue, stage, shape_args)
     import r13_1053_replay

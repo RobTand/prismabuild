@@ -1694,14 +1694,15 @@ unchanged; descriptor-based temporary-directory cleanup can therefore finish
 under the failed-only retention policy instead of failing in the fixture itself.
 Only `tmp_path` is removed per test. A directory made with `tmp_path_factory.mktemp`,
 and the directory of any failing test, lasts as long as the session's base temporary
-directory. By default `pbtest` passes no `--basetemp`, so that base is
-`$TMPDIR/pytest-of-<user>/pytest-N`, where `TMPDIR` is the default `/home/rob/tmp` or the
-`--tmpdir` directory when one is given. pytest removes the whole directory itself when
-the session ends with exit status 0 (policy `failed`); after a session with any failure it
-stays until later sessions prune older numbered directories (pytest keeps the newest three
-by default). With `--basetemp root` pytest does not remove the directory at the end of the
-session: it deletes and recreates the root at the start of the next session that uses that
-path, so a leftover root has to be cleaned by whoever sealed it.
+directory. Without `--basetemp` each attempt owns its base temp (#1542):
+`<tmpdir>/pbtest-<action-key12>/<attempt>/pytest`, where `tmpdir` is the
+default `/home/rob/tmp` or the `--tmpdir` directory when one is given. The
+worker removes only that attempt's directory after pytest exits 0, and keeps
+it on a non-zero exit, as the failed-only retention policy does. Expiry of
+kept directories is out of scope. With `--basetemp root` pytest does not
+remove the directory at the end of the session: it deletes and recreates
+the root at the start of the next session that uses that path, so a leftover
+root has to be cleaned by whoever sealed it.
 
 `--basetemp root` seals a separate scratch root for pytest's own temporary
 files (#1469), so selecting real test scratch no longer moves the process
@@ -1723,16 +1724,16 @@ action root. The root stays unsupported through `--pytest-args`: the closed
 vocabulary does not grow.
 
 Nothing removes the derived `root/<action-key>/<attempt>/pytest` namespaces
-automatically. pytest deletes only the basetemp it is handed, at its own
-start. A sealed root is not PrismaBuild-admitted scratch: the attempt
-lifetime contract (#1463, refs #1360) owns declared, registered ephemeral
-roots, not a caller-provisioned `--basetemp` root, so D1 disk admission does
-not see what accumulates there. A relative root needs no extra owner -- it
-lives inside the attempt's materialized checkout and is removed with it. An
-absolute root grows outside every PB accounting path, so the caller who
-provisions ROOT owns the removal of its action namespaces; until #1360
-extends scratch lifetime to sealed client roots, provision absolute roots
-under a retention policy of your own.
+of a sealed `--basetemp` automatically. pytest deletes only the basetemp it
+is handed, at its own start. A sealed root is not PrismaBuild-admitted
+scratch: the attempt lifetime contract (#1463, refs #1360) owns declared,
+registered ephemeral roots, not a caller-provisioned `--basetemp` root, so
+D1 disk admission does not see what accumulates there. A relative root needs
+no extra owner -- it lives inside the attempt's materialized checkout and is
+removed with it. An absolute root grows outside every PB accounting path, so
+the caller who provisions ROOT owns the removal of its action namespaces;
+until #1360 extends scratch lifetime to sealed client roots, provision
+absolute roots under a retention policy of your own.
 
 Every requested path must be a file or directory. A missing or invalid path
 refuses the whole submission with exit code 2 and a diagnostic before any
@@ -3864,7 +3865,12 @@ map uses the existing idle-queue procedure.
 CPU samples, learned profiles, interval state, spent borrowing samples, the
 GPU probe state and each running scope's live telemetry live in the host-local
 `PRISMABUILD_BOX_STATE_ROOT` directory, keyed by ledger and hostname. The default root is `/tmp/prismabuild-admission-<uid>`. Do not delete
-it while workers run. A cold start relearns intervals and profiles; shared
+it while workers run. Each new digest files `<digest>.origin.json` once,
+naming its queue root, hostname, pid, executable and creation time; entries
+without one are legacy entries. Maintenance-only prune (`survey_box_state`,
+`prune_box_state`) removes idle digests: the default only surveys, and apply
+needs the maintenance hold with every worker loop stopped and no new opener
+able to enter. A cold start relearns intervals and profiles; shared
 copies are never recovery authority. For this authority migration or rollback,
 keep the queue drained until every worker loop reports the selected generation.
 Before rollback to shared authority, verify all snapshot publishers have

@@ -8,6 +8,7 @@ ownership (which still uses NFS rename).
 from __future__ import annotations
 
 from contextlib import contextmanager
+import contextlib
 import fcntl
 import hashlib
 import json
@@ -17,6 +18,7 @@ from pathlib import Path
 import socket
 import stat
 import statistics
+import sys
 import time
 import uuid
 
@@ -552,7 +554,122 @@ def box_state(base):
         if info.st_mode & 0o077:
             # The chmod did not take.  Now there is nothing left to try.
             raise RuntimeError('unsafe PrismaBuild admission lock directory')
-    return directory, box_identity(base)
+    digest = box_identity(base)
+    _record_box_origin(directory, digest, base)
+    return directory, digest
+
+
+def _record_box_origin(directory, digest, base):
+    """File ``<digest>.origin.json`` once, with ``O_EXCL``, naming the writer.
+
+    The record names the resolved queue root, hostname, pid, ``argv[0]``,
+    and creation time. A second call for the same digest keeps the first
+    record: the origin is who first created the entry, not who last
+    touched it. An entry without one is a legacy entry; nothing invents
+    its origin. A missing file elsewhere stays "no information".
+    """
+    path = Path(directory) / (digest + '.origin.json')
+    try:
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    except FileExistsError:
+        return 'present'
+    except OSError:
+        return 'unavailable'
+    try:
+        try:
+            resolved = str(Path(base).resolve())
+        except OSError:
+            resolved = str(base)
+        record = {'schema': 'prismabuild.box_origin.v1', 'digest': digest,
+                  'queue_root': resolved, 'hostname': socket.gethostname(),
+                  'pid': os.getpid(), 'argv0': sys.argv[0] if sys.argv else '',
+                  'created_unix': time.time()}
+        raw = json.dumps(record, sort_keys=True).encode()
+        written = 0
+        while written < len(raw):
+            count = os.write(descriptor, raw[written:])
+            if count <= 0:
+                raise OSError('short write of the box origin record')
+            written += count
+        os.fsync(descriptor)
+    except OSError:
+        with contextlib.suppress(OSError):
+            os.close(descriptor)
+        with contextlib.suppress(OSError):
+            os.unlink(path)
+        return 'unavailable'
+    os.close(descriptor)
+    return 'recorded'
+
+
+def read_box_origin(directory, digest):
+    """The origin record for ``digest``, or ``None`` for a legacy entry.
+
+    ``None`` also answers an unreadable or foreign record: a legacy entry
+    and a damaged one both carry no attribution, and neither invents one.
+    """
+    try:
+        raw = (Path(directory) / (digest + '.origin.json')).read_bytes()
+    except OSError:
+        return None
+    try:
+        record = json.loads(raw.decode())
+    except (ValueError, UnicodeError):
+        return None
+    if not isinstance(record, dict):
+        return None
+    if record.get('schema') != 'prismabuild.box_origin.v1':
+        return None
+    if record.get('digest') != digest:
+        return None
+    for name in ('queue_root', 'hostname', 'argv0'):
+        if not isinstance(record.get(name), str) or not record[name]:
+            return None
+    if type(record.get('pid')) is not int or record['pid'] <= 0:
+        return None
+    if type(record.get('created_unix')) not in (int, float):
+        return None
+    return record
+
+
+def census_box_origins(directory):
+    """Group every digest under ``directory`` by its origin record.
+
+    Returns ``(origins, legacy)``: ``origins`` maps each origin record's
+    stable identity ``(queue_root, hostname, argv0)`` to its digests;
+    ``legacy`` holds the digests with no readable record. Names only.
+    """
+    directory = Path(directory)
+    try:
+        names = sorted(entry.name for entry in os.scandir(directory))
+    except OSError:
+        return {}, []
+    digests = set()
+    for name in names:
+        if name.endswith('.origin.json'):
+            stem = name[:-len('.origin.json')]
+            if len(stem) == 64 and all(char in '0123456789abcdef' for char in stem):
+                digests.add(stem)
+            continue
+        for suffix in ('.measurement-reader-v1', '.adaptive-cpu-v1', '.preemption', '.sweep', '.lock'):
+            if name.endswith(suffix):
+                stem = name[:-len(suffix)]
+                break
+        else:
+            continue
+        if len(stem) == 64 and all(char in '0123456789abcdef' for char in stem):
+            digests.add(stem)
+    origins = {}
+    legacy = []
+    for stem in sorted(digests):
+        record = read_box_origin(directory, stem)
+        if record is None:
+            legacy.append(stem)
+            continue
+        key = (record['queue_root'], record['hostname'], record['argv0'])
+        origins.setdefault(key, []).append(stem)
+    return origins, legacy
+
 
 
 def box_identity(base):
@@ -588,10 +705,38 @@ class AdmissionGate:
         try:
             try:
                 directory, digest = box_state(self.ledger.base)
-                descriptor = os.open(directory / (digest + '.lock'),
-                                     os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
-                info = os.fstat(descriptor)
-                if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1:
+                name = digest + '.lock'
+                # A pruner renames an idle entry aside before it removes it.
+                # An opener that created the name after the rename must not
+                # lock an inode nobody else can reach: open, then check the
+                # name still names this inode, and open again when it does
+                # not. One retry is enough: the second open either names the
+                # same inode the lock then holds, or names a fresh file.
+                for _attempt in range(2):
+                    descriptor = os.open(directory / name,
+                                         os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+                    try:
+                        info = os.fstat(descriptor)
+                        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1:
+                            raise RuntimeError('unsafe PrismaBuild admission lock file')
+                        try:
+                            named = os.stat(directory / name, follow_symlinks=False)
+                        except FileNotFoundError:
+                            os.close(descriptor)
+                            descriptor = None
+                            continue
+                        if (named.st_dev, named.st_ino) != (info.st_dev, info.st_ino):
+                            os.close(descriptor)
+                            descriptor = None
+                            continue
+                        break
+                    except BaseException:
+                        if descriptor is not None:
+                            with contextlib.suppress(OSError):
+                                os.close(descriptor)
+                            descriptor = None
+                        raise
+                if descriptor is None:
                     raise RuntimeError('unsafe PrismaBuild admission lock file')
                 try:
                     fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -622,6 +767,244 @@ def local_state_base(base):
         if state.lstat().st_mode & 0o077:
             raise RuntimeError('unsafe PrismaBuild adaptive CPU state directory')
     return state
+
+#: How long an idle digest waits before maintenance may remove it. Seven
+#: days: seven times the longest worker-loop ceiling of 86,400 s. A live
+#: loop writes ``cpu-sample.json`` on every claim pass, so a live entry is
+#: never this old.
+PRUNE_IDLE_AFTER_S = 7 * 24 * 3600.0
+#: Most entries one prune pass removes. A count bound, not a safety proof:
+#: age and liveness select candidates, the bound only sizes the pass.
+PRUNE_MAX_ENTRIES_PER_PASS = 100
+#: Most digests one prune pass removes when the root holds too many. The
+#: oldest idle entry goes first, never a fresh one.
+PRUNE_HARD_CAP_ENTRIES = 5000
+#: Digest suffixes this module and its callers own under the box-state root.
+BOX_STATE_SUFFIXES = ('.lock', '.origin.json', '.adaptive-cpu-v1',
+                      '.measurement-reader-v1', '.measurement-reader-v1.guard',
+                      '.measurement-reader-v1.writing',
+                      '.preemption', '.sweep')
+
+
+class PruneRefused(RuntimeError):
+    """Maintenance-only removal refused: the box is not provably idle."""
+
+
+def _box_state_digest_of(name):
+    for suffix in BOX_STATE_SUFFIXES:
+        if name.endswith(suffix):
+            stem = name[:-len(suffix)]
+            break
+    else:
+        return None
+    if len(stem) == 64 and all(char in '0123456789abcdef' for char in stem):
+        return stem
+    return None
+
+
+def _box_state_entry_mtime(entry):
+    """Newest mtime under ``entry``, or ``None`` when nothing is readable."""
+    newest = None
+    try:
+        top = entry.lstat().st_mtime
+    except OSError:
+        return None
+    newest = top
+    try:
+        children = list(os.scandir(entry))
+    except OSError:
+        return None
+    for child in children:
+        try:
+            if child.is_dir(follow_symlinks=False):
+                try:
+                    nested = [item.stat(follow_symlinks=False).st_mtime
+                              for item in os.scandir(child.path)]
+                except OSError:
+                    return None
+                for stamp in nested:
+                    if stamp > newest:
+                        newest = stamp
+            else:
+                stamp = child.stat(follow_symlinks=False).st_mtime
+                if stamp > newest:
+                    newest = stamp
+        except OSError:
+            return None
+    return newest
+
+
+def _live_box_state_digests(queue_roots):
+    """Digests of the queue roots this box serves, never prune candidates."""
+    found = set()
+    for root in queue_roots or ():
+        try:
+            found.add(box_identity(root))
+        except OSError:
+            continue
+    return found
+
+
+def _held_lock_digest(path):
+    """Whether ``path`` names a lock file a live loop holds right now."""
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError:
+        return False
+    try:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        except OSError:
+            return False
+        return False
+    finally:
+        with contextlib.suppress(OSError):
+            os.close(descriptor)
+
+
+def survey_box_state(directory=None, *, queue_roots=(), older_than_s=PRUNE_IDLE_AFTER_S,
+                     max_entries=PRUNE_HARD_CAP_ENTRIES, now=None):
+    """Sort every digest under the box-state root into keep or candidate.
+
+    Returns ``{'candidates': [...], 'kept': {digest: reason}}``. A digest is
+    a candidate only when every file under its entry is older than
+    ``older_than_s`` and no live evidence names it: a digest of a served
+    queue root, a held admission lock, a live reader fence, or an
+    incomplete census. Missing or incomplete evidence keeps, never
+    removes. Age and count only select; neither permits unsafe removal.
+    """
+    root = Path(directory) if directory is not None else Path(BOX_STATE_ROOT)
+    moment = time.time() if now is None else float(now)
+    try:
+        names = sorted(entry.name for entry in os.scandir(root))
+    except OSError:
+        return {'candidates': [], 'kept': {}}
+    by_digest = {}
+    for name in names:
+        digest = _box_state_digest_of(name)
+        if digest is not None:
+            by_digest.setdefault(digest, []).append(name)
+    live = _live_box_state_digests(queue_roots)
+    candidates = []
+    kept = {}
+    for digest in sorted(by_digest):
+        names = by_digest[digest]
+        if digest in live:
+            kept[digest] = 'served queue root'
+            continue
+        if _held_lock_digest(root / (digest + '.lock')):
+            kept[digest] = 'held admission lock'
+            continue
+        newest = _box_state_entry_mtime(root / (digest + '.adaptive-cpu-v1'))
+        if newest is None:
+            kept[digest] = 'unreadable state'
+            continue
+        file_stamps = []
+        readable = True
+        for name in names:
+            if name.endswith('.adaptive-cpu-v1'):
+                continue
+            try:
+                file_stamps.append((root / name).lstat().st_mtime)
+            except OSError:
+                readable = False
+                break
+        if not readable:
+            kept[digest] = 'unreadable state'
+            continue
+        newest = max([newest, *file_stamps]) if file_stamps else newest
+        if moment - newest < older_than_s:
+            kept[digest] = 'fresh activity'
+            continue
+        reader = root / (digest + '.measurement-reader-v1')
+        try:
+            marker_exists = reader.exists()
+        except OSError:
+            kept[digest] = 'unreadable state'
+            continue
+        if marker_exists:
+            kept[digest] = 'unresolved census reader'
+            continue
+        candidates.append((newest, digest))
+    candidates.sort()
+    if len(by_digest) > max_entries:
+        over = len(by_digest) - max_entries
+        aged = [digest for _stamp, digest in candidates[:over]]
+        rest = [digest for _stamp, digest in candidates[over:]]
+        return {'candidates': aged, 'kept': kept, 'over_cap': rest}
+    return {'candidates': [digest for _stamp, digest in candidates], 'kept': kept}
+
+
+def prune_box_state(*, queue_roots=(), older_than_s=PRUNE_IDLE_AFTER_S,
+                    max_entries_per_pass=PRUNE_MAX_ENTRIES_PER_PASS,
+                    max_entries=PRUNE_HARD_CAP_ENTRIES, apply=False,
+                    directory=None, maintenance_held=False, now=None):
+    """Remove idle admission state under maintenance hold, or only survey it.
+
+    The default is a dry run: it returns the survey and changes nothing.
+    With ``apply`` it renames each eligible entry into ``.pruned-<ts>/``,
+    then removes what it renamed. A racing opener re-creates what it
+    needs; the admission lock re-checks the name after the open, so the
+    rename cannot create two independent holders.
+
+    ``maintenance_held`` must be true: the caller holds the fleet's
+    maintenance gate, with every worker loop stopped and no new opener
+    able to enter. Without it apply refuses with :class:`PruneRefused`.
+    The prohibition on deletion while workers run stays: apply without
+    the hold is refused, never queued.
+    """
+    root = Path(directory) if directory is not None else Path(BOX_STATE_ROOT)
+    survey = survey_box_state(root, queue_roots=queue_roots,
+                              older_than_s=older_than_s,
+                              max_entries=max_entries, now=now)
+    if not apply:
+        return {'dry_run': True, 'candidates': list(survey['candidates']),
+                'kept': dict(survey['kept'])}
+    if not maintenance_held:
+        raise PruneRefused(
+            'prune apply needs the maintenance hold: stop every worker '
+            'loop and bar new openers first; deletion while workers run '
+            'stays prohibited')
+    removed = []
+    moment = time.time() if now is None else float(now)
+    staged = root / ('.pruned-%d' % int(moment))
+    for digest in survey['candidates'][:max_entries_per_pass]:
+        names = [entry.name for entry in os.scandir(root)
+                 if _box_state_digest_of(entry.name) == digest]
+        if not names:
+            continue
+        if _held_lock_digest(root / (digest + '.lock')):
+            continue
+        try:
+            staged.mkdir(mode=0o700, exist_ok=True)
+            moved = []
+            for name in sorted(names):
+                target = staged / name
+                os.rename(root / name, target)
+                moved.append(name)
+        except OSError:
+            continue
+        for name in moved:
+            target = staged / name
+            try:
+                if target.is_dir() and not target.is_symlink():
+                    import shutil
+                    shutil.rmtree(target)
+                else:
+                    target.unlink()
+            except OSError:
+                continue
+        removed.append(digest)
+    try:
+        staged.rmdir()
+    except OSError:
+        pass
+    return {'dry_run': False, 'removed': removed,
+            'candidates': list(survey['candidates']),
+            'kept': dict(survey['kept'])}
+
 
 
 def local_telemetry_path(base, action_key):
