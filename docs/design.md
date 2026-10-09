@@ -4837,14 +4837,43 @@ directly -- `pbgang` refuses this shape -- or any other submitter's row) is
 planned by the manifest planner (#1247) off its own sealed request and is
 then gated by its filed plan exactly like an explicit one, reaching its map at
 launch through the declared-manifest branch of `residency_map_environment`.
-Operational consequence: a window whose movers are slow drains its already-
-elected siblings' hosts for the whole mover time, and the wait does not end on
-its own if a lead ends terminally (`residency_lead_terminal`) or the plan is
-refused (`plan_unreadable`, `plan_superseded`): gang elections never expire,
-and the gang sweep tears a gang down only on an UNSUCCESSFUL member, which a
-READY member never is -- the wait lasts until the gang is withdrawn. Size
-`--residency` windows with that fence in mind, submit the movers before the
-gang, and withdraw the gang when a member's residency can no longer land.
+Slow movers keep fences on the hosts that their gang siblings elect.
+The claim pass tears down a gang after it confirms `residency_lead_terminal`.
+This denial covers failed, withdrawn, dropped, unpinned, and manifest-mismatched leads.
+The sweep withdraws all members and releases their fences (#1543).
+
+The first terminal observation writes `gangs/<group>/terminal-<member>.json`.
+The mark contains a signature of each pending lead's records and generations.
+An unchanged signature must persist for `TERMINAL_CONFIRM_S` (120 seconds).
+A live verdict clears the mark.
+A changed signature, failed read, busy lock, or future timestamp starts a new window.
+
+The final proof takes every relevant lead's transition lock without a wait, in lead-key order.
+It refreshes directory names and reopens positive records before it checks live generations, the verdict, and pin state.
+A failed refresh, unreadable listed record, or live lead prevents teardown.
+The proof writes the one-shot `teardown.json` before it releases these locks.
+The caller withdraws siblings only after it releases every lead lock.
+A requeue after teardown cannot restore the gang.
+
+The queue checks mark reads and removals with the same strict directory refresh.
+If unlink and replacement both fail, the queue retains a reset obligation.
+It cannot confirm that member until the reset succeeds.
+A new queue instance resets inherited evidence before use.
+This restart costs a new confirmation window but prevents an old mark from bypassing a failed reset.
+
+Only `lead_not_resident` and `lead_unpinned` can start or confirm a teardown.
+Every other verdict state ends the window and clears the mark.
+This includes the shape refusal `prelaunch_undeclared`, `map_unreadable`, `map_incomplete`, and any state added later.
+The shape check (#1594) answers before the leads are read, so it blocks the proof at the confirming read too.
+A prelaunch gang defers each election while a sibling's verdict is unresolved (`deferred_for_gang_prelaunch`).
+A dead member therefore holds no fence there, and the teardown still ends the gang.
+
+Plan refusals (`plan_unreadable`, `plan_superseded`) remain outside this change.
+A READY member with a plan refusal still holds its siblings' fences until withdrawal.
+Issue #1543 remains open for that scope.
+Submit movers before the gang.
+Withdraw the gang when its member's plan cannot become resident.
+These source changes do not establish deployment or a live-queue qualification.
 
 Per member host, inside the ordinary claim pass:
 

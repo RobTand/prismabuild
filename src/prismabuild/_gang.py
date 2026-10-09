@@ -39,6 +39,8 @@ TEARDOWN_SCHEMA = "prismabuild.gang_teardown.v1"
 #: pass that finds the member admissible refreshes it.
 READY_FRESH_S = 30.0
 DEFAULT_SKEW_S = 120.0
+TERMINAL_CONFIRM_S = 120.0
+TERMINAL_SCHEMA = "prismabuild.gang_terminal_mark.v1"
 #: How often a claimed member re-reads its siblings before launch.
 BARRIER_POLL_S = 0.25
 MAX_MEMBERS = 16
@@ -266,6 +268,64 @@ def tear_down(queue, group: str, *, reason: str, by: str, now: float) -> bool:
     return _link_new(state_dir(queue, group) / "teardown.json",
                      {"schema": TEARDOWN_SCHEMA, "group": group, "reason": str(reason),
                       "by": str(by), "torn_down_unix": float(now)})
+
+
+def terminal_mark_path(queue, group: str, key: str) -> Path:
+    return state_dir(queue, group) / f"terminal-{key}.json"
+
+
+def note_terminal(queue, group: str, key: str, signature: str, *, now: float,
+                  confirm_s: float = TERMINAL_CONFIRM_S) -> bool:
+    """Record that member ``key`` reads terminal; ``True`` once that has stood.
+
+    A reading of "every lead ended" is a snapshot of leads that can be
+    requeued (READY -> CLAIMED passes through states a reader sees as
+    absent or ended), so one reading never tears a gang down (#1543).  The
+    first reading writes a durable mark carrying ``signature``, the leads'
+    generations and endings; a later reading confirms only when the mark is
+    at least ``confirm_s`` old and names the same signature.  A different or
+    unreadable mark is replaced and starts the wait again, as is a mark
+    stamped in the future (another host's clock).  An empty signature is
+    never a terminal reading: it is the reset an uncertain reading
+    leaves, and it only ever restarts the wait.  The caller holds the
+    member's row lock, so a member's mark has one writer.
+    """
+    path = terminal_mark_path(queue, group, key)
+    from . import pool
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        mark = pool._read_json_confirmed(path, max_bytes=MAX_RECORD_BYTES)
+    except (GangContractError, OSError, ValueError, core.PrismaBuildError):
+        mark = None
+    stamp = mark.get("first_seen_unix") if isinstance(mark, Mapping) else None
+    if (signature and isinstance(mark, Mapping) and mark.get("schema") == TERMINAL_SCHEMA
+            and mark.get("signature") == signature
+            and isinstance(stamp, (int, float)) and not isinstance(stamp, bool)
+            and 0 <= now - float(stamp)):
+        return now - float(stamp) >= confirm_s
+    pool._write_json_atomic(path, {"schema": TERMINAL_SCHEMA, "group": group,
+                                   "member": key, "signature": signature,
+                                   "first_seen_unix": float(now)})
+    return False
+
+
+def clear_terminal(queue, group: str, key: str) -> bool:
+    """Forget member ``key``'s terminal reading: it read live again.
+
+    ``True`` when no mark survives: the mark was absent or the unlink
+    removed it.  ``False`` when the mark is still on file, so the caller
+    must not treat the live reading as a reset of the confirmation
+    window (#1583 review, second round).
+    """
+    from . import pool
+    path = terminal_mark_path(queue, group, key)
+    try:
+        if group not in os.listdir(root(queue)):
+            return True
+        path.unlink(missing_ok=True)
+        return pool._read_json_confirmed(path, max_bytes=MAX_RECORD_BYTES) is None
+    except (OSError, core.PrismaBuildError):
+        return False
 
 
 def sibling_states(queue, record: Mapping[str, object], entry: Mapping[str, object]) -> dict[int, str]:
