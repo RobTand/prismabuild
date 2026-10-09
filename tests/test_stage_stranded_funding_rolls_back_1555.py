@@ -206,6 +206,12 @@ def test_stranded_intent_rolls_back_and_live_intent_stays(tmp_path: Path) -> Non
                and e.get("mover") == dead_mover for e in events), events
     rec = q.read_output_funding(dead_mover, TIER)
     assert rec is not None and rec["state"] == "released"
+    freed = any(e.get("event") == "output-funding-tokens-released"
+                and e.get("mover") == dead_mover
+                and e.get("released_gib") == 1 for e in events), events
+    assert freed
+    assert ledger.holder_tokens(dead_mover).get(KIND, 0) == 0
+    assert ledger.available().get(KIND, 0) == 5
 
     # The live intent is untouched by the same pass.
     live = q.read_output_funding(live_mover, TIER)
@@ -218,9 +224,47 @@ def test_stranded_intent_rolls_back_and_live_intent_stays(tmp_path: Path) -> Non
     assert q.read_output_funding(
         dead_mover, TIER)["state"] == "released"
 
-    # Ordinary release returns the dead mover's token to free.
-    freed = ledger.release(dead_mover)
-    assert freed == 1
+    # No manual release: the production cycle already returned the
+    # dead mover's token to free.
     live2 = q.read_output_funding(live_mover, TIER)
     assert live2 is not None and live2["state"] == "transferring"
     assert str(live2["generation"]) != dead_gen or True
+
+
+def test_partial_output_keeps_its_charge(tmp_path: Path) -> None:
+    """A withdrawn mover with staged bytes keeps tokens (pool.py:15970)."""
+    owner = _hexkey("1555-owner-partial")
+    mover = _hexkey("1555-mover-partial")
+    q = _queue(tmp_path)
+    ledger = q.tier_ledger(TIER)
+    template = _template(str(tmp_path / "outputs"))
+    inst = _bind(q, template, owner)
+
+    descs = _descriptors(tmp_path, template, inst, name="partial.bin")
+    _prewrite(q, inst, template, "partial", TIER, descs)
+    manifest = po.output_manifest_sha256(descs)
+    total = sum(int(d["bytes"]) for d in descs)
+    staged = q.stage_output_intent(
+        tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
+        template=template, batch_id="partial", descriptors=descs)
+    assert staged.get("ok") is True, staged
+    _publish_mover(q, mover, manifest, total, gib=1,
+                   batch_ref=_ref(inst, template, "partial", descs))
+    funded = q.fund_output_batch(
+        tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
+        template=template, batch_id="partial", descriptors=descs)
+    assert funded.get("ok") is True, funded
+    assert ledger.holder_tokens(mover).get(KIND, 0) == 1
+
+    # The mover staged part of its batch, then was withdrawn: bytes
+    # may sit on the stage, so the reconcile must not free them.
+    q.record_move(mover, {"tier_id": TIER, "complete": False,
+                          "bytes_staged": total,
+                          "range_start_bytes": 0,
+                          "range_end_bytes": total,
+                          "manifest_sha256": manifest})
+    assert q.withdraw(mover, by="test", reason="stopped") is not None
+    events = tier_loop._settle_protected(q, {"protected": {}, "grants": {}})
+    assert ledger.holder_tokens(mover).get(KIND, 0) == 1
+    assert not any(e.get("event") == "output-funding-tokens-released"
+                   and e.get("mover") == mover for e in events), events

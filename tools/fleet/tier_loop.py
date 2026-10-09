@@ -7892,10 +7892,13 @@ def _reconcile_stranded_output_funding(queue: pool.PoolQueue,
     Calls :meth:`PoolQueue.release_output_funding`, which proves mover
     nonexecution itself (no CLAIMED row, no DONE or FAILED row, no
     staged receipt, no lease) and retires ``reserved`` or
-    ``transferring`` to ``released``. Tokens stay where they are;
-    the ordinary owner or mover release then frees them. A live or
-    uncertain intent is untouched: the call refuses and this reports
-    why. Returns at most one event.
+    ``transferring`` to ``released``. The pool leaves tokens where
+    they are by design, so this then runs the ordinary token release
+    for a mover the withdrawal proves never started: a WITHDRAWN row,
+    no DONE or FAILED row, no receipt with staged bytes or a complete
+    copy, and no lane verdict claiming the key. A live or uncertain
+    intent is untouched: the call refuses and this reports why.
+    Returns at most two events.
     """
     events: list[dict[str, object]] = []
     stem = Path(str(path)).name
@@ -7937,10 +7940,65 @@ def _reconcile_stranded_output_funding(queue: pool.PoolQueue,
                        "tier_id": str(scan_tier), "mover": mover_name,
                        "error": repr(exc)})
         return events
-    if released:
-        events.append({"event": "output-funding-reconcile-released",
-                       "tier_id": str(scan_tier), "mover": mover_name})
+    if not released:
+        return events
+    events.append({"event": "output-funding-reconcile-released",
+                   "tier_id": str(scan_tier), "mover": mover_name})
+    freed = _release_never_started_mover_tokens(queue, mover_name, scan_tier)
+    if freed:
+        events.append({"event": "output-funding-tokens-released",
+                       "tier_id": str(scan_tier), "mover": mover_name,
+                       "released_gib": freed})
     return events
+
+
+def _release_never_started_mover_tokens(queue: pool.PoolQueue, mover: str,
+                                        tier_id: str) -> int:
+    """Free one proven never-started mover's tier tokens, or 0.
+
+    The ordinary token half of the stranded rollback: the funding
+    call above proves nonexecution for the record, and this proves
+    it again for the tokens before the ordinary release runs. A
+    mover frees only when all hold: a WITHDRAWN row exists, no DONE
+    or FAILED row exists, no receipt carries staged bytes or a
+    complete copy, and the mover is not runnable (no READY or
+    CLAIMED row). The lane's own ``produced_holder`` verdict still
+    retains a committed or partial batch (``dead`` or ``unknown``),
+    and a ``live`` verdict for a mover still queued or claimed, but
+    never a withdrawn mover with no bytes, which can never copy.
+    Uses the ordinary ``release_tier_holder`` path; no token file
+    is removed by hand.
+    """
+    try:
+        from prismabuild import pool as _pool_mod
+        if _pool_mod._read_json(
+                queue.item_path(_pool_mod.WITHDRAWN, mover)) is None:
+            return 0
+        for state in (_pool_mod.DONE, _pool_mod.FAILED):
+            if _pool_mod._read_json(queue.item_path(state, mover)) is not None:
+                return 0
+        receipt = queue.move_record(mover)
+        if isinstance(receipt, Mapping):
+            staged = receipt.get("bytes_staged")
+            if (isinstance(staged, int) and not isinstance(staged, bool)
+                    and staged > 0):
+                return 0
+            if receipt.get("complete") is True:
+                return 0
+        for state in (_pool_mod.READY, _pool_mod.CLAIMED):
+            try:
+                if _pool_mod._read_json(
+                        queue.item_path(state, mover)) is not None:
+                    return 0
+            except (OSError, _pool_mod.PoolContractError):
+                return 0
+        verdict = stage_release.produced_holder(queue, tier_id, mover)
+        if verdict is not None and verdict.get("class") in ("dead",
+                                                            "unknown"):
+            return 0
+        return int(queue.release_tier_holder(tier_id, mover))
+    except (OSError, pool.PoolContractError, ValueError):
+        return 0
 
 
 def _settle_protected(queue: pool.PoolQueue,
@@ -9906,19 +9964,20 @@ def landed_and_in_flight(queue: pool.PoolQueue, tier_id: str, kind: str) -> tupl
     return landed, in_flight
 
 
-def _mint_bytes(queue: pool.PoolQueue, tier_id: str, kind: str) -> tuple[int, int]:
+def _mint_bytes(queue: pool.PoolQueue, tier_id: str, kind: str,
+                ) -> tuple[int, int, int]:
     """Byte side of the mint split, read beside the token split.
 
-    Sums ``bytes_staged`` over complete, unrefused receipts on one
-    side of the same line ``landed_and_in_flight`` draws. A holder
-    that cannot be classified adds no bytes, so rounding stays an
-    upper bound. Returns ``(landed_bytes, in_flight_bytes)``.
+    Sums ``bytes_staged`` over complete, unrefused receipts for the
+    landed side, and the sealed plan range for each in-flight holder.
+    A holder with no plan leg adds its tokens to unknown, never to
+    waste. Returns ``(landed_bytes, in_flight_bytes, unknown_gib)``.
     """
     try:
         split = stage_rounding.landed_and_in_flight_bytes(queue, tier_id, kind)
     except (OSError, pool.PoolContractError, ValueError):
-        return (0, 0)
-    return (split[1], split[3])
+        return (0, 0, 0)
+    return (split[1], split[3], split[4])
 
 
 def mint_stage_supply(queue: pool.PoolQueue, *, tier_id: str, kind: str,
@@ -9977,9 +10036,11 @@ def mint_stage_supply(queue: pool.PoolQueue, *, tier_id: str, kind: str,
             supply = min(supply, int(cap))
         seen["landed"] = landed
         seen["in_flight"] = in_flight
-        landed_bytes, flight_bytes = _mint_bytes(queue, tier_id, kind)
+        landed_bytes, flight_bytes, unknown_gib = _mint_bytes(
+            queue, tier_id, kind)
         seen["landed_bytes"] = landed_bytes
         seen["in_flight_bytes"] = flight_bytes
+        seen["in_flight_unknown_gib"] = unknown_gib
         seen["supply"] = supply
         seen["writable"] = writable
         merged = {str(k): int(v) for k, v in dict(extra_tokens or {}).items()}
@@ -9990,6 +10051,7 @@ def mint_stage_supply(queue: pool.PoolQueue, *, tier_id: str, kind: str,
     return {"landed": seen["landed"], "in_flight": seen["in_flight"],
             "landed_bytes": seen.get("landed_bytes", 0),
             "in_flight_bytes": seen.get("in_flight_bytes", 0),
+            "in_flight_unknown_gib": seen.get("in_flight_unknown_gib", 0),
             "supply": seen["supply"], "writable": seen["writable"],
             "ledger": result}
 
@@ -10947,6 +11009,8 @@ def _cycle(
             record["in_flight_gib"] = minted["in_flight"]
             record["landed_bytes"] = minted.get("landed_bytes", 0)
             record["in_flight_bytes"] = minted.get("in_flight_bytes", 0)
+            record["in_flight_unknown_gib"] = minted.get(
+                "in_flight_unknown_gib", 0)
             record["landed_rounding_gib"] = stage_rounding.rounding_gib(
                 minted["landed"], int(minted.get("landed_bytes", 0)),
                 storage_tiers.GIB)
