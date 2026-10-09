@@ -3951,7 +3951,8 @@ def _guarded_mutation(*, blocking: bool):
     Every other mutator waits and completes under the lock, so a
     contended commit/abandon is never reported as success nor silently
     dropped.  A contended non-blocking guard returns ``None`` from the
-    wrapped call.
+    wrapped call and names the lock in ``last_token_shortage``, so a
+    caller that reads the shortage tells contention from no room.
 
     Every token mutator takes this. Readers take nothing by themselves:
     a check-and-reserve caller must retain ``_mutation_locked`` across
@@ -3965,6 +3966,10 @@ def _guarded_mutation(*, blocking: bool):
         def wrapper(self, *args, **kwargs):
             with self._mutation_locked(blocking=blocking) as acquired:
                 if not acquired:
+                    if not blocking:
+                        self.last_token_shortage = {
+                            "resource": "ledger_lock", "requested": 0,
+                            "available": 0, "reason": "mutation_lock_busy"}
                     return None
                 return fn(self, *args, **kwargs)
         return wrapper
@@ -4789,7 +4794,9 @@ class ResourceLedger:
         come from a per-process cache the loop tick refreshes outside every
         lock; its floor locks are taken inside the mutation lock and are
         innermost.  A refusal is a shortage: ``None``, with
-        ``last_token_shortage`` naming ``filesystem_floor``.  With the floor
+        ``last_token_shortage`` naming ``filesystem_floor``.  A contended
+        mutation lock is a shortage too (``ledger_lock`` /
+        ``mutation_lock_busy``), never a silent ``None``.  With the floor
         mode ``off`` (the default) this is exactly the locked acquisition.
         """
 
@@ -4809,6 +4816,9 @@ class ResourceLedger:
             return self._begin_acquire_locked(action_key, demand, **kwargs)
         with self._mutation_locked(blocking=False) as acquired:
             if not acquired:
+                self.last_token_shortage = {
+                    "resource": "ledger_lock", "requested": 0, "available": 0,
+                    "reason": "mutation_lock_busy"}
                 return None
             with gate.admitted() as allowed:
                 if not allowed:

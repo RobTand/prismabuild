@@ -5117,7 +5117,10 @@ shared cover the demand. The window's `blocked_gib` and the begin's
 deficit itself, read from this cycle's begin event when the reserve pass
 began, else from the same prospective census the begin will use. A
 declined begin journals its need with the ledger's own shortage reason,
-and the stall carries that cause beside the wait reason.
+and the stall carries that cause beside the wait reason. A contended
+mutation lock names `mutation_lock_busy`, never a capacity shortage.
+A republished mover keeps its fence: the terminal settle skips a key
+whose terminal records all finished before its live row published.
 A committed group whose census reads short with an empty holder lost its
 tokens to a path that wrote no release receipt (live, 2026-10-08: the PACT band
 source).  Its receipt still said committed, so the unit was never a newcomer

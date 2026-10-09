@@ -7722,6 +7722,50 @@ def _protect_tier_advances(queue: pool.PoolQueue,
             "census_unknown": census_unknown}
 
 
+def _settle_live_row(queue: pool.PoolQueue,
+                     mover: str) -> dict[str, object] | None:
+    """One live ready or claimed row, or None when the key has none."""
+    for state in (pool.READY, pool.CLAIMED):
+        row = pool.read_queue_record(queue.item_path(state, mover))
+        if isinstance(row, Mapping):
+            return dict(row)
+    return None
+
+
+def _settle_terminal_is_stale(queue: pool.PoolQueue, mover: str,
+                              live_row: Mapping[str, object]) -> bool | None:
+    """Whether every terminal record predates one live row: stale, live, unknown.
+
+    True when each readable done/failed record finished before the live
+    row published: the terminal belongs to an earlier generation and the
+    live republication keeps its fence (#1690). False when any record
+    proves the live attempt itself ended. None when nothing proves the
+    order, and the caller settles as before.
+    """
+    try:
+        row_published = float(live_row.get("published_unix"))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    seen = False
+    for state in (pool.DONE, pool.FAILED):
+        try:
+            ended = pool._read_json(queue.item_path(state, mover))
+        except (OSError, pool.PoolContractError):
+            return None
+        if ended is None:
+            continue
+        if not isinstance(ended, Mapping):
+            return None
+        seen = True
+        try:
+            finished = float(ended.get("finished_unix"))  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return None
+        if finished >= row_published:
+            return False
+    return True if seen else None
+
+
 def _settle_terminal_fence(queue: pool.PoolQueue, ledger, *, tier_id: str,
                            mover_role: str, consumer: str | None,
                            mover: str) -> list[dict[str, object]]:
@@ -7736,11 +7780,13 @@ def _settle_terminal_fence(queue: pool.PoolQueue, ledger, *, tier_id: str,
     ``tier_funding`` proof is that attempt's fence-or-bytes, never free
     credit.  Anything else releases only on an exact name match between the
     bound tokens and what the mover holds; the record always closes.
+    A terminal record filed before the live row's own publication is an
+    earlier generation: the live republication keeps its fence (#1690).
     Unreadable terminal, proof, or holder evidence defers with the record
     named and leaves recoverable authority intact -- absence of proof is
     never proof of absence.  Takes the mover's transition lock
-    non-blocking (a live claim wins, this defers), so both call sites are
-    safe locked or not.
+    non-blocking (a live claim wins, this defers), so both call sites
+    are safe locked or not.
     """
 
     events: list[dict[str, object]] = []
@@ -7765,6 +7811,7 @@ def _settle_terminal_fence(queue: pool.PoolQueue, ledger, *, tier_id: str,
             if state in ("consumed", "released"):
                 return events
             try:
+                live_row = _settle_live_row(queue, mover)
                 terminal = (queue.item_path(pool.DONE, mover).exists()
                             or queue.item_path(pool.FAILED, mover).exists()
                             or queue.item_path(
@@ -7777,6 +7824,13 @@ def _settle_terminal_fence(queue: pool.PoolQueue, ledger, *, tier_id: str,
                 return events
             if not terminal:
                 return events
+            if live_row is not None:
+                try:
+                    stale = _settle_terminal_is_stale(queue, mover, live_row)
+                except (OSError, pool.PoolContractError, ValueError):
+                    stale = None
+                if stale is True:
+                    return events
             bound = record.get("tokens")
             bound_names = (set(str(name) for name in bound)
                            if isinstance(bound, list) and bound else set())
@@ -8950,15 +9004,26 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
             # the deficit against the unit's own legs. The reserve pass
             # runs first and the taken tokens sit in a private handle,
             # so a fresh census would read need zero beside begun 41.
+            # A decline this same cycle names its cause at once; an
+            # older journaled decline stands when this cycle asked
+            # nothing new, so the stall never lags the reservation.
             need_now = None
             for event in published:
-                if (event.get("event") == "prelaunch-group-begun"
-                        and event.get("unit") == prelaunch_unit.unit
+                if (event.get("unit") == prelaunch_unit.unit
                         and event.get("tier_id") == tier_id):
-                    asked = event.get("need_gib")
-                    if isinstance(asked, int) and asked >= 0:
-                        need_now = asked
-                    break
+                    if event.get("event") == "prelaunch-group-begun":
+                        asked = event.get("need_gib")
+                        if isinstance(asked, int) and asked >= 0:
+                            need_now = asked
+                        break
+                    if event.get("event") == "prelaunch-begin-declined":
+                        asked = event.get("need_gib")
+                        if isinstance(asked, int) and asked >= 0:
+                            need_now = asked
+                        cause = event.get("reason")
+                        if isinstance(cause, str) and cause:
+                            decline_reason_now = cause
+                        break
             if need_now is None:
                 try:
                     need_now = prelaunch_group.prospective_need_gib(
@@ -8968,7 +9033,8 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
                         [leg["mover_key"] for leg in prelaunch_unit.legs])
                 except (OSError, pool.PoolContractError, ValueError):
                     need_now = None
-            if need_now is not None and need_now > 0:
+            if (need_now is not None and need_now > 0
+                    and decline_reason_now is None):
                 decline_reason_now = prelaunch_group.latest_decline_reason(
                     queue, prelaunch_unit.unit, tier_id)
             decision = residency_plan.window(

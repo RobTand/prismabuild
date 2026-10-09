@@ -769,6 +769,8 @@ def _shortage_reason(ledger: pool.ResourceLedger) -> str:
         return "ledger unreadable"
     if not isinstance(shortage, Mapping):
         return "no room for the deficit"
+    if shortage.get("reason") == "mutation_lock_busy":
+        return "ledger lock busy: another writer holds the tier mint lock"
     resource = shortage.get("resource")
     requested = shortage.get("requested")
     available = shortage.get("available")
