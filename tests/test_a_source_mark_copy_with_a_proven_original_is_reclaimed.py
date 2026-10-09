@@ -982,6 +982,19 @@ def test_the_cli_restore_needs_a_quarantine_root(
     assert "--restore needs --quarantine-root" in capsys.readouterr().err
 
 
+def test_the_tool_ships_with_the_published_generation() -> None:
+    """dl380g10 has no checkout, so only a published tool can run there."""
+    import publish_runtime
+
+    manifest = publish_runtime._publication_manifest()
+    assert "stage_reclaim.py" in publish_runtime.FLEET_SCRIPTS
+    assert "stage_reclaim.py" not in {
+        name for name, _reason in publish_runtime.EXCLUDED}
+    for layout in ("tools", "tools/fleet"):
+        assert f"{layout}/stage_reclaim.py" in manifest
+    assert publish_runtime._unshipped_imports(manifest) == []
+
+
 def test_the_cli_help_explains_every_flag_and_renders(capsys) -> None:
     with pytest.raises(SystemExit) as stopped:
         stage_reclaim.main(["--help"])
