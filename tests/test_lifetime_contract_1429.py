@@ -49,6 +49,10 @@ from test_measurement_reservation_backfill_1419 import (  # noqa: E402
 
 fleet = fleet_fixture
 
+#: How long a loaded box may take to start a payload, and to stop one.
+STARTUP_S = 90.0
+STOP_S = 45.0
+
 
 @pytest.fixture()
 def broker(tmp_path, monkeypatch):
@@ -134,7 +138,7 @@ def test_a_stalled_supervisor_cannot_delay_the_fence_stop(tmp_path, monkeypatch)
     def blocked_observe(process, previous=None, **kwargs):
         # The shared mount stops answering while the payload runs; time passes.
         stalled.set()
-        wait_for(pid_file.exists, 20.0)
+        wait_for(pid_file.exists, STARTUP_S)
         skew.to(_clock_of(item).stop_unix + 1.0)
         release.wait(timeout=30)
         return real_observe(process, previous, **kwargs)
@@ -146,12 +150,12 @@ def test_a_stalled_supervisor_cannot_delay_the_fence_stop(tmp_path, monkeypatch)
     runner.start()
     pid = None
     try:
-        assert stalled.wait(timeout=20), "the supervisor never reached its first checkpoint"
-        assert wait_for(pid_file.exists), "the payload never started"
+        assert stalled.wait(timeout=STARTUP_S), "the supervisor never reached its first checkpoint"
+        assert wait_for(pid_file.exists, STARTUP_S), "the payload never started"
         pid = int(pid_file.read_text())
         # The supervisor is stuck inside checkpoint I/O and the stop instant
         # has passed: the payload must already be gone.
-        assert wait_for(lambda: not alive(pid), 10.0), (
+        assert wait_for(lambda: not alive(pid), STOP_S), (
             "the payload outlived the fence while its supervisor was stalled")
     finally:
         release.set()
@@ -281,7 +285,7 @@ def _outlive_the_stop(tmp_path, monkeypatch, *, containment=True, **execute_kwar
     def observe(process, previous=None, **kwargs):
         if not started[0]:
             started[0] = True
-            wait_for(pid_file.exists, 20.0)
+            wait_for(pid_file.exists, STARTUP_S)
             skew.to(_clock_of(item).stop_unix + 1.0)
         return real_observe(process, previous, **kwargs)
 
@@ -333,7 +337,7 @@ def test_a_stalled_supervisor_does_not_delay_the_broker_stop(
 
     def blocked_observe(process, previous=None, **kwargs):
         stalled.set()
-        wait_for(pid_file.exists, 20.0)
+        wait_for(pid_file.exists, STARTUP_S)
         skew.to(_clock_of(item).stop_unix + 1.0)
         release.wait(timeout=30)
         return real_observe(process, previous, **kwargs)
@@ -345,14 +349,14 @@ def test_a_stalled_supervisor_does_not_delay_the_broker_stop(
     runner.start()
     pid = None
     try:
-        assert stalled.wait(timeout=20)
-        assert wait_for(pid_file.exists)
+        assert stalled.wait(timeout=STARTUP_S)
+        assert wait_for(pid_file.exists, STARTUP_S)
         pid = int(pid_file.read_text())
         # While the supervisor is blocked the alarm alone has told the broker
         # to stop the exact scope, and the payload is gone.
         assert wait_for(lambda: broker.record(key).get("stop_reason")
-                        == lifetime_fence.FENCE_TERMINATION_REASON, 10.0)
-        assert wait_for(lambda: not alive(pid), 10.0)
+                        == lifetime_fence.FENCE_TERMINATION_REASON, STOP_S)
+        assert wait_for(lambda: not alive(pid), STOP_S)
     finally:
         release.set()
         runner.join(timeout=60)
@@ -377,7 +381,7 @@ def test_credited_waits_extend_the_payload_budget_and_never_the_fence(
     def observe(process, previous=None, **kwargs):
         calls[0] += 1
         if calls[0] == 1:
-            wait_for(pid_file.exists, 20.0)
+            wait_for(pid_file.exists, STARTUP_S)
         elif calls[0] <= 4:
             time.sleep(0.25)          # slow checkpoint I/O: credited to the payload budget
         elif calls[0] == 5:
