@@ -2000,9 +2000,43 @@ def parse_progress_phases(
         raise SystemExit(f"pbrun: {exc}") from None
 
 
-def progress_required_tags(policy: Mapping[str, object]) -> list[str]:
-    return [pb.PROGRESS_TAG, pb.PROGRESS_HELPER_TAG] + (
+def parse_awaited_batch(declared: str | None) -> dict[str, object] | None:
+    """Turn ``--awaited-batch PARENT:PLAN:STATE`` into a sealed declaration (#1666).
+
+    The first two halves are 64-hex action identities: the parent the
+    campaign cut and the plan that fixed the children's membership. The
+    third names the controller-state directory whose accepted members
+    the worker reads under an exact shape check. Refused at the
+    terminal, before anything seals, like the progress phases beside it.
+    """
+
+    if declared is None:
+        return None
+    parts = str(declared).split(":")
+    if len(parts) != 3 or not all(part.strip() for part in parts):
+        raise SystemExit(
+            "pbrun: --awaited-batch must be PARENT:PLAN:STATE, two 64-hex "
+            "keys and the controller-state directory")
+    parent, plan, state = (part.strip() for part in parts)
+    try:
+        return pb.validate_awaited_batch({
+            "schema": pb.AWAITED_BATCH_SCHEMA_V1,
+            "parent_key": parent, "plan_key": plan,
+            "controller_state": state})
+    except pb.ActionContractError as exc:
+        raise SystemExit(f"pbrun: {exc}") from None
+
+
+def progress_required_tags(policy: Mapping[str, object],
+                           awaited_batch: Mapping[str, object] | None = None) -> list[str]:
+    tags = [pb.PROGRESS_TAG, pb.PROGRESS_HELPER_TAG] + (
         [pb.PROGRESS_CYCLE_TAG] if policy.get("cycle") else [])
+    if awaited_batch is not None:
+        # A coordinator that declares an awaited batch needs a worker that
+        # credits the wait (#1666): an older worker would ignore the sealed
+        # declaration and end a valid queue wait as no_progress.
+        tags = [*tags, pb.QUEUED_CHILD_TAG]
+    return tags
 
 
 def container_image_required_tags(images: Sequence[str]) -> list[str]:
@@ -2380,6 +2414,7 @@ def progress_contract_notice(
     *,
     policy: Mapping[str, object] | None,
     requested_timeout_s: float | None = None,
+    awaited_batch: Mapping[str, object] | None = None,
 ) -> str:
     """Say what this action's stall allowance is, and who cannot honour it.
 
@@ -2496,6 +2531,28 @@ def progress_contract_notice(
             "between increases in cumulative committed units; "
             f"at most {total:g}s of quiet after the count stops increasing.")
         helper_intent = cycle_intent
+    if awaited_batch is not None:
+        awaited_intent = {**helper_intent, "tags": [
+            *helper_intent["tags"], pb.QUEUED_CHILD_TAG]}
+        awaited_hosts = set(queue.placeable_hosts(awaited_intent) or [])
+        awaited_missing = sorted(eligible - awaited_hosts)
+        eligible &= awaited_hosts
+        if not eligible:
+            raise SystemExit(
+                f"pbrun: no eligible worker offers {pb.QUEUED_CHILD_TAG} "
+                f"({', '.join(awaited_missing)}); update the fleet's published "
+                "generation before submitting a coordinator that awaits "
+                "queued children.")
+        if awaited_missing:
+            lines.append("pbrun: " + ", ".join(awaited_missing)
+                         + f" do not offer {pb.QUEUED_CHILD_TAG}; "
+                         "this coordinator waits for a capable worker.")
+        lines.append(
+            "pbrun: queued-child wait: the worker credits quiet while a "
+            "verified awaited child is ready or claimed at both ends of "
+            "the interval; a first sighting is a baseline and earns no "
+            "credit.")
+        helper_intent = awaited_intent
     ceilings = queue.placement_timeout_ceilings(helper_intent)
     for host in sorted(eligible):
         ceiling = ceilings.get(host)
@@ -4240,6 +4297,29 @@ def require_progress_scope(*, progress: Mapping[str, object] | None,
         )
 
 
+def require_awaited_batch_scope(
+        *, awaited: Mapping[str, object] | None,
+        progress: Mapping[str, object] | None, transport: str) -> None:
+    """Refuse an awaited batch without progress phases on pool transport (#1666).
+
+    The credit moves the stall deadline, so without a progress policy it
+    credits against no allowance. The stall watchdog is the pull-queue
+    worker's, so the SLURM lane cannot enforce it either.
+    """
+
+    if awaited is None:
+        return
+    if progress is None:
+        raise ValueError(
+            "--awaited-batch requires --progress-phase: the credit moves the "
+            "stall deadline, and without a policy it credits no allowance")
+    if transport != "pool":
+        raise ValueError(
+            "--awaited-batch requires pool transport: the stall watchdog is "
+            "the pull-queue worker's, and the SLURM lane can only enforce a "
+            "total duration")
+
+
 def require_host_class_scope(
     *, measurement: bool, host_class: str | None, transport: str, anywhere: bool = False
 ) -> None:
@@ -5452,6 +5532,7 @@ def freeze_action_template(
     gpu_memory_gb: float | None,
     execution_timeout_s: float | None,
     progress: Mapping[str, object] | None,
+    awaited_batch: Mapping[str, object] | None = None,
     profile: object | None,
     container_image_refs: Sequence[str] = (),
     d38_namespace: str | None = None,
@@ -5780,6 +5861,11 @@ def freeze_action_template(
         # receipt.  Absent, the key is byte-identical to what it was before
         # this flag existed.
         params[pb.PROGRESS_PARAM] = progress
+    if awaited_batch is not None:
+        # Sealed beside the progress policy it credits (#1666): a coordinator
+        # the worker credits is a different action from one it does not.
+        # Absent, the key is byte-identical to before this flag existed.
+        params[pb.AWAITED_BATCH_PARAM] = awaited_batch
     if profile is not None:
         # Sealed, and only when asked for.  Present, it makes a profiled run a
         # different action from its unprofiled twin, which is what stops the
@@ -7393,6 +7479,13 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
                     help="allow progress phases to repeat; each phase gets one "
                          "allowance between increases in cumulative committed "
                          "units. Requires --progress-phase and cyclic-capable workers")
+    ap.add_argument("--awaited-batch", default=None, metavar="PARENT:PLAN:STATE",
+                    help="declare the decomposed batch this coordinator awaits, "
+                         "as parent and plan keys and the controller-state "
+                         "directory, separated by colons. Valid "
+                         "only with --progress-phase on pool transport: the "
+                         "worker's stall watch credits quiet while a verified "
+                         "awaited child is ready or claimed (#1666)")
     ap.add_argument("--wait-s", type=float, default=86400.0,
                     help="give up waiting for a worker to pick this up")
     ap.add_argument(
@@ -7502,6 +7595,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         raise SystemExit("pbrun: --timeout-s must be a positive finite number")
     args.progress_policy = parse_progress_phases(
         args.progress_phase, cycle=args.progress_cycle)
+    args.awaited_batch = parse_awaited_batch(args.awaited_batch)
     # Some things an argument gets wrong can only be judged once the demand
     # is resolved -- a GPU budget on a slot that reserves no GPU is the case
     # -- and they are argument errors all the same.  So the parser that
@@ -7767,7 +7861,9 @@ def prepare_submission(args: argparse.Namespace) -> dict[str, object]:
         # the receipt says the action was admitted under the contract *and*
         # ran on a box that could keep it.
         tags = pool.normalize_placement_tags(
-            [*tags, *progress_required_tags(progress_policy)])
+            [*tags, *progress_required_tags(
+                progress_policy,
+                getattr(args, "awaited_batch", None))])
     if gang is not None:
         # Capability, not place (#1517): only a gang-enabled box offers it,
         # so the live-offer check below refuses when none can claim a member.
@@ -7888,6 +7984,9 @@ def prepare_submission(args: argparse.Namespace) -> dict[str, object]:
     try:
         require_progress_scope(
             progress=progress_policy, transport=args.transport)
+        require_awaited_batch_scope(
+            awaited=getattr(args, "awaited_batch", None),
+            progress=progress_policy, transport=args.transport)
     except ValueError as exc:
         args.refuse_argument(str(exc))
     if not demand.get("gpu"):
@@ -7926,6 +8025,7 @@ def prepare_submission(args: argparse.Namespace) -> dict[str, object]:
         gpu_memory_gb=args.gpu_memory_gb,
         execution_timeout_s=args.timeout_s,
         progress=progress_policy,
+        awaited_batch=getattr(args, "awaited_batch", None),
         profile=args.profile,
         container_image_refs=images,
         d38_namespace=(d38_gate.load_namespace(args.d38_namespace)[1]
@@ -8028,10 +8128,12 @@ def announce_placement(
         queue,
         {**intent, "tags": [
             t for t in tags
-            if t not in (pb.PROGRESS_TAG, pb.PROGRESS_HELPER_TAG, pb.PROGRESS_CYCLE_TAG)
+            if t not in (pb.PROGRESS_TAG, pb.PROGRESS_HELPER_TAG, pb.PROGRESS_CYCLE_TAG,
+                         pb.QUEUED_CHILD_TAG)
         ]},
         policy=progress_policy,
         requested_timeout_s=args.timeout_s,
+        awaited_batch=getattr(args, "awaited_batch", None),
     )
     if progress_notice:
         print(progress_notice, file=sys.stderr, flush=True)

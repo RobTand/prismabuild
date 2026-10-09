@@ -82,10 +82,11 @@ __all__ = [
     "publication_index",
     "resolve_task_batch",
     "validate_batch_policy",
-    "validate_child_result_manifest",
     "validate_common_spec",
     "validate_frozen_common",
     "validate_logical_request",
+    "validate_child_result_manifest",
+    "validate_publication_index",
     "validate_plan",
     "validate_roster",
     "verify_exact_cover",
@@ -165,8 +166,10 @@ _ACTION_COMMON_KEYS = frozenset(
      "execution_scope"}
 )
 _PLAN_KEYS = frozenset(
-    {"schema", "parent_key", "algorithm_version", "partitions", "plan_key"}
-)
+    {"schema", "parent_key", "algorithm_version", "partitions", "plan_key"})
+_PUBLICATION_KEYS = frozenset(
+    {"schema", "parent_key", "plan_key", "batch_input_sha256",
+     "child_action_keys"})
 _MANIFEST_KEYS = frozenset(
     {"schema", "parent_key", "plan_key", "child_ordinal", "results"}
 )
@@ -958,7 +961,7 @@ def publication_index(
     """Bind the frozen plan to the exact children it authorizes.
 
     Written before the first child is published, so a crash halfway through
-    leaves a record that says which keys were meant to exist.  Recovery fills
+    leaves a record that says which keys were meant to exist. Recovery fills
     the missing ones; it never asks the batcher for a fresh opinion.
     """
 
@@ -974,14 +977,73 @@ def publication_index(
         "parent_key": plan["parent_key"],
         "plan_key": plan["plan_key"],
         "batch_input_sha256": [
-            pb._sha256(digest, where=f"publication index batch_input_sha256[{index}]")
-            for index, digest in enumerate(batch_input_digests)
+            pb._sha256(digest, where=f"publication index batch_input_sha256[{position}]")
+            for position, digest in enumerate(batch_input_digests)
         ],
         "child_action_keys": [
-            pb._sha256(key, where=f"publication index child_action_keys[{index}]")
-            for index, key in enumerate(child_action_keys)
+            pb._sha256(key, where=f"publication index child_action_keys[{position}]")
+            for position, key in enumerate(child_action_keys)
         ],
     }
+
+
+def validate_publication_index(value: object, plan: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """Re-check a publication index read back from storage (#1666).
+
+    Recovery and the coordinator's stall watch reuse published bytes instead
+    of re-deriving membership, so the one thing that must not be taken on
+    trust is that those bytes name this plan's children in order. With a
+    plan, the index must name its parent and plan keys and carry one child
+    key per partition; the ordinal of a child is its zero-based position in
+    ``child_action_keys``, and the plan carries no ordinal field.
+    """
+
+    index = pb._exact_mapping(
+        value, keys=_PUBLICATION_KEYS, where="decomposition publication index")
+    if index["schema"] != PUBLICATION_INDEX_SCHEMA_V1:
+        pb._fail(
+            "decomposition publication index schema must be "
+            f"{PUBLICATION_INDEX_SCHEMA_V1!r}")
+    parent_key = pb._sha256(
+        index["parent_key"], where="decomposition publication index parent_key")
+    plan_key = pb._sha256(
+        index["plan_key"], where="decomposition publication index plan_key")
+    raw_digests = index["batch_input_sha256"]
+    if (not isinstance(raw_digests, Sequence)
+            or isinstance(raw_digests, (str, bytes))):
+        pb._fail("decomposition publication index batch_input_sha256 must be an array")
+    digests = [
+        pb._sha256(digest, where=f"decomposition publication index batch_input_sha256[{position}]")
+        for position, digest in enumerate(raw_digests)]
+    raw_keys = index["child_action_keys"]
+    if (not isinstance(raw_keys, Sequence)
+            or isinstance(raw_keys, (str, bytes))):
+        pb._fail("decomposition publication index child_action_keys must be an array")
+    keys = [
+        pb._sha256(key, where=f"decomposition publication index child_action_keys[{position}]")
+        for position, key in enumerate(raw_keys)]
+    if len(digests) != len(keys):
+        pb._fail(
+            "decomposition publication index must carry one batch digest per "
+            f"child key: {len(digests)} digests, {len(keys)} keys")
+    result = {
+        "schema": PUBLICATION_INDEX_SCHEMA_V1,
+        "parent_key": parent_key, "plan_key": plan_key,
+        "batch_input_sha256": digests, "child_action_keys": keys}
+    if plan is not None:
+        if parent_key != plan["parent_key"]:
+            pb._fail(
+                "decomposition publication index names parent "
+                f"{parent_key[:12]}, not this plan's {str(plan['parent_key'])[:12]}")
+        if plan_key != plan["plan_key"]:
+            pb._fail(
+                "decomposition publication index names plan "
+                f"{plan_key[:12]}, not {str(plan['plan_key'])[:12]}")
+        if len(keys) != len(plan["partitions"]):
+            pb._fail(
+                "decomposition publication index names "
+                f"{len(keys)} children for a plan with {len(plan['partitions'])} batches")
+    return result
 
 
 # --------------------------------------------------------------------------

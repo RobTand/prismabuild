@@ -12714,6 +12714,122 @@ wait yet: the owner's barrier and window waits must call
 `declare_export_wait` with their outstanding export keys and
 `clear_export_wait` when they end (owed on the PrismaQuant side).
 
+### A coordinator's wait on queued children is not quiet (#1666)
+
+The D44 coordinator needs about 396,000 s. No loop grants that, and the
+progress contract removes the total limit only while a committed count
+advances. The coordinator is itself an executing action while its native
+children wait in the queue behind priority queues. That wait has no finite
+bound, but the worker clamps each phase's stall allowance at the loop
+ceiling (3,600 s on dl380g10). Any finite allowance ends the coordinator as
+`no_progress` during a long queue wait, although nothing has stalled.
+
+**The declaration.** The coordinator's submission declares the batch it
+awaits as a sealed value: the parent key, the plan key, and the
+controller-state directory whose accepted members name the awaited
+children (`progress_awaited_batch`,
+`prismabuild.progress_awaited_batch.v1`,
+`pbrun --awaited-batch PARENT:PLAN:STATE`). It is valid only with progress
+phases on pool transport. A sealed declaration without progress, or on the
+SLURM lane, is refused at submit; a sealed request whose keys do not read
+is refused at seal. A coordinator that declares an awaited batch requires
+the `progress-queued-child-v1` worker tag (`core.QUEUED_CHILD_TAG`): a
+worker without it cannot claim the row, so an older loop never ends a
+valid queue wait as `no_progress`. No seal or identity wall is added
+(D32), and the scientific and native limits stay unchanged.
+
+**The verdict.** The worker samples the awaited set on the heartbeat
+cadence and judges each interval since the last look. It credits an
+eligible interval through the same mark as every other exemption
+(`ProgressWatch._credit`), from the prior sample's monotonic start, so
+an interval is credited once. The credit covers an interval of quiet
+only when it verifies exact membership: every counted child's sealed
+request names that parent and plan under `params.logical_batch`, its
+ordinal equals its position in the stored publication's
+`child_action_keys`, and its task set equals the stored plan's partition
+there. A child with other keys, with no `logical_batch`, with a foreign
+ordinal or task set, or with an unreadable sealed request earns none. A
+first sighting is a baseline and earns no credit; a child live at both
+ends of the interval is carried and credits only that interval's span.
+A replacement child is a new baseline.
+A blocked interval earns nothing and receives no later credit.
+A child that ends keeps the credit its verified intervals earned.
+The `no_progress` rung judges only the interval since the last sample.
+The credit uses the shared `_credit` arithmetic and adds no threshold.
+
+Both endpoints must have valid custody and no unresolved missing member.
+Recovery establishes a new valid sample but grants no credit across the refused endpoint.
+The next fully eligible interval can receive credit.
+
+**The awaited set.** The controller's accepted members define the SDK-confirmed admitted or attached set.
+The worker uses the closed typed projection `CONTROLLER_CUSTODY_SCHEMA_V1`
+(`prismabuild.d44_controller_custody.v1`) for the fixed `fa37751` routed writer.
+`wave-state.json` requires `waves`.
+Each wave requires exactly `wave` (integer), `closed` (boolean), and `members` (list).
+Each member requires `batch` (nonempty string) and `key` (64-hex action key).
+The member can also have `published_unix` (finite nonnegative number).
+The state accepts these optional fields:
+
+| Field | Type |
+| --- | --- |
+| `pending_submission` | An object with exactly `batch` (nonempty string) and `key` (64-hex action key) |
+| `last_completion` | An object from the native completion reader |
+| `wait_reason` | A string |
+| `last_disk_check` | An object with exactly `action_key` (64-hex) and `evidence` (an object from the disk checker) |
+| `disk_checks` | A list of `last_disk_check` objects |
+
+These fields are diagnostic metadata or intent, not admission or progress proof.
+Their types come from `next_wave.py` at `fa3775151f77dc713fd78882daf6e147ab471243`.
+Unknown fields refuse the whole read and appear by name in the progress observation.
+The projection version resides in PrismaBuild; the controller files need no new schema field.
+`sub-keys.txt` requires one `<batch> <key>` pair per complete line.
+The reader checks the union of both files for conflicts.
+A key in only one file is a candidate and earns no credit.
+Two batches for one key, or two keys for one batch, refuse the whole read.
+Only matching records in both files confirm a member.
+An accepted member that becomes a candidate retains custody but earns no credit.
+Every confirmed member is validated
+against the stored plan and publication read from the coordinator's CAS
+through the native validators. A missing or unreadable stored plan or
+publication refuses the credit. A child that is only prepared or in
+`pending_submission` earns no credit: that records intent only and
+proves no queue admission. A stored child request, or membership in the
+plan, does not prove queued work either. An accepted key stays in the
+set across unreadable documents, unreadable sealed requests and worker
+restarts, until the controller's own state stops naming it; queue rows
+never add or drop a member. While a member stays missing the verdict
+carries it and refuses the credit, so a live sibling cannot cover for
+it. With no awaited child ready or claimed (all terminal), or an
+awaited child whose record is missing or unreadable and has no verified
+durable CAS result, the coordinator ends `no_progress` at its allowance.
+A missing queue record with a verified durable result is treated as
+durable, not as missing. Cleanup tombstones and late-finish leaves keep
+their owner-defined custody and are neither credited nor released. A
+claimed child that exceeds its own ceiling or stalls is ended as before.
+The credit moves only the coordinator's deadline and changes no child's
+deadline.
+
+**Records.** The progress observation carries `queued_child_wait_exempt_s`
+and `queued_child_wait`: every awaited child with its verified state,
+ordinal and membership keys. A `no_progress` ending's `stall.credited_s`
+carries `queued_child_wait`.
+
+**The reporter.** A reporter runs beside the coordinator (`prismabuild.durable_child_reporter`).
+It reports one unit per distinct child after the native CAS verifies the receipt, result blob digest, and exact manifest membership.
+The parent and plan must match.
+The sealed ordinal must equal the publication slot.
+The sealed task set must equal the plan partition.
+The manifest must answer exactly that task set.
+
+The reporter requires `controller_state` and reads the same closed custody projection.
+Prepared children, pending intent, and single-file candidates count zero, even with a verified durable result.
+The reporter does not require a queue record for a confirmed durable child.
+A child with several tasks still counts one unit.
+Children already durable at start are a verified baseline and count zero.
+
+A non-verifying child, queue waits, admission, logs, and heartbeats count zero.
+The reporter reports through `prismabuild.progress.commit` only.
+
 ### Every leg has a row, and a blocked reader moves its horizon (#1018)
 
 Until #1018 the landing record listed an unpublished leg only inside its
