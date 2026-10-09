@@ -130,12 +130,12 @@ _COMPONENT = {component.phase: component for component in COMPONENTS}
 #: bound. The record of the acceptance holds this text, so another reserve or
 #: another wording is another decision, and an older record stops applying.
 ASSUMPTION = (
-    "The payload stop, termination, cleanup, scope settlement and resource "
-    f"release end within {RELEASE_RESERVE_S:g} seconds of the stop instant "
-    "only while the kernel, the broker, the local disk and the shared mount "
-    "answer promptly. No component bounds those answers. A call that never "
-    "returns keeps the host tokens, and the measurement that waits then "
-    "starts after its opportunity."
+    "Payload stop, termination, cleanup, scope settlement and resource "
+    f"release end within {RELEASE_RESERVE_S:g} seconds of the stop instant. "
+    "This holds only while the kernel, the broker, the local disk and the "
+    "shared mount answer promptly. No component bounds those answers. "
+    "A call that never returns keeps the host tokens. "
+    "The measurement that waits then starts after its opportunity."
 )
 #: Why a :data:`PROMPT` phase reads UNKNOWN until the assumption is accepted.
 UNACCEPTED = (
