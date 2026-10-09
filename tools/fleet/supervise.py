@@ -86,7 +86,7 @@ import role_log_identity  # noqa: E402
 import worker_loop as runtime_gate  # noqa: E402
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
-from prismabuild import filesystem_capacity, local_scratch, pool  # noqa: E402
+from prismabuild import filesystem_capacity, local_scratch, pbtest_scratch, pool  # noqa: E402
 
 MIRROR = Path("/mnt/shared/prismabuild-fleet")
 CONFIG = Path(__file__).resolve().parent / "fleet_boxes.json"
@@ -2092,6 +2092,24 @@ def _wait_for_shutdown() -> None:
             time.sleep(1)
 
 
+_last_scratch_sweep = None
+
+
+def maintain_pbtest_scratch(host):
+    """Expire ended scratch even when all worker loops have active actions."""
+    global _last_scratch_sweep
+    now = time.monotonic()
+    if (_last_scratch_sweep is not None
+            and now - _last_scratch_sweep < pbtest_scratch.SWEEP_INTERVAL_S):
+        return
+    _last_scratch_sweep = now
+    try:
+        for report in pbtest_scratch.sweep_registered():
+            print(f"[{host}] pbtest-scratch-expiry: " + json.dumps(report), flush=True)
+    except (OSError, ValueError) as exc:
+        print(f"[{host}] pbtest scratch expiry refused: {exc}", flush=True)
+
+
 def main() -> int:
     stopping = False
 
@@ -2198,6 +2216,7 @@ def _run_supervisor(stop_requested) -> int:
             print(f"[{host}] reaped {reaped} exited child process(es)", flush=True)
         if not args.once and _reexec_if_published(loaded_generation, handle):
             return 0                       # reached only under an exec test double
+        maintain_pbtest_scratch(host)
         target, loop_args = declared_shape(
             host, args.loops, (target, loop_args))
         if stop_requested():

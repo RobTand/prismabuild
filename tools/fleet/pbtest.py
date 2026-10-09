@@ -1034,14 +1034,13 @@ _pb_sys.argv[2:2] = ["--basetemp", _pb_derived]
 #: ``--basetemp`` keeps its existing meaning and owns its own namespace;
 #: this default never touches it. The worker removes only this attempt's
 #: directory after pytest exits 0, and keeps it on a non-zero exit, as
-#: ``tmp_path_retention_policy=failed`` does. Expiry of kept directories
-#: is out of scope. ``TMPDIR`` itself is the sealed scratch placement and
-#: the compiler cache context; it is never removed.
+#: ``tmp_path_retention_policy=failed`` does. The shared scratch owner
+#: registers the sealed root and retains custody until the interpreter exits.
+#: The worker supervisor expires ended failures after 24 hours (#1710).
+#: ``TMPDIR`` itself is never removed.
 ATTEMPT_TEMP_PROGRAM = """\
 import os as _pb_os
-import shutil as _pb_shutil
 import sys as _pb_sys
-import tempfile as _pb_tempfile
 
 
 def _pb_run_and_clean_attempt_base(_pb_run):
@@ -1058,22 +1057,15 @@ if _pb_attempt and (len(_pb_attempt) != 32 or any(
 if (_pb_tmpdir and _pb_key and "/" not in _pb_key
         and _pb_key not in (".", "..")):
     try:
-        # mkdtemp creates an exclusive namespace; no action identity is truncated.
-        _pb_directory = _pb_tempfile.mkdtemp(prefix="pb-", dir=_pb_tmpdir)
-        _pb_owned = _pb_os.path.join(_pb_directory, "pytest")
-        _pb_os.mkdir(_pb_owned)
-        with _pb_tempfile.TemporaryFile(dir=_pb_owned):
-            pass
+        _pb_scratch_attempt = _pb_scratch["create"](_pb_tmpdir, _pb_key, _pb_attempt)
+        _pb_owned = str(_pb_scratch_attempt.directory / "pytest")
     except (OSError, ValueError) as _pb_exc:
         raise SystemExit("pbtest: cannot use the attempt base temp: " + str(_pb_exc))
     _pb_sys.argv[2:2] = ["--basetemp", _pb_owned]
 
 
     def _pb_run_and_clean_attempt_base(_pb_run):
-        _pb_code = _pb_run()
-        if int(_pb_code) == 0:
-            _pb_shutil.rmtree(_pb_directory, ignore_errors=True)
-        return _pb_code
+        return _pb_scratch_attempt.finish(_pb_run())
 
 
 """
@@ -1125,10 +1117,10 @@ def shard_entry(python: str, checkout: Path, *, tmpdir: str | None = None,
         # the attempt default below never runs beside it.
         program = BASETEMP_PROGRAM.replace("@ROOT@", repr(basetemp)) + program
     else:
-        # No sealed root: mkdtemp gives the attempt a short, exclusive directory
-        # and the worker removes that directory after exit 0. The wrapper
-        # defines the cleanup beside the exit call, so the derivation and
-        # the removal cannot drift apart.
+        # The standalone owner travels in the sealed argv. It works in any
+        # target interpreter without an installed PrismaBuild package.
+        scratch_source = (generation_root(__file__) / "src" / "prismabuild" /
+                          "pbtest_scratch.py").read_text()
         program = program.replace(
             'raise SystemExit(load("pbtest_outcomes").main(',
             'raise SystemExit(_pb_run_and_clean_attempt_base(lambda: load("pbtest_outcomes").main(',
@@ -1136,7 +1128,10 @@ def shard_entry(python: str, checkout: Path, *, tmpdir: str | None = None,
             'collection_source=SOURCES["pbtest_collection"]))',
             'collection_source=SOURCES["pbtest_collection"])))',
             1)
-        program = ATTEMPT_TEMP_PROGRAM + program
+        program = (
+            "_pb_scratch = {}\n"
+            f"exec(compile({scratch_source!r}, '<pbtest scratch>', 'exec'), _pb_scratch)\n"
+        ) + ATTEMPT_TEMP_PROGRAM + program
     if tmpdir is not None:
         # Explicit scratch placement must refuse on the worker rather than let
         # tempfile silently choose another filesystem. The default entry stays
