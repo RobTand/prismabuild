@@ -422,18 +422,19 @@ What PB does with it:
 
 Practical rules:
 
-- Reference forms. `sha256:<64 hex>` matches the local image **ID**;
-  `repository@sha256:<64 hex>` matches that exact **RepoDigest**, repository
-  context included; `content:sha256:<64 hex>` matches the image's
-  store-independent **content**. The three are not aliases. Mutable tags
-  (`repo:tag`) are refused; use a digest.
-- Prefer the content form for work any box holding the image may run. An
-  image ID is what that box's own image store calls the image, and the two
-  Sparks run different stores, so an ID-sealed action is claimable by one
-  Spark only (#805); a locally built image has no RepoDigest on the classic
-  store, so the `repository@` form is not the answer either. Read a portable
-  reference off a box that holds the image with `python3 -m
-  prismabuild.container_images <repo:tag>`.
+- A bare `sha256:<64 hex>` requirement matches the local image **ID** or
+  the digest part of any reported **RepoDigest**. The digest must match in full.
+  Placement, claim admission, and GPU room checks use `container_images.missing`.
+  That function checks each requirement through `container_images.satisfied`.
+- A `repository@sha256:<64 hex>` requirement matches only that exact **RepoDigest**,
+  with the repository name included. A bare ID cannot satisfy it.
+  A `content:sha256:<64 hex>` requirement matches only that exact **content** reference.
+  Mutable tags (`repo:tag`) remain invalid.
+- Prefer the content form for portable work. The two Sparks use different
+  image stores, which can report different IDs for the same image (#805).
+  A pulled image can satisfy a bare digest through its RepoDigest.
+  A locally built or loaded image can lack a RepoDigest on the classic store.
+  Read its portable reference with `python3 -m prismabuild.container_images <repo:tag>`.
 - The image must be local *before* the action is claimed. A workflow that
   loads its image from an archive inside the action (PrismaQuant's
   `container.archive`) must **not** declare it: PB would deny the claim

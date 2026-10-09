@@ -6298,8 +6298,11 @@ class PoolQueue:
                 present = offer.get("container_images")
                 if not isinstance(present, list):
                     continue
-                seen = {str(entry) for entry in present}
-                if any(image not in seen for image in declared_images):
+                # The same predicate the claim reads (image_inventory.missing
+                # -> satisfied): a bare sha256: requirement takes the image ID
+                # or any RepoDigest carrying the hex, so one image under two
+                # stores' names (#805) places on both boxes.
+                if image_inventory.missing(declared_images, present):
                     continue
             if declared_interpreter:
                 # Same rule, one path (#1263): an offer that reports no
