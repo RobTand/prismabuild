@@ -8693,7 +8693,12 @@ receipt; its bytes are already subtracted from `available`) and **in flight**
 release; its bytes are not). The ledger's supply is minted as **writable +
 landed** (`tier_loop.landed_and_in_flight`), and the record announces
 `writable_gib`, `landed_gib`, `in_flight_gib`, `held_gib` and
-`capacity_basis: "zfs available + landed"`.
+`capacity_basis: "zfs available + landed"`, with `landed_bytes`,
+`in_flight_bytes`, `landed_rounding_gib` (`landed_gib` minus whole GiB
+in `landed_bytes`) and `in_flight_rounding_gib` beside them. Landed
+rounding costs no free capacity: the same tokens it holds it also
+adds to the supply, so free stays `floor(available / GiB)` minus
+in-flight tokens.
 
 Both simpler formulas failed on `prismabuild-stage:dl380g10` on 2026-09-18.
 `available` alone counted every landed GiB twice -- free fell as

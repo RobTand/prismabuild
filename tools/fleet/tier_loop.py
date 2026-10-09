@@ -64,6 +64,7 @@ from prismabuild import storage_tiers  # noqa: E402
 from prismabuild import window_credit  # noqa: E402
 
 import deferred_release  # noqa: E402
+import stage_rounding  # noqa: E402
 import prewarm_loop  # noqa: E402
 import manifest_promotion  # noqa: E402
 import prelaunch_tier  # noqa: E402
@@ -7884,6 +7885,64 @@ def _settle_terminal_fence(queue: pool.PoolQueue, ledger, *, tier_id: str,
     return events
 
 
+def _reconcile_stranded_output_funding(queue: pool.PoolQueue,
+                                         path) -> list[dict[str, object]]:
+    """Roll back one never-started output intent through the pool (#1555).
+
+    Calls :meth:`PoolQueue.release_output_funding`, which proves mover
+    nonexecution itself (no CLAIMED row, no DONE or FAILED row, no
+    staged receipt, no lease) and retires ``reserved`` or
+    ``transferring`` to ``released``. Tokens stay where they are;
+    the ordinary owner or mover release then frees them. A live or
+    uncertain intent is untouched: the call refuses and this reports
+    why. Returns at most one event.
+    """
+    events: list[dict[str, object]] = []
+    stem = Path(str(path)).name
+    if not stem.endswith(".output-funding.json"):
+        return events
+    stem = stem[: -len(".output-funding.json")]
+    mover_name, dot, scan_tier = stem.rpartition(".")
+    if not dot or len(mover_name) != 64 or not scan_tier:
+        return events
+    try:
+        from prismabuild import pool as _pool_mod
+        if _pool_mod._read_json(
+                queue.item_path(_pool_mod.WITHDRAWN, mover_name)) is None:
+            return events
+    except (OSError, _pool_mod.PoolContractError, ValueError):
+        events.append({"event": "output-funding-reconcile-deferred",
+                       "tier_id": str(scan_tier), "mover": mover_name,
+                       "error": "withdrawal census unreadable"})
+        return events
+    try:
+        _record, file_state = queue.output_funding_file_state(
+            mover_name, scan_tier)
+    except (OSError, pool.PoolContractError, ValueError) as exc:
+        events.append({"event": "output-funding-reconcile-deferred",
+                       "tier_id": str(scan_tier), "mover": mover_name,
+                       "error": repr(exc)})
+        return events
+    if file_state == "absent":
+        return events
+    if file_state != "ok":
+        events.append({"event": "output-funding-reconcile-deferred",
+                       "tier_id": str(scan_tier), "mover": mover_name,
+                       "error": f"funding file state: {file_state}"})
+        return events
+    try:
+        released = queue.release_output_funding(mover_name, scan_tier)
+    except (OSError, pool.PoolContractError, ValueError) as exc:
+        events.append({"event": "output-funding-reconcile-deferred",
+                       "tier_id": str(scan_tier), "mover": mover_name,
+                       "error": repr(exc)})
+        return events
+    if released:
+        events.append({"event": "output-funding-reconcile-released",
+                       "tier_id": str(scan_tier), "mover": mover_name})
+    return events
+
+
 def _settle_protected(queue: pool.PoolQueue,
                         protection: Mapping[str, object]) -> list[dict[str, object]]:
     """Move held fences onto their published movers; release the moot ones.
@@ -8024,10 +8083,15 @@ def _settle_protected(queue: pool.PoolQueue,
     try:
         funding_dir = queue.root / pool.TIER_FUNDING
         funding_files = sorted(funding_dir.glob("*.funding.json"))
+        funding_files += sorted(funding_dir.glob("*.output-funding.json"))
     except (OSError, pool.PoolContractError, ValueError):
         funding_files = []
     for funding_path in funding_files:
         stem = funding_path.name
+        if stem.endswith(".output-funding.json"):
+            events.extend(_reconcile_stranded_output_funding(
+                queue, funding_path))
+            continue
         if not stem.endswith(".funding.json"):
             continue
         stem = stem[: -len(".funding.json")]
@@ -9842,6 +9906,21 @@ def landed_and_in_flight(queue: pool.PoolQueue, tier_id: str, kind: str) -> tupl
     return landed, in_flight
 
 
+def _mint_bytes(queue: pool.PoolQueue, tier_id: str, kind: str) -> tuple[int, int]:
+    """Byte side of the mint split, read beside the token split.
+
+    Sums ``bytes_staged`` over complete, unrefused receipts on one
+    side of the same line ``landed_and_in_flight`` draws. A holder
+    that cannot be classified adds no bytes, so rounding stays an
+    upper bound. Returns ``(landed_bytes, in_flight_bytes)``.
+    """
+    try:
+        split = stage_rounding.landed_and_in_flight_bytes(queue, tier_id, kind)
+    except (OSError, pool.PoolContractError, ValueError):
+        return (0, 0)
+    return (split[1], split[3])
+
+
 def mint_stage_supply(queue: pool.PoolQueue, *, tier_id: str, kind: str,
                       writable_tokens: int | None = None,
                       writable_reader=None,
@@ -9898,6 +9977,9 @@ def mint_stage_supply(queue: pool.PoolQueue, *, tier_id: str, kind: str,
             supply = min(supply, int(cap))
         seen["landed"] = landed
         seen["in_flight"] = in_flight
+        landed_bytes, flight_bytes = _mint_bytes(queue, tier_id, kind)
+        seen["landed_bytes"] = landed_bytes
+        seen["in_flight_bytes"] = flight_bytes
         seen["supply"] = supply
         seen["writable"] = writable
         merged = {str(k): int(v) for k, v in dict(extra_tokens or {}).items()}
@@ -9906,6 +9988,8 @@ def mint_stage_supply(queue: pool.PoolQueue, *, tier_id: str, kind: str,
 
     result = queue.mint_tier_capacity_guarded(tier_id, wanted)
     return {"landed": seen["landed"], "in_flight": seen["in_flight"],
+            "landed_bytes": seen.get("landed_bytes", 0),
+            "in_flight_bytes": seen.get("in_flight_bytes", 0),
             "supply": seen["supply"], "writable": seen["writable"],
             "ledger": result}
 
@@ -10861,6 +10945,14 @@ def _cycle(
             record["held_gib"] = minted["landed"] + minted["in_flight"]
             record["landed_gib"] = minted["landed"]
             record["in_flight_gib"] = minted["in_flight"]
+            record["landed_bytes"] = minted.get("landed_bytes", 0)
+            record["in_flight_bytes"] = minted.get("in_flight_bytes", 0)
+            record["landed_rounding_gib"] = stage_rounding.rounding_gib(
+                minted["landed"], int(minted.get("landed_bytes", 0)),
+                storage_tiers.GIB)
+            record["in_flight_rounding_gib"] = stage_rounding.rounding_gib(
+                minted["in_flight"], int(minted.get("in_flight_bytes", 0)),
+                storage_tiers.GIB)
             record["capacity_basis"] = supply_basis
             tokens[kind] = minted["supply"]
             record["ledger"] = minted["ledger"]
