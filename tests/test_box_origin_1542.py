@@ -1,9 +1,11 @@
 """Digest origin records name each new entry's writer once (#1542).
 
-``box_state`` files ``<digest>.origin.json`` with ``O_EXCL`` when it first
-creates an entry. The record names the resolved queue root, hostname, pid,
-``argv[0]`` and creation time. A second call for the same root keeps the
-first record. Entries without a record are legacy entries.
+``box_state`` files ``<digest>.origin.json`` with ``O_EXCL`` only when
+the digest owns no state yet. The record names the resolved queue
+root, hostname, pid, ``argv[0]`` and creation time. A second call for
+the same root keeps the first record. An entry that already owns
+state when the code first sees it keeps no record: it is a legacy
+entry, and nothing invents its origin.
 """
 from __future__ import annotations
 
@@ -53,6 +55,25 @@ def test_a_second_call_for_the_same_root_keeps_the_first_record(tmp_path, monkey
     _, again = adaptive_cpu.box_state(base)
     assert again == digest
     assert json.loads(path.read_text()) == before
+
+
+def test_a_preexisting_entry_gets_no_origin_and_stays_legacy(tmp_path, monkeypatch):
+    root = tmp_path / "box-state"
+    root.mkdir()
+    monkeypatch.setattr(adaptive_cpu, "BOX_STATE_ROOT", root)
+    base = tmp_path / "queue" / "reservations" / "h"
+    base.mkdir(parents=True)
+    digest = adaptive_cpu.box_identity(base)
+    (root / (digest + ".lock")).touch()
+    state = root / (digest + ".adaptive-cpu-v1")
+    state.mkdir(mode=0o700)
+    (state / "cpu-sample.json").write_text("{}")
+    _, seen = adaptive_cpu.box_state(base)
+    assert seen == digest
+    assert not (root / (digest + ".origin.json")).exists()
+    assert adaptive_cpu.read_box_origin(root, digest) is None
+    _origins, legacy = adaptive_cpu.census_box_origins(root)
+    assert legacy == [digest]
 
 
 def test_an_entry_without_a_record_is_a_legacy_entry(tmp_path, monkeypatch):

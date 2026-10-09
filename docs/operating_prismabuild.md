@@ -3865,12 +3865,17 @@ map uses the existing idle-queue procedure.
 CPU samples, learned profiles, interval state, spent borrowing samples, the
 GPU probe state and each running scope's live telemetry live in the host-local
 `PRISMABUILD_BOX_STATE_ROOT` directory, keyed by ledger and hostname. The default root is `/tmp/prismabuild-admission-<uid>`. Do not delete
-it while workers run. Each new digest files `<digest>.origin.json` once,
-naming its queue root, hostname, pid, executable and creation time; entries
+it while workers run. Each genuinely new digest files `<digest>.origin.json`
+once, naming its queue root, hostname, pid, executable and creation time;
+an entry that already owns state when the code first sees it keeps no
+record: it is a legacy entry, and nothing invents its origin. Entries
 without one are legacy entries. Maintenance-only prune (`survey_box_state`,
-`prune_box_state`) removes idle digests: the default only surveys, and apply
-needs the maintenance hold with every worker loop stopped and no new opener
-able to enter. A cold start relearns intervals and profiles; shared
+`prune_box_state`, `prove_box_quiescent`) removes idle digests: the default
+only surveys, and apply needs the acknowledged maintenance hold plus a
+proven-quiet box (no live worker loop, no unresolved claim, no live scope,
+and every lock-family file unheld). Partial or unreadable evidence counts
+as "not quiet". Age and count select candidates; neither permits unsafe
+removal. No rename of a held inode ever happens. A cold start relearns intervals and profiles; shared
 copies are never recovery authority. For this authority migration or rollback,
 keep the queue drained until every worker loop reports the selected generation.
 Before rollback to shared authority, verify all snapshot publishers have
