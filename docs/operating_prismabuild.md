@@ -422,16 +422,20 @@ What PB does with it:
 
 Practical rules:
 
-- Reference forms. `sha256:<64 hex>` matches the local image **ID**;
-  `repository@sha256:<64 hex>` matches that exact **RepoDigest**, repository
-  context included; `content:sha256:<64 hex>` matches the image's
-  store-independent **content**. The three are not aliases. Mutable tags
+- Reference forms. `sha256:<64 hex>` matches the local image **ID**, or the
+  digest part of any **RepoDigest** the box reports (decided 2026-10-05: a
+  digest is content-addressed, so this carries a pulled image across both
+  stores); `repository@sha256:<64 hex>` matches that exact **RepoDigest**,
+  repository context included, and is never satisfied by a bare ID;
+  `content:sha256:<64 hex>` matches the image's store-independent
+  **content**. Mutable tags
   (`repo:tag`) are refused; use a digest.
 - Prefer the content form for work any box holding the image may run. An
   image ID is what that box's own image store calls the image, and the two
-  Sparks run different stores, so an ID-sealed action is claimable by one
-  Spark only (#805); a locally built image has no RepoDigest on the classic
-  store, so the `repository@` form is not the answer either. Read a portable
+  Sparks run different stores (#805): a bare-digest seal places on both only
+  while the image was pulled, so its RepoDigest appears on the classic store
+  too -- a locally built or `docker load`-ed image has no RepoDigest there,
+  so the content form is the only portable seal for it. Read a portable
   reference off a box that holds the image with `python3 -m
   prismabuild.container_images <repo:tag>`.
 - The image must be local *before* the action is claimed. A workflow that
