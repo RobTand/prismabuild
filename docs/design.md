@@ -8824,7 +8824,24 @@ receipt; its bytes are already subtracted from `available`) and **in flight**
 release; its bytes are not). The ledger's supply is minted as **writable +
 landed** (`tier_loop.landed_and_in_flight`), and the record announces
 `writable_gib`, `landed_gib`, `in_flight_gib`, `held_gib` and
-`capacity_basis: "zfs available + landed"`.
+`capacity_basis: "zfs available + landed"`, with `landed_bytes`,
+`in_flight_bytes`, `in_flight_unknown_gib`, `landed_rounding_gib`
+(`landed_gib` minus whole GiB in `landed_bytes`) and
+`in_flight_rounding_gib` beside them. The in-flight waste is
+(`in_flight_gib` minus `in_flight_unknown_gib`) minus whole GiB in
+`in_flight_bytes`, clamped at zero. Landed bytes come from complete
+receipts; in-flight bytes come from each holder's sealed plan range
+(`end_bytes - start_bytes` of its leg, read by mover key), never from
+landed bytes, which are zero while a mover copies. A holder no filed
+plan names reports under `in_flight_unknown_gib`, never as waste:
+unknown tokens stay in the `in_flight_gib` admission deduction but
+leave the waste number. Landed rounding costs no free capacity: the
+same tokens it holds it also adds to the supply, so free stays
+`floor(available / GiB)` minus in-flight tokens.
+
+The runtime publisher includes `stage_rounding.py` in both tool layouts.
+The tier role can report these fields from the published generation without a source checkout.
+CPU tests start each published tier command from an isolated consumer directory.
 
 Both simpler formulas failed on `prismabuild-stage:dl380g10` on 2026-09-18.
 `available` alone counted every landed GiB twice -- free fell as
@@ -13849,6 +13866,29 @@ the output funding record first. For a key it funds on this tier:
   keeping it is not a cache (#598).
 - **Unknown** otherwise, and kept. An absent producer is unknown, not dead: no
   outcome record is not an ending (#798).
+
+**A never-started output intent has a separate rollback (#1555).**
+The tier cycle scans output funding records on every pass.
+It takes the mover's transition lock before each fresh safety check.
+The producer attempt must be dead, and the mover must be withdrawn, not ready or claimed.
+The bound prewrite paths must all be absent.
+Unreadable evidence retains the reservation.
+The pool's existing nonexecution proof also refuses committed batches, terminals, staged bytes, and live leases.
+
+The token files and the funding record are separate stores.
+The cycle releases tokens first through `release_tier_holder`.
+It checks the holder with `held_names_visible`, which reports read faults instead of an empty holder.
+Only then does `_release_never_started_funding_locked` mark a `transferring` record as `released`.
+A release error or a partial release leaves the marker unchanged.
+A fault after token release leaves an empty holder with a `transferring` marker.
+The next pass repeats the safety checks and completes the rollback.
+
+A previous `released` marker with held tokens needs the same proof before token release.
+The owner census retains that intent until its holder is empty.
+This preserves the prewrite record that supplies the absence proof through release faults.
+An absent or unreadable prewrite record still refuses repair.
+Complete ranges and partial produced outputs keep their existing charge rules.
+This repair adds no seal, identity barrier, or admission policy.
 
 The same question fixes the opposite exposure. A completed produced mover's
 receipt names its batch namespace, not a queue action, and its fragment is in

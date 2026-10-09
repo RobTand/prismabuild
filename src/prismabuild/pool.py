@@ -16325,6 +16325,29 @@ class PoolQueue:
             return True
         if state not in ("reserved", "transferring"):
             return False
+        proven = self._output_funding_nonexecution_locked(
+            current, dead_input=dead_input)
+        if proven is not True:
+            return proven
+        if self._advance_output_funding_state_locked(
+                mover, str(tier_id), expect=state, advance_to="released",
+                generation=str(current.get("generation"))):
+            return True
+        # Every proven refusal answered above; a False here is a read or
+        # write fault under the advance's own idempotence, which the next
+        # pass retries (#1202 review N3).
+        return None
+
+    def _output_funding_nonexecution_locked(
+            self, current: Mapping[str, object], *,
+            dead_input: Mapping[str, object] | None = None) -> bool | None:
+        """Prove nonexecution without a state change; hold the mover lock.
+
+        Return True for proof, False for refusal, or None for a read fault.
+        A released marker alone does not prove that the mover never started.
+        """
+
+        mover = str(current["mover_action_key"])
         if dead_input is not None:
             # #1202's dead-input ending: the caller proved this funding's
             # producer attempt dead and its bound origin gone, so the batch's
@@ -16346,7 +16369,6 @@ class PoolQueue:
                 return False
         except (OSError, PoolContractError, ValueError):
             return None
-        exp_gen = str(current.get("generation"))
         # Durable claim: CLAIMED row of any shape means the mover may hold
         # the fence while the consumed marker failed.
         try:
@@ -16390,15 +16412,8 @@ class PoolQueue:
             return None
         if isinstance(lease, Mapping):
             return False
-        _ = exp_gen
-        if self._advance_output_funding_state_locked(
-                mover, str(tier_id), expect=state, advance_to="released",
-                generation=str(current.get("generation"))):
-            return True
-        # Every proven refusal answered above; a False here is a read or
-        # write fault under the advance's own idempotence, which the next
-        # pass retries (#1202 review N3).
-        return None
+
+        return True
 
     def output_census_for_owner(self, owner_key: str) -> tuple[list[dict], bool]:
         """Outstanding output intents for owner + census-unknown flag (R2).
@@ -16417,6 +16432,9 @@ class PoolQueue:
         that fails `validate_output_funding` (corrupt binding that may own
         source-held names). Files for other owners that parse cleanly (or
         fail with a proven different owner) do not taint this census.
+
+        A released marker with held mover tokens remains outstanding until
+        token release completes. Retain its prewrite recovery authority.
         """
 
         intents: list[dict] = []
@@ -16473,8 +16491,17 @@ class PoolQueue:
                 # source-held names => unknown, retain.
                 unknown = True
                 continue
-            if str(record.get("state")) in ("reserved", "transferring"):
+            state = str(record.get("state"))
+            if state in ("reserved", "transferring"):
                 intents.append(record)
+            elif state == "released":
+                try:
+                    if held_names_visible(
+                            self.tier_ledger(str(record["tier_id"])),
+                            str(record["mover_action_key"])):
+                        intents.append(record)
+                except (OSError, PoolContractError, ValueError):
+                    unknown = True
         return (intents, unknown)
 
     def _output_spoken_token_names(
