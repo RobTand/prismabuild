@@ -155,10 +155,13 @@ def _sweep_staging(store: Path) -> None:
 def publish_generation(source: Path, *, receipt_sha256: str) -> Path:
     """Copy one generation and its receipt, byte for byte, without executing it (root only).
 
-    ``receipt_sha256`` is the digest of the receipt the caller selected.  The
-    copy is refused when the receipt on disk differs, when any member differs
-    from the digest the receipt names, or when the store has no root custody.
-    A publication is never replaced.
+    ``receipt_sha256`` is the digest of the receipt the caller read.  The copy
+    is refused when the receipt on disk differs from it (the generation changed
+    under the copy), when any member differs from the digest the receipt names,
+    or when the store has no root custody.  The digest binds the copy to the
+    bytes that were read; it does not authenticate who published them.  The
+    root unit (:func:`converge`) takes its authority from the store's live
+    pointer.  A publication is never replaced.
     """
     if os.geteuid() != 0:
         raise PermissionError("movement publication requires root authority")
@@ -253,7 +256,9 @@ def converge(config: Mapping[str, object], *, now: float | None = None) -> dict[
 
     ``config`` names ``runtime`` (the live pointer), ``generation_store`` (the
     store the pointer must lead into) and ``status`` (where the result is
-    recorded).  The live generation is the only one published: a host that
+    recorded).  The generation the pointer names is the authority: the receipt
+    digest passed on is that generation's own, so it guards against a change
+    during the copy and proves nothing about its publisher.  The live generation is the only one published: a host that
     still runs an older one has that copy from when it was live.  The result
     is ``current`` (the copy exists and matches), ``published`` or ``error``;
     an error leaves the host without a copy, and a host without a copy keeps

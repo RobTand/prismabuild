@@ -21179,6 +21179,12 @@ class PoolQueue:
         #: Their wait ends when this host's incumbents finish, so it never
         #: holds back work an incumbent itself depends on.
         measurement_withholds: set[str] = set()
+        #: The carried ones among them (#1579): a measurement's episode carried
+        #: from an earlier pass, recognised by the drain deadline it snapshots.
+        #: Only the gang precedence reads this set. The rule that serves an
+        #: incumbent's dependents reads ``measurement_withholds`` alone, as it
+        #: always did, so no host's other admission changes.
+        carried_measurement_withholds: set[str] = set()
         #: Each ready row's priority, so a gang member past the reservation bound
         #: is released from a measurement withhold only when that measurement is
         #: not of strictly higher priority (#1579): higher priority goes first.
@@ -21226,11 +21232,10 @@ class PoolQueue:
                 verdict_snapshot(), item, host=socket.gethostname(), now=_now())
             if carried is not None:
                 withhold(key, WITHHOLD_KINDS.get(str(carried["mode"])))
-                if "drain_until_unix" in carried and movement_authority():
+                if "drain_until_unix" in carried:
                     # A measurement's carried episode (it snapshots its drain
-                    # deadline): the gang precedence reads it like a fresh one,
-                    # on a host where that precedence applies (#1579).
-                    measurement_withholds.add(key)
+                    # deadline): the gang precedence reads it like a fresh one.
+                    carried_measurement_withholds.add(key)
             return carried
 
         def keep_refused_room(key: str, reservation: Mapping[str, object],
@@ -21313,7 +21318,9 @@ class PoolQueue:
                 withheld_kinds is None
                 or self._demands_withheld_kind(item, withheld_kinds))
             reserving_gang = (self._gang_reservation_priority(item, authority=movement_authority())
-                              if held_back and withheld_for in measurement_withholds else None)
+                              if held_back and (withheld_for in measurement_withholds
+                                                or withheld_for in carried_measurement_withholds)
+                              else None)
             if (reserving_gang is not None
                     and ready_priority.get(withheld_for, 0) <= reserving_gang):
                 # The reservation wins over a measurement withhold (#1579): a

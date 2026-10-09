@@ -330,7 +330,9 @@ def test_every_fleet_tool_is_published_or_excluded_on_purpose() -> None:
     """
 
     fleet = ROOT / "tools" / "fleet"
-    on_disk = {source.name for source in fleet.glob("*.py")}
+    # The shell installers are fleet tools too: one nobody listed left no host
+    # able to enroll in automatic movement publication (#1659).
+    on_disk = {source.name for source in [*fleet.glob("*.py"), *fleet.glob("*.sh")]}
     published = set(publish_runtime.FLEET_SCRIPTS)
     excluded = {name for name, _reason in publish_runtime.EXCLUDED}
 

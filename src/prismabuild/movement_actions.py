@@ -165,42 +165,11 @@ def _movement_environment_ok(action: Mapping[str, object], command: list) -> boo
             and str(marker).endswith(f"/{owner}.used"))
 
 
-def effective_local_resident_operation(argv: object) -> str | None:
-    """The operation a sealed ``local_resident`` command runs, shared with the tool.
-
-    Parsed exactly as ``tools/fleet/local_resident.py`` parses it (#1579,
-    review 3): the LAST ``--operation`` wins, ``--operation=value`` and
-    unambiguous prefixes count, and anything argparse refuses is ``None``.
-    This duplicates the tool's option shape rather than importing the tool, so
-    the pool never imports a fleet script; the shape is asserted equal by
-    ``test_local_resident_operation_parsing_matches_the_tool``.
-    """
-    import argparse
-    import contextlib
-    import io
-    if not isinstance(argv, list) or not all(isinstance(part, str) for part in argv):
-        return None
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--pool-root", required=True)
-    parser.add_argument("--set-id", required=True)
-    parser.add_argument("--host", required=True)
-    parser.add_argument("--policy", required=True)
-    parser.add_argument("--operation", choices=("copy", "evict", "adopt"), required=True)
-    parser.add_argument("--source")
-    try:
-        with contextlib.redirect_stderr(io.StringIO()):
-            args, _ = parser.parse_known_args(list(argv))
-    except SystemExit:
-        return None
-    operation = getattr(args, "operation", None)
-    return operation if operation in ("copy", "evict", "adopt") else None
-
-
 def _local_resident_evict(command: list) -> bool:
     """Whether ``command`` runs the evict operation, spelled once, literally (#1579).
 
-    The effective operation comes from the tool's own parsing contract
-    (:func:`effective_local_resident_operation`, last ``--operation`` wins),
+    The effective operation comes from the tool's own parser
+    (``local_resident.effective_operation``, last ``--operation`` wins),
     and the spelling must be exactly one literal ``--operation evict``: a
     duplicate, an ``--operation=value`` form or a prefix abbreviation may run
     ``evict`` today but is not the shape the sealer emits, so it is ordinary.
@@ -209,7 +178,8 @@ def _local_resident_evict(command: list) -> bool:
         return False
     if any(part != "--operation" and _spells_operation(part) for part in command):
         return False
-    return effective_local_resident_operation(command[2:]) == "evict"
+    from . import local_resident
+    return local_resident.effective_operation(command[2:]) == "evict"
 
 
 def _spells_operation(part: str) -> bool:
@@ -280,12 +250,12 @@ def capacity_role(action: Mapping[str, object], demand: Mapping[str, object], *,
     if command[0] != MOVEMENT_PYTHON or not runtime_publication.spelled_member(command[1]):
         return None
     script = Path(command[1]).name
-    if script in (STAGE_MOVER_SCRIPT, RAM_PROMOTE_SCRIPT):
+    role = next((name for name, scripts in ROLE_SCRIPTS.items() if script in scripts), None)
+    if role == "serves_residency":
         if isinstance(residency, Mapping) and "range_start_bytes" in residency:
-            return CapacityRole("serves_residency", command[1])
+            return CapacityRole(role, command[1])
         return None
-    evict = script == LOCAL_RESIDENT_SCRIPT and _local_resident_evict(command)
-    if script not in (STAGE_RELEASE_SCRIPT, PRODUCED_EXPORT_SCRIPT) and not evict:
+    if role is None or (script == LOCAL_RESIDENT_SCRIPT and not _local_resident_evict(command)):
         return None
     for kind, count in demand.items():
         if type(count) is not int or count < 0:
@@ -294,7 +264,7 @@ def capacity_role(action: Mapping[str, object], demand: Mapping[str, object], *,
             return None
         if kind not in ("cpu", "mem_gb") and "@" not in str(kind):
             return None
-    return CapacityRole("returns_capacity", command[1])
+    return CapacityRole(role, command[1])
 
 
 def authorized_role(item: Mapping[str, object]) -> bool:
@@ -315,9 +285,8 @@ def authorized_role(item: Mapping[str, object]) -> bool:
     if len(marks) != 1 or not runtime_publication.spelled_member(script):
         return False
     path = Path(str(script))
-    permitted = (STAGE_MOVER_SCRIPT, RAM_PROMOTE_SCRIPT) if marks[0] == "serves_residency" else (
-        STAGE_RELEASE_SCRIPT, PRODUCED_EXPORT_SCRIPT, LOCAL_RESIDENT_SCRIPT)
-    return path.name in permitted and runtime_publication.published_member(path) == path
+    return (path.name in ROLE_SCRIPTS[marks[0]]
+            and runtime_publication.published_member(path) == path)
 
 
 #: The retry policy a movement node gets when its caller names none (#950).
@@ -651,6 +620,14 @@ RAM_PROMOTE_SCRIPT = "ram_promote.py"
 STAGE_RELEASE_SCRIPT = "stage_release.py"
 MOVEMENT_SCRIPTS = (STAGE_MOVER_SCRIPT, RAM_PROMOTE_SCRIPT,
                     STAGE_RELEASE_SCRIPT)
+
+#: The one statement of which tool can have which role (#1579):
+#: :func:`capacity_role` derives a role from it and :func:`authorized_role`
+#: checks a mark against it.
+ROLE_SCRIPTS = {
+    "returns_capacity": (STAGE_RELEASE_SCRIPT, PRODUCED_EXPORT_SCRIPT, LOCAL_RESIDENT_SCRIPT),
+    "serves_residency": (STAGE_MOVER_SCRIPT, RAM_PROMOTE_SCRIPT),
+}
 
 
 def movement_tools(tier: Mapping[str, object], *,

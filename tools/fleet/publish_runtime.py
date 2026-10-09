@@ -199,6 +199,11 @@ FLEET_SCRIPTS = (
     # materializing a checkout.
     "qualify_needrestart_broker_deferral.py",
     "upgrade_client.py", "install_client_upgrader.sh", "install_supervisor_unit.sh",
+    # The one-time root enrollment of a host in automatic movement publication
+    # (#1659).  An administrator copies it out of the live generation, as the
+    # client upgrader's installer; a generation without it leaves no host able
+    # to enroll.  ``runtime_publication.py`` it installs is a package module.
+    "install_movement_publisher.sh",
 )
 #: Fleet tools deliberately left out of the generation, each with the reason.
 #: Runtime tools travel; qualification harnesses use submitted checkouts.

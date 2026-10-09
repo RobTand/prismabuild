@@ -121,6 +121,7 @@ def _scan_publications(queue: PoolQueue) -> dict:
     from . import pool
     rows: dict[str, list[dict]] = {}
     unorderable: dict[str, list[dict]] = {}   # live members, never candidates
+    ready: set[str] = set()                   # keys that have a READY row
     selected: dict[str, dict] = {}
     opportunities: dict[str, dict] = {}
     count = 0
@@ -177,9 +178,12 @@ def _scan_publications(queue: PoolQueue) -> dict:
                             # CLAIMED one stays strict too: a running
                             # incumbent the census cannot read is unknown.
                             unorderable.setdefault(key, []).append(record)
+                            ready.add(key)
                             continue
                         raise CensusUnavailable("unreadable publication priority")
                     rows.setdefault(key, []).append(record)
+                    if state == pool.READY:
+                        ready.add(key)
                     if state == pool.CLAIMED and not is_mark:
                         # Every claimed action is an incumbent; only a sealed
                         # deadline contributes a finite opportunity (#1419).
@@ -234,7 +238,7 @@ def _scan_publications(queue: PoolQueue) -> dict:
             "gang_elections": _gang_elections(
                 queue, {key: rows.get(key, []) + unorderable.get(key, [])
                         for key in rows.keys() | unorderable.keys()}, count,
-                frozenset(opportunities))}
+                frozenset(ready))}
 
 
 def _member_demand(rows: dict[str, list[dict]], record: dict, key: str) -> dict | None:
@@ -259,7 +263,7 @@ def _member_demand(rows: dict[str, list[dict]], record: dict, key: str) -> dict 
 
 
 def _gang_elections(queue: PoolQueue, rows: dict[str, list[dict]], count: int,
-                    claimed: frozenset[str] = frozenset()) -> dict:
+                    waiting: frozenset[str] = frozenset()) -> dict:
     """Live gang host elections (#1517), read in the same bounded child.
 
     A gang election fences its host while any member row of a gang without a
@@ -269,10 +273,12 @@ def _gang_elections(queue: PoolQueue, rows: dict[str, list[dict]], count: int,
     admission, which also serializes this host's readers, so no member key
     joins the M lock set.
 
-    ``claimed`` names the member rows that are CLAIMED. An election whose member
-    is claimed carries ``claimed``: that member's tokens are held on its host,
-    so a reservation of its demand (#1579) would count them twice. The fence
-    against strictly lower priority stays for the gang's whole life.
+    ``waiting`` names the member rows that are READY. An election carries
+    ``waiting`` when its member is: only a waiting member has a demand to
+    reserve (#1579). A claimed member holds its tokens on its host already, and
+    a reservation of them would count them twice. A member that has ended has no
+    demand left at all. The fence against strictly lower priority stays for the
+    gang's whole life, whatever its members do.
     """
     from . import _gang
     directory = _gang.root(queue)
@@ -304,7 +310,7 @@ def _gang_elections(queue: PoolQueue, rows: dict[str, list[dict]], count: int,
                         "group": group, "index": index, "action_key": election["action_key"],
                         "host": election["host"], "priority": election["priority"], "rank": rank,
                         "demand": _member_demand(rows, record, election["action_key"]),
-                        "claimed": election["action_key"] in claimed}
+                        "waiting": election["action_key"] in waiting}
     except _gang.GangContractError as exc:
         raise CensusUnavailable(str(exc)) from exc
     return found
@@ -564,11 +570,13 @@ def reserves_after(first_published: object, now: float, *, authority: bool) -> b
 def _gang_reserves(chosen: dict, now: float, authority: bool) -> bool:
     """Whether the gang behind election ``chosen`` reserves its host (:func:`reserves_after`).
 
-    A member that is already CLAIMED reserves nothing: its demand is held on
-    the ledger, and reserving it again would refuse rows that fit beside it.
+    Only a member that is still waiting (its row is READY) reserves. A member
+    that is CLAIMED holds its demand on the ledger, and reserving it again would
+    refuse rows that fit beside it. A member that has ended has nothing to
+    reserve, and its host is idle for other work.
     """
     rank = chosen.get("rank")
-    return (chosen.get("claimed") is not True
+    return (chosen.get("waiting") is True
             and reserves_after(rank[1] if isinstance(rank, list) and len(rank) == 3 else None, now,
                                authority=authority))
 
@@ -601,8 +609,18 @@ def _reserved(member_demand: object, capacity: Mapping) -> dict[str, int]:
             and all(isinstance(kind, str) and type(count) is int and count >= 0
                     for kind, count in member_demand.items())):
         return whole
-    return {kind: min(count, whole[kind]) for kind, count in member_demand.items()
-            if count > 0 and kind in whole}
+    reserved = {kind: min(count, whole[kind]) for kind, count in member_demand.items()
+                if count > 0 and kind in whole}
+    if reserved:
+        # A member that takes anything on this host and leaves its CPU or memory
+        # out, or declares zero CPU, is unknown in it: admission reads that as an
+        # unbounded consumer that needs the box empty (``adaptive_cpu``).  Unknown
+        # is consuming, so it reserves all of that dimension.  A member that
+        # declares no host dimension at all has nothing to reserve here.
+        for kind in _UNKNOWN_WHEN_ABSENT:
+            if kind in whole and (kind not in member_demand or (kind == "cpu" and not member_demand[kind])):
+                reserved[kind] = whole[kind]
+    return reserved
 
 
 def reservation_shortfall(item: dict, member_demand: object, *, held: object,

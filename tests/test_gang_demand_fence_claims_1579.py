@@ -311,29 +311,55 @@ def test_a_submitter_alias_of_a_published_tool_gets_no_role(gang_fleet, store, t
     assert _roles(queue, key) == [], _row(queue, key)
 
 
-def test_local_resident_operation_parsing_matches_the_tool(gang_fleet, store, tmp_path):
-    """Review 3: the role's operation test parses exactly as local_resident does."""
+def test_the_tool_and_the_role_check_share_one_option_parser(monkeypatch, capsys):
+    """One statement of the options (DRY): the tool parses with it and the role check asks it."""
+    from prismabuild import local_resident
     sys.path.insert(0, str(Path("tools/fleet").resolve()))
-    from local_resident import effective_operation as tool_parses
+    import local_resident as tool
+    calls = []
+    real = local_resident.build_parser
+    monkeypatch.setattr(local_resident, "build_parser", lambda *a, **k: calls.append(a) or real(*a, **k))
+    with pytest.raises(SystemExit):
+        tool.main(["--help"])
+    assert calls, "the tool builds its parser from prismabuild.local_resident"
+    capsys.readouterr()
+    calls.clear()
+    assert local_resident.effective_operation(["--operation", "evict"]) is None   # required options missing
+    assert calls, "the role check asks the same parser"
+
+
+def test_the_effective_operation_is_what_argparse_resolves_and_prints_nothing(capsys):
+    from prismabuild import local_resident
+    base = ["--pool-root", "q", "--set-id", "s", "--host", "h", "--policy", "/p"]
+    expected = [
+        ([*base, "--operation", "evict"], "evict"),
+        ([*base, "--operation", "evict", "--operation", "copy"], "copy"),
+        ([*base, "--operation=copy", "--operation", "evict"], "evict"),
+        ([*base, "--oper", "evict"], "evict"),
+        ([*base, "--op", "evict"], "evict"),
+        ([*base, "--o", "evict"], "evict"),
+        ([*base, "--operation", "copy", "--op", "evict"], "evict"),
+        ([*base, "--operation", "copy", "--o=evict"], "evict"),
+        ([*base, "--operation=evict"], "evict"),
+        ([*base, "--operation", "copy"], "copy"),
+        ([*base, "--operation"], None),
+        ([*base, "--operation", "wipe"], None),
+        ([*base], None),
+        ([*base, "--help", "--operation", "evict"], None),
+        (["-h"], None),
+        ("not a list", None),
+        ([*base, 7], None),
+    ]
+    for argv, operation in expected:
+        assert local_resident.effective_operation(argv) == operation, argv
+    captured = capsys.readouterr()
+    assert captured.out == "" and captured.err == "", "a sealed command is judged silently"
+
+
+def test_only_one_literal_operation_evict_gets_the_role(gang_fleet, store, tmp_path):
+    """Review 3 and the later abbreviation review: every other spelling of the option is ordinary."""
     queue, clock, *_ = gang_fleet
     base = ["--pool-root", str(queue.root), "--set-id", "s", "--host", "h", "--policy", "/p"]
-    shapes = [
-        [*base, "--operation", "evict"],
-        [*base, "--operation", "evict", "--operation", "copy"],
-        [*base, "--operation=copy", "--operation", "evict"],
-        [*base, "--oper", "evict"],
-        [*base, "--op", "evict"],
-        [*base, "--o", "evict"],
-        [*base, "--operation", "copy", "--op", "evict"],
-        [*base, "--operation", "copy", "--o=evict"],
-        [*base, "--operation=evict"],
-        [*base, "--operation", "copy"],
-        [*base, "--operation"],
-        [*base],
-    ]
-    for argv in shapes:
-        assert ma.effective_local_resident_operation(argv) == tool_parses(argv), argv
-    # Only one literal --operation evict gets the role; every other shape is ordinary.
     key = _publish_sealed(queue, tmp_path, clock, "evict", script="local_resident.py",
                           resources=SMALL, extra_command=(*base, "--operation", "evict"),
                           generation=store)
@@ -347,6 +373,7 @@ def test_local_resident_operation_parsing_matches_the_tool(gang_fleet, store, tm
             "shortest-abbreviation": (*base, "--o", "evict"),
             "literal-then-abbreviated": (*base, "--operation", "copy", "--op", "evict"),
             "abbreviated-equals": (*base, "--o=evict"),
+            "help-then-evict": (*base, "--help", "--operation", "evict"),
             "truncated": (*base, "--operation"),
     }.items():
         key = _publish_sealed(queue, tmp_path, clock, name, script="local_resident.py",
@@ -467,7 +494,11 @@ def test_a_waiting_gang_reserves_its_member_demand_and_admits_what_returns_capac
 
 
 def test_a_gang_that_has_started_holds_back_no_equal_priority_row(gang_fleet, tmp_path):
-    """Review of 66f259db0c: a running member's tokens are held; reserving them again refused fitting rows."""
+    """Review of fd78197058: a running member's tokens are held; reserving them again refused fitting rows.
+
+    The same review: a member that has ended leaves its election behind until the last member ends,
+    and that election must not keep its idle host reserved.
+    """
     queue, clock, publish, finish, gclaim, denial, members = gang_fleet
     incumbents, group, (first, second) = _wait_gang(publish, gclaim, members, clock, "running")
     clock[0] += reservation.GANG_RESERVE_AFTER_S + 1
@@ -483,6 +514,12 @@ def test_a_gang_that_has_started_holds_back_no_equal_priority_row(gang_fleet, tm
     # The members hold cpu 2, gpu 1 and mem 100 on each host.  A row of cpu 1 and mem 1 fits beside them.
     small = _publish_sealed(queue, tmp_path, clock, "beside-the-running-gang", script=None, resources=SMALL)
     assert gclaim("sparky") == small, denial(small, "sparky")
+    # One member ends while the other still runs: the gang record and both elections stay, and the
+    # finished member has no demand left to reserve, so its idle host takes other work.
+    finish(first, "sparklina")
+    again = _publish_sealed(queue, tmp_path, clock, "beside-the-finished-member", script=None,
+                            resources=SMALL, tags=("sparklina",))
+    assert gclaim("sparklina") == again, denial(again, "sparklina")
 
 
 def test_a_gangs_priority_for_the_precedence_is_the_gang_records(gang_fleet):

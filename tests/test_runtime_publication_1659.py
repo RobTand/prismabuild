@@ -470,3 +470,17 @@ def test_the_settings_the_installer_writes_pass_the_programs_validation(
     path.write_text(json.dumps(config))
     path.chmod(0o644)
     assert publication._read_config(path) == config
+
+
+def test_the_installer_and_the_program_travel_with_every_generation():
+    """No checkout exists on three of the boxes: an administrator copies both out of the live generation."""
+    import importlib.util
+    root = Path(__file__).resolve().parents[1]
+    spec = importlib.util.spec_from_file_location(
+        "publish_runtime_for_1659", root / "tools" / "fleet" / "publish_runtime.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    manifest = module._publication_manifest()
+    for member in ("tools/fleet/install_movement_publisher.sh", "tools/install_movement_publisher.sh",
+                   "src/prismabuild/runtime_publication.py", "tests/movement_publication_support.py"):
+        assert member in manifest, member

@@ -22,11 +22,11 @@ YOUNG = FIRST + BOUND - 1
 OLD = FIRST + BOUND + 1
 
 
-def _census(priority=-10, demand=MEMBER, host="sparky", other=None, claimed=False):
+def _census(priority=-10, demand=MEMBER, host="sparky", other=None, waiting=True):
     elections = {"g" * 63 + "1": {
         "group": "g" * 32, "index": 0, "action_key": "g" * 63 + "1", "host": host,
         "priority": priority, "rank": [-priority, FIRST, "g" * 32], "demand": demand,
-        "claimed": claimed}}
+        "waiting": waiting}}
     if other is not None:
         elections.update(other)
     return {"gang_elections": elections}
@@ -180,21 +180,45 @@ def test_the_reservation_priority_is_the_gangs_and_only_past_the_bound_on_its_ho
     assert reservation.reservation_priority_on({}, host="sparky", now=OLD, authority=True) is None
 
 
-# --- a gang that has started reserves nothing ----------------------------------------
+# --- only a waiting member reserves -----------------------------------------------------
 
 def test_a_member_already_running_has_its_demand_held_and_reserves_nothing_more():
     """Held and reserved would count the same tokens twice, and refuse rows that fit."""
     running = {"cpu": 2, "gpu": 1, "mem_gb": 100}
     row = _row()
     assert _blocked(row, held=running) is not None, "a waiting member reserves beside what is held"
-    assert _blocked(row, held=running, claimed=True) is None
+    assert _blocked(row, held=running, waiting=False) is None
     assert reservation.reservation_priority_on(
-        _census(claimed=True), host="sparky", now=OLD, authority=True) is None
+        _census(waiting=False), host="sparky", now=OLD, authority=True) is None
 
 
-def test_a_running_member_still_fences_strictly_lower_priority():
-    blocked = _blocked(_row(priority=-20), now=FIRST + 1, claimed=True)
+def test_a_member_that_has_ended_leaves_its_host_idle_for_other_work():
+    """The gang record lives until its last member ends; the election of a finished member stays."""
+    assert _blocked(_row(), waiting=False) is None
+    assert _blocked(_row(resources={"cpu": 8, "mem_gb": 64}), waiting=False) is None
+
+
+def test_an_election_that_does_not_say_whether_its_member_waits_reserves_nothing():
+    census = _census()
+    del next(iter(census["gang_elections"].values()))["waiting"]
+    assert _blocked(_row(), census=census) is None
+
+
+def test_a_member_not_waiting_still_fences_strictly_lower_priority():
+    blocked = _blocked(_row(priority=-20), now=FIRST + 1, waiting=False)
     assert blocked is not None and "reservation" not in blocked
+
+
+@pytest.mark.parametrize("demand", [{"gpu": 1, "mem_gb": 100}, {"cpu": 0, "gpu": 1, "mem_gb": 100}])
+def test_a_member_that_leaves_its_cpu_out_reserves_all_of_it(demand):
+    """Admission reads a missing or zero CPU as an unbounded consumer that needs the box empty."""
+    held = _blocked(_row(), held={"cpu": 19}, demand=demand)
+    assert held is not None and held["reservation"] == {"cpu": 20}
+
+
+def test_a_member_that_leaves_its_memory_out_reserves_all_of_it():
+    held = _blocked(_row(), demand={"cpu": 2, "gpu": 1})
+    assert held is not None and held["reservation"] == {"mem_gb": 1}
 
 
 # --- the fallback: no protected copy on this host ---------------------------------

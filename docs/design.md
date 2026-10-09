@@ -4972,11 +4972,23 @@ zero unless the row sets `needs_gpu`, and so is any other omitted ledger dimensi
 such as `spool_gb`. A member whose demand does not read reserves the whole host. A host
 ledger that does not read denies the row for the pass.
 
-A member that has started reserves nothing more. Its tokens are held on the ledger, so
-reserving its demand again would count them twice and refuse rows that fit beside it.
-The census marks an election `claimed` when its member row is CLAIMED. The reservation
-and the measurement precedence below skip a claimed election. The fence against
-strictly lower priority stays for the whole life of the gang, as before. Never held: the gang's own members and any gang's (two gangs of one priority
+Only a waiting member reserves. The census marks an election `waiting` when its member
+row is READY. A member that has started holds its tokens on the ledger, so reserving
+its demand again would count them twice and refuse rows that fit beside it. A member
+that has ended has no demand left, and its host is idle for other work, although its
+election stays until the last member of the gang ends. The reservation and the
+measurement precedence below skip an election that is not waiting. The fence against
+strictly lower priority stays for the whole life of the gang, as before.
+
+A member that reserves anything on a host and leaves its `cpu` or `mem_gb` out, or
+declares `cpu` as zero, is unknown in that dimension, as a candidate row is: it
+reserves all of it. A member that declares no host dimension at all reserves nothing
+there. The reservation drains a host for the member: a row is admitted only if the
+member would still fit beside it right now, in every dimension the member declares. A
+row that asks nothing of a reserved dimension is therefore still held while running work
+occupies that dimension. A gang that cannot start because a sibling host is away or busy
+keeps its elected hosts reserved, as it keeps them fenced against strictly lower
+priority. Withdraw the gang to release them. Never held: the gang's own members and any gang's (two gangs of one priority
 are ordered by `rank`), higher priority, a verified publication canary slot (its
 own next-free-safe-boundary contract) and the two roles PrismaBuild itself assigns.
 
