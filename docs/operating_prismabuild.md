@@ -1695,14 +1695,15 @@ unchanged; descriptor-based temporary-directory cleanup can therefore finish
 under the failed-only retention policy instead of failing in the fixture itself.
 Only `tmp_path` is removed per test. A directory made with `tmp_path_factory.mktemp`,
 and the directory of any failing test, lasts as long as the session's base temporary
-directory. By default `pbtest` passes no `--basetemp`, so that base is
-`$TMPDIR/pytest-of-<user>/pytest-N`, where `TMPDIR` is the default `/home/rob/tmp` or the
-`--tmpdir` directory when one is given. pytest removes the whole directory itself when
-the session ends with exit status 0 (policy `failed`); after a session with any failure it
-stays until later sessions prune older numbered directories (pytest keeps the newest three
-by default). With `--basetemp root` pytest does not remove the directory at the end of the
-session: it deletes and recreates the root at the start of the next session that uses that
-path, so a leftover root has to be cleaned by whoever sealed it.
+directory. Without `--basetemp` each attempt owns its base temp (#1542):
+`<tmpdir>/pbtest-<action-key12>/<attempt>/pytest`, where `tmpdir` is the
+default `/home/rob/tmp` or the `--tmpdir` directory when one is given. The
+worker removes only that attempt's directory after pytest exits 0, and keeps
+it on a non-zero exit, as the failed-only retention policy does. Expiry of
+kept directories is out of scope. With `--basetemp root` pytest does not
+remove the directory at the end of the session: it deletes and recreates
+the root at the start of the next session that uses that path, so a leftover
+root has to be cleaned by whoever sealed it.
 
 `--basetemp root` seals a separate scratch root for pytest's own temporary
 files (#1469), so selecting real test scratch no longer moves the process
@@ -1724,16 +1725,16 @@ action root. The root stays unsupported through `--pytest-args`: the closed
 vocabulary does not grow.
 
 Nothing removes the derived `root/<action-key>/<attempt>/pytest` namespaces
-automatically. pytest deletes only the basetemp it is handed, at its own
-start. A sealed root is not PrismaBuild-admitted scratch: the attempt
-lifetime contract (#1463, refs #1360) owns declared, registered ephemeral
-roots, not a caller-provisioned `--basetemp` root, so D1 disk admission does
-not see what accumulates there. A relative root needs no extra owner -- it
-lives inside the attempt's materialized checkout and is removed with it. An
-absolute root grows outside every PB accounting path, so the caller who
-provisions ROOT owns the removal of its action namespaces; until #1360
-extends scratch lifetime to sealed client roots, provision absolute roots
-under a retention policy of your own.
+of a sealed `--basetemp` automatically. pytest deletes only the basetemp it
+is handed, at its own start. A sealed root is not PrismaBuild-admitted
+scratch: the attempt lifetime contract (#1463, refs #1360) owns declared,
+registered ephemeral roots, not a caller-provisioned `--basetemp` root, so
+D1 disk admission does not see what accumulates there. A relative root needs
+no extra owner -- it lives inside the attempt's materialized checkout and is
+removed with it. An absolute root grows outside every PB accounting path, so
+the caller who provisions ROOT owns the removal of its action namespaces;
+until #1360 extends scratch lifetime to sealed client roots, provision
+absolute roots under a retention policy of your own.
 
 Every requested path must be a file or directory. A missing or invalid path
 refuses the whole submission with exit code 2 and a diagnostic before any
@@ -3886,11 +3887,47 @@ map uses the existing idle-queue procedure.
 CPU samples, learned profiles, interval state, spent borrowing samples, the
 GPU probe state and each running scope's live telemetry live in the host-local
 `PRISMABUILD_BOX_STATE_ROOT` directory, keyed by ledger and hostname. The default root is `/tmp/prismabuild-admission-<uid>`. Do not delete
-it while workers run. A cold start relearns intervals and profiles; shared
+it while workers run. Each genuinely new digest files `<digest>.origin.json`
+once, naming its queue root, hostname, pid, executable and creation time;
+an entry that already owns state when the code first sees it keeps no
+record: it is a legacy entry, and nothing invents its origin. Entries
+without one are legacy entries. The admission path probes only the
+digest's own paths, never the whole directory.
+
+Maintenance-only prune (`survey_box_state`, `prune_box_state`, `prove_box_quiescent`)
+uses a dry run by default. An entry includes every `<digest>.*` sibling,
+even without an adaptive CPU directory. Lock-only, sweep-only, and
+preemption-only entries qualify by the same identity and age rules.
+The default age floor is seven days. Apply removes at most 100 entries
+per pass; the 5,000-entry target prioritizes older eligible entries.
+
+Stop all relevant users and bar new openers before apply.
+Acknowledge the maintenance hold. Apply also requires a proven-quiet box:
+no live worker loop, unresolved claim, or live scope, with complete queue evidence.
+Each `.lock`, `.preemption`, `.sweep`, and `.guard` file must pass
+a non-blocking `flock` probe. Configured roots and unresolved census readers stay.
+An absent roots list, missing queue, or incomplete evidence refuses apply without removal.
+
+An old unheld `.sweep` marker and a released `.preemption` lock never keep
+an entry alone. Partial or unreadable evidence counts as "not quiet".
+Age and count select candidates; neither permits unsafe removal.
+No rename of a held inode ever happens.
+A cold start relearns intervals and profiles; shared
 copies are never recovery authority. For this authority migration or rollback,
 keep the queue drained until every worker loop reports the selected generation.
 Before rollback to shared authority, verify all snapshot publishers have
 actually exited as well; a stalled publisher blocks that rollback.
+
+The R13 bench binds admission state to `<work>/box-state` before queue use
+in both parent and child processes. A nonempty explicit override remains unchanged.
+Use a new or empty work directory. The bench refuses a nonempty or unreadable
+directory before queue use and names that directory. It deletes nothing from a prior run.
+
+Claims, census fences, guard files, and claim-denial records remain across reuse attempts.
+Neither `finish` nor direct child exit proves settlement or permits removal.
+
+This source repair does not establish runtime deployment.
+Obtain CEO approval before runtime publication.
 
 Remote status readers still read `reservations/<host>/adaptive/`, now populated
 by an independent publisher after admission is released. Its CPU and GPU

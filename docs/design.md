@@ -249,7 +249,42 @@ opens remain (actions 8c9e1d2bd5f4 and 8550ef5bc4ab). On the NFS export a
 listing is at least one READDIR, and a per-key lookup is a LOOKUP unless
 the client's dentry cache answers it.
 
-The standalone `bench_claim_pass` command uses an owned temporary admission directory under `/tmp` when `PRISMABUILD_BOX_STATE_ROOT` is absent or empty. It sets the environment value before `build_and_poll` imports `pool` and retains the directory across both synchronous polls. It restores the prior environment value and removes only the owned directory after the call. A nonempty explicit override remains unchanged. The count-only branch returns before work or scope creation. Production roots and admission policy remain unchanged.
+The standalone `bench_claim_pass` command uses an owned temporary admission directory under `/tmp` when `PRISMABUILD_BOX_STATE_ROOT` is absent or empty. It sets the environment value before `build_and_poll` imports `pool` and retains the directory across both synchronous polls. It restores the prior environment value and removes only the owned directory after the call. A nonempty explicit override remains unchanged. The count-only branch returns before work or scope creation. Production roots and admission policy stay unchanged.
+
+Digest origin records name each genuinely new admission entry's writer (#1542). `box_state` files `<digest>.origin.json` once, with `O_EXCL`, only when the digest owns no state yet. The record holds the resolved queue root, hostname, pid, `argv[0]` and creation time. A second call for the same digest keeps the first record. An entry that already owns state when the code first sees it keeps no record: it is a legacy entry. A census groups digests by `(queue_root, hostname, argv0)`; an entry without a record is a legacy entry. Nothing invents an origin. A missing file elsewhere stays "no information", as before.
+
+The R13 bench binds admission state to `<work>/box-state` before queue use in both parent and child processes (#1542).
+`bind_private_box_state` preserves a nonempty explicit override.
+The `--tiny-shape` flag builds a minimal queue for isolation tests.
+Unresolved claims and census fences remain in the work directory after the run.
+
+R13 requires a new or empty work directory.
+`_prepare_work_directory` proves an existing directory empty through a complete top-level census.
+The bench refuses a nonempty or unreadable directory before queue use or output creation.
+The refusal names the work directory and leaves every entry unchanged.
+This rule preserves claims, census markers, guard files, and claim-denial records without assumptions about settlement.
+The bench never deletes state from a prior run; neither `finish` nor child exit permits removal.
+
+Maintenance-only prune removes eligible idle admission entries (#1542).
+`survey_box_state` lists candidates; `prune_box_state` applies them; `prove_box_quiescent` proves the box quiet.
+An entry includes every file or directory whose name starts with `<digest>.`.
+Lock-only, sweep-only, and preemption-only entries need no adaptive CPU directory.
+The survey uses the newest timestamp across every sibling and its descendants.
+Unreadable state stays.
+
+The default is a dry run.
+Candidates must be at least seven days old and must not belong to a configured queue root.
+The default removal bound is 100 entries per pass; the 5,000-entry target prioritizes older eligible entries.
+An absent roots list, missing queue, or incomplete queue evidence keeps every entry and refuses apply.
+An unheld `.sweep` or `.preemption` file alone does not establish activity.
+Admission still probes only its own digest paths, without a directory census.
+
+Before apply, stop every relevant user and bar new openers under the acknowledged maintenance hold.
+Apply also requires no live worker loop, live scope, or unresolved claim, with complete queue evidence.
+Every `.lock`, `.preemption`, `.sweep`, and `.guard` file must pass a non-blocking `flock` probe.
+Configured roots and unresolved census readers stay.
+Age and count select candidates; neither permits unsafe removal.
+Deletion while workers run remains prohibited; no rename or unlink of a held inode establishes safety.
 
 Each claim pass times its per-key transition-lock holds (#1029): every lock
 the pass acquires is timed on `time.monotonic()` from acquisition to the end
