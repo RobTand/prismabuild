@@ -388,8 +388,6 @@ def _unified_gpu_charge_gib(
     return held_caps, held_total, candidate_gib
 
 
-
-
 def _power_estimate(rows):
     values = [row['power_w'] for row in rows]
     mean = statistics.mean(values)
