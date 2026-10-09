@@ -5461,6 +5461,55 @@ for another tag or host class, a row without the required local capabilities,
 a malformed demand, or a demand this host cannot fit does not hold CPU work back.
 This rule crosses priority bands and has no timeout: aging or a higher CPU
 priority cannot spend the GPU host's CPUs or memory ahead of eligible GPU work.
+One class of CPU-only row can pass it (#1589): work whose required tags name
+something no host without a GPU offers (aarch64 work tagged `gb10`), because it
+has no CPU host to be left to and deferring it for good starved the arm64 smoke
+a GPU successor waited on. A row is excluded from the CPU hosts when one of its
+required tags is carried by some GPU host's offer and by no offer of a host
+without a GPU, read from every offer on file, stale ones included (what a class
+offers does not change while one of its boxes is briefly away, so portable work
+stays portable and keeps waiting for the x86 box); with no GPU host or no host
+without a GPU on file there is no evidence and the row is not excluded. Such a
+row is only a CANDIDATE (`_class_scoped_candidate`): it is no gang member (a gang
+election is written before any later check and outlives a refusal, so it could
+fence the GPU row out with every token free), and its sealed host demand is plain
+and bounded: an explicit `cpu` and `mem_gb`, nothing else (no GPU, no tier or fill
+kind, no other kind). Before any admission lock, once per pass and under no lock
+(the reads can stall on the shared filesystem and must not do so inside the gate
+every claimant waits on), the eligible GPU row's room is read
+(`_class_scoped_room`): the GPU row must be one a running CPU holder cannot keep
+from starting beyond the tokens it takes, so not a measurement row (it needs an
+idle host), with an explicit `cpu` and `mem_gb` (an unbounded row is refused
+whenever the box holds anything), not a gang member, and with a readable sealed
+contract (an unreadable request is unknown, never an ordinary non-measurement
+row: the contract reader answers it as `(None, measurement, True, budget)`,
+so the exemption requires affirmative shape evidence); the room is then the
+reservation its own claim charges (`_ready_gpu_row_room`: under the facts its claim
+reads first, the producer's export allowance included). Without such a room the row
+stays deferred and the denial names why. At the token boundary, under host
+admission, `_class_scoped_beside_room` reads only the free tokens: the row passes
+only if, after it takes its own, that room still fits them. Under adaptive
+admission it also replays the owner's projected-cost rule over the live host:
+every holder's conservative cost from its reservation and fresh local telemetry
+(`_class_scoped_holder_costs`), plus this candidate at its full demand, plus the GPU row at its declared demand, against the
+host CPU count. Holder costs use the owner's interval rule: the rate comes from
+this interval's telemetry delta against the controller's cached previous record,
+never a lifetime average, so a quiet past cannot hide a busy present; a holder
+without a valid interval charges its full reservation, and unknown costs hold the row. A funded row still pays its full sealed demand, not its token remainder: the owner charges a funded holder's reservation in full while its rate is unknown. A busy incumbent, an unattributed starter, a second class
+holder, and an in-flight (`claiming.*`) reservation each count at the declared cost the owner's own rule charges (a borrowing sibling declares more than the physical tokens it holds); unknown costs hold the row. Without a controller there is no
+projected-cost gate, so the token fit stands alone. What the replay proves is
+bounded: the projected-cost gate at this sample. Later samples, learned costs,
+host pressure, and the GPU row's own later gates still decide its own claim, so
+the exemption cannot promise the GPU row starts next. It promises only that the
+class row did not take tokens or headroom the GPU row needs at this decision.
+A measurement row is held (its exclusivity contracts are its own), and free
+tokens or holder costs that do not read hold the row. Ordinary CPU admission
+(adaptive CPU, measurement elections, gang reservations) still applies to the row
+afterwards, priority order is untouched, and portable rows, rows with a host tag
+and rows that do not fit are unchanged. Limits: a class-scoped row is recognised
+by tags only; arm64-only work that names no class tag but only an image or
+interpreter is still held by the rule. The replay covers the CPU projected-cost
+gate only, not host pressure or the GPU row's GPU-side gates.
 Once no such GPU row is READY, ordinary CPU placement resumes.
 
 An eligible-fit GPU row stops holding CPU work back when this host's latest
@@ -5499,8 +5548,9 @@ entry of that host in the row's reason ring. The GPU host records
 no such host remains. CPU-only work still overflows onto GPU hosts when the CPU
 host is full or refuses, but portable rows must also pass the eligible-READY-GPU
 rule above. A host without a GPU never yields, so no two hosts wait on each
-other. Tags excluding every host without a GPU bypass only this CPU-host
-deferral, not the READY-GPU rule. Remote reads are made once per host per claim
+other. Tags excluding every host without a GPU bypass this CPU-host
+deferral, and (when the row is let past by the eligible GPU row's own room, #1589)
+the READY-GPU rule as well. Remote reads are made once per host per claim
 pass and each yield
 charges that view, so a pass never leaves a host more rows than it fits.
 
