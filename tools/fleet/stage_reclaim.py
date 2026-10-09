@@ -2,7 +2,7 @@
 """Reclaim source-mark-only stage copies with digest-proven originals (#1636).
 
 A staged range lives at ``<rel>.pbrange/<offset>-<size>``, so the copy
-names its own original: ``<mount>/<rel>`` at extent ``[offset, size)``.
+names its own original: ``<mount>/<rel>`` at extent ``[offset, offset+size)``.
 No receipt names it. Routine ``reconcile`` leaves every such copy for
 the life of the fleet.
 
@@ -14,6 +14,7 @@ cycle. ``restore`` copies a run back with its marks.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import argparse
 import hashlib
 import json
@@ -23,6 +24,7 @@ import shlex
 import socket
 import stat as statmod
 import sys
+import tempfile
 import time
 
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
@@ -30,11 +32,11 @@ from runtime_paths import generation_root  # noqa: E402
 
 sys.path.insert(0, str(generation_root(__file__) / "src"))
 
-from prismabuild import pool  # noqa: E402
+from prismabuild import core as pb, pool  # noqa: E402
 
 import prewarm_loop  # noqa: E402
 import stage_release  # noqa: E402
-from stage_move import RANGE_SUFFIX, STAGE_MOVER_XATTR  # noqa: E402
+from stage_move import RANGE_SUFFIX, STAGE_MOVER_XATTR, stage_relative  # noqa: E402
 
 #: The event each reclaim receipt publishes.
 RECLAIM_EVENT = "stage-source-mark-reclaimed"
@@ -122,26 +124,43 @@ def original_for(stage: Path, path: Path, *, mount_prefix: str,
     return original, offset, size
 
 
+@contextmanager
+def _open_regular(path: str | Path):
+    """Open the descriptor to read, without symlink or access-time changes."""
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+                 | os.O_NOATIME)
+    try:
+        if not statmod.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError(f"{path}: not a regular file")
+        handle = os.fdopen(fd, "rb")
+    except BaseException:
+        os.close(fd)
+        raise
+    with handle:
+        yield handle
+
+
 def digest_file(path: str | Path, *, offset: int = 0,
                 length: int | None = None) -> tuple[str, int] | None:
-    """SHA-256 of a file range, and the bytes hashed, or None."""
-
+    """Hash an exact extent from a stable regular-file descriptor."""
     digest = hashlib.sha256()
     hashed = 0
     try:
-        with open(path, "rb") as handle:
-            if offset:
-                handle.seek(offset)
-            while True:
-                want = _CHUNK if length is None else min(
-                    _CHUNK, length - hashed)
-                if want <= 0:
-                    break
-                chunk = handle.read(want)
+        with _open_regular(path) as handle:
+            before = _file_identity(os.fstat(handle.fileno()))
+            extent = before["size"] - offset if length is None else length
+            if offset < 0 or extent < 0 or offset + extent > before["size"]:
+                return None
+            handle.seek(offset)
+            while hashed < extent:
+                chunk = handle.read(min(_CHUNK, extent - hashed))
                 if not chunk:
-                    break
+                    return None
                 digest.update(chunk)
                 hashed += len(chunk)
+            if (_file_identity(os.fstat(handle.fileno())) != before
+                    or _file_identity(os.lstat(path)) != before):
+                return None
     except OSError:
         return None
     return digest.hexdigest(), hashed
@@ -150,9 +169,9 @@ def digest_file(path: str | Path, *, offset: int = 0,
 def _file_identity(info: os.stat_result) -> dict[str, int]:
     """The stat fields that fence one file's hashed bytes."""
 
-    return {"ino": int(info.st_ino), "size": int(info.st_size),
-            "mtime_ns": int(info.st_mtime_ns),
-            "ctime_ns": int(getattr(info, "st_ctime_ns", 0))}
+    return {"dev": int(info.st_dev), "ino": int(info.st_ino),
+            "mode": int(info.st_mode), "size": int(info.st_size),
+            "mtime_ns": int(info.st_mtime_ns), "ctime_ns": int(info.st_ctime_ns)}
 
 
 def prove_pair(stage_path: Path, original: str, offset: int, size: int,
@@ -191,7 +210,7 @@ def prove_pair(stage_path: Path, original: str, offset: int, size: int,
         stage_before = _file_identity(os.stat(stage_path))
     except OSError as exc:
         return None, "stage_unreadable", {"error": str(exc)}
-    stage_got = digest_file(stage_path)
+    stage_got = digest_file(stage_path, length=size)
     if stage_got is None:
         return None, "stage_unreadable", dict(detail)
     stage_hex, stage_n = stage_got
@@ -240,14 +259,14 @@ def _source_mark_only(path: Path) -> bool | None:
     """Whether a file carries only the prewarm source mark, or None."""
 
     try:
-        os.getxattr(path, STAGE_MOVER_XATTR)
+        os.getxattr(path, STAGE_MOVER_XATTR, follow_symlinks=False)
     except OSError as exc:
         if exc.errno not in stage_release._XATTR_ABSENT:
             return None
     else:
         return False
     try:
-        os.getxattr(path, prewarm_loop.STAGE_SOURCE_XATTR)
+        os.getxattr(path, prewarm_loop.STAGE_SOURCE_XATTR, follow_symlinks=False)
     except OSError as exc:
         if exc.errno in stage_release._XATTR_ABSENT:
             return False
@@ -271,20 +290,27 @@ def _walk_source_marks(stage: Path, attributed: set[str]
     stack = [stage]
     while stack:
         directory = stack.pop()
+        directory_fd = None
         try:
-            entries = sorted(os.scandir(directory),
-                             key=lambda entry: entry.name)
+            directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY
+                                   | os.O_NOFOLLOW | os.O_NOATIME)
+            with os.scandir(directory_fd) as scan:
+                entries = sorted(scan, key=lambda entry: entry.name)
         except OSError as exc:
             walk_errors.append(f"{directory}: {exc}")
             continue
+        finally:
+            if directory_fd is not None:
+                os.close(directory_fd)
         for entry in entries:
             if entry.name == stage_release.STAGE_ROOT_MARKER:
                 continue
-            entry_path = Path(entry.path)
+            entry_path = directory / entry.name
             try:
-                if entry.is_symlink():
+                info = os.lstat(entry_path)
+                if statmod.S_ISLNK(info.st_mode):
                     continue
-                if entry.is_dir():
+                if statmod.S_ISDIR(info.st_mode):
                     stack.append(entry_path)
                     continue
             except OSError as exc:
@@ -292,12 +318,15 @@ def _walk_source_marks(stage: Path, attributed: set[str]
                 continue
             if prewarm_loop._STAGE_TEMPORARY.search(entry.name):
                 continue
+            kind = _source_mark_only(entry_path)
+            if kind is None:
+                walk_errors.append(f"{entry_path}: marks unreadable")
+                continue
+            if kind is not True:
+                continue
             normalized = os.path.normpath(str(entry_path))
             if normalized in attributed:
                 skipped.append(entry_path)
-                continue
-            kind = _source_mark_only(entry_path)
-            if kind is not True:
                 continue
             try:
                 info = os.lstat(entry_path)
@@ -318,52 +347,70 @@ def _quarantine_dest(quarantine_root: Path, run_id: str,
     return quarantine_root / run_id / Path(stage_rel)
 
 
-def _copy_to_quarantine(source: Path, dest: Path, size: int) -> str | None:
-    """Copy a file to quarantine, fsync it, and check its digest.
-
-    The bytes land on a temporary beside the destination and are
-    renamed into place only after they verify, so a crash never
-    leaves a partial file wearing a moved file's name.
-    """
-
+def _fsync_directory(path: Path) -> None:
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
-        dest.parent.mkdir(parents=True, exist_ok=True)
-    except OSError:
-        return None
-    temporary = dest.parent / f".{dest.name}.{os.getpid()}.tmp"
-    digest = hashlib.sha256()
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _mkdir_durable(path: Path) -> None:
+    """Commit each new directory before a file can depend on it."""
+    if os.path.lexists(path):
+        if not statmod.S_ISDIR(os.lstat(path).st_mode):
+            raise OSError(f"{path}: directory is not a plain directory")
+        return
+    _mkdir_durable(path.parent)
+    path.mkdir()
+    _fsync_directory(path.parent)
+
+
+def _copy_to_quarantine(source: Path, dest: Path, size: int, *,
+                        metadata=None, expected_digest: str | None = None
+                        ) -> str | None:
+    """Commit a verified copy without replacing an existing destination."""
+    temporary = None
     try:
-        with open(source, "rb") as reader, open(temporary, "wb") as writer:
-            while True:
-                chunk = reader.read(_CHUNK)
+        _mkdir_durable(dest.parent)
+        fd, name = tempfile.mkstemp(prefix=f".{dest.name}.", dir=dest.parent)
+        temporary = Path(name)
+        digest = hashlib.sha256()
+        with os.fdopen(fd, "wb") as writer, _open_regular(source) as reader:
+            before = _file_identity(os.fstat(reader.fileno()))
+            if before["size"] != size:
+                return None
+            remaining = size
+            while remaining:
+                chunk = reader.read(min(_CHUNK, remaining))
                 if not chunk:
-                    break
+                    return None
                 writer.write(chunk)
                 digest.update(chunk)
+                remaining -= len(chunk)
+            if (_file_identity(os.fstat(reader.fileno())) != before
+                    or _file_identity(os.lstat(source)) != before):
+                return None
             writer.flush()
             os.fsync(writer.fileno())
-    except OSError:
-        try:
-            temporary.unlink()
-        except OSError:
-            pass
+        check = digest_file(temporary)
+        if check != (digest.hexdigest(), size):
+            return None
+        if expected_digest is not None and check[0] != expected_digest:
+            return None
+        if metadata is not None:
+            xattrs, times = metadata
+            _apply_xattrs_and_times(temporary, xattrs, times)
+            if not _metadata_matches(temporary, xattrs, times):
+                return None
+        os.link(temporary, dest, follow_symlinks=False)
+        _fsync_directory(dest.parent)
+        return digest.hexdigest()
+    except (OSError, ValueError):
         return None
-    check = digest_file(temporary)
-    if check is None or check[1] != size or check[0] != digest.hexdigest():
-        try:
-            temporary.unlink()
-        except OSError:
-            pass
-        return None
-    try:
-        os.replace(temporary, dest)
-    except OSError:
-        try:
-            temporary.unlink()
-        except OSError:
-            pass
-        return None
-    return digest.hexdigest()
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def _xattrs_and_times(path: Path
@@ -372,55 +419,64 @@ def _xattrs_and_times(path: Path
 
     A manifest without the source mark restores an unmarked file, and
     ``reconcile`` deletes unmarked files. So unreadable marks refuse
-    the file; only the times may fall back to empty.
+    the file, as unreadable times do.
     """
 
     xattrs: dict[str, str] = {}
     try:
-        names = os.listxattr(path)
+        names = os.listxattr(path, follow_symlinks=False)
     except OSError:
         return None
     for name in names:
         try:
-            raw = os.getxattr(path, name)
+            raw = os.getxattr(path, name, follow_symlinks=False)
         except OSError:
             return None
         xattrs[str(name)] = raw.hex()
     try:
         info = os.stat(path, follow_symlinks=False)
         times = {"mtime_ns": int(info.st_mtime_ns),
-                 "atime_ns": int(info.st_atime_ns)}
+                 "atime_ns": int(info.st_atime_ns),
+                 "mode": statmod.S_IMODE(info.st_mode)}
     except OSError:
-        times = {}
+        return None
     return xattrs, times
 
 
 def _apply_xattrs_and_times(path: Path, xattrs: dict[str, str],
                             times: dict[str, int]) -> None:
+    if "mode" in times:
+        os.chmod(path, times["mode"], follow_symlinks=False)
     for name, hexed in xattrs.items():
-        try:
-            os.setxattr(path, name, bytes.fromhex(hexed))
-        except OSError:
-            continue
-    if times:
-        try:
-            os.utime(path, ns=(int(times.get("atime_ns", 0)),
-                               int(times.get("mtime_ns", 0))))
-        except (OSError, ValueError):
-            pass
+        os.setxattr(path, name, bytes.fromhex(hexed), follow_symlinks=False)
+    os.utime(path, ns=(int(times["atime_ns"]), int(times["mtime_ns"])),
+             follow_symlinks=False)
+    with _open_regular(path) as handle:
+        os.fsync(handle.fileno())
 
 
-def _marks_restored(path: Path, xattrs: dict[str, str]) -> bool:
-    """Whether ``path`` carries the manifest's marks after a restore."""
+def _metadata_matches(path: Path, xattrs: dict[str, str],
+                      times: dict[str, int], *, check_atime: bool = True) -> bool:
+    captured = _xattrs_and_times(path)
+    if captured is None or captured[0] != xattrs:
+        return False
+    fields = ("mtime_ns", "atime_ns", "mode") if check_atime else ("mtime_ns", "mode")
+    return all(captured[1].get(key) == times[key] for key in fields if key in times)
 
-    for name, hexed in xattrs.items():
-        try:
-            raw = os.getxattr(path, name)
-        except OSError:
-            return False
-        if raw != bytes.fromhex(hexed):
-            return False
-    return True
+
+def _safe_tree_path(path: Path, root: Path) -> None:
+    """Keep each path component on the approved device without symlinks."""
+    root = root.resolve(strict=True)
+    relative = path.absolute().relative_to(root)
+    device = root.stat().st_dev
+    current = root
+    for part in relative.parts:
+        current /= part
+        if not os.path.lexists(current):
+            break
+        info = os.lstat(current)
+        if statmod.S_ISLNK(info.st_mode) or info.st_dev != device:
+            raise ValueError(f"{current}: unsafe path component")
 
 
 def write_manifest(run_dir: Path, entries: list[dict[str, object]]) -> Path:
@@ -430,6 +486,7 @@ def write_manifest(run_dir: Path, entries: list[dict[str, object]]) -> Path:
         "unix": time.time(),
         "host": socket.gethostname(),
         "entries": entries,
+        "restore_command": entries[0].get("restore_command") if entries else None,
     }
     path = run_dir / MANIFEST_NAME
     temporary = run_dir / f".{MANIFEST_NAME}.{os.getpid()}.tmp"
@@ -467,10 +524,13 @@ def _append_journal(run_dir: Path, entry: dict[str, object]) -> None:
     """Append one moved file to the run's journal, durably."""
 
     path = run_dir / JOURNAL_NAME
-    with open(path, "a") as stream:
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW,
+                 0o600)
+    with os.fdopen(fd, "w") as stream:
         stream.write(json.dumps(entry, sort_keys=True) + "\n")
         stream.flush()
         os.fsync(stream.fileno())
+    _fsync_directory(run_dir)
 
 
 def _read_journal(run_dir: Path) -> list[dict[str, object]]:
@@ -478,16 +538,18 @@ def _read_journal(run_dir: Path) -> list[dict[str, object]]:
 
     path = run_dir / JOURNAL_NAME
     try:
-        raw = path.read_text()
+        with _open_regular(path) as stream:
+            raw = stream.read().decode("utf-8")
     except FileNotFoundError:
         return []
     entries: list[dict[str, object]] = []
-    for line in raw.splitlines():
-        if not line.strip():
-            continue
+    for line in raw.splitlines(keepends=True):
+        if not line.endswith("\n"):
+            break  # An interrupted append cannot authorize an unlink.
         entry = json.loads(line)
-        if isinstance(entry, dict):
-            entries.append(entry)
+        if not isinstance(entry, dict):
+            raise ValueError("journal entry is not an object")
+        entries.append(entry)
     return entries
 
 
@@ -560,13 +622,13 @@ def _memo_hit(memo: dict[str, dict[str, object]], stage: Path,
             or entry.get("size") != size):
         return None, {}
     try:
-        stage_identity = _file_identity(os.stat(stage / stage_rel))
+        stage_identity = _file_identity(os.lstat(stage / stage_rel))
     except OSError:
         return None, {}
     if stage_identity != entry.get("stage_identity"):
         return None, {}
     try:
-        origin_identity = _file_identity(os.stat(original))
+        origin_identity = _file_identity(os.lstat(original))
     except OSError:
         return None, {}
     if origin_identity != entry.get("original_identity"):
@@ -583,6 +645,149 @@ def _valid_run_id(run_id: str) -> bool:
 
     return (bool(run_id) and "/" not in run_id and run_id not in (".", "..")
             and "\\" not in run_id and "\x00" not in run_id)
+
+
+def _reference_census(queue: pool.PoolQueue, *, stage: Path, tier_id: str,
+                      cas_root: str | Path | None,
+                      residency_root: str | Path | None) -> set[str]:
+    """Resolve receipts, plans, consumers and orphan leases under the lock.
+
+    Fragments and reader pins have their existing strict census. This census
+    adds records that can name bytes without a surviving fragment.
+    """
+    named: set[str] = set()
+    roots = (stage, stage.resolve(strict=True))
+    layouts: dict[tuple[str, str], tuple[str, list[dict[str, object]]]] = {}
+
+    def direct(value):
+        if isinstance(value, dict):
+            for item in value.values():
+                direct(item)
+        elif isinstance(value, list):
+            for item in value:
+                direct(item)
+        elif isinstance(value, str) and value.startswith("/"):
+            path = Path(os.path.normpath(value))
+            if any(root in path.parents for root in roots):
+                named.add(str(path))
+
+    def manifests(value, own_cas):
+        if isinstance(value, list):
+            for item in value:
+                manifests(item, own_cas)
+            return
+        if not isinstance(value, dict):
+            return
+        digest = value.get("manifest_sha256")
+        declaration = value.get("data_manifest")
+        if isinstance(declaration, dict):
+            input_ref = declaration.get("input")
+            if isinstance(input_ref, dict):
+                digest = input_ref.get("sha256")
+        if digest is not None:
+            if (not isinstance(digest, str) or len(digest) != 64
+                    or any(char not in "0123456789abcdef" for char in digest)):
+                raise ValueError("reference names an invalid manifest digest")
+            key = (own_cas, digest)
+            if key not in layouts:
+                blob = pb.PrismaBuildCAS(Path(own_cas)).blob_path(digest)
+                proof = digest_file(blob)
+                if proof is None or proof[0] != digest:
+                    raise ValueError(f"reference manifest {digest} is unreadable")
+                layout = stage_release._cached_manifest_layout(own_cas, digest)
+                if layout is None:
+                    raise ValueError(f"reference manifest {digest} is invalid")
+                layouts[key] = layout
+            prefix, entries = layouts[key]
+            start = value.get("range_start_bytes", 0)
+            end = value.get("range_end_bytes",
+                            sum(int(entry["bytes"]) for entry in entries))
+            if (stage_release._bounded_int(start) is None
+                    or stage_release._bounded_int(end) is None or end < start):
+                raise ValueError("reference names an invalid extent")
+            for entry in prewarm_loop.entries_between(entries, start, end):
+                relative = stage_relative(
+                    str(entry["path"]), int(entry["offset"]), int(entry["bytes"]),
+                    mount_prefix=prefix)
+                named.update(str(root / relative) for root in roots)
+        for item in value.values():
+            if isinstance(item, (dict, list)):
+                manifests(item, own_cas)
+
+    def record(path):
+        value = pool._read_json_bounded(path, max_bytes=128 << 20)
+        if not isinstance(value, dict) or not isinstance(value.get("schema"), str):
+            raise ValueError(f"{path}: reference record is unreadable")
+        direct(value)
+        own_cas = str(cas_root or value.get("cas_root") or queue.root.parent / "cas")
+        manifests(value, own_cas)
+        return value, own_cas
+
+    def tree(root):
+        try:
+            with os.scandir(root) as entries:
+                paths = sorted((Path(entry.path) for entry in entries))
+        except FileNotFoundError:
+            return
+        for path in paths:
+            if path.name.startswith("."):
+                continue
+            mode = os.lstat(path).st_mode
+            if statmod.S_ISDIR(mode):
+                yield from tree(path)
+            elif path.suffix in (".json", ".lease"):
+                if not statmod.S_ISREG(mode):
+                    raise ValueError(f"{path}: reference is not a regular file")
+                yield path
+
+    for root in (queue.root / pool.MOVERS, queue.root / pool.MOVERS_RETIRED,
+                 queue.root / pool.RESIDENCY_PLANS):
+        for path in tree(root):
+            record(path)
+    for path in tree(Path(residency_root or queue.root / pool.RESIDENCY)):
+        value = pool._read_json_bounded(path, max_bytes=128 << 20)
+        if not isinstance(value, dict) or not isinstance(value.get("schema"), str):
+            raise ValueError(f"{path}: reference record is unreadable")
+        direct(value)
+    for state in (pool.READY, pool.CLAIMED):
+        for path in tree(queue.dir(state)):
+            value, own_cas = record(path)
+            key = value.get("action_key")
+            if not isinstance(key, str):
+                raise ValueError(f"{path}: reference names no action")
+            request, why = stage_release._validated_sealed_request(own_cas, key)
+            if request is None:
+                raise ValueError(f"{path}: {why}")
+            direct(request)
+            manifests(request.get("params"), own_cas)
+    ledger = queue.tier_ledger(tier_id)
+    for key in ledger.held_keys():
+        if not ledger.holder_tokens(key).get("stage_gib", 0):
+            continue
+        receipt = pool._read_json_bounded(queue.move_path(key), max_bytes=128 << 20)
+        if isinstance(receipt, dict):
+            direct(receipt)
+            manifests(receipt, str(cas_root or queue.root.parent / "cas"))
+            if receipt.get("manifest_sha256") or receipt.get("entries"):
+                continue
+        raise ValueError(f"{key}: held stage scope is unreadable")
+    return named
+
+
+def _proof_current(pair: dict[str, object], stage: Path) -> None:
+    """Refuse changed copies, changed originals, or source path substitution."""
+    copy = Path(str(pair["stage_path"]))
+    original = Path(str(pair["original_path"]))
+    _safe_tree_path(copy, stage)
+    for path, field in ((copy, "stage_identity"), (original, "original_identity")):
+        info = os.lstat(path)
+        if not statmod.S_ISREG(info.st_mode) or _file_identity(info) != pair[field]:
+            raise ValueError(f"{path}: identity changed")
+    resolved = original.resolve(strict=True)
+    if resolved == stage or stage in resolved.parents:
+        raise ValueError(f"{original}: original resolves into the stage")
+    if stage not in copy.resolve(strict=True).parents:
+        raise ValueError(f"{copy}: copy resolves outside the stage")
 
 
 def reclaim_source_marks(queue: pool.PoolQueue, *, tier_id: str,
@@ -658,12 +863,16 @@ def reclaim_source_marks(queue: pool.PoolQueue, *, tier_id: str,
     except OSError as exc:
         return _refuse(stage, f"stage_root_unreadable: {exc}",
                        tier_id=tier_id)
+    if memo_out is not None:
+        target = Path(memo_out).resolve()
+        if target == stage_resolved or stage_resolved in target.parents:
+            return _refuse(stage, "memo output must be outside the stage", tier_id=tier_id)
     quarantine: Path | None = None
     if quarantine_root is not None:
         quarantine = Path(quarantine_root)
         if apply:
             try:
-                quarantine_resolved = quarantine.resolve()
+                quarantine_resolved = quarantine.resolve(strict=True)
             except OSError as exc:
                 return _refuse(stage,
                                f"quarantine_root_unreadable: {exc}",
@@ -675,11 +884,15 @@ def reclaim_source_marks(queue: pool.PoolQueue, *, tier_id: str,
                     stage, "quarantine root must be outside the stage",
                     tier_id=tier_id)
             try:
+                if not statmod.S_ISDIR(os.lstat(quarantine_resolved).st_mode):
+                    return _refuse(stage, "quarantine root is not a directory",
+                                   tier_id=tier_id)
                 if os.stat(quarantine_resolved).st_dev == os.stat(
                         stage_resolved).st_dev:
                     return _refuse(
                         stage, "quarantine must be on another device",
                         tier_id=tier_id)
+                quarantine = quarantine_resolved
             except OSError as exc:
                 return _refuse(stage, f"quarantine_unstatable: {exc}",
                                tier_id=tier_id)
@@ -704,7 +917,7 @@ def reclaim_source_marks(queue: pool.PoolQueue, *, tier_id: str,
                                      memo=census_memo)
         stage_release._claimed_source_paths(queue, stage, own_cas,
                                             memo=census_memo)
-    except (OSError, ValueError):
+    except (OSError, ValueError, pool.PoolContractError):
         pass
     census_s = time.perf_counter() - census_started
     # The walk and the proofs run without the lock. The walk names
@@ -712,16 +925,17 @@ def reclaim_source_marks(queue: pool.PoolQueue, *, tier_id: str,
     # Nothing decided here is acted on: under the lock every pair is
     # judged again against fresh ownership, and moved only while
     # both files still fence the proven identities.
-    found, walk_skipped, walk_bytes, walk_errors = _walk_source_marks(
-        stage, hinted)
+    found, walk_skipped, walk_bytes, walk_errors = _walk_source_marks(stage, set())
     try:
         read_budget = int(float(max_read_gib) * (1024 ** 3))
     except (TypeError, ValueError, OverflowError):
         return _refuse(stage, f"max_read_gib {max_read_gib!r} is not a size",
                        tier_id=tier_id)
+    if read_budget < 0:
+        return _refuse(stage, "max_read_gib must not be negative", tier_id=tier_id)
     proven: dict[str, dict[str, object]] = {}
     refused_early: dict[str, tuple[str, dict[str, object]]] = {}
-    read_used = memo_hits = 0
+    read_used = memo_hits = proof_read_reserved = apply_read_reserved = 0
     hash_started = time.perf_counter()
     for path in found:
         try:
@@ -737,16 +951,19 @@ def reclaim_source_marks(queue: pool.PoolQueue, *, tier_id: str,
             refused_early[stage_rel] = ("unpaired_name", {})
             continue
         original, offset, size = derived
-        if read_used + 2 * size > read_budget:
+        sha, hit_detail = (_memo_hit(memo, stage, stage_rel, original, offset, size)
+                           if apply else (None, {}))
+        proof_read = 0 if sha is not None else 2 * size
+        move_read = 3 * size if apply else 0
+        if proof_read_reserved + apply_read_reserved + proof_read + move_read > read_budget:
             refused_early[stage_rel] = (
                 "read_budget_exceeded",
-                {"original_path": original, "offset": offset,
-                 "size": size})
+                {"original_path": original, "offset": offset, "size": size})
             continue
-        sha, hit_detail = _memo_hit(memo, stage, stage_rel, original,
-                                    offset, size)
+        proof_read_reserved += proof_read
         if sha is not None:
             memo_hits += 1
+            apply_read_reserved += move_read
             proven[stage_rel] = {
                 "stage_path": str(path), "stage_rel": stage_rel,
                 "status": "paired", "original_path": original,
@@ -766,6 +983,7 @@ def reclaim_source_marks(queue: pool.PoolQueue, *, tier_id: str,
                     extra[key] = value
             refused_early[stage_rel] = (status, extra)
             continue
+        apply_read_reserved += move_read
         proven[stage_rel] = {
             "stage_path": str(path), "stage_rel": stage_rel,
             "status": "paired", "original_path": original,
@@ -778,17 +996,19 @@ def reclaim_source_marks(queue: pool.PoolQueue, *, tier_id: str,
     if apply and quarantine is not None:
         run_dir = quarantine / active
         try:
-            run_dir.mkdir(parents=True, exist_ok=True)
+            run_dir.mkdir()
+            _fsync_directory(quarantine)
         except OSError as exc:
             return _refuse(stage, f"quarantine run dir refused: {exc}",
                            tier_id=tier_id)
         try:
             volume = os.statvfs(run_dir)
             room = volume.f_bavail * volume.f_frsize
-        except OSError:
-            room = -1
+        except OSError as exc:
+            return _refuse(stage, f"quarantine capacity unreadable: {exc}",
+                           tier_id=tier_id)
         need = sum(int(one["size"]) for one in proven.values())
-        if room >= 0 and room < need:
+        if room < need:
             return _refuse(
                 stage, f"quarantine holds {room} bytes, needs {need}",
                 tier_id=tier_id)
@@ -798,10 +1018,18 @@ def reclaim_source_marks(queue: pool.PoolQueue, *, tier_id: str,
     def _held_reclaim() -> dict[str, object]:
         parse_counts = census_memo.counts()
         validate_started = time.perf_counter()
-        in_flight = stage_release.movers_in_flight(queue, tier_id=tier_id)
+        try:
+            in_flight = stage_release.movers_in_flight(queue, tier_id=tier_id)
+        except (OSError, pool.PoolContractError, ValueError) as exc:
+            receipt["skipped"] = "queue_census_unreadable"
+            receipt["complete"] = False
+            receipt["errors"] = [str(exc)]
+            return receipt
         if in_flight:
             receipt["skipped"] = "movers_in_flight"
             receipt["movers_in_flight"] = sorted(in_flight)
+            receipt["complete"] = False
+            receipt["errors"] = ["movers_in_flight"]
             return receipt
         attributed, attribution_taint = stage_release._attributed_census(
             queue, wanted=None, residency_root=residency_root,
@@ -855,6 +1083,16 @@ def reclaim_source_marks(queue: pool.PoolQueue, *, tier_id: str,
             receipt["complete"] = False
             receipt["errors"] = [f"ledger_unreadable: {exc}"]
             return receipt
+        try:
+            attributed |= _reference_census(
+                queue, stage=stage, tier_id=tier_id, cas_root=cas_root,
+                residency_root=residency_root)
+        except (OSError, pool.PoolContractError, pb.PrismaBuildError,
+                ValueError, TypeError) as exc:
+            receipt["skipped"] = "reference_census_unreadable"
+            receipt["complete"] = False
+            receipt["errors"] = [str(exc)]
+            return receipt
         receipt["census_validate_s"] = round(
             time.perf_counter() - validate_started, 6)
         receipt.update(stage_release._locked_parse_record(
@@ -867,7 +1105,8 @@ def reclaim_source_marks(queue: pool.PoolQueue, *, tier_id: str,
                                                        stage_rel)),
                          os.path.normpath(os.path.join(str(stage_resolved),
                                                        stage_rel))):
-                if form in attributed:
+                if form in attributed or any(
+                        str(parent) in attributed for parent in Path(form).parents):
                     return True
             return False
 
@@ -905,12 +1144,28 @@ def reclaim_source_marks(queue: pool.PoolQueue, *, tier_id: str,
                             offset=pair["offset"], size=pair["size"],
                             sha256=pair["sha256"])
                 continue
+            try:
+                _proof_current(pair, stage_resolved)
+            except (OSError, ValueError) as exc:
+                _refuse_row(stage_rel, "proof_changed", error=str(exc))
+                continue
+            proof_receipt = {
+                "schema": "prismabuild.stage-source-mark-proof.v1",
+                **{key: pair[key] for key in (
+                    "stage_path", "original_path", "offset", "size", "sha256",
+                    "stage_identity", "original_identity")},
+            }
+            pair["proof_receipt"] = proof_receipt
+            pair["proof_receipt_sha256"] = pb.canonical_sha256(proof_receipt)
             rows.append(dict(pair))
             pairs.append(pair)
         receipt["entries_scanned"] = len(found) + len(walk_skipped)
         receipt["walk_bytes"] = walk_bytes
         receipt["bytes_hashed"] = read_used
         receipt["read_budget_bytes"] = read_budget
+        receipt["apply_read_reserved_bytes"] = apply_read_reserved
+        receipt["proof_read_reserved_bytes"] = proof_read_reserved
+        receipt["estimated_read_bytes"] = 2 * walk_bytes
         receipt["hash_s"] = round(hash_s, 6)
         receipt["memo_hits"] = memo_hits
         receipt["entries"] = rows
@@ -922,6 +1177,8 @@ def reclaim_source_marks(queue: pool.PoolQueue, *, tier_id: str,
         if walk_errors:
             receipt["complete"] = False
             receipt["errors"] = list(walk_errors)
+            if apply:
+                return receipt
         if not apply:
             if memo_out is not None:
                 try:
@@ -953,6 +1210,11 @@ def reclaim_source_marks(queue: pool.PoolQueue, *, tier_id: str,
             receipt["complete"] = False
             receipt["errors"] = [str(receipt["skipped"])]
             return receipt
+        receipt["restore_command"] = shlex.join([
+            sys.executable, str(Path(__file__).resolve()),
+            "--pool-root", str(queue.root), "--tier-id", tier_id,
+            "--stage-root", str(stage), "--mount-prefix", mount_prefix,
+            "--quarantine-root", str(quarantine), "--restore", active])
         manifest_entries: list[dict[str, object]] = []
         moved = moved_bytes = already_gone = 0
         errors: list[str] = []
@@ -963,27 +1225,8 @@ def reclaim_source_marks(queue: pool.PoolQueue, *, tier_id: str,
             size = int(pair["size"])
             sha = str(pair["sha256"])
             try:
-                link = os.lstat(stage_path)
-                if (not statmod.S_ISREG(link.st_mode)
-                        or int(link.st_size) != size):
-                    errors.append(f"{rel}: changed")
-                    continue
-                live = _file_identity(os.stat(stage_path))
-            except FileNotFoundError:
-                already_gone += 1
-                continue
-            except OSError as exc:
-                errors.append(f"{rel}: {exc}")
-                continue
-            if live != pair["stage_identity"]:
-                errors.append(f"{rel}: changed")
-                continue
-            try:
-                if _file_identity(os.stat(original)) != pair[
-                        "original_identity"]:
-                    errors.append(f"{rel}: original changed")
-                    continue
-            except OSError as exc:
+                _proof_current(pair, stage_resolved)
+            except (OSError, ValueError) as exc:
                 errors.append(f"{rel}: {exc}")
                 continue
             if _named(rel):
@@ -1000,20 +1243,30 @@ def reclaim_source_marks(queue: pool.PoolQueue, *, tier_id: str,
                 errors.append(f"{rel}: {exc}")
                 continue
             dest = _quarantine_dest(quarantine, active, rel)
+            try:
+                _mkdir_durable(dest.parent)
+                _safe_tree_path(dest, quarantine)
+            except (OSError, ValueError) as exc:
+                errors.append(f"{rel}: {exc}")
+                continue
+            captured = _xattrs_and_times(stage_path)
+            if captured is None:
+                errors.append(f"{rel}: metadata unreadable")
+                continue
+            xattrs, times = captured
             got = _copy_to_quarantine(stage_path, dest, size)
             if got != sha:
                 errors.append(f"{rel}: quarantine copy failed")
                 continue
-            captured = _xattrs_and_times(stage_path)
-            if captured is None:
-                errors.append(f"{rel}: marks unreadable")
-                try:
-                    dest.unlink()
-                except OSError:
-                    pass
+            try:
+                _apply_xattrs_and_times(dest, xattrs, times)
+                if not _metadata_matches(dest, xattrs, times):
+                    raise ValueError("quarantine metadata differs")
+                _safe_tree_path(dest, quarantine)
+                quarantine_identity = _file_identity(os.lstat(dest))
+            except (OSError, ValueError) as exc:
+                errors.append(f"{rel}: {exc}")
                 continue
-            xattrs, times = captured
-            _apply_xattrs_and_times(dest, xattrs, times)
             entry = {
                 "stage_path": str(stage_path),
                 "stage_rel": rel,
@@ -1024,6 +1277,10 @@ def reclaim_source_marks(queue: pool.PoolQueue, *, tier_id: str,
                 "xattrs": xattrs,
                 "times": times,
                 "quarantine_path": str(dest),
+                "quarantine_identity": quarantine_identity,
+                "proof_receipt": pair["proof_receipt"],
+                "proof_receipt_sha256": pair["proof_receipt_sha256"],
+                "restore_command": receipt["restore_command"],
             }
             # The journal is write-ahead: it names the move before the
             # unlink performs it. A journaled file still on stage is
@@ -1033,19 +1290,31 @@ def reclaim_source_marks(queue: pool.PoolQueue, *, tier_id: str,
                 _append_journal(run_dir, entry)
             except OSError as exc:
                 errors.append(f"{rel}: journal refused: {exc}")
-                try:
-                    dest.unlink()
-                except OSError:
-                    pass
-                continue
+                break
             try:
+                _proof_current(pair, stage_resolved)
+                origin_check = digest_file(
+                    original, offset=int(pair["offset"]), length=size)
+                if origin_check != (sha, size):
+                    raise ValueError("original digest changed")
+                _proof_current(pair, stage_resolved)
+                fresh = _reference_census(
+                    queue, stage=stage, tier_id=tier_id, cas_root=cas_root,
+                    residency_root=residency_root)
+                attributed.update(fresh)
+                if (_named(rel) or stage_release.movers_in_flight(
+                        queue, tier_id=tier_id)):
+                    raise ValueError("reference changed")
+                _safe_tree_path(dest, quarantine)
+                if _file_identity(os.lstat(dest)) != quarantine_identity:
+                    raise ValueError("quarantine copy changed")
+                if _source_mark_only(stage_path) is not True:
+                    raise ValueError("stage mark changed")
+                _proof_current(pair, stage_resolved)
                 os.unlink(stage_path)
-            except FileNotFoundError:
-                already_gone += 1
-                manifest_entries.append(entry)
-                pruned.append(stage_path.parent)
-                continue
-            except OSError as exc:
+                _fsync_directory(stage_path.parent)
+            except (OSError, ValueError, pool.PoolContractError,
+                    pb.PrismaBuildError) as exc:
                 errors.append(f"{rel}: {exc}")
                 continue
             manifest_entries.append(entry)
@@ -1063,13 +1332,6 @@ def reclaim_source_marks(queue: pool.PoolQueue, *, tier_id: str,
         receipt["manifest"] = str(run_dir / MANIFEST_NAME)
         receipt["manifest_entries"] = len(manifest_entries)
         receipt["memo"] = str(run_dir / MEMO_NAME)
-        receipt["restore_command"] = (
-            f"stage_reclaim.py --pool-root {shlex.quote(str(queue.root))} "
-            f"--tier-id {shlex.quote(tier_id)} "
-            f"--stage-root {shlex.quote(str(stage))} "
-            f"--mount-prefix {shlex.quote(str(mount_prefix))} "
-            f"--quarantine-root {shlex.quote(str(quarantine))} "
-            f"--restore {shlex.quote(active)}")
         receipt["errors"] = list(walk_errors) + errors
         receipt["complete"] = not errors and not walk_errors
         if errors or walk_errors:
@@ -1081,6 +1343,18 @@ def reclaim_source_marks(queue: pool.PoolQueue, *, tier_id: str,
             queue, stage, role="reclaim-source-marks") as granted:
         result = _held_reclaim()
     released = time.perf_counter()
+    if "entries" not in result:
+        result["entries"] = [
+            {**proven.get(rel, refused_early.get(rel, ("", {}))[1]),
+             "stage_path": str(stage / rel), "stage_rel": rel,
+             "status": result.get("skipped", "pass_refused")}
+            for rel in sorted(set(proven) | set(refused_early))]
+        result["entries_scanned"] = len(found)
+        result["entries_paired"] = 0
+        result["entries_refused"] = len(result["entries"])
+        result["bytes_hashed"] = read_used
+        result["estimated_read_bytes"] = 2 * walk_bytes
+        result["read_budget_bytes"] = read_budget
     prune_started = time.perf_counter()
     for parent in sorted(set(pruned), key=lambda one: len(one.parts),
                          reverse=True):
@@ -1137,9 +1411,19 @@ def restore_run(queue: pool.PoolQueue, *, stage_root: str,
         receipt["complete"] = False
         receipt["errors"] = [str(exc)]
         return receipt
-    if not entries and journaled:
-        entries = list(journaled)
-        receipt["manifest"] = str(run_dir / JOURNAL_NAME)
+    combined: dict[str, dict[str, object]] = {}
+    for entry in [*entries, *journaled]:
+        if not isinstance(entry, dict) or not isinstance(entry.get("stage_rel"), str):
+            receipt["complete"] = False
+            receipt["errors"] = ["restore record names no stage path"]
+            return receipt
+        rel = entry["stage_rel"]
+        if rel in combined and combined[rel] != entry:
+            receipt["complete"] = False
+            receipt["errors"] = [f"{rel}: restore records conflict"]
+            return receipt
+        combined[rel] = entry
+    entries = list(combined.values())
     refusal = stage_release.stage_root_refusal(queue, stage)
     if refusal is not None:
         receipt["event"] = stage_release.STAGE_ROOT_REFUSED_EVENT
@@ -1180,8 +1464,10 @@ def restore_run(queue: pool.PoolQueue, *, stage_root: str,
             except (KeyError, TypeError, ValueError) as exc:
                 errors.append(f"manifest entry unreadable: {exc}")
                 continue
-            if (os.path.isabs(stage_rel)
-                    or ".." in Path(stage_rel).parts):
+            if (not stage_rel or stage_rel == "." or os.path.isabs(stage_rel)
+                    or ".." in Path(stage_rel).parts or size <= 0
+                    or "mtime_ns" not in times or "atime_ns" not in times
+                    or prewarm_loop.STAGE_SOURCE_XATTR not in xattrs):
                 errors.append(f"{stage_rel}: manifest names an unsafe path")
                 continue
             try:
@@ -1196,20 +1482,22 @@ def restore_run(queue: pool.PoolQueue, *, stage_root: str,
                 continue
             dest = stage / stage_rel
             try:
+                _safe_tree_path(dest, stage_resolved)
+                _safe_tree_path(Path(quarantine_path), run_resolved)
                 resolved_parent = dest.parent.resolve()
                 if (resolved_parent != stage_resolved
                         and stage_resolved not in resolved_parent.parents):
                     errors.append(f"{stage_rel}: outside the stage root")
                     continue
-            except OSError as exc:
+            except (OSError, ValueError) as exc:
                 errors.append(f"{stage_rel}: {exc}")
                 continue
             if dest.exists() or os.path.lexists(dest):
                 # A second restore is a no-op when the file already
                 # proves identical; a conflicting file refuses.
                 check = digest_file(dest)
-                if (check is not None and check[1] == size
-                        and check[0] == sha):
+                if (check is not None and check == (sha, size)
+                        and _metadata_matches(dest, xattrs, times, check_atime=False)):
                     skipped += 1
                     continue
                 errors.append(f"{stage_rel}: destination exists")
@@ -1218,17 +1506,11 @@ def restore_run(queue: pool.PoolQueue, *, stage_root: str,
             if check is None or check[1] != size or check[0] != sha:
                 errors.append(f"{stage_rel}: quarantine copy unreadable")
                 continue
-            got = _copy_to_quarantine(Path(quarantine_path), dest, size)
+            got = _copy_to_quarantine(
+                Path(quarantine_path), dest, size, metadata=(xattrs, times),
+                expected_digest=sha)
             if got != sha:
                 errors.append(f"{stage_rel}: restore copy failed")
-                continue
-            _apply_xattrs_and_times(dest, xattrs, times)
-            if not _marks_restored(dest, xattrs):
-                errors.append(f"{stage_rel}: marks unrestorable")
-                try:
-                    dest.unlink()
-                except OSError:
-                    pass
                 continue
             restored += 1
             restored_bytes += size
@@ -1286,7 +1568,15 @@ def main(argv: list[str] | None = None) -> int:
                         help="restore a quarantine run instead of "
                              "reclaiming")
     args = parser.parse_args(argv)
-    args.action_key = stage_release.own_action_key(args.action_key)
+    declared_key = args.action_key or os.environ.get(pb.ACTION_KEY_ENV)
+    args.action_key = (stage_release.own_action_key(declared_key)
+                       if declared_key else None)
+    for output in (args.receipt, args.memo_out):
+        if output is not None:
+            resolved = Path(output).resolve()
+            stage = Path(args.stage_root).resolve()
+            if resolved == stage or stage in resolved.parents:
+                parser.error("receipt and memo outputs must be outside the stage")
     queue = pool.PoolQueue(Path(args.pool_root))
     if args.restore is not None:
         if args.quarantine_root is None:
@@ -1294,7 +1584,8 @@ def main(argv: list[str] | None = None) -> int:
         receipt = restore_run(queue, stage_root=args.stage_root,
                               quarantine_root=args.quarantine_root,
                               run_id=args.restore)
-        queue.record_move(args.action_key, receipt)
+        if args.action_key:
+            queue.record_move(args.action_key, receipt)
         if args.receipt:
             with open(args.receipt, "w") as stream:
                 json.dump(receipt, stream, indent=1, sort_keys=True)
@@ -1308,7 +1599,8 @@ def main(argv: list[str] | None = None) -> int:
         apply=args.apply, max_read_gib=args.max_read_gib,
         memo_path=args.memo, memo_out=args.memo_out,
         cas_root=args.cas_root, residency_root=args.residency_root)
-    queue.record_move(args.action_key, receipt)
+    if args.apply and args.action_key:
+        queue.record_move(args.action_key, receipt)
     if args.receipt:
         with open(args.receipt, "w") as stream:
             json.dump(receipt, stream, indent=1, sort_keys=True)
