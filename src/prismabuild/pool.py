@@ -29203,21 +29203,6 @@ class PoolQueue:
             # retained or current -- so the proxy comes from that same
             # proven runtime however the argv is prefixed.
             argv = scope.wrap_argv(argv, worker_script=item["worker_script"])
-        if life is not None:
-            # Scope setup completed above; recheck before launch.  A slow
-            # broker call cannot move the fence, so expiry here fails closed
-            # without starting a payload.  The scope it made is cleaned and
-            # settled by ``finish`` like any other.
-            prelaunch_end = _now()
-            if life.clock.launch_expired(prelaunch_end):
-                life.refuse("prelaunch", now_unix=prelaunch_end,
-                            evidence="stop-instant-passed-during-scope-setup")
-                return _fence_refusal(
-                    "PrismaBuild: lifetime fence expired during scope setup.\n",
-                    argv=argv, allocation=allocation)
-            life.end("prelaunch", mechanism="launch-gate",
-                     evidence="scope-ready" if scope is not None else "uncontained-launch",
-                     ended_unix=prelaunch_end)
         # Read immediately before the launch and again at every way out, so
         # the difference is this child's and not the worker loop's history.
         rusage_before = resource.getrusage(resource.RUSAGE_CHILDREN)
@@ -29261,6 +29246,30 @@ class PoolQueue:
                     Path(pb_progress.__file__).resolve()),
             }
         )
+        # The action's own ending, and a killed run's partial profile, travel
+        # in a file because this process's exit status cannot carry them.
+        launch_environment = {
+            **os.environ, pb.ACTION_STATUS_PATH_ENV: str(status_path),
+            **progress_environment, **self.launch_environment(item)}
+        if life is not None:
+            # The last gate before the payload exists (#1429).  Everything
+            # above that can wait on a shared mount or a slow call has run:
+            # the scope, the status and progress files, the environment.  So
+            # the check follows all of it, and the instant it passes is the
+            # instant prelaunch ended.  Past the stop instant no payload
+            # starts: the refusal fails closed, and ``finish`` cleans and
+            # settles the scope this run made like any other.
+            prelaunch_end = _now()
+            if life.clock.launch_expired(prelaunch_end):
+                life.refuse("prelaunch", now_unix=prelaunch_end,
+                            evidence="stop-instant-passed-during-launch-preparation")
+                return _fence_refusal(
+                    "PrismaBuild: lifetime fence expired during launch preparation.\n",
+                    argv=argv, allocation=allocation)
+            life.end("prelaunch", mechanism="launch-gate",
+                     evidence=("scope-ready-launch-prepared" if scope is not None
+                               else "uncontained-launch-prepared"),
+                     ended_unix=prelaunch_end)
         # No payload exists during withdrawal, scope preparation or status-file
         # cleanup. Shared I/O there must not spend its execution budget.
         deadline = None if timeout_s is None else time.monotonic() + timeout_s
@@ -29272,11 +29281,7 @@ class PoolQueue:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            # The action's own ending, and a killed run's partial profile,
-            # travel in a file because this process's exit status cannot
-            # carry them.
-            env={**os.environ, pb.ACTION_STATUS_PATH_ENV: str(status_path),
-                 **progress_environment, **self.launch_environment(item)},
+            env=launch_environment,
             # The launcher leads its own group so the timeout can signal the
             # group rather than the single pid.  ``kill()`` on the pid reaches
             # the launcher only, and leaves the action holding the GPU.

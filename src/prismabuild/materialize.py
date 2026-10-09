@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
+import errno
 import os
 from pathlib import Path
 import shutil
@@ -74,6 +75,9 @@ def _now() -> float:
 _GIT_TIMEOUT_S = 120.0
 #: How many directory entries a bounded removal deletes between clock reads.
 _REMOVAL_CLOCK_STRIDE = 256
+#: Opens a directory for descriptor-relative work: never through a link in
+#: the last component, and never as anything but a directory.
+_DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 
 
 def _seconds_before(deadline_unix: float, where: str) -> float:
@@ -238,32 +242,48 @@ def _run_materializer_git(
 def _remove_tree_before(path: Path, deadline_unix: float) -> None:
     """``shutil.rmtree`` that stops at ``deadline_unix`` and says so (#1429).
 
-    Bottom-up, never through a link, and the clock is read once per directory
-    and every ``_REMOVAL_CLOCK_STRIDE`` entries.  What remains at the deadline
-    stays where it is: the caller records the leak, as it does for any other
-    removal failure.
+    Descriptor-relative and never through a link, as ``shutil.rmtree`` is.  A
+    directory is opened with ``O_NOFOLLOW``, compared with the entry that was
+    listed, and every name below it is deleted relative to that descriptor.
+    A path name is never resolved twice, so a descendant that swaps a listed
+    directory for a link, or for another directory, steers no deletion out of
+    the tree: the open refuses and the removal raises.  ``path`` itself is
+    trusted, as it is for ``shutil.rmtree``.  The clock is read once per
+    directory and every ``_REMOVAL_CLOCK_STRIDE`` entries.  What remains at
+    the deadline stays where it is: the caller records the leak, as it does
+    for any other removal failure.
     """
 
-    def refuse(error: OSError) -> None:
-        raise error
-
     removed = 0
-    for directory, subdirectories, files in os.walk(
-            path, topdown=False, followlinks=False, onerror=refuse):
+
+    def empty(directory: int) -> None:
+        nonlocal removed
         _seconds_before(deadline_unix, "checkout removal")
-        for name in files:
-            os.unlink(os.path.join(directory, name))
+        with os.scandir(directory) as listing:
+            entries = list(listing)
+        for entry in entries:
+            if entry.is_dir(follow_symlinks=False):
+                listed = entry.stat(follow_symlinks=False)
+                child = os.open(entry.name, _DIRECTORY_FLAGS, dir_fd=directory)
+                try:
+                    if not os.path.samestat(listed, os.fstat(child)):
+                        raise OSError(
+                            errno.ELOOP, "directory replaced during removal", entry.name)
+                    empty(child)
+                finally:
+                    os.close(child)
+                os.rmdir(entry.name, dir_fd=directory)
+            else:
+                os.unlink(entry.name, dir_fd=directory)
             removed += 1
             if removed % _REMOVAL_CLOCK_STRIDE == 0:
                 _seconds_before(deadline_unix, "checkout removal")
-        for name in subdirectories:
-            entry = os.path.join(directory, name)
-            # A link to a directory is listed with the directories but is
-            # not one: removing the link must not touch its target.
-            if os.path.islink(entry):
-                os.unlink(entry)
-            else:
-                os.rmdir(entry)
+
+    top = os.open(path, _DIRECTORY_FLAGS)
+    try:
+        empty(top)
+    finally:
+        os.close(top)
     os.rmdir(path)
 
 

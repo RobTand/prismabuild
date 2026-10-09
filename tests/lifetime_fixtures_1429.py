@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import json
 import platform
+import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -240,7 +242,10 @@ class Broker:
         self.authority = resource_broker.Authority(
             tmp_path / "broker-state", __import__("os").getuid(), self.kernel,
             max_memory_bytes=64 * 1024 ** 3)
-        self.endpoint = tmp_path / "broker.sock"
+        # A socket path holds 107 bytes, and a sharded pytest run puts a test
+        # directory far deeper than that; a short private directory does not.
+        self.socket_dir = Path(tempfile.mkdtemp(prefix="pb1429-"))
+        self.endpoint = self.socket_dir / "broker.sock"
         self.server = resource_broker.Server(str(self.endpoint), resource_broker.Handler)
         self.server.authority = self.authority
         self.thread = threading.Thread(
@@ -266,6 +271,7 @@ class Broker:
     def close(self) -> None:
         self.server.shutdown()
         self.server.server_close()
+        shutil.rmtree(self.socket_dir, ignore_errors=True)
 
     def record(self, key: str) -> dict:
         """The broker's own record of the one scope this action made."""

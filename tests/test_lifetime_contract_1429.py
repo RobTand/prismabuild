@@ -488,16 +488,64 @@ def _refusal_prelaunch(tmp_path, monkeypatch, broker):
     return queue, item, skew
 
 
+def _refusal_launch_environment(tmp_path, monkeypatch, broker):
+    """The scope is ready and every check passed; the environment then takes the fence."""
+
+    queue, action = fenced_queue(tmp_path)
+    item = claim(queue)
+    skew = Skew(monkeypatch)
+    real = pool.PoolQueue.launch_environment
+
+    def slow_environment(self, entry):
+        environment = real(self, entry)
+        skew.to(_clock_of(item).stop_unix + 1.0)
+        return environment
+
+    monkeypatch.setattr(pool.PoolQueue, "launch_environment", slow_environment)
+    return queue, item, skew
+
+
+def _refusal_status_cleanup(tmp_path, monkeypatch, broker):
+    """Clearing the last attempt's status file on the shared mount takes the fence."""
+
+    queue, action = fenced_queue(tmp_path)
+    item = claim(queue)
+    skew = Skew(monkeypatch)
+    status = queue.action_status_path(item["action_key"])
+    real = Path.unlink
+
+    def slow_unlink(self, *args, **kwargs):
+        if self == status:
+            skew.to(_clock_of(item).stop_unix + 1.0)
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", slow_unlink)
+    return queue, item, skew
+
+
 @pytest.mark.parametrize("phase,arrange", [
-    ("checkout", _refusal_checkout),
-    ("readiness", _refusal_readiness),
-    ("prelaunch", _refusal_prelaunch),
+    pytest.param("checkout", _refusal_checkout, id="checkout"),
+    pytest.param("readiness", _refusal_readiness, id="readiness"),
+    pytest.param("prelaunch", _refusal_prelaunch, id="scope-setup"),
+    pytest.param("prelaunch", _refusal_launch_environment, id="launch-environment"),
+    pytest.param("prelaunch", _refusal_status_cleanup, id="status-cleanup"),
 ])
 def test_a_phase_past_the_stop_instant_refuses_the_launch_and_returns_the_tokens(
         tmp_path, broker, monkeypatch, phase, arrange):
     queue, item, skew = arrange(tmp_path, monkeypatch, broker)
     key = item["action_key"]
+    # The observation is the first thing the supervisor does once a payload
+    # exists, so a call to it means a payload was launched.
+    launched: list[object] = []
+    real_observe = pool._observe_execution
+
+    def observe(*args, **kwargs):
+        launched.append(args)
+        return real_observe(*args, **kwargs)
+
+    monkeypatch.setattr(pool, "_observe_execution", observe)
     outcome = _execute(queue, item)
+    assert launched == [], "a payload started after the stop instant"
     assert outcome["status"] == "failed"
     assert outcome["termination_reason"] == lifetime_fence.FENCE_TERMINATION_REASON
     assert outcome["lifetime_evidence"]["expired_phase"] == phase
@@ -518,6 +566,33 @@ def test_a_phase_past_the_stop_instant_refuses_the_launch_and_returns_the_tokens
     attempt = queue.attempt_outcomes(pool._read_json(dst))[0]
     stderr = (queue.root / attempt["logs"]["stderr"]["path"]).read_text()
     assert "lifetime fence expired" in stderr
+
+
+def test_prelaunch_ends_at_the_final_check_after_the_launch_is_prepared(
+        tmp_path, broker, monkeypatch):
+    # Preparation that stays inside the fence still counts: prelaunch ends at
+    # the check that follows it, never before the status files and the
+    # environment, so the audit sees the time the launch really took.
+    queue, action = fenced_queue(tmp_path)
+    item = claim(queue)
+    skew = Skew(monkeypatch)
+    real = pool.PoolQueue.launch_environment
+    prepared: list[float] = []
+
+    def slow_environment(self, entry):
+        environment = real(self, entry)
+        skew.seconds += 30.0         # long, and still well before the stop instant
+        prepared.append(pool._now())
+        return environment
+
+    monkeypatch.setattr(pool.PoolQueue, "launch_environment", slow_environment)
+    outcome = _execute(queue, item)
+    assert outcome["status"] == "executed", outcome
+    prelaunch = _phases(outcome)["prelaunch"]
+    assert prelaunch["enforced"] is True
+    assert prepared and prelaunch["ended_unix"] >= prepared[0]
+    assert prelaunch["ended_unix"] < _clock_of(item).stop_unix
+    assert _phases(outcome)["readiness"]["ended_unix"] < prepared[0] - 29.0
 
 
 # -- settlement: cleanup, scope settlement and resource release --
@@ -804,6 +879,102 @@ def test_bounded_tree_removal_never_follows_a_link(tmp_path):
     materialize._remove_tree_before(tree, time.time() + 60.0)
     assert not tree.exists()
     assert (outside / "keep").read_text() == "kept"
+
+
+def _swap_a_directory_for_a_link(monkeypatch, directory: Path, target: Path, *,
+                                 before: str) -> list[bool]:
+    """Replace ``directory`` by a link to ``target`` just before ``before`` is unlinked.
+
+    This is what a surviving descendant can do between the removal's listing
+    of a directory and its deletion of the entries.
+    """
+
+    real_unlink = os.unlink
+    swapped: list[bool] = []
+
+    def unlink(path, *args, **kwargs):
+        if not swapped and os.fspath(path).endswith(before):
+            swapped.append(True)
+            directory.rename(directory.with_name(directory.name + "-moved"))
+            directory.symlink_to(target)
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "unlink", unlink)
+    return swapped
+
+
+def test_bounded_tree_removal_never_follows_a_directory_swapped_for_a_link(
+        tmp_path, monkeypatch):
+    # The removal lists a directory, and a descendant replaces it by a link to
+    # a tree outside the checkout before the entries are deleted. Deleting by
+    # path name would follow the link and remove the outside file.
+    tree = tmp_path / "tree"
+    (tree / "a" / "b").mkdir(parents=True)
+    (tree / "a" / "b" / "victim").write_text("inside")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "victim").write_text("outside")
+    swapped = _swap_a_directory_for_a_link(
+        monkeypatch, tree / "a" / "b", outside, before="victim")
+    with pytest.raises(OSError):
+        materialize._remove_tree_before(tree, time.time() + 60.0)
+    assert swapped == [True]
+    assert (outside / "victim").read_text() == "outside"
+
+
+def test_bounded_tree_removal_never_follows_a_swapped_top_directory(tmp_path, monkeypatch):
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    (tree / "victim").write_text("inside")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "victim").write_text("outside")
+    swapped = _swap_a_directory_for_a_link(monkeypatch, tree, outside, before="victim")
+    with pytest.raises(OSError):
+        materialize._remove_tree_before(tree, time.time() + 60.0)
+    assert swapped == [True]
+    assert (outside / "victim").read_text() == "outside"
+
+
+def test_bounded_tree_removal_refuses_a_directory_replaced_by_another_directory(
+        tmp_path, monkeypatch):
+    # A link is not the only swap: another real directory can take the name
+    # between the listing and the open. The open succeeds, so only the
+    # comparison with the listed entry keeps the deletion inside the tree.
+    tree = tmp_path / "tree"
+    (tree / "a" / "b").mkdir(parents=True)
+    (tree / "a" / "b" / "mine").write_text("inside")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "theirs").write_text("outside")
+    real_open = os.open
+    swapped: list[bool] = []
+
+    def opening(path, flags, *args, **kwargs):
+        if not swapped and kwargs.get("dir_fd") is not None and os.fspath(path) == "b":
+            swapped.append(True)
+            (tree / "a" / "b").rename(tree / "a" / "b-moved")
+            elsewhere.rename(tree / "a" / "b")
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", opening)
+    with pytest.raises(OSError):
+        materialize._remove_tree_before(tree, time.time() + 60.0)
+    assert swapped == [True]
+    assert (tree / "a" / "b" / "theirs").read_text() == "outside"
+    assert (tree / "a" / "b-moved" / "mine").read_text() == "inside"
+
+
+def test_bounded_tree_removal_refuses_a_link_at_its_root(tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep").write_text("kept")
+    tree = tmp_path / "tree"
+    tree.symlink_to(outside)
+    with pytest.raises(OSError):
+        materialize._remove_tree_before(tree, time.time() + 60.0)
+    assert (outside / "keep").read_text() == "kept"
+    assert tree.is_symlink()
 
 
 def test_bounded_tree_removal_stops_at_the_deadline_and_leaves_the_rest(tmp_path):
