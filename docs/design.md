@@ -5079,7 +5079,9 @@ An unqualified movement row keeps the host on main's fallback until that row end
 This rule covers retained tools, older generations, and the previous non-isolated sealer.
 The host evaluates tags and GPU requirements with its existing placement predicate.
 A CLAIMED row belongs to its recorded host.
-The claim refreshes the proof under host admission.
+Each pass reads a complete census under host admission.
+Later candidates retain known movement obligations and refresh member state and demand.
+A successful claim ends the pass. The next pass reads new publications.
 Measurement election and bootstrap precedence use the same proof.
 
 A missing, stale, or fresh copy also keeps main's fallback.

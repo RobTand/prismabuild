@@ -3575,7 +3575,9 @@ The host preserves its lower-priority fence and ordinary resource admission.
 Legacy rows never obtain roles from mutable retained bytes.
 Their sealed requests remain unchanged.
 
-The claim refreshes drain proof under admission.
+Each pass reads complete drain proof under admission.
+Later candidates retain known obligations until the pass ends.
+A successful claim ends the pass. The next pass reads new publications.
 The same proof controls measurement precedence and measurement election.
 Tier announcements select tool roots on the execution host.
 The sealer does not substitute a path from another host.
