@@ -25680,8 +25680,7 @@ class PoolQueue:
                                  record.get("finished_unix"),
                                  record.get("withdrawn_unix"), record.get("status")])
             rows.append([lead, entry.get("status"), seen])
-        return hashlib.sha256(json.dumps(rows, sort_keys=True, default=str)
-                              .encode()).hexdigest()
+        return pb.canonical_sha256(rows)
 
     def _terminal_leads(self, residency: Mapping[str, object]) -> list[str] | None:
         """The pending leads of a terminal reading, in lock order, or ``None``."""
