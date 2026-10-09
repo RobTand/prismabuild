@@ -28,6 +28,9 @@ from __future__ import annotations
 
 from pathlib import Path
 import time
+from types import SimpleNamespace
+
+import pytest
 
 import test_prepaid_writer_integration as fx
 import test_produced_spool as sp
@@ -82,14 +85,9 @@ def _denial(queue: pool.PoolQueue, key: str) -> dict:
     return next(value for value in records.values() if value["action_key"] == key)
 
 
-def _producer(tmp_path: Path, monkeypatch, *, measurement: bool = False,
-              demand: dict[str, int] = PRODUCER_DEMAND):
-    """A spool producer claimed through the adaptive path on an idle host.
-
-    Its sealed environment names a spool root, as every Stage A chain's
-    does, and nothing else about the allowance: the default applies.
-    """
-
+def _publish_producer(tmp_path: Path, *, measurement: bool = False,
+                      demand: dict[str, int] = PRODUCER_DEMAND):
+    """Seal and publish a spool producer without claiming it."""
     cas_root = tmp_path / "cas"
     template = fx._template(str(tmp_path / "canonical"))
     initial = fx._producer_request(tmp_path, cas_root, template)
@@ -110,6 +108,22 @@ def _producer(tmp_path: Path, monkeypatch, *, measurement: bool = False,
                   checkout_root=str(tmp_path / "mover-checkout"),
                   resources={**demand, **po.owner_demand_terms(template)},
                   produced_output_template=template)
+    return SimpleNamespace(queue=queue, owner=owner, template=template,
+                             cas_root=cas_root), cas
+
+
+def _producer(tmp_path: Path, monkeypatch, *, measurement: bool = False,
+              demand: dict[str, int] = PRODUCER_DEMAND):
+    """A spool producer claimed through the adaptive path on an idle host.
+
+    Its sealed environment names a spool root, as every Stage A chain's
+    does, and nothing else about the allowance: the default applies.
+    """
+
+    (published, cas) = _publish_producer(tmp_path, measurement=measurement,
+                                         demand=demand)
+    queue, owner = published.queue, published.owner
+    template, cas_root = published.template, published.cas_root
     _sample(monkeypatch, psi=0.)
     claimed = queue.claim(owner="spool-producer", capacity=CAPACITY,
                           cpu_tiers=CPU_TIERS, adaptive_cpu=True)
@@ -419,15 +433,33 @@ def test_stale_owner_telemetry_does_not_project_the_export_against_its_owner(
     _assert_on_allowance(spool, export_key)
 
 
-def test_a_spool_producer_that_fits_only_without_the_allowance_runs_as_before(
-        tmp_path, monkeypatch) -> None:
-    """The allowance is never what keeps a producer off a box: one that fits
-    only without it is claimed without it, and its exports use free tokens."""
-
-    spool, _cas = _producer(tmp_path, monkeypatch, demand={"cpu": 10, "mem_gb": 104})
-    assert _tokens(spool.queue, spool.owner, "mem_gb") == 104
-    assert _tokens(spool.queue, spool.owner, "cpu") == 10
-    assert _meta(spool.queue, spool.owner).get("dependent_allowance") is None
+@pytest.mark.parametrize(("demand", "measured_slots"), [
+    ({"cpu": 10, "mem_gb": 104}, None),
+    ({"cpu": 20, "mem_gb": 100}, None),
+    ({"cpu": 10, "mem_gb": 100}, 5),
+], ids=["memory-total", "cpu-total", "measured-memory-overflow"])
+def test_a_published_producer_that_fits_without_its_allowance_still_claims(
+        tmp_path, monkeypatch, demand, measured_slots) -> None:
+    """Preserve #985 for published producers, including learned slot counts."""
+    published, _cas = _publish_producer(tmp_path, demand=demand)
+    queue, owner = published.queue, published.owner
+    if measured_slots is not None:
+        rates = {po.template_sha256(published.template): {
+            "landing_s": [float(measured_slots)], "spacing_s": [1.]}}
+        base = adaptive_cpu.local_state_base(queue.ledger().base)
+        adaptive_cpu.write_json(base / adaptive_cpu.EXPORT_RATES, rates)
+        row = pool._read_json(queue.item_path(pool.READY, owner))
+        assert adaptive_cpu.producer_allowance(row, rates)["slots"] == measured_slots
+    _sample(monkeypatch, psi=0.)
+    claimed = queue.claim(owner="spool-producer", capacity=CAPACITY,
+                          cpu_tiers=CPU_TIERS, adaptive_cpu=True)
+    assert claimed is not None and claimed["action_key"] == owner
+    assert not queue.item_path(pool.READY, owner).exists()
+    allocation = _meta(queue, owner)["allocation"]
+    assert len(set(allocation["preferred"] + allocation["fallback"])) == demand["cpu"]
+    assert _tokens(queue, owner, "cpu") == demand["cpu"]
+    assert _tokens(queue, owner, "mem_gb") == demand["mem_gb"]
+    assert queue.passes(owner) == 0
 
 
 def test_the_allowance_is_derived_only_from_a_sealed_spool_root(tmp_path) -> None:
