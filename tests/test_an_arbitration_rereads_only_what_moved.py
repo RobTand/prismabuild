@@ -83,6 +83,9 @@ NEW_DIGEST = hashlib.sha256(NEW).hexdigest()
 #: that from load either.  The seconds are still printed, as the receipt's
 #: ``ownership_lock_held``.
 FINGERPRINT_OPS = ("lstat", "stat")
+#: A directory ``O_PATH`` probe is neither: the trust check opens
+#: directories with ``O_PATH`` on filesystems whose device the mount table
+#: does not list, and the probe never reads through such a descriptor.
 
 #: Directories of the residency root that are not the forest: the pin census
 #: a replacement passes reads them per name by design (#966).
@@ -227,6 +230,10 @@ def _forest_touches(monkeypatch: pytest.MonkeyPatch, publisher,
         holding, part, locked = touches.holding, touches.part, touches.locked
 
         def call(path, *args, **kwargs):  # type: ignore[no-untyped-def]
+            if (kind == "read" and args
+                    and isinstance(args[0], int)
+                    and (args[0] & os.O_PATH)):
+                return real(path, *args, **kwargs)
             if getattr(holding, "depth", 0) and part(path) is not None:
                 locked[kind] += 1
             return real(path, *args, **kwargs)

@@ -132,7 +132,9 @@ class FsProbe:
     ``opens`` every ``open``, ``io.open`` and ``os.open`` of a record file.
     The trusted-stamp check opens directories with ``O_PATH`` on filesystems
     whose device the mount table does not list; a directory probe is a local
-    kernel observation, not a record read, and is not counted.  On the NFS
+    kernel observation, not a record read, and is not counted.  Each trust
+    check also re-stats the directory it verifies there (two stats per
+    directory, not one), while a mount-listed device costs one.  On the NFS
     mount each is at least one LOOKUP or GETATTR unless the client answers
     it from its attribute cache, so their sum is the lookup count #1020
     measures.  The exporter's read of its own ``/proc/self/status`` (its
@@ -516,7 +518,7 @@ def _require_trusted(root: Path) -> None:
 
 
 def test_idle_scrape_reads_no_record_and_lists_no_directory(live_shaped):
-    """The second scrape of an unchanged queue costs one lstat per directory."""
+    """The second scrape of an unchanged queue re-stats each directory only."""
 
     _require_trusted(live_shaped)
     cache = pbmetrics.MetricsCache(live_shaped, 0.0, WINDOW_S, LIMIT)
@@ -536,7 +538,7 @@ def test_idle_scrape_reads_no_record_and_lists_no_directory(live_shaped):
     assert not_directories == [], (
         f"{len(not_directories)} stats of records on an unchanged queue, e.g. "
         f"{Counter(Path(p).parent.name for p in not_directories).most_common(5)}")
-    assert len(probe.stats) <= directories_under(live_shaped)
+    assert len(probe.stats) <= 2 * directories_under(live_shaped)
     assert probe.namespace_stats, "retention must still check its current namespace"
 
 
