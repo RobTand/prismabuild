@@ -1363,7 +1363,7 @@ member, an action that declares scratch, or a box without the capability reads
 UNKNOWN and waits as before.
 
 Read the limits as well. The bound holds while the kernel, the broker and the
-shared mount answer. A call that never returns, or the death of the worker,
+shared mount answer promptly. A call that never returns, or the death of the worker,
 leaves the attempt holding its tokens until settlement is proved, and its audit
 reads UNKNOWN. No timer releases anything. A retry-safe action that a fence
 stops and that has attempts left returns to `ready`, but the same deadline

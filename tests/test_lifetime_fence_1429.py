@@ -368,6 +368,26 @@ def test_a_scratch_declaring_candidate_reads_unknown_in_its_cleanup_phase(fleet)
     assert queue.item_path(pool.READY, key).exists()
 
 
+def test_a_gang_member_reads_unknown_in_its_admission_phase_and_never_claims(fleet):
+    queue, clock, readings, sample, publish, tick, claim, denial = fleet
+    incumbent, measurement, original_end, snapshot = _bounded_measurement_wait(fleet)
+    key = publish_fenced(fleet, "fenced-gang-member")
+    path = queue.item_path(pool.READY, key)
+    row = pool._read_json(path)
+    assert reservation.candidate_release_verdict(queue, row)[0] is not None
+    # A member waits on its siblings' claims, which no fence bounds.
+    row["gang"] = {"group": "0" * 32, "size": 2, "index": 0}
+    pool._write_json_atomic(path, row)
+    bound, support = reservation.candidate_release_verdict(queue, row)
+    assert bound is None
+    assert support["admission"] and all(
+        reason is None for phase, reason in support.items() if phase != "admission")
+    _observe_real_sharing_permission(fleet, key)
+    assert claim_on_host(fleet) is None
+    assert path.exists()
+    _assert_holder_unchanged(queue, incumbent, snapshot)
+
+
 def _opportunity_case(fleet, delta):
     """A fenced candidate whose deadline is ``delta`` seconds from the opportunity."""
 

@@ -531,7 +531,10 @@ mount will answer.
 any resource moves. By the deadline every phase of the attempt has ended and
 the host tokens are back. The stop instant is `deadline_unix - 120 s`. The 120
 seconds are `RELEASE_RESERVE_S`, a constant of contract v1; another reserve is
-another version. Nothing launches from the stop instant, and the worker stops
+another version. The reserve is sized for answers that take seconds (the
+broker released a stopped scope 0.56 s after its stop in the 2026-10-09
+measurement), not for the sum of every worst-case timeout. Nothing launches
+from the stop instant, and the worker stops
 the payload there at the latest. Nothing credits, pauses or extends either
 instant. The separate payload budget (`execution_timeout_s`) keeps its credited
 waits and its disclaimers.
@@ -579,10 +582,13 @@ strictly before the original opportunity. Equality and later bounds refuse. The
 capacity, isolation and measurement gates stay unchanged beside this answer.
 
 *What the bound is not.* The bound holds when the kernel, the broker, the local
-disk and the shared mount answer. A system call that never returns is outside
-it, and so is the death of the worker process. Such an attempt keeps its tokens
-until settlement is proved, its audit reads UNKNOWN, and a delay can still
-reach the measurement. Once the original opportunity has passed, every later
+disk and the shared mount answer promptly. A system call that never returns is outside
+it, and so is the death of the worker process. A task in uninterruptible sleep
+survives the broker's kill, and its scope stays populated. The deadline is a
+wall-clock instant that the publishing host stamps and the claiming host
+reads, so the bound also assumes those clocks agree. Such an attempt keeps its
+tokens until settlement is proved, its audit reads UNKNOWN, and a delay can
+still reach the measurement. Once the original opportunity has passed, every later
 bound is later than it, so one overrun admits no more backfill. No timer
 returns tokens. The payload stop kills the payload and releases nothing, and it
 does not make kernel or NFS reclamation immediate.

@@ -23,8 +23,9 @@ bounded for the candidate's shape; a phase that is not names its reason and
 the verdict is UNKNOWN.
 
 What the bound is not. It is the bound of this control flow when the kernel,
-the broker, the local disk and the shared mount answer. A system call that
-never returns is outside it. Such an attempt keeps its tokens, its audit
+the broker, the local disk and the shared mount answer promptly. The reserve
+is sized for answers that take seconds, not for the sum of every worst-case
+timeout. A system call that never returns is outside it. Such an attempt keeps its tokens, its audit
 reads UNKNOWN, and a delay can still reach the measurement. Once the original
 opportunity has passed, no later bound precedes it, so one overrun does not
 admit further backfill. A timer never returns capacity; only the proved

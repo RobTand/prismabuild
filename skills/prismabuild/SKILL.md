@@ -170,6 +170,15 @@ reset the count on a new cycle. This requires a deployed worker offering
 `progress-cycle-v1`; an old or unknown fleet refuses the submission. Existing
 sealed policies remain linear. A requested hard deadline still applies.
 
+`--lifetime-s N` (pool transport, 180 s to 7 days) is a different bound: it
+limits the whole life of the action, from publication to the return of its
+resources, not only the payload. The worker stops the payload 120 s before
+`published + N`, whatever `--timeout-s` has credited, and files per-phase
+evidence. Use it for short work that may run ahead of a waiting measurement:
+the pool admits such work only when its deadline falls strictly before that
+measurement's original opportunity. It never returns resources on a timer. A
+call that never returns keeps its tokens until settlement is proved.
+
 ### Emit committed units from any loop longer than a few minutes
 
 Declaring phases is half the contract; the action still has to say it is

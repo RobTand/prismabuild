@@ -616,6 +616,23 @@ def test_a_release_the_ledger_does_not_show_is_not_filed(tmp_path, broker, monke
     assert _audit(queue, dst) is None
 
 
+def test_a_lease_expiry_conclusion_never_supplies_a_finite_bound(tmp_path, broker):
+    # The worker dies before it finishes. Only the lease reaper concludes the
+    # claim: it stops and settles the scope before the tokens return, and what
+    # it files carries no lifetime evidence, so no bound is audited.
+    queue, item, outcome = _clean_attempt(tmp_path, broker)
+    key = item["action_key"]
+    assert queue.reap_stale(timeout_s=-1) == [key]
+    ready, failed = queue.item_path(pool.READY, key), queue.item_path(pool.FAILED, key)
+    assert ready.exists() != failed.exists()
+    assert queue.ledger().held_keys() == []
+    assert broker.record(key)["released_unix"]
+    conclusion = pool._read_json(ready if ready.exists() else failed)
+    assert "lifetime_evidence" not in conclusion
+    assert "lifetime_evidence" not in (conclusion.get("detail") or {})
+    assert reservation.attempt_release_audit(queue.queue, conclusion) is None
+
+
 def test_a_stale_owner_never_files_evidence_for_a_live_successor(tmp_path, broker):
     queue, item, outcome = _clean_attempt(tmp_path, broker)
     key = item["action_key"]
