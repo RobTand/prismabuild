@@ -357,6 +357,39 @@ def _number(value):
     return type(value) in (int, float) and math.isfinite(value) and value >= 0
 
 
+def _held_gpu_caps_gib(holders: list) -> tuple[list[dict[str, object]], float]:
+    """Unified GPU caps this host holds, in GiB, with their total."""
+    caps: list[dict[str, object]] = []
+    total = 0.0
+    for holder, meta in holders:
+        if not isinstance(meta, dict):
+            continue
+        if meta.get("memory_domain") != "shared_system":
+            continue
+        budget = meta.get("gpu_memory_budget_bytes")
+        if type(budget) not in (int, float) or not math.isfinite(budget) or budget <= 0:
+            continue
+        gib = float(budget) / float(GIB)
+        total += gib
+        name = getattr(holder, "name", "?")
+        caps.append({"action_key": name, "gpu_cap_gib": gib})
+    return caps, total
+
+def _unified_gpu_charge_gib(
+    holders: list, budget: object,
+) -> tuple[list[dict[str, object]], float, float] | None:
+    """Unified held GPU caps, their total, and this candidate's own cap."""
+    if type(budget) not in (int, float) or not math.isfinite(budget) or budget <= 0:
+        return None
+    held_caps, held_total = _held_gpu_caps_gib(holders)
+    if not held_caps:
+        return None
+    candidate_gib = float(budget) / float(GIB)
+    return held_caps, held_total, candidate_gib
+
+
+
+
 def _power_estimate(rows):
     values = [row['power_w'] for row in rows]
     mean = statistics.mean(values)
@@ -654,6 +687,20 @@ class Controller:
                               limited=limited,
                               sw_cap_idle_exception=sw_cap_exception,
                               **({'baseline': idle} if measurement else {}))
+            if device.get("memory_domain") == "shared_system":
+                charge = _unified_gpu_charge_gib(holders, budget)
+                if charge is not None:
+                    held_caps, held_total, candidate_gib = charge
+                    offer_gib = float(self.ledger.capacity().get("mem_gb", 0))
+                    host_gib = float(sample.get("host_total_bytes", 0)) / float(GIB)
+                    if offer_gib > 0 and held_total + candidate_gib > offer_gib:
+                        return refuse("unified_gpu_memory_budget",
+                                      requested_budget_bytes=budget,
+                                      requested_budget_gib=candidate_gib,
+                                      held_gpu_caps=held_caps,
+                                      held_gpu_cap_total_gib=held_total,
+                                      mem_offer_gib=offer_gib,
+                                      host_total_gib=host_gib)
             if device.get('memory_domain') == 'discrete':
                 fields = ('memory_total_bytes', 'memory_free_bytes', 'memory_used_bytes')
                 if not all(_number(device.get(k)) for k in fields):
