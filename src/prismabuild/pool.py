@@ -7523,9 +7523,9 @@ class PoolQueue:
         """The export allowance a producer's claim adds to its reservation (#985).
 
         ``None`` unless the box admits adaptively and the row carries a
-        producer's ``produced_output`` reference.  An unbounded-CPU producer
-        gets none, and nor does one that fits this box only without it.  The
-        claim pass and the ready GPU row's room (#1169) read the same answer.
+        producer's ``produced_output`` reference. An unbounded-CPU producer
+        gets none, and nor does one that fits this box only without it.
+        The claim pass and the ready GPU row's room (#1169) read the same answer.
         """
 
         if controller is None or item.get("produced_output") is None:
@@ -7542,8 +7542,9 @@ class PoolQueue:
                 total.get(kind, 0)
                 < reservation_demand.get(kind, 0) + int(allowance[kind])
                 for kind in cpu_admission.EXPORT_DEMAND):
-            # A producer that fits this box only without the allowance runs
-            # as it did before it existed.
+            # Preserve #985: a producer that fits only without the allowance
+            # runs without it. Submission checks incompatible declarations;
+            # learned slots must not turn published work into a permanent refusal.
             return None
         return allowance or None
 
@@ -21324,6 +21325,15 @@ class PoolQueue:
         #: measurement stayed READY behind 'reader busy'.  Refusing never
         #: authorizes anything; the next pass takes the fence afresh.
         census_refusal: dict[str, object] | None = None
+        #: One successful census this pass reuses for later candidates
+        #: (#1571): with a free fence each candidate otherwise paid two
+        #: bounded-child scans, the discovery read and the refresh read.
+        #: Later candidates re-take only the elected keys of this host
+        #: plus host admission, never the fence or the scan.  Reset where
+        #: authority may have changed: this pass's own claim, gang
+        #: election, or measurement election.
+        from . import _measurement_reservation as _pass_reservation
+        pass_census = _pass_reservation.PassCensus(self, ledger, host_gate)
         for item in ready:
             key = str(item.get("action_key", ""))
             held_back = withheld_for is not None and (
@@ -22027,7 +22037,8 @@ class PoolQueue:
                         if census_refusal is not None:
                             self.record_denial(item, "measurement_census_unavailable", census_refusal)
                             continue
-                        census_guard = measurement_reservation.admission_census(self, ledger, host_gate)
+                        census_guard = measurement_reservation.pass_admission_census(
+                            pass_census, self, ledger, host_gate)
                         with census_guard as census:
                             if "unavailable" in census:
                                 census_refusal = census
@@ -22646,9 +22657,12 @@ class PoolQueue:
                         continue
                     # This pass renamed into ``claimed/``: a later candidate
                     # of the same pass lists it again (#993), and reads the
-                    # tiers' reading sets again (#1091 review 1).
+                    # tiers' reading sets again (#1091 review 1). The rename
+                    # also moves a publication the reused census read, so the
+                    # next candidate reads fresh (#1571).
                     claimed_listed = None
                     reader_plans.clear()
+                    pass_census.invalidate()
                     moved_record = _read_json(dst)
                     moved = moved_record or item
                     if container_class_policy is not None:
