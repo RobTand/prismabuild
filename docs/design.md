@@ -524,9 +524,19 @@ The opt-in sealed lifetime fence (`params.lifetime`,
 versioned all-applicable-phase bound: admission, checkout, readiness,
 prelaunch, payload including credited waits, termination, cleanup, scope
 settlement and resource release, or UNKNOWN for each unfenced component.
-A finite verdict needs the sealed fence plus enforcement and evidence for
-every applicable phase; missing enforcement or evidence keeps UNKNOWN and
-holds resources until settlement evidence permits release. A verified
+The worker stamps one absolute, non-creditable deadline at claim
+(`claimed_unix + fence_s`) and enforces it across every phase it runs:
+checkout, readiness, and prelaunch refuse to launch past it, the payload
+wait loop kills past it with the `lifetime_fence` verdict before the
+payload budget rung, and checkpoint I/O credits the payload budget only,
+never the fence. A finite verdict needs the sealed fence plus filed
+enforcement evidence for every applicable phase, each end at or before
+the deadline; missing enforcement, missing evidence, or an end past the
+deadline keeps UNKNOWN and holds resources until settlement evidence
+permits release. Publish projects the sealed seconds onto the row and
+requires the fence tag; claim verifies the projection against the sealed
+request and stamps the deadline durably; admission reads the bound back
+only from the durable claimed row and its archived attempt. A verified
 release bound strictly before the original opportunity permits timed
 backfill; equality and later bounds refuse, and capacity and isolation
 gates stay in force. The payload budget keeps its existing semantics and

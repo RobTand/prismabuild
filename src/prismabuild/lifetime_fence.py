@@ -6,15 +6,20 @@ credit it, and cleanup settles after it. It never proves that capacity
 returns by any wall time.
 
 This module seals one absolute, non-creditable, versioned bound instead.
-A submitter opts in with ``params.lifetime``. The worker enforces the
-bound across every phase it runs. Admission grants timed backfill only
-on a verified release bound strictly before the original opportunity.
-Every unfenced component reads ``UNKNOWN``. Expired timers never return
-capacity; only proved settlement does.
+A submitter opts in with ``params.lifetime``. ``fence_deadline`` is the
+single enforcement clock: the worker stamps it at claim from ``claimed_unix``
+plus the sealed fence, and every phase the worker runs -- checkout,
+readiness, prelaunch, payload including credited waits, termination,
+cleanup, scope settlement, resource release -- must conclude before it.
+Nothing credits it, pauses it, or extends it. Admission grants timed
+backfill only on a verified release bound strictly before the original
+opportunity. Every unfenced component reads ``UNKNOWN``. Expired timers
+never return capacity; only proved settlement does.
 
 Validation lives in :mod:`prismabuild.core` beside the other sealed
 params, so ``validate_action`` refuses an unreadable fence at seal time.
-This module owns the admission predicate and its evidence shape.
+This module owns the enforcement clock, the evidence shape, and the
+admission predicate.
 """
 from __future__ import annotations
 
@@ -31,6 +36,11 @@ LIFETIME_PARAM = pb.LIFETIME_PARAM
 LIFETIME_SCHEMA_V1 = pb.LIFETIME_SCHEMA_V1
 #: Capability tag a lifetime action requires of its claiming box.
 LIFETIME_TAG = pb.LIFETIME_TAG
+#: Versioned evidence record the worker files per attempt.
+EVIDENCE_SCHEMA_V1 = "prismabuild.action_lifetime_evidence.v1"
+#: Termination reason the fence kill files, distinct from the payload
+#: budget's ``execution_deadline`` so a reader tells which bound fired.
+FENCE_TERMINATION_REASON = "lifetime_fence"
 
 #: Every phase the fence covers. A component outside this list is
 #: unfenced by definition and answers ``UNKNOWN``.
@@ -63,18 +73,27 @@ def required_tags(lifetime: Mapping[str, object] | None) -> list[str]:
     return [LIFETIME_TAG]
 
 
-def release_bound(
-    *,
-    claimed_unix: object,
-    fence_s: object,
-    evidence: Mapping[str, object] | None,
-) -> float | None:
-    """The verified release bound, or ``None`` when it is UNKNOWN.
+def fence_seconds(lifetime: Mapping[str, object] | None) -> float | None:
+    """The sealed fence in seconds, or ``None`` when unfenced."""
 
-    A finite bound needs all three: a finite claim stamp, a sealed
-    fence, and enforcement evidence for every applicable phase.
-    A missing phase, a failed phase, or absent evidence answers
-    ``None``. Callers render that as ``UNKNOWN`` and hold resources.
+    if not isinstance(lifetime, Mapping):
+        return None
+    fence = lifetime.get("fence_s")
+    if (
+        type(fence) not in (int, float)
+        or isinstance(fence, bool)
+        or not math.isfinite(float(fence))
+        or float(fence) <= 0
+    ):
+        return None
+    return float(fence)
+
+
+def fence_deadline(*, claimed_unix: object, fence_s: object) -> float | None:
+    """The absolute wall-clock bound, or ``None`` when UNKNOWN.
+
+    One addition, never credited: ``claimed_unix + fence_s``. Both ends
+    must be finite numbers. Anything else answers ``None``.
     """
 
     if (
@@ -85,20 +104,53 @@ def release_bound(
         and not isinstance(fence_s, bool)
         and math.isfinite(float(fence_s))
         and float(fence_s) > 0
-        and isinstance(evidence, Mapping)
     ):
-        phases = evidence.get("phases")
-        if isinstance(phases, Mapping):
-            for phase in PHASES:
-                record = phases.get(phase)
-                if not isinstance(record, Mapping):
-                    return None
-                if record.get("enforced") is not True:
-                    return None
-                if record.get("evidence") in (None, "", [], {}):
-                    return None
-            return float(claimed_unix) + float(fence_s)
+        return float(claimed_unix) + float(fence_s)
     return None
+
+
+def release_bound(
+    *,
+    claimed_unix: object,
+    fence_s: object,
+    evidence: Mapping[str, object] | None,
+) -> float | None:
+    """The verified release bound, or ``None`` when it is UNKNOWN.
+
+    A finite bound needs all three: a finite claim stamp, a sealed
+    fence, and enforcement evidence for every applicable phase.
+    Each phase record must name the fence schema, carry ``enforced``
+    true, cite its enforcement proof, and record the phase end at or
+    before the fence deadline. A missing phase, a failed phase, an
+    end past the deadline, or absent evidence answers ``None``.
+    Callers render that as ``UNKNOWN`` and hold resources.
+    """
+
+    bound = fence_deadline(claimed_unix=claimed_unix, fence_s=fence_s)
+    if bound is None or not isinstance(evidence, Mapping):
+        return None
+    if evidence.get("schema") != EVIDENCE_SCHEMA_V1:
+        return None
+    phases = evidence.get("phases")
+    if not isinstance(phases, Mapping):
+        return None
+    for phase in PHASES:
+        record = phases.get(phase)
+        if not isinstance(record, Mapping):
+            return None
+        if record.get("enforced") is not True:
+            return None
+        if record.get("evidence") in (None, "", [], {}):
+            return None
+        ended = record.get("ended_unix")
+        if (
+            type(ended) not in (int, float)
+            or isinstance(ended, bool)
+            or not math.isfinite(float(ended))
+            or float(ended) > bound
+        ):
+            return None
+    return bound
 
 
 def timed_backfill_allowed(
