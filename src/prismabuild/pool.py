@@ -21181,6 +21181,17 @@ class PoolQueue:
         #: not of strictly higher priority (#1579): higher priority goes first.
         ready_priority = {str(row.get("action_key", "")): int(row.get("priority", 0))
                           for row in ready if isinstance(row.get("priority", 0), int)}
+        #: Whether this host holds the protected copy of the runtime it runs
+        #: (#1579): read at most once per pass, and only when a gang's
+        #: reservation asks.
+        pass_authority: list[bool] = []
+
+        def movement_authority() -> bool:
+            if not pass_authority:
+                from . import runtime_publication
+                pass_authority.append(runtime_publication.live_authority())
+            return pass_authority[0]
+
         #: Whether a row this pass already withheld the whole box for (#1230
         #: review): ``carry_withhold``'s None then means "held elsewhere in
         #: this pass", not "no live carry", and the busy-row room must not
@@ -21299,7 +21310,8 @@ class PoolQueue:
                 or self._demands_withheld_kind(item, withheld_kinds))
             if (held_back and withheld_for in measurement_withholds
                     and ready_priority.get(withheld_for, 0) <= int(item.get("priority", 0))
-                    and self._gang_member_past_reservation_bound(item)):
+                    and self._gang_member_past_reservation_bound(
+                        item, authority=movement_authority())):
                 # The reservation wins over a measurement withhold (#1579): a
                 # gang member whose gang has waited past the bound is not held
                 # back behind a waiting measurement, or the gang could not even
@@ -21995,12 +22007,11 @@ class PoolQueue:
                             # the runtime it runs: without it nothing the gang waits on
                             # can be told from other work, and the host keeps the fence
                             # against strictly lower priority that it always had.
-                            from . import movement_actions, runtime_publication
+                            from . import movement_actions
                             reservation_now = _now()
-                            movement_authority = runtime_publication.live_authority()
                             reserving_priority = measurement_reservation.reservation_priority_on(
                                 census, host=ledger.base.name, now=reservation_now,
-                                authority=movement_authority)
+                                authority=movement_authority())
                             # This row's own measurement withhold yields only to a
                             # gang of its priority or higher.
                             measurement_suspended = (reserving_priority is not None
@@ -22038,7 +22049,9 @@ class PoolQueue:
                                 continue
                             # A role mark exempts the row only if this host holds
                             # a protected copy of the tool the row names (#1579).
-                            role_exempt = movement_actions.authorized_role(item)
+                            # Asked only when an election could hold the row.
+                            role_exempt = (bool(census.get("gang_elections"))
+                                           and movement_actions.authorized_role(item))
                             gang_blocked = (None if serves_incumbent else
                                             measurement_reservation.gang_blocking(
                                                 census, item, host=ledger.base.name,
@@ -22046,7 +22059,7 @@ class PoolQueue:
                                                 now=reservation_now, held=reservation_held,
                                                 capacity=reservation_capacity,
                                                 exempt=role_exempt,
-                                                authority=movement_authority))
+                                                authority=movement_authority()))
                             while gang_blocked is not None:
                                 # A demand shortfall cannot become a loan (#1579).
                                 if "reservation" in gang_blocked:
@@ -22076,7 +22089,7 @@ class PoolQueue:
                                     remaining, item, host=ledger.base.name, group=None,
                                     now=reservation_now, held=reservation_held,
                                     capacity=reservation_capacity, exempt=role_exempt,
-                                    authority=movement_authority)
+                                    authority=movement_authority())
                             if gang_blocked is not None:
                                 self.record_denial(item, "deferred_for_gang_reservation", {
                                     "withheld_for": gang_blocked["action_key"],
@@ -25631,13 +25644,14 @@ class PoolQueue:
         )
         return self.attempt_path(archived, attempt)
 
-    def _gang_member_past_reservation_bound(self, item: Mapping[str, object]) -> bool:
+    def _gang_member_past_reservation_bound(self, item: Mapping[str, object], *,
+                                            authority: bool) -> bool:
         """Whether ``item`` is a gang member whose gang reserves its hosts now (#1579).
 
         The gang has waited past the reservation bound, and this host holds the
-        protected copy that makes the reservation apply at all.
+        protected copy (``authority``) that makes the reservation apply at all.
         """
-        from . import _gang, _measurement_reservation as measurement_reservation, runtime_publication
+        from . import _gang, _measurement_reservation as measurement_reservation
         if not isinstance(item.get("gang"), Mapping):
             return False
         try:
@@ -25646,7 +25660,7 @@ class PoolQueue:
             if record is None:
                 return False
             return measurement_reservation.reserves_after(
-                _gang.rank(record)[1], _now(), authority=runtime_publication.live_authority())
+                _gang.rank(record)[1], _now(), authority=authority)
         except (_gang.GangContractError, OSError, pb.PrismaBuildError, KeyError, TypeError, ValueError):
             return False
 

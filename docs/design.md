@@ -5036,11 +5036,16 @@ no copy here, publishes one. It publishes only that live generation. A host that
 runs an older generation has that copy from when it was live. The unit writes
 `/var/lib/prismabuild-movement-publish/status.json` (`published`, `current` or
 `error`, with the generation and the reason). An error leaves the host without a copy,
-which is the fallback above, and the next minute tries again. This delegation is the
-one `docs/client_upgrade.md` already makes for the client upgrader: root copies what
-the store's live pointer names, after checking every member against the receipt. The
-receipt proves copy consistency, not publisher authenticity, so access to publish
-generations must stay with the principals that administer these hosts.
+which is the fallback above, and the next minute tries again. The authority is the
+publisher of the live pointer, which is the delegation `docs/client_upgrade.md`
+already makes for the client upgrader: root copies what the store's live pointer
+names, after checking every member against the receipt. The receipt proves copy
+consistency, not publisher authenticity, so access to publish generations must stay
+with the principals that administer these hosts. It is narrower than a store owner's
+write access. A generation, a receipt or a tool placed in the store that the live
+pointer does not name gets no copy, and a role needs a copy. Whoever can move the
+live pointer already controls what every worker runs and what the client upgrader
+installs, so the copy adds no authority beyond that.
 
 **Tool roots.** A box that holds the copy of its tier loop's generation announces the
 copy's tool directory as `mover_tools_root` (`tier_loop.announced_tools_root`); a box
@@ -5069,11 +5074,13 @@ memory, GPU and tier ledger admission, so required movers use free capacity even
 the gang reserves every CPU. The role check is a scheduling classification. It adds no
 launch refusal under D32 and changes no allocator or kernel path under D41.
 
-CEO decision `dec-1009-062221-f41c` requires publication authority outside submitters
-and ordinary store owners. The decision of 2026-10-09 for PR #1584 keeps that
-authority and removes the person from each generation: no per-generation manual root
-step; if root is needed it is a one-time install per host; a missing or stale copy
-falls back to the behaviour of main and never deadlocks a gang. No deployment or live
+CEO decision `dec-1009-062221-f41c` requires publication authority outside
+submitters and ordinary store owners. The decision of 2026-10-09 for PR #1584 removes
+the person from each generation: no per-generation manual root step; if root is needed
+it is a one-time install per host that an administrator applies once; a missing or
+stale copy falls back to the behaviour of main and never deadlocks a gang. The
+authority is now the publisher of the live pointer (see "Publication without a
+person"). No deployment or live
 gang qualification is claimed here. D45 remains active. SC-01 remains PB-owned
 admission. SC-02 remains PB-owned movement. ID-08 still requires separate runtime
 deployment evidence; source support does not prove deployment.
