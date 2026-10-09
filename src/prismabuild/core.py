@@ -164,6 +164,24 @@ ACTION_RESIDENCY_ENV = (ACTION_KEY_ENV, RESIDENCY_MAP_ENV, QUEUE_ROOT_ENV,
                         ACTION_NONCE_ENV, ACTION_SCOPE_ENV,
                         READER_HELPER_ROOT_ENV)
 
+#: The sealed request key that declares the opt-in lifetime fence (#1429),
+#: and the schema name that versions it.  ``LIFETIME_PARAM`` is sealed into
+#: the action key like ``PROGRESS_PARAM``: an action admitted under the fence
+#: is a different action from its unfenced twin, so nothing already in the
+#: store is answered by a receipt filed under the other bound.
+LIFETIME_PARAM = "lifetime"
+LIFETIME_SCHEMA_V1 = "prismabuild.action_lifetime.v1"
+#: The placement tag a worker offers when it enforces the lifetime fence,
+#: and which the submitter requires of any action that declares one.  Same
+#: shape and reason as :data:`PROGRESS_TAG`: an old loop reads no lifetime
+#: and must never claim fenced work, so item tags must already be a subset
+#: of the worker's.  Versioned with the fence schema on purpose.
+LIFETIME_TAG = "lifetime-fence-v1"
+#: Shortest and longest fence the contract seals, in seconds.  A shorter
+#: fence cannot cover checkout, termination and settlement evidence; a
+#: longer one is not an admission planning bound.
+LIFETIME_MIN_FENCE_S = 60.0
+LIFETIME_MAX_FENCE_S = 7 * 24 * 3600.0
 #: The sealed request key that declares the progress contract, and the two
 #: schema names that version it.  ``PROGRESS_PARAM`` is sealed into the action
 #: key like ``PROFILE_PARAM``: an action admitted under the progress contract
@@ -2948,6 +2966,14 @@ def _normalize_action_body(value: object) -> dict[str, object]:
     normalized_params = _decode_strict_json(
         _canonical_bytes(normalized_params), where="action.params"
     )
+    if LIFETIME_PARAM in normalized_params:
+        # Refused here rather than at the worker: a fence the worker cannot
+        # read would be sealed into an action key that then answers every
+        # later submission of the same command with the same unreadable bound.
+        declared_lifetime = _validate_lifetime_param(
+            normalized_params[LIFETIME_PARAM])
+        if declared_lifetime != normalized_params[LIFETIME_PARAM]:
+            _fail("action.params.lifetime is valid but not in normalized form")
     if PROGRESS_PARAM in normalized_params:
         # Refused here rather than at the worker: a policy the worker cannot
         # read would be sealed into an action key that then answers every later
@@ -8527,6 +8553,36 @@ def action_pool_contention(action: Mapping[str, object]) -> dict[str, object] | 
     return validate_pool_contention(declared)
 
 
+def _validate_lifetime_param(value: object, *, where: str = "action.params.lifetime") -> dict[str, object]:
+    """Normalize the sealed lifetime fence (#1429), or refuse it."""
+
+    if not isinstance(value, Mapping) or set(value) != {"schema", "fence_s"}:
+        _fail(f"{where} must declare exactly schema and fence_s")
+    if value["schema"] != LIFETIME_SCHEMA_V1:
+        _fail(f"{where}.schema must be {LIFETIME_SCHEMA_V1!r}")
+    fence = value["fence_s"]
+    try:
+        finite = math.isfinite(fence)
+    except (TypeError, OverflowError):
+        finite = False
+    if type(fence) not in (int, float) or not finite:
+        _fail(f"{where}.fence_s must be a positive finite number")
+    if not LIFETIME_MIN_FENCE_S <= float(fence) <= LIFETIME_MAX_FENCE_S:
+        _fail(f"{where}.fence_s must lie within {LIFETIME_MIN_FENCE_S:g}s and {LIFETIME_MAX_FENCE_S:g}s")
+    return {"schema": LIFETIME_SCHEMA_V1, "fence_s": float(fence)}
+
+
+def action_lifetime(action: Mapping[str, object]) -> dict[str, object] | None:
+    """The sealed lifetime fence of a validated action, if it declared one."""
+
+    params = action["params"]
+    assert isinstance(params, Mapping)
+    declared = params.get(LIFETIME_PARAM)
+    if declared is None:
+        return None
+    return _validate_lifetime_param(declared)
+
+
 def action_progress_policy(action: Mapping[str, object]) -> dict[str, object] | None:
     """The sealed progress policy of a validated action, if it declared one."""
 
@@ -8944,7 +9000,12 @@ __all__ = [
     "POOL_CONTENTION_PARAM",
     "POOL_CONTENTION_SCHEMA_V1",
     "POOL_CONTENTION_TAG",
-    "EGRESS_PROGRESS_TAG",
+    "LIFETIME_PARAM",
+    "LIFETIME_SCHEMA_V1",
+    "LIFETIME_TAG",
+    "LIFETIME_MIN_FENCE_S",
+    "LIFETIME_MAX_FENCE_S",
+    "action_lifetime",
     "action_pool_contention",
     "validate_pool_contention",
     "CONTAINER_IMAGE_TAG",

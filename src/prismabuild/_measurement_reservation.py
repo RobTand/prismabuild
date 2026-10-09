@@ -494,6 +494,65 @@ def admission_census(queue: PoolQueue, ledger: ResourceLedger, controller):
         yield census
 
 
+def candidate_release_bound(queue: "PoolQueue", item: Mapping[str, object]) -> object:
+    """The candidate's verified release bound, or ``"UNKNOWN"``.
+
+    A finite bound needs the opt-in sealed lifetime fence (#1429): a
+    fenced action whose every applicable phase carries enforcement and
+    evidence.  The sealed payload timeout alone is opportunity metadata,
+    never a release bound.  Anything unfenced answers ``"UNKNOWN"`` and
+    holds the reserved host.
+    """
+
+    from . import lifetime_fence
+    try:
+        key = str(item.get("action_key") or "")
+        cas_root = item.get("cas_root")
+        claimed = item.get("claimed_unix")
+        if not key or cas_root is None:
+            return "UNKNOWN"
+        action = core.validate_action(core._decode_strict_json(
+            core._read_regular_file_nofollow(
+                Path(str(cas_root)) / "requests" / key[:2] / f"{key}.json",
+                where="pool action request", max_bytes=MAX_RECORD_BYTES),
+            where="pool action request"))
+        if action.get("action_key") != key:
+            return "UNKNOWN"
+        fence = core.action_lifetime(action)
+        if fence is None:
+            return "UNKNOWN"
+        evidence = item.get("lifetime_evidence")
+        bound = lifetime_fence.release_bound(
+            claimed_unix=claimed, fence_s=fence.get("fence_s"),
+            evidence=evidence if isinstance(evidence, Mapping) else None)
+        if bound is None:
+            return "UNKNOWN"
+        return float(bound)
+    except (OSError, ValueError, core.PrismaBuildError, KeyError, TypeError):
+        return "UNKNOWN"
+
+
+def timed_backfill_permitted(
+    queue: "PoolQueue", item: Mapping[str, object], blocked: Mapping[str, object],
+) -> tuple[bool, object]:
+    """Whether this candidate may backfill before the blocking election.
+
+    Returns ``(allowed, candidate_bound)``.  The candidate needs a
+    verified finite release bound strictly before the election's
+    opportunity; equality and later bounds refuse.  Capacity and
+    isolation gates stay in force beside this answer.
+    """
+
+    from . import lifetime_fence
+    bound = candidate_release_bound(queue, item)
+    opportunity = blocked.get("opportunity_unix")
+    if isinstance(bound, bool) or not isinstance(bound, (int, float)):
+        return False, bound
+    allowed = lifetime_fence.timed_backfill_allowed(
+        candidate_bound=bound, original_opportunity=opportunity)
+    return allowed, bound
+
+
 def blocking_selection(census: dict, item: dict, *, host: str, funded_by: str | None) -> dict | None:
     """UNKNOWN-first: no current timed candidate proves a safe finish."""
     for key, chosen in sorted(census["elections"].items()):

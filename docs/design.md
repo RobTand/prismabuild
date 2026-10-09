@@ -517,15 +517,21 @@ action key, publication generation, host, priority, election epoch and original
 `opportunity_unix`. The original incumbent `claimed_unix + requested_timeout_s`
 (the latest declared one, or the election epoch when no incumbent declared a
 finite deadline) is ONLY selector-opportunity metadata, never proof that preparation, checkpoint
-credits, cleanup or physical resources finish by then. All prospective timed
-backfill candidates remain UNKNOWN, including five-second payloads (#1429).
-Submit notices and ``pbtest.shard_ceiling`` describe a **payload execution
-budget**, not a wall-clock stop or admission-to-resource-release guarantee.
-The lowest announced worker budget does not describe every eligible worker;
-an offer with no ceiling leaves its effective budget unknown. The notice
-retains each cutting worker and its own ceiling. Progress notices preserve
-an explicitly requested
-payload budget without promising when preparation or settlement finishes.
+credits, cleanup or physical resources finish by then. An unfenced timed
+backfill candidate remains UNKNOWN, including five-second payloads (#1429).
+The opt-in sealed lifetime fence (`params.lifetime`,
+`prismabuild.action_lifetime.v1`, 60 s to 7 days) is the one separately
+versioned all-applicable-phase bound: admission, checkout, readiness,
+prelaunch, payload including credited waits, termination, cleanup, scope
+settlement and resource release, or UNKNOWN for each unfenced component.
+A finite verdict needs the sealed fence plus enforcement and evidence for
+every applicable phase; missing enforcement or evidence keeps UNKNOWN and
+holds resources until settlement evidence permits release. A verified
+release bound strictly before the original opportunity permits timed
+backfill; equality and later bounds refuse, and capacity and isolation
+gates stay in force. The payload budget keeps its existing semantics and
+credited waits; no timer expiry returns capacity. Only a loop that offers
+the fence tag claims fenced work.
 
 Discover potential measurement generations and elected sidecars outside H;
 acquire the sorted transition keys of the measurements **elected for this host**

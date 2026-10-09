@@ -21961,10 +21961,13 @@ class PoolQueue:
                             if serves_incumbent:
                                 census_blocked = None
                             if census_blocked is not None and dependent_owner != census_blocked["action_key"]:
-                                self.record_denial(item, "deferred_for_measurement_reservation", {
-                                    "withheld_for": census_blocked["action_key"],
-                                    "selection": census_blocked, "candidate_release_bound": "UNKNOWN"})
-                                continue
+                                permitted, candidate_bound = measurement_reservation.timed_backfill_permitted(
+                                    self, item, census_blocked)
+                                if not permitted:
+                                    self.record_denial(item, "deferred_for_measurement_reservation", {
+                                        "withheld_for": census_blocked["action_key"],
+                                        "selection": census_blocked, "candidate_release_bound": candidate_bound})
+                                    continue
                             gang_blocked = (None if serves_incumbent else
                                             measurement_reservation.gang_blocking(
                                                 census, item, host=ledger.base.name,
@@ -22072,10 +22075,13 @@ class PoolQueue:
                             funded_claim = adaptive is not None and bool(adaptive.get("funded_by"))
                             if census_blocked is not None and not (
                                     funded_claim and adaptive.get("funded_by") == census_blocked["action_key"]):
-                                self.record_denial(item, "deferred_for_measurement_reservation", {
-                                    "withheld_for": census_blocked["action_key"],
-                                    "selection": census_blocked, "candidate_release_bound": "UNKNOWN"})
-                                continue
+                                permitted, candidate_bound = measurement_reservation.timed_backfill_permitted(
+                                    self, item, census_blocked)
+                                if not permitted:
+                                    self.record_denial(item, "deferred_for_measurement_reservation", {
+                                        "withheld_for": census_blocked["action_key"],
+                                        "selection": census_blocked, "candidate_release_bound": candidate_bound})
+                                    continue
                             if funded_claim:
                                 # The funded kinds come from the producer's
                                 # allowance, not ``free/`` (#985): only the

@@ -1618,6 +1618,12 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
         tags.append(local_scratch.IO_CAPABILITY)
         # Versioned lifetime actions cannot run on declaration-only workers.
         tags.append(local_scratch.SCRATCH_LIFETIME_TAG)
+        # Same fence for the opt-in lifetime contract (#1429): this loop
+        # enforces the sealed fence across every phase, so it may take
+        # fenced work.  A loop from before the contract offers neither the
+        # tag nor the enforcement, so a fenced item waits for a box that
+        # can keep the bound instead of running where no fence exists.
+        tags.append(pb.LIFETIME_TAG)
         if args.gang_admission:
             # Default off (#1517): without this no box offers the tag, so no
             # gang member is ever claimed and no gang code runs in a pass.

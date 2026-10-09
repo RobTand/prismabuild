@@ -4175,6 +4175,23 @@ def require_progress_scope(*, progress: Mapping[str, object] | None,
         )
 
 
+def require_lifetime_scope(*, lifetime_s: float | None, transport: str) -> None:
+    """Refuse a lifetime fence on a transport with nothing to enforce it.
+
+    The fence is the pull-queue worker's: only a loop that offers the
+    fence tag enforces it across every phase.  The SLURM lane has no
+    such enforcement, so sealing the fence there would admit an action
+    on a bound nothing keeps.  Refused where the submitter watches.
+    """
+
+    if lifetime_s is not None and transport != "pool":
+        raise ValueError(
+            "--lifetime-s requires pool transport: the lifetime fence is "
+            "the pull-queue worker's, and the SLURM lane cannot enforce it. "
+            "Submit this action to the pool, or bound it there with --timeout-s"
+        )
+
+
 def require_host_class_scope(
     *, measurement: bool, host_class: str | None, transport: str, anywhere: bool = False
 ) -> None:
@@ -5386,6 +5403,7 @@ def freeze_action_template(
     exclusive: bool,
     gpu_memory_gb: float | None,
     execution_timeout_s: float | None,
+    lifetime_s: float | None = None,
     progress: Mapping[str, object] | None,
     profile: object | None,
     container_image_refs: Sequence[str] = (),
@@ -5704,6 +5722,13 @@ def freeze_action_template(
             params["gpu_memory_gb"] = gpu_memory_gb
     if execution_timeout_s is not None:
         params["execution_timeout_s"] = execution_timeout_s
+    if lifetime_s is not None:
+        # Sealed, like the progress policy: a fenced action is a different
+        # action from its unfenced twin, so the store never answers one
+        # with the other's receipt.  Absent, the key is byte-identical to
+        # what it was before this flag existed.
+        params[pb.LIFETIME_PARAM] = {
+            "schema": pb.LIFETIME_SCHEMA_V1, "fence_s": float(lifetime_s)}
     if gang is not None:
         # Sealed membership (#1517): the group, its size and this index are
         # part of the action key. Absent, the key is byte-identical to before.
@@ -7311,6 +7336,15 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
                          "(7200 s by default, announced per box and reported "
                          "here when it would cut this request short) also "
                          "applies. Queue waiting is bounded by --wait-s")
+    ap.add_argument("--lifetime-s", type=float, default=None,
+                    help="opt-in sealed lifetime fence in seconds, enforced "
+                         "across admission, checkout, readiness, prelaunch, "
+                         "payload, credited waits, termination, cleanup, scope "
+                         "settlement and resource release (60 s to 7 days). "
+                         "Unlike --timeout-s, which bounds only the payload, "
+                         "a verified fence before the original opportunity "
+                         "permits timed backfill (#1429). Absent, the action "
+                         "is unfenced and every release bound reads UNKNOWN")
     ap.add_argument("--progress-phase", "--progress", action="append", default=None,
                     metavar="NAME=SECONDS",
                     help="declare one phase of this action and the quiet it is "
@@ -7435,6 +7469,13 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         not math.isfinite(args.timeout_s) or args.timeout_s <= 0
     ):
         raise SystemExit("pbrun: --timeout-s must be a positive finite number")
+    if args.lifetime_s is not None and (
+        not math.isfinite(args.lifetime_s)
+        or not pb.LIFETIME_MIN_FENCE_S <= args.lifetime_s <= pb.LIFETIME_MAX_FENCE_S
+    ):
+        raise SystemExit(
+            "pbrun: --lifetime-s must lie within "
+            f"{pb.LIFETIME_MIN_FENCE_S:g}s and {pb.LIFETIME_MAX_FENCE_S:g}s")
     args.progress_policy = parse_progress_phases(
         args.progress_phase, cycle=args.progress_cycle)
     # Some things an argument gets wrong can only be judged once the demand
@@ -7703,6 +7744,12 @@ def prepare_submission(args: argparse.Namespace) -> dict[str, object]:
         # ran on a box that could keep it.
         tags = pool.normalize_placement_tags(
             [*tags, *progress_required_tags(progress_policy)])
+    if args.lifetime_s is not None:
+        # A capability, not a place (#1429): only a box that enforces the
+        # sealed fence across every phase may claim the action.  A loop
+        # from before the contract offers no tag, so fenced work waits
+        # for a box that can keep the bound.
+        tags = pool.normalize_placement_tags([*tags, pb.LIFETIME_TAG])
     if gang is not None:
         # Capability, not place (#1517): only a gang-enabled box offers it,
         # so the live-offer check below refuses when none can claim a member.
@@ -7825,6 +7872,11 @@ def prepare_submission(args: argparse.Namespace) -> dict[str, object]:
             progress=progress_policy, transport=args.transport)
     except ValueError as exc:
         args.refuse_argument(str(exc))
+    try:
+        require_lifetime_scope(
+            lifetime_s=args.lifetime_s, transport=args.transport)
+    except ValueError as exc:
+        args.refuse_argument(str(exc))
     if not demand.get("gpu"):
         if declared not in (None, ""):
             raise SystemExit(
@@ -7860,6 +7912,7 @@ def prepare_submission(args: argparse.Namespace) -> dict[str, object]:
         exclusive=args.exclusive,
         gpu_memory_gb=args.gpu_memory_gb,
         execution_timeout_s=args.timeout_s,
+        lifetime_s=args.lifetime_s,
         progress=progress_policy,
         profile=args.profile,
         container_image_refs=images,
