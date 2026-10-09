@@ -97,6 +97,8 @@ FLEET_SCRIPTS = (
     # consumers filed with ``pbrun --after`` once their producers commit
     # (#913).  A generation without it is a tier loop that cannot start.
     "deferred_release.py",
+    # The tier role imports this helper for stage byte and token reports (#1555).
+    "stage_rounding.py",
     # ...and manifest_promotion.py, which the tier loop imports to promote
     # manifest rows' residency plans (#1252).  Generation 9098f84c872b shipped
     # without it and the tier role crash-looped at import (#1284);

@@ -50,6 +50,8 @@ def test_no_published_script_imports_a_module_the_publication_lacks():
     ("pbrun.py", "--target-evidence"),
     ("pbgang.py", "--target-evidence"),
     ("pbevidence.py", "--out"),
+    ("tier_loop.py", "--source-pool"),
+    ("fleet/tier_loop.py", "--source-pool"),
 ])
 def test_the_command_starts_from_the_generation_alone(
         tmp_path, monkeypatch, tool, fragment):

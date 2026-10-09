@@ -8708,6 +8708,10 @@ leave the waste number. Landed rounding costs no free capacity: the
 same tokens it holds it also adds to the supply, so free stays
 `floor(available / GiB)` minus in-flight tokens.
 
+The runtime publisher includes `stage_rounding.py` in both tool layouts.
+The tier role can report these fields from the published generation without a source checkout.
+CPU tests start each published tier command from an isolated consumer directory.
+
 Both simpler formulas failed on `prismabuild-stage:dl380g10` on 2026-09-18.
 `available` alone counted every landed GiB twice -- free fell as
 `available - held` and the window starved at half the pool, an 11 GiB head
