@@ -155,12 +155,11 @@ class _ForestTouches:
     root or a namespace in it, with whether the calling thread held the stage
     ownership lock at the time.  ``locked`` counts, by call, what was done to
     the forest -- the root, a namespace, or a file in one -- while the lock
-    was held, and ``holds`` how many times it was taken.  ``refusals`` counts
-    the trust refusals the census saw: each ``_trusted_directory_stamp``,
-    ``_directory_version_at`` or ``_current_directory_version`` of a forest
-    directory that answered ``None``.  Not ``leases/`` or ``material/``: the
-    pin census a replacement passes reads those per name by design (#966),
-    they are not the forest.
+    was held, and ``holds`` counts lock acquisitions. ``events`` records
+    listings and trust refusals in call order. Only the stamp and underlying
+    version check supply refusals; the current-version wrapper does not
+    supply another. Each listing consumes its directory's pending refusal,
+    if any. The pin directories, ``leases/`` and ``material/``, are excluded.
     """
 
     def __init__(self, root: Path) -> None:
@@ -168,6 +167,8 @@ class _ForestTouches:
         self.inside = self.prefix + os.sep
         self.listings: list[tuple[str, bool]] = []
         self.locked: collections.Counter[str] = collections.Counter()
+        self.locked_directories: collections.Counter[str] = collections.Counter()
+        self.events: list[tuple[str, str, bool]] = []
         self.holds = 0
         self.holding = threading.local()
         self.refusals = 0
@@ -221,9 +222,12 @@ def _forest_touches(monkeypatch: pytest.MonkeyPatch, publisher,
         def call(path=".", *args, **kwargs):  # type: ignore[no-untyped-def]
             if touches.part(path) in ("root", "namespace"):
                 under = touches.under_lock()
-                touches.listings.append((os.fspath(path), under))
+                name = os.fspath(path)
+                touches.listings.append((name, under))
+                touches.events.append(("list", name, under))
                 if under:
                     touches.locked["list"] += 1
+                    touches.locked_directories[name] += 1
             return real(path, *args, **kwargs)
         return call
 
@@ -235,8 +239,12 @@ def _forest_touches(monkeypatch: pytest.MonkeyPatch, publisher,
                     and isinstance(args[0], int)
                     and (args[0] & os.O_PATH)):
                 return real(path, *args, **kwargs)
-            if getattr(holding, "depth", 0) and part(path) is not None:
-                locked[kind] += 1
+            if getattr(holding, "depth", 0):
+                where = part(path)
+                if where is not None:
+                    locked[kind] += 1
+                    if where in ("root", "namespace"):
+                        touches.locked_directories[os.fspath(path)] += 1
             return real(path, *args, **kwargs)
         return call
 
@@ -248,32 +256,50 @@ def _forest_touches(monkeypatch: pytest.MonkeyPatch, publisher,
     monkeypatch.setattr(os, "open", counted("read", os.open))
     monkeypatch.setattr(io, "open", counted("read", io.open))
     monkeypatch.setattr(builtins, "open", counted("read", builtins.open))
-    real_stamp = stage_move._trusted_directory_stamp
-    real_version = stage_move._directory_version_at
-    real_current = stage_move._current_directory_version
 
-    def stamp(path):  # type: ignore[no-untyped-def]
-        answer = real_stamp(path)
-        if answer is None and touches.part(os.fspath(path)) is not None:
-            touches.refusals += 1
-        return answer
+    def refused(real):  # type: ignore[no-untyped-def]
+        def call(path):  # type: ignore[no-untyped-def]
+            answer = real(path)
+            if answer is None and touches.part(path) in ("root", "namespace"):
+                touches.refusals += 1
+                touches.events.append(
+                    ("refusal", os.fspath(path), touches.under_lock()))
+            return answer
+        return call
 
-    def version(name):  # type: ignore[no-untyped-def]
-        answer = real_version(name)
-        if answer is None and touches.part(name) is not None:
-            touches.refusals += 1
-        return answer
-
-    def current(path):  # type: ignore[no-untyped-def]
-        answer = real_current(path)
-        if answer is None and touches.part(os.fspath(path)) is not None:
-            touches.refusals += 1
-        return answer
-
-    monkeypatch.setattr(stage_move, "_trusted_directory_stamp", stamp)
-    monkeypatch.setattr(stage_move, "_directory_version_at", version)
-    monkeypatch.setattr(stage_move, "_current_directory_version", current)
+    monkeypatch.setattr(stage_move, "_trusted_directory_stamp",
+                        refused(stage_move._trusted_directory_stamp))
+    # _current_directory_version calls this function. Do not wrap both.
+    monkeypatch.setattr(stage_move, "_directory_version_at",
+                        refused(stage_move._directory_version_at))
     return touches
+
+
+def _assert_forest_listings(
+        events: list[tuple[str, str, bool]], root: str,
+        directories: list[str]) -> collections.Counter[str]:
+    """Permit one re-list per earlier refusal, for the same directory."""
+
+    expected = {root, *directories}
+    seen: set[str] = set()
+    pending: dict[str, collections.deque[int]] = collections.defaultdict(
+        collections.deque)
+    locked_relists: collections.Counter[str] = collections.Counter()
+    for index, (kind, name, under_lock) in enumerate(events):
+        assert name in expected, (kind, name)
+        if kind == "refusal":
+            pending[name].append(index)
+            continue
+        if name in seen or under_lock:
+            assert pending[name], (
+                f"unjustified forest listing: {name} at event {index}")
+            pending[name].popleft()
+        if under_lock:
+            locked_relists[name] += 1
+        seen.add(name)
+    assert seen == expected, (seen, expected)
+    return locked_relists
+
 
 @pytest.fixture()
 def world(fleet, monkeypatch: pytest.MonkeyPatch):  # noqa: F811
@@ -320,6 +346,8 @@ def test_2000_names_of_one_dead_owner_list_the_forest_once(
         assert (written, digest) == (SIZE, NEW_DIGEST)
     listings = list(touches.listings)
     locked = collections.Counter(touches.locked)
+    events = list(touches.events)
+    locked_directories = collections.Counter(touches.locked_directories)
     holds = touches.holds
     refusals = touches.refusals
     assert all(path.read_bytes() == NEW for path in destinations)
@@ -335,20 +363,17 @@ def test_2000_names_of_one_dead_owner_list_the_forest_once(
                    if entry.is_dir() and entry.name not in _NOT_THE_FOREST]
     fragments = sum(1 for directory in directories
                     for entry in os.scandir(directory) if entry.is_file())
-    fingerprint = 1 + len(directories) + fragments
     # The census's per-hold cost on this filesystem: the fingerprint where
     # the mount table names the device directly, plus one verifying
     # ``lstat`` per directory where each trust check re-proves an anonymous
     # device through its descriptor (#1358). No listing, no read, no second
     # pass on either.
     probed = stage_move._filesystem_type(os.stat(root).st_dev) is None
-    per_hold = ((1 + len(directories)) * (2 if probed else 1) + fragments)
-    # The forest did not change during the range, so the first census listed
-    # it and every later one, locked or not, compared stamps. A listing past
-    # the first of a directory is allowed only with the trust refusal that
-    # caused it: each re-listed directory answers ``None`` from its stamp or
-    # version check first, and that refusal is counted above. A listing with
-    # no observed refusal is a regression, not churn.
+    directory_cost = 2 if probed else 1
+    per_hold = (1 + len(directories)) * directory_cost + fragments
+    # Consume one earlier refusal for this directory at each re-list.
+    # A refused initial stamp prevents retention of the first listing, so
+    # that refusal permits its next listing, not another directory's list.
     listed_locked = [name for name, under_lock in listings if under_lock]
     roots = [name for name, _under_lock in listings if name == str(root)]
     print(f"forest listings {len(listings)} (root {len(roots)}, under the "
@@ -356,21 +381,22 @@ def test_2000_names_of_one_dead_owner_list_the_forest_once(
           f"fragments {fragments}; under the lock, {holds} holds touched "
           f"the forest {dict(sorted(locked.items()))}, at most "
           f"{per_hold} per hold; trust refusals {refusals}")
-    firsts = 1 + len(directories)
-    relists = max(0, len(listings) - firsts)
-    assert relists <= refusals, (relists, refusals, len(listings), firsts)
-    assert len(listed_locked) <= refusals, (
-        len(listed_locked), refusals, listed_locked[:3])
-    assert len(roots) <= 1 + refusals, (len(roots), refusals)
+    locked_relists = _assert_forest_listings(events, str(root), directories)
     assert held["calls"] >= NAMES, held
     assert holds == held["calls"], (holds, held)
-    # What the lock covered of the forest is its fingerprint, once per hold at
-    # most, plus one re-listing per observed refusal, and nothing more: no
-    # read, no second pass.
+    # A matched re-list adds at most two directory trust checks and one
+    # listing. It cannot pay for another directory or another forest pass.
     assert set(locked) - {"list"} <= set(FINGERPRINT_OPS), locked
-    assert locked.get("list", 0) <= refusals, (locked, refusals)
-    assert sum(locked.values()) <= holds * per_hold + refusals * per_hold, (
-        locked, holds, per_hold, refusals)
+    assert locked.get("list", 0) == sum(locked_relists.values()), (
+        locked, locked_relists)
+    for name, count in locked_directories.items():
+        bound = (holds * directory_cost
+                 + locked_relists[name] * (2 * directory_cost + 1))
+        assert count <= bound, (name, count, bound)
+    assert sum(locked.values()) <= (
+        holds * per_hold
+        + sum(locked_relists.values()) * (2 * directory_cost + 1)
+    ), (locked, holds, per_hold, locked_relists)
 
 
 def test_a_fragment_filed_mid_range_is_seen_by_the_next_decision(
@@ -408,3 +434,101 @@ def test_a_fragment_filed_mid_range_is_seen_by_the_next_decision(
         _replace(publisher, target, copier)
     assert live_consumer[:12] in str(refused.value), str(refused.value)
     assert target.read_bytes() == OLD
+
+
+@pytest.mark.parametrize("extra", ["unrelated", "reused", "late"])
+def test_a_refusal_cannot_pay_for_an_unjustified_listing(
+        fleet, monkeypatch: pytest.MonkeyPatch, extra: str) -> None:
+    """The regression gate must reject a re-list without its own refusal."""
+
+    queue, _stage, _cas = fleet
+    root = queue.root / pool.RESIDENCY
+    first, second = root / "first", root / "second"
+    first.mkdir()
+    second.mkdir()
+    publisher = base._publisher(fleet, base._key(), base._key())
+    time.sleep(2 * time.clock_getres(5))
+    # Keep trust stable except for one root comparison. Exercise the real
+    # census, including current -> version, rather than synthetic counters.
+    refuse_root = False
+
+    def filesystem(_info, *, path=None, **_kwargs):
+        nonlocal refuse_root
+        if refuse_root and os.fspath(path) == str(root):
+            refuse_root = False
+            return None
+        return "tmpfs"
+
+    monkeypatch.setattr(stage_move, "_object_filesystem_type", filesystem)
+    touches = _forest_touches(monkeypatch, publisher, root)
+    publisher._forest_census()
+    assert publisher._listed_root is not None
+    assert set(publisher._listed_children) == {"first", "second"}
+    with publisher.queue.stage_ownership_lock(str(publisher.stage_root)):
+        if extra == "late":
+            with os.scandir(second) as entries:
+                tuple(entries)
+        refuse_root = True
+        publisher._forest_census()
+        if extra != "late":
+            target = second if extra == "unrelated" else root
+            with os.scandir(target) as entries:
+                tuple(entries)
+    with pytest.raises(AssertionError, match="unjustified forest listing"):
+        _assert_forest_listings(
+            touches.events, str(root), [str(first), str(second)])
+    assert touches.refusals == 1
+
+
+@pytest.mark.parametrize("changed", [
+    "stable", "root", "namespace", "initial", "both"])
+def test_only_the_directory_that_refuses_trust_is_relisted(
+        fleet, monkeypatch: pytest.MonkeyPatch, changed: str) -> None:
+    """One refusal re-lists one directory; restored trust retains its names."""
+
+    queue, _stage, _cas = fleet
+    root = queue.root / pool.RESIDENCY
+    first, second = root / "first", root / "second"
+    first.mkdir()
+    second.mkdir()
+    publisher = base._publisher(fleet, base._key(), base._key())
+    time.sleep(2 * time.clock_getres(5))
+    target = {"stable": None, "root": str(root), "namespace": str(first),
+              "initial": str(root), "both": str(root)}[changed]
+    remaining = int(changed == "initial")
+
+    def filesystem(_info, *, path=None, **_kwargs):
+        nonlocal remaining
+        if remaining and os.fspath(path) == target:
+            remaining -= 1
+            return None
+        return "tmpfs"
+
+    monkeypatch.setattr(stage_move, "_object_filesystem_type", filesystem)
+    touches = _forest_touches(monkeypatch, publisher, root)
+    publisher._forest_census()
+    remaining = (2 if changed == "both"
+                 else int(changed in {"root", "namespace"}))
+    for _ in range(2):
+        with publisher.queue.stage_ownership_lock(str(publisher.stage_root)):
+            publisher._forest_census()
+    expected = collections.Counter({str(root): 1, str(first): 1, str(second): 1})
+    if target is not None:
+        expected[target] += 2 if changed == "both" else 1
+    assert collections.Counter(name for name, _ in touches.listings) == expected
+    relists = _assert_forest_listings(
+        touches.events, str(root), [str(first), str(second)])
+    extra_lists = 2 if changed == "both" else int(target is not None)
+    assert relists == (
+        collections.Counter() if target is None
+        else collections.Counter({target: extra_lists}))
+    assert touches.refusals == extra_lists
+    extra_checks = {"stable": 0, "root": 2, "namespace": 2,
+                    "initial": 1, "both": 2}[changed]
+    assert touches.locked == collections.Counter(
+        lstat=6 + extra_checks, list=extra_lists)
+    assert touches.locked_directories == collections.Counter({
+        name: 2 + extra_checks + extra_lists if name == target else 2
+        for name in expected})
+    assert publisher._listed_root is not None
+    assert set(publisher._listed_children) == {"first", "second"}
