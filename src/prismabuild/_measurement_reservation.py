@@ -488,16 +488,18 @@ class PassCensus:
     def _refresh_dynamic_elections(self) -> bool:
         """Re-read live elections into the stored census (#1571).
 
-        A sibling loop's gang or measurement election lands between
-        this pass's candidates, while these locks are released. The
-        stored elections would miss it, and the blocking checks would
-        admit work a live election fences -- the unsafe direction. So
-        every reuse re-reads the two small election sources (one
-        listing plus one small read per live gang group, one listing
-        plus one small read per passes sidecar, no fence, no scan).
-        Election files are no-clobber writes, and a member row this
-        pass is about to elect re-checks standing under the re-taken
-        admission lock anyway. Only fences are added, never removed:
+        Run only while the elected measurement keys of this host and
+        host admission are held. A sibling loop's gang or measurement
+        election lands between this pass's candidates, while these
+        locks are released. The stored elections would miss it, and
+        the blocking checks would admit work a live election fences
+        -- the unsafe direction. So every reuse re-reads the two
+        small election sources (one listing plus one small read per
+        live gang group, one listing plus one small read per passes
+        sidecar, no fence, no scan). Election writers elect only
+        under host admission (#1517), so the refresh reads a stable
+        election state and the candidate then holds it.
+        Only fences are added, never removed:
         a newly found measurement selection joins the stored
         selections and elections (missing authority stays fenced,
         exactly as in :func:`locked_census`), while a stored election
@@ -574,11 +576,12 @@ class PassCensus:
         the candidate, or ``None`` when the locks did not come. A
         busy elected key is recorded for :meth:`reused` to keep as a
         live election, the conservative reading :func:`locked_census`
-        already uses.
+        already uses. The live-election refresh runs under these
+        same locks: election writers elect only under host admission
+        (#1517), so the refreshed gang and measurement selections it
+        yields are stable while the candidate holds them.
         """
         if self._census is None:
-            return None
-        if not self._refresh_dynamic_elections():
             return None
         from . import pool as pool_mod
         held = ExitStack()
@@ -598,6 +601,9 @@ class PassCensus:
             held.close()
             return None
         except OSError:
+            held.close()
+            return None
+        if not self._refresh_dynamic_elections():
             held.close()
             return None
         self._busy = busy
