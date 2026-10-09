@@ -2049,7 +2049,27 @@ pytest receives its `pytest` child as the base temp.
 The short name leaves room for xdist worker directories and AF_UNIX sockets.
 No action key or attempt identity is truncated to create this namespace.
 Exit 0 removes only this attempt directory; a nonzero exit retains it.
-The sealed `TMPDIR` and explicit `--basetemp` contracts stay unchanged.
+The worker supervisor expires retained default scratch after 24 hours (#1710).
+It sweeps each registered sealed `TMPDIR` root once per hour, even while worker loops execute actions.
+With complete custody and an ended scope, retention is at most 25 hours plus a supervisor tick and the sweep duration.
+
+The standalone `pbtest_scratch` owner travels in the shard's sealed argv.
+It records the full action key, nonce, scope, root identity, attempt identity, and completion time.
+Its private registry uses the account home, not the action's sealed `HOME`.
+A root lock serializes namespace creation, completion, and expiry.
+An attempt lock stays held until the shard interpreter exits.
+Expiry also requires the exact broker scope to be absent or to report `populated 0`.
+An active controller, populated scope, or unknown ownership prevents deletion.
+The completion time, not the directory modification time, starts the retention clock.
+
+Expiry pins the root and attempt with directory descriptors.
+It checks their device and inode identities and refuses nested mounts.
+It does not follow symlinks during deletion.
+Legacy `pbtest-<key12>/<nonce>` directories and unmarked `pb-*` directories have no safe completion proof.
+Expiry preserves them, malformed records, interrupted attempts without completion metadata, and attempts without exact broker scope evidence.
+Age alone never authorizes their deletion.
+The sealed `TMPDIR` placement stays unchanged.
+Explicit `--basetemp` uses its separate namespace and remains outside this expiry policy.
 
 `--pytest-args '["--pbtest-trace"]'` opts into interrupted-shard diagnostics
 (#1455, Refs #1421). The existing outcome controller flushes one
