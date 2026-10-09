@@ -611,10 +611,36 @@ def test_release_frees_the_unified_charge(rig, tmp_path):
 
 
 def test_starting_reservation_counts_once(rig, tmp_path):
-    """An acquiring holder charges mem once; its cap is reported, not added."""
-    from prismabuild import adaptive_gpu as _gpu
+    """Each holder charges mem once; caps are reported, not added."""
     queue, now, sample, args = rig
     first, _, _ = _sealed(tmp_path, "starting-first")
+    _publish(queue, first, SMALL)
+    assert queue.claim(**args)["action_key"] == first
+    _tick(rig)
+    second, _, _ = _sealed(tmp_path, "starting-second")
+    _publish_cpu(queue, second, {"cpu": 2, "mem_gb": 96})
+    assert queue.claim(**args)["action_key"] == second
+    third, _, _ = _sealed(tmp_path, "starting-third")
+    _publish(queue, third, SMALL)
+    _tick(rig)
+    assert queue.claim(**args) is None
+    decision = _denial(queue, third)["evidence"]["decision"]
+    assert decision["reason"] == "unified_gpu_memory_budget"
+    assert decision["held_gpu_cap_total_gib"] == SMALL["mem_gb"]
+    assert decision["held_mem_gb"] == SMALL["mem_gb"] + 96.0
+    assert decision["held_ram_mem_gb"] == 0.0
+    assert decision["committed_gib"] == SMALL["mem_gb"] + 96.0
+    assert decision["candidate_charge_gib"] == SMALL["mem_gb"]
+    assert {entry["action_key"] for entry in decision["held_gpu_caps"]} == {
+        first, second}
+    assert all(entry["charge_gib"] == entry["mem_gb"]
+               for entry in decision["held_gpu_caps"])
+
+
+def test_acquiring_holder_counts_once_in_committed(rig, tmp_path):
+    """An acquiring holder charges mem once in the committed walk."""
+    queue, now, sample, args = rig
+    first, _, _ = _sealed(tmp_path, "committed-first")
     _publish(queue, first, SMALL)
     assert queue.claim(**args)["action_key"] == first
     ledger = queue.ledger()
@@ -626,22 +652,14 @@ def test_starting_reservation_counts_once(rig, tmp_path):
     assert handle is not None
     assert handle.startswith(pool.ACQUIRING_PREFIX)
     try:
-        controller = _gpu.Controller(ledger)
-        controller._sample = dict(sample)
-        item = adaptive_cpu.read_json(
-            queue.item_path(pool.CLAIMED, first))
-        assert controller.decision(
-            item, SMALL,
-            contract=("shape", False, False, SMALL["mem_gb"] * GIB)) is None
-        decision = controller.last_decision
-        assert decision["reason"] == "unified_gpu_memory_budget"
-        assert decision["held_gpu_cap_total_gib"] == SMALL["mem_gb"] + 90.0
-        assert decision["held_mem_gb"] == SMALL["mem_gb"] + 96.0
-        assert decision["held_ram_mem_gb"] == 0.0
-        assert decision["committed_gib"] == SMALL["mem_gb"] + 96.0
-        assert decision["candidate_charge_gib"] == SMALL["mem_gb"]
-        assert {entry["action_key"] for entry in decision["held_gpu_caps"]} == {
-            first, handle}
+        caps, committed, cap_total, held_mem, ram_mem = (
+            adaptive_gpu._unified_committed_gib(ledger))
+        assert committed == SMALL["mem_gb"] + 96.0
+        assert cap_total == SMALL["mem_gb"] + 90.0
+        assert held_mem == SMALL["mem_gb"] + 96.0
+        assert ram_mem == 0.0
+        assert {entry["action_key"] for entry in caps} == {first, handle}
+        assert all(entry["charge_gib"] == entry["mem_gb"] for entry in caps)
     finally:
         ledger.abandon_acquire(handle)
 

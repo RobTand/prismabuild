@@ -6409,6 +6409,10 @@ still require fresh trusted telemetry. The refusal
 bytes, the baseline the offer already subtracted, the candidate charge, and
 the offer.
 
+Sharing arbitration precedes the memory fit check. A candidate that cannot
+share the device refuses quietly there, as before this gate. Only a settled
+sharer reaches the memory check. Gang backfill reclamation keeps its election.
+
 Memory refusals retain the existing background preemption and age rules.
 The release must cover the candidate and fresh external growth before preemption can select a holder.
 Withdrawal does not release memory tokens. The holder's finish path returns them.

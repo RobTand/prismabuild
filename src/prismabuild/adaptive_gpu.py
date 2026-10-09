@@ -858,14 +858,11 @@ class Controller:
                                   requested_budget_bytes=budget,
                                   requested_budget_gib=float(budget) / float(GIB),
                                   requested_mem_gb=demand.get("mem_gb", 0))
-                if type(budget) in (int, float) and math.isfinite(budget) and budget > 0:
-                    verdict = unified_memory_verdict(
-                        self.ledger, demand, budget, sample=sample,
-                        observed_external_gib=observed_external_gib)
-                    if verdict is not None:
-                        host_gib = float(sample.get("host_total_bytes", 0)) / float(GIB)
-                        return refuse(verdict.pop("reason"),
-                                      host_total_gib=host_gib, **verdict)
+                # The fit verdict runs after sharing arbitration below
+                # (#1661): a candidate that cannot share refuses quietly
+                # there, exactly as before this gate existed. Only a settled
+                # sharer reaches the memory check, and only its refusal
+                # preempts at the pool, so gang reclamation keeps its election.
             if device.get('memory_domain') == 'discrete':
                 fields = ('memory_total_bytes', 'memory_free_bytes', 'memory_used_bytes')
                 if not all(_number(device.get(k)) for k in fields):
@@ -905,6 +902,19 @@ class Controller:
                         or record['sampled_unix'] < meta['admitted_unix']
                         or sample['sampled_unix'] < meta['admitted_unix'] + SETTLE_S):
                     return refuse("holder_telemetry_unavailable", holder=holder.name)
+        if device.get("memory_domain") == "shared_system":
+            # Last fit check before admission (#1661). Sharing arbitration
+            # above already refused unsettled candidates without preemption;
+            # the GPU cap stays a subset of ``mem_gb`` here, never a second
+            # charge, and attributed bytes never count twice.
+            if type(budget) in (int, float) and math.isfinite(budget) and budget > 0:
+                verdict = unified_memory_verdict(
+                    self.ledger, demand, budget, sample=sample,
+                    observed_external_gib=observed_external_gib)
+                if verdict is not None:
+                    host_gib = float(sample.get("host_total_bytes", 0)) / float(GIB)
+                    return refuse(verdict.pop("reason"),
+                                  host_total_gib=host_gib, **verdict)
         self.last_decision = {"reason": "admitted", "sample": sample,
                                 "power_reference_w": reference,
                                 "power_reference_scope": reference_scope,
