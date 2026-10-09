@@ -225,6 +225,32 @@ def test_rejoin_caps_memory_but_does_not_override_current_gpu_safety():
     assert offer["gpu"] == 0
     assert offer["mem_gb"] == 40
 
+def test_rejoin_forgets_populated_window_and_external_baseline():
+    """Pre-action samples must not decide the first offer after rejoin."""
+    observer = bc.CapacityObserver(samples=3)
+    declared = {"cpu": 20, "gpu": 1, "mem_gb": 104}
+    now = time.time()
+    foreign = {
+        "schema": bc.GPU_CAPACITY_SCHEMA, "sample_id": "e" * 32,
+        "sampled_unix": now, "complete": True, "attributed": True,
+        "devices": [{"uuid": "GPU-1", "memory_domain": "shared_system"}],
+        "host_total_bytes": 128 * GIB, "host_available_bytes": 120 * GIB,
+        "memory_pressure_some": 0.0, "memory_pressure_full": 0.0,
+        "cpu_pressure_some": 0.0, "cpu_pressure_full": 0.0,
+        "foreign_processes": [{"pid": 9, "gpu_uuid": "GPU-1",
+                               "used_bytes": 30 * GIB}],
+        "jobs": []}
+    for _ in range(3):
+        offer = observer.offer(declared, {}, gpu_sample=foreign, mem_gb=120,
+                               load1=0)
+    assert offer["mem_gb"] == 82
+    assert observer.last_offer_external_gib == 30
+    observer.rejoin({"cpu": 20, "gpu": 1, "mem_gb": 40})
+    assert observer.last_offer_external_gib == 0
+    offer = observer.offer(declared, {}, gpu_sample=None, mem_gb=120, load1=0)
+    assert offer["mem_gb"] == 40
+    assert observer.last_offer_external_gib == 0
+
 
 def test_invalid_sample_count_is_refused():
     with pytest.raises(ValueError):

@@ -676,7 +676,9 @@ class CapacityObserver:
         host; that is "no verdict to inherit", not "no capacity".
         """
 
+        self._history.clear()
         self._external_history.clear()
+        self.last_offer_external_gib = 0
         # An emptied window is not a new one: the pad is what a start gets, and
         # a return must not be given it -- see the module docstring.
         self._seeded = True
