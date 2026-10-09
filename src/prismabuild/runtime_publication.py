@@ -307,12 +307,13 @@ def sign_approval(generation_dir: Path, *, key_path: Path | None = None) -> Path
         raise PermissionError("movement signing key must belong to the publisher account")
     try:
         store = source.parent.resolve(strict=True)
-        if info.st_uid == store.stat().st_uid:
-            raise PermissionError(
-                "movement signing key shares its account with the runtime store; "
-                "use the dedicated publisher account")
+        store_uid = store.stat().st_uid
     except OSError as exc:
         raise PermissionError("movement signing key store is unreadable") from exc
+    if info.st_uid == store_uid:
+        raise PermissionError(
+            "movement signing key shares its account with the runtime store; "
+            "use the dedicated publisher account")
     secret = _regular_bytes(key_file).decode("utf-8").strip()
     if _DIGEST.fullmatch(secret) is None:
         raise ValueError("movement signing key is not 64 hex")
