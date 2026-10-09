@@ -21226,9 +21226,10 @@ class PoolQueue:
                 verdict_snapshot(), item, host=socket.gethostname(), now=_now())
             if carried is not None:
                 withhold(key, WITHHOLD_KINDS.get(str(carried["mode"])))
-                if "drain_until_unix" in carried:
+                if "drain_until_unix" in carried and movement_authority():
                     # A measurement's carried episode (it snapshots its drain
-                    # deadline): the gang precedence reads it like a fresh one.
+                    # deadline): the gang precedence reads it like a fresh one,
+                    # on a host where that precedence applies (#1579).
                     measurement_withholds.add(key)
             return carried
 
@@ -21311,15 +21312,16 @@ class PoolQueue:
             held_back = withheld_for is not None and (
                 withheld_kinds is None
                 or self._demands_withheld_kind(item, withheld_kinds))
-            if (held_back and withheld_for in measurement_withholds
-                    and ready_priority.get(withheld_for, 0) <= int(item.get("priority", 0))
-                    and self._gang_member_past_reservation_bound(
-                        item, authority=movement_authority())):
+            reserving_gang = (self._gang_reservation_priority(item, authority=movement_authority())
+                              if held_back and withheld_for in measurement_withholds else None)
+            if (reserving_gang is not None
+                    and ready_priority.get(withheld_for, 0) <= reserving_gang):
                 # The reservation wins over a measurement withhold (#1579): a
-                # gang member whose gang has waited past the bound is not held
-                # back behind a waiting measurement, or the gang could not even
-                # elect the host it reserves.  The measurement row stays READY
-                # and withholds again once the gang has started.
+                # gang member whose gang reserves its hosts is not held back
+                # behind a waiting measurement of the gang's priority or lower,
+                # or the gang could not even elect the host it reserves.  The
+                # measurement row stays READY and withholds again once the gang
+                # has started.
                 held_back = False
             producer = held_back and self._may_serve_a_producer(item)
             if held_back and withheld_kinds is None and not producer:
@@ -25647,25 +25649,28 @@ class PoolQueue:
         )
         return self.attempt_path(archived, attempt)
 
-    def _gang_member_past_reservation_bound(self, item: Mapping[str, object], *,
-                                            authority: bool) -> bool:
-        """Whether ``item`` is a gang member whose gang reserves its hosts now (#1579).
+    def _gang_reservation_priority(self, item: Mapping[str, object], *,
+                                   authority: bool) -> int | None:
+        """The priority of the gang that ``item`` belongs to when it reserves its hosts now (#1579).
 
-        The gang has waited past the reservation bound, and this host holds the
+        ``None`` for a row that is no gang member and for a gang that is young.
+        The gang has waited past the reservation bound and this host holds the
         protected copy (``authority``) that makes the reservation apply at all.
+        The priority is the gang record's, which every other comparison of the
+        precedence reads, not a member row's.
         """
         from . import _gang, _measurement_reservation as measurement_reservation
         if not isinstance(item.get("gang"), Mapping):
-            return False
+            return None
         try:
             declared = _gang.declaration(item["gang"])
             record = _gang.read_group(self, declared["group"]) if declared else None
-            if record is None:
-                return False
-            return measurement_reservation.reserves_after(
-                _gang.rank(record)[1], _now(), authority=authority)
+            if record is None or not measurement_reservation.reserves_after(
+                    _gang.rank(record)[1], _now(), authority=authority):
+                return None
+            return int(record["priority"])
         except (_gang.GangContractError, OSError, pb.PrismaBuildError, KeyError, TypeError, ValueError):
-            return False
+            return None
 
     @_serialized_key
     def _gang_teardown(self, item: Mapping[str, object] | None, *, reason: str,

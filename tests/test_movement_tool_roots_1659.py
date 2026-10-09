@@ -86,3 +86,8 @@ def test_a_producer_seals_its_export_from_the_copy_it_holds(movement_authority, 
 def test_a_checkout_seals_its_export_from_the_checkout(movement_authority):
     tool = produced_spool.export_tool()
     assert tool == Path(produced_spool.__file__).resolve().parents[2] / "tools" / "fleet" / "produced_export.py"
+
+
+def test_the_movement_environment_allow_list_is_built_from_the_pools_names():
+    from prismabuild import movement_actions as ma
+    assert ma.MOVEMENT_EXTRA_ENVIRONMENT == (pool.CONTAINER_OWNER_ENV, pool.CONTAINER_MARKER_ENV)

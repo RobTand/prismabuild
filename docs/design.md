@@ -4965,11 +4965,18 @@ row can borrow a fresh-ready member's host while peers cannot commit, and the
 reservation it meets there is that election's fence. A reservation shortfall never
 becomes a loan. The claim loop refuses it before it checks backfill eligibility.
 
-Unknown is consuming, never exempt. A candidate that omits `cpu` or `mem_gb`, or
-whose demand does not read, counts as the whole host in that dimension (an omitted
-`gpu` is zero unless the row sets `needs_gpu`); a member whose demand does not read
-reserves the whole host; a host ledger that does not read denies the row for the
-pass. Never held: the gang's own members and any gang's (two gangs of one priority
+Unknown is consuming, never exempt. A candidate that omits `cpu` or `mem_gb`, that
+declares `cpu` as zero (`adaptive_cpu` reads that as unbounded CPU use), or whose
+demand does not read, counts as the whole host in that dimension. An omitted `gpu` is
+zero unless the row sets `needs_gpu`, and so is any other omitted ledger dimension
+such as `spool_gb`. A member whose demand does not read reserves the whole host. A host
+ledger that does not read denies the row for the pass.
+
+A member that has started reserves nothing more. Its tokens are held on the ledger, so
+reserving its demand again would count them twice and refuse rows that fit beside it.
+The census marks an election `claimed` when its member row is CLAIMED. The reservation
+and the measurement precedence below skip a claimed election. The fence against
+strictly lower priority stays for the whole life of the gang, as before. Never held: the gang's own members and any gang's (two gangs of one priority
 are ordered by `rank`), higher priority, a verified publication canary slot (its
 own next-free-safe-boundary contract) and the two roles PrismaBuild itself assigns.
 
@@ -4990,9 +4997,12 @@ main and adds no refusal.
 
 **The two roles.** `returns_capacity` marks a node whose whole job is to give
 capacity back: a stage or RAM egress (`stage_release.py`), a produced export
-(`produced_export.py`) or a resident evict. `serves_residency` marks a stage mover
-or RAM promotion a residency consumer waits on (`stage_move.py`, `ram_promote.py`,
-carrying its residency range). Neither is a declaration. `PoolQueue.publish` refuses
+(`produced_export.py`) or a resident evict (`local_resident.py`). `serves_residency`
+marks a stage mover or RAM promotion a residency consumer waits on (`stage_move.py`,
+`ram_promote.py`, carrying its residency range). A role needs a tool spelled in a
+protected copy, and only a tier that announces the protected tool root seals one. Today
+that is `tier_loop.py` (the stage and RAM tiers). The local tier loop announces its own
+directory, so a local resident evict carries no role yet. Neither role is a declaration. `PoolQueue.publish` refuses
 both names in a sealed action and derives the role from the node's EXECUTED identity
 (`movement_actions.capacity_role`), from the sealed definition alone and reading no
 file of the publishing box. `task.argv` must equal exactly the bash capture wrapper
@@ -5071,9 +5081,12 @@ movement node sealed before its host announced the copy (an older generation, a 
 loop run from a checkout) carries no role. While a reservation is active on a host
 that holds the copy, such a node is held by its demand like any ordinary row. The
 cycle (one minute) and the publication timer (one minute) bound that window after a
-roll; run tier loops from the published generation. A complete copy is about 27 MB per
-generation, and the store only grows. Removing an old copy is an administrator's act,
-and a copy that a sealed row still names must stay. Role exemptions retain real CPU,
+roll; run tier loops from the published generation, under `/usr/bin/python3` as the
+supervisor starts them. A tier loop under another interpreter announces that
+interpreter, and its movers carry no role. A complete copy is about 27 MB per
+generation, and the store only grows. The unit publishes nothing when less than 1 GiB is
+free on the filesystem, and the host then falls back. Removing an old copy is an
+administrator's act, and a copy that a sealed row still names must stay. Role exemptions retain real CPU,
 memory, GPU and tier ledger admission, so required movers use free capacity even when
 the gang reserves every CPU. The role check is a scheduling classification. It adds no
 launch refusal under D32 and changes no allocator or kernel path under D41.

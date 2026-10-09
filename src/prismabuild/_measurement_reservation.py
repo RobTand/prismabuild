@@ -233,7 +233,8 @@ def _scan_publications(queue: PoolQueue) -> dict:
             "opportunities": opportunities, "keys": sorted(set(measurements) | set(selected)),
             "gang_elections": _gang_elections(
                 queue, {key: rows.get(key, []) + unorderable.get(key, [])
-                        for key in rows.keys() | unorderable.keys()}, count)}
+                        for key in rows.keys() | unorderable.keys()}, count,
+                frozenset(opportunities))}
 
 
 def _member_demand(rows: dict[str, list[dict]], record: dict, key: str) -> dict | None:
@@ -257,7 +258,8 @@ def _member_demand(rows: dict[str, list[dict]], record: dict, key: str) -> dict 
     return None
 
 
-def _gang_elections(queue: PoolQueue, rows: dict[str, list[dict]], count: int) -> dict:
+def _gang_elections(queue: PoolQueue, rows: dict[str, list[dict]], count: int,
+                    claimed: frozenset[str] = frozenset()) -> dict:
     """Live gang host elections (#1517), read in the same bounded child.
 
     A gang election fences its host while any member row of a gang without a
@@ -266,6 +268,11 @@ def _gang_elections(queue: PoolQueue, rows: dict[str, list[dict]], count: int) -
     Elections are written only by the elected host's own pass under its host
     admission, which also serializes this host's readers, so no member key
     joins the M lock set.
+
+    ``claimed`` names the member rows that are CLAIMED. An election whose member
+    is claimed carries ``claimed``: that member's tokens are held on its host,
+    so a reservation of its demand (#1579) would count them twice. The fence
+    against strictly lower priority stays for the gang's whole life.
     """
     from . import _gang
     directory = _gang.root(queue)
@@ -296,7 +303,8 @@ def _gang_elections(queue: PoolQueue, rows: dict[str, list[dict]], count: int) -
                     found[election["action_key"]] = {
                         "group": group, "index": index, "action_key": election["action_key"],
                         "host": election["host"], "priority": election["priority"], "rank": rank,
-                        "demand": _member_demand(rows, record, election["action_key"])}
+                        "demand": _member_demand(rows, record, election["action_key"]),
+                        "claimed": election["action_key"] in claimed}
     except _gang.GangContractError as exc:
         raise CensusUnavailable(str(exc)) from exc
     return found
@@ -529,10 +537,12 @@ def blocking_selection(census: dict, item: dict, *, host: str, funded_by: str | 
 #: elected host (#1579).  See ``docs/design.md``, "Priority rule".
 GANG_RESERVE_AFTER_S = 600.0
 
-#: A dimension a row that omits it demands none of.  ``cpu`` and ``mem_gb`` are
-#: not here: a row that omits them is unknown (``adaptive_cpu`` refuses a row
-#: with no ``cpu`` on a held box), so it is taken to demand the whole host.
-_ABSENT_IS_ZERO = ("gpu",)
+#: The dimensions a row that omits them is unknown in, so it is taken to demand
+#: the whole host: ``adaptive_cpu`` reads a missing or zero ``cpu`` as unbounded
+#: CPU use and refuses it on a held box.  Any other dimension a row omits it
+#: demands none of, as the ledger itself counts it (``gpu`` too, unless the row
+#: sets ``needs_gpu``).
+_UNKNOWN_WHEN_ABSENT = ("cpu", "mem_gb")
 
 
 def reserves_after(first_published: object, now: float, *, authority: bool) -> bool:
@@ -552,10 +562,15 @@ def reserves_after(first_published: object, now: float, *, authority: bool) -> b
 
 
 def _gang_reserves(chosen: dict, now: float, authority: bool) -> bool:
-    """Whether the gang behind election ``chosen`` reserves its host (:func:`reserves_after`)."""
+    """Whether the gang behind election ``chosen`` reserves its host (:func:`reserves_after`).
+
+    A member that is already CLAIMED reserves nothing: its demand is held on
+    the ledger, and reserving it again would refuse rows that fit beside it.
+    """
     rank = chosen.get("rank")
-    return reserves_after(rank[1] if isinstance(rank, list) and len(rank) == 3 else None, now,
-                          authority=authority)
+    return (chosen.get("claimed") is not True
+            and reserves_after(rank[1] if isinstance(rank, list) and len(rank) == 3 else None, now,
+                               authority=authority))
 
 
 def reservation_priority_on(census: dict, *, host: str, now: float, authority: bool) -> int | None:
@@ -598,9 +613,11 @@ def reservation_shortfall(item: dict, member_demand: object, *, held: object,
 
         held[d] + row[d] + reserved[d] <= capacity[d]
 
-    A row dimension that is missing (``cpu``, ``mem_gb``) or unreadable counts
-    as the whole host's capacity, never as zero: unknown is consuming, not
-    exempt.  A host ledger that did not read is the same, fail safe.
+    A row dimension that is unknown counts as the whole host's capacity, never
+    as zero: unknown is consuming, not exempt.  Unknown is a missing or zero
+    ``cpu``, a missing ``mem_gb`` or ``gpu`` of a GPU row, and any value that
+    does not read.  Any other omitted dimension demands none of it.  A host
+    ledger that did not read is the same, fail safe.
     """
     if not (isinstance(held, dict) and isinstance(capacity, dict)):
         return {"unknown": "host ledger unreadable"}
@@ -610,9 +627,10 @@ def reservation_shortfall(item: dict, member_demand: object, *, held: object,
         total = int(capacity[kind])
         asked = resources.get(kind) if isinstance(resources, dict) else None
         if asked is None and isinstance(resources, dict) and (
-                kind in _ABSENT_IS_ZERO and not (kind == "gpu" and item.get("needs_gpu") is True)):
+                kind not in _UNKNOWN_WHEN_ABSENT
+                and not (kind == "gpu" and item.get("needs_gpu") is True)):
             asked = 0
-        if type(asked) is not int or asked < 0:
+        if type(asked) is not int or asked < 0 or (kind == "cpu" and asked == 0):
             asked = total
         used = held.get(kind, 0)
         if type(used) is not int or used < 0:

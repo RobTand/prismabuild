@@ -24,6 +24,7 @@ Standard library only: the installed copy runs standalone, as
 from __future__ import annotations
 
 import argparse
+import errno
 import fcntl
 import functools
 import hashlib
@@ -47,6 +48,10 @@ STATUS_SCHEMA = "prismabuild.movement-publication-status.v1"
 DEFAULT_CONFIG = Path("/etc/prismabuild/movement-publish.json")
 #: The movement tool every tool root carries; its copy stands for the root.
 PROBE_TOOL = "stage_release.py"
+#: The root unit never fills its filesystem: it publishes nothing below this.
+#: A copy is about 27 MB and the store only grows, so the host falls back
+#: (no copy, main's behaviour) instead of starving the rest of the box.
+MIN_FREE_BYTES = 1 << 30
 _DIGEST = re.compile(r"[0-9a-f]{64}")
 _GENERATION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 #: Verified generation copies and members, keyed by what their files look like
@@ -182,6 +187,9 @@ def publish_generation(source: Path, *, receipt_sha256: str) -> Path:
         # else creates entries here, so this rename cannot replace a publication.
         if target.exists():
             raise FileExistsError("movement generations are append-only")
+        room = os.statvfs(store)
+        if room.f_bavail * room.f_frsize < MIN_FREE_BYTES:
+            raise OSError(errno.ENOSPC, f"less than {MIN_FREE_BYTES} bytes free in {store}")
         _sweep_staging(store)
         stage = Path(tempfile.mkdtemp(prefix=".publication-", dir=store))
         try:

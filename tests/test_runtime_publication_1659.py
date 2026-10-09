@@ -352,6 +352,27 @@ def test_the_root_unit_reports_a_refusal_and_never_raises(
         assert not (publication_store / source.name).exists()
 
 
+def test_a_nearly_full_filesystem_is_an_error_and_publishes_nothing(
+        enrolled, monkeypatch, publication_store):
+    """The unit never fills the root filesystem; a host that cannot publish falls back."""
+    source, pointer, config = enrolled
+    real = os.statvfs
+
+    def nearly_full(path, *args, **kwargs):
+        result = real(path, *args, **kwargs)
+        return os.statvfs_result((result.f_bsize, result.f_frsize, result.f_blocks,
+                                  result.f_bfree, 1, result.f_files, result.f_ffree,
+                                  result.f_favail, result.f_flag, result.f_namemax))
+
+    with monkeypatch.context() as full, as_root(monkeypatch):
+        full.setattr(os, "statvfs", nearly_full)
+        result = publication.converge(config)
+    assert result["state"] == "error" and "free" in result["error"], result
+    assert not (publication_store / source.name).exists()
+    with as_root(monkeypatch):
+        assert publication.converge(config)["state"] == "published"
+
+
 def test_an_interrupted_publication_leaves_no_staging_behind_the_next_one(
         enrolled, monkeypatch, publication_store):
     source, pointer, config = enrolled

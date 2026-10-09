@@ -22,10 +22,11 @@ YOUNG = FIRST + BOUND - 1
 OLD = FIRST + BOUND + 1
 
 
-def _census(priority=-10, demand=MEMBER, host="sparky", other=None):
+def _census(priority=-10, demand=MEMBER, host="sparky", other=None, claimed=False):
     elections = {"g" * 63 + "1": {
         "group": "g" * 32, "index": 0, "action_key": "g" * 63 + "1", "host": host,
-        "priority": priority, "rank": [-priority, FIRST, "g" * 32], "demand": demand}}
+        "priority": priority, "rank": [-priority, FIRST, "g" * 32], "demand": demand,
+        "claimed": claimed}}
     if other is not None:
         elections.update(other)
     return {"gang_elections": elections}
@@ -96,6 +97,22 @@ def test_unknown_or_unreadable_demand_is_consuming_never_exempt(resources):
     assert _blocked(_row(resources=resources)) is not None
 
 
+def test_an_omitted_dimension_other_than_cpu_and_memory_demands_none_of_it():
+    """Only cpu and mem_gb are unknown when absent; a row that omits spool_gb uses no spool."""
+    capacity = {**CAPACITY, "spool_gb": 400}
+    member = {**MEMBER, "spool_gb": 40}
+    assert _blocked(_row(), capacity=capacity, demand=member) is None
+    held = _blocked(_row(resources={"cpu": 1, "mem_gb": 1, "spool_gb": "x"}), capacity=capacity, demand=member)
+    assert held is not None and held["reservation"] == {"spool_gb": 40}
+
+
+@pytest.mark.parametrize("resources", [{"cpu": 0, "mem_gb": 1}, {"cpu": 0, "mem_gb": 0}])
+def test_a_zero_cpu_row_is_unknown_because_admission_reads_it_as_unbounded(resources):
+    """``adaptive_cpu`` takes cpu 0 as unbounded CPU use, so the reservation takes it as the whole host."""
+    held = _blocked(_row(resources=resources))
+    assert held is not None and held["reservation"] == {"cpu": MEMBER["cpu"]}
+
+
 def test_a_row_without_a_gpu_key_demands_no_gpu_but_a_gpu_row_without_one_is_unknown():
     assert _blocked(_row(resources={"cpu": 1, "mem_gb": 1})) is None
     assert _blocked(_row(needs_gpu=True, resources={"cpu": 1, "mem_gb": 1})) is not None
@@ -161,6 +178,23 @@ def test_the_reservation_priority_is_the_gangs_and_only_past_the_bound_on_its_ho
     assert reservation.reservation_priority_on(census, host="sparky", now=OLD, authority=True) == -10
     assert reservation.reservation_priority_on(census, host="sparklina", now=OLD, authority=True) is None
     assert reservation.reservation_priority_on({}, host="sparky", now=OLD, authority=True) is None
+
+
+# --- a gang that has started reserves nothing ----------------------------------------
+
+def test_a_member_already_running_has_its_demand_held_and_reserves_nothing_more():
+    """Held and reserved would count the same tokens twice, and refuse rows that fit."""
+    running = {"cpu": 2, "gpu": 1, "mem_gb": 100}
+    row = _row()
+    assert _blocked(row, held=running) is not None, "a waiting member reserves beside what is held"
+    assert _blocked(row, held=running, claimed=True) is None
+    assert reservation.reservation_priority_on(
+        _census(claimed=True), host="sparky", now=OLD, authority=True) is None
+
+
+def test_a_running_member_still_fences_strictly_lower_priority():
+    blocked = _blocked(_row(priority=-20), now=FIRST + 1, claimed=True)
+    assert blocked is not None and "reservation" not in blocked
 
 
 # --- the fallback: no protected copy on this host ---------------------------------

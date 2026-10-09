@@ -137,12 +137,11 @@ MOVEMENT_PYTHON = "/usr/bin/python3"
 #: ownership the sealer injects (:func:`seal_movement_action`).  Nothing else
 #: is a movement launch: an extra ``BASH_ENV``, ``PYTHONPATH`` or startup hook
 #: would run submitter code around the published tool.
-MOVEMENT_EXTRA_ENVIRONMENT = ("PRISMABUILD_CONTAINER_OWNER", "PRISMABUILD_CONTAINER_MARKER")
+MOVEMENT_EXTRA_ENVIRONMENT = (pool.CONTAINER_OWNER_ENV, pool.CONTAINER_MARKER_ENV)
 
 
 def _movement_environment_ok(action: Mapping[str, object], command: list) -> bool:
     """Whether the sealed environment is exactly a movement launch (#1579)."""
-    from . import pool
     environment = action.get("environment")
     if not isinstance(environment, Mapping):
         return False
@@ -208,11 +207,19 @@ def _local_resident_evict(command: list) -> bool:
     """
     if command.count("--operation") != 1:
         return False
-    if any(part != "--operation" and (part.startswith("--operation=")
-                                      or part.startswith("--oper"))
-            for part in command):
+    if any(part != "--operation" and _spells_operation(part) for part in command):
         return False
     return effective_local_resident_operation(command[2:]) == "evict"
+
+
+def _spells_operation(part: str) -> bool:
+    """Whether ``part`` is the ``--operation`` option in any spelling argparse accepts.
+
+    The option name, any unambiguous prefix of it (``--o`` is one: no other
+    option of the tool starts with ``--o``), and each of those with ``=value``.
+    """
+    head = part.split("=", 1)[0]
+    return len(head) >= 3 and "--operation".startswith(head)
 
 
 def capacity_role(action: Mapping[str, object], demand: Mapping[str, object], *,

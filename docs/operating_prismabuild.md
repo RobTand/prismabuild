@@ -3539,10 +3539,14 @@ Movers are sealed from the tool root their tier announces, which a host announce
 when it has the copy, so a box without the copy is never sent a path it lacks. An
 `error` in the status file is the thing to fix, and nothing waits on it.
 
-**Limits.** A complete copy is about 27 MB per generation and the store only grows.
-Removing an old copy is an administrator's act, and a copy that a sealed row still names
-must stay. A tier loop run from a checkout announces its own directory, so its movers
-carry no role. Run tier loops from the published generation. The unit changes no runtime
+**Limits.** A complete copy is about 27 MB per generation and the store only grows. The
+unit publishes nothing when less than 1 GiB is free on the filesystem, and the status
+file then says `error`. Removing an old copy is an administrator's act, and a copy that
+a sealed row still names must stay. A tier loop run from a checkout, or under another
+interpreter than `/usr/bin/python3`, announces its own directory or interpreter, so its
+movers carry no role. Run tier loops from the published generation as the supervisor
+starts them. The local resident tier loop does not announce a protected root yet, so a
+local resident evict carries no role. The unit changes no runtime
 activation and no canary verdict. This is source support; a live gang qualification and
 a deployment record are separate evidence (D45 stays in force until they exist).
 
