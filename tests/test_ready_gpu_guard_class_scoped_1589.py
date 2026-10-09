@@ -163,20 +163,41 @@ def _adaptive_fleet(tmp_path, monkeypatch, host, *, cpu=8, mem_gb=32):
         gpu_sample.update(sampled_unix=clock[0], sample_id=str(clock[0]))
         gpu_sample["jobs"] = []
         for held in queue.ledger().held_keys():
+            path = adaptive_cpu.local_telemetry_path(queue.ledger().base, held)
+            keep = adaptive_cpu.read_json(path)
             record = {"action_key": held, "nonce": held + "-attempt",
                       "scope_unit": held + "-scope", "sampled_unix": clock[0],
                       "cpu_seconds": 0.01 * (clock[0] - T0),
                       "wall_seconds": clock[0] - T0, "complete": True}
-            adaptive_cpu.write_json(
-                adaptive_cpu.local_telemetry_path(queue.ledger().base, held), record)
+            if keep.get("nonce") not in (None, held + "-attempt"):
+                record["nonce"] = keep["nonce"]
+                record["cpu_seconds"] = keep.get("cpu_seconds", record["cpu_seconds"])
+                record["wall_seconds"] = keep.get("wall_seconds", record["wall_seconds"])
+                record["sampled_unix"] = keep.get("sampled_unix", record["sampled_unix"])
+            adaptive_cpu.write_json(path, record)
             gpu_sample["jobs"].append({"action_key": held, "nonce": record["nonce"],
                                        "scope_id": record["scope_unit"], "complete": True})
 
-    def telemetry(key, *, cpu_seconds, wall_seconds):
-        adaptive_cpu.write_json(adaptive_cpu.local_telemetry_path(queue.ledger().base, key), {
-            "action_key": key, "sampled_unix": clock[0], "cpu_seconds": cpu_seconds,
-            "wall_seconds": wall_seconds, "memory_current_bytes": 100,
-            "memory_peak_bytes": 100, "complete": True})
+    def telemetry(key, *, cpu_seconds, wall_seconds, nonce=None, cpu_per_s=None):
+        path = adaptive_cpu.local_telemetry_path(queue.ledger().base, key)
+        keep = adaptive_cpu.read_json(path)
+        record = {"action_key": key, "sampled_unix": clock[0], "cpu_seconds": cpu_seconds,
+                  "wall_seconds": wall_seconds, "memory_current_bytes": 100,
+                  "memory_peak_bytes": 100, "complete": True,
+                  **({"nonce": nonce} if nonce is not None else {})}
+        adaptive_cpu.write_json(path, record)
+        # Seed the controller's cached previous record with a stated prior
+        # interval, so the owner's delta and the replay read one rule.  A
+        # steady rate extends the same line back two seconds; an explicit
+        # quiet past is stated through ``cpu_per_s=None`` below.
+        if nonce is not None and cpu_per_s is not None and keep.get("nonce") == nonce:
+            prior = {"action_key": key, "nonce": nonce, "sampled_unix": clock[0] - 2.0,
+                     "cpu_seconds": cpu_seconds - 2.0 * cpu_per_s,
+                     "wall_seconds": wall_seconds - 2.0, "complete": True}
+            jobs_path = adaptive_cpu.local_state_base(queue.ledger().base) / "jobs.json"
+            jobs = adaptive_cpu.read_json(jobs_path)
+            jobs[key] = prior
+            adaptive_cpu.write_json(jobs_path, jobs)
 
     return {"queue": queue, "publish": publish, "claim": claim, "tick": tick,
             "telemetry": telemetry, "clock": clock, "capacity": capacity, "tiers": tiers,
@@ -455,11 +476,13 @@ def test_a_gpu_room_that_cannot_be_established_holds_the_row(tmp_path, monkeypat
 def test_a_class_scoped_row_without_projected_headroom_still_waits(tmp_path, monkeypatch, host):
     """Review 3 finding 1 end to end, under review 4's aggregate rule and controllers.
 
-    A host-pinned 2-CPU incumbent runs beside a 2-CPU class row and a 6-CPU GPU
-    row on 8 CPUs.  Free tokens fit (8 - 2 - 2 >= 6), but the owner's rule counts
-    the incumbent, the starter at its full reservation, and the GPU row: with the
-    incumbent running at 2 CPUs the GPU row's own decision refuses, so the class
-    row waits and the GPU row claims first.
+    A host-pinned 2-CPU incumbent runs at 2 CPUs beside a 2-CPU class row and
+    a 6-CPU GPU row on 8 CPUs.  The class row cannot take the GPU row's room
+    (8 - 2 - 2 < 6), so the token fit holds it before any headroom check;
+    the GPU row itself cannot start on this sample either (2.5 + 6 > 8) and
+    waits for the incumbent to drain, as the owner's rule requires.  The
+    headroom replay is pinned by the tests below; this one pins the token
+    boundary under the real controllers.
     """
     rig = _adaptive_fleet(tmp_path, monkeypatch, host)
     queue, publish, claim = rig["queue"], rig["publish"], rig["claim"]
@@ -467,14 +490,16 @@ def test_a_class_scoped_row_without_projected_headroom_still_waits(tmp_path, mon
                       resources={"cpu": 6, "gpu": 1, "mem_gb": 8})
     incumbent = publish(_key("incumbent"), tags=[host], resources={"cpu": 2, "mem_gb": 4}, priority=2)
     assert claim()["action_key"] == incumbent
-    rig["telemetry"](incumbent, cpu_seconds=4.0, wall_seconds=2.0)
+    rig["telemetry"](incumbent, cpu_seconds=4.0, wall_seconds=2.0, cpu_per_s=2.0, nonce=incumbent + "-n1")
     rig["tick"]()
-    rig["telemetry"](incumbent, cpu_seconds=8.0, wall_seconds=4.0)
     class_key = publish(_key("class"), tags=["gb10"], resources={"cpu": 2, "mem_gb": 4}, priority=1)
     first = claim()
     assert first is not None and first["action_key"] == gpu_key, (
         f"the GPU row claims first: {_denial(queue, gpu_key)}")
     assert queue.item_path(pool.READY, class_key).exists()
+    denial = _denial(queue, class_key)
+    assert denial["reason"] == "deferred_for_ready_gpu_row", denial
+    assert denial["evidence"]["kept_for"] == "class_scoped_cpu_beside_ready_gpu", denial
 
 
 
@@ -573,9 +598,9 @@ def test_two_class_holders_that_each_fit_do_not_together_block_the_gpu_row(tmp_p
     second_key = publish(_key("class-b"), tags=["gb10"], resources={"cpu": 2, "mem_gb": 4}, priority=1)
     first = claim()
     assert first is not None and first["action_key"] == first_key, first
-    rig["telemetry"](first_key, cpu_seconds=4.0, wall_seconds=2.0)
+    rig["telemetry"](first_key, cpu_seconds=4.0, wall_seconds=2.0, cpu_per_s=2.0, nonce=first_key + "-n1")
     rig["tick"]()
-    rig["telemetry"](first_key, cpu_seconds=8.0, wall_seconds=4.0)
+    rig["telemetry"](first_key, cpu_seconds=8.0, wall_seconds=4.0, cpu_per_s=2.0, nonce=first_key + "-n1")
     run = claim()
     assert run is not None and run["action_key"] == gpu_key, run
     assert queue.item_path(pool.READY, second_key).exists(), (
@@ -598,9 +623,9 @@ def test_a_busy_incumbent_counts_against_the_gpu_rows_headroom(tmp_path, monkeyp
                       resources={"cpu": 4, "gpu": 1, "mem_gb": 8})
     incumbent = publish(_key("incumbent"), tags=[host], resources={"cpu": 2, "mem_gb": 4}, priority=2)
     assert claim()["action_key"] == incumbent
-    rig["telemetry"](incumbent, cpu_seconds=4.0, wall_seconds=2.0)
+    rig["telemetry"](incumbent, cpu_seconds=4.0, wall_seconds=2.0, cpu_per_s=2.0, nonce=incumbent + "-n1")
     rig["tick"]()
-    rig["telemetry"](incumbent, cpu_seconds=8.0, wall_seconds=4.0)
+    rig["telemetry"](incumbent, cpu_seconds=8.0, wall_seconds=4.0, cpu_per_s=2.0, nonce=incumbent + "-n1")
     class_key = publish(_key("class"), tags=["gb10"], resources={"cpu": 2, "mem_gb": 4}, priority=1)
     run = claim()
     assert run is not None and run["action_key"] == gpu_key, run
@@ -759,4 +784,125 @@ def test_the_aggregate_headroom_holds_when_holder_costs_do_not_read(tmp_path, mo
     assert queue._class_scoped_beside_room(
         room, ledger=ledger, identity=None, demand=demand, cpu_count=None,
         holder_costs={"active": 99.0, "pending": 99.0, "busy_cpus": 99.0}) is None
+
+
+# --- review 5: the owner's interval rule, and the funded candidate's full cost ---
+
+
+def test_a_quiet_past_does_not_hide_a_busy_present(tmp_path, monkeypatch, host):
+    """Review 5 finding 1: the replay uses the interval delta, not the lifetime average.
+
+    A 2-CPU incumbent idled for 100 s (cpu 0), then burned 4 CPU-s in the last
+    2 s. The lifetime average reads near zero. The owner charges the interval
+    rate (2 * 1.25 = 2.5). The class row (2 CPUs) beside the 4-CPU GPU row on
+    8 CPUs must wait: 2.5 + 2 + 4 > 8.
+    """
+    rig = _adaptive_fleet(tmp_path, monkeypatch, host)
+    queue, publish, claim = rig["queue"], rig["publish"], rig["claim"]
+    gpu_key = publish(_key("gpu"), gpu=True, tags=["gb10"],
+                      resources={"cpu": 4, "gpu": 1, "mem_gb": 8})
+    incumbent = publish(_key("incumbent"), tags=[host], resources={"cpu": 2, "mem_gb": 4}, priority=2)
+    assert claim()["action_key"] == incumbent
+    meta = adaptive_cpu.read_json(queue.ledger().held_dir / incumbent / adaptive_cpu.METADATA)
+    admitted = meta["admitted_unix"]
+    # A quiet past: 100 s of wall, no CPU. The cached previous record matches
+    # the fresh record's nonce, so the owner reads the delta between them.
+    adaptive_cpu.write_json(
+        adaptive_cpu.local_state_base(queue.ledger().base) / "jobs.json", {
+            incumbent: {"action_key": incumbent, "nonce": "n1", "sampled_unix": admitted,
+                        "cpu_seconds": 0.0, "wall_seconds": 100.0, "complete": True}})
+    rig["clock"][0] = admitted + 102.0
+    rig["gpu_sample"].update(sampled_unix=rig["clock"][0], sample_id=str(rig["clock"][0]))
+    base = adaptive_cpu.local_state_base(queue.ledger().base)
+    adaptive_cpu.write_json(base / "telemetry" / f"{incumbent}.json", {
+        "action_key": incumbent, "nonce": "n1", "sampled_unix": rig["clock"][0],
+        "cpu_seconds": 4.0, "wall_seconds": 102.0, "memory_current_bytes": 100,
+        "memory_peak_bytes": 100, "complete": True})
+    now_holder = adaptive_cpu.Controller(queue.ledger(), rig["tiers"])
+    now_holder._host_sample = {"sampled_unix": rig["clock"][0], "busy_cpus": 2.0,
+                               "cpu_count": 8, "interval_s": 1.0}
+    costs = pool.PoolQueue._class_scoped_holder_costs(queue.ledger(), now_holder)
+    assert costs is not None and costs["active"] == 2.5, costs
+    class_key = publish(_key("class"), tags=["gb10"], resources={"cpu": 2, "mem_gb": 4}, priority=1)
+    run = claim()
+    assert run is not None and run["action_key"] == gpu_key, run
+    assert queue.item_path(pool.READY, class_key).exists()
+
+
+def test_a_superseded_interval_cache_prices_nothing(tmp_path, monkeypatch, host):
+    """A new nonce since the cached record prices nothing: unknown, never zero.
+
+    The fresh telemetry carries nonce n2; the cache still holds n1. The owner
+    drops the stale cache entry and finds no interval, so it charges the full
+    reservation (2.0 active and pending). The replay reports the same terms,
+    deterministically: same holder files, same answer.
+    """
+    rig = _adaptive_fleet(tmp_path, monkeypatch, host)
+    queue = rig["queue"]
+    incumbent = rig["publish"](_key("incumbent"), tags=[host],
+                               resources={"cpu": 2, "mem_gb": 4}, priority=2)
+    assert rig["claim"]()["action_key"] == incumbent
+    meta = adaptive_cpu.read_json(queue.ledger().held_dir / incumbent / adaptive_cpu.METADATA)
+    admitted = meta["admitted_unix"]
+    adaptive_cpu.write_json(
+        adaptive_cpu.local_state_base(queue.ledger().base) / "jobs.json", {
+            incumbent: {"action_key": incumbent, "nonce": "n1", "sampled_unix": admitted,
+                        "cpu_seconds": 0.0, "wall_seconds": 1.0, "complete": True}})
+    rig["clock"][0] = admitted + 3.0
+    rig["gpu_sample"].update(sampled_unix=rig["clock"][0], sample_id=str(rig["clock"][0]))
+    base = adaptive_cpu.local_state_base(queue.ledger().base)
+    adaptive_cpu.write_json(base / "telemetry" / f"{incumbent}.json", {
+        "action_key": incumbent, "nonce": "n2", "sampled_unix": rig["clock"][0],
+        "cpu_seconds": 0.1, "wall_seconds": 4.0, "memory_current_bytes": 100,
+        "memory_peak_bytes": 100, "complete": True})
+    probe = adaptive_cpu.Controller(queue.ledger(), rig["tiers"])
+    probe._host_sample = {"sampled_unix": rig["clock"][0], "busy_cpus": 2.0,
+                          "cpu_count": 8, "interval_s": 1.0}
+    costs = pool.PoolQueue._class_scoped_holder_costs(queue.ledger(), probe)
+    assert costs is not None, costs
+    assert costs["active"] == 2.0 and costs["pending"] == 2.0, costs
+    again = pool.PoolQueue._class_scoped_holder_costs(queue.ledger(), probe)
+    assert again == costs, (again, costs)
+
+
+def test_a_superseded_interval_cache_holds_the_row(tmp_path, monkeypatch, host):
+    """A superseded cache charges the full reservation in the headroom replay.
+
+    The fresh telemetry carries nonce n2; the cache still holds n1. The owner
+    drops the stale cache entry and finds no interval, so it charges the full
+    reservation (2.0 active and pending). The replayed headroom must hold a
+    3-CPU class row beside the 2-CPU GPU row on 8 CPUs with those terms
+    (max(2 + 2, 2) + 3 + 2 > 8) and name the projected-cost headroom. The
+    determinism unit above pins the replay terms; this pins the boundary
+    answer on the same terms.
+    """
+    rig = _adaptive_fleet(tmp_path, monkeypatch, host)
+    queue, publish = rig["queue"], rig["publish"]
+    room = {"action_key": _key("gpu"), "room": {"cpu": 2, "gpu": 1, "mem_gb": 8}}
+    held = queue._class_scoped_beside_room(
+        room, ledger=_Holders(available={"cpu": 8, "gpu": 1, "mem_gb": 32}), identity=None,
+        demand={"cpu": 3, "mem_gb": 4}, cpu_count=8,
+        holder_costs={"active": 2.0, "pending": 2.0, "busy_cpus": 2.0},
+        candidate_demand={"cpu": 3, "mem_gb": 4})
+    assert held["kept_for"] == "class_scoped_cpu_projected_cpu_cost", held
+    assert held["active_cpu_cost"] == 2.0 and held["pending_cpu_cost"] == 2.0, held
+    assert held["holder_cost"] == 3.0 and held["gpu_cost"] == 2.0, held
+
+
+def test_a_funded_candidate_pays_its_full_cost(tmp_path, monkeypatch):
+    """Review 5 finding 1: a fully funded row costs its reservation, not its remainder.
+
+    The headroom unit: a 2-CPU candidate whose token remainder is zero still
+    charges 2.0 beside a 4-CPU GPU row on 8 CPUs with a 2.5 incumbent cost.
+    """
+    queue = _bare(tmp_path, monkeypatch)
+    room = {"action_key": GPU_KEY, "room": {"cpu": 4, "gpu": 1, "mem_gb": 8}}
+    ledger = _Holders(available={"cpu": 8, "gpu": 1, "mem_gb": 32})
+    costs = {"active": 2.5, "pending": 0.0, "busy_cpus": 0.0}
+    held = queue._class_scoped_beside_room(
+        room, ledger=ledger, identity=None, demand={},
+        cpu_count=8, holder_costs=costs,
+        candidate_demand={"cpu": 2, "mem_gb": 4})
+    assert held["kept_for"] == "class_scoped_cpu_projected_cpu_cost", held
+    assert held["holder_cost"] == 2.0 and held["gpu_cost"] == 4.0
 

@@ -5128,9 +5128,11 @@ admission, `_class_scoped_beside_room` reads only the free tokens: the row passe
 only if, after it takes its own, that room still fits them. Under adaptive
 admission it also replays the owner's projected-cost rule over the live host:
 every holder's conservative cost from its reservation and fresh local telemetry
-(`_class_scoped_holder_costs`), plus this candidate at its full reservation (a
-starter has no rate yet), plus the GPU row at its declared demand, against the
-host CPU count. A busy incumbent, an unattributed starter, and a second class
+(`_class_scoped_holder_costs`), plus this candidate at its full demand, plus the GPU row at its declared demand, against the
+host CPU count. Holder costs use the owner's interval rule: the rate comes from
+this interval's telemetry delta against the controller's cached previous record,
+never a lifetime average, so a quiet past cannot hide a busy present; a holder
+without a valid interval charges its full reservation, and unknown costs hold the row. A funded row still pays its full sealed demand, not its token remainder: the owner charges a funded holder's reservation in full while its rate is unknown. A busy incumbent, an unattributed starter, and a second class
 holder each count; unknown costs hold the row. Without a controller there is no
 projected-cost gate, so the token fit stands alone. What the replay proves is
 bounded: the projected-cost gate at this sample. Later samples, learned costs,
