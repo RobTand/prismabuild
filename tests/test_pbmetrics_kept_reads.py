@@ -538,7 +538,8 @@ def test_idle_scrape_reads_no_record_and_lists_no_directory(live_shaped):
     assert not_directories == [], (
         f"{len(not_directories)} stats of records on an unchanged queue, e.g. "
         f"{Counter(Path(p).parent.name for p in not_directories).most_common(5)}")
-    assert len(probe.stats) <= 2 * directories_under(live_shaped)
+    probed = stage_move._filesystem_type(os.stat(live_shaped).st_dev) is None
+    assert len(probe.stats) <= (2 if probed else 1) * directories_under(live_shaped)
     assert probe.namespace_stats, "retention must still check its current namespace"
 
 
