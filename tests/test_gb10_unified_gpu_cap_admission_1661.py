@@ -524,9 +524,12 @@ def test_decomposition_allows_a_cap_above_mem_gb_off_gb10():
     assert dc.validate_common_spec({**common, "tags": ["x86"]})["gpu_memory_gb"] == 8
 
 
-def test_adjusted_offer_admits_without_a_second_external_charge(rig, tmp_path):
+def test_adjusted_offer_admits_without_a_second_external_charge(
+        rig, tmp_path, monkeypatch):
     """An 82 GiB offer with a 30 GiB baseline still admits 60 GiB once."""
+    from prismabuild import adaptive_gpu as _gpu
     queue, now, sample, args = rig
+    monkeypatch.setattr(_gpu, "trusted_sample", lambda *a, **k: sample)
     observer = box_capacity.CapacityObserver(samples=1)
     observed_sample = {
         "schema": "prismabuild.gpu_capacity.v1", "sample_id": "obs",
