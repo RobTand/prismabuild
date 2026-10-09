@@ -602,6 +602,86 @@ def test_a_fresh_read_that_disagrees_blocks_the_teardown(gang_fleet, monkeypatch
     assert not _gang.terminal_mark_path(queue, group, first).exists()
 
 
+#: Every verdict state but the two that carry a pending lead: a confirming
+#: read in any of them is no terminal proof.  Built from the queue's own
+#: refusal list, so a state main adds later joins the test by itself.
+NON_TERMINAL_STATES = [
+    state for state in pool.RESIDENCY_REFUSAL_STATES
+    if state not in ("lead_not_resident", "lead_unpinned")
+] + ["resident", "not_requested", "no_leads"]
+
+
+@pytest.mark.parametrize("state", NON_TERMINAL_STATES)
+def test_a_confirming_read_in_any_other_verdict_state_blocks_the_teardown(
+        gang_fleet, monkeypatch, tmp_path, state):
+    """Only the two terminal states may confirm a teardown (#1594 R3, R4).
+
+    #1594 added ``prelaunch_undeclared`` and ``map_incomplete`` beside the
+    older refusals.  The confirming read of an aged mark answers each state in
+    turn.  None of them proves that the leads ended: the proof files no
+    teardown marker, resets the mark and leaves the gang waiting.
+    """
+    queue, clock, gclaim, denial, group, first, second, lead = _fail_lead_and_mark(
+        gang_fleet, monkeypatch, tmp_path, "state-" + state)
+    clock[0] += 2 * _gang.TERMINAL_CONFIRM_S
+    real = queue.residency_verdict
+    confirming = []
+
+    def verdict(item, **kwargs):
+        if kwargs.get("fresh"):
+            confirming.append(state)
+            return {"state": state, "leads": [lead]}
+        return real(item, **kwargs)
+
+    monkeypatch.setattr(queue, "residency_verdict", verdict)
+    assert gclaim("sparklina") is None
+    assert confirming == [state], "the pass never reached the confirming read"
+    assert _gang.teardown(queue, group) is None
+    assert not _gang.terminal_mark_path(queue, group, first).exists()
+    assert queue.item_path(pool.READY, first).exists()
+    assert queue.item_path(pool.READY, second).exists()
+
+
+@pytest.mark.parametrize("refusal", [
+    {"state": "prelaunch_undeclared", "consumer": "member",
+     "manifest_sha256": MANIFEST, "manifest_declares": ["phase-0"],
+     "plan_declares": []},
+    {"state": "map_unreadable", "map_path": None,
+     "manifest_sha256": MANIFEST, "error": "manifest blob unreadable"},
+], ids=lambda refusal: refusal["state"])
+def test_a_shape_refusal_at_the_confirming_read_blocks_the_teardown(
+        gang_fleet, monkeypatch, tmp_path, refusal):
+    """The shape check (#1594 R4) answers before the leads are read.
+
+    It runs first in ``residency_verdict`` and returns without reading a
+    lead.  At the confirming read of an aged mark it now refuses, through the
+    real early return: the leads are not read, so the proof has no terminal
+    verdict to match against the mark.
+    """
+    queue, clock, gclaim, denial, group, first, second, lead = _fail_lead_and_mark(
+        gang_fleet, monkeypatch, tmp_path, "shape-" + refusal["state"])
+    clock[0] += 2 * _gang.TERMINAL_CONFIRM_S
+    real = queue.residency_verdict
+    confirming = []
+
+    def verdict(item, **kwargs):
+        confirming.append(bool(kwargs.get("fresh")))
+        return real(item, **kwargs)
+
+    # The first reading of the pass sees no refusal: only the confirming read
+    # carries ``fresh``, and it alone meets the changed shape.
+    monkeypatch.setattr(queue, "residency_verdict", verdict)
+    monkeypatch.setattr(
+        queue, "_prelaunch_shape_verdict",
+        lambda item: dict(refusal) if confirming and confirming[-1] else None)
+    assert gclaim("sparklina") is None
+    assert confirming == [False, True], confirming
+    assert _gang.teardown(queue, group) is None
+    assert not _gang.terminal_mark_path(queue, group, first).exists()
+    assert queue.item_path(pool.READY, first).exists()
+    assert queue.item_path(pool.READY, second).exists()
+
+
 def test_a_requeue_that_wins_before_the_proof_blocks_the_teardown(
         gang_fleet, monkeypatch, tmp_path):
     """P1: an aged mark must not tear down a gang the lead rejoined in time.
