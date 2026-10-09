@@ -27,6 +27,7 @@ def test_private_parameters_observe_the_actual_ledger_and_keep_admission(tmp_pat
     class Observer:
         def __init__(self, *, samples, ledger_total):
             assert samples > 0 and ledger_total == {}
+            self.last_offer_external_gib = 0
         def offer(self, declared, held, **overrides):
             assert callable(held) and held() == queue.ledger().held()
             assert declared == {"gpu": 0, **CAPACITY}
@@ -35,7 +36,8 @@ def test_private_parameters_observe_the_actual_ledger_and_keep_admission(tmp_pat
     monkeypatch.setattr(worker_loop.box_capacity, "CapacityObserver", Observer)
     parameters = worker_loop.private_claim_parameters(queue)
     assert parameters == {"capacity": {"cpu": 2, "mem_gb": 3},
-                          "cpu_tiers": TIERS, "adaptive_cpu": True}
+                          "cpu_tiers": TIERS, "adaptive_cpu": True,
+                          "observed_external_gib": 0}
     assert len(seen) == 1 and seen[0]["gpu_sample"] is None
     monkeypatch.setattr(pool.cpu_admission.Controller, "sample", lambda self: {
         "sampled_unix": time.time(), "busy_cpus": 0., "psi_some": 0.,
