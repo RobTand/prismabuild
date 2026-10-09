@@ -84,14 +84,6 @@ NEW_DIGEST = hashlib.sha256(NEW).hexdigest()
 #: ``ownership_lock_held``.
 FINGERPRINT_OPS = ("lstat", "stat")
 
-#: Under-lock re-listings a passing run may still file. Mount-table churn on
-#: the shared box can refuse the descriptor proof one trust check rests on,
-#: and a refused directory is listed again on the next census, which a
-#: re-decision takes under the stage ownership lock. Each event re-lists a
-#: handful of directories once; a per-name regression lists this whole
-#: forest per name (810,000 under-lock listings), nowhere near this bound.
-_CHURN_SLACK = 32
-
 #: Directories of the residency root that are not the forest: the pin census
 #: a replacement passes reads them per name by design (#966).
 _NOT_THE_FOREST = frozenset({"leases", "material"})
@@ -163,9 +155,12 @@ class _ForestTouches:
     root or a namespace in it, with whether the calling thread held the stage
     ownership lock at the time.  ``locked`` counts, by call, what was done to
     the forest -- the root, a namespace, or a file in one -- while the lock
-    was held, and ``holds`` how many times it was taken.  Not ``leases/`` or
-    ``material/``: the pin census a replacement passes reads those per name
-    by design (#966), and they are not the forest.
+    was held, and ``holds`` how many times it was taken.  ``refusals`` counts
+    the trust refusals the census saw: each ``_trusted_directory_stamp``,
+    ``_directory_version_at`` or ``_current_directory_version`` of a forest
+    directory that answered ``None``.  Not ``leases/`` or ``material/``: the
+    pin census a replacement passes reads those per name by design (#966),
+    they are not the forest.
     """
 
     def __init__(self, root: Path) -> None:
@@ -175,6 +170,7 @@ class _ForestTouches:
         self.locked: collections.Counter[str] = collections.Counter()
         self.holds = 0
         self.holding = threading.local()
+        self.refusals = 0
 
     def under_lock(self) -> bool:
         return getattr(self.holding, "depth", 0) > 0
@@ -252,8 +248,32 @@ def _forest_touches(monkeypatch: pytest.MonkeyPatch, publisher,
     monkeypatch.setattr(os, "open", counted("read", os.open))
     monkeypatch.setattr(io, "open", counted("read", io.open))
     monkeypatch.setattr(builtins, "open", counted("read", builtins.open))
-    return touches
+    real_stamp = stage_move._trusted_directory_stamp
+    real_version = stage_move._directory_version_at
+    real_current = stage_move._current_directory_version
 
+    def stamp(path):  # type: ignore[no-untyped-def]
+        answer = real_stamp(path)
+        if answer is None and touches.part(os.fspath(path)) is not None:
+            touches.refusals += 1
+        return answer
+
+    def version(name):  # type: ignore[no-untyped-def]
+        answer = real_version(name)
+        if answer is None and touches.part(name) is not None:
+            touches.refusals += 1
+        return answer
+
+    def current(path):  # type: ignore[no-untyped-def]
+        answer = real_current(path)
+        if answer is None and touches.part(os.fspath(path)) is not None:
+            touches.refusals += 1
+        return answer
+
+    monkeypatch.setattr(stage_move, "_trusted_directory_stamp", stamp)
+    monkeypatch.setattr(stage_move, "_directory_version_at", version)
+    monkeypatch.setattr(stage_move, "_current_directory_version", current)
+    return touches
 
 @pytest.fixture()
 def world(fleet, monkeypatch: pytest.MonkeyPatch):  # noqa: F811
@@ -301,6 +321,7 @@ def test_2000_names_of_one_dead_owner_list_the_forest_once(
     listings = list(touches.listings)
     locked = collections.Counter(touches.locked)
     holds = touches.holds
+    refusals = touches.refusals
     assert all(path.read_bytes() == NEW for path in destinations)
     assert len(publisher.invalidated) == NAMES
     assert {(row["consumer_action_key"], row["mover_action_key"], row["state"])
@@ -323,29 +344,33 @@ def test_2000_names_of_one_dead_owner_list_the_forest_once(
     probed = stage_move._filesystem_type(os.stat(root).st_dev) is None
     per_hold = ((1 + len(directories)) * (2 if probed else 1) + fragments)
     # The forest did not change during the range, so the first census listed
-    # it and every later one, locked or not, compared stamps: nothing of the
-    # forest is listed under the lock but churn refused a few directories.
+    # it and every later one, locked or not, compared stamps. A listing past
+    # the first of a directory is allowed only with the trust refusal that
+    # caused it: each re-listed directory answers ``None`` from its stamp or
+    # version check first, and that refusal is counted above. A listing with
+    # no observed refusal is a regression, not churn.
     listed_locked = [name for name, under_lock in listings if under_lock]
     roots = [name for name, _under_lock in listings if name == str(root)]
     print(f"forest listings {len(listings)} (root {len(roots)}, under the "
           f"lock {len(listed_locked)}), directories {len(directories)}, "
           f"fragments {fragments}; under the lock, {holds} holds touched "
           f"the forest {dict(sorted(locked.items()))}, at most "
-          f"{per_hold} per hold")
-    assert len(listed_locked) <= _CHURN_SLACK, (
-        len(listed_locked), listed_locked[:3])
-    assert len(roots) <= 1 + _CHURN_SLACK, len(roots)
-    assert len(listings) <= 1 + len(directories) + 2 * _CHURN_SLACK, (
-        len(listings), len(directories))
+          f"{per_hold} per hold; trust refusals {refusals}")
+    firsts = 1 + len(directories)
+    relists = max(0, len(listings) - firsts)
+    assert relists <= refusals, (relists, refusals, len(listings), firsts)
+    assert len(listed_locked) <= refusals, (
+        len(listed_locked), refusals, listed_locked[:3])
+    assert len(roots) <= 1 + refusals, (len(roots), refusals)
     assert held["calls"] >= NAMES, held
     assert holds == held["calls"], (holds, held)
     # What the lock covered of the forest is its fingerprint, once per hold at
-    # most, and nothing more: no read, no second pass. Listings are counted
-    # above: churn may file a few, never a per-name pass.
+    # most, plus one re-listing per observed refusal, and nothing more: no
+    # read, no second pass.
     assert set(locked) - {"list"} <= set(FINGERPRINT_OPS), locked
-    assert locked.get("list", 0) <= _CHURN_SLACK, locked
-    assert sum(locked.values()) <= holds * per_hold + _CHURN_SLACK * per_hold, (
-        locked, holds, per_hold)
+    assert locked.get("list", 0) <= refusals, (locked, refusals)
+    assert sum(locked.values()) <= holds * per_hold + refusals * per_hold, (
+        locked, holds, per_hold, refusals)
 
 
 def test_a_fragment_filed_mid_range_is_seen_by_the_next_decision(
