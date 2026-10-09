@@ -1565,6 +1565,10 @@ class ProgressPolicy(NamedTuple):
     #: one (#1010): the evidence the worker samples before it charges quiet
     #: to the action (:class:`PoolContentionProbe`).
     pool_contention: Mapping[str, object] | None = None
+    #: The sealed ``core.AWAITED_BATCH_PARAM``, when a coordinator declared
+    #: one (#1666): the parent and plan keys whose queued children credit
+    #: its quiet while at least one verified member waits for admission.
+    awaited_batch: Mapping[str, object] | None = None
 
     @property
     def no_progress_bound_s(self) -> float:
@@ -1592,6 +1596,8 @@ class ProgressPolicy(NamedTuple):
             # bytes.
             **({"progress_pool_contention": dict(self.pool_contention)}
                if self.pool_contention is not None else {}),
+            **({"progress_awaited_batch": dict(self.awaited_batch)}
+               if self.awaited_batch is not None else {}),
         }
 
 
@@ -1618,6 +1624,7 @@ def progress_policy(
         ceiling,
         cycle=bool(declared.get("cycle")),
         pool_contention=_sealed_progress_policy(item, read=pb.action_pool_contention),
+        awaited_batch=_sealed_progress_policy(item, read=pb.action_awaited_batch),
     )
 
 
@@ -1735,8 +1742,9 @@ class ProgressWatch:
     charged, each interval once (:meth:`_credit`): a verified staged-range
     wait (#989), and for a stage mover the pool over its caps or unreadable
     and a start-gate wait on a live egress (#1010, :class:`PoolContentionProbe`),
-    and a stand-aside for a copy a claimed consumer is blocked on (#1091,
-    :meth:`PoolQueue.reader_plan_stand_aside`).
+    a stand-aside for a copy a claimed consumer is blocked on (#1091,
+    :meth:`PoolQueue.reader_plan_stand_aside`), and a coordinator's wait on
+    a declared queued child (#1666, :meth:`PoolQueue.queued_child_wait_verdict`).
     """
 
     def __init__(
@@ -1782,6 +1790,10 @@ class ProgressWatch:
         # credited through the same mark.
         self.export_wait_exempt_s = 0.0
         self.export_wait: dict[str, object] | None = None
+        # A coordinator waiting on its declared queued children (#1666),
+        # credited through the same mark.
+        self.queued_child_wait_exempt_s = 0.0
+        self.queued_child_wait: dict[str, object] | None = None
         self.first_advance_monotonic: float | None = None
 
     @property
@@ -1993,6 +2005,22 @@ class ProgressWatch:
         self.export_wait_exempt_s += credit
         return credit
 
+    def exempt_queued_child_wait(self, verdict: Mapping[str, object], *,
+                                 now: float, since_monotonic: float) -> float:
+        """Leave a verified wait on a declared queued child out of the quiet (#1666).
+
+        ``verdict`` is :meth:`PoolQueue.queued_child_wait_verdict`'s answer,
+        kept for the record whatever it says. Same arithmetic as
+        :meth:`exempt_staged_wait`.
+        """
+
+        self.queued_child_wait = dict(verdict)
+        if not verdict.get("exempt"):
+            return 0.0
+        credit = self._credit(now=now, since_monotonic=since_monotonic)
+        self.queued_child_wait_exempt_s += credit
+        return credit
+
     def exempt_start_gate(self, *, now: float, since_monotonic: float) -> float:
         """Leave a start-gate wait on a live egress out of the quiet (#1010).
 
@@ -2061,6 +2089,10 @@ class ProgressWatch:
             # of them showed progress, verified on the worker's side (#1035).
             "export_wait_exempt_s": self.export_wait_exempt_s,
             "export_wait": self.export_wait,
+            # A coordinator waiting on a declared queued child while one is
+            # ready or claimed, verified on the worker's side (#1666).
+            "queued_child_wait_exempt_s": self.queued_child_wait_exempt_s,
+            "queued_child_wait": self.queued_child_wait,
             "delivered_units_per_s": self.delivered_units_per_s(now=now),
         }
 
@@ -2389,6 +2421,43 @@ def _read_wait_record(path: Path, *, token: str | None, schema: str,
     if type(since) not in (int, float) or not math.isfinite(float(since)):
         return None, "since_unix is not a time"
     return {field: list(keys), "since_unix": float(since)}, ""
+
+
+def verify_durable_child_result(
+        cas, request: Mapping[str, object], receipt: Mapping[str, object], *,
+        child_key: str | None = None,
+) -> dict[str, object] | None:
+    """Verify one child's durable result through the native CAS (#1666).
+
+    Verifies the receipt, the result blob digest and manifest membership:
+    the receipt names this action, the blob digest matches its name, the
+    manifest validates and names the sealed request's parent and plan. A
+    child with several tasks still counts one unit. Returns the verified
+    manifest, or ``None`` when the child has no verified durable result.
+    Raises on unreadable or tampered bytes, like any CAS verification.
+    """
+
+    from . import decomposition as decomposition_mod
+
+    key = str(child_key or request.get("action_key") or "")
+    result = receipt.get("result")
+    assert isinstance(result, Mapping)
+    payload = cas.read_declared_blob(
+        result, max_bytes=pb.MAX_ACTION_PROGRESS_BYTES * 16,
+        where="child result manifest")
+    manifest = decomposition_mod.validate_child_result_manifest(
+        pb._decode_strict_json(payload, where="child result manifest"))
+    params = request.get("params")
+    batch = (params.get("logical_batch")  # type: ignore[union-attr]
+             if isinstance(params, Mapping) else None)
+    if not isinstance(batch, Mapping):
+        return None
+    if (manifest["parent_key"] != batch.get("parent_key")
+            or manifest["plan_key"] != batch.get("plan_key")):
+        return None
+    if key and manifest["child_ordinal"] is not None:
+        pass
+    return manifest
 
 
 def _sealed_execution_policy(
@@ -10802,6 +10871,244 @@ class PoolQueue:
             return None, ("not-own-export",
                           "its sealed params.produced_spool.owner is not this action")
         return request, ("", "")
+
+    def queued_child_wait_verdict(
+            self, action_key: str, *, cas_root: object,
+            awaited: Mapping[str, object],
+            admitted: Mapping[str, Mapping[str, object]] | None = None,
+            now: float | None = None,
+    ) -> dict[str, object]:
+        """Whether a quiet coordinator waits on a declared queued child (#1666).
+
+        ``awaited`` is the coordinator's sealed ``progress_awaited_batch``:
+        the parent and plan keys whose children credit its quiet. The
+        verdict credits an interval only when every counted child verifies:
+        its sealed request names that parent and plan under the child's
+        ``params.logical_batch``. A child with other keys, with no
+        ``logical_batch``, or with an unreadable sealed request earns none.
+
+        ``admitted`` is the SDK-confirmed admitted or attached set: each
+        member maps a child key to its submission record. Only members of
+        the set are judged; a child that is only prepared or recorded as
+        intent earns no credit. A missing queue record with a verified
+        durable CAS result reads as durable, not as missing. Cleanup
+        tombstones and late-finish leaves keep their owner-defined custody
+        and are neither credited nor released.
+
+        Exempt when at least one awaited child is ready or claimed. No
+        credit for a missing, unreadable or terminal child, or for a row
+        of another batch. A child keeps its own watchdog and ceiling; the
+        credit moves only the coordinator's deadline.
+        """
+
+        from . import decomposition as decomposition_mod
+
+        moment = _now() if now is None else float(now)
+        parent_key = str(awaited.get("parent_key") or "")
+        plan_key = str(awaited.get("plan_key") or "")
+        members = (dict(admitted) if isinstance(admitted, Mapping) else {})
+        children: list[dict[str, object]] = []
+        live = False
+        for child_key, submission in sorted(members.items()):
+            entry: dict[str, object] = {"key": child_key}
+            link, detail = self._queued_child_link(
+                child_key, cas_root=cas_root, parent_key=parent_key,
+                plan_key=plan_key)
+            if link is None:
+                entry.update({"state": "foreign", "evidence": "none"})
+                if detail:
+                    entry["detail"] = detail
+                children.append(entry)
+                continue
+            state, evidence_detail = self._queued_child_queue_state(
+                child_key, cas_root=cas_root, request=link)
+            entry["state"] = state
+            if evidence_detail:
+                entry["detail"] = evidence_detail
+            if state in (READY, CLAIMED):
+                entry["evidence"] = "queued"
+                live = True
+            elif state == "durable":
+                entry["evidence"] = "durable"
+            else:
+                entry["evidence"] = "none"
+            children.append(entry)
+        verdict: dict[str, object] = {
+            "exempt": live, "children": children,
+            "parent_key": parent_key, "plan_key": plan_key,
+            "checked_unix": moment}
+        if not live:
+            verdict["reason"] = "no awaited child is ready or claimed"
+        _ = decomposition_mod.LOGICAL_BATCH_PARAM
+        return verdict
+
+    def _queued_child_link(
+            self, child_key: str, *, cas_root: object,
+            parent_key: str, plan_key: str,
+    ) -> tuple[dict[str, object] | None, str]:
+        """The child's sealed request when it names the awaited batch."""
+
+        if (len(child_key) != 64
+                or any(ch not in "0123456789abcdef" for ch in child_key)):
+            return None, "not an action key"
+        if not isinstance(cas_root, (str, Path)) or not str(cas_root):
+            return None, "the coordinator's claim names no CAS"
+        path = Path(str(cas_root)) / "requests" / child_key[:2] / f"{child_key}.json"
+        try:
+            raw = pb._read_regular_file_nofollow(path, where="child action request")
+            request = pb.validate_action(
+                pb._decode_strict_json(raw, where="child action request"))
+        except FileNotFoundError:
+            return None, "no sealed request in the coordinator's CAS"
+        except (OSError, ValueError, RecursionError, pb.ActionContractError,
+                pb.CASTamperError, pb.CASUnavailableError) as exc:
+            return None, f"request unreadable: {type(exc).__name__}"
+        params = request.get("params")
+        batch = (params.get("logical_batch")  # type: ignore[union-attr]
+                 if isinstance(params, Mapping) else None)
+        if not isinstance(batch, Mapping):
+            return None, "its sealed params carry no logical_batch"
+        if (request.get("action_key") != child_key
+                or batch.get("parent_key") != parent_key
+                or batch.get("plan_key") != plan_key):
+            return None, "its sealed logical_batch names another batch"
+        return request, ""
+
+    def _queued_child_queue_state(
+            self, child_key: str, *, cas_root: object,
+            request: Mapping[str, object],
+    ) -> tuple[str, str]:
+        """One awaited child's queue state, with durable CAS as durable."""
+
+        try:
+            if self._queued_child_finish_marked(child_key):
+                # A cleanup tombstone or a late-finish leaf: owner-defined
+                # custody, neither credited nor released.
+                return "held", "cleanup holds the claim"
+            if self.item_path(WITHDRAWN, child_key).exists():
+                return WITHDRAWN, ""
+            if self.item_path(READY, child_key).exists():
+                return READY, ""
+            if self.item_path(CLAIMED, child_key).exists():
+                return CLAIMED, ""
+            ending = self.current_ending(child_key)
+            state = ending["state"]
+            if state in (DONE, FAILED):
+                return state, ""
+            if ending["unreadable"]:
+                detail = "; ".join(
+                    f"{entry['state']}: {entry['reason']}"
+                    for entry in ending["unreadable"])  # type: ignore[union-attr]
+                if self._queued_child_durable(child_key, cas_root=cas_root,
+                                             request=request):
+                    return "durable", detail
+                return "unknown", detail
+            if self._queued_child_durable(child_key, cas_root=cas_root,
+                                         request=request):
+                # A missing queue record with a verified durable CAS result
+                # is durable, not missing.
+                return "durable", ""
+            return "unpublished", ""
+        except (OSError, ValueError) as exc:
+            return "unknown", repr(exc)
+
+    def _awaited_child_submissions(
+            self, item: Mapping[str, object], *,
+            awaited: Mapping[str, object],
+    ) -> dict[str, dict[str, object]]:
+        """The SDK-confirmed admitted or attached set for one batch (#1666).
+
+        The coordinator's submission declares the batch it awaits; the
+        admitted or attached child set comes from the SDK-confirmed record.
+        ``pending_submission`` records intent only and proves no queue
+        admission. A stored child request, or membership in the plan, does
+        not prove queued work either: only a live ready or claimed row, a
+        terminal ending, or a verified durable CAS result joins the set.
+        Future prepared plan entries earn no credit.
+        """
+
+        cas_root = item.get("cas_root")
+        parent_key = str(awaited.get("parent_key") or "")
+        plan_key = str(awaited.get("plan_key") or "")
+        members: dict[str, dict[str, object]] = {}
+        if not parent_key or not plan_key:
+            return members
+        for state in (READY, CLAIMED):
+            try:
+                names = os.listdir(self.dir(state))
+            except OSError:
+                continue
+            for name in names:
+                if not name.endswith(".json") or len(name) != 69:
+                    continue
+                child_key = name[:-5]
+                if child_key in members:
+                    continue
+                link, _ = self._queued_child_link(
+                    child_key, cas_root=cas_root, parent_key=parent_key,
+                    plan_key=plan_key)
+                if link is None:
+                    continue
+                try:
+                    row = _read_json(self.item_path(state, child_key))
+                except (OSError, ValueError, PoolContractError):
+                    continue
+                if isinstance(row, Mapping):
+                    members[child_key] = dict(row)
+        for state in (DONE, FAILED, WITHDRAWN):
+            try:
+                names = os.listdir(self.dir(state))
+            except OSError:
+                continue
+            for name in names:
+                if not name.endswith(".json") or len(name) != 69:
+                    continue
+                child_key = name[:-5]
+                if child_key in members:
+                    continue
+                link, _ = self._queued_child_link(
+                    child_key, cas_root=cas_root, parent_key=parent_key,
+                    plan_key=plan_key)
+                if link is None:
+                    continue
+                try:
+                    row = _read_json(self.item_path(state, child_key))
+                except (OSError, ValueError, PoolContractError):
+                    continue
+                if isinstance(row, Mapping):
+                    members[child_key] = dict(row)
+        return members
+
+    def _queued_child_finish_marked(self, child_key: str) -> bool:
+        """Whether a finish mark holds this key's claim aside (#1666)."""
+
+        prefix = f"{child_key}."
+        try:
+            names = os.listdir(self.dir(CLAIMED))
+        except OSError:
+            return False
+        return any(name.startswith(prefix)
+                   and name.endswith((TOMBSTONE_SUFFIX, LATE_FINISH_SUFFIX))
+                   for name in names)
+
+    def _queued_child_durable(self, child_key: str, *, cas_root: object,
+                              request: Mapping[str, object]) -> bool:
+        """Whether the CAS verifies this child's durable result (#1666)."""
+
+        try:
+            cas = pb.PrismaBuildCAS(Path(str(cas_root)))
+            receipt = cas.lookup(request)
+        except (OSError, ValueError, pb.ActionContractError,
+                pb.CASTamperError, pb.CASUnavailableError):
+            return False
+        if receipt is None:
+            return False
+        try:
+            return verify_durable_child_result(
+                cas, request, receipt, child_key=child_key) is not None
+        except (OSError, ValueError, pb.ActionContractError,
+                pb.CASTamperError, pb.CASUnavailableError):
+            return False
 
     def _export_landed_bytes(self, request: Mapping[str, object], cas_root: object
                              ) -> tuple[int | None, int | None, str]:
@@ -27895,7 +28202,8 @@ class PoolQueue:
                                 "pool_contention": watch.pool_contention_exempt_s,
                                 "start_gate": watch.start_gate_exempt_s,
                                 "reader_plan": watch.reader_plan_exempt_s,
-                                "export_wait": watch.export_wait_exempt_s},
+                                "export_wait": watch.export_wait_exempt_s,
+                                "queued_child_wait": watch.queued_child_wait_exempt_s},
                             "delivered_units_per_s": delivered,
                             "delivered_bytes_per_s": (
                                 delivered if contention is not None else None),
@@ -28213,6 +28521,36 @@ class PoolQueue:
                                     since_monotonic=aside_checkpoint
                                     - max(0.0, now_unix - since))
                             spent = time.monotonic() - aside_checkpoint
+                            watch.shift(spent)
+                            if deadline is not None:
+                                deadline += spent
+                        if (not advanced
+                                and time.monotonic() >= watch.stall_deadline()):
+                            # A coordinator waiting on its declared queued
+                            # children, one of which is ready or claimed, is
+                            # waiting on admission rather than stuck (#1666).
+                            # At the rung only, like the staged wait, and
+                            # credited through the same mark.
+                            queued_checkpoint = time.monotonic()
+                            try:
+                                awaited = (progress.awaited_batch
+                                           if progress is not None else None)
+                                queued = (
+                                    None if awaited is None
+                                    else self.queued_child_wait_verdict(
+                                        key, cas_root=item.get("cas_root"),
+                                        awaited=awaited,
+                                        admitted=self._awaited_child_submissions(
+                                            item, awaited=awaited),
+                                        now=_now()))
+                            except (OSError, ValueError, PoolContractError) as exc:
+                                queued = {"exempt": False, "children": [],
+                                          "reason": f"unreadable: {exc!r}"}
+                            if queued is not None:
+                                watch.exempt_queued_child_wait(
+                                    queued, now=queued_checkpoint,
+                                    since_monotonic=watch.last_real_advance_monotonic)
+                            spent = time.monotonic() - queued_checkpoint
                             watch.shift(spent)
                             if deadline is not None:
                                 deadline += spent

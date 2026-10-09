@@ -212,6 +212,12 @@ POOL_CONTENTION_SCHEMA_V1 = "prismabuild.progress_pool_contention.v1"
 #: A worker without it would ignore the param and kill a paced mover at the
 #: bare copy grace, so a mover that declares it requires the tag.
 POOL_CONTENTION_TAG = "progress-pool-contention-v1"
+#: The sealed request key a coordinator declares beside its progress policy
+#: (#1666): the batch it awaits, as parent and plan keys. Sealed into the
+#: action key: a coordinator the worker credits is a different action from
+#: one it does not.
+AWAITED_BATCH_PARAM = "progress_awaited_batch"
+AWAITED_BATCH_SCHEMA_V1 = "prismabuild.progress_awaited_batch.v1"
 #: Offered by a worker that names the holder of a stage's ownership lock
 #: from the holder's own record and never credits an action's own hold as a
 #: start-gate wait (#1021).  A stage egress takes that lock itself, so a
@@ -2962,6 +2968,14 @@ def _normalize_action_body(value: object) -> dict[str, object]:
         contention = validate_pool_contention(normalized_params[POOL_CONTENTION_PARAM])
         if contention != normalized_params[POOL_CONTENTION_PARAM]:
             _fail("action.params.progress_pool_contention is valid but not in "
+                  "normalized form")
+    if AWAITED_BATCH_PARAM in normalized_params:
+        # Only beside a policy: a credit against no allowance is meaningless.
+        if PROGRESS_PARAM not in normalized_params:
+            _fail("action.params.progress_awaited_batch needs action.params.progress")
+        awaited = validate_awaited_batch(normalized_params[AWAITED_BATCH_PARAM])
+        if awaited != normalized_params[AWAITED_BATCH_PARAM]:
+            _fail("action.params.progress_awaited_batch is valid but not in "
                   "normalized form")
     normalized_inputs = _normalize_inputs(body["inputs"])
     if PRODUCED_OUTPUT_TEMPLATE_PARAM in normalized_params:
@@ -8527,6 +8541,41 @@ def action_pool_contention(action: Mapping[str, object]) -> dict[str, object] | 
     return validate_pool_contention(declared)
 
 
+def validate_awaited_batch(
+    value: object, *, where: str = "action.params.progress_awaited_batch",
+) -> dict[str, object]:
+    """Normalize a coordinator's sealed awaited batch, or refuse it (#1666).
+
+    Closed key set, for the reason the progress policy's is: the worker
+    credits quiet on exactly these terms, and a field it does not read
+    would be a promise nobody keeps. Both keys name sealed decomposition
+    identities: the parent the campaign cut and the plan that fixed the
+    children's membership.
+    """
+
+    if not isinstance(value, Mapping) or set(value) != {
+            "schema", "parent_key", "plan_key"}:
+        _fail(f"{where} must declare exactly schema, parent_key and plan_key")
+    if value["schema"] != AWAITED_BATCH_SCHEMA_V1:
+        _fail(f"{where}.schema must be {AWAITED_BATCH_SCHEMA_V1!r}")
+    return {"schema": AWAITED_BATCH_SCHEMA_V1,
+            "parent_key": _sha256(value["parent_key"],
+                                  where=f"{where}.parent_key"),
+            "plan_key": _sha256(value["plan_key"],
+                                where=f"{where}.plan_key")}
+
+
+def action_awaited_batch(action: Mapping[str, object]) -> dict[str, object] | None:
+    """The sealed awaited batch of a validated action, if any (#1666)."""
+
+    params = action["params"]
+    assert isinstance(params, Mapping)
+    declared = params.get(AWAITED_BATCH_PARAM)
+    if declared is None:
+        return None
+    return validate_awaited_batch(declared)
+
+
 def action_progress_policy(action: Mapping[str, object]) -> dict[str, object] | None:
     """The sealed progress policy of a validated action, if it declared one."""
 
@@ -8944,6 +8993,10 @@ __all__ = [
     "POOL_CONTENTION_PARAM",
     "POOL_CONTENTION_SCHEMA_V1",
     "POOL_CONTENTION_TAG",
+    "AWAITED_BATCH_PARAM",
+    "AWAITED_BATCH_SCHEMA_V1",
+    "action_awaited_batch",
+    "validate_awaited_batch",
     "EGRESS_PROGRESS_TAG",
     "action_pool_contention",
     "validate_pool_contention",
