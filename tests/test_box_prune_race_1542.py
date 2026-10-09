@@ -16,6 +16,8 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from prismabuild import adaptive_cpu
 
@@ -154,3 +156,50 @@ def test_concurrent_openers_share_one_lock_inode(tmp_path, monkeypatch):
             if child.is_alive():
                 child.terminate()
                 child.join(timeout=10)
+
+
+def _hold_until_released(path, ready, release):
+    descriptor = os.open(path, os.O_RDWR)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        ready.put(os.fstat(descriptor).st_ino)
+        if not release.wait(30):
+            raise RuntimeError("the parent did not release the holder")
+    finally:
+        os.close(descriptor)
+
+
+@pytest.mark.parametrize("suffix", [".lock", ".sweep", ".preemption", ".guard"])
+def test_nonadaptive_holder_in_another_process_refuses_all_removal(tmp_path, suffix):
+    root = tmp_path / "box-state"
+    root.mkdir()
+    queue = tmp_path / "served"
+    for name in ("reservations", "ready", "claimed"):
+        (queue / name).mkdir(parents=True)
+    digest = adaptive_cpu.box_identity(tmp_path / "obsolete")
+    held_path = root / (digest + suffix)
+    idle_path = root / ("01" * 32 + ".lock")
+    old = time.time() - 8 * 24 * 3600
+    for path in (held_path, idle_path):
+        path.write_text("keep")
+        os.utime(path, (old, old))
+    before = {path.name: (path.stat().st_ino, path.read_bytes()) for path in root.iterdir()}
+    context = mp.get_context("spawn")
+    ready, release = context.Queue(), context.Event()
+    holder = context.Process(target=_hold_until_released, args=(str(held_path), ready, release))
+    holder.start()
+    try:
+        assert ready.get(timeout=30) == before[held_path.name][0]
+        with pytest.raises(adaptive_cpu.PruneRefused, match="lock held"):
+            adaptive_cpu.prune_box_state(
+                directory=root, queue_roots=[queue], apply=True, maintenance_held=True,
+                proc_root=_quiet_proc(tmp_path))
+        assert {path.name: (path.stat().st_ino, path.read_bytes())
+                for path in root.iterdir()} == before
+    finally:
+        release.set()
+        holder.join(timeout=30)
+        if holder.is_alive():
+            holder.terminate()
+            holder.join(timeout=10)
+    assert holder.exitcode == 0

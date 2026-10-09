@@ -500,6 +500,8 @@ BOX_STATE_SUFFIXES = ('.lock', '.origin.json', '.adaptive-cpu-v1',
                       '.measurement-reader-v1', '.measurement-reader-v1.guard',
                       '.measurement-reader-v1.writing',
                       '.preemption', '.sweep')
+#: Lock-family paths require an unheld probe before maintenance removal.
+BOX_STATE_LOCK_SUFFIXES = ('.lock', '.preemption', '.sweep', '.guard')
 
 
 def box_state(base):
@@ -790,46 +792,30 @@ class PruneRefused(RuntimeError):
 
 
 def _box_state_digest_of(name):
-    for suffix in BOX_STATE_SUFFIXES:
-        if name.endswith(suffix):
-            stem = name[:-len(suffix)]
-            break
-    else:
-        return None
-    if len(stem) == 64 and all(char in '0123456789abcdef' for char in stem):
+    """Every ``<digest>.*`` sibling belongs to the same admission entry."""
+    stem, separator, _suffix = name.partition('.')
+    if separator and len(stem) == 64 and all(char in '0123456789abcdef' for char in stem):
         return stem
     return None
 
 
 def _box_state_entry_mtime(entry):
-    """Newest mtime under ``entry``, or ``None`` when nothing is readable."""
-    newest = None
+    """Return the newest mtime, or ``None`` for unreadable or unsafe state."""
     try:
-        top = entry.lstat().st_mtime
-    except OSError:
-        return None
-    newest = top
-    try:
-        children = list(os.scandir(entry))
-    except OSError:
-        return None
-    for child in children:
-        try:
-            if child.is_dir(follow_symlinks=False):
-                try:
-                    nested = [item.stat(follow_symlinks=False).st_mtime
-                              for item in os.scandir(child.path)]
-                except OSError:
-                    return None
-                for stamp in nested:
-                    if stamp > newest:
-                        newest = stamp
-            else:
-                stamp = child.stat(follow_symlinks=False).st_mtime
-                if stamp > newest:
-                    newest = stamp
-        except OSError:
+        info = entry.lstat()
+        if stat.S_ISREG(info.st_mode):
+            return info.st_mtime
+        if not stat.S_ISDIR(info.st_mode):
             return None
+        newest = info.st_mtime
+        with os.scandir(entry) as children:
+            for child in children:
+                stamp = _box_state_entry_mtime(Path(child.path))
+                if stamp is None:
+                    return None
+                newest = max(newest, stamp)
+    except OSError:
+        return None
     return newest
 
 
@@ -842,8 +828,8 @@ def _served_box_state_digests(queue_roots):
     (``pool.py``), one digest per reservation host present. A bare
     queue root alone protects nothing: its own hash names no ledger.
 
-    Missing or unreadable evidence protects nothing either, and it is
-    reported, never hidden: a missing queue root, an unreadable
+    An absent roots list is incomplete evidence. Missing or unreadable
+    evidence is reported, never hidden: a missing queue root, an unreadable
     ``reservations/`` listing, or a partial host census yields
     ``complete`` false with the cause in ``errors``. An empty
     ``reservations/`` directory that lists cleanly is complete
@@ -852,7 +838,9 @@ def _served_box_state_digests(queue_roots):
     """
     found = set()
     errors = []
+    roots_seen = False
     for root in queue_roots or ():
+        roots_seen = True
         try:
             queue = Path(root)
         except (TypeError, ValueError) as exc:
@@ -895,6 +883,8 @@ def _served_box_state_digests(queue_roots):
             except (OSError, ValueError) as exc:
                 errors.append('%s: host %r unreadable: %s' % (queue, host, exc))
                 continue
+    if not roots_seen:
+        errors.append('served queue roots absent')
     return found, not errors, errors
 
 
@@ -945,13 +935,11 @@ def survey_box_state(directory=None, *, queue_roots=(), older_than_s=PRUNE_IDLE_
     select; neither permits unsafe removal. Queue roots name queue
     directories; protection derives from their reservation hosts.
 
-    The ``.sweep`` marker is a scheduling timestamp, unlocked by
-    design (``pool.py``): its presence alone never keeps an entry,
-    and its age joins the entry's age. The ``.preemption`` file is a
-    permanent lock inode (``pool.py`` opens it with ``O_CREAT`` and
-    never unlinks it): only a held preemption lock keeps its entry.
-    Both leave with the rest of an obsolete entry inside a
-    proven-quiet maintenance window. Incomplete queue evidence keeps
+    An entry includes every ``<digest>.*`` sibling, with or without an
+    adaptive CPU directory. A ``.sweep`` marker or permanent lock file
+    does not establish activity; its age joins the entry's age. Every
+    lock-family file must be unheld. Obsolete entries leave only inside
+    a proven-quiet maintenance window. Incomplete queue evidence keeps
     every entry: every digest reads ``'unresolved queue evidence'``.
     """
     root = Path(directory) if directory is not None else Path(BOX_STATE_ROOT)
@@ -978,38 +966,28 @@ def survey_box_state(directory=None, *, queue_roots=(), older_than_s=PRUNE_IDLE_
         if digest in live:
             kept[digest] = 'served queue root'
             continue
-        held = _held_lock_digest(root / (digest + '.lock'))
-        if held is None:
-            kept[digest] = 'unreadable state'
-            continue
-        if held:
-            kept[digest] = 'held admission lock'
-            continue
-        preemption = _held_lock_digest(root / (digest + '.preemption'))
-        if preemption is None:
-            kept[digest] = 'unreadable state'
-            continue
-        if preemption:
-            kept[digest] = 'held preemption lock'
-            continue
-        newest = _box_state_entry_mtime(root / (digest + '.adaptive-cpu-v1'))
-        if newest is None:
-            kept[digest] = 'unreadable state'
-            continue
-        file_stamps = []
-        readable = True
         for name in names:
-            if name.endswith('.adaptive-cpu-v1'):
+            if not name.endswith(BOX_STATE_LOCK_SUFFIXES):
                 continue
-            try:
-                file_stamps.append((root / name).lstat().st_mtime)
-            except OSError:
-                readable = False
+            held = _held_lock_digest(root / name)
+            if held is None:
+                kept[digest] = 'unreadable state'
                 break
-        if not readable:
+            if held:
+                if name.endswith('.lock'):
+                    kept[digest] = 'held admission lock'
+                elif name.endswith('.preemption'):
+                    kept[digest] = 'held preemption lock'
+                else:
+                    kept[digest] = 'held state lock'
+                break
+        if digest in kept:
+            continue
+        stamps = [_box_state_entry_mtime(root / name) for name in names]
+        if any(stamp is None for stamp in stamps):
             kept[digest] = 'unreadable state'
             continue
-        newest = max([newest, *file_stamps]) if file_stamps else newest
+        newest = max(stamps)
         if moment - newest < older_than_s:
             kept[digest] = 'fresh activity'
             continue
@@ -1040,12 +1018,10 @@ def prove_box_quiescent(directory=None, *, queue_roots=(), proc_root='/proc'):
 
     Returns ``{'quiet': True}`` only when every check passes: no live
     worker loop of this box, no claim not yet resolved on any served
-    queue, no live resource scope, and every ``.lock``, ``.preemption``
-    and ``.guard`` file under the root is unheld (a non-blocking
-    ``flock`` probe that releases at once). The ``.sweep`` marker is
-    a scheduling timestamp, unlocked by design, so it is never a
-    holder and never probed. Partial or unreadable evidence counts
-    as "not quiet": an unknown box never reads as idle. A supplied
+    queue, no live resource scope, and every ``.lock``, ``.preemption``,
+    ``.sweep`` and ``.guard`` file under the root is unheld. Each
+    non-blocking ``flock`` probe releases at once. Partial or unreadable
+    evidence counts as "not quiet": an unknown box never reads as idle. A supplied
     queue whose ``ready/``, ``claimed/`` or ``reservations/``
     evidence is missing or unreadable is "not quiet": a missing
     queue never reads as an empty queue. The function changes
@@ -1059,8 +1035,7 @@ def prove_box_quiescent(directory=None, *, queue_roots=(), proc_root='/proc'):
     for name in names:
         if _box_state_digest_of(name) is None:
             continue
-        if (name.endswith('.lock') or name.endswith('.preemption')
-                or name.endswith('.measurement-reader-v1.guard')):
+        if name.endswith(BOX_STATE_LOCK_SUFFIXES):
             held = _held_lock_digest(root / name)
             if held is None:
                 return {'quiet': False, 'reason': 'lock probe unreadable: %s' % name}

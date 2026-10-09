@@ -333,3 +333,62 @@ def test_an_unreadable_reservations_census_keeps_everything(tmp_path, monkeypatc
                                      maintenance_held=True,
                                      proc_root=_quiet_proc(tmp_path))
     assert (root / (stale + ".lock")).exists()
+
+
+@pytest.mark.parametrize("suffix", [".lock", ".sweep", ".preemption", ".other-state"])
+def test_nonadaptive_entries_are_candidates_but_served_locks_stay(tmp_path, monkeypatch, suffix):
+    root = tmp_path / "box-state"
+    root.mkdir()
+    monkeypatch.setattr(adaptive_cpu, "BOX_STATE_ROOT", root)
+    queue = tmp_path / "served"
+    for name in ("reservations/host", "ready", "claimed"):
+        (queue / name).mkdir(parents=True)
+    live = adaptive_cpu.box_identity(queue / "reservations" / "host")
+    obsolete = adaptive_cpu.box_identity(tmp_path / "unserved" / "reservations" / "host")
+    live_path = root / (live + ".lock")
+    obsolete_path = root / (obsolete + suffix)
+    stamp = time.time() - 8 * 24 * 3600
+    for path in (live_path, obsolete_path):
+        path.write_text("legacy")
+        os.utime(path, (stamp, stamp))
+    before = {path.name: path.stat().st_ino for path in root.iterdir()}
+    dry_run = adaptive_cpu.prune_box_state(directory=root, queue_roots=[queue])
+    assert dry_run["candidates"] == [obsolete]
+    assert dry_run["kept"][live] == "served queue root"
+    assert {path.name: path.stat().st_ino for path in root.iterdir()} == before
+    applied = adaptive_cpu.prune_box_state(
+        directory=root, queue_roots=[queue], apply=True, maintenance_held=True,
+        proc_root=_quiet_proc(tmp_path))
+    assert applied["removed"] == [obsolete]
+    assert not obsolete_path.exists()
+    assert live_path.read_text() == "legacy"
+    assert live_path.stat().st_ino == before[live_path.name]
+
+
+@pytest.mark.parametrize("roots", [None, [], ()])
+def test_absent_queue_roots_refuse_apply_without_any_changes(tmp_path, monkeypatch, roots):
+    root, _queue, _base, _live, _stale, _fresh = _fixture(monkeypatch, tmp_path)
+    before = {path.name: path.lstat().st_ino for path in root.iterdir()}
+    with pytest.raises(adaptive_cpu.PruneRefused, match="queue evidence"):
+        adaptive_cpu.prune_box_state(
+            directory=root, queue_roots=roots, apply=True, maintenance_held=True,
+            proc_root=_quiet_proc(tmp_path))
+    survey = adaptive_cpu.prune_box_state(directory=root, queue_roots=roots)
+    assert survey["queue_evidence"]["complete"] is False
+    assert survey["candidates"] == []
+    assert {path.name: path.lstat().st_ino for path in root.iterdir()} == before
+
+
+def test_a_live_resource_scope_refuses_apply_without_any_changes(tmp_path, monkeypatch):
+    root, queue, _base, _live, _stale, _fresh = _fixture(monkeypatch, tmp_path)
+    before = {path.name: path.lstat().st_ino for path in root.iterdir()}
+    proc = _quiet_proc(tmp_path)
+    member = proc / "4242"
+    member.mkdir()
+    (member / "cmdline").write_bytes(b"python3\0payload.py\0")
+    (member / "cgroup").write_text("0::/prismabuild.slice/prismabuild-job-test.slice\n")
+    with pytest.raises(adaptive_cpu.PruneRefused, match="live resource scope"):
+        adaptive_cpu.prune_box_state(
+            directory=root, queue_roots=[queue], apply=True, maintenance_held=True,
+            proc_root=proc)
+    assert {path.name: path.lstat().st_ino for path in root.iterdir()} == before

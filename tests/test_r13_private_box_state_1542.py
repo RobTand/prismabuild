@@ -13,6 +13,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -99,3 +100,63 @@ def test_setup_and_cycles_touch_only_the_private_root(tmp_path):
     assert record["attempts"] == [], record["attempts"]
     assert record["box_files"], "the bench filed no admission state in its work directory"
     assert any(name.endswith(".lock") for name in record["box_files"]), record["box_files"]
+
+
+@pytest.fixture
+def reused_work():
+    # The bench refuses /tmp; /dev/shm provides RAM scratch for this gate test.
+    with tempfile.TemporaryDirectory(prefix="pb1542-r13-reuse-", dir="/dev/shm") as parent:
+        work = Path(parent) / "work"
+        work.mkdir()
+        yield work
+
+
+@pytest.mark.parametrize("relative", [
+    "pb-queue/claimed/" + "ab12" * 16 + ".json",
+    "pb-queue/claimed/" + "ab12" * 16 + ".lease",
+    "box-state/" + "cd34" * 16 + ".measurement-reader-v1",
+    "box-state/" + "cd34" * 16 + ".measurement-reader-v1.guard",
+    "box-state/" + "cd34" * 16 + ".measurement-reader-v1.writing",
+    "box-state/" + "cd34" * 16 + ".adaptive-cpu-v1/claim-denials.json",
+    "previous-run.json",
+])
+def test_reuse_refuses_existing_state_without_deletion(reused_work, monkeypatch, relative):
+    evidence = reused_work / relative
+    evidence.parent.mkdir(parents=True, exist_ok=True)
+    evidence.write_text('{"custody": "unresolved"}')
+    before = {path.relative_to(reused_work): path.lstat().st_ino
+              for path in reused_work.rglob("*")}
+    out = reused_work.parent / "out"
+
+    def queue_must_not_start(*args, **kwargs):
+        raise AssertionError("the bench used the queue before it refused retained state")
+
+    monkeypatch.setattr(bench.pool, "PoolQueue", queue_must_not_start)
+    with pytest.raises(SystemExit, match="refusing.*" + str(reused_work)):
+        bench.main(["--work", str(reused_work), "--out", str(out), "--tiny-shape"])
+    assert evidence.read_text() == '{"custody": "unresolved"}'
+    assert {path.relative_to(reused_work): path.lstat().st_ino
+            for path in reused_work.rglob("*")} == before
+    assert not out.exists()
+
+
+def test_reuse_refuses_an_unreadable_work_directory(reused_work, monkeypatch):
+    evidence = reused_work / "retained.json"
+    evidence.write_text("keep")
+    inode = evidence.stat().st_ino
+    real_scandir = os.scandir
+
+    def unreadable(path):
+        if path == reused_work:
+            raise PermissionError("the work census is unavailable")
+        return real_scandir(path)
+
+    def queue_must_not_start(*args, **kwargs):
+        raise AssertionError("the bench used the queue without a complete work census")
+
+    monkeypatch.setattr(os, "scandir", unreadable)
+    monkeypatch.setattr(bench.pool, "PoolQueue", queue_must_not_start)
+    with pytest.raises(SystemExit, match="refusing.*" + str(reused_work)):
+        bench.main(["--work", str(reused_work), "--out", str(reused_work.parent / "out")])
+    assert evidence.read_text() == "keep"
+    assert evidence.stat().st_ino == inode

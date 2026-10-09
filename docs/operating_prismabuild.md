@@ -3870,19 +3870,42 @@ once, naming its queue root, hostname, pid, executable and creation time;
 an entry that already owns state when the code first sees it keeps no
 record: it is a legacy entry, and nothing invents its origin. Entries
 without one are legacy entries. The admission path probes only the
-digest's own paths, never the whole directory. Maintenance-only prune
-(`survey_box_state`, `prune_box_state`, `prove_box_quiescent`) removes
-idle digests: the default only surveys, and apply needs the acknowledged
-maintenance hold plus a proven-quiet box (no live worker loop, no unresolved
-claim, no live scope, complete queue evidence, and every lock file unheld).
+digest's own paths, never the whole directory.
+
+Maintenance-only prune (`survey_box_state`, `prune_box_state`, `prove_box_quiescent`)
+uses a dry run by default. An entry includes every `<digest>.*` sibling,
+even without an adaptive CPU directory. Lock-only, sweep-only, and
+preemption-only entries qualify by the same identity and age rules.
+The default age floor is seven days. Apply removes at most 100 entries
+per pass; the 5,000-entry target prioritizes older eligible entries.
+
+Stop all relevant users and bar new openers before apply.
+Acknowledge the maintenance hold. Apply also requires a proven-quiet box:
+no live worker loop, unresolved claim, or live scope, with complete queue evidence.
+Each `.lock`, `.preemption`, `.sweep`, and `.guard` file must pass
+a non-blocking `flock` probe. Configured roots and unresolved census readers stay.
+An absent roots list, missing queue, or incomplete evidence refuses apply without removal.
+
 An old unheld `.sweep` marker and a released `.preemption` lock never keep
-an entry alone. A missing queue never reads as an empty queue. Partial or
-unreadable evidence counts as "not quiet". Age and count select candidates;
-neither permits unsafe removal. No rename of a held inode ever happens. A cold start relearns intervals and profiles; shared
+an entry alone. Partial or unreadable evidence counts as "not quiet".
+Age and count select candidates; neither permits unsafe removal.
+No rename of a held inode ever happens.
+A cold start relearns intervals and profiles; shared
 copies are never recovery authority. For this authority migration or rollback,
 keep the queue drained until every worker loop reports the selected generation.
 Before rollback to shared authority, verify all snapshot publishers have
 actually exited as well; a stalled publisher blocks that rollback.
+
+The R13 bench binds admission state to `<work>/box-state` before queue use
+in both parent and child processes. A nonempty explicit override remains unchanged.
+Use a new or empty work directory. The bench refuses a nonempty or unreadable
+directory before queue use and names that directory. It deletes nothing from a prior run.
+
+Claims, census fences, guard files, and claim-denial records remain across reuse attempts.
+Neither `finish` nor direct child exit proves settlement or permits removal.
+
+This source repair does not establish runtime deployment.
+Obtain CEO approval before runtime publication.
 
 Remote status readers still read `reservations/<host>/adaptive/`, now populated
 by an independent publisher after admission is released. Its CPU and GPU

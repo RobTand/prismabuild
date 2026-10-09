@@ -68,7 +68,6 @@ import json
 import os
 from pathlib import Path
 import secrets
-import shutil
 import socket
 import subprocess
 import sys
@@ -134,6 +133,30 @@ def bind_private_box_state(work):
     except ImportError:
         pass
     return str(root)
+
+
+def _prepare_work_directory(work):
+    """Require a new or empty directory; never delete a prior run's state.
+
+    An empty top-level census proves there are no retained claims, census
+    fences or claim-denial records below it. A nonempty or unreadable
+    directory stays untouched, including state this run did not create.
+    """
+    try:
+        with os.scandir(work) as entries:
+            first = next(entries, None)
+    except FileNotFoundError:
+        try:
+            work.mkdir(parents=True)
+        except OSError as exc:
+            raise SystemExit(f"refusing {work}: cannot create work directory: {exc}") from exc
+        return
+    except OSError as exc:
+        raise SystemExit(f"refusing {work}: work directory census unavailable: {exc}") from exc
+    if first is not None:
+        raise SystemExit(
+            f"refusing {work}: retained state may hold unresolved claims or census fences; "
+            "use a new or empty work directory")
 
 #: The sampler's own reads, taken before the counter wraps anything, so the
 #: thread's reads are never counted as the cycle's.
@@ -591,7 +614,7 @@ def analyze(profile: Path, rate: int) -> dict[str, object]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--work", default="",
-                        help="scratch directory; emptied first; never /tmp")
+                        help="new or empty scratch directory; keep existing state; never /tmp")
     parser.add_argument("--out", default="",
                         help="where summary.json, the cycles and the profile go")
     parser.add_argument("--cycles", type=int, default=6,
@@ -656,9 +679,7 @@ def main(argv: list[str] | None = None) -> int:
             raise SystemExit(f"refusing {guarded}: never /tmp")
     if args.py_spy and not os.access(args.py_spy, os.X_OK):
         raise SystemExit(f"refusing: py-spy {args.py_spy!r} is not executable")
-    if work.exists():
-        shutil.rmtree(work)
-    work.mkdir(parents=True)
+    _prepare_work_directory(work)
     out.mkdir(parents=True, exist_ok=True)
     bind_private_box_state(work)
 
