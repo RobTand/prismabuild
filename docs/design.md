@@ -14884,6 +14884,49 @@ failure; every refusal lands before the first unlink.
 holds each rule as a focused case, with the staged copies and originals
 asserted intact after every refusal.
 
+### Reclaim of source-mark-only copies with digest-proven originals (#1636)
+
+Routine `reconcile` leaves every `source_mark_only` copy for the life of
+the fleet, and that contract does not change here. `tools/fleet/stage_reclaim.py`
+is a separate operator verb beside `stage_release.recover_orphaned_range`,
+never a sweep: it moves staged copies whose originals still exist into a
+quarantine area outside the stage tier, and it deletes nothing. The tier
+mint reads the dataset's `available` each cycle, so the freed room appears
+with no ledger edit.
+
+A staged range lives at `<rel>.pbrange/<offset>-<size>`, so the copy names
+its own original: `<mount_prefix>/<rel>` at extent `[offset, offset+size)`.
+No receipt is needed, which is why `recover_orphaned_range` cannot serve
+here: it requires filed move receipts the September copies lack. A copy is
+unpaired when its name does not parse, its original is missing, is not a
+regular file, resolves into the stage root, or is shorter than the extent.
+An unpaired copy never moves. Proof is by digest at reclaim time: the verb
+streams SHA-256 over the whole copy and over the original extent, and moves
+only when they are equal, with each side's identity fenced across its
+read. The size-only proof of `recover_orphaned_range` is not enough here,
+because a genuine prewarm object and a legacy copy carry the same marks.
+The walk and the proofs run outside the stage ownership lock; the lock
+covers the fresh ownership censuses, the identity re-checks and the moves
+only. The dry run is the default; apply needs `--apply` and a quarantine
+root outside the stage on another device, with room for the batch, and it
+reuses a dry run's `memo.json` only while both files still fence the
+proven identities. Each file is copied to a temporary, fsynced,
+digest-checked and renamed into quarantine before the stage copy is
+removed, and each move is journaled as it completes, so a crash before
+the final `manifest.json` still restores. The manifest records stage
+path, original path, offset, size, sha256, xattrs and times per file, and
+`restore` copies each file back with its xattrs, verifies the marks it
+set, refuses to overwrite, and re-checks the digest. Never-move rules
+hold under the stage ownership lock: fragment, pin, in-flight claim,
+promotion handoff, ready or claimed mover, or the produced-output lane.
+The ledger names action keys, never paths, so it cannot attribute a copy;
+an unreadable ledger still refuses the pass, as any unreadable reference
+record does. `reconcile` keeps leaving `source_mark_only` copies, so
+wiring this verb to stage pressure stays a later issue.
+`tests/test_a_source_mark_copy_with_a_proven_original_is_reclaimed.py`
+covers paired, unpaired, differing, referenced, memo, journal and
+restore cases.
+
 ### How the map reaches the consumer
 
 `tier_loop` is the map's **single writer**: movers write one fragment each into a
