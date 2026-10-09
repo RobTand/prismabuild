@@ -67,6 +67,35 @@ reviewed design, unchanged-main failure and targeted PrismaBuild receipt. Do not
 widen a progress grace to hide a load-sensitive failure. Spool tests need a
 basetemp on a supported local disk; dl380g10's tmpfs-backed /tmp is not one.
 
+The three positive wait fixtures for #1506 use an action-written declaration
+signal before the native Popen returns to the pool. A pipe releases the
+action after the real progress watch starts. The claimed mover publishes
+its first milestone at that boundary. The export writer retains its own
+ready event. These fixture barriers change no production timer or negative
+control. Their evidence covers selected subprocess paths, not arbitrary host load.
+
+One-shot claim fixtures separate backpressure from capacity exhaustion.
+Test concurrent waves only for disjoint use of held CPU IDs. Test exact
+allocation and exhaustion with sequential claims. A concurrent wave may
+refuse a caller with None. Never retry a refused call in a fixture.
+
+Warm-listing trust fixtures pin the complete object resolver
+`stage_move._object_filesystem_type`, not its direct device subquery
+`stage_move._filesystem_type`. A direct `None` answer can still resolve trust
+through the validated mount table, so only the complete resolver models trust
+loss (#1506).
+
+Unrelated subprocesses retain native Popen behavior when env=None.
+
+The live-store test guard checks `os.open(name, dir_fd=fd)` against the
+descriptor path from local `/proc/self/fd` (#1610). Its wrapper retains the
+descriptor because CPython omits it from the `open` audit event.
+Calls without a descriptor use the cwd. Absolute names ignore the descriptor.
+The guarded roots and the `live_store` marker remain unchanged.
+
+Restore scratch guard roots before pytest removes the scratch tree.
+Restore the cwd before each regression ends.
+
 Install the local direct-push guard with:
 
 ```bash
@@ -83,3 +112,22 @@ for branch protection and rulesets: private repository protection requires an
 eligible paid plan. Keep this repository private. Until that account limitation
 is resolved, neither the workflow nor the local hook is server-enforced branch
 protection, and direct API writes remain technically possible.
+
+## Scratch for small CPU suites
+
+Use `pbtest --tag x86 --tmpdir /tmp` for small suites on dl380g10 that do not require disk semantics.
+For detached pytest actions, seal `pbrun --env TMPDIR=/tmp` instead.
+The host mounts `/tmp` as RAM-backed tmpfs. The #1530 probe observed
+158120488960 bytes of capacity and 121960222720 bytes available.
+These values are observations, not reservations or permanent capacity guarantees.
+
+Declare memory for the processes and their peak tmpfs files together.
+Check free bytes and inodes before a run. Limit concurrent scratch demand.
+
+Do not use tmpfs for spool tests or tests that require a supported local disk.
+Keep disk durability, disk capacity, filesystem-specific, and ZFS/NFS tests on their required filesystem.
+Do not use the HDD pool as the normal scratch parent for small CPU suites.
+The [#1530 evidence record](results/pbtest_exit_completion_1530.md) shows pytest's
+exit hook inside pool cleanup after the test progress reached `[100%]`.
+An exit timeout remains non-green, even when the selected tests have verified completion evidence.
+

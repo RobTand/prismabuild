@@ -162,7 +162,19 @@ infrastructure does not certify a complete measurement census: `ready_items`
 still supplies an advisory, potentially skipping snapshot. Reservation-aware
 current-census admission (#1419) is implemented in the private
 `_measurement_reservation` domain boundary for capacity-backed claims and
-integrated with explicit fixture compatibility. The combined source qualification
+integrated with explicit fixture compatibility. The census skips, as a candidate, a READY record
+whose publication priority the queue itself cannot order (`PoolQueue._unorderable_queue_field`
+names `priority`; a record whose priority the queue can order and whose `passes` sidecar is
+unreadable is not skipped, because the queue reads `passes` as 0 and can still list and claim it.
+A record whose `published_unix` is unreadable is unorderable too, but it fails the strict
+publication identity check before the skip is reached, so it still refuses: a follow-up, not part
+of this change):
+it holds no tokens, runs nothing, is never claimed, and the queue already files it by name
+instead of raising (#1506). The skipped record still counts as a live gang member, so an
+elected gang keeps its host fences. A priority the queue can order (`5.5`, `True`, `"5"`)
+stays a refusal, because such a record can be claimed and reach the CLAIMED census. A CLAIMED
+record the census cannot read, any identity mismatch, and a missing census record still
+refuse. The combined source qualification
 at `e5abdd29291064f1efc228c3054ffed9b8a682b3` is independently verified and
 accepted by Astra (2026-10-02); its evidence is recorded below. **Deployment and
 end-to-end acceptance remain HOLD.** The owner's enforce-admission decision
@@ -236,6 +248,8 @@ reads are gone, and the 40 `ready/` record reads and 40 transition-lock
 opens remain (actions 8c9e1d2bd5f4 and 8550ef5bc4ab). On the NFS export a
 listing is at least one READDIR, and a per-key lookup is a LOOKUP unless
 the client's dentry cache answers it.
+
+The standalone `bench_claim_pass` command uses an owned temporary admission directory under `/tmp` when `PRISMABUILD_BOX_STATE_ROOT` is absent or empty. It sets the environment value before `build_and_poll` imports `pool` and retains the directory across both synchronous polls. It restores the prior environment value and removes only the owned directory after the call. A nonempty explicit override remains unchanged. The count-only branch returns before work or scope creation. Production roots and admission policy remain unchanged.
 
 Each claim pass times its per-key transition-lock holds (#1029): every lock
 the pass acquires is timed on `time.monotonic()` from acquisition to the end
@@ -1950,6 +1964,10 @@ Structured `--pytest-args` forwarding uses a closed population/report vocabulary
 and replaces environment/project `addopts` when supplied. Worker count, config
 indirection, extra file paths, and xdist's population-duplicating `each` mode
 are refused rather than overriding PB's reservations or file partitioning.
+The one ini override, `-o tmp_path_retention_policy=all|failed|none` (#1535,
+D29), is a retention choice for sealed checkouts that carry no setting. Any
+other `-o` key is refused, because `addopts`, `testpaths` and plugin keys
+would reopen resource control and config indirection.
 Surface report names expand `{shard}` or receive `.shard-N` before the final
 suffix. Expanded arguments and GPU budgets enter the ordinary sealed action
 identity through `pbrun`; no second dispatcher or placement policy is added.
@@ -2032,6 +2050,35 @@ has `skipped: null`, which means its skip reasons are unknown, not that nothing
 was skipped. The recorder changes every shard's command, so receipts from
 before it are not cache hits for shards after it.
 
+Each shard also emits `pbtest-completion: {json}` before exit hooks can block
+the final outcomes (#1530). Its schema is `prismabuild.pbtest_completion.v1`.
+The recorder flushes this separate record after the last selected test reports
+teardown. For an incomplete session, it emits the available evidence at entry
+to `pytest_sessionfinish`. An xdist controller checks every worker's collection
+before it can report complete tests.
+
+The JSON report field `test_completion.status` is `complete`, `incomplete`,
+or `unknown`. Complete tests require a nonempty, unique selected population,
+an observed outcome for each test, and a teardown report for each test.
+Collection errors, inconsistent worker collections, duplicate teardown reports,
+and reports outside the selected population prevent complete status.
+Missing or invalid records give unknown status. Collection-only runs do not
+establish complete test execution.
+
+A timeout without a summary states `TESTS COMPLETE; PROCESS DID NOT EXIT`
+only when this completion record verifies the selected population.
+Otherwise, it states `TEST COMPLETION UNVERIFIED` and retains unknown coverage.
+
+The JSON field `timed_out` identifies an observed pbrun timeout with a nonzero
+return code. If a final summary exists, the console keeps its counts and
+adds the same completion notice beside it.
+
+Completion does not prove final outcomes, assigned-file reconciliation, or a
+successful process exit. Progress dots, `[100%]`, and trace events establish
+none of these facts. The green gate still requires exit zero, a final pytest
+summary, and reconciled final outcomes.
+
+
 `pbtest` reconciles every shard by node ID (#941). Each shard's receipt entry
 carries `reconciliation`: its collected tests matched against the outcomes its
 recorder saw, and its record's counts matched against its summary line. A
@@ -2062,6 +2109,8 @@ outcomes equal tests, plus outcomes at collection, plus extra phases.
 For a failed shard, the human report prints its full output, including the
 pytest failure section; the pool also retains the action's immutable attempt
 stdout log. The `--json` entry contains that output without truncation.
+For a pool-scratch exit stack and bounded tmpfs guidance, see
+[the #1530 evidence record](results/pbtest_exit_completion_1530.md).
 
 `pbtest` names every shard's full action key (#1012). `pbrun`'s pool
 submission line (`queued` or `attached to`) carries the full key, and every
@@ -2488,6 +2537,26 @@ miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
   capabilities. The live NVIDIA model and physical UUID are recorded in the
   receipt; UUID is provenance, not a requirement to use the same physical GPU.
   Missing model/UUID evidence or a failed identity probe refuses this opt-in.
+- A box without an accelerator takes the class facts from a vetted packet
+  (#1598): `pbrun --target-evidence PATH` replaces the local probe of a pool
+  `--measurement --host-class` submission, and `pbgang --target-evidence PATH`
+  forwards it to the members that declare both. `tools/fleet/pbevidence.py`
+  prints the packet on a worker of the class, as a normal PrismaBuild action.
+  `pbrun` refuses a packet that is not local, has no accelerator, has no device
+  identity, mixes models or drivers, or does not match the class. Only `gb10`
+  has a class rule. The sealed facts are the same ones a live probe seals: the
+  host name and the device UUID stay provenance and are not identity. The option
+  adds no seal and no identity field. Each worker still checks every declared
+  fact against its own live facts before it runs, so a wrong packet fails
+  closed at the worker. The default refusal, when the option is absent, does
+  not change.
+  The packet also carries the worker's own `/bin/bash` identity (`argv0`), which
+  `pbrun` seals instead of reading the submitter's file; a packet without it is
+  refused. A scratch recorder runs the worker's interpreter as argv[0], so its
+  digest, size and version come from the packet's optional `recorder` field,
+  collected with `pbevidence.py --recorder-python PATH`. A recorder submitted
+  under a packet that lacks it, or names another interpreter, is refused; the
+  submitter's interpreter is never sealed for a class.
   Legacy receipts and ordinary measurement keys retain their existing shape.
   Explicit `--here` still pins the host. `--anywhere` remains invalid.
   Declaring a class asserts that external command, container, Python and data
@@ -2680,14 +2749,75 @@ miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
   names such as `repo-results` remain external paths. It also checks embedded
   `--out=<path>`, quoted command strings, and colon-separated path lists. New
   submissions from non-Git directories refuse: there is no mutable-path
-  override. The command executable is resolved exactly from argv[0] and the
-  declared `PATH`. An executable outside the repository and shared storage
-  retains the submitting host's tag; an absent executable refuses unless an
-  explicit tag names the worker class that owns it. Other direct argv and
-  caller-environment paths receive a conservative lexical screen, not a claim
-  that PrismaBuild can parse shell/application indirection. `--tag` explicitly
-  assigns those dependencies to a worker class; `--anywhere` explicitly
-  asserts that they are portable. The normalized effective tags are sealed in
+  override. Default portable placement resolves argv[0] against the same
+  shim-prefixed PATH as capture and binds that invocation into params.command
+  and task.argv; a later same-name PATH entry cannot redirect execution.
+  Explicit executable paths, relative PATH entries and direct input paths
+  follow filesystem traversal: `link/..` is not cancelled lexically. The
+  selected executable directory is resolved before checkout relativization,
+  while its leaf is retained so a venv Python remains a venv invocation.
+  Input requirements retain the requested pathname for offer and claim checks.
+
+  A local executable alias needs its own dependency evidence.
+  An alias outside the checkout and shared storage requires executable evidence, even when its target is portable.
+  Each class member must report that alias.
+  The claim check tests that alias before an attempt.
+  Direct checkout and shared-storage pathnames keep their existing portable scope.
+
+  Direct argv and caller-environment inputs use the same local dependency rule.
+  A local input alias needs evidence even when its target is portable.
+  The code checks the retained pathname and the resolved parent directory without replacing its leaf.
+  Offer and claim checks keep the requested pathname, including directory symlinks and parent components.
+  The rule also keeps evidence for external targets.
+  Parent components that leave the portable roots require local evidence.
+
+  External relative inputs bind to their retained absolute pathname before action capture.
+  The dependency collector binds positional arguments, option values, and caller-environment path-list entries.
+  It preserves directory-symlink traversal and parent components without replacing the leaf.
+  Checkout-owned relative inputs remain relative so the snapshot can relocate.
+  The collector returns the bound command and caller environment without mutating caller data.
+  PATH and unrecognized values remain unchanged.
+
+  Input binding preserves raw pathname strings, including terminal slash and dot components.
+  The collector prefixes external relative values with the absolute cwd without normalization.
+  Cache keys and dependency keys retain the raw pathname spelling.
+  Physical presence checks use the same raw strings instead of Path objects.
+  Namespace assessment can use Path without changing the captured or checked pathname.
+  Directory-content copy semantics and invalid file suffixes remain unchanged.
+
+  Explicit executable checks also use the raw pathname before binding its directory.
+  A directory suffix cannot turn a regular file into a valid executable.
+
+  Checkout executables use relative invocation paths so snapshots relocate,
+  and nominal Docker still runs through the existing shim. Pool defaults from
+  a declared gb10 member, or GPU work from celestia, use gb10 only when every
+  distinct active canonical member has its own fresh offer positively answering
+  every local dependency (#1511). Alias/canonical overlap refuses roster proof;
+  a physical offer cannot supply multiple declared members.
+  An absent executable still refuses. The full direct argv and caller-environment
+  screen runs before class selection; repository/shared paths remain portable.
+  Missing, stale, incomplete or old-generation dependency evidence retains the
+  host pin with a notice naming why, including when shared or checkout commands
+  have no external dependencies. Unavailable or invalid class inventory also
+  keeps that pin; a failed class proof never broadens to all workers. A genuine
+  non-class command keeps its ordinary dependency-derived placement. The
+  existing queue chooses by load.
+  Class-default requirements are sealed as `local_dependencies`, projected
+  onto the row and fenced by `local-dependency-v1`. The offer lookup extends
+  the named-interpreter mechanism with executable/path answers; it primes only
+  PB's default bash and configured worker Python, then answers the ready rows'
+  sealed `dependency_queries` on every box. Queries from a conservative host
+  pin are advisory, not homogeneity proof. Claim rechecks required paths before
+  spending an attempt. A dangling link is absent; real file/directory targets
+  preserve presence. This proves presence, not byte/toolchain equivalence or
+  protection against deletion after the check. Venv invocation paths are not
+  collapsed to their system-Python symlink targets. The screen cannot parse
+  shell/application indirection: `--tag` assigns those dependencies to a
+  worker class; `--anywhere` asserts all-worker portability. Explicit tags
+  and `--here` retain precedence; `--anywhere` with either still refuses.
+  Pool measurements keep existing exclusivity, platform/toolchain identity
+  and implicit host pin unless `--host-class` is explicit.
+  The normalized effective tags are sealed in
   action params, so a receipt produced for one placement conjunction cannot
   answer an otherwise identical submission constrained to another. Workers
   continue to understand
@@ -4844,6 +4974,112 @@ with routine work at 0 or below.
 it never claims a member. During a rolling publish it may not honour a gang
 fence on its host; the start barrier still prevents a lone start.
 
+## Prelaunch-resident manifest phases (#1594)
+
+A consumer that opens its whole artifact before its servers start declares
+that fact per phase in the manifest.  The declaration is part of the
+content hash.  A phase declares with a literal `resident_before_launch:
+true`: on a v1 `annotations.phases[i]` entry, on a v2 `read_plan.phases[i]`
+entry.  An older `core` refuses the unknown v2 key, which fails closed.
+Only a literal boolean `true` declares.  Other values refuse at submission.
+The declared phases form a contiguous prefix from the first phase.
+`storage_tiers.manifest_prelaunch_phases` and `residency_plan.validate_plan`
+enforce the prefix.  The frozen plan carries the declaration per phase.  A
+plan with no declaration omits the key.  Its bytes, `plan_sha256` and rows
+stay byte-identical.
+
+With no declaration, `residency_plan.leads_for(plan)` gives the single
+first-mover lead, as today.  With one, it gives all stage-leg chunk movers
+of all declared phases, in read order, chunked or whole.  `lead_mover_row`
+is untouched.  `prelaunch_phase_names(plan)` reads the declared names.
+`prelaunch_bound(plan, owned_by_others)` gives `{retained_gib: T,
+suffix_gib: S, peak_gib: B}` with `B = T + max over i of (size(pi) +
+size(p(i+1)))` and `size(p(n+1)) = 0`.  Sizes come from the sealed
+`stage_gib` of the legs, minus legs that others own.  It gives `None` with
+no declaration.  `prelaunch_peak_gib` serves submission, `pbgang` and the
+gate.  The three never disagree.
+
+The submission and gang refusals compare the peak with the tier's MINTED
+supply, `storage_tiers.minted_tokens(record)`, and not with
+`tier_tokens(record)`.  A stage tier mints `writable + landed`; the tier loop
+announces that supply as `record["tokens"]`.  `capacity_bytes` is only the
+writable room, which `tier_tokens` converts, and which the loop mints FROM.
+Reading the writable room refuses a prefix that fits the tier whenever copies
+have landed.  The first live submissions of 2026-10-07 were refused against
+9 GiB while the tier had minted 178 GiB.  A record with no usable announced
+supply falls back to `tier_tokens`, and unknown capacity never refuses.
+
+Submission refuses before it seals or publishes.  The refusal names the
+tier, the retained and suffix terms, and the capacity.
+`pbrun.residency_stage_rows` (also reached by `pbcampaign`) refuses when
+the declared peak exceeds the minted stage tier capacity.
+`storage_tiers.tier_tokens` of the announced tier record gives that
+capacity.  The tier loop mints the same mapping.  Unknown capacity never
+refuses.  `pbgang` refuses when the member distinct movers per stage tier
+jointly exceed it, with shared ranges counted once by `share_namespace`.
+The pure `residency_plan.gang_prelaunch_demand` computes that sum.
+Headroom below capacity waits, never refuses.  A peak equal to capacity
+passes.
+
+The tier loop reserves one group per declared unit before it publishes any
+leg.  A declared consumer is a newcomer until its unit holds tokens, has a
+published chunk or has a committed receipt; a claimed consumer is never one.
+The state comes from the unit, not from the streaming lead, so a plan with no
+suffix (one declared phase) still opens its group.  The filed intent is
+immutable: a later cycle holds the filed demand and chunks instead of
+recomputing them from moved evidence, and a leg whose registered shared
+mover is its own does not count as owned by others.  Every live declared leg
+is funded on every cycle, because a crash between a row and its funding, or
+a deferred funding, leaves a READY mover with no credit while the group
+holds the tier.  Funding is idempotent.  The group census counts a bound
+token the mover holds in a `reserved` record too: `publish_chunk` moves the
+tokens before it closes the record, and a stop or a deferred update between
+the two must not read as a short group, which would drop authority and
+leave the record unrepaired.  A stage tier that no live consumer
+names still releases a group holder no live unit owns, under the same
+complete-census guard, so a withdrawn sole consumer returns its capacity.
+A same-consumer republication writes its reserved generation before token
+transfer. The record binds valid retained mover tokens and the exact remaining
+group tokens. A deferred rotation moves no tokens. A partial transfer retains
+that generation, and a retry moves only its missing tokens. Foreign live
+records still refuse, and foreign spent recovery keeps its existing rule.
+A committed group whose census reads short with an empty holder lost its
+tokens to a path that wrote no release receipt (live, 2026-10-08: the PACT band
+source).  Its receipt still said committed, so the unit was never a newcomer
+again and no pass restored the tokens.  The writer now begins one acquisition
+for the deficit, the filed demand less the holder, bound mover and released
+counts, into the same holder, and the next pass settles it like any begun
+acquisition.  The intent is not recomputed.  No room files
+`prelaunch-begin-declined` and waits.  A committed group that is short with
+holder tokens still releases them first, as before, and tops up on the next
+pass.  Only the top-up and the settling of its handle are writer-only; the
+release in the committed-short path has never checked the writer and still
+does not.
+Two rules keep that recovery safe.  A live unit whose committed receipt
+stands obliges its whole peak, less what it owns, even when it owns nothing,
+so no newcomer is admitted into room its recovery needs.  And the group's
+replacement tokens reach the movers: a `transferring` record on a READY mover
+row whose bound tokens left is rebound to what the mover still holds plus the
+exact remainder from the holder, under the mover lock, only while the record
+is still `transferring` and the row still READY.  A claimed or consumed row
+keeps its refusal, and `funded_cover` is unchanged: the mover claims through
+its fence and takes no second stage charge.
+At claim time a row whose own `reserved` fence names its publication, with
+every bound token held by some holder, defers with `window_funding_pending`
+instead of paying its full demand.  A funding record or holder directory that
+cannot be read, or a funding record that is malformed, is unknown, not
+absent: the record exists and may still bind tokens, so the claim defers with
+`window_funding_unknown` and asks again.  The claim reads the record through
+`read_funding_evidence`, never the tolerant `read_funding`.  Only proven
+absence pays as before: no record, another state or publication, or bound
+tokens that are gone.
+Submission selects the prefix and suffix cuts by phase name, since an empty
+declared phase has no range.  A gang across tiers stays unsupported: its
+group is not reserved and the event `prelaunch-turn-unsupported` is filed.
+The terminal release writes its receipt after it frees tokens, so a crash
+between the two can lose the journal counts; a write-ahead release receipt
+is a follow-up before the multi-tier turn becomes live.
+
 ## Physical and adaptive GPU admission
 
 Both current GB10 workers have one physical GPU. Their fleet shape uses the
@@ -5079,6 +5315,49 @@ It resolves and pins the selected Unix daemon endpoint; remote or unresolved
 contexts refuse because CPU identities belong to the admitted host. Agents
 must retain this shim and must not widen their assigned affinity. These are
 cooperative execution controls, not hostile-process containment.
+
+The shim relays termination (#1599).  A foreground `docker run` or `create`
+runs the real client as a child, with handlers for TERM, INT and HUP installed
+before it starts and kept armed until the receipt is written.  The first signal
+is forwarded to the client, which relays it to the container's main process.
+One absolute deadline bounds the whole stop: a grace (1.5 s,
+`PRISMABUILD_DOCKER_STOP_GRACE_S`, capped at 30 s) plus a tail of 2.5 s that
+covers the ownership query, the kill and the check afterwards, 4 s by default,
+inside the five a guard may allow between TERM and its own KILL; each daemon call
+is also capped by what remains.  After the grace the shim kills the exact
+container this call created, then the client if it outlives a short wait
+(0.5 s, `PRISMABUILD_DOCKER_STOP_KILL_WAIT_S`).  The container is named by a
+`--cidfile` (the caller's own, else a fresh one the shim removes) and by a
+per-call label, `prismabuild.shim=<nonce>`, that callers may not set.  It is
+killed only after `docker inspect` shows the owner label and nonce, and the
+scope label and cgroup parent when the action has a scope.  A container that
+cannot be shown to be this attempt's is never killed, and nothing is stopped by
+name.  An empty search is not proof that no container will appear, because a create
+request the client already sent can complete at the daemon after the client is
+gone; the shim keeps watching for the call's label to the deadline, stops what
+appears, and otherwise reports `creation_unresolved` and returns 125.
+A stop is proved only by an affirmative terminal state, `exited` or `dead`,
+or by the daemon's own "No such object"; `Running=false` is not enough, because a
+container that is only `created` can still be started by a request the client
+already sent.  The shim removes such an exact, owned container after the grace;
+if it cannot, the outcome is `start_unresolved` and the exit is 125.
+A query counts as proof only when it succeeds: a container is absent only
+on the daemon's own "No such object", and every other failure is `unknown`.  A
+kill is recorded only when Docker accepts it; a refused kill is retried to the
+deadline and counted in `kill_rejected`.  The shim then checks the daemon until
+the container is proved stopped or absent.  It returns 128+signal only when the
+stop is proved; otherwise it returns 125, so a guard never reads "terminated"
+while the workload lives.  A receipt, `<marker>.stop-<nonce12>.json` (schema
+`prismabuild.docker_stop_receipt.v1`), names the real container, how it was
+found, the signals, the escalation and the final state; its outcome is
+`stopped`, `killed`, `not_owned`, `creation_unresolved`, `start_unresolved`,
+`still_running` or `unknown`,
+and `stop_proved` says whether the exit was 128+signal.  A shim that is itself
+killed cannot relay: the label cleanup of `pool.cleanup_action_containers`
+remains the backstop.  `tools/fleet/qualify_docker_stop.py` proves the stop
+against a real daemon, inside an admitted action, for a TERM-ignoring and a
+TERM-honoring container, after the workload reports ready, and fails a stop that
+takes five seconds or more.
 Offers advertise `cpu_tiers`, and
 claims and endings retain `cpu_allocation`. Already-running overflow actions
 are not migrated when preferred cores become free; subsequent actions reuse
@@ -6119,9 +6398,16 @@ journal, not operator descriptors.
 
 `pbresident dispatch SET_ID` retries action publication for an already-filed
 immutable body. It never republishes the set or acquires a second publication
-hold. Repeated dispatch attaches to a live copy generation; a resident host
-gets its descriptors refreshed without another copy action. An absent or
-interrupted copy can be re-driven through the existing movement retry policy.
+hold. Dispatch checks `lease_active` before action publication or descriptor updates.
+It refuses a released lease or a lease at its hard maximum.
+Ready or claimed rows with `resident_set` can extend an until lease before that maximum.
+
+Repeated dispatch attaches to a live copy generation for the same checkout snapshot.
+A changed checkout snapshot changes the action key and can queue another copy.
+The mover lock serializes copies; the second copy verifies the completed tree again.
+A resident host gets its descriptors refreshed without another copy action.
+An absent or interrupted copy can be re-driven through the existing movement retry policy.
+
 `pbresident renew SET_ID` appends an explicit until-date or campaign lease with
 a required hard maximum, bounded by the configured renewal ceiling. Neither
 command changes the immutable body or adds a seal/authority requirement.
@@ -6152,7 +6438,8 @@ manifest-subset inference (the design note section 3.3 supersedes its older
 lifecycle wording). Until leases may be extended by ready or claimed rows,
 but never past their hard maximum. Campaign leases end on release or maximum.
 An explicit `ResidentSets.renew` appends a new bounded lease without changing
-the body. Explicit Phase 1 readers take `local_resident.pin` and release that
+the body. It can reactivate a released set; live rows cannot cancel a release.
+Explicit Phase 1 readers take `local_resident.pin` and release that
 token only after their last read; a crashed reader pin stays until the existing
 broker scope attestation proves stop. Phase 2 will integrate container pins.
 Explicit renewals are capped at `now + renewal_ceiling_s`, a positive finite
@@ -10941,6 +11228,61 @@ The real gate re-checks
 everything before publishing; the probe only decides whether the room is
 worth reclaiming.
 
+**A waiter that produces no pressure says why (#1627).** `window_pressure`
+decides in many places that a waiter asks the tier for nothing, and until
+#1627 none of them left a record. On 2026-10-08 the stage tier held
+887 GiB in 178 holders of ended consumers while a strict consumer waited on
+native residency, and the loop evicted nothing for over an hour. Fourteen
+private-queue cases show the sweep evicting correctly once a waiter produces
+pressure, so the open question was what produced none. The function now takes
+an optional `skipped` list and appends one row per waiter or tier that asked
+for nothing, with the reason and the numbers the decision read. It changes no
+answer: the returned pressure is identical with and without the list.
+
+A row has `scope` (`waiter`, `tier` or `claim`), `consumer` (`None` for a
+tier), `tier_id` and `reason`. The waiter reasons are `unit-unsupported`,
+`cancelled`, `state-unreadable`, `commitment-refused` (with the decision
+`_commitment_decision` made: its reason, the capacity, held, evictable, queued,
+committed, footprint and growth numbers, the shortfall, the first eight of its
+`terms` with their total, and the census error when the census could not be
+read), `superseded`, and the three verdicts of
+`_relief_verdict`: `gate-refused` (the gate's answer is permanent, with
+`gate_reason`), `shortfall-exceeds-evictable` and `no-shortfall`. A relief
+that is asked for, and a gate that already admits, are not skips. The tier
+reasons are `output-owed-unreadable`, `ledger-unreadable`,
+`capacity-unknown`, `holders-unreadable`, and `no-evictable`, which is
+reported only when some waiter's current and its protected next need more
+than is free. Every verdict row carries capacity, held, free and evictable
+GiB, the queued and owed output terms, the protected next, and whether the
+output obligation is enforced, so a reader can reconcile the recorded decision
+with the gate. A `claim` row and a ram newcomer's row name their consumer like
+a stage waiter's. A tier row also says how the
+tier is held: `holders`, `live_holders`, `prelaunch_holders` and
+`receiptless_holders`, the last being holders whose receipt names no
+consumer, which this probe cannot count as evictable.
+
+The cycle files each row as a `window-pressure-skipped` event, once per change
+of reason. A standing wait is one line, not a line a cycle: only the reason,
+and a commitment refusal's own reason, decide a change. The memory is keyed by
+scope, consumer, tier and reason, so two verdicts for one tier are each
+remembered; keyed without the reason they overwrote each other and the one that
+lost was reported again every cycle. The numbers ride on the
+first line and on every change. A waiter or tier that stops being skipped is
+forgotten and is reported again if it returns. A waiter row is filed under
+its consumer. A tier row is filed for every planned consumer on the tier with
+`attributed_by: tier_id`, as other tier-level verdicts are. The memory is
+per process, so a restart reports each standing reason once more.
+
+`_admission_relief` now answers through `_relief_verdict`, which also says
+which of five ways its answer came out. This was a refactor first, committed
+with the same tests passing, before any reporting was added.
+
+Not every skip is reported. The ram leg's own skips (a ram window that is not
+planned for this consumer) and the per-leg `continue`s inside the stage walk
+leave no row. A waiter that is skipped for one of those reasons still looks
+like a waiter that asked for nothing and said nothing; that is a gap to close
+only if a log shows one.
+
 **A ready consumer's claim is also pressure (#901).** Once a ready consumer's
 leads hold their tokens, the claim's residency gate passes, and the next thing
 that refuses the claim is its own claim-time tier demand, such as a
@@ -14749,6 +15091,29 @@ because a queue that has stopped moving is diagnosed from which of the two it
 is sitting on. An adopted range files a fragment under its own mover key, so a
 window nobody had to copy satisfies this without a special case.
 
+A shared lead can make the map incomplete without making it stale (#1594). A
+lead another consumer sealed is a shared range (#1026): the tier loop's fan-out
+gives each reader its own fragment, for the entries the source material has
+dated so far, so a map can name every lead and hold only part of what the lead
+staged. A streaming consumer reads the rest lazily. A consumer whose filed plan
+declares a `resident_before_launch` prefix is promised the whole prefix before
+launch, so for each lead whose source fragment is filed under its share
+namespace the verdict compares the source's entries with the entries of the
+composed map, the document the consumer receives, and denies `map_incomplete`
+(reason `residency_map_incomplete`, naming the lead and the count) while any
+entry is missing. The consumer's own fragment is not the test: the fan-out can
+complete it a cycle before the loop recomposes the map from it. It is the same
+wait as `map_stale`: no host token is taken and no pass ages. A source fragment
+the reader cannot stat or parse, or an unreadable move receipt, is
+`map_unreadable` naming the path and the error, as the map's own read errors
+are; only a missing source fragment, the non-shared case, is skipped. An entry
+the material never dates keeps the consumer waiting, visibly, instead of
+launching and failing at the reader. Measured on action `e9fc9f1dbe8f`,
+2026-10-08: claimed on a map of one entry out of 899, failed on its first read,
+and its complete fragment was filed five seconds later. The source's key set is
+remembered by the fragment's size and mtime; the map is compared on every
+verdict, because it is the part that changes.
+
 ### A plan the coordinator cannot read
 
 `residency_plan.read` answers `None` both when no plan was filed and when the
@@ -16459,3 +16824,68 @@ selection reconstructs missing/corrupt views; corrected descendant heads remain
 eligible. Unowned replacements are retained for explicit recovery rather than
 removed. Supported once retains no hold/view. Original failed evidence survives
 cleanup, and deployment still requires separate coordinator acceptance.
+
+
+## D38 preflight gate (#1639)
+
+D38 requires a CPU dry run before a new or changed GPU job.  `tools/fleet/d38_gate.py`
+is the consumer side and `pbrun.py` calls it once, in the shared submission path, after
+the target is sealed and before any new runnable work is published, on the pool and SLURM
+transports alike.  It reads evidence only; nothing asks a model whether evidence exists.
+
+A publication has GPU intent when its final sealed demand has `gpu` above zero, a required
+tag (derived host pins included) is `gb10`, `sparky` or `sparklina`, or `--host-class` is
+`gb10`.  A `--preflight` token, an environment variable or `--gpu` with zero demand exempts
+nothing.
+
+**Evidence.**  `--d38-namespace PATH` seals the digest of a namespace descriptor into the
+job's params before the key is computed, so a changed namespace is a changed job; absent,
+keys are byte-identical to before.  `--d38-receipt KEY` names a preflight action.  Its
+content-verified CAS receipt must exist before publication, and its `fleet.d38.preflight.v1`
+result (strict JSON, 64 KiB, no duplicate keys or NaN) must bind this job identity, normalized
+images and namespace, say `pass`, not be future-dated and not have expired.  The preflight
+action must also carry its target plan as a verified CAS input (`d38-plan`, schema
+`fleet.d38.plan.v1`) whose digest is the one the action declares.  The plan names the target
+(identity, images, namespace), the entry point, the target command (which must be this job's
+command), the CPU command (which must be the preflight action's command) and a list of typed
+CPU changes.  The entry point is a `script` (`[interpreter, script, *args]`) or a `module`
+(`[interpreter, "-m", module, *args]`); nothing parses a shell, and a target that starts with `-`
+(`bash -lc "..."`, any launcher whose program sits in a later slot) is refused as opaque.  A
+reviewed invocation descriptor (`d38_gate.INVOCATIONS`, keyed `kind:interpreter:target`) lists
+the CPU changes that entry point allows, each `{flag, from, to}`; the CPU arguments must equal
+the target's arguments with exactly the plan's listed changes applied, so a changed program,
+module, input or check argument is a difference no descriptor lists.  No descriptor ships, so no
+receipt authorizes a job until a harness owner adds a reviewed one, and the scoped exception is
+the only path.  What the worker executes is `task.argv`, not the descriptive `params.command`:
+the preflight's `task.argv` must be the standard captured-log recipe of its declared command
+(`action_result.bind_standard_capture_command`), so an unrelated task cannot present a passing
+receipt.  A receipt with no plan, an unrelated entry point, a plan for another job, an unlisted
+change or an unrelated task is refused.  Device hiding is read from what the preflight action sealed:
+`CUDA_VISIBLE_DEVICES` empty, and `NVIDIA_VISIBLE_DEVICES=none` for a gb10 proof.  The worker's
+host accelerator inventory is not task visibility: a CPU-only gb10 container still has the
+Spark's GPU in its host evidence, so the check reads the sealed environment and keeps only the
+host-class (machine) check on the evidence.  `--d38-exception DECISION_ID` reads a CEO decision
+whose `grant.d38_exception` binds the exact job, images, namespace and expiry; it waives D38
+only, never together with a receipt.  Either way an immutable event is written under
+`pb-queue/d38-audit/<job hash>/` before the publication, and a failed write refuses.  The CAS
+action request is written before authorization, so the guarantee is that no new runnable work is
+published, not that nothing is written.
+
+**No exemption by liveness.**  The gate has no early return for a cache hit or a live run:
+whether a publication creates new work is decided inside the queue, and a liveness read taken
+earlier goes stale (and `slurm_outcome` submits a new job even when a pool run is live).  Without
+evidence, `pbrun` publishes and submits nothing.  Attached, it may only wait on a live pool run it
+can see, whatever transport was asked for, or refuse with exit 2.  A live SLURM job, and an
+attached cache hit, are refused without evidence: stricter than "needs no receipt", and a
+detached submission still answers a cache hit or a live attachment without publishing.
+
+A deferred (`--after`) submission has no job identity until its producer ends, so no receipt or
+grant can bind it.  GPU intent is refused at registration, and the release checks the sealed key
+again for a record an older client filed (the two flags ride in its publication options, as
+optional keys so older records still read).  Deferred GPU work needs a separate design.
+
+The producer (`--d38-plan`, `--d38-preflight-for`), a supported grant issuer, `pbgang` member
+flags and retiring old installed clients are later changes; until the producer lands a GPU job
+is publishable only through a scoped exception, and enforcement must not be published before
+them.  `d38_gate.ENFORCE` is the one switch; it is a module attribute that no flag or environment
+variable reaches, and only the existing test suite turns it off.

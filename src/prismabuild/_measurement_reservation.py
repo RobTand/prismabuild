@@ -120,6 +120,7 @@ def _scan_publications(queue: PoolQueue) -> dict:
     """
     from . import pool
     rows: dict[str, list[dict]] = {}
+    unorderable: dict[str, list[dict]] = {}   # live members, never candidates
     selected: dict[str, dict] = {}
     opportunities: dict[str, dict] = {}
     count = 0
@@ -157,6 +158,26 @@ def _scan_publications(queue: PoolQueue) -> dict:
                 else:
                     queue.attempt_generation(record)  # strict publication identity
                     if type(record.get("priority", 0)) is not int:
+                        unorderable_field = pool.PoolQueue._unorderable_queue_field(record)
+                        if (state == pool.READY and unorderable_field is not None
+                                and unorderable_field[0] == "priority"):
+                            # A READY record the queue itself cannot order
+                            # holds no tokens and runs nothing, and the queue
+                            # files it by name instead of raising
+                            # (``ready_items``).  Refusing it denied every
+                            # good claim on the host (#1506).  It is never
+                            # claimed, so it cannot reach the CLAIMED census.
+                            # It is still a live gang member: only candidate
+                            # classification skips it.  A priority the queue
+                            # CAN order (5.5, True, "5") stays strict, even
+                            # when another ordering field is unreadable: the
+                            # helper names the FIRST bad field, and the queue
+                            # reads a bad ``passes`` as 0 before it orders, so
+                            # it still lists and can claim such a record.  A
+                            # CLAIMED one stays strict too: a running
+                            # incumbent the census cannot read is unknown.
+                            unorderable.setdefault(key, []).append(record)
+                            continue
                         raise CensusUnavailable("unreadable publication priority")
                     rows.setdefault(key, []).append(record)
                     if state == pool.CLAIMED and not is_mark:
@@ -210,7 +231,9 @@ def _scan_publications(queue: PoolQueue) -> dict:
         elections[key] = chosen  # missing authority stays fenced, indefinitely
     return {"measurements": measurements, "elections": elections, "selections": selected,
             "opportunities": opportunities, "keys": sorted(set(measurements) | set(selected)),
-            "gang_elections": _gang_elections(queue, rows, count)}
+            "gang_elections": _gang_elections(
+                queue, {key: rows.get(key, []) + unorderable.get(key, [])
+                        for key in rows.keys() | unorderable.keys()}, count)}
 
 
 def _gang_elections(queue: PoolQueue, rows: dict[str, list[dict]], count: int) -> dict:

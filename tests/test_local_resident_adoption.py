@@ -6,6 +6,10 @@ import pytest
 from prismabuild import pool
 from test_local_resident_mover import world
 
+from local_resident_space import roomy_disk  # noqa: F401
+
+pytestmark = pytest.mark.usefixtures("roomy_disk")
+
 
 def test_adoption_verifies_every_file_and_moves_without_copying(tmp_path):
     from prismabuild import local_resident

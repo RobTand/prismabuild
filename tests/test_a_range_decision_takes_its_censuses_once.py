@@ -530,7 +530,10 @@ def test_a_partial_created_during_a_scan_is_reported_and_not_kept(
     partial = destinations[1].parent / f".{destinations[1].name}.{base._key()[:16]}.partial"
 
     def scan(path=".", *args, **kwargs):
-        if os.fspath(path) == target:
+        # An integer is a directory descriptor: ``shutil.rmtree`` walks by
+        # descriptor on current Pythons, and pytest's tmp_path cleanup does it
+        # while this wrapper is still installed (#1506).
+        if isinstance(path, (str, os.PathLike)) and os.fspath(path) == target:
             scans.append(os.fspath(path))
             if len(scans) == 1:
                 partial.write_bytes(b"half a copy")

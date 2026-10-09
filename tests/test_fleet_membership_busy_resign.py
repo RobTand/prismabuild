@@ -714,13 +714,38 @@ def test_resign_resumes_withdrawn_row_after_crash(
     assert requeued[0]["supersedes_withdrawal"]["withdrawn_by"] == old_owner
 
 
+def _operator_resubmits_then_holder_concludes(queue: pool.PoolQueue, key: str, snapshot, published: list,
+                                              refused: list, errors: list) -> None:
+    """An operator resubmission of the same work, then the holder concluding the withdrawn attempt.
+
+    Against the newer publication the holder's finish must be refused or entombed, never overwrite
+    the foreign row.
+    """
+    try:
+        queue.publish(action_key=key, cas_root=queue.root / "cas", checkout_root=queue.root / "co",
+                      worker_script=queue.root / "worker.py", resources={"cpu": 1},
+                      max_attempts=1, retry_safe=True, tags=["x86"])
+        published.append(json.loads(queue.item_path(pool.READY, key).read_text()))
+        try:
+            queue.finish(key, status="failed", detail={"termination_reason": "resign-withdrawn"},
+                         claim_snapshot=snapshot)
+        except pool.PoolContractError as exc:
+            refused.append(exc)
+    except BaseException as exc:  # noqa: BLE001
+        errors.append(exc)
+
+
 def test_resign_preserves_newer_unrelated_publication(
     queue: pool.PoolQueue, authority, tmp_path: Path, monkeypatch
 ) -> None:
-    """An operator resubmission landing mid-resign is preserved byte-identical:
-    no adoption without exact lineage, no overwrite, fence retained."""
-    import threading
+    """An operator resubmission landing MID-resign is preserved byte-identical:
+    no adoption without exact lineage, no overwrite, fence retained.
 
+    The publication is ordered by a hook before the real crash-resume census, so it lands after
+    resign has begun (the gate is closed) and before resign has settled the key.  A thread waiting
+    for the withdrawal cannot order it: the test itself files that withdrawal first, so the thread
+    ran before resign started and resign then, correctly, found nothing owned (#1506).
+    """
     key = "a" * 64
     host = socket.gethostname()
     old_owner = f"{host}:supervisor-4194304:1"
@@ -733,47 +758,60 @@ def test_resign_preserves_newer_unrelated_publication(
     published: list = []
     errors: list = []
     refused: list = []
+    gate_closed: list = []
+    real = fm._resign_resume_owed
 
-    def operator_and_holder():
-        try:
-            deadline = time.monotonic() + 30.0
-            while time.monotonic() < deadline:
-                if queue.item_path(pool.WITHDRAWN, key).exists():
-                    break
-                time.sleep(0.2)
-            # Operator resubmits the same work while resign is waiting.
-            queue.publish(action_key=key, cas_root=queue.root / "cas",
-                          checkout_root=queue.root / "co",
-                          worker_script=queue.root / "worker.py",
-                          resources={"cpu": 1}, max_attempts=1, retry_safe=True,
-                          tags=["x86"])
-            published.append(json.loads(
-                queue.item_path(pool.READY, key).read_text()))
-            # Holder concludes the withdrawn attempt afterwards: against the
-            # newer publication its finish must be refused (or entombed),
-            # never overwrite the foreign row.
-            try:
-                queue.finish(key, status="failed",
-                             detail={"termination_reason": "resign-withdrawn"},
-                             claim_snapshot=snapshot)
-            except pool.PoolContractError as exc:
-                refused.append(exc)
-        except BaseException as exc:  # noqa: BLE001
-            errors.append(exc)
+    def operator_lands_mid_resign(queue_root, host_, owner):
+        if not published:
+            gate_closed.append(fm.read_gate(gate) is not None)
+            _operator_resubmits_then_holder_concludes(queue, key, snapshot, published, refused, errors)
+        return real(queue_root, host_, owner)
 
-    worker = threading.Thread(target=operator_and_holder, daemon=True)
+    monkeypatch.setattr(fm, "_resign_resume_owed", operator_lands_mid_resign)
     with mock.patch.object(worker_loop, "MAINTENANCE_GATE", gate):
-        worker.start()
-        try:
-            out = fm.resign(host, reason="preserve foreign row",
-                            queue_root=queue.root, gate=gate,
-                            broker_call=_broker_call(authority),
-                            live=[], wait_s=25.0)
-        finally:
-            worker.join(timeout=10.0)
+        out = fm.resign(host, reason="preserve foreign row",
+                        queue_root=queue.root, gate=gate,
+                        broker_call=_broker_call(authority),
+                        live=[], wait_s=25.0)
     assert not errors, errors
     assert published, "operator publication never landed"
+    assert gate_closed == [True], "the publication must land after resign closed the gate"
     assert out["status"] == "resigning", out
+    assert "attempts without exact terminal" in out["reason"], out
+    live = json.loads(queue.item_path(pool.READY, key).read_text())
+    assert live == published[0], "resign must not touch the foreign row"
+
+
+def test_resign_after_a_publication_that_landed_before_it_began_owns_nothing_and_preserves_it(
+    queue: pool.PoolQueue, authority, tmp_path: Path, monkeypatch
+) -> None:
+    """The control for the test above: the same resubmission and conclusion, finished BEFORE resign.
+
+    Resign then finds no owned claim and nothing owed, proves the owned set empty and completes,
+    and the foreign row is still byte-identical.  This is what the original thread-ordered test
+    actually exercised and then rejected as ``resigned``.
+    """
+    key = "a" * 64
+    host = socket.gethostname()
+    old_owner = f"{host}:supervisor-4194304:1"
+    snapshot = _publish_claim(queue, key, max_attempts=3)
+    queue.withdraw(key, reason=f"resign {old_owner}: crash", by=old_owner)
+    auth, _ = authority
+    gate = Path(auth.maintenance_path)
+    _incarnation(monkeypatch)
+    _sealed_shape(monkeypatch)
+    published: list = []
+    errors: list = []
+    refused: list = []
+    _operator_resubmits_then_holder_concludes(queue, key, snapshot, published, refused, errors)
+    assert not errors and published, errors
+    with mock.patch.object(worker_loop, "MAINTENANCE_GATE", gate):
+        out = fm.resign(host, reason="preserve foreign row",
+                        queue_root=queue.root, gate=gate,
+                        broker_call=_broker_call(authority),
+                        live=[], wait_s=25.0)
+    assert out["status"] == "resigned", out
+    assert out["handled"] == {}, out
     live = json.loads(queue.item_path(pool.READY, key).read_text())
     assert live == published[0], "resign must not touch the foreign row"
 

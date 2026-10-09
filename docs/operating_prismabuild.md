@@ -43,15 +43,25 @@ The owning host must have announced its local tier tools and capacity.
 
 If publication files its body but action dispatch fails, do not republish the
 same manifest: `pbresident.py --pool-root QUEUE dispatch SET_ID --checkout
-CHECKOUT --policy POLICY` retries dispatch using that existing set. The
-command returns movement rows as JSON, attaches to already-live copy actions,
-and queues no new copy for a host whose copy is resident. Use a bounded Git
-checkout explicitly when the current directory is too large to snapshot.
+CHECKOUT --policy POLICY` retries dispatch using that existing set.
+The command checks the lease before action publication or movement descriptor updates.
+It refuses released leases and leases at their hard maximum.
+Ready or claimed rows with `resident_set` can extend an until lease before that maximum.
+
+The command returns movement rows as JSON.
+It attaches to already-live copy actions for the same checkout snapshot.
+A changed checkout snapshot changes the action key and can queue another copy.
+The mover lock serializes copies; the second copy verifies the completed tree again.
+Dispatch queues no new copy for a host whose copy is resident.
+Use a bounded Git checkout explicitly when the current directory is too large to snapshot.
 
 `pbresident.py --pool-root QUEUE renew SET_ID --lease-until DATE --hard-max
 DATE --policy POLICY --by OPERATOR` appends a new lease without modifying
 the set body. Use `--campaign NAME` instead of `--lease-until` if needed.
 The policy ceiling applies to the new hard maximum relative to renewal time.
+
+An explicit renewal can reactivate a released set.
+Live rows cannot cancel a release or extend a lease past its hard maximum.
 
 `pbresident.py --pool-root QUEUE adopt SET_ID --host HOST --source DIRECTORY`
 queues a verified same-filesystem adoption on the owning host; it does not
@@ -102,9 +112,9 @@ Three properties follow from that.
     submit every row, and only the missing ones cost anything.
 
 Placement is part of identity. `pbrun` normalizes and sorts the tags that
-landed, including a hostname pin derived from a box-local executable, and seals
-them before computing the key. Flag order and duplicate tags do not move the
-key; a different admissible worker population does.
+landed, including a dependency-derived host pin or a proven gb10 class
+default, and seals them before computing the key. Flag order and duplicate
+tags do not move the key; a different admissible worker population does.
 
 The runtime-generation path of PB's Docker wrapper is also sealed. Publishing
 a new runtime can therefore change an ordinary re-run's key even when its
@@ -279,6 +289,78 @@ its existing limits. This is not a whole-submission timeout.
 | `--priority N` | A queue hint. Higher runs sooner; a negative value yields to everything at 0, and aging never lifts it past them. Defaults to 0. | `--nice`, sent on every submission. SLURM subtracts the nice from the base priority its scheduler assigned. |
 | `--priority-reason TEXT` | Optional explanation shown beside priority in `pbstatus`; outside action identity and admission policy. | Stored with the lane submission, outside identity and scheduling flags. |
 | `--profile MODE` | Run a profiler around the action's child and store the profile as a CAS blob named on the ending. `sample` is py-spy over the whole process tree, optionally at a sealed positive rate (`sample:10`); `nsys` is Nsight Systems over CUDA and NVTX, optionally windowed (`nsys:600`); `torch` is a contract the action opts into. **Part of the action identity**, unlike `--priority`. | Carried unchanged; the worker resolves the backend on the box that runs it. |
+
+Without `--tag`, `--here` or `--anywhere`, pool submissions from a
+declared Spark and GPU submissions from celestia default to `gb10` only
+when **every active class member** has fresh, positive worker-offer evidence
+for the command's executable and every direct local argv/environment path.
+The fleet roster retains every distinct canonical member and rejects overlapping
+canonical names or aliases. Each member needs its own fresh offer: one host
+cannot supply two members. The existing queue still chooses by load.
+
+A host-only dependency, an unanswered path, a missing/stale member offer,
+or a worker without `local-dependency-v1` keeps the conservative host pin
+and prints why, even if a shared or checkout executable has no external
+dependencies. Missing or invalid class inventory also retains the host pin.
+Neither failure silently permits all-worker placement. A genuine non-class
+submission retains its ordinary dependency-derived placement. Workers extend
+the existing interpreter lookup with path
+questions from ready rows, plus local checks of PB's default bash and their
+configured worker interpreter. A first-use path may be unknown; neither the
+submitter's copy nor a busy/missing member proves homogeneity. Name
+`--tag gb10` explicitly when you own that dependency assertion. An executable
+or direct external input absent on the submitter still refuses by default; a
+dangling symlink is absent, while links to real files or directories are valid.
+Repository/shared paths remain portable under the snapshot contract; indirect
+shell/application dependencies remain yours to declare.
+
+Sealed local requirements and the capability fence class-default rows during
+rolling adoption. Claim rechecks presence before an attempt; this does not
+attest equal bytes or prevent later deletion. Default portable placement binds
+the resolved invocation into the captured command, so later PATH entries cannot
+redirect it. Resolution includes the normal Docker shim prefix; Docker still
+uses that shim. Checkout executables retain relocatable relative paths. A venv
+Python keeps its invocation path, not its dereferenced system interpreter.
+Executable paths and relative PATH entries follow directory symlinks before
+`..`; they are not simplified lexically. The selected directory is resolved
+before a checkout command is made relative, without dereferencing its leaf.
+Direct argv and caller-environment inputs keep the requested pathname, so
+presence and claim checks inspect the same target the command names.
+
+An executable alias outside the checkout and shared storage needs its own dependency evidence.
+A portable target does not make the local alias portable.
+Each class member must report the alias.
+The worker checks the alias before an attempt.
+Direct checkout and shared-storage commands keep their portable scope.
+
+A local input alias also needs its own dependency evidence.
+The code applies this rule to direct argv and caller-environment paths.
+The code checks the retained pathname and follows directory symlinks before parent components.
+It keeps the requested pathname for offer and claim checks.
+A portable target does not remove the alias requirement.
+Parent components that leave the portable roots require local evidence.
+
+External relative input paths bind to the same retained absolute pathname used by dependency checks.
+The collector preserves positional arguments, option prefixes, and colon-separated caller-environment entries.
+It keeps directory-symlink traversal and parent components.
+Checkout-local relative inputs stay relative after capture and work from the private snapshot.
+The collector returns a new caller-environment map and leaves caller data unchanged.
+It does not reinterpret PATH or unrecognized values.
+
+The binder keeps the raw pathname, including a final slash or dot component.
+It prefixes external relative values with the absolute cwd and does not normalize them.
+Its cache and dependency keys retain the raw spelling.
+Offer and claim checks use that same string for physical filesystem checks.
+Namespace assessment does not rewrite the pathname.
+The explicit executable check also preserves invalid directory-suffixed file pathnames.
+
+Explicit `--here` and tags
+remain authoritative; `--anywhere --tag` remains invalid. Use a class tag
+alone, or `--anywhere` alone only if every eligible worker can run the command.
+Measurements keep their submitting-host pin by default. Existing
+`--measurement --host-class CLASS` is the opt-in class contract with unchanged
+platform/toolchain attestation and exclusivity; same-host A/B and TP2 rank
+pins are not rewritten.
 
 `pbrun` accepts only `cpu`, `gpu`, `mem_gb`, and `disk_metadata` in `--demand`.
 It refuses an unknown resource before sealing at this client boundary;
@@ -1600,8 +1682,12 @@ A passing test's `tmp_path` directory is removed as soon as the test ends
 it pytest keeps every test's directory until a later session prunes it, which on
 a RAM tmpfs with a fixed inode table (`nr_inodes`) held 750,000 inodes from six
 concurrent suites on dl380g10 and made every action there fail in preflight with
-`OSError 28` while the filesystem still reported free bytes. `pbtest` refuses a
-command-line `-o`, so this setting is part of the checkout the shards snapshot.
+`OSError 28` while the filesystem still reported free bytes. A checkout that
+does not carry the setting, such as a sealed one that cannot be edited, passes
+it through `--pytest-args '["-o", "tmp_path_retention_policy=none"]'` (or
+`all`, or `failed`; `--override-ini` is the same option). It is the only key
+`-o` accepts, and it is accepted once. The value enters the sealed action
+identity, so two retention choices are two actions.
 The status error-injection fixtures also delegate integer directory descriptors
 to the real system call. Their named-path error injections and assertions stay
 unchanged; descriptor-based temporary-directory cleanup can therefore finish
@@ -1773,8 +1859,10 @@ multiple workers and accepts `load`, `loadscope`, `loadfile`, `loadgroup`, or
 `worksteal`; `each` would repeat the population and is refused.
 
 Forwarded arguments cannot add files, change worker counts, select another
-config, or inject plugins/ini overrides. Unknown options are refused before
-submission; new plugin options require an explicit vocabulary extension.
+config, or inject plugins. The one ini override is the tmp retention policy
+above; every other `-o` or `--override-ini` is refused. Unknown options are
+refused before submission; new plugin options require an explicit vocabulary
+extension.
 When `--pytest-args` is supplied (even `[]`), it replaces both project and
 environment `addopts` so those cannot silently contradict the reservations.
 Pass the wanted supported options explicitly. Without this option, existing
@@ -1921,6 +2009,23 @@ driver, and GPU models/counts and compute capabilities before running. The
 receipt records the selected worker and actual GPU UUID. Unknown device identity
 refuses. `--here` adds a host pin even with a class; `--anywhere` is unnecessary
 and refused. The class is placement intent, not a claimed SLURM attestation.
+
+A box without an accelerator cannot probe the class facts, so it cannot submit
+the command above. Take the facts from a worker of the class instead. Run
+`tools/fleet/pbevidence.py --out PATH` as a normal detached action on a worker
+of the class (`--tag gb10`). Then submit with `--target-evidence PATH`:
+
+    tools/fleet/pbrun.py --transport pool --measurement --host-class gb10 --gpu \
+        --target-evidence PATH -- ./paired-probe.sh
+
+For a gang, give `pbgang.py --manifest M --target-evidence PATH`, an absolute
+path. The manifest does not change. `pbgang` forwards the option to the members
+that declare `measurement` and `host_class`. Collect the packet just before you
+submit. Each worker checks the sealed facts against its own live facts before
+it runs. A stale packet, for example after a driver update, fails at the worker.
+With one attempt, that loses the run. `pbrun` refuses a packet that is not
+local, has no accelerator or device identity, mixes models or drivers, or does
+not match the class. Without the option, the refusal does not change.
 
 Keep both arms of a comparison in one self-contained interleaved action. CPU
 near-idle admission, measurement isolation, GPU exclusivity, memory and telemetry
@@ -3733,6 +3838,18 @@ with the reservation. A disjoint mask or remote Docker context refuses with an
 explanation. Use the action's ordinary `docker` command so the shim can preserve
 CPU affinity and ownership labels. Directly choosing another Docker executable
 or widening a child mask violates the agent execution policy.
+
+When an action is terminated, the shim also stops its container (#1599). TERM,
+INT and HUP go to the Docker client; after a grace of 1.5 seconds the exact
+container that call created is killed, and only if it carries this action's
+owner label (and scope label when scoped). The whole stop is bounded at about
+four seconds by default. Set `PRISMABUILD_DOCKER_STOP_GRACE_S` (up to 30) only
+when your own guard waits longer than five seconds. The shim exits 128+signal
+only when the stop is proved; exit 125 means it could not prove the container
+stopped, so treat the workload as alive. Read `<marker>.stop-<nonce>.json` for
+the real container ID and its final state. To prove it on a box with Docker, run
+`tools/fleet/qualify_docker_stop.py` inside an admitted action; exit 0 means
+`proved`, 2 means nothing was tested.
 
 The CPU map is immutable while a host serves work. To change an existing host's
 usable topology or CPU cap: drain its reservations, stop its supervisor and

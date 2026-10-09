@@ -149,6 +149,7 @@ from . import materialize, cpu_topology
 from . import adaptive_cpu as cpu_admission
 from . import adaptive_gpu as gpu_admission
 from . import container_images as image_inventory
+from . import local_dependencies
 from . import dependency_digest
 from . import residency_map
 from . import storage_tiers
@@ -408,9 +409,13 @@ WITHHOLD_CARRYING_REASONS = frozenset({
 #: ``ram_epoch_stale`` belongs here with ``map_not_composed``: the map names
 #: ram paths from the epoch before a reboot, so the bytes are gone and the
 #: tier loop's next recomposition is what makes the row admissible (#640).
+#: ``prelaunch_undeclared`` belongs here as a shape refusal: the
+#: sealed manifest declares a prelaunch prefix the filed plan does not carry,
+#: so no token moves until the plan matches the manifest (#1594).
 RESIDENCY_REFUSAL_STATES = ("lead_not_resident", "lead_unpinned", "map_not_composed",
                             "map_stale", "map_unreadable", "plan_unreadable",
-                            "ram_epoch_stale")
+                            "ram_epoch_stale", "prelaunch_undeclared",
+                            "map_incomplete")
 
 #: Pending-lead statuses (``residency_verdict``'s ``pending``) that a later
 #: poll can still see land: a lead with no ending yet (``absent``), and a lead
@@ -1225,7 +1230,7 @@ def is_box_local_path(path: object) -> bool:
 
     The rule that decides an action's placement lives here rather than in
     ``pbrun`` because two readers need it and they must not disagree: the
-    submitter turns it into a pin (``pbrun.placement_tags``), and the queue
+    submitter turns it into a pin (``pbrun.placement_contract``), and the queue
     turns it into a width (``placement_census``).  A second copy is how the
     pin and the measurement of the pin end up describing different fleets.
 
@@ -3894,6 +3899,37 @@ def _acquisition_claimant(name: str) -> tuple[str, int] | None:
     except ValueError:
         return None
 
+def _acquisition_handle_of(name: str, holder: str) -> tuple[int, str, int] | None:
+    """(usec, host, pid) when ``name`` is exactly ``holder``'s private handle.
+
+    The exact parse the prelaunch group census reads its in-flight
+    acquisitions by (#1594 R1'''): ``claiming.<usec>.<holder>.<host>.<pid>.
+    <nonce>``, where the host may itself contain dots, so the host is the
+    middle re-joined -- ``".".join(parts[3:-2])`` -- and not the third field.
+    The holder matches by exact equality, which is unambiguous because group
+    holders are dot-free by construction, so a holder never matches a prefix
+    of another.  The clock field is the same one :func:`_acquisition_clock`
+    reads; the host and pid are NOT read the :func:`_acquisition_claimant`
+    way (fields 3 and 4), because that spelling is exact only for a dot-free
+    host and misreads every dotted one.  Neither helper changes: this is the
+    spelling that stays exact when the hostname has dots.  ``None`` for
+    anything else -- another holder's handle, or a name no claimant wrote.
+    """
+
+    parts = name.split(".")
+    if len(parts) < 6 or parts[0] != "claiming" or parts[2] != holder:
+        return None
+    usec, pid, nonce = parts[1], parts[-2], parts[-1]
+    if (not usec or any(c not in "0123456789" for c in usec)
+            or not pid or any(c not in "0123456789" for c in pid)
+            or len(nonce) != 8
+            or any(c not in "0123456789abcdef" for c in nonce)):
+        return None
+    host = ".".join(parts[3:-2])
+    if not host:
+        return None
+    return int(usec), host, int(pid)
+
 
 def _guarded_mutation(*, blocking: bool):
     """Run a ``ResourceLedger`` mutator under its mutation exclusion.
@@ -5067,6 +5103,80 @@ class ResourceLedger:
         return moved
 
     @_guarded_mutation(blocking=True)
+    def transfer_count(self, from_key: str, to_key: str, count: int) -> int:
+        """Move up to ``count`` of one holder's tokens to another key.
+
+        The ledger operation behind splitting a prelaunch group across its
+        chunk movers (#1594 R1'): the group's whole demand sits under one
+        holder, and each chunk's tokens change owner **without ever being
+        free**, exactly as :meth:`transfer` moves a whole reservation.  The
+        same no-free-interval rule therefore holds at every instant of the
+        loop -- :meth:`capacity`, :meth:`held` and :meth:`available` read the
+        same number before, during and after -- and a crash part-way leaves
+        the reservation split across the two holders with the sum unchanged:
+        calling again with the remaining count finishes the move.
+
+        Tokens go in deterministic sorted-name order, so a re-call after a
+        partial move continues where the last one stopped rather than
+        re-moving (a name already present under the destination is left in
+        place, for the reason ``commit_acquire`` gives) or skipping.  Moves
+        at most ``count`` tokens and never more than the source holds; a
+        non-positive count moves nothing.
+
+        One deliberate difference from :meth:`transfer`: adaptive CPU/GPU
+        metadata (``cpu_admission.METADATA``, ``gpu_admission.METADATA``) is
+        neither moved nor counted here -- only tier tokens change owner.
+        ``transfer`` carries the metadata along because the whole reservation,
+        seat and all, changes owner; a partial split must not duplicate or
+        strand the seat description, so the metadata stays with the source
+        and the funding record (which names the token set) stays the
+        authority for what moved.
+
+        The refusals are :meth:`transfer`'s: empty or equal keys move nothing
+        (``0``), and a claimant-private acquisition on either end raises
+        ``PoolContractError`` -- those are named for a claimant whose action
+        is not decided yet.
+        """
+
+        if not from_key or not to_key or from_key == to_key:
+            return 0
+        if _is_acquisition(str(from_key)) or _is_acquisition(str(to_key)):
+            raise PoolContractError(
+                "a reservation transfer names two action keys, never a "
+                "claimant-private acquisition")
+        try:
+            count = int(count)
+        except (TypeError, ValueError):
+            raise PoolContractError(
+                f"transfer_count needs a whole-number count, got {count!r}")
+        if count <= 0:
+            return 0
+        source = self.held_dir / str(from_key)
+        destination = self.held_dir / str(to_key)
+        if not source.is_dir():
+            return 0
+        moved = 0
+        destination.mkdir(parents=True, exist_ok=True)
+        for token in sorted(_scan(source), key=lambda entry: entry.name):
+            if moved >= count:
+                break
+            if token.name in (cpu_admission.METADATA, gpu_admission.METADATA):
+                continue
+            landing = destination / token.name
+            if landing.exists():
+                continue
+            try:
+                os.rename(token, landing)
+            except OSError:
+                continue
+            moved += 1
+        try:
+            source.rmdir()
+        except OSError:
+            pass
+        return moved
+
+    @_guarded_mutation(blocking=True)
     def transfer_tokens(self, from_key: str, to_key: str,
                         names: Sequence[str]) -> int:
         """Move an exact token subset between holders, never via free.
@@ -5152,6 +5262,72 @@ class ResourceLedger:
         except OSError:
             pass
         return done
+
+    def acquisitions_of(
+            self, holder: str) -> list[tuple[str, int, str, int, int]]:
+        """Private acquisition handles this holder still owns (#1594 R1''').
+
+        The prelaunch group census reads its in-flight acquisitions through
+        this: after a crash between ``begin_acquire`` and ``commit_acquire``
+        the tokens sit under the private ``claiming.<usec>.<holder>.<host>.
+        <pid>.<nonce>`` handle rather than under the holder, and only the
+        exact parse -- see :func:`_acquisition_handle_of` -- may attribute
+        them.  One entry per handle, ``(handle, usec, host, pid,
+        token_count)``, in sorted-handle order: ``usec`` is the claimant's
+        microsecond stamp, ``host`` re-joins the dotted hostname, ``pid``
+        the claimant's process id, and ``token_count`` counts the real
+        tokens in the handle's directory the way :meth:`commit_acquire`
+        counts them -- one per token file, not counting adaptive CPU/GPU
+        admission metadata.  Directories that do not satisfy every clause
+        of the parse are not counted here; the tier loop names those
+        through :meth:`unparsed_acquisitions_of` instead of guessing.
+        A reader: takes no mutation guard.
+        """
+
+        found: list[tuple[str, int, str, int, int]] = []
+        for entry in self._scan_names(self.held_dir):
+            if not entry.is_dir():
+                continue
+            parsed = _acquisition_handle_of(entry.name, str(holder))
+            if parsed is None:
+                continue
+            usec, host, pid = parsed
+            tokens = sum(
+                1 for token in _scan(entry)
+                if token.name not in (cpu_admission.METADATA,
+                                      gpu_admission.METADATA))
+            found.append((entry.name, usec, host, pid, tokens))
+        return sorted(found)
+
+    def unparsed_acquisitions_of(self, holder: str) -> list[str]:
+        """``claiming.*`` names of this holder no exact parse owns (#1594).
+
+        The other half of :meth:`acquisitions_of`: a directory under
+        ``held/`` that starts with the claimant prefix and names this holder
+        in the holder field, yet fails the exact parse -- a malformed stamp,
+        pid or nonce, or too few fields -- is not counted as anyone's
+        acquisition, and it must not be silently ignored either.  The tier
+        loop reports these names as ``prelaunch-handle-unparsed`` and never
+        guesses their tokens.  Names that name another holder belong to that
+        holder's own census (valid) or its own unparsed set (malformed); a
+        ``claiming.*`` name too short to name any holder belongs to none and
+        is left to the stale sweep.  Sorted, so the event is deterministic.
+        A reader: takes no mutation guard.
+        """
+
+        holder = str(holder)
+        names: list[str] = []
+        for entry in self._scan_names(self.held_dir):
+            if not entry.is_dir():
+                continue
+            if not entry.name.startswith(ACQUIRING_PREFIX):
+                continue
+            if _acquisition_handle_of(entry.name, holder) is not None:
+                continue
+            parts = entry.name.split(".")
+            if len(parts) >= 3 and parts[2] == holder:
+                names.append(entry.name)
+        return sorted(names)
 
     @_guarded_mutation(blocking=True)
     def abandon_acquire(self, handle: str) -> int:
@@ -5562,6 +5738,20 @@ class PoolQueue:
         # An unseen member must reset inherited evidence. Failed resets stay
         # owed until storage accepts them; a restart cannot inherit eligibility.
         self._gang_terminal_resets: dict[tuple[str, str], bool] = {}
+        #: Declared prelaunch phases per sealed manifest (#1594 R4), keyed by
+        #: ``(cas root, manifest sha256)``.  A manifest blob is immutable, so
+        #: one parse serves every later verdict over the same bytes.  Only
+        #: successful parses are kept: a missing blob may still arrive.
+        self._prelaunch_manifests: dict[tuple[str, str], list[str]] = {}
+        #: Each row's sealed data-manifest input, keyed by ``(cas root,
+        #: action key)`` (#1594 R4).  A sealed request is immutable, so the
+        #: answer never changes and the request is read once per row.
+        self._prelaunch_row_manifests: dict[
+            tuple[str, str], tuple[str, Mapping[str, object] | None]] = {}
+        #: ``(source fragment path, mtime_ns, size)`` to the entry keys the
+        #: source holds (:meth:`_shared_vouch_gap`); bounded, rebuilt on any
+        #: change of the source.
+        self._vouch_keys_memo: dict[tuple[str, int, int], frozenset[str]] = {}
         #: The last claim pass's transition holds (#1029), or ``None`` before
         #: the first pass: :meth:`_TransitionHolds.summary`.
         self.last_claim_pass: dict[str, object] | None = None
@@ -5825,6 +6015,7 @@ class PoolQueue:
         container_class_verdict: Mapping[str, object] | None = None,
         interpreters: Sequence[str] | None = None,
         interpreters_absent: Sequence[str] | None = None,
+        local_dependency_answers: Mapping[str, str] | None = None,
         dependency_files: Sequence[str] | None = None,
         dependency_files_absent: Sequence[str] | None = None,
         state: str | None = None,
@@ -5985,6 +6176,8 @@ class PoolQueue:
             # with a notice rather than a deadlock.
             record["interpreters_absent"] = sorted(
                 {str(p) for p in interpreters_absent})
+        if local_dependency_answers is not None:
+            record["local_dependencies"] = dict(local_dependency_answers)
         if dependency_files is not None:
             # The digest-contract answers (#1495): the requirement paths this
             # poll's ready rows name, statted on this box.  Present-and-empty
@@ -6089,6 +6282,10 @@ class PoolQueue:
                 declared_interpreter, str):
             raise PoolContractError(
                 "pool item interpreter must be an absolute path string")
+        try:
+            dependencies = local_dependencies.normalize(item.get("local_dependencies", {}))
+        except ValueError as exc:
+            raise PoolContractError(str(exc)) from exc
         declared_requirements = item.get("requires_files")
         if declared_requirements is not None and (
                 not isinstance(declared_requirements, list) or any(
@@ -6130,6 +6327,8 @@ class PoolQueue:
                         declared_interpreter not in {
                             str(entry) for entry in offered_paths}:
                     continue
+            if local_dependencies.missing(dependencies, offer.get("local_dependencies")):
+                continue
             if declared_requirements:
                 # The same positive-evidence rule for digest-pinned
                 # dependencies (#1495): an offer that has not answered for a
@@ -6161,6 +6360,39 @@ class PoolQueue:
                 continue          # this box can never fit it, however idle
             matches.append(offer)
         return matches
+
+    def class_dependency_gap(
+        self, klass: str, members: Mapping[str, Sequence[str]],
+        requirements: Mapping[str, str],
+    ) -> str | None:
+        """Every roster member must positively answer; partial offers are not proof."""
+        if not members:
+            return f"no active {klass} class members declared"
+        live = self.offers()
+        used_hosts = set()
+        known = {alias for aliases in members.values() for alias in aliases}
+        for offer in live:
+            if klass in (offer.get("tags") or []) and offer.get("host") not in known:
+                return f"class offer {offer.get('host')} is not in the fleet inventory"
+        for member, aliases in members.items():
+            offers = [offer for offer in live if offer.get("host") in aliases
+                      and klass in (offer.get("tags") or [])]
+            if len(offers) != 1:
+                return f"{member}: missing or ambiguous fresh {klass} offer"
+            offer = offers[0]
+            host = offer.get("host")
+            if host in used_hosts:
+                return f"{member}: fresh {klass} offer {host} already supplies another member"
+            used_hosts.add(host)
+            if requirements and local_dependencies.TAG not in (offer.get("tags") or []):
+                return f"{member}: dependency capability unknown"
+            missing = local_dependencies.missing(requirements, offer.get("local_dependencies"))
+            if missing:
+                path = missing[0]
+                answers = offer.get("local_dependencies")
+                answer = answers.get(path, "unknown") if isinstance(answers, Mapping) else "unknown"
+                return f"{member}: {path} ({answer})"
+        return None
 
     def interpreter_placement_verdict(
             self, item: Mapping[str, object], interpreter: str, *,
@@ -6530,6 +6762,8 @@ class PoolQueue:
         container_owner: str | None = None,
         container_images: Sequence[str] | None = None,
         interpreter: str | None = None,
+        local_dependencies: Mapping[str, str] | None = None,
+        dependency_queries: Mapping[str, str] | None = None,
         requires_files: Sequence[Mapping[str, object]] | None = None,
         preempted_claim: Mapping[str, object] | None = None,
         handoff_by: str | None = None,
@@ -6628,6 +6862,14 @@ class PoolQueue:
                     "interpreter must be an absolute path to an executable "
                     f"(got {interpreter!r})")
             declared_interpreter = interpreter
+        # The required map is class-default eligibility; queries alone are
+        # advisory questions from a conservative host-pinned first use.
+        from . import local_dependencies as dependency_contract
+        try:
+            dependencies = dependency_contract.normalize(local_dependencies or {})
+            queries = dependency_contract.normalize(dependency_queries or {})
+        except ValueError as exc:
+            raise PoolContractError(str(exc)) from exc
         declared_requirements: list[dict] | None = None
         if requires_files is not None:
             # Validated here for the same reason the interpreter is: the row
@@ -6674,6 +6916,11 @@ class PoolQueue:
                 f"{pb.INTERPRETER_TAG} requires an interpreter; an item may "
                 "not require the declared-interpreter capability without "
                 "naming one")
+        if dependencies:
+            normalized_tags = normalize_placement_tags(
+                [*normalized_tags, dependency_contract.TAG])
+        elif dependency_contract.TAG in normalized_tags:
+            raise PoolContractError(f"{dependency_contract.TAG} requires local_dependencies")
         if declared_requirements is not None:
             # The same ride (#714 shape): a loop from before this contract
             # offers neither the tag nor the claim check, so a row whose
@@ -7120,6 +7367,10 @@ class PoolQueue:
             item["container_images"] = image_refs
         if declared_interpreter is not None:
             item["interpreter"] = declared_interpreter
+        if dependencies:
+            item["local_dependencies"] = dependencies
+        if queries:
+            item["dependency_queries"] = queries
         if resident_set is not None:
             from . import resident_sets
             item["resident_set"] = resident_sets._set_id(resident_set)
@@ -12650,6 +12901,55 @@ class PoolQueue:
                                    "error": repr(exc)})
         return moved
 
+    def transfer_tier_reservation_count(self, tier_id: str, from_key: str,
+                                        to_key: str, count: int, *,
+                                        faults: list | None = None) -> int:
+        """Hand up to ``count`` of one tier's reservation to another key (#1594).
+
+        The per-chunk half of splitting a prelaunch group: the group's whole
+        demand sits under one holder, and each chunk mover takes only its own
+        tokens through :meth:`ResourceLedger.transfer_count` -- never free in
+        between, so the tier's occupancy is the same number at every instant,
+        and a re-call with the remaining count finishes an interrupted move.
+        Returns the count moved this call.
+
+        On the RAM tier the host ``mem_gb`` hold moves with it, under the
+        same new name (#1245 review B1), exactly as
+        :meth:`transfer_tier_reservation` pairs the two halves: tier first,
+        then host, so a crash between the two leaves the host half under the
+        old name -- the shape :meth:`reconcile_ram_host_holds` heals by name
+        next cycle.  The host half moves exactly the tier-moved count, never
+        the requested one: a short tier move (a source that holds fewer than
+        ``count``) must not strand host tokens under the new name with no
+        tier tokens behind them.  The host hold is count-aligned with the
+        tier reservation by construction (the sync makes each live tier
+        holder's host hold equal to its occupancy tokens), so moving the
+        same number on both sides keeps the two halves attributable and the
+        sums unchanged; a partial split is therefore consistent on RAM tiers
+        too, with the same named-fault-and-heal shape when the host half
+        cannot land.
+        """
+
+        moved = self.tier_ledger(tier_id).transfer_count(
+            str(from_key), str(to_key), count)
+        if storage_tiers.tier_kind_of(str(tier_id)) == "ram":
+            host = self._ram_tier_host(str(tier_id))
+            try:
+                self.ledger(host).transfer_count(
+                    self.RAM_HOST_MEMORY_PREFIX + str(from_key),
+                    self.RAM_HOST_MEMORY_PREFIX + str(to_key),
+                    moved)
+            except (OSError, PoolContractError, ValueError) as exc:
+                # The tier half moved and the host half did not: named, not
+                # swallowed, and healed by name when the two-way sync next
+                # runs (#1245 review r2).
+                if faults is not None:
+                    faults.append({"reason": "ram_host_transfer_failed",
+                                   "tier_id": str(tier_id),
+                                   "from": str(from_key), "to": str(to_key),
+                                   "error": repr(exc)})
+        return moved
+
     # -- advance-credit funding records (window progress protection) --------
 
     def funding_path(self, mover_action_key: str, tier_id: str) -> Path:
@@ -16366,6 +16666,53 @@ class PoolQueue:
             raise ValueError(f"tier commitment record {path.name} is not one")
         return record
 
+    def _window_fence_state(self, ledger: "ResourceLedger", tier_id: str,
+                            action_key: str,
+                            sealed: Mapping[str, object] | None) -> str | None:
+        """``"pending"``, ``"unknown"`` or ``None`` for this row's ``reserved`` fence.
+
+        A publication or a recovery files the generation first and moves the
+        tokens after.  A claim in that gap would pay its full demand and then
+        hold the fence on top of it (#1637).  ``"pending"``: the record names
+        this row's publication and every bound token is held by some holder.
+        ``"unknown"``: the funding record is unreadable or malformed, or a
+        holder directory could not be read.  The record exists and may still
+        bind tokens, so none of these proves the fence absent (see
+        :meth:`read_funding_evidence` and :func:`held_names_visible`), and the
+        claim defers and asks again.  ``None``: proven absent or stale -- no
+        record, another state or publication, or bound tokens that are gone --
+        and the claim pays as before, so nothing waits on a fence that cannot
+        arrive.
+        """
+        if not isinstance(sealed, Mapping):
+            return None
+        try:
+            status, record, _why = self.read_funding_evidence(
+                action_key, tier_id)
+        except (OSError, PoolContractError, ValueError):
+            return "unknown"
+        if status == "unknown":
+            return "unknown"
+        if status != "record" or record is None:
+            return None
+        if record.get("state") != "reserved":
+            return None
+        try:
+            if float(record["published_unix"]) != float(sealed["published_unix"]):
+                return None
+        except (KeyError, TypeError, ValueError):
+            return None
+        tokens = record.get("tokens")
+        if not isinstance(tokens, list) or not tokens:
+            return None
+        held: set[str] = set()
+        try:
+            for holder in ledger.held_keys():
+                held |= held_names_visible(ledger, holder)
+        except (OSError, PoolContractError, ValueError):
+            return "unknown"
+        return "pending" if {str(name) for name in tokens} <= held else None
+
     def _begin_tier_acquire(
         self, action_key: str, tier_demand: Mapping[str, Mapping[str, int]],
         handles: dict[str, str], funded: dict[str, dict[str, object]],
@@ -16588,6 +16935,13 @@ class PoolQueue:
                                 "demand": dict(needs)}
                     return {"tier_id": tier_id,
                             "reason": "output_funding_required_absent",
+                            "demand": dict(needs)}
+            if not any(covered.values()):
+                fence = self._window_fence_state(
+                    ledger, tier_id, action_key, sealed)
+                if fence is not None:
+                    return {"tier_id": tier_id,
+                            "reason": f"window_funding_{fence}",
                             "demand": dict(needs)}
             handle = ledger.begin_acquire(action_key, remainder)
             if handle is None:
@@ -17526,6 +17880,172 @@ class PoolQueue:
         except (OSError, ValueError, TypeError, PoolContractError) as exc:
             return {"unreadable": True, "error": str(exc)}
 
+    def _prelaunch_shape_verdict(self, item: Mapping[str, object]) -> dict[str, object] | None:
+        """Refuse a declared manifest with an undeclared plan (#1594 R4).
+
+        A v1 submitter ignores the manifest annotation and files a streaming
+        plan.  This check refuses that shape before any token moves.  It
+        answers ``None`` when the row carries no sealed data manifest or no
+        filed plan, so ordinary rows keep today's verdict byte-identically.
+        """
+
+        key = item.get("action_key")
+        cas_root = item.get("cas_root")
+        if not isinstance(key, str) or not key:
+            return None
+        if not isinstance(cas_root, str) or not cas_root:
+            return None
+        from . import residency_plan
+        # The declared prefix comes off the filed-plan memo: one ``stat`` per
+        # verdict, and a parse only when the filing changes (#1332).  No
+        # filed plan, or one this reader refuses, adds nothing here: the
+        # verdict below already answers ``plan_unreadable`` for the latter,
+        # and this check never turns that refusal into a pass.
+        plan_declares = residency_plan.filed_prelaunch_phases(self, key)
+        if plan_declares is None:
+            return None
+        row_key = (str(cas_root), key)
+        found = self._prelaunch_row_manifests.get(row_key)
+        if found is None:
+            try:
+                action = _sealed_action_request(cas_root, key)
+            except (OSError, ValueError, PoolContractError):
+                # A broken request is the claim pass's own denial, not this
+                # check's: skip it rather than rename it.
+                return None
+            entry: Mapping[str, object] | None = None
+            inputs = action.get("inputs") if action is not None else None
+            if isinstance(inputs, list):
+                for candidate in inputs:
+                    if (isinstance(candidate, Mapping)
+                            and str(candidate.get("id"))
+                            == pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID):
+                        entry = candidate
+                        break
+            digest = entry.get("sha256") if entry is not None else None
+            if not isinstance(digest, str) or not digest:
+                # A sealed request is immutable: a row without a data
+                # manifest never gains one, so remember the answer too.
+                self._prelaunch_row_manifests[row_key] = ("", None)
+                return None
+            found = (digest, entry)
+            if len(self._prelaunch_row_manifests) >= 4096:
+                self._prelaunch_row_manifests.clear()
+            self._prelaunch_row_manifests[row_key] = found
+        digest, entry = found
+        if entry is None:
+            return None
+        memo_key = (str(cas_root), digest)
+        declares = self._prelaunch_manifests.get(memo_key)
+        if declares is None:
+            try:
+                path = pb.PrismaBuildCAS(cas_root).input_path(entry)
+                manifest, _ = pb.read_data_manifest(path)
+                declares = storage_tiers.manifest_prelaunch_phases(manifest)
+            except (OSError, ValueError, pb.PrismaBuildError) as exc:
+                # Unknown evidence waits; it never admits.  ``map_unreadable``
+                # is the nearest existing refusal: like an unreadable composed
+                # map, the declaration itself cannot be parsed, so the next
+                # scan retries rather than launching on a guess.
+                return {"state": "map_unreadable", "map_path": None,
+                        "manifest_sha256": digest, "error": str(exc)}
+            self._prelaunch_manifests[memo_key] = list(declares)
+        if list(declares) == list(plan_declares):
+            return None
+        return {"state": "prelaunch_undeclared", "consumer": key,
+                "manifest_sha256": digest,
+                "manifest_declares": list(declares),
+                "plan_declares": list(plan_declares)}
+
+    def _gang_prelaunch_blocker(self, gang_record: Mapping[str, object],
+                                gang_entry: Mapping[str, object],
+                                ) -> dict[str, object] | None:
+        """The sibling whose verdict defers this member's election (#1594 R3).
+
+        Only a gang with a declared prelaunch prefix reads sibling verdicts.
+        An undeclared gang answers ``None`` with no verdict read and no
+        manifest read.  Missing or unreadable sibling evidence defers, never
+        admits.  Nothing here is memoized: the caller re-checks at the
+        election boundary every pass.
+        """
+
+        from . import _gang, residency_plan
+        members = gang_record.get("members")
+        if not isinstance(members, list) or not members:
+            return None
+        declared = False
+        for other in members:
+            if not isinstance(other, Mapping):
+                declared = True
+                continue
+            other_key = other.get("action_key")
+            if not isinstance(other_key, str) or not other_key:
+                declared = True
+                continue
+            problems: list[Exception] = []
+            declared_here = residency_plan.filed_prelaunch_phases(
+                self, other_key, on_unreadable=problems.append)
+            if declared_here is None:
+                if problems:
+                    # An unreadable plan may declare: fail closed and read
+                    # the siblings below instead of calling this gang clean.
+                    declared = True
+                continue
+            if declared_here:
+                declared = True
+        if not declared:
+            return None
+        group = gang_record.get("group")
+        own = gang_entry.get("index")
+        try:
+            states = _gang.member_states(self, gang_record)
+        except (OSError, ValueError, pb.PrismaBuildError, KeyError, TypeError) as exc:
+            return {"group": group, "sibling_index": None,
+                    "sibling_state": "unknown",
+                    "error": f"sibling states unreadable: {exc}"}
+        for other in members:
+            if not isinstance(other, Mapping):
+                continue
+            index = other.get("index")
+            other_key = other.get("action_key")
+            if index == own or not isinstance(other_key, str):
+                continue
+            state = (states.get(index, "absent") if isinstance(index, int)
+                     else "absent")
+            if state in ("claimed", "done"):
+                # Admitted or finished: nothing to wait on.
+                continue
+            if state != "ready":
+                return {"group": group, "sibling_index": index,
+                        "sibling_action_key": other_key,
+                        "sibling_state": state}
+            try:
+                row = _read_json(self.item_path(READY, other_key))
+            except (OSError, ValueError, PoolContractError) as exc:
+                return {"group": group, "sibling_index": index,
+                        "sibling_action_key": other_key,
+                        "sibling_state": "unknown",
+                        "error": f"sibling row unreadable: {exc}"}
+            if (not isinstance(row, Mapping)
+                    or row.get("action_key") != other_key):
+                return {"group": group, "sibling_index": index,
+                        "sibling_action_key": other_key,
+                        "sibling_state": "unknown",
+                        "error": "sibling row unreadable"}
+            try:
+                verdict = self.residency_verdict(row)
+            except (OSError, ValueError, PoolContractError) as exc:
+                return {"group": group, "sibling_index": index,
+                        "sibling_action_key": other_key,
+                        "sibling_state": "unknown",
+                        "error": f"sibling verdict unreadable: {exc}"}
+            if verdict["state"] in RESIDENCY_REFUSAL_STATES:
+                return {"group": group, "sibling_index": index,
+                        "sibling_action_key": other_key,
+                        "sibling_state": state,
+                        "sibling_verdict": verdict["state"]}
+        return None
+
     def residency_verdict(self, item: Mapping[str, object], *,
                           fresh: bool = False) -> dict[str, object]:
         """Whether this item's declared bytes are resident, and why not.
@@ -17542,6 +18062,9 @@ class PoolQueue:
         ``fresh`` requires error-visible record and pin reads for terminal
         gang proof. Ordinary admission retains its existing read policy.
         """
+        shape = self._prelaunch_shape_verdict(item)
+        if shape is not None:
+            return shape
 
         residency = item.get("residency")
         if not isinstance(residency, Mapping):
@@ -17728,6 +18251,10 @@ class PoolQueue:
                     "missing_leads": missing,
                     "generation": document.get("generation"),
                     "leads": [str(lead) for lead in leads]}
+        if isinstance(key, str):
+            incomplete = self._shared_vouch_gap(key, leads, composed, document)
+            if incomplete is not None:
+                return incomplete
         # A ram overlay is resident only within the epoch it landed under
         # (#640).  tmpfs empties on reboot while the map survives, so a map
         # still naming ram paths is compared against the epoch the ram tier
@@ -17752,6 +18279,90 @@ class PoolQueue:
                         "leads": [str(lead) for lead in leads]}
         return {"state": "resident", "leads": [str(lead) for lead in leads],
                 "map_path": str(composed)}
+
+    def _shared_vouch_gap(self, key: str, leads: Sequence[object],
+                          composed: Path, document: Mapping[str, object],
+                          ) -> dict[str, object] | None:
+        """``map_incomplete`` when a declared prefix would be admitted on part of its vouch.
+
+        A lead another consumer sealed is a shared range (#1026), and the tier
+        loop's fan-out gives this consumer a fragment of its own for the
+        entries the source material has dated so far.  So the composed map can
+        name every lead and still hold only part of what the lead staged: the
+        gate above checks leads, not entries.  A streaming consumer reads the
+        rest lazily and loses nothing.  A declared prefix is promised whole
+        before launch, and its reader refuses an entry nothing vouches for.
+        On 2026-10-08 a consumer of 899 declared entries was claimed on a
+        map of one and failed on its first read; the complete fragment was
+        filed five seconds later (#1594).
+
+        The comparison is against the composed map, because that is the
+        document the consumer receives: the fan-out can complete the
+        consumer's fragment a cycle before :func:`compose_map` rewrites the
+        map from it.  Only a consumer whose filed plan declares a prefix asks.
+        Only a lead whose source fragment is filed under its share namespace
+        is compared: where there is none, the mover's own fragment is the
+        vouch.  A source this reader cannot read is not an answer either way,
+        so it is ``map_unreadable``, as the map's own read errors are.  The
+        source's key set is remembered by its size and mtime.
+        """
+
+        from . import residency_plan
+
+        if not residency_plan.filed_prelaunch_phases(self, key):
+            return None
+        root = self.residency_fragment_root()
+        mapped = document.get("entries")
+        mapped = mapped if isinstance(mapped, Mapping) else {}
+        all_leads = [str(lead) for lead in leads]
+
+        def unreadable(what: str, exc: Exception) -> dict[str, object]:
+            return {"state": "map_unreadable", "map_path": str(composed),
+                    "error": f"{what}: {exc!r}", "leads": all_leads}
+
+        unvouched: dict[str, int] = {}
+        for lead in all_leads:
+            try:
+                receipt = self.move_record(lead)
+            except (OSError, ValueError, PoolContractError) as exc:
+                return unreadable(f"move receipt of {lead}", exc)
+            if not isinstance(receipt, Mapping):
+                continue
+            try:
+                namespace = residency_plan.share_namespace(
+                    str(receipt["manifest_sha256"]), str(receipt["tier_id"]),
+                    int(receipt["range_start_bytes"]),  # type: ignore[call-overload]
+                    int(receipt["range_end_bytes"]))  # type: ignore[call-overload]
+            except (KeyError, TypeError, ValueError):
+                continue
+            source = residency_map.fragment_path(root, namespace, lead)
+            try:
+                info = source.stat()
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                return unreadable(str(source), exc)
+            memo_key = (str(source), info.st_mtime_ns, info.st_size)
+            keys = self._vouch_keys_memo.get(memo_key)
+            if keys is None:
+                try:
+                    entries = json.loads(source.read_text()).get("entries")
+                    if not isinstance(entries, dict):
+                        raise ValueError("the fragment has no entries mapping")
+                except (OSError, ValueError, AttributeError) as exc:
+                    return unreadable(str(source), exc)
+                keys = frozenset(entries)
+                if len(self._vouch_keys_memo) >= 64:
+                    self._vouch_keys_memo.clear()
+                self._vouch_keys_memo[memo_key] = keys
+            gap = sum(1 for entry in keys if entry not in mapped)
+            if gap:
+                unvouched[lead] = gap
+        if not unvouched:
+            return None
+        return {"state": "map_incomplete", "map_path": str(composed),
+                "missing": sum(unvouched.values()), "unvouched": unvouched,
+                "leads": all_leads}
 
     def _residency_plan_refusal(self, consumer_action_key: object) -> str | None:
         """Why this consumer's frozen plan will not validate, or ``None``.
@@ -19939,7 +20550,8 @@ class PoolQueue:
             **addressing,
         }
         for field in ("max_attempts", "retry_safe", "container_owner",
-                      "container_images", "tested_repository"):
+                      "container_images", "interpreter", "local_dependencies",
+                      "dependency_queries", "tested_repository"):
             # ``tested_repository`` rides along because a requeue tests the
             # same sealed tree again: a new generation, not a new repository.
             # Absent stays absent, so rows from producers that never named one
@@ -20907,6 +21519,19 @@ class PoolQueue:
                         self.record_denial(item, "interpreter_not_present", {
                             "interpreter": declared_interpreter})
                         continue
+                try:
+                    dependencies = local_dependencies.normalize(item.get("local_dependencies", {}))
+                    if local_dependencies.TAG in (item.get("tags") or []) and not dependencies:
+                        raise ValueError(f"{local_dependencies.TAG} requires local_dependencies")
+                    missing_dependencies = local_dependencies.missing(
+                        dependencies, local_dependencies.observe(dependencies))
+                except (ValueError, OSError) as exc:
+                    self.record_denial(item, "local_dependencies_unavailable", {"error": str(exc)})
+                    continue
+                if missing_dependencies:
+                    self.record_denial(item, "local_dependency_not_present",
+                                       {"paths": missing_dependencies})
+                    continue
                 declared_requirements = item.get("requires_files")
                 item_tags = item.get("tags")
                 if (not declared_requirements and isinstance(item_tags, list)
@@ -21489,6 +22114,16 @@ class PoolQueue:
                                         "gang_election": ahead[0], "ranked_behind": True})
                                     continue
                                 if mine is None and not sibling_here:
+                                    # A prelaunch gang elects only whole: defer
+                                    # while a sibling's verdict is unresolved
+                                    # (#1594 R3).  One call; the merge keeps it.
+                                    prelaunch_blocker = self._gang_prelaunch_blocker(
+                                        gang_record, gang_entry)
+                                    if prelaunch_blocker is not None:
+                                        self.record_denial(
+                                            item, "deferred_for_gang_prelaunch",
+                                            prelaunch_blocker)
+                                        continue
                                     try:
                                         mine = _gang.elect_gang_member(self, gang_record, gang_entry, here, _now())
                                     except (_gang.GangContractError, OSError, pb.PrismaBuildError) as exc:

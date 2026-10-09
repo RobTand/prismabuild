@@ -334,6 +334,36 @@
    ],
    "name": "run",
    "reason": "The migration consumer returns a closed three-leaf read-only plan or original-FD-only mode change with partial-effect reporting. Existing run helpers execute actions, broker scopes, canary watches, benchmark loops or stage/upgrade operations; their arguments, effects and returned evidence are different."
+  },
+  {
+   "name": "census",
+   "modules": [
+    "src/prismabuild/filesystem_floor.py",
+    "src/prismabuild/prelaunch_group.py"
+   ],
+   "reason": "The prelaunch group census counts the tokens of one reservation group in the tier ledger, in its private acquisition handles and in its chunk movers. The filesystem floor census reads mounted filesystem trust. The two share a name and no contract."
+  },
+  {
+   "name": "reconcile",
+   "modules": [
+    "src/prismabuild/prelaunch_group.py"
+   ],
+   "reason": "The prelaunch group reconcile runs the crash-recovery rule table of one reservation group against the tier ledger and its receipts. Other reconcile helpers repair queue records or host holds. Their inputs and outcomes differ."
+  },
+  {
+   "modules": [
+    "src/prismabuild/local_dependencies.py"
+   ],
+   "name": "observe",
+   "reason": "The local dependency observer stats declared absolute paths on this box and answers executable, path, absent or unknown for each one. The capacity and container-image observers read other facts with other answer shapes, so the three share no contract."
+  },
+  {
+   "modules": [
+    "src/prismabuild/container_images.py",
+    "src/prismabuild/local_dependencies.py"
+   ],
+   "name": "missing",
+   "reason": "The container-image helper subtracts a present set from required image names. The local dependency helper compares declared path kinds with a worker's per-path answers and fails closed on an unreadable answer. The inputs, domains and results differ."
   }
  ],
  "same_name_helpers": {

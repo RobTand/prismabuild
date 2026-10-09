@@ -16,6 +16,10 @@ import pytest
 from prismabuild import local_resident, local_tier, pool
 from test_local_resident_mover import world
 
+from local_resident_space import roomy_disk  # noqa: F401
+
+pytestmark = pytest.mark.usefixtures("roomy_disk")
+
 
 HOLD_AND_EVICT = """
 import json, sys

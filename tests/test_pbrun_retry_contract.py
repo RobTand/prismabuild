@@ -74,6 +74,8 @@ def _submit(
             # (#918).
             "--wait-s",
             "0",
+            # The output path is created by the worker, not present here.
+            *(() if "--tag" in options else ("--tag", "sparky")),
             *options,
             "--",
             "/bin/bash",
@@ -189,11 +191,73 @@ def test_retry_safe_policy_is_explicit_bounded_and_sealed(
 def test_new_submitter_keeps_one_attempt_during_an_old_pool_runtime_window(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Publishing the repo checkout can precede the atomic worker rollout."""
+    """Publishing the repo checkout can precede the atomic worker rollout.
+
+    The legacy ``publish`` here lacks ``retry_safe`` and carries ``tested_repository``
+    (#1565), which every submission now names: the retry-safety fallback is what is
+    exercised.  A runtime that cannot carry the tag at all is the next test's.
+    """
 
     current_publish = pool.PoolQueue.publish
 
     def legacy_publish(
+        self,
+        *,
+        action_key,
+        cas_root,
+        worker_script,
+        checkout_root=None,
+        checkout_snapshot=None,
+        tags=(),
+        needs_gpu=False,
+        priority=0,
+        resources=None,
+        max_attempts=pool.DEFAULT_MAX_ATTEMPTS,
+        container_owner=None,
+        tested_repository=None,
+    ):
+        return current_publish(
+            self,
+            action_key=action_key,
+            cas_root=cas_root,
+            checkout_root=checkout_root,
+            checkout_snapshot=checkout_snapshot,
+            worker_script=worker_script,
+            tags=tags,
+            needs_gpu=needs_gpu,
+            priority=priority,
+            resources=resources,
+            max_attempts=max_attempts,
+            container_owner=container_owner,
+            tested_repository=tested_repository,
+        )
+
+    monkeypatch.setattr(pool.PoolQueue, "publish", legacy_publish)
+    work, queue = _work_and_queue(tmp_path)
+    assert _submit(tmp_path, monkeypatch, work) == 75
+    item = json.loads(
+        next(queue.dir(pool.READY).glob("*.json")).read_text(encoding="utf-8")
+    )
+    assert item["max_attempts"] == 1
+    assert "retry_safe" not in item
+    assert item["tested_repository"] == "work"
+
+
+def test_new_submitter_refuses_an_old_pool_runtime_that_cannot_carry_the_tested_repository(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1565: a loaded runtime that cannot carry the tag refuses, it never untags.
+
+    ``tested_repository_name`` always names a repository or ``"unknown"``, so
+    every submission carries it, and a ``publish`` that does not accept it (a
+    runtime from before #1565) refuses the whole submission with nothing
+    published.  Before #1565 this window published without the tag; the test
+    above keeps its retry-safety half.
+    """
+
+    current_publish = pool.PoolQueue.publish
+
+    def pre_1565_publish(
         self,
         *,
         action_key,
@@ -223,11 +287,8 @@ def test_new_submitter_keeps_one_attempt_during_an_old_pool_runtime_window(
             container_owner=container_owner,
         )
 
-    monkeypatch.setattr(pool.PoolQueue, "publish", legacy_publish)
+    monkeypatch.setattr(pool.PoolQueue, "publish", pre_1565_publish)
     work, queue = _work_and_queue(tmp_path)
-    assert _submit(tmp_path, monkeypatch, work) == 75
-    item = json.loads(
-        next(queue.dir(pool.READY).glob("*.json")).read_text(encoding="utf-8")
-    )
-    assert item["max_attempts"] == 1
-    assert "retry_safe" not in item
+    with pytest.raises(pool.PoolContractError, match="does not support tested_repository"):
+        _submit(tmp_path, monkeypatch, work)
+    assert list(queue.dir(pool.READY).glob("*.json")) == []

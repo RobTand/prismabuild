@@ -1297,7 +1297,8 @@ def displayed(output: str) -> list[str]:
     """A shard's output lines for a human, without its outcome record."""
 
     return [line for line in (output or "").strip().splitlines()
-            if not line.startswith(pbtest_outcomes.PREFIX)]
+            if not line.startswith((pbtest_outcomes.PREFIX,
+                                    pbtest_outcomes.COMPLETION_PREFIX))]
 
 
 # A closed vocabulary prevents resource controls, config indirection, and
@@ -1309,6 +1310,14 @@ PYTEST_SWITCHES = {"--strict-cuda", "--strict-markers", "--strict-config",
                    "--collect-only", "--co", "--disable-warnings", "-x"}
 PYTEST_VALUES = {"-k", "-m", "--dist", "--surface-json", "--durations",
                  "--durations-min", "--maxfail", "--tb"}
+#: ``-o`` and its long spelling name one ini key and three values: pytest's own
+#: tmp retention policy (#1535, D29).  A sealed checkout cannot take a config
+#: edit, and a repository without the key keeps every passing test's directory
+#: on an inode-limited scratch.  No other key passes: ``addopts``, ``testpaths``
+#: and plugin keys would reopen resource control and config indirection.
+PYTEST_OVERRIDES = {"-o", "--override-ini"}
+RETENTION_KEY = "tmp_path_retention_policy"
+RETENTION_POLICIES = {"all", "failed", "none"}
 
 
 def parse_pytest_args(raw: str, *, gpu: bool, workers: int) -> list[str]:
@@ -1319,6 +1328,7 @@ def parse_pytest_args(raw: str, *, gpu: bool, workers: int) -> list[str]:
     ):
         raise ValueError("--pytest-args must be a JSON array of nonempty strings")
     result: list[str] = []
+    retention_seen = False
     index = 0
     while index < len(values):
         option, equals, value = values[index].partition("=")
@@ -1329,7 +1339,7 @@ def parse_pytest_args(raw: str, *, gpu: bool, workers: int) -> list[str]:
                 raise ValueError("--strict-cuda requires --gpu")
             result.append(option)
             continue
-        if option not in PYTEST_VALUES:
+        if option not in PYTEST_VALUES | PYTEST_OVERRIDES:
             raise ValueError(f"unsupported pytest option {option!r}; use "
                              "--workers-per-shard for parallelism and paths for files")
         if not equals:
@@ -1346,6 +1356,15 @@ def parse_pytest_args(raw: str, *, gpu: bool, workers: int) -> list[str]:
                 raise ValueError("--dist must partition tests; 'each' duplicates the population")
         if option == "--surface-json" and not Path(value).name:
             raise ValueError("--surface-json requires a filename")
+        if option in PYTEST_OVERRIDES:
+            key, _, policy = value.partition("=")
+            if key != RETENTION_KEY or policy not in RETENTION_POLICIES:
+                raise ValueError(
+                    f"unsupported pytest option {option!r} {value!r}; the only "
+                    f"override is {RETENTION_KEY}=" + "|".join(sorted(RETENTION_POLICIES)))
+            if retention_seen:
+                raise ValueError(f"{RETENTION_KEY} may be set once")
+            retention_seen = True
         result += [option, value]
     return result
 
@@ -2051,6 +2070,10 @@ def main() -> int:
         out = replayed_output(out or "") or (out or "")
         tail = [line for line in out.strip().splitlines() if line.strip()]
         summary = pytest_summary(tail)
+        test_completion = pbtest_outcomes.completion(out)
+        timed_out = returncode != 0 and any(re.match(
+            r"^pbrun: (?:[0-9a-f]{12} )?timeout (?:on|--)",
+            ANSI.sub("", line)) for line in tail)
         # Missing terminal output must stay visible: an empty summary once
         # hid 74 tests behind a killed submission (#208). But absence of the
         # summary cannot establish absence of execution (#1365): a deadline
@@ -2081,10 +2104,18 @@ def main() -> int:
                 summary = (f"STORAGE EXHAUSTED (ENOSPC: No space left on device) -- "
                            f"{len(bucket)} file(s) have no verified final result "
                            f"(the shard ended {how}; execution/coverage unknown)")
+            elif test_completion["status"] == "complete":
+                label = ("TESTS COMPLETE; PROCESS DID NOT EXIT" if timed_out else
+                         "TESTS COMPLETE; FINAL OUTCOME UNVERIFIED")
+                summary = (f"{label} -- {len(test_completion['collected'])} "
+                           f"collected test(s) finished teardown (the shard ended "
+                           f"{how}; final outcomes unverified)")
             else:
                 summary = (f"NO PYTEST SUMMARY -- {len(bucket)} file(s) have no "
                            f"verified final result (the shard ended {how}; "
                            "execution/coverage unknown)")
+                if timed_out:
+                    summary += "; TEST COMPLETION UNVERIFIED"
         # Each skip by node ID, with its reason (#942).  ``None`` is "this
         # shard printed no record", which is not "it skipped nothing".
         skipped = recorded_skips(pbtest_outcomes.parse(out))
@@ -2105,6 +2136,8 @@ def main() -> int:
                         # whether the packing bought what it promised (#1246).
                         "predicted_s": predicted_s,
                         "pytest_s": actual_s,
+                        "test_completion": test_completion,
+                        "timed_out": timed_out,
                         "ran": ran, "skipped": skipped, "attempts": attempts,
                         "output": out})
         state = "ok" if returncode == 0 else f"rc={returncode}"
@@ -2119,7 +2152,14 @@ def main() -> int:
         if predicted:
             have = f"{actual_s:.1f}s" if actual_s is not None else "unknown"
             timed = f" [predicted {predicted_s:.1f}s, pytest {have}]"
-        _say(f"shard {index:>3} {state:<8} {summary}{timed}{retried}{keyed}")
+        completion_note = ""
+        if ran and timed_out:
+            label = ("TESTS COMPLETE; PROCESS DID NOT EXIT"
+                     if test_completion["status"] == "complete"
+                     else "TEST COMPLETION UNVERIFIED")
+            completion_note = f" [{label}]"
+        _say(f"shard {index:>3} {state:<8} {summary}{completion_note}"
+             f"{timed}{retried}{keyed}")
         counted = summary_count(summary, "skipped") if ran else 0
         if skipped is None and counted:
             print(f"shard {index:>3} {counted} skip(s) with NO RECORDED REASON: "

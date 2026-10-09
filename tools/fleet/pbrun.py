@@ -90,7 +90,13 @@ from prismabuild import (  # noqa: E402
     decomposition as dc, dependency_digest, filesystem_floor, materialize,
     movement_actions, pool, residency_plan, slurm_lane, storage_tiers,
 )
+import d38_gate  # noqa: E402
+import pbevidence  # noqa: E402
 import pbstatus  # noqa: E402
+import fleet_roster  # noqa: E402
+from prismabuild import local_dependencies  # noqa: E402
+
+FLEET_ROSTER_PATH = Path(__file__).resolve().parent / "fleet_boxes.json"
 
 POLL_S = 5.0
 #: Which transport carries a submission.  The pull queue is still the default:
@@ -1629,167 +1635,156 @@ def keep_droppings_out_of_git(cwd: Path) -> Path | None:
         ) from exc
 
 
-def placement_tags(
-    cwd: Path,
-    *,
-    explicit: list[str],
-    here: bool,
-    hostname: str,
-    portable_checkout: bool = False,
-    command: list[str] | None = None,
-    repository_root: Path | None = None,
-    environment: dict[str, str] | None = None,
-    caller_environment: dict[str, str] | None = None,
-    anywhere: bool = False,
-) -> list[str]:
-    """Return the placement tags for an action whose working directory is ``cwd``.
+def command_dependency_contract(
+    cwd: Path, command: list[str], *, repository_root: Path,
+    environment: dict[str, str] | None, caller_environment: dict[str, str] | None,
+) -> tuple[list[str], dict[str, str], dict[str, str]]:
+    """Bind the invocation and its direct path requirements in one resolution."""
+    cwd = cwd.resolve()
+    root = repository_root.resolve()
 
-    Placement is PrismaBuild's decision, not the submitter's.  The submitter
-    knows one thing the pool cannot infer -- an explicit ``--tag`` naming a
-    hardware class the work requires -- and everything else follows from where
-    the checkout lives:
+    def resolved_path(candidate: Path) -> Path:
+        try:
+            return candidate.resolve(strict=False)
+        except (OSError, RuntimeError) as exc:
+            raise SystemExit(f"pbrun: cannot resolve declared path {candidate}: {exc}") from exc
 
-    * A Git checkout is snapshotted through the CAS. Its command executable is
-      resolved exactly from argv[0] and the declared PATH. A submitter-local
-      executable retains the source-host pin; an absent executable refuses.
-      Direct argv and caller-environment paths are also screened
-      conservatively. This lexical screen is not proof of a shell program's or
-      application code's indirect inputs: ``--tag`` names the worker class
-      owning those dependencies, while ``--anywhere`` explicitly asserts they
-      are portable.
-    * The path rule remains only for already-published legacy queue records.
-      New ``pbrun`` submissions refuse a non-Git directory rather than execute
-      mutable bytes. ``--here`` still forces a host pin for work genuinely
-      about *this* machine.
+    def stays_within(candidate: Path, owner: Path) -> bool:
+        try:
+            parts = candidate.relative_to(owner).parts
+        except ValueError:
+            return False
+        depth = 0
+        for part in parts:
+            depth += -1 if part == ".." else 1
+            if depth < 0:
+                return False
+        return True
 
-    ``--tag`` and ``--here`` are two constraints, not two spellings of one.
-    A submitter who passes both asks for a box of that class *and* for this
-    box, so both land: the explicit tags, then ``hostname``, deduplicated and
-    with the hostname last.  Returning ``list(explicit)`` instead dropped the
-    host pin without saying so, which is a narrowing the submitter asked for
-    and did not get.  (The order is for a reader: the conjunction is sorted
-    by ``pool.normalize_placement_tags`` before it is sealed.)
+    def portable(candidate: Path) -> bool:
+        return stays_within(candidate, root) or stays_within(candidate, SHARED_ROOT.resolve())
 
-    Nothing here decides *which* free box runs a shared-checkout action; the
-    queue does, from the demand and what each worker offers.  That separation
-    is the point.
-    """
+    def path_scope(candidate: Path) -> tuple[bool, bool]:
+        location = resolved_path(candidate.parent) / candidate.name
+        target = resolved_path(candidate)
+        local = not portable(candidate) or not portable(location) or not portable(target)
+        checkout_local = (stays_within(candidate, root) and stays_within(location, root)
+                          and stays_within(target, root))
+        return local, checkout_local
 
-    if explicit:
-        if here:
-            return [*dict.fromkeys(t for t in explicit if t != hostname),
-                    hostname]
-        return list(explicit)
-    if here:
-        return [hostname]
-    if anywhere:
-        return []
-    if portable_checkout:
-        root = (repository_root or cwd).resolve()
-        if command is None:
-            # Library callers asking only about source-checkout placement do
-            # not have a command contract to classify. The CLI always passes
-            # argv and therefore always takes the exact executable gate below.
-            return []
+    if not command or not command[0]:
+        raise SystemExit("pbrun: portable placement requires argv[0]")
+    raw = command[0]
+    if os.sep in raw:
+        executable_path = os.path.join(str(cwd), raw)
+        if not os.path.isfile(executable_path) or not os.access(executable_path, os.X_OK):
+            raise SystemExit(
+                "pbrun: command executable is absent or not executable "
+                f"on the submitting box: {raw!r}. Pass --tag for the "
+                "worker class that owns it, or --anywhere to assert an "
+                "identical executable contract on every eligible worker.")
+        executable = Path(executable_path)
+    else:
+        declared_path = (environment or {}).get("PATH") or os.defpath
+        search = [str(cwd / entry) for entry in declared_path.split(os.pathsep)]
+        found = shutil.which(raw, path=os.pathsep.join(search))
+        if found is None:
+            raise SystemExit(
+                "pbrun: command executable cannot be resolved from the "
+                f"declared PATH: {raw!r}. Pass --tag for the worker class "
+                "that owns it, or --anywhere to assert an identical "
+                "executable contract on every eligible worker.")
+        executable = Path(found)
+    # Traverse directory symlinks and .. before making a relocatable command.
+    # relpath/abspath would cancel .. lexically and could select another file.
+    # Keep the leaf: dereferencing a venv Python loses the venv invocation.
+    executable = resolved_path(executable.parent) / executable.name
+    # Executables and inputs need evidence for a retained local alias.
+    # A portable target does not make that alias available to the worker.
+    requirements = {str(executable): "executable"} if path_scope(executable)[0] else {}
+    bindings: dict[str, str | None] = {}
 
-        def scope(candidate: Path) -> tuple[Path, bool, bool]:
-            try:
-                resolved_path = candidate.resolve(strict=False)
-            except (OSError, RuntimeError) as exc:
-                raise SystemExit(
-                    f"pbrun: cannot resolve declared path {candidate}: {exc}"
-                ) from exc
-            try:
-                resolved_path.relative_to(root)
-                inside_repository = True
-            except ValueError:
-                inside_repository = False
-            try:
-                resolved_path.relative_to(SHARED_ROOT.resolve())
-                on_shared_storage = True
-            except ValueError:
-                on_shared_storage = False
-            return resolved_path, inside_repository, on_shared_storage
-
-        def command_executable() -> Path:
-            if not command or not command[0]:
-                raise SystemExit("pbrun: portable placement requires argv[0]")
-            raw = command[0]
-            if os.sep in raw:
-                candidate = Path(raw)
-                if not candidate.is_absolute():
-                    candidate = cwd / candidate
-                executable = candidate.resolve(strict=False)
-                if not executable.is_file() or not os.access(executable, os.X_OK):
+    def bind_input(raw: str) -> str:
+        if not (os.path.isabs(raw) or os.sep in raw or os.path.exists(os.path.join(str(cwd), raw))):
+            return raw
+        if raw not in bindings:
+            path = os.path.join(str(cwd), raw)
+            local, checkout_local = path_scope(Path(path))
+            if local:
+                if not os.path.exists(path):
                     raise SystemExit(
-                        "pbrun: command executable is absent or not executable "
-                        f"on the submitting box: {raw!r}. Pass --tag for the "
-                        "worker class that owns it, or --anywhere to assert an "
-                        "identical executable contract on every eligible worker."
-                    )
-                return executable
+                        "pbrun: direct argv or caller environment names an "
+                        "external path absent from the submitting box: "
+                        f"{raw}. Pass --tag for the worker class that owns "
+                        "it, or --anywhere to assert its portability.")
+                requirements.setdefault(path, "path")
+            bindings[raw] = (path if not os.path.isabs(raw) and not checkout_local else None)
+        bound = bindings[raw]
+        return raw if bound is None else bound
 
-            declared_path = (environment or {}).get("PATH") or os.defpath
-            search_parts = []
-            for entry in declared_path.split(os.pathsep):
-                directory = Path(entry) if entry else cwd
-                if not directory.is_absolute():
-                    directory = cwd / directory
-                search_parts.append(str(directory.resolve(strict=False)))
-            found = shutil.which(raw, path=os.pathsep.join(search_parts))
-            if found is None:
-                raise SystemExit(
-                    "pbrun: command executable cannot be resolved from the "
-                    f"declared PATH: {raw!r}. Pass --tag for the worker class "
-                    "that owns it, or --anywhere to assert an identical "
-                    "executable contract on every eligible worker."
-                )
-            return Path(found).resolve(strict=True)
-
-        executable, executable_in_repo, executable_shared = scope(
-            command_executable()
-        )
-        if not executable_in_repo and not executable_shared:
-            return [hostname]
-
-        # This is intentionally a conservative lexical screen, never the
-        # authority for command interpretation. argv[0] above is exact. Here
-        # only direct path-shaped tokens and caller-declared values can add a
-        # host pin; shell strings and application configuration remain the
-        # caller's explicit --tag/--anywhere responsibility.
-        candidates: list[Path] = []
-        for token in (command or [])[1:]:
-            raw = token.split("=", 1)[1] if token.startswith("-") and "=" in token else token
-            if token.startswith("-") and raw == token:
+    arguments = []
+    for token in command[1:]:
+        if token.startswith("-"):
+            if "=" not in token:
+                arguments.append(token)
                 continue
-            candidate = Path(raw)
-            relative_candidate = cwd / candidate
-            if candidate.is_absolute() or os.sep in raw or relative_candidate.exists():
-                candidates.append(candidate)
-        for name, value in (caller_environment or {}).items():
-            if name == "PATH":
-                continue  # argv[0] was resolved against the complete value above
-            for raw in value.split(os.pathsep):
-                candidate = Path(raw)
-                relative_candidate = cwd / candidate
-                if candidate.is_absolute() or os.sep in raw or relative_candidate.exists():
-                    candidates.append(candidate)
+            option, raw = token.split("=", 1)
+            arguments.append(option + "=" + bind_input(raw))
+        else:
+            arguments.append(bind_input(token))
+    bound_caller = dict(caller_environment or {})
+    for name, value in bound_caller.items():
+        if name != "PATH":
+            bound_caller[name] = os.pathsep.join(bind_input(raw) for raw in value.split(os.pathsep))
 
-        for candidate in dict.fromkeys(candidates):
-            path = candidate if candidate.is_absolute() else cwd / candidate
-            resolved_path, inside_repository, on_shared_storage = scope(path)
-            if inside_repository or on_shared_storage:
-                continue
-            if not resolved_path.exists() and not resolved_path.is_symlink():
-                raise SystemExit(
-                    "pbrun: direct argv or caller environment names an "
-                    "external path absent from the submitting box: "
-                    f"{candidate}. Pass --tag for the worker class that owns "
-                    "it, or --anywhere to assert its portability."
-                )
-            return [hostname]
-        return []
-    return [hostname] if is_box_local(cwd) else []
+    invocation = (os.path.relpath(executable, cwd)
+                  if executable.is_relative_to(root) else str(executable))
+    if not os.path.isabs(invocation) and os.sep not in invocation:
+        invocation = "./" + invocation
+    return [invocation, *arguments], local_dependencies.normalize(requirements), bound_caller
+
+
+def placement_contract(
+    cwd: Path, *, explicit: list[str], here: bool, hostname: str,
+    portable_checkout: bool = False, command: list[str] | None = None,
+    repository_root: Path | None = None, environment: dict[str, str] | None = None,
+    caller_environment: dict[str, str] | None = None, anywhere: bool = False,
+    needs_gpu: bool = False, offer_queue=None,
+) -> tuple[list[str], dict[str, str], list[str] | None, dict[str, str]]:
+    """Return placement, dependency questions, command, and caller environment."""
+    bound_caller = dict(caller_environment or {})
+    if explicit:
+        return (([*dict.fromkeys(t for t in explicit if t != hostname), hostname]
+                 if here else list(explicit)), {}, command, bound_caller)
+    if here:
+        return [hostname], {}, command, bound_caller
+    if anywhere:
+        return [], {}, command, bound_caller
+    if not portable_checkout:
+        return ([hostname] if is_box_local(cwd) else []), {}, command, bound_caller
+    if command is None:
+        return [], {}, command, bound_caller
+    command, requirements, bound_caller = command_dependency_contract(
+        cwd, command, repository_root=repository_root or cwd,
+        environment=environment, caller_environment=caller_environment)
+    if offer_queue is not None:
+        try:
+            roster = json.loads(FLEET_ROSTER_PATH.read_text())
+            members = fleet_roster.class_members(roster, "gb10")
+        except (OSError, ValueError, TypeError) as exc:
+            print(f"pbrun: keeping {hostname} placement: class inventory unavailable: {exc}",
+                  file=sys.stderr, flush=True)
+            return [hostname], requirements, command, bound_caller
+        aliases = {alias for names in members.values() for alias in names}
+        if hostname in aliases or (hostname == "celestia" and needs_gpu):
+            reason = offer_queue().class_dependency_gap("gb10", members, requirements)
+            if reason is None:
+                return ["gb10", *([local_dependencies.TAG] if requirements else [])], requirements, command, bound_caller
+            print(f"pbrun: keeping host pin {hostname}: gb10 dependencies not proven: {reason}",
+                  file=sys.stderr, flush=True)
+            return [hostname], requirements, command, bound_caller
+    return ([hostname] if requirements else []), requirements, command, bound_caller
+
 
 
 def is_box_local(cwd: Path) -> bool:
@@ -1824,10 +1819,10 @@ def require_reachable_runtime(
     receipt), so a ``pbrun`` invoked out of a developer worktree can be executed
     only by the box that worktree is on.
 
-    ``placement_tags`` cannot see this and should not: it screens argv and the
+    ``placement_contract`` cannot see this and should not: it screens argv and the
     caller's environment, which are the submitter's inputs, not ``pbrun``'s own
     installation.  So an explicit ``--tag`` -- which by design outranks every
-    pin ``placement_tags`` derives -- sends the action to a box where the
+    pin ``placement_contract`` derives -- sends the action to a box where the
     launcher path does not exist, and the failure arrives from the far side as
     ``can't open file '<worktree>/tools/prismabuild_worker.py'``, after a
     claim, a checkout materialization and a wasted slot.  Measured 2026-09-06
@@ -2537,7 +2532,7 @@ def pin_notice(
     and so announced "PINNED to sparky by --here, so no other box can claim
     this action" for a submission whose tags were ``['x86']`` -- naming, as
     the *other* box, the only box that could actually run it.  A notice about
-    a pin has one job and that was it.  ``placement_tags`` no longer drops the
+    a pin has one job and that was it. ``placement_contract`` no longer drops the
     host pin that way, but the reading rule is what keeps this correct
     whatever it returns.
 
@@ -2549,7 +2544,7 @@ def pin_notice(
     contingency it is rather than as "match only this box".
 
     The explicit ``--tag`` list is deliberately NOT a parameter here.  The
-    only thing it decides is what ``placement_tags`` returned, and that is
+    only thing it decides is what ``placement_contract`` returned, and that is
     already in ``intent``; taking it as well would leave a second way to ask
     the flags what the tags already answer, which is the bug this function
     was rewritten to close.  ``here`` stays, because ``--here`` on a shared
@@ -4214,8 +4209,92 @@ def require_host_class_scope(
         )
 
 
+#: The largest packet ``--target-evidence`` reads (#1598).  A packet is one
+#: worker's platform and accelerator facts: a few hundred bytes.
+TARGET_EVIDENCE_MAX_BYTES = 64 * 1024
+
+#: The rule of each class a target-evidence packet may stand for (#1598): the
+#: platform key and the accelerator model its workers report.  A class this
+#: table does not name has no rule, so a packet cannot stand for it.  GB10 is
+#: one AArch64 platform with one model.  Another model on AArch64, such as a
+#: GH200, is not GB10, and neither is another model that shares its capability.
+_TARGET_EVIDENCE_CLASSES = {
+    "gb10": lambda evidence, platform_key: (
+        platform_key == "linux-aarch64-sm121"
+        and all(row["name"] == "NVIDIA GB10" and row["compute_capability"] == "12.1"
+                for row in evidence["accelerators"])),
+}
+
+
+class TargetEvidence(dict):
+    """A vetted packet's evidence, plus the worker's argv[0] toolchain fields.
+
+    It compares equal to the plain evidence mapping, so everything that reads
+    the evidence is unchanged.  ``argv0`` is what the class seals for argv[0]:
+    the WORKER's executable identity, never the submitting box's (#1598).
+    """
+
+    argv0: dict[str, str]
+    recorder: dict[str, str] | None = None
+
+
+def load_target_evidence(path: str, *, host_class: str) -> dict[str, object]:
+    """Read and vet one target-evidence packet for ``host_class`` (#1598).
+
+    ``pbevidence.py`` prints the packet on a worker of the class.  It replaces
+    the local probe a class-scoped pool measurement makes, so a box without an
+    accelerator can seal the class facts.  Nothing here is an attestation: each
+    worker checks the declared facts against its own live facts before it
+    runs, so a wrong packet fails closed there.  This function refuses the
+    packets that could never seal a class -- not local, no accelerator, no
+    device identity, mixed models, or a platform the class does not have --
+    before anything is sealed.
+    """
+
+    try:
+        with open(path, "rb") as handle:
+            raw = handle.read(TARGET_EVIDENCE_MAX_BYTES + 1)
+    except OSError as exc:
+        raise SystemExit(f"pbrun: cannot read --target-evidence {path}: {exc}") from None
+    if len(raw) > TARGET_EVIDENCE_MAX_BYTES:
+        raise SystemExit(
+            f"pbrun: --target-evidence {path} exceeds {TARGET_EVIDENCE_MAX_BYTES} "
+            "bytes: a packet is one worker's facts, not a payload")
+    try:
+        value = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise SystemExit(f"pbrun: --target-evidence {path} is not JSON: {exc}") from None
+    try:
+        evidence = pbevidence.vet(value)
+    except pbevidence.PacketError as exc:
+        raise SystemExit(f"pbrun: --target-evidence {path}: {exc}") from None
+    rule = _TARGET_EVIDENCE_CLASSES.get(host_class)
+    if rule is None:
+        raise SystemExit(
+            f"pbrun: --target-evidence {path}: no rule for class {host_class!r}; "
+            f"a packet can stand for {', '.join(sorted(_TARGET_EVIDENCE_CLASSES))}")
+    try:
+        argv0 = pbevidence.argv0_contract(value)
+        recorder = pbevidence.recorder_contract(value)
+    except pbevidence.PacketError as exc:
+        raise SystemExit(f"pbrun: --target-evidence {path}: {exc}") from None
+    try:
+        platform_key = pb._platform_key_from_evidence(evidence)
+    except pb.ActionContractError as exc:
+        raise SystemExit(f"pbrun: --target-evidence {path}: {exc}") from None
+    if not rule(evidence, platform_key):
+        raise SystemExit(
+            f"pbrun: --target-evidence {path} disagrees with class {host_class}: "
+            f"it reports {platform_key}")
+    vetted = TargetEvidence(evidence)
+    vetted.argv0 = argv0
+    vetted.recorder = recorder
+    return vetted
+
+
 def host_class_scope(
     host_class: str | None, *, measurement: bool = False, transport: str = "slurm",
+    target_evidence: Mapping[str, object] | None = None,
 ) -> tuple[dict[str, object], dict[str, str]]:
     """The execution scope and the toolchain a submission seals.
 
@@ -4232,16 +4311,35 @@ def host_class_scope(
     another class is refused there, naming the field that differs.
     """
 
+    if target_evidence is not None and not (
+            measurement and transport == "pool" and host_class is not None):
+        raise ValueError(
+            "target_evidence stands for a class-scoped pool measurement only")
     if measurement and transport == "pool":
         # A pool worker can attest its platform and executable/ABI directly.
         # A class is placement intent, not a forged SLURM attestation. The
         # actual platform, ABI, driver and device models constrain numerics;
         # physical UUIDs and the selected worker remain receipt provenance.
-        evidence = pb._collect_worker_evidence(
-            **({"attest_accelerator_identity": True} if host_class is not None else {})
-        )
+        # A vetted target-evidence packet stands in for the local probe when
+        # the submitting box has no accelerator (#1598): the worker still
+        # checks every declared fact against its own live facts.
+        evidence = (target_evidence if target_evidence is not None else
+                    pb._collect_worker_evidence(
+                        **({"attest_accelerator_identity": True}
+                           if host_class is not None else {})))
+        # The class's executable identity is the WORKER's: a submitter of another
+        # architecture has a different /bin/bash, and the worker refuses a
+        # declared size that is not its own (#1598).
+        if target_evidence is not None:
+            argv0 = getattr(target_evidence, "argv0", None)
+            if not argv0:
+                raise ValueError(
+                    "target_evidence carries no worker argv0 identity; "
+                    "load it with load_target_evidence")
+        else:
+            argv0 = pb.executable_toolchain_contract(SEALED_ARGV0)
         toolchain = {
-            **pb.executable_toolchain_contract(SEALED_ARGV0),
+            **argv0,
             **pb.live_platform_toolchain_contract(evidence=evidence),
         }
         if host_class is not None:
@@ -5291,10 +5389,13 @@ def freeze_action_template(
     progress: Mapping[str, object] | None,
     profile: object | None,
     container_image_refs: Sequence[str] = (),
+    d38_namespace: str | None = None,
     wrapper_dir: Path | None = None,
+    dependency_queries: Mapping[str, str] | None = None,
     gang: Mapping[str, object] | None = None,
     requires_files: list[dict] | None = None,
     resident_set: str | None = None,
+    target_evidence: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """Read the tree and the environment once, and freeze what they say.
 
@@ -5530,12 +5631,28 @@ def freeze_action_template(
                 f"pbrun: --produced-output-template declaration: {exc}") from None
         inputs.append(template_input)
     execution_scope, toolchain = host_class_scope(
-        host_class, measurement=measurement, transport=transport)
+        host_class, measurement=measurement, transport=transport,
+        target_evidence=target_evidence)
     if recorder is not None:
         # Actual executable/version facts, verified by the normal worker
         # preflight and bound into its real receipt; never guessed hashes.
-        toolchain = {**toolchain, **pb.executable_toolchain_contract(command[0]),
-                     **pb._probe_python_toolchain(Path(command[0]))}
+        if target_evidence is not None:
+            # The class is the worker's: its interpreter is not this box's, so
+            # the packet's own declaration is the only source (#1598).
+            declared = getattr(target_evidence, "recorder", None)
+            # Both refusals are correctness checks, not D32 seals (CEO ruling on
+            # dec-1007-143227-359f): facts about another file are not comparable
+            # to this command's executable, and absent facts are missing input.
+            # They also protect the content-addressed action key.
+            if declared is None or declared["path"] != command[0]:
+                raise SystemExit(
+                    "pbrun: a scratch recorder under --target-evidence needs the "
+                    f"worker's identity of {command[0]!r}; collect the packet with "
+                    f"pbevidence.py --recorder-python {command[0]}")
+            toolchain = {**toolchain, **{k: v for k, v in declared.items() if k != "path"}}
+        else:
+            toolchain = {**toolchain, **pb.executable_toolchain_contract(command[0]),
+                         **pb._probe_python_toolchain(Path(command[0]))}
     if pool_measurement_class and demand.get("gpu", 0) and (
         "cuda_compute_capability" not in toolchain or "nvidia_driver" not in toolchain
     ):
@@ -5549,6 +5666,10 @@ def freeze_action_template(
         "checkout_snapshot": checkout_snapshot,
         "retry_policy": retry_policy,
     }
+    if dependency_queries:
+        params["dependency_queries"] = dict(dependency_queries)
+        if local_dependencies.TAG in placement["required_tags"]:
+            params["local_dependencies"] = dict(dependency_queries)
     if resident_set is not None:
         from prismabuild import resident_sets
         params["resident_set"] = resident_sets._set_id(resident_set)
@@ -5608,6 +5729,12 @@ def freeze_action_template(
         # projection of this one, never the other way around (#714).  Absent,
         # the key is byte-identical to what it was before this flag existed.
         params["container_images"] = list(container_image_refs)
+    if d38_namespace is not None:
+        # Sealed before the key is computed (D38): the namespace the preflight
+        # proved is part of the job's identity, so a changed namespace is a
+        # changed job and the old receipt no longer binds it.  Absent, the key
+        # is byte-identical to what it was before this flag existed.
+        params[d38_gate.NAMESPACE_PARAM] = d38_namespace
     template = {
         "cas": cas,
         "marker_root": marker_root,
@@ -5964,6 +6091,54 @@ def reader_declaration(args) -> dict[str, int]:
     return reader
 
 
+def prelaunch_capacity_refusal(
+    tier: Mapping[str, object], tier_id: str, bound: Mapping[str, int],
+    prelaunch: object, manifest_sha256: str,
+) -> str | None:
+    """Why a declared prefix cannot fit this stage tier, or ``None`` (#1594).
+
+    Compares the peak with the tier's minted capacity.  Headroom is not
+    checked: a fit prefix with no free room waits.  Unknown capacity never
+    refuses.
+    """
+
+    minted = storage_tiers.minted_tokens(tier).get(
+        storage_tiers.capacity_kind_of(tier_id))
+    if minted is None or bound["peak_gib"] <= minted:
+        return None
+    return (
+        f"pbrun: prelaunch prefix {prelaunch} of "
+        f"{manifest_sha256[:12]} needs peak "
+        f"{bound['peak_gib']} GiB (retained "
+        f"{bound['retained_gib']} GiB + suffix "
+        f"{bound['suffix_gib']} GiB) on stage tier {tier_id}, "
+        f"above the tier's minted capacity of {minted} GiB.  "
+        f"Nothing was sealed or published.")
+
+
+def split_prelaunch_cuts(
+    ranges: Sequence[Mapping[str, object]],
+    cuts: Sequence[list[tuple[int, int]]],
+    prelaunch_names: frozenset[str] | set[str],
+) -> tuple[list[list[tuple[int, int]]], list[list[tuple[int, int]]]]:
+    """The declared prefix's cuts and the streaming suffix's, chosen by name.
+
+    ``cuts`` holds one entry per range, and ``ranges`` omits an empty phase,
+    so the manifest's declared count and the cut list can disagree: slicing
+    by count would take a suffix phase's cuts into the prefix.  The names
+    are what the manifest declared, so the split follows them (#1594).
+    """
+
+    if len(ranges) != len(cuts):
+        raise SystemExit("pbrun: prelaunch cuts and ranges disagree; "
+                         "nothing was sealed or published.")
+    prefix = [chunks for span, chunks in zip(ranges, cuts)
+              if str(span["name"]) in prelaunch_names]
+    suffix = [chunks for span, chunks in zip(ranges, cuts)
+              if str(span["name"]) not in prelaunch_names]
+    return (prefix, suffix)
+
+
 def residency_leg_cuts(
     record: Mapping[str, object],
     *,
@@ -6065,6 +6240,18 @@ def residency_stage_rows(
             "pbrun: --residency stage needs a manifest that declares its read "
             "order in phases; this one declares none, so there is no boundary "
             "to stage up to that is not invented here")
+    # Read the declared prelaunch-resident prefix (#1594).  Mark its phases
+    # on the sealed plan.  Refuse its peak when it exceeds the tier.  A v1
+    # manifest reaches this reader unchecked by ``core``.  Refuse a
+    # non-boolean or a non-prefix declaration here.
+    try:
+        prelaunch = storage_tiers.manifest_prelaunch_phases(manifest)
+    except ValueError as exc:
+        raise SystemExit(
+            f"pbrun: data manifest {str(entry['sha256'])[:12]} declares an "
+            f"unusable prelaunch prefix: {exc}; nothing was sealed or "
+            f"published.") from None
+    prelaunch_names = frozenset(prelaunch)
     tier_id = str(tier["tier_id"])
     # A consumer that is already staged keeps the window it was frozen with.
     # Receipts price a *new* window; they must never repartition a frozen one.
@@ -6200,6 +6387,25 @@ def residency_stage_rows(
     ram_cuts = (None if ram_tier is None else
                 residency_leg_cuts(ram_tier, leg="ram", ranges=ranges,
                                    read_entries=read_entries))
+    if prelaunch:
+        # Fit the declared prefix peak to the minted tier capacity (#1594).
+        # The sizes are the same chunk demands the sealed legs will carry,
+        # cut at the same boundaries.  This refuses what the plan demands.
+        # Headroom is not checked: a fit prefix with no free room waits.
+        # Unknown capacity never refuses.
+        prefix_cuts, suffix_cuts = split_prelaunch_cuts(
+            ranges, stage_cuts, prelaunch_names)
+
+        def _cut_gib(cuts: list[list[tuple[int, int]]]) -> list[int]:
+            return [sum(storage_tiers.stage_tokens_for_bytes(cend - cstart)
+                        for cstart, cend in chunks) for chunks in cuts]
+
+        bound = residency_plan.prelaunch_peak_gib(
+            _cut_gib(prefix_cuts), _cut_gib(suffix_cuts))
+        refusal = prelaunch_capacity_refusal(
+            tier, tier_id, bound, prelaunch, str(entry["sha256"]))
+        if refusal is not None:
+            raise SystemExit(refusal)
 
     # One read of the live receipts for the whole window: every mover in it has
     # the same structure and reads the same pool, so they price alike, and a
@@ -6721,6 +6927,12 @@ def residency_stage_rows(
             phase_record["ram_egress_row"] = ram_egress_row
         if ram_chunks is not None:
             phase_record["ram_chunks"] = ram_chunks
+        # Carry the declared prefix on the frozen plan (#1594).  Discovery,
+        # admission and reuse derive leads from ``leads_for(plan)`` with no
+        # manifest in hand.  Only declared phases carry the key.  Undeclared
+        # plans stay byte-identical.
+        if str(span["name"]) in prelaunch_names:
+            phase_record["resident_before_launch"] = True
         phases.append(phase_record)
     plan = residency_plan.build_plan(
         consumer_action_key=consumer_action_key, tier_id=tier_id,
@@ -6870,6 +7082,20 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
              "attempt, and a missing or drifted digest is a named denial, "
              "never a run (#1495)")
     ap.add_argument(
+        "--d38-receipt", default=None, metavar="KEY",
+        help="the full 64-character action key of the CPU preflight that "
+             "proves this GPU job (D38). Its CAS receipt must bind this job's "
+             "identity, images and namespace")
+    ap.add_argument(
+        "--d38-exception", default=None, metavar="DECISION_ID",
+        help="an explicit CEO decision that grants D38 for exactly this job; "
+             "never together with --d38-receipt")
+    ap.add_argument(
+        "--d38-namespace", default=None, metavar="PATH",
+        help="a JSON namespace descriptor (execution mode, cwd, interpreter, "
+             "mounts, prerequisite identities). Its digest is sealed into the "
+             "job, so a changed namespace is a changed job")
+    ap.add_argument(
         "--container-image", action="append", default=[], metavar="REF",
         help="require the claiming box's local Docker to positively hold this "
              "image before the action is claimed (repeatable). Accepts "
@@ -6899,6 +7125,13 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
                          "driver and device models; external dependencies must be "
                          "identical across the class. SLURM seals host_class_keyed "
                          "and attests its constraint through the controller")
+    ap.add_argument("--target-evidence", default=None, metavar="PATH",
+                    help="seal the class facts of a pool --measurement "
+                         "--host-class submission from this packet instead of "
+                         "probing this box (#1598). Run tools/fleet/pbevidence.py "
+                         "as an action on a worker of the class to make one. "
+                         "Each worker still checks the facts against its own "
+                         "live facts before it runs")
     ap.add_argument("--anywhere", action="store_true",
                     help="assert that command/tool/data dependencies outside "
                          "the snapshot are identical on every eligible worker")
@@ -7398,26 +7631,62 @@ def prepare_submission(args: argparse.Namespace) -> dict[str, object]:
             "the boxes offering "
             f"{', '.join(sorted(set(args.tag)))}.  Drop whichever is not true."
         )
+    target_evidence = None
+    target_evidence_path = getattr(args, "target_evidence", None)
+    if target_evidence_path is not None:
+        missing = [name for name, present in (
+            ("--measurement", args.measurement),
+            ("--host-class", args.host_class is not None),
+            ("the pool transport", args.transport == "pool")) if not present]
+        if missing:
+            raise SystemExit(
+                "pbrun: --target-evidence needs " + ", ".join(missing) + ": it "
+                "stands in for the local probe of a class-scoped pool "
+                "measurement (#1598)")
+        target_evidence = load_target_evidence(
+            target_evidence_path, host_class=args.host_class)
+        print(
+            f"pbrun: sealing the facts of class {args.host_class} from "
+            f"--target-evidence {target_evidence_path}, not from this box; "
+            "each worker checks them against its own live facts before it runs",
+            file=sys.stderr, flush=True)
     require_host_class_scope(
         measurement=args.measurement, host_class=args.host_class,
         transport=args.transport, anywhere=args.anywhere,
     )
     pool_measurement = args.measurement and args.transport == "pool"
     pool_measurement_class = pool_measurement and args.host_class is not None
-    tags = pool.normalize_placement_tags(
-        placement_tags(
-            cwd,
-            explicit=[*args.tag, *([args.host_class] if pool_measurement_class else [])],
-            here=args.here or (pool_measurement and not pool_measurement_class),
-            hostname=socket.gethostname(),
-            portable_checkout=portable_checkout,
-            command=command,
-            repository_root=repository_root,
-            environment=variables,
-            caller_environment=caller_variables,
-            anywhere=args.anywhere,
-        )
+    # One bounded offer snapshot serves default-class proof and the later
+    # admission advice. Explicit placement and measurements never read it here.
+    q = None
+    offer_snapshot = None
+
+    def offer_queue():
+        nonlocal q, offer_snapshot
+        if q is None:
+            q = pool.PoolQueue(SH / "pb-queue")
+        if offer_snapshot is None:
+            offer_snapshot = bounded_offer_snapshot(q)
+        return offer_snapshot
+
+    # Check original inputs before the collector binds external relative paths.
+    if portable_checkout:
+        require_relocatable_checkout(command[1:], variables, cwd, repository_root=repository_root)
+    # Resolve against the same shim-prefixed PATH the captured action receives.
+    invocation_environment = {
+        **variables, "PATH": f"{wrapper_dir}:{variables.get('PATH') or '/usr/local/bin:/usr/bin:/bin'}"}
+    tags, dependency_queries, command, bound_caller = placement_contract(
+        cwd,
+        explicit=[*args.tag, *([args.host_class] if pool_measurement_class else [])],
+        here=args.here or (pool_measurement and not pool_measurement_class),
+        hostname=socket.gethostname(), portable_checkout=portable_checkout,
+        command=command, repository_root=repository_root,
+        environment=invocation_environment, caller_environment=caller_variables,
+        anywhere=args.anywhere, needs_gpu=bool(demand.get("gpu")),
+        offer_queue=offer_queue if args.transport == "pool" else None,
     )
+    variables = {**variables, **bound_caller}
+    tags = pool.normalize_placement_tags(tags)
     if args.host_class is not None:
         # The class rides the placement axis, the same way --tag does, so the
         # action key moves with it and the SLURM lane seals it as
@@ -7459,18 +7728,7 @@ def prepare_submission(args: argparse.Namespace) -> dict[str, object]:
             [*tags, dependency_digest.DEPENDENCY_DIGEST_TAG])
     require_reachable_runtime(
         tags, hostname=socket.gethostname(), runtime_root=RUNTIME_ROOT)
-    # Its offer scan remains lazy so cache-hit, withdrawal and SLURM paths
-    # keep avoiding both worker-offer reads and PoolQueue construction.
-    q = None
-    offer_snapshot = None
-
-    def offer_queue():
-        nonlocal q, offer_snapshot
-        if q is None:
-            q = pool.PoolQueue(SH / "pb-queue")
-        if offer_snapshot is None:
-            offer_snapshot = bounded_offer_snapshot(q)
-        return offer_snapshot
+    # Other paths retain lazy discovery until submission advice needs it.
 
     placement = {"required_tags": tags}
     if args.exclusive and args.transport == "slurm":
@@ -7535,7 +7793,7 @@ def prepare_submission(args: argparse.Namespace) -> dict[str, object]:
 
     if portable_checkout:
         require_relocatable_checkout(
-            command, variables, cwd, repository_root=repository_root
+            command[:1], {}, cwd, repository_root=repository_root
         )
 
     # A CPU slot must not be able to run GPU work.  The pool's whole claim is
@@ -7591,6 +7849,7 @@ def prepare_submission(args: argparse.Namespace) -> dict[str, object]:
         measurement=args.measurement,
         transport=args.transport,
         pool_measurement_class=bool(pool_measurement_class),
+        target_evidence=target_evidence,
         # A deferred submission's manifest is built at release (#913); its
         # static part is ingested beside the template, never sealed into it.
         data_manifest_path=(None if getattr(args, "after", None)
@@ -7604,7 +7863,10 @@ def prepare_submission(args: argparse.Namespace) -> dict[str, object]:
         progress=progress_policy,
         profile=args.profile,
         container_image_refs=images,
+        d38_namespace=(d38_gate.load_namespace(args.d38_namespace)[1]
+                       if getattr(args, "d38_namespace", None) else None),
         wrapper_dir=wrapper_dir,
+        dependency_queries=dependency_queries,
         gang=gang,
         resident_set=getattr(args, "resident_set", None),
         requires_files=requirements,
@@ -7656,6 +7918,8 @@ def announce_placement(
         # answers for the row it is about to write.
         intent["interpreter"] = str(params["interpreter"])
         intent["tags"] = [*tags, pb.INTERPRETER_TAG]
+    if params.get("local_dependencies"):
+        intent["local_dependencies"] = dict(params["local_dependencies"])
     if params.get("requires_files"):
         # Same authority for the digest requirements (#1495): the probe
         # carries the sealed paths and the capability tag publish adds, so
@@ -7790,7 +8054,13 @@ def announce_placement(
     capability_verdict = queue.placeable(
         probe_intent, max_age_s=RECORDED_OFFER_MAX_AGE_S)
     if capability_verdict is False:
-        without_images = {name: value for name, value in intent.items()
+        # The counterfactuals below start from ``probe_intent``, the intent the
+        # verdict above was asked of (#1595).  An unknown interpreter is
+        # already out of it.  Starting from ``intent`` kept the interpreter
+        # requirement, so every question failed on the interpreter and the
+        # missing image or capability was never named.  The interpreter keeps
+        # its own verdict, asked of ``intent`` below.
+        without_images = {name: value for name, value in probe_intent.items()
                           if name != "container_images"}
         image_blocked = bool(intent.get("container_images")) and queue.placeable(
             without_images, max_age_s=RECORDED_OFFER_MAX_AGE_S) is True
@@ -7826,7 +8096,7 @@ def announce_placement(
                     "  interpreter:    " + str(intent["interpreter"])
                     + " (every recorded eligible worker names it absent)\n")
         capacity_line = ("" if image_blocked or capability_blocked else
-                         placement_capacity_notice(queue, intent))
+                         placement_capacity_notice(queue, probe_intent))
         remedy = (
             "Load or pull the image on a box that offers these tags and the "
             f"{pb.CONTAINER_IMAGE_TAG} capability, then wait for its worker's "
@@ -8012,6 +8282,9 @@ def publication_row(
         row["container_images"] = list(params["container_images"])
     if params.get("interpreter"):
         row["interpreter"] = str(params["interpreter"])
+    for field in ("local_dependencies", "dependency_queries"):
+        if params.get(field):
+            row[field] = dict(params[field])
     if params.get("gang"):
         row["gang"] = dict(params["gang"])
     if params.get("requires_files") and "requires_files" in (
@@ -8049,7 +8322,23 @@ _DEFERRED_PUBLICATION_ARGS = (
     # The reader's declaration (#909), which a deferred consumer's plan must
     # carry exactly as a direct submission's does.
     "residency_prefetch_depth_gib", "residency_read_mb_s",
+    # D38 evidence the release checks again against the sealed key.
+    "d38_receipt", "d38_exception",
 )
+
+
+def check_supersession_or_exit(q, old: str, *, new: str, new_kind: str) -> None:
+    """Refuse now what :func:`file_supersession_or_exit` would refuse, writing nothing (#1585).
+
+    For a submission that still has fallible work to do before its row can
+    publish: the record is immutable, so one filed for a replacement that then
+    refuses strands the old key at a successor that never existed.
+    """
+
+    try:
+        action_edges.check_supersession(q, old, new=new, new_kind=new_kind)
+    except action_edges.ActionEdgeError as exc:
+        raise SystemExit(f"pbrun: --supersedes: {exc}") from None
 
 
 def file_supersession_or_exit(q, old: str, *, new: str, new_kind: str) -> None:
@@ -8143,6 +8432,7 @@ def submit_deferred(prepared: Mapping[str, object],
     """
 
     template = prepared["template"]
+    d38_gate.refuse_deferred(args, template["params"])
     cas = template["cas"]
     q = pool.PoolQueue(SH / "pb-queue")
     edges = resolve_after_edges(q, Path(cas.root), args.after)
@@ -8433,8 +8723,12 @@ def release_deferred(q, pending_id: str, record: Mapping[str, object], *,
                 produced_mod.load_origin_batches(q.root, all_refs)
             except produced_mod.ProducedOutputError as exc:
                 raise action_edges.ActionEdgeError(str(exc)) from None
-        cas.publish_action_request(action)
         options = argparse.Namespace(**dict(record["publication"]))
+        # D38 again, now that the key exists: a record an older client filed
+        # carries no evidence for it, and nothing is published without it.
+        d38_gate.require(options, action, cas=cas, queue_root=q.root,
+                         transport="pool")
+        cas.publish_action_request(action)
         sealed = {**template,
                   "params": {**template["params"], "data_manifest": summary},
                   "inputs": [*template["inputs"], manifest_input]}
@@ -8467,7 +8761,8 @@ def release_deferred(q, pending_id: str, record: Mapping[str, object], *,
 def publish_consumer_row(q, action: Mapping[str, object],
                          template: Mapping[str, object], *, key: str,
                          args: argparse.Namespace, cas,
-                         attach: bool = False) -> tuple[object, float | None]:
+                         attach: bool = False,
+                         before_publish=None) -> tuple[object, float | None]:
     """Publish one sealed action's row, with its window when it stages.
 
     Returns ``(queued_path, generation)``; ``queued_path`` is ``None`` when
@@ -8481,6 +8776,13 @@ def publish_consumer_row(q, action: Mapping[str, object],
     Everything the window will ever publish is sealed and written down before
     the consumer's own row goes in, so a crash between the two leaves a
     frozen plan and no queue rows rather than a half-published window.
+
+    ``before_publish`` is called, with nothing fallible left but the publish
+    itself, immediately before the row goes in.  A submission that supersedes
+    an ended key files its immutable record there (#1585): every refusal the
+    window's preparation can raise -- the stage tier, the phase table, the
+    seal, the row's own checks -- comes first, so none can strand a record at
+    a replacement that never published.
     """
 
     staged = None
@@ -8529,6 +8831,8 @@ def publish_consumer_row(q, action: Mapping[str, object],
             if template.get("produced_output_template") is not None:
                 publication["produced_output_template"] = template[
                     "produced_output_template"]
+            if before_publish is not None:
+                before_publish()
             if attach:
                 # A release resuming after a crash (#913) finds its own row:
                 # the plan above was first-writer and reused, and the row is
@@ -8563,6 +8867,8 @@ def publish_consumer_row(q, action: Mapping[str, object],
         if template.get("produced_output_template") is not None:
             publication["produced_output_template"] = template[
                 "produced_output_template"]
+        if before_publish is not None:
+            before_publish()
         queued_path, generation = publish_or_attach(q, publication, key=key)
     return queued_path, generation
 
@@ -8751,6 +9057,31 @@ def submit_and_publish(args, *, publication_canary_intent=None,
             ), flush=True)
             return 0
 
+    # D38: new GPU work needs preflight evidence before anything runnable is
+    # published, on every transport.  There is no liveness or cache exemption
+    # here: a read taken now is stale by the time the queue decides whether the
+    # key is new.  Without evidence this process publishes and submits nothing;
+    # it may only wait on a pool run it can see, or refuse.  (The detached
+    # branches above already answered a cache hit and a live attachment without
+    # publishing.)
+    verdict = d38_gate.judge_publication(
+        args, action, cas=cas, queue_root=SH / "pb-queue",
+        transport=args.transport)
+    if verdict is not None:
+        if not args.detach:
+            try:
+                live = bounded_attachment(pool.PoolQueue(SH / "pb-queue"), key)
+            except (OutcomeReadUnavailable, OSError):
+                live = None
+            if live is not None and live["transport"] == "pool":
+                print(f"pbrun: {key[:12]} is already running on the pool; "
+                      f"waiting on that run, and publishing nothing, because "
+                      f"D38 evidence is missing", file=sys.stderr, flush=True)
+                return functools.partial(
+                    await_outcome, pool.PoolQueue(SH / "pb-queue"), key,
+                    wait_s=args.wait_s, generation=live["generation"])
+        raise d38_gate.refusal_exit(verdict, action)
+
     if args.transport == "slurm":
         # Everything below this point reads the pull queue -- worker offers,
         # the placement census, the ready directory -- and none of it describes
@@ -8821,13 +9152,25 @@ def submit_and_publish(args, *, publication_canary_intent=None,
         if origin_refs:
             declare_origin_consumers(q, origin_refs, consumer_action_key=key)
         # Filed before the row, so an edge that names the replaced key
-        # follows this one from the moment it can run (#913).
+        # follows this one from the moment it can run (#913), but only once
+        # everything that can still refuse has had its say (#1585): the
+        # record is immutable, and one filed for a replacement that then
+        # refused named a key that never published, which the corrected
+        # submission (another key) could not replace and a reader following
+        # it could not find.  What can be refused now is refused now, with
+        # nothing written; the record itself goes in right before the row.
+        supersede = None
         if args.supersedes is not None:
-            file_supersession_or_exit(q, args.supersedes, new=key,
-                                      new_kind=action_edges.PRODUCER_KEY)
+            check_supersession_or_exit(q, args.supersedes, new=key,
+                                       new_kind=action_edges.PRODUCER_KEY)
+
+            def supersede() -> None:
+                file_supersession_or_exit(q, args.supersedes, new=key,
+                                          new_kind=action_edges.PRODUCER_KEY)
 
         queued_path, generation = publish_consumer_row(
-            q, action, template, key=key, args=args, cas=cas)
+            q, action, template, key=key, args=args, cas=cas,
+            before_publish=supersede)
     # Say that the slot has no device, every time.  The mask is correct and it
     # is also a silent narrowing: a suite that used to run its CUDA tests now
     # skips them, and a skip that nobody announced reads as the same green.

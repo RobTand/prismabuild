@@ -2282,6 +2282,28 @@ def tier_tokens(record: Mapping[str, object]) -> dict[str, int]:
     return tokens
 
 
+def minted_tokens(record: Mapping[str, object]) -> dict[str, int]:
+    """The capacity tokens a tier has MINTED, as its loop announced them (#1594).
+
+    ``tier_tokens`` is the discovery number the tier loop mints FROM: for a
+    stage tier ``capacity_bytes`` is the writable room only.  The loop mints
+    ``writable + landed`` and announces that supply as ``tokens``.  A check
+    of what a tier can hold reads the supply.  Reading the writable room
+    refuses a prefix that fits the tier whenever copies have landed.  A record
+    with no usable announced supply (an older loop, an unreadable value)
+    falls back to the discovery number, so unknown capacity never refuses.
+    """
+
+    minted = dict(tier_tokens(record))
+    announced = record.get("tokens")
+    if isinstance(announced, Mapping):
+        for kind in (STAGE_CAPACITY_KIND, RAM_CAPACITY_KIND, ARC_CAPACITY_KIND):
+            value = announced.get(kind)
+            if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+                minted[kind] = value
+    return minted
+
+
 #: The demand key grammar admission splits on: ``<kind>@<tier_id>``.
 #: ``residency_demand`` is the only supported way to produce one, so that a
 #: number in a claim record always traces back to a manifest.
@@ -2459,6 +2481,52 @@ def manifest_phase_ranges(manifest: Mapping[str, object]) -> list[dict[str, obje
             ranges.append({"name": name, "start_bytes": previous, "end_bytes": cumulative})
         previous = cumulative
     return ranges
+
+
+def manifest_prelaunch_phases(
+        manifest: Mapping[str, object]) -> list[str]:
+    """The declared prelaunch-resident phases of the manifest, in order, or ``[]``.
+
+    A phase declares with a literal ``resident_before_launch: true`` (#1594):
+    on a v1 ``annotations.phases`` entry, on a v2 ``read_plan.phases``
+    entry.  The declaration is part of the content hash.  Only a literal
+    boolean true declares.  Other present values refuse.  A declared set
+    past the prefix refuses.  A manifest with no read order declares
+    nothing.
+    """
+
+    layout = _manifest_read_layout(manifest)
+    if layout is None:
+        return []
+    names = [name for name, _ in layout[0]]
+    if manifest.get("schema") == "prismaquant.prismabuild.data_manifest.v2":
+        plan = manifest.get("read_plan")
+        raw_phases = (plan.get("phases") if isinstance(plan, Mapping)
+                      else None)
+    else:
+        annotations = manifest.get("annotations")
+        raw_phases = (annotations.get("phases")
+                      if isinstance(annotations, Mapping) else None)
+    if not isinstance(raw_phases, list):
+        return []
+    declared: list[str] = []
+    for index, phase in enumerate(raw_phases):
+        if not isinstance(phase, Mapping):
+            return []
+        if "resident_before_launch" not in phase:
+            continue
+        value = phase["resident_before_launch"]
+        if type(value) is not bool:
+            raise ValueError(
+                f"data manifest phase {index} resident_before_launch "
+                f"must be a boolean, got {value!r}")
+        if value:
+            declared.append(str(phase.get("name")))
+    if declared != names[:len(declared)]:
+        raise ValueError(
+            f"data manifest prelaunch phases {declared} are not a "
+            f"contiguous prefix of the read order {names}")
+    return declared
 
 
 def manifest_read_entries(
@@ -2858,6 +2926,7 @@ __all__ = [
     "export_measured_mb_s",
     "mover_fill_price",
     "manifest_phase_ranges",
+    "manifest_prelaunch_phases",
     "manifest_read_entries",
     "capacity_kind_of",
     "promotion_chunk_gib_for_window",

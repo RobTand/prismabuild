@@ -388,3 +388,106 @@ def test_one_present_answer_beats_every_absent_one(tmp_path):
         queue, PQ_PYTHON, tags=[], resources={"cpu": 1}, needs_gpu=False)
 
     assert kind is None
+
+
+@pytest.mark.parametrize("target", ["file", "directory", "executable", "missing", "dangling"])
+def test_local_dependency_requirement_guards_claim_before_attempt(tmp_path, target):
+    from prismabuild import local_dependencies
+    q = _queue_at(tmp_path)
+    dependency = tmp_path / "input.bin"
+    if target == "file":
+        dependency.write_text("input")
+    elif target == "directory":
+        dependency.mkdir()
+    elif target == "executable":
+        dependency.symlink_to(sys.executable)
+    elif target == "dangling":
+        dependency.symlink_to(tmp_path / "missing-target")
+    missing = target in ("missing", "dangling")
+    assert local_dependencies.observe({str(dependency): "path"}) == {
+        str(dependency): "absent" if missing else "executable" if target == "executable" else "path"}
+    key = "d" * 64
+    _publish(q, key, resources={"cpu": 1},
+             local_dependencies={str(dependency): "path"})
+    before = _item_of(q, key)
+    assert local_dependencies.TAG in before["tags"]
+    item = q.claim(tags=[local_dependencies.TAG], capacity={"cpu": 1})
+    if missing:
+        assert item is None
+        assert _item_of(q, key) == before
+        assert any(row.get("reason") == "local_dependency_not_present" for row in _denials(q))
+    else:
+        assert item is not None
+        q.finish(item["action_key"], status="failed", detail={"returncode": 1}, claim_snapshot=item)
+
+
+def test_local_dependency_offer_and_lookup_do_not_infer_presence(tmp_path):
+    from prismabuild import local_dependencies
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
+    import worker_loop
+    q = _queue_at(tmp_path)
+    data = tmp_path / "input.bin"
+    data.write_text("data")
+    absent = str(tmp_path / "absent.bin")
+    requirements = {str(data): "path", absent: "path", sys.executable: "executable"}
+    answers = worker_loop.local_dependency_lookup(
+        [{"dependency_queries": requirements}], python=sys.executable)
+    assert answers[str(data)] == "path" and answers[absent] == "absent"
+    assert answers[sys.executable] == "executable"
+    q.announce(host="present", tags=[local_dependencies.TAG], has_gpu=False,
+               capacity={"cpu": 1}, local_dependency_answers=answers)
+    q.announce(host="unknown", tags=[local_dependencies.TAG], has_gpu=False,
+               capacity={"cpu": 1})
+    probe = {"tags": [local_dependencies.TAG], "resources": {"cpu": 1},
+             "local_dependencies": {str(data): "path"}}
+    assert q.placeable_hosts(probe) == ["present"]
+    probe["local_dependencies"] = {absent: "path"}
+    assert q.placeable(probe) is False
+
+
+def test_local_dependency_capability_without_requirements_refuses(tmp_path):
+    from prismabuild import local_dependencies
+    q = _queue_at(tmp_path)
+    with pytest.raises(pool.PoolContractError, match="requires local_dependencies"):
+        _publish(q, "e" * 64, tags=[local_dependencies.TAG])
+    assert not q.item_path(pool.READY, "e" * 64).exists()
+
+
+@pytest.mark.parametrize("kind,suffix", [("path", "/"), ("path", "/."),
+                                        ("executable", "/"), ("executable", "/.")])
+def test_raw_file_suffix_is_absent_at_offer_and_claim(tmp_path, kind, suffix):
+    from prismabuild import local_dependencies
+    file = tmp_path / "input.bin"
+    file.write_bytes(Path("/bin/true").read_bytes() if kind == "executable" else b"ordinary input")
+    file.chmod(0o755 if kind == "executable" else 0o644)
+    invalid = str(file) + suffix
+    assert not os.path.exists(invalid)
+    requirements = {invalid: kind}
+    answers = local_dependencies.observe(requirements)
+    queue = _queue_at(tmp_path)
+    queue.announce(host="raw-worker", tags=[local_dependencies.TAG], has_gpu=False,
+                   capacity={"cpu": 1}, local_dependency_answers=answers)
+    probe = {"tags": [local_dependencies.TAG], "resources": {"cpu": 1},
+             "local_dependencies": requirements}
+    placeable = queue.placeable(probe)
+    key = "f" * 64
+    _publish(queue, key, resources={"cpu": 1}, local_dependencies=requirements)
+    before = _item_of(queue, key)
+    item = queue.claim(tags=[local_dependencies.TAG], capacity={"cpu": 1})
+    assert item is None
+    assert answers == {invalid: "absent"}
+    assert placeable is False
+    assert _item_of(queue, key) == before
+    assert any(entry.get("reason") == "local_dependency_not_present"
+               and entry.get("evidence", {}).get("paths") == [invalid]
+               and entry.get("attempts") == 0 for entry in _denials(queue))
+
+
+def test_raw_directory_suffix_controls_preserve_presence(tmp_path):
+    from prismabuild import local_dependencies
+    directory = tmp_path / "directory"
+    directory.mkdir()
+    requirements = {str(directory) + suffix: "path" for suffix in ("/", "/.")}
+    assert all(os.path.isdir(path) for path in requirements)
+    assert local_dependencies.observe(requirements) == {path: "path" for path in requirements}
+

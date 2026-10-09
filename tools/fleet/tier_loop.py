@@ -54,6 +54,7 @@ from prismabuild import core as pb  # noqa: E402
 from prismabuild import filesystem_capacity, filesystem_floor  # noqa: E402
 from prismabuild import movement_actions  # noqa: E402
 from prismabuild import pool  # noqa: E402
+from prismabuild import prelaunch_group  # noqa: E402
 from prismabuild import produced_output  # noqa: E402
 from prismabuild import progress as pb_progress  # noqa: E402
 from prismabuild import reader_lease  # noqa: E402
@@ -65,6 +66,7 @@ from prismabuild import window_credit  # noqa: E402
 import deferred_release  # noqa: E402
 import prewarm_loop  # noqa: E402
 import manifest_promotion  # noqa: E402
+import prelaunch_tier  # noqa: E402
 import stage_release  # noqa: E402
 #: The same generation gate ``prewarm_loop`` reads, under the same name, for
 #: the same reason: a loop holds the modules it imported for its whole life,
@@ -1169,6 +1171,8 @@ def drop_prior_ram_epochs(
         except (OSError, pool.PoolContractError):
             continue
         for key in held:
+            if key.startswith(prelaunch_group.HOLDER_PREFIX):
+                continue      # a group holder belongs to the prelaunch pass
             if queue.item_path(pool.CLAIMED, key).exists():
                 # A promotion claimed right now holds tokens for a copy that
                 # is running; its receipt will date it, and the next cycle
@@ -1290,6 +1294,8 @@ def release_incomplete_ram_promotions(
         except (OSError, pool.PoolContractError):
             continue
         for key in _budget_order(budget, RAM_INCOMPLETE_UNIT, held, str):
+            if key.startswith(prelaunch_group.HOLDER_PREFIX):
+                continue      # a group holder belongs to the prelaunch pass
             if (queue.item_path(pool.READY, key).exists()
                     or queue.item_path(pool.CLAIMED, key).exists()):
                 # Queued or running: the window or the copy owns this key, and
@@ -3426,6 +3432,7 @@ def _held_ram_copies(queue: pool.PoolQueue, plan: Mapping[str, object],
 def _beyond_horizon_candidates(
     queue: pool.PoolQueue, tiers: Mapping[str, Mapping[str, object]],
     consumers: list, cancelled: frozenset[str],
+    declared_keys: frozenset = frozenset(),
 ) -> dict[str, list[dict[str, object]]]:
     """Per tier, the landed ranges no reader needs before a refill (#903, #906).
 
@@ -3452,6 +3459,8 @@ def _beyond_horizon_candidates(
     still reading it nominates it on its own terms, and then once, at the
     soonest any of them needs it, taking every sharer's ram copies with it.
     One sharer inside its horizon keeps it for all of them.
+    A declared prelaunch leg (#1594) is never a candidate when named in
+    ``declared_keys``; empty keeps today's set.
     """
 
     out: dict[str, list[dict[str, object]]] = {}
@@ -3498,6 +3507,11 @@ def _beyond_horizon_candidates(
             out.setdefault(tier_id, []).append(row)
     readers_of = _shared_readers(queue, consumers)
     for tier_id, rows in out.items():
+        if declared_keys:
+            # A live declared prefix stays to its consumer's end (#1594).
+            rows[:] = [row for row in rows
+                       if not prelaunch_tier.is_prelaunch_leg(
+                           declared_keys, str(row.get("mover_action_key")))]
         if readers_of:
             rows[:] = _agreed_shared_rows(rows, readers_of)
         rows.sort(key=lambda row: (-float(row["seconds_until_needed"]),  # type: ignore[arg-type]
@@ -3667,6 +3681,60 @@ def _claim_tier_demands(item: object,
     return out
 
 
+#: Why :func:`_relief_verdict` asks a sweep for nothing (#1627).  ``relief`` is
+#: not one of them: it is the answer that does ask.  ``admits-already`` is not
+#: a stall either, so neither of the two is a waiter the sweep failed.
+RELIEF = "relief"
+ADMITS_ALREADY = "admits-already"
+GATE_REFUSED = "gate-refused"
+NO_SHORTFALL = "no-shortfall"
+SHORTFALL_EXCEEDS_EVICTABLE = "shortfall-exceeds-evictable"
+
+
+def _relief_verdict(*, held_gib: int, ready_gib: int, output_gib: int,
+                    output_enforced: bool, capacity_gib: int,
+                    cur_min_gib: int, next_min_gib: int | None,
+                    existing_min_next_gib: int, free_gib: int,
+                    evictable_gib: int,
+                    ) -> tuple[int | None, str, dict[str, object]]:
+    """``(relief, reason, facts)``: what :func:`_admission_relief` answers and why.
+
+    ``relief`` is the free a sweep must reach so ``gate_newcomer`` admits, or
+    ``None``.  ``reason`` says which of the five ways the answer came out:
+    ``relief``; ``admits-already``; ``gate-refused`` (the gate's answer is
+    permanent or unknown, so no eviction could admit it); ``no-shortfall``
+    (the gate stalls on a term the arithmetic does not count); or
+    ``shortfall-exceeds-evictable`` (#632: a demand that cannot fit even after
+    everything evictable returns asks for nothing).  ``facts`` are the
+    numbers the decision read, so a record of it needs no second arithmetic.
+    """
+
+    decision = window_credit.gate_newcomer(
+        held_gib=held_gib, ready_gib=ready_gib, output_gib=output_gib,
+        output_enforced=output_enforced, capacity_gib=capacity_gib,
+        cur_min_gib=cur_min_gib, next_min_gib=next_min_gib,
+        existing_min_next_gib=existing_min_next_gib)
+    facts: dict[str, object] = {
+        "capacity_gib": capacity_gib, "held_gib": held_gib,
+        "ready_gib": ready_gib, "output_gib": output_gib,
+        "cur_min_gib": cur_min_gib, "next_min_gib": next_min_gib,
+        "existing_min_next_gib": existing_min_next_gib,
+        "output_enforced": output_enforced,
+        "free_gib": free_gib, "evictable_gib": evictable_gib}
+    if decision.get("admit"):
+        return None, ADMITS_ALREADY, facts
+    if str(decision.get("reason")) != window_credit.REASON_STALL:
+        facts["gate_reason"] = str(decision.get("reason"))
+        return None, GATE_REFUSED, facts
+    shortfall = (held_gib + ready_gib + output_gib + cur_min_gib
+                 + (next_min_gib or 0) + existing_min_next_gib - capacity_gib)
+    facts["shortfall_gib"] = shortfall
+    if 0 < shortfall <= evictable_gib:
+        return free_gib + shortfall, RELIEF, facts
+    return None, (NO_SHORTFALL if shortfall <= 0
+                  else SHORTFALL_EXCEEDS_EVICTABLE), facts
+
+
 def _admission_relief(*, held_gib: int, ready_gib: int, output_gib: int,
                       output_enforced: bool, capacity_gib: int,
                       cur_min_gib: int, next_min_gib: int | None,
@@ -3683,22 +3751,15 @@ def _admission_relief(*, held_gib: int, ready_gib: int, output_gib: int,
     the landed ranges past their readers' refill horizons (#903).
     Otherwise the answer is stated as the free the sweeps must reach; their
     stop-at-needed order keeps the eviction to the shortfall.
+    :func:`_relief_verdict` says which of those it was.
     """
 
-    decision = window_credit.gate_newcomer(
+    return _relief_verdict(
         held_gib=held_gib, ready_gib=ready_gib, output_gib=output_gib,
         output_enforced=output_enforced, capacity_gib=capacity_gib,
         cur_min_gib=cur_min_gib, next_min_gib=next_min_gib,
-        existing_min_next_gib=existing_min_next_gib)
-    if decision.get("admit"):
-        return None
-    if str(decision.get("reason")) != window_credit.REASON_STALL:
-        return None
-    shortfall = (held_gib + ready_gib + output_gib + cur_min_gib
-                 + (next_min_gib or 0) + existing_min_next_gib - capacity_gib)
-    if 0 < shortfall <= evictable_gib:
-        return free_gib + shortfall
-    return None
+        existing_min_next_gib=existing_min_next_gib, free_gib=free_gib,
+        evictable_gib=evictable_gib)[0]
 
 
 #: The fastest consumption each claim has provably attained, in bytes per
@@ -5148,7 +5209,9 @@ def _claim_order_candidates(queue: pool.PoolQueue, *, tier_id: str,
                             tier_record: Mapping[str, object] | None,
                             consumers: list,
                             order: Mapping[str, object],
-                            taken: set[str]) -> list[dict[str, object]]:
+                            taken: set[str],
+                            declared_keys: frozenset = frozenset(),
+) -> list[dict[str, object]]:
     """Landed legs the head of a claim order may have evicted (#1011).
 
     In this order, each consumer's legs farthest first:
@@ -5210,6 +5273,7 @@ def _claim_order_candidates(queue: pool.PoolQueue, *, tier_id: str,
     or running, or whose promotion holds the ram tier (#640), and never a
     leg in ``taken``.  Each row carries its ``basis``, its
     ``seconds_until_needed`` and the head it is evicted for.
+    Never a declared prelaunch leg (#1594) named in ``declared_keys``.
     """
 
     entries = [entry for entry in order.get("entries") or ()  # type: ignore[union-attr]
@@ -5335,6 +5399,8 @@ def _claim_order_candidates(queue: pool.PoolQueue, *, tier_id: str,
         under_rule = ruled(basis, entry)
         for leg in sorted(legs, key=lambda leg: -int(leg["start_bytes"])):
             mover = str(leg["mover_row"]["action_key"])  # type: ignore[index]
+            if prelaunch_tier.is_prelaunch_leg(declared_keys, mover):
+                continue
             if mover in taken and mover not in nominated:
                 continue
             egress = leg.get("egress_row")
@@ -5389,6 +5455,121 @@ def _claim_order_candidates(queue: pool.PoolQueue, *, tier_id: str,
     return rows
 
 
+def _waiter_keys(rows: Iterable[Mapping[str, object]]) -> list[str]:
+    """The consumers a tier's waiting newcomers belong to, sorted and distinct."""
+
+    return sorted({str(row["consumer"]) for row in rows if row.get("consumer")})
+
+
+#: The reasons :func:`window_pressure` reports for a waiter whose own relief
+#: verdict asked a sweep for nothing and was not already admitted (#1627).
+_STALLED_VERDICTS = frozenset(
+    {GATE_REFUSED, NO_SHORTFALL, SHORTFALL_EXCEEDS_EVICTABLE})
+
+
+def _note_skip(skipped: list[dict[str, object]] | None, *, scope: str,
+               tier_id: str, reason: str, consumer: str | None = None,
+               **facts: object) -> None:
+    """Record why a waiter or a tier asked :func:`window_pressure` for nothing.
+
+    ``skipped`` is the caller's list, or ``None`` when nobody is asking, which
+    records nothing.  One row per ``(scope, consumer, tier, reason)``: a
+    declared consumer is walked as a unit and again as a consumer, and that
+    is one waiter.  Two demands of one consumer that stall on different
+    numbers are two rows.  Every row carries ``consumer`` (``None`` for a tier), so a
+    reader indexes it without branching.
+    """
+
+    if skipped is None:
+        return
+    identity = (scope, consumer, tier_id, reason, facts.get("cur_min_gib"))
+    for row in skipped:
+        if (row["scope"], row["consumer"], row["tier_id"], row["reason"],
+                row.get("cur_min_gib")) == identity:
+            return
+    skipped.append({"scope": scope, "consumer": consumer, "tier_id": tier_id,
+                    "reason": reason, **facts})
+
+
+#: How many of a refusal's ``terms`` ride on a skipped-waiter row.  The terms
+#: say what the gap is made of (#930) and are the point of the row, but a
+#: tier of hundreds of holders must not make the row hundreds of lines.
+_DECISION_TERMS_SHOWN = 8
+
+
+def _decision_facts(decision: Mapping[str, object]) -> dict[str, object]:
+    """What :func:`_commitment_decision` refused on, flat, for a skipped row.
+
+    The decision keeps its numbers one level down, in ``commitment``: capacity,
+    held, evictable, queued, committed, growth and (on a refusal) the shortfall
+    and ``terms``, and an unreadable census puts its ``error`` there.  This
+    reads that real schema.  Scalars only, apart from the first
+    ``_DECISION_TERMS_SHOWN`` terms and their total.
+    """
+
+    scalar = (str, int, float, bool)
+    facts: dict[str, object] = {
+        str(key): value for key, value in decision.items()
+        if key != "admit" and isinstance(value, scalar)}
+    inner = decision.get("commitment")
+    if isinstance(inner, Mapping):
+        for key, value in inner.items():
+            if key == "terms":
+                if isinstance(value, Sequence) and not isinstance(value, str):
+                    facts["terms_total"] = len(value)
+                    facts["terms"] = [dict(term) for term in
+                                      value[:_DECISION_TERMS_SHOWN]
+                                      if isinstance(term, Mapping)]
+            elif isinstance(value, scalar):
+                facts[str(key)] = value
+    return facts
+
+
+#: The event a skipped waiter or an empty tier is filed under (#1627).
+PRESSURE_SKIPPED_EVENT = "window-pressure-skipped"
+
+#: What each queue's loop last reported, by ``(queue root, scope, consumer,
+#: tier, reason)``, so a standing reason is one line and a changed one is
+#: another.  The reason is in the key because one tier can be skipped for two
+#: reasons at once; keyed without it the two overwrite each other and each is
+#: reported again every cycle.
+#: A key that is no longer skipped is forgotten, so it is reported again if
+#: it comes back.  Held by this process: a restart reports each once more.
+_PRESSURE_SKIPS: dict[tuple[str, str, str, str, str], tuple[str, str]] = {}
+
+
+def _pressure_skip_events(queue: pool.PoolQueue,
+                          skipped: Sequence[Mapping[str, object]],
+                          ) -> list[dict[str, object]]:
+    """The rows :func:`window_pressure` skipped, once per change of reason (#1627).
+
+    Only the reason (and a commitment refusal's own reason) decides a change:
+    the numbers move every cycle as a sweep runs and would turn a standing
+    wait into a line a cycle.  The numbers ride on the first line and on
+    every change.
+    """
+
+    root = str(queue.root)
+    current: dict[tuple[str, str, str, str, str], tuple[str, str]] = {}
+    events: list[dict[str, object]] = []
+    for row in skipped:
+        key = (root, str(row["scope"]), str(row.get("consumer") or ""),
+               str(row["tier_id"]), str(row["reason"]))
+        decision = row.get("decision")
+        signature = (str(row["reason"]),
+                     str(decision.get("reason", "")) if isinstance(decision, Mapping)
+                     else "")
+        current[key] = signature
+        if _PRESSURE_SKIPS.get(key) != signature:
+            events.append({"event": PRESSURE_SKIPPED_EVENT, **row})
+    for key in [key for key in _PRESSURE_SKIPS
+                if key[0] == root and key not in current]:
+        del _PRESSURE_SKIPS[key]
+    _PRESSURE_SKIPS.update(current)
+    return events
+
+
+
 def window_pressure(
     queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, object]],
     consumers: list | None = None,
@@ -5396,6 +5577,7 @@ def window_pressure(
     unknown: list[dict[str, object]] | None = None,
     commitments: Mapping[str, Mapping[str, object]] | None = None,
     claim_order: dict[str, dict[str, object]] | None = None,
+    skipped: list[dict[str, object]] | None = None,
 ) -> dict[str, int]:
     """Per tier, the GiB a live window needs and the tier does not have free.
 
@@ -5455,6 +5637,14 @@ def window_pressure(
     here, so it costs no second walk of the plans, and it adds nothing to
     the returned pressure: the room the head needs is made by
     :func:`evict_beyond_horizon`'s claim-order pass.
+    ``skipped``, when given, is appended one row for each waiter that produced
+    no pressure and each tier that could give nothing back, with the reason
+    and the numbers the decision read (#1627): a commitment refusal, a
+    cancelled or superseded plan, an unreadable ledger, a gate that refuses
+    for good, a shortfall beyond everything evictable, a tier with nothing
+    evictable.  It changes no answer.  Until it existed, a waiter that
+    waited beside a tier full of ended holders left no record of why the
+    sweep evicted nothing.
     """
 
     need: dict[str, int] = {}
@@ -5474,14 +5664,85 @@ def window_pressure(
     landed_next: dict[str, int] = {}
     # Claim-time tier demands of ready consumers whose leads are pinned
     # (#901), per tier: the next thing such a consumer asks the tier for.
-    claimants: dict[str, list[int]] = {}
+    claimants: dict[str, list[tuple[str, int]]] = {}
     # The commitment's decisions (#907), asked once and only when a
     # newcomer is found.
     admissions: dict[tuple[str, str], dict[str, object]] | None = None
+    # Declared prelaunch units (#1594).  ``advance_needs`` leaves a declared
+    # prefix out of ``waiting`` on purpose, so the walk below never sees it and
+    # a declared consumer produced no pressure: on 2026-10-07 a tier of 178 GiB
+    # held 169 GiB for ended consumers while an 88 GiB prefix waited beside
+    # them.  An unadmitted unit joins the newcomers with the footprint and the
+    # held term its own gate uses, so the probe asks for exactly what the gate
+    # will check.  The protected prefixes of live units are not evictable:
+    # ``declared_keys`` keeps them out of both feasibility terms below, as
+    # :func:`evict_beyond_horizon` does.
+    declared_keys: frozenset = frozenset()
+    try:
+        _declared = prelaunch_tier.declared_units(
+            queue, tiers, [entry[1] for entry in consumers])
+    except (OSError, pool.PoolContractError, ValueError):
+        _declared = []
+    if _declared:
+        declared_keys = prelaunch_tier.declared_leg_keys(_declared)
+    _tier_state: dict[str, tuple[dict[str, dict[str, int]], str, dict, dict]] = {}
+    for unit in _declared:
+        tier_of_unit = str(unit.tier_id)
+        if unit.unsupported is not None:
+            _note_skip(skipped, scope="waiter", consumer=str(unit.key),
+                       tier_id=tier_of_unit, reason="unit-unsupported",
+                       detail=str(unit.unsupported)[:200])
+            continue
+        if all(str(member) in cancelled for member in unit.keys):
+            _note_skip(skipped, scope="waiter", consumer=str(unit.key),
+                       tier_id=tier_of_unit, reason="cancelled")
+            continue
+        try:
+            if tier_of_unit not in _tier_state:
+                _led = queue.tier_ledger(tier_of_unit)
+                _held = {str(holder): dict(_led.holder_tokens(holder))
+                         for holder in _led.held_keys()}
+                _kind = storage_tiers.capacity_kind_of(tier_of_unit)
+                _totals, _detail = prelaunch_tier.obligations(
+                    [other for other in _declared
+                     if str(other.tier_id) == tier_of_unit], _held, _kind)
+                _tier_state[tier_of_unit] = (_held, _kind, _totals, _detail)
+            _held, _kind, _totals, _detail = _tier_state[tier_of_unit]
+            _already, _staged = _mover_state(queue, unit.plan, tier_of_unit)
+        except (OSError, pool.PoolContractError, ValueError) as exc:
+            _note_skip(skipped, scope="waiter", consumer=str(unit.key),
+                       tier_id=tier_of_unit, reason="state-unreadable",
+                       error=repr(exc)[:200])
+            continue
+        if prelaunch_tier.is_admitted(unit, _held, _kind, sorted(_already)):
+            continue
+        # The commitment refuses it (#907) and no eviction can change that.
+        if admissions is None:
+            admissions = _commitment_admissions(_commitment_census(
+                queue, tiers, consumers=consumers, unknown=unknown or ()))
+        refusal = _commitment_refusal(admissions, str(unit.key), tier_of_unit)
+        if refusal is not None:
+            _note_skip(skipped, scope="waiter", consumer=str(unit.key),
+                       tier_id=tier_of_unit, reason="commitment-refused",
+                       decision=_decision_facts(refusal))
+            continue
+        own_due = int((_detail.get(unit.unit) or {}).get("obligation_gib", 0))
+        owned = residency_plan.prelaunch_owned_gib(
+            unit.plan, _held, unit.holder, _kind)
+        newcomers.setdefault(tier_of_unit, []).append({
+            "current_min_gib": window_credit.prelaunch_footprint_gib(
+                unit.peak_gib, owned),
+            "next_min_gib": None,
+            "declared": True,
+            "consumer": str(unit.key),
+            "extra_held_gib": max(
+                int(_totals.get(tier_of_unit, 0)) - own_due, 0)})
     for _key, consumer, plan, tier_id in consumers:
         if residency_plan.superseded(queue, plan) is not None:
             # A superseded window publishes nothing (#708), so it is not
             # waiting on room: evicting for it would make room nobody uses.
+            _note_skip(skipped, scope="waiter", consumer=str(_key),
+                       tier_id=str(tier_id), reason="superseded")
             continue
         already, staged = _mover_state(queue, plan, tier_id)
         if (consumer.get("state") == pool.READY and _key not in cancelled
@@ -5495,7 +5756,7 @@ def window_pressure(
             # will never claim (#708).
             for demand_tier, gib in _claim_tier_demands(
                     consumer.get("item"), tiers):
-                claimants.setdefault(demand_tier, []).append(gib)
+                claimants.setdefault(demand_tier, []).append((str(_key), gib))
         accepted = consumer["accepted_phase"]
         # The refill horizon (#903): a leg past it is not something this
         # window will publish this cycle, however much room there is, so it
@@ -5556,13 +5817,18 @@ def window_pressure(
             if admissions is None:
                 admissions = _commitment_admissions(_commitment_census(
                     queue, tiers, consumers=consumers, unknown=unknown or ()))
-            if _commitment_refusal(admissions, _key, str(tier_id)) is not None:
+            refusal = _commitment_refusal(admissions, _key, str(tier_id))
+            if refusal is not None:
                 # The commitment refuses it (#907), and no eviction can
                 # change that: its window publishes nothing this cycle, so
                 # neither its lead nor its admission shortfall is pressure
                 # (#632).
+                _note_skip(skipped, scope="waiter", consumer=str(_key),
+                           tier_id=str(tier_id), reason="commitment-refused",
+                           decision=_decision_facts(refusal))
                 continue
-            newcomers.setdefault(str(tier_id), []).append(stage_needs)
+            newcomers.setdefault(str(tier_id), []).append(
+                {**stage_needs, "consumer": str(_key)})
         if waiting:
             # A mover already in ``ready/`` or ``claimed/`` that holds no
             # tokens is the plainest form of "the tier needs the tokens": it
@@ -5679,7 +5945,8 @@ def window_pressure(
                 staged=sorted(state["staged"]), mover_role="ram_mover_row",
                 horizon_end_bytes=state["horizon_end_bytes"])    # type: ignore[arg-type]
             if _is_newcomer(consumer, ram_needs, set(state["already"])):
-                newcomers.setdefault(ram_tier_id, []).append(ram_needs)
+                newcomers.setdefault(ram_tier_id, []).append(
+                    {**ram_needs, "consumer": str(_key)})
             elif str(ram_wanted[0]["phase"]) != reading:
                 # The stage leg's rule: an unpublished current is no next.
                 ram_next = int(ram_wanted[0]["stage_gib"])
@@ -5703,6 +5970,10 @@ def window_pressure(
         owed_gib, owed_enforced, _note, owed_error = (
             output_obligation(queue, tier_id))
         if owed_error:
+            _note_skip(skipped, scope="tier", tier_id=tier_id,
+                       reason="output-owed-unreadable",
+                       error=str(owed_error)[:200],
+                       waiters=_waiter_keys(newcomers.get(tier_id, ())))
             need.pop(tier_id, None)
             newcomers.pop(tier_id, None)
             continue
@@ -5730,7 +6001,8 @@ def window_pressure(
     speculative: dict[str, int] = {}
     if newcomers or claimants:
         for tier_id, rows in _beyond_horizon_candidates(
-                queue, tiers, consumers, cancelled).items():
+                queue, tiers, consumers, cancelled,
+                declared_keys=declared_keys).items():
             speculative[tier_id] = sum(int(row["stage_gib"]) for row in rows)  # type: ignore[arg-type]
     for tier_id in sorted({t for t, w in newcomers.items() if w}
                           | {t for t, c in claimants.items() if c}):
@@ -5743,25 +6015,61 @@ def window_pressure(
             held_total = int(ledger.held().get(kind, 0))
             free_gib = int(ledger.available().get(kind, 0))
             capacity_gib = int(ledger.capacity().get(kind, 0))
-        except (OSError, pool.PoolContractError, ValueError):
+        except (OSError, pool.PoolContractError, ValueError) as exc:
+            _note_skip(skipped, scope="tier", tier_id=tier_id,
+                       reason="ledger-unreadable", error=repr(exc)[:200],
+                       waiters=_waiter_keys(waiting_newcomers))
             continue
         if capacity_gib <= 0:
+            _note_skip(skipped, scope="tier", tier_id=tier_id,
+                       reason="capacity-unknown",
+                       waiters=_waiter_keys(waiting_newcomers))
             continue
+        holders = live_holders = prelaunch_holders = receiptless_holders = 0
         try:
             wanted_claims, owners = stage_release.live_claims(queue)
             orphan_gib = 0
             for holder in ledger.held_keys():
+                holders += 1
                 if holder in wanted_claims or holder in owners:
+                    live_holders += 1
+                    continue
+                if prelaunch_tier.is_prelaunch_leg(declared_keys, str(holder)):
+                    prelaunch_holders += 1
                     continue
                 record = queue.move_record(holder)
                 if (isinstance(record, Mapping)
                         and record.get("consumer_action_key")):
                     orphan_gib += int(
                         ledger.holder_tokens(holder).get(kind, 0))
-        except (OSError, pool.PoolContractError, ValueError):
+                else:
+                    # No receipt names a consumer, so this probe cannot count
+                    # it as evictable; the sweep keeps it unless a fragment
+                    # names its owner (#892).
+                    receiptless_holders += 1
+        except (OSError, pool.PoolContractError, ValueError) as exc:
+            _note_skip(skipped, scope="tier", tier_id=tier_id,
+                       reason="holders-unreadable", error=repr(exc)[:200],
+                       waiters=_waiter_keys(waiting_newcomers))
             continue
         evictable_gib = orphan_gib + speculative.get(tier_id, 0)
+        held_by = {"orphan_gib": orphan_gib,
+                   "speculative_gib": speculative.get(tier_id, 0),
+                   "holders": holders, "live_holders": live_holders,
+                   "prelaunch_holders": prelaunch_holders,
+                   "receiptless_holders": receiptless_holders}
         if evictable_gib <= 0:
+            # Only a tier somebody needs room from is worth a row: a waiter
+            # that fits in what is free asks for nothing, and says nothing.
+            if (any(int(row.get("current_min_gib") or 0)
+                    + (row["next_min_gib"]
+                       if isinstance(row.get("next_min_gib"), int) else 0)
+                    > free_gib for row in waiting_newcomers)
+                    or any(demand > free_gib for _claim, demand in waiting_claims)):
+                _note_skip(skipped, scope="tier", tier_id=tier_id,
+                           reason="no-evictable", capacity_gib=capacity_gib,
+                           held_gib=held_total, free_gib=free_gib, **held_by,
+                           waiters=_waiter_keys(waiting_newcomers))
             continue
         # A ready consumer's claim (#901): its claim-time demand is a final
         # window of one step, asked of the same gate with the obligations
@@ -5770,8 +6078,8 @@ def window_pressure(
         # capacity are the whole question: no queued demand, no owed output
         # (the demand may itself be that output window) and no protected
         # next.  Its oversize answer is the claim's ``never_fits``.
-        for demand_gib in waiting_claims:
-            relief = _admission_relief(
+        for claim_key, demand_gib in waiting_claims:
+            relief, why, facts = _relief_verdict(
                 held_gib=held_total, ready_gib=0, output_gib=0,
                 output_enforced=False, capacity_gib=capacity_gib,
                 cur_min_gib=demand_gib, next_min_gib=None,
@@ -5779,10 +6087,14 @@ def window_pressure(
                 evictable_gib=evictable_gib)
             if relief is not None:
                 need[tier_id] = max(need.get(tier_id, 0), relief)
+            elif why in _STALLED_VERDICTS:
+                _note_skip(skipped, scope="claim", consumer=claim_key,
+                           tier_id=tier_id, reason=why, **facts, **held_by)
         if not waiting_newcomers:
             continue
         try:
             ready_full = 0
+            ready_new = 0
             for item in queue.ready_items():
                 if not isinstance(item, Mapping):
                     continue
@@ -5793,15 +6105,29 @@ def window_pressure(
                     continue
                 tier_needs = demands.get(tier_id)
                 if isinstance(tier_needs, Mapping):
-                    ready_full += int(tier_needs.get(kind, 0) or 0)
+                    row_gib = int(tier_needs.get(kind, 0) or 0)
+                    ready_full += row_gib
+                    # A declared unit is asked what its gate asks: a row its
+                    # funding record fully covers consumes its fence rather
+                    # than free, so it commits no new capacity (#1594).
+                    try:
+                        covered, _generation = queue.funded_cover(
+                            tier_id, item, kind, row_gib)
+                    except (OSError, pool.PoolContractError, ValueError,
+                            KeyError):
+                        covered = 0
+                    if not (row_gib and covered >= row_gib):
+                        ready_new += row_gib
         except (OSError, pool.PoolContractError, ValueError):
             ready_full = 0
+            ready_new = 0
         output_gib, output_enforced = owed[tier_id]
         existing_next = landed_next.get(tier_id, 0)
         for needs in waiting_newcomers:
             nxt = needs.get("next_min_gib")
-            relief = _admission_relief(
-                held_gib=held_total, ready_gib=ready_full,
+            relief, why, facts = _relief_verdict(
+                held_gib=held_total + int(needs.get("extra_held_gib") or 0),
+                ready_gib=ready_new if needs.get("declared") else ready_full,
                 output_gib=output_gib, output_enforced=output_enforced,
                 capacity_gib=capacity_gib,
                 cur_min_gib=int(needs.get("current_min_gib") or 0),
@@ -5810,6 +6136,11 @@ def window_pressure(
                 evictable_gib=evictable_gib)
             if relief is not None:
                 need[tier_id] = max(need.get(tier_id, 0), relief)
+            elif why in _STALLED_VERDICTS:
+                _note_skip(skipped, scope="waiter",
+                           consumer=(str(needs["consumer"])
+                                     if needs.get("consumer") else None),
+                           tier_id=tier_id, reason=why, **facts, **held_by)
     return need
 
 
@@ -6331,9 +6662,26 @@ def _protect_tier_advances(queue: pool.PoolQueue,
     unknown_consumers: set[tuple[str, str]] = set()
     unknown_tiers: set[str] = set()
     unknown_ready = False
+    # Declared units the gate let through this pass: open to begin their
+    # group reservation (#1594).  Empty when no declared plan is live.
+    prelaunch_open: set[tuple[str, str]] = set()
     wants, census_unknown = _advance_wants(
         queue, tiers, mover_role=mover_role,
         tier_of=tier_of, state_of=state_of, horizon_of=horizon_of)
+    # Declared prelaunch units (#1594), once per call.  An undeclared queue
+    # files no declared phase, so this is empty and every want below keeps
+    # today's shape: only a declared consumer gains ``declared_unit``.
+    units = prelaunch_tier.declared_units(
+        queue, tiers, [want["consumer"] for want in wants])
+    units_by_consumer: dict[tuple[str, str], prelaunch_tier.Unit] = {}
+    for unit in units:
+        for member in unit.keys:
+            units_by_consumer[(str(member), str(unit.tier_id))] = unit
+    for want in wants:
+        unit = units_by_consumer.get(
+            (str(want["key"]), str(want["tier_id"])))
+        if unit is not None:
+            want["declared_unit"] = unit
     for entry in census_unknown:
         consumer_key = str(entry.get("consumer", ""))
         entry_tier = entry.get("tier_id")
@@ -6436,6 +6784,25 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                     ready_rows.append((action, row_gib))
                     ready_by_key[action] = item
         held_total = sum(int(tokens.get(kind, 0)) for tokens in held.values())
+        # Declared units on this tier (#1594).  A declared consumer's
+        # newcomer state comes from the unit, not from the streaming lead:
+        # a plan with no suffix has no lead, so the lead test calls it
+        # admitted and no permit would open its group.  A claimed consumer
+        # passed the claim gate and stays admitted; any other declared one
+        # is a newcomer until it holds tokens, a published chunk or a
+        # committed receipt.  Admitted declared windows oblige room for
+        # their peak, beside the protected nexts below.  With no declared
+        # unit the term is zero.
+        units_on_tier = [unit for unit in units
+                         if unit.tier_id == tier_id]
+        for want in tier_wants:
+            unit = want.get("declared_unit")
+            if unit is not None and want["consumer"].get("state") != pool.CLAIMED:
+                want["newcomer"] = not prelaunch_tier.is_admitted(
+                    unit, held, kind, want["already"])
+        oblig_totals, oblig_detail = prelaunch_tier.obligations(
+            units_on_tier, held, kind)
+        prelaunch_obligation = int(oblig_totals.get(tier_id, 0))
         output_gib, output_enforced, output_note, output_error = (
             output_obligation(queue, tier_id))
         if output_error:
@@ -6519,6 +6886,9 @@ def _protect_tier_advances(queue: pool.PoolQueue,
         admitted_currents: dict[str, int] = {}
         currents_counted = False
         admitted_newcomers: set[str] = set()
+        # Declared publication authority stashed per window (#1594); set
+        # after the suffix fence below, so a fence permit stands instead.
+        prelaunch_permits: dict[tuple[str, str], dict[str, object]] = {}
         # A shared range (#1026) is one advance for every window whose next
         # it is, so it is fenced once: by the first window, in this pass's
         # order, whose grant already holds it, else by the first to fence
@@ -6584,13 +6954,48 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                         "output_note": output_note,
                     }
                     continue
-                decision = window_credit.gate_newcomer(
-                    held_gib=held_total + running_extra + running_fence,
-                    ready_gib=ready_new_money,
-                    output_gib=output_gib, output_enforced=output_enforced,
-                    capacity_gib=capacity_gib,
-                    cur_min_gib=cur, next_min_gib=nxt if isinstance(nxt, int) else None,
-                    existing_min_next_gib=reserve_next or 0)
+                unit = want.get("declared_unit")
+                if unit is not None and unit.tier_id == tier_id:
+                    # A declared newcomer's footprint is its peak less what
+                    # it owns (#1594), not the suffix minimum: the whole
+                    # prefix must fit beside the admitted obligations.  Its
+                    # own obligation leaves the held sum, never counted
+                    # twice.  A peak past capacity refuses for good, as the
+                    # joint gate refuses oversize.
+                    owned = residency_plan.prelaunch_owned_gib(
+                        unit.plan, held, unit.holder, kind)
+                    own_due = int((oblig_detail.get(unit.unit) or {}).get(
+                        "obligation_gib", 0))
+                    footprint = window_credit.prelaunch_footprint_gib(
+                        unit.peak_gib, owned)
+                    if unit.peak_gib > capacity_gib:
+                        decision = {
+                            "admit": False,
+                            "reason": window_credit.REASON_OVERSIZE,
+                            "permanent": True, "output_note": output_note}
+                    else:
+                        decision = window_credit.gate_newcomer(
+                            held_gib=(held_total + running_extra
+                                      + running_fence
+                                      + prelaunch_obligation - own_due),
+                            ready_gib=ready_new_money,
+                            output_gib=output_gib,
+                            output_enforced=output_enforced,
+                            capacity_gib=capacity_gib,
+                            cur_min_gib=footprint, next_min_gib=None,
+                            existing_min_next_gib=reserve_next or 0)
+                    cur, next_gib = footprint, 0
+                else:
+                    decision = window_credit.gate_newcomer(
+                        held_gib=(held_total + running_extra + running_fence
+                                  + prelaunch_obligation),
+                        ready_gib=ready_new_money,
+                        output_gib=output_gib,
+                        output_enforced=output_enforced,
+                        capacity_gib=capacity_gib,
+                        cur_min_gib=cur,
+                        next_min_gib=nxt if isinstance(nxt, int) else None,
+                        existing_min_next_gib=reserve_next or 0)
                 # The commitment (#907): the newcomer's read footprint beside
                 # every admitted window's.  Asked unless the joint-fit gate
                 # refused for good, and it names the refusal when it refuses
@@ -6642,6 +7047,21 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                 running_extra += cur + next_gib
                 added_extra = cur + next_gib
                 admitted_newcomers.add(key)
+            # Declared publication authority (#1594): an admitted unit may
+            # publish its declared legs.  The suffix fence below still runs;
+            # a permit it sets stands instead of this stashed one.
+            # A newcomer the gate just let through is open too (#1594): its
+            # group is how it becomes admitted, so waiting for a holder first
+            # would never begin one.
+            if (mover_role == "mover_row"
+                    and want.get("declared_unit") is not None
+                    and (key in admitted_newcomers
+                         or prelaunch_tier.is_admitted(
+                             want["declared_unit"], held, kind,
+                             want["already"]))):
+                prelaunch_permits[(key, tier_id)] = {
+                    "advance": "prelaunch", "tier_id": tier_id,
+                    "leg": mover_role}
             # One fence per window: the advance after the frontier.  The
             # frontier pays from free under the gate's count; exactly the
             # advance is fenced -- bound when its row is queued, taken blind
@@ -7212,6 +7632,14 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                 "phase": phase, "tier_id": tier_id, "kind": kind,
                 "leg": mover_role,
             }
+        # Stashed declared permits (#1594) stand only where the suffix
+        # fence set none and the window was neither gated nor unknown:
+        # never an overwrite, never beside a refusal.
+        for permit_key, permit in prelaunch_permits.items():
+            if (permit_key not in gated
+                    and permit_key not in unknown_consumers):
+                permitted.setdefault(permit_key, permit)
+                prelaunch_open.add(permit_key)
         # Dangling-grant cleanup runs only on a complete census: a grant
         # whose consumer went unreadable this cycle is preserved, never
         # freed -- releasing on a partial view could return room a live
@@ -7237,6 +7665,12 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                                "consumer": None, "tier_id": tier_id,
                                "leg": mover_role, "reason": "dangling-grant",
                                "released_gib": released})
+        # Group holders no live unit owns (#1594) go under the same guard:
+        # the advance census above never names them, since held_grants
+        # matches advance- holders only.
+        for event in prelaunch_tier.dangling(
+                queue, tier_id, ledger, units_on_tier, complete_census=True):
+            events.append(event)
         # Per-cycle reconciliation (#1245 review B1/r2): a two-way sync.
         # Every live tier holder's ram-host hold is made equal to its
         # occupancy tokens -- which covers the claim path's bare tier
@@ -7254,10 +7688,32 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                            "reason": str(healed.get("reason")),
                            "holder": healed.get("holder"),
                            "released_gib": healed.get("released_gib")})
+    # Group holders on a stage tier no live consumer names (#1594).  The
+    # loop above visits only tiers with a live want, so a sole declared
+    # consumer withdrawn after its reservation and before its first
+    # publication would keep the tier's capacity until another consumer
+    # arrived there.  The same complete-census guard applies: with any
+    # consumer or ready scan unread, release nothing.
+    if mover_role == "mover_row" and not census_unknown and not unknown_ready:
+        for empty_tier in sorted(tiers):
+            if empty_tier in by_tier or empty_tier in unknown_tiers:
+                continue
+            if str((tiers[empty_tier] or {}).get("tier")) != "stage":
+                continue
+            try:
+                empty_ledger = queue.tier_ledger(empty_tier)
+            except (OSError, ValueError, pool.PoolContractError) as exc:
+                events.append({"event": "prelaunch-dangling-retained",
+                               "unit": None, "consumer": None,
+                               "holder": None, "tier_id": empty_tier,
+                               "reason": f"tier ledger unreadable: {exc!r}"})
+                continue
+            events.extend(prelaunch_tier.dangling(
+                queue, empty_tier, empty_ledger, [], complete_census=True))
     # The census this pass admitted on, and what it would be taken over, so
     # the stage window can report on the same one (#930).
     return {"gated": gated, "protected": protected, "grants": grants,
-            "permitted": permitted,
+            "permitted": permitted, "prelaunch_open": prelaunch_open,
             "unknown_ready": unknown_ready, "unknown_tiers": unknown_tiers,
             "unknown_consumers": unknown_consumers, "events": events,
             "census": census,
@@ -8306,6 +8762,7 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
         state_of=_mover_state, horizon_of=horizon_of,
         claim_order=claim_order)
     gated = protection["gated"]
+    prelaunch_open = protection.get("prelaunch_open") or set()
     assert isinstance(gated, dict)
     grants = protection["grants"]
     assert isinstance(grants, dict)
@@ -8324,6 +8781,54 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
                           "tier_id": None,
                           "reason": f"live census unreadable: {exc!r}"})
         cycle_consumers = []
+    # One declared-unit census per cycle: with no declared plan this answers
+    # [] off the cached filings and nothing below runs (#1594).
+    prelaunch_units = prelaunch_tier.declared_units(
+        queue, tiers, cycle_consumers)
+    prelaunch_by_member: dict[str, prelaunch_tier.Unit] = {}
+    prelaunch_authority: dict[str, bool] = {}
+    if prelaunch_units:
+        for unit in prelaunch_units:
+            prelaunch_by_member[unit.key] = unit
+            for member in unit.keys:
+                prelaunch_by_member[member] = unit
+        wanted: dict[str, list[prelaunch_tier.Unit]] = {}
+        for unit in prelaunch_units:
+            if unit.unsupported is not None:
+                published.append({"event": "prelaunch-turn-unsupported",
+                                  "unit": unit.unit, "consumer": unit.key,
+                                  "tier_id": unit.tier_id,
+                                  "reason": unit.unsupported})
+                continue
+            wanted.setdefault(unit.tier_id, []).append(unit)
+        for reserve_tier, tier_units in wanted.items():
+            try:
+                reserve_ledger = queue.tier_ledger(reserve_tier)
+                reserve_kind = storage_tiers.capacity_kind_of(reserve_tier)
+                reserve_held = {
+                    str(holder): dict(reserve_ledger.holder_tokens(holder))
+                    for holder in reserve_ledger.held_keys()}
+            except (OSError, pool.PoolContractError, ValueError):
+                reserve_held, reserve_kind = {}, ""
+            # A unit with no room waits: intent stands, the ledger never moves.
+            def admitted(unit: prelaunch_tier.Unit,
+                         held: Mapping[str, Mapping[str, int]] = reserve_held,
+                         kind: str = reserve_kind,
+                         tier_id: str = reserve_tier) -> bool:
+                try:
+                    already, _staged = _mover_state(queue, unit.plan, tier_id)
+                    movers: list[str] = sorted(already)
+                except (OSError, pool.PoolContractError, ValueError):
+                    movers = []
+                if prelaunch_tier.is_admitted(unit, held, kind, movers):
+                    return True
+                # A newcomer the gate let through begins its group (#1594).
+                return ((unit.key, tier_id) in prelaunch_open
+                        and (unit.key, tier_id) not in gated)
+            reserve_events, reserve_authority = prelaunch_tier.reserve_pass(
+                queue, reserve_tier, tier_units, admitted=admitted)
+            published.extend(reserve_events)
+            prelaunch_authority.update(reserve_authority)
     for consumer in cycle_consumers:
         key = str(consumer["action_key"])
         refusals: list[Exception] = []
@@ -8356,6 +8861,13 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
             # the thing the tier id exists to prevent.
             continue
         tier_record = tiers[tier_id]
+        # This consumer's declared unit, if the reserve pass saw one on this
+        # tier with room held.  None leaves every call below as it was.
+        prelaunch_unit = prelaunch_by_member.get(key)
+        if (prelaunch_unit is not None
+                and (prelaunch_unit.tier_id != tier_id
+                     or prelaunch_unit.unsupported is not None)):
+            prelaunch_unit = None
         superseded = residency_plan.superseded(queue, plan)
         if superseded is None:
             # An operator's withdrawal of one of the plan's movers retires
@@ -8431,12 +8943,22 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
         # Bounded by the consumer's refill horizon as well as by room and the
         # run-ahead budget (#903): a leg past it publishes on the cycle the
         # consumer's progress brings it inside, and not before.
-        decision = residency_plan.window(
-            plan, accepted_phase=consumer["accepted_phase"],  # type: ignore[arg-type]
-            free_gib=int(free), capacity_gib=int(capacity),
-            published=sorted(already), staged=sorted(staged),
-            withdrawn=sorted(cancelled),
-            horizon_end_bytes=horizon_of(consumer, plan, tier_id))
+        if prelaunch_unit is not None:
+            decision = residency_plan.window(
+                plan, accepted_phase=consumer["accepted_phase"],  # type: ignore[arg-type]
+                free_gib=int(free), capacity_gib=int(capacity),
+                published=sorted(already), staged=sorted(staged),
+                withdrawn=sorted(cancelled),
+                horizon_end_bytes=horizon_of(consumer, plan, tier_id),
+                prelaunch_held=bool(
+                    prelaunch_authority.get(prelaunch_unit.unit)))
+        else:
+            decision = residency_plan.window(
+                plan, accepted_phase=consumer["accepted_phase"],  # type: ignore[arg-type]
+                free_gib=int(free), capacity_gib=int(capacity),
+                published=sorted(already), staged=sorted(staged),
+                withdrawn=sorted(cancelled),
+                horizon_end_bytes=horizon_of(consumer, plan, tier_id))
         stall = decision["stall"]
         if isinstance(stall, Mapping) and superseded is None:
             # Said here rather than nowhere: the incident this bound exists to
@@ -8445,7 +8967,9 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
             # consumer is not denied, it is running and reporting nothing.  A
             # superseded window does not stall: nothing is waiting to publish.
             published.append({"event": "window-stalled", "consumer": key,
-                              **{field: stall[field] for field in (
+                              # A stall names every field; a missing one files
+                              # as None here, never as a KeyError (#1594).
+                              **{field: stall.get(field) for field in (
                                   "accepted_phase", "reading_phase",
                                   "blocked_phase", "blocked_gib", "runahead_gib",
                                   "runahead_budget_gib", "free_gib",
@@ -8466,7 +8990,14 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
                        or (key, tier_id) in unknown_consumers
                        or (key, "") in unknown_consumers
                        or ("", "") in unknown_consumers)
-        have_permit = (key, tier_id) in permitted
+        # A declared consumer with group authority publishes its declared
+        # legs: the group already holds their tokens (#1594).  The protection
+        # pass permits these itself (``advance: prelaunch``); this carries
+        # the same permission when that entry is absent.
+        have_permit = ((key, tier_id) in permitted
+                       or (prelaunch_unit is not None
+                           and prelaunch_authority.get(
+                               prelaunch_unit.unit) is True))
         publishable = ([] if (superseded is not None or gate is not None
                               or unknown_hit or not have_permit)
                        else decision["publish"])
@@ -8527,6 +9058,7 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
         item = consumer.get("item")
         if isinstance(item, Mapping):
             generation = item.get("published_unix")
+        prelaunch_rows: list[dict[str, object]] = []
         for entry in publishable:
             # The leg's own egress row, resolved off the plan rather than
             # the entry: publish entries carry their mover, evict entries
@@ -8627,6 +9159,34 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
                               "chunk_index": entry.get("chunk_index"),
                               "action_key": entry["mover_action_key"],
                               "stage_gib": entry["stage_gib"]})
+            prelaunch_rows.append(entry)
+        if prelaunch_unit is not None:
+            # The group fence stands behind every live declared leg, not only
+            # the rows this window published (#1594): a crash between a row's
+            # publication and its funding, or a funding that deferred on the
+            # mover lock, leaves a READY row with no credit, and the window
+            # skips it as already published.  Funding is idempotent: a funded
+            # leg answers ``already`` with no event, and a leg with no row yet
+            # is skipped.  A superseded unit funds nothing.
+            repair_rows = (
+                [{"mover_action_key": leg["mover_key"]}
+                 for leg in prelaunch_unit.legs]
+                if superseded is None
+                and prelaunch_authority.get(prelaunch_unit.unit) is True
+                else prelaunch_rows)
+            published.extend(prelaunch_tier.publish_declared(
+                queue, tier_id, prelaunch_unit, repair_rows))
+        if (prelaunch_unit is not None and superseded is not None
+                and prelaunch_group.has_holdings(queue, prelaunch_unit.unit)):
+            # A superseded window ends its unit: free the unsplit remainder
+            # and the fences no live co-owner still reads (#1594).
+            shared_owned = [
+                str(leg["mover_key"]) for leg in prelaunch_unit.legs
+                if set((readers_of.get(str(leg["mover_key"]))
+                        or (None, []))[1] or ()) - {key}]
+            published.extend(prelaunch_tier.release_terminal(
+                queue, tier_id, [prelaunch_unit],
+                shared_owned=shared_owned))
         for entry in decision["evict"]:
             row = dict(entry["egress_row"])                  # type: ignore[arg-type]
             egress_key = str(row["action_key"])
@@ -8864,6 +9424,11 @@ def evict_beyond_horizon(queue: pool.PoolQueue,
     if not pressure and not claim_order:
         return events
     cancelled = _withdrawn_keys(queue, withdrawn)
+    # Declared prefixes (#1594), once per call: an undeclared queue gets
+    # none, and every candidate below reads as today.
+    evict_units = prelaunch_tier.declared_units(
+        queue, tiers, [entry[1] for entry in consumers])
+    declared_keys = prelaunch_tier.declared_leg_keys(evict_units)
     short: dict[str, int] = {}
     for tier_id, needed in (pressure or {}).items():
         record = tiers.get(tier_id)
@@ -8884,7 +9449,8 @@ def evict_beyond_horizon(queue: pool.PoolQueue,
               and tiers[tier_id].get("tier") == "stage"}
     if not short and not ranked:
         return events
-    candidates = _beyond_horizon_candidates(queue, tiers, consumers, cancelled)
+    candidates = _beyond_horizon_candidates(
+        queue, tiers, consumers, cancelled, declared_keys=declared_keys)
 
     def evicted(row: Mapping[str, object], tier_id: str, stage_root: str,
                 needed: int, *, prefix: str = "beyond-horizon",
@@ -9057,7 +9623,8 @@ def evict_beyond_horizon(queue: pool.PoolQueue,
                          "for_consumer": order["head"]})
         rows.extend(_claim_order_candidates(
             queue, tier_id=tier_id, tier_record=tiers.get(tier_id),
-            consumers=consumers, order=order, taken=taken))
+            consumers=consumers, order=order, taken=taken,
+            declared_keys=declared_keys))
         offered = sum(int(row["stage_gib"]) for row in rows)  # type: ignore[arg-type]
         if free + offered < target:
             stamp("futile")
@@ -10419,9 +10986,13 @@ def _cycle(
     commitments = _commitment_census(queue, announced_tiers, consumers=planned,
                                      unknown=planned_unknown, remember=False)
     claim_order: dict[str, dict[str, object]] = {}
+    skipped: list[dict[str, object]] = []
     pressure = window_pressure(queue, tiers=announced_tiers, consumers=planned,
                                withdrawn=withdrawn, unknown=planned_unknown,
-                               commitments=commitments, claim_order=claim_order)
+                               commitments=commitments, claim_order=claim_order,
+                               skipped=skipped)
+    for event in _pressure_skip_events(queue, skipped):
+        _emit(queue, host, event, tier_consumers=tier_consumers)
     phases.lap("window_pressure")
     # Failed movers' partials next: a terminal, unpinned mover that still
     # names bytes is an eviction candidate when the window has no room (#627).

@@ -1,0 +1,231 @@
+"""A claim in the interval of a fence recovery pays no second stage charge (#1637).
+
+Review of b845063a62: a recovery rebinds a ``transferring`` record to a fresh
+``reserved`` generation, moves the group's replacement tokens to the mover and
+advances the record.  ``funded_cover`` gives a ``reserved`` record no credit, so
+a claim that lands between the rotation and the transfer pays its full demand
+from free, and the transfer then adds the replacement fence on top: the mover
+holds two charges.
+
+Both tests run on a tmp_path queue.  The first stops the recovery after the
+rotation (an interrupted transaction) and claims in the gap.  The second runs
+the claim on another thread while the recovery's own transfer is in progress.
+"""
+from __future__ import annotations
+
+from pathlib import Path
+import os
+import sys
+import threading
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from prismabuild import pool, prelaunch_group as pg  # noqa: E402
+from test_prelaunch_group_reconcile_1594 import (  # noqa: E402
+    TIER, _drive_to_committed, _group, _hexkey, _leg, _plan, _publish, _queue)
+
+KIND = "stage_gib"
+
+
+def _tokens(queue, key: str) -> int:
+    return int(queue.tier_ledger(TIER).holder_tokens(key).get(KIND, 0))
+
+
+def _free(queue) -> int:
+    return int(queue.tier_ledger(TIER).available().get(KIND, 0))
+
+
+def _recovering(tmp_path: Path):
+    """A published mover whose tokens left, and a group topped up to its demand."""
+    queue = _queue(tmp_path, stage_gib=12)
+    consumer = _hexkey("rci-consumer")
+    first, second = _hexkey("rci-m1"), _hexkey("rci-m2")
+    plan = _plan(queue, consumer, first, second)
+    unit, holder = _group(queue, plan, [first, second], demand=4)
+    _drive_to_committed(queue, TIER, unit, holder, 4, [first, second])
+    row = _publish(queue, plan, first)
+    published = pg.publish_chunk(queue, TIER, unit, holder, plan,
+                                 _leg(plan, first), float(row["published_unix"]))
+    assert published.status == "published"
+    queue.tier_ledger(TIER).release(first)       # the fence leaves, the record stays
+    for _ in range(8):
+        outcome = pg.reconcile(queue, TIER, unit, holder, 4, [first, second],
+                               writer_is_me=True)
+        if outcome.authority:
+            break
+    assert outcome.authority is True, (outcome.state, outcome.events)
+    assert _tokens(queue, holder) == 4
+    return queue, plan, unit, holder, first, row
+
+
+def _recover(queue, plan, unit, holder, first, row):
+    return pg.publish_chunk(queue, TIER, unit, holder, plan, _leg(plan, first),
+                            float(row["published_unix"]))
+
+
+def test_a_claim_after_an_interrupted_recovery_waits_for_the_fence(
+        tmp_path: Path, monkeypatch) -> None:
+    queue, plan, unit, holder, first, row = _recovering(tmp_path)
+    free_before = _free(queue)
+
+    def interrupted(*_args, **_kwargs):
+        raise OSError("the recovery stopped after the rotation")
+
+    real = queue.transfer_tier_reservation_count
+    monkeypatch.setattr(queue, "transfer_tier_reservation_count", interrupted)
+    stopped = _recover(queue, plan, unit, holder, first, row)
+    assert stopped.status == "deferred"
+    record = queue.read_funding(first, TIER)
+    assert record is not None and record["state"] == "reserved"
+    got = queue.claim(tags=["dl380g10"], owner="w-gap")
+    state = {"claimed": None if got is None else str(got["action_key"])[-8:],
+             "free before": free_before, "free after": _free(queue),
+             "mover tokens": _tokens(queue, first)}
+    assert got is None or got["action_key"] != first, state
+    assert _free(queue) == free_before, state
+    assert _tokens(queue, first) == 0, state
+
+    monkeypatch.setattr(queue, "transfer_tier_reservation_count", real)
+    assert _recover(queue, plan, unit, holder, first, row).status == "published"
+    free_mid = _free(queue)
+    got = queue.claim(tags=["dl380g10"], owner="w-after")
+    assert got is not None and got["action_key"] == first
+    assert _free(queue) == free_mid
+    assert _tokens(queue, first) == 2
+    assert queue.read_funding(first, TIER)["state"] == "consumed"
+
+
+def test_a_claim_while_the_recovery_transfers_is_not_charged_twice(
+        tmp_path: Path, monkeypatch) -> None:
+    queue, plan, unit, holder, first, row = _recovering(tmp_path)
+    free_before = _free(queue)
+    seen: dict[str, object] = {}
+    real = queue.transfer_tier_reservation_count
+
+    def transfer_with_a_claimant(*args, **kwargs):
+        def claim() -> None:
+            seen["got"] = queue.claim(tags=["dl380g10"], owner="w-thread")
+
+        worker = threading.Thread(target=claim)
+        worker.start()
+        worker.join(5)
+        seen["still waiting"] = worker.is_alive()
+        seen["thread"] = worker
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(queue, "transfer_tier_reservation_count",
+                        transfer_with_a_claimant)
+    assert _recover(queue, plan, unit, holder, first, row).status == "published"
+    seen["thread"].join(30)
+    state = {"free before": free_before, "free after": _free(queue),
+             "mover tokens": _tokens(queue, first),
+             "claim returned": None if seen.get("got") is None
+             else str(seen["got"]["action_key"])[-8:]}
+    assert _tokens(queue, first) in (0, 2), state
+    assert _free(queue) == free_before, state
+
+
+def test_a_claim_is_deferred_when_the_fence_custody_cannot_be_read(
+        tmp_path: Path, monkeypatch) -> None:
+    """Review of df8797cbe6: unreadable custody is unknown, never absent.
+
+    The recovery moves part of the fence and stops, leaving the record
+    ``reserved``.  A holder scan then fails.  A claim that read the failure as
+    "no pending fence" would pay its full demand from free while the mover
+    already holds part of its fence, and the recovery would add the rest.
+    """
+    queue, plan, unit, holder, first, row = _recovering(tmp_path)
+    free_before = _free(queue)
+    real = queue.transfer_tier_reservation_count
+
+    def part_then_stop(tier_id, source, target, count):
+        real(tier_id, source, target, 1)         # one of the two tokens moves
+        raise OSError("the recovery stopped after a partial transfer")
+
+    monkeypatch.setattr(queue, "transfer_tier_reservation_count", part_then_stop)
+    assert _recover(queue, plan, unit, holder, first, row).status == "deferred"
+    assert queue.read_funding(first, TIER)["state"] == "reserved"
+    assert _tokens(queue, first) == 1
+    monkeypatch.setattr(queue, "transfer_tier_reservation_count", real)
+
+    def unreadable(_ledger, _key):
+        raise OSError("a holder directory could not be listed")
+
+    real_held = pool.held_names_visible
+    monkeypatch.setattr(pool, "held_names_visible", unreadable)
+    got = queue.claim(tags=["dl380g10"], owner="w-unreadable")
+    state = {"claimed": None if got is None else str(got["action_key"])[-8:],
+             "free before": free_before, "free after": _free(queue),
+             "mover tokens": _tokens(queue, first)}
+    monkeypatch.setattr(pool, "held_names_visible", real_held)
+    assert got is None or got["action_key"] != first, state
+    assert _free(queue) == free_before, state
+    assert _tokens(queue, first) == 1, state
+
+    assert _recover(queue, plan, unit, holder, first, row).status == "published"
+    free_mid = _free(queue)
+    got = queue.claim(tags=["dl380g10"], owner="w-after")
+    assert got is not None and got["action_key"] == first
+    assert _free(queue) == free_mid
+    assert _tokens(queue, first) == 2
+
+
+def _break_garbage(path: Path) -> object:
+    original = path.read_bytes()
+    path.write_bytes(b"{not json")
+    return lambda: path.write_bytes(original)
+
+
+def _break_unreadable(path: Path) -> object:
+    mode = path.stat().st_mode & 0o777
+    path.chmod(0)
+    return lambda: path.chmod(mode)
+
+
+import pytest  # noqa: E402
+
+
+@pytest.mark.parametrize("breaker", [_break_garbage, _break_unreadable],
+                         ids=["malformed", "unreadable"])
+def test_a_claim_is_deferred_when_the_funding_record_cannot_be_read(
+        tmp_path: Path, monkeypatch, breaker) -> None:
+    """Review of e1a18d1704: an unreadable or malformed record is unknown.
+
+    The record exists and may still bind tokens, so neither says that the
+    prior fence holds nothing.  ``read_funding`` is the tolerant spelling that
+    turns both into ``None``; the claim guard reads ``read_funding_evidence``.
+    """
+    if breaker is _break_unreadable and os.geteuid() == 0:
+        pytest.skip("root reads a mode-000 file")
+    queue, plan, unit, holder, first, row = _recovering(tmp_path)
+    free_before = _free(queue)
+    real = queue.transfer_tier_reservation_count
+
+    def part_then_stop(tier_id, source, target, count):
+        real(tier_id, source, target, 1)
+        raise OSError("the recovery stopped after a partial transfer")
+
+    monkeypatch.setattr(queue, "transfer_tier_reservation_count", part_then_stop)
+    assert _recover(queue, plan, unit, holder, first, row).status == "deferred"
+    assert _tokens(queue, first) == 1
+    monkeypatch.setattr(queue, "transfer_tier_reservation_count", real)
+
+    restore = breaker(queue.funding_path(first, TIER))
+    try:
+        got = queue.claim(tags=["dl380g10"], owner="w-unreadable")
+        state = {"claimed": None if got is None else str(got["action_key"])[-8:],
+                 "free before": free_before, "free after": _free(queue),
+                 "mover tokens": _tokens(queue, first)}
+    finally:
+        restore()
+    assert got is None or got["action_key"] != first, state
+    assert _free(queue) == free_before, state
+    assert _tokens(queue, first) == 1, state
+
+    assert _recover(queue, plan, unit, holder, first, row).status == "published"
+    free_mid = _free(queue)
+    got = queue.claim(tags=["dl380g10"], owner="w-after")
+    assert got is not None and got["action_key"] == first
+    assert _free(queue) == free_mid
+    assert _tokens(queue, first) == 2

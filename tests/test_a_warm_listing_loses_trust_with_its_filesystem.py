@@ -88,13 +88,22 @@ def test_the_current_version_is_refused_once_trust_leaves(
     directory.mkdir()
     _settle()
 
-    monkeypatch.setattr(stage_move, "_filesystem_type", lambda device: "zfs")
+    monkeypatch.setattr(
+        stage_move, "_object_filesystem_type",
+        lambda info, *, path=None, descriptor=None,
+        follow_symlinks=True: "zfs")
     assert stage_move._current_directory_version(directory) is not None
 
-    monkeypatch.setattr(stage_move, "_filesystem_type", lambda device: "nfs4")
+    monkeypatch.setattr(
+        stage_move, "_object_filesystem_type",
+        lambda info, *, path=None, descriptor=None,
+        follow_symlinks=True: "nfs4")
     assert stage_move._current_directory_version(directory) is None
 
-    monkeypatch.setattr(stage_move, "_filesystem_type", lambda device: None)
+    monkeypatch.setattr(
+        stage_move, "_object_filesystem_type",
+        lambda info, *, path=None, descriptor=None,
+        follow_symlinks=True: None)
     assert stage_move._current_directory_version(directory) is None
 
 
@@ -108,7 +117,10 @@ def test_a_warm_listing_is_read_again_when_its_trust_leaves(
     _write(record, b'{"v": 1}')
     _settle()
 
-    monkeypatch.setattr(stage_move, "_filesystem_type", lambda device: "zfs")
+    monkeypatch.setattr(
+        stage_move, "_object_filesystem_type",
+        lambda info, *, path=None, descriptor=None,
+        follow_symlinks=True: "zfs")
     reader = stage_release.DirectoryRecords()
     first = reader.read(directory, select=_select, parse=_parse)
     assert [value for _path, value in first] == [{"v": 1}]
@@ -119,7 +131,10 @@ def test_a_warm_listing_is_read_again_when_its_trust_leaves(
     assert _counts(reader) == (1, 1, 1), (
         "an unchanged trusted directory is not listed or parsed again")
 
-    monkeypatch.setattr(stage_move, "_filesystem_type", lambda device: None)
+    monkeypatch.setattr(
+        stage_move, "_object_filesystem_type",
+        lambda info, *, path=None, descriptor=None,
+        follow_symlinks=True: None)
     third = reader.read(directory, select=_select, parse=_parse)
     assert [value for _path, value in third] == [{"v": 1}]
     assert _counts(reader) == (2, 1, 2), (
