@@ -236,6 +236,28 @@ def test_a_look_alike_is_refused_a_role_part_by_part(gang_fleet, store, tmp_path
         assert _roles(queue, key) == [], (name, _row(queue, key))
 
 
+@pytest.mark.parametrize("missing", ["PATH", "LANG", "LC_ALL"])
+def test_missing_movement_environment_keys_with_docker_ownership_publish_without_a_role(
+        gang_fleet, store, tmp_path, missing):
+    """An incomplete movement environment produces an ordinary row."""
+    from prismabuild import movement_actions as ma
+    queue, clock, *_ = gang_fleet
+    command = [ma.MOVEMENT_PYTHON, _tool(store, "stage_release.py"),
+               "--pool-root", str(queue.root)]
+    owner = "f" * 64
+    variables = {
+        **ma.movement_environment(command),
+        pool.CONTAINER_OWNER_ENV: owner,
+        pool.CONTAINER_MARKER_ENV: str(tmp_path / f"{owner}.used"),
+    }
+    variables.pop(missing)
+    key = _publish_sealed(queue, tmp_path, clock, f"missing-{missing}",
+                          script="stage_release.py", resources={"cpu": 1, "mem_gb": 1},
+                          generation=store, variables=variables)
+    assert _roles(queue, key) == []
+    assert _row(queue, key)["resources"] == {"cpu": 1, "mem_gb": 1}
+
+
 def test_a_submitter_alias_of_a_published_tool_gets_no_role(gang_fleet, store, tmp_path):
     """Review 3: the role is read off the resolved member, and the sealed path spells it exactly."""
     from prismabuild import movement_actions as ma

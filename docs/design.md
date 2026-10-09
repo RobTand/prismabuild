@@ -4958,8 +4958,8 @@ new census work. On the reservation's own host the reservation arithmetic lends
 nothing: a reservation-denied row is refused, not lent. The gang backfill loan above
 still applies where its own contract allows, so a strictly lower-priority restartable
 row can borrow a fresh-ready member's host while peers cannot commit, and the
-reservation it meets there is that election's fence. A reservation shortfall is never
-a loan: `backfill_allowed` answers only the election fence it is asked about.
+reservation it meets there is that election's fence. A reservation shortfall never
+becomes a loan. The claim loop refuses it before it checks backfill eligibility.
 
 Unknown is consuming, never exempt. A candidate that omits `cpu` or `mem_gb`, or
 whose demand does not read, counts as the whole host in that dimension (an omitted
@@ -5016,6 +5016,17 @@ its real ledger fit (tier tokens, CPU, memory), so it cannot take what is not fr
 This is what lets a gang member that takes every CPU on its host progress: the movers
 it waits for are admitted although no CPU slack remains. Every other row is held by
 its demand.
+
+Authority prerequisite (#1659): CEO decision `dec-1009-062221-f41c` selects a
+publisher-controlled authority source. Submitters and store owners must not create
+or alter that source. The current receipt anchor does not meet this requirement.
+The repository has no separate publication registry with this boundary.
+PR #1584 needs that prerequisite before it can meet the movement-role acceptance
+criteria. This source correction does not qualify deployment or remove D45.
+
+An incomplete movement environment produces an ordinary row.
+This rule also applies when both Docker ownership keys are present.
+`PATH`, `LANG`, and `LC_ALL` must all exist before the classifier compares their values.
 
 A host is never both withheld for a waiting measurement and reserved for a gang:
 once the gang's ten minutes elapse the reservation wins on that host over a

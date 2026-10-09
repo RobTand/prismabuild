@@ -22031,6 +22031,9 @@ class PoolQueue:
                                                 now=reservation_now, held=reservation_held,
                                                 capacity=reservation_capacity))
                             while gang_blocked is not None:
+                                # A demand shortfall cannot become a loan (#1579).
+                                if "reservation" in gang_blocked:
+                                    break
                                 from . import _gang
                                 try:
                                     if backfill_eligible is None:

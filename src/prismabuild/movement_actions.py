@@ -138,7 +138,7 @@ def _movement_environment_ok(action: Mapping[str, object], command: list) -> boo
     if not isinstance(variables, Mapping):
         return False
     if (set(variables) - {"PATH", *MOVEMENT_LOCALE, *MOVEMENT_EXTRA_ENVIRONMENT}
-            or set(variables) < {"PATH", *MOVEMENT_LOCALE}):
+            or not {"PATH", *MOVEMENT_LOCALE} <= set(variables)):
         return False
     if any(not isinstance(value, str) for value in variables.values()):
         return False
