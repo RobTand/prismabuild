@@ -74,6 +74,18 @@ def test_a_submitter_cannot_publish_an_authority_record(tmp_path, monkeypatch, p
     assert not publication_store.exists()
 
 
+@pytest.mark.parametrize("umask", [0o002, 0o077])
+def test_publication_preserves_custody_under_the_callers_umask(
+        tmp_path, monkeypatch, publication_store, umask):
+    previous = os.umask(umask)
+    try:
+        protected = approve(source_generation(tmp_path), monkeypatch)
+    finally:
+        os.umask(previous)
+    member = protected / "tools" / "fleet" / "stage_release.py"
+    assert publication.published_member(member) == member
+
+
 def test_publication_copies_imports_and_binds_an_independent_record(
         tmp_path, monkeypatch, publication_store):
     source = source_generation(tmp_path)

@@ -33,6 +33,17 @@ def _protected_path(path: Path) -> bool:
     return True
 
 
+def _create_directories(path: Path) -> None:
+    """Create each missing component without group or other write access."""
+    missing = []
+    while not path.exists():
+        missing.append(path)
+        path = path.parent
+    for directory in reversed(missing):
+        directory.mkdir(mode=0o755)
+        directory.chmod(0o755)
+
+
 def _regular_bytes(path: Path) -> bytes:
     """Read a regular file without following a final symlink."""
     descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
@@ -83,7 +94,7 @@ def publish_generation(source: Path, *, receipt_sha256: str) -> Path:
         ancestor = ancestor.parent
     if not _protected_path(ancestor):
         raise PermissionError("movement publication store has no root custody")
-    store.mkdir(parents=True, exist_ok=True, mode=0o755)
+    _create_directories(store)
     if not _protected_path(store):
         raise PermissionError("movement publication store has no root custody")
     target = store / source.name
@@ -100,7 +111,7 @@ def publish_generation(source: Path, *, receipt_sha256: str) -> Path:
             if hashlib.sha256(data).hexdigest() != expected:
                 raise ValueError(f"runtime member digest differs: {name}")
             copied = stage / name
-            copied.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
+            _create_directories(copied.parent)
             copied.write_bytes(data)
             copied.chmod(0o555 if member.stat().st_mode & 0o111 else 0o444)
         (stage / "RUNTIME_VERSION.json").write_bytes(raw)
