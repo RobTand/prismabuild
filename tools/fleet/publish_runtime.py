@@ -1860,6 +1860,25 @@ def _barrier_preflight(agent_sha: str, *, dry_run: bool) -> None:
 
 
 def main() -> int:
+    if any(arg.split("=", 1)[0] == "--publish-movement-generation" for arg in sys.argv[1:]):
+        # This administrative interface never executes or imports copied bytes.
+        # It has no submitter token and cannot run through ordinary publication.
+        authority = argparse.ArgumentParser(
+            description="Publish a protected movement runtime with root authority.")
+        authority.add_argument("--publish-movement-generation", type=Path, required=True)
+        authority.add_argument("--receipt-sha256", required=True)
+        options = authority.parse_args()
+        sys.path.insert(0, str(CHECKOUT / "src"))
+        from prismabuild import runtime_publication
+        try:
+            target = runtime_publication.publish_generation(
+                options.publish_movement_generation,
+                receipt_sha256=options.receipt_sha256)
+        except (OSError, ValueError, TypeError) as exc:
+            authority.exit(1, f"movement publication refused: {exc}\n")
+        print(json.dumps({"state": "published", "path": str(target),
+                          "receipt_sha256": options.receipt_sha256}, sort_keys=True))
+        return 0
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--allow-dirty", action="store_true",
                     help="publish a tree with uncommitted changes")

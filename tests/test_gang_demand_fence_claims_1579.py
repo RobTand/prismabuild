@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 from test_gang_reservation_1517 import HOSTS, _busy_both, gang_fleet  # noqa: F401
 from test_measurement_drains_gpu_backfill import fleet  # noqa: F401
+from test_runtime_publication_1659 import approve, publication_store  # noqa: F401
 
 from prismabuild import _gang, _measurement_reservation as reservation, core as pb, pool
 
@@ -32,12 +33,8 @@ SCRIPTS = ("stage_move.py", "ram_promote.py", "stage_release.py", "produced_expo
 
 
 @pytest.fixture()
-def store(tmp_path, monkeypatch):
-    """A retained-generation store holding one published generation of the movement scripts.
-
-    Sealed like a real one: a direct child of the store, no write bits, a receipt naming it with a
-    40-hex commit and the sha256 of every file under ``tools/`` and ``tools/fleet/``.
-    """
+def store(tmp_path, monkeypatch, publication_store):
+    """Publish a private generation through the protected publication interface."""
     from prismabuild import resource_scope
     root = tmp_path / "runtime-generations"
     generation = root / ("a" * 12 + "-1791311474-" + "b" * 12)
@@ -57,9 +54,7 @@ def store(tmp_path, monkeypatch):
         (generation / sub).chmod(0o555)
     generation.chmod(0o555)
     monkeypatch.setattr(resource_scope, "RETAINED_GENERATION_STORE", root)
-    resource_scope._RECEIPT_CACHE.clear()
-    resource_scope._MEMBER_CACHE.clear()
-    yield generation
+    yield approve(generation, monkeypatch)
     for sub in ("tools/fleet", "tools"):
         (generation / sub).chmod(0o755)
     generation.chmod(0o755)
@@ -187,6 +182,39 @@ def test_a_genuine_spool_export_gets_its_role_without_recompute(gang_fleet, stor
         assert _roles(queue, key) == ["returns_capacity"], recompute
 
 
+@pytest.mark.parametrize("layout", ["tools", "tools/fleet"])
+def test_the_real_sealer_publishes_a_protected_movement_role(
+        gang_fleet, store, tmp_path, layout):
+    from prismabuild import movement_actions as ma, resource_scope
+    queue, clock, *_ = gang_fleet
+    key, cas, checkout = _seal(queue, tmp_path, "consumer")
+    consumer = pool._sealed_action_request(str(cas.root), key)
+    template = {
+        "task": consumer["task"], "params": {"cwd": str(checkout)},
+        "inputs": consumer["inputs"], "code_closure": consumer["code_closure"],
+        "environment": consumer["environment"], "marker_root": tmp_path / "markers",
+        "checkout_identity": {"commit": "a" * 40},
+    }
+    source = resource_scope.RETAINED_GENERATION_STORE / store.name / layout / "stage_release.py"
+    action = ma.seal_movement_action(
+        template, command=[ma.MOVEMENT_PYTHON, str(source), "--pool-root", str(queue.root)],
+        demand={"cpu": 1, "mem_gb": 1}, tags=["sparky"], log_name=f"release-{layout}.log")
+    cas.publish_action_request(action)
+    _enqueue(queue, clock, action["action_key"], cas, checkout, resources={"cpu": 1, "mem_gb": 1})
+    assert _roles(queue, action["action_key"]) == ["returns_capacity"]
+
+
+def test_a_self_certified_store_generation_gets_no_role(gang_fleet, store, tmp_path):
+    """A store owner cannot authorize its own movement code."""
+    queue, clock, *_ = gang_fleet
+    from prismabuild import resource_scope
+    source = resource_scope.RETAINED_GENERATION_STORE / store.name
+    key = _publish_sealed(queue, tmp_path, clock, "self-certified-release",
+                          script="stage_release.py", resources={"cpu": 1, "mem_gb": 1},
+                          generation=source)
+    assert _roles(queue, key) == []
+
+
 def test_a_look_alike_is_refused_a_role_part_by_part(gang_fleet, store, tmp_path, monkeypatch):
     """Every way a submitted action could imitate a movement node leaves it an ordinary row (review 2)."""
     from prismabuild import movement_actions as ma
@@ -274,7 +302,6 @@ def test_a_submitter_alias_of_a_published_tool_gets_no_role(gang_fleet, store, t
     # The same alias retargeted after publication still names the alias.
     alias.unlink()
     alias.symlink_to(store / "tools" / "fleet" / "stage_release.py")
-    resource_scope._MEMBER_CACHE.clear()
     key = _publish_sealed(queue, tmp_path, clock, "alias-retargeted", script="stage_release.py",
                           resources=small, tool=str(alias), generation=store)
     assert _roles(queue, key) == [], _row(queue, key)
@@ -334,11 +361,11 @@ def test_local_resident_operation_parsing_matches_the_tool(gang_fleet, store, tm
         assert _roles(queue, key) == [], (name, _row(queue, key))
 
 
-def test_without_a_retained_store_nothing_is_a_movement_node(gang_fleet, store, tmp_path, monkeypatch):
-    """No published generations to anchor to is an ordinary row, never a guess."""
-    from prismabuild import resource_scope
+def test_without_a_protected_store_nothing_is_a_movement_node(gang_fleet, store, tmp_path, monkeypatch):
+    """Unknown publication authority produces an ordinary row."""
+    from prismabuild import runtime_publication
     queue, clock, *_ = gang_fleet
-    monkeypatch.setattr(resource_scope, "RETAINED_GENERATION_STORE", tmp_path / "no-such-store")
+    monkeypatch.setattr(runtime_publication, "PROTECTED_GENERATION_STORE", tmp_path / "no-such-store")
     key = _publish_sealed(queue, tmp_path, clock, "no-store", script="stage_release.py",
                           resources={"cpu": 1, "mem_gb": 1}, generation=store)
     assert _roles(queue, key) == []

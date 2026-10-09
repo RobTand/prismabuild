@@ -333,75 +333,15 @@ def _sha256_file(path: Path) -> str:
 RETAINED_GENERATION_STORE = Path(
     "/mnt/shared/prismabuild-fleet/runtime-generations")
 
-#: Parsed receipts of generations already seen, by ``(root, mtime_ns)``, and the
-#: members already hash-verified, by ``(path, mtime_ns, size, expected)``.  A
-#: published generation is immutable, so both only ever answer the same thing
-#: again; the keys make a replaced file or a changed receipt a different entry
-#: (#1579, review 3).
-_RECEIPT_CACHE: dict[tuple[str, int], dict[str, Any] | None] = {}
-_MEMBER_CACHE: dict[tuple[str, int, int, str], bool] = {}
-
-
 def published_generation_member(path: str | Path) -> Path | None:
-    """The resolved tool of a runtime generation this fleet published, else ``None``.
+    """Return a tool with independent, root-controlled publication authority.
 
-    The test a gang reservation uses before it trusts a movement script (#1579),
-    with the rules ``_sealed_generation_proxy`` applies before a worker is
-    launched from a retained generation, and no new configuration: the store is
-    :data:`RETAINED_GENERATION_STORE`.  ``path`` is resolved through symlinks
-    (the live ``repo`` link names a generation), must be a regular file in a
-    direct, non-staging child of the store whose directory is sealed (no write
-    bits) and whose ``RUNTIME_VERSION.json`` names that generation with a 40-hex
-    commit and a manifest, must sit at ``tools/<name>`` or ``tools/fleet/<name>``,
-    and must hash to the digest the manifest records for it.  On success the
-    RESOLVED member path is returned, so the caller classifies the bytes that
-    were verified, never the name the request spelled (a submitter-owned alias
-    pointing at another tool resolves to that tool).  Anything unreadable,
-    unsealed, unlisted or mismatched is ``None``: unknown is not published.
-
-    The seal rests on the store owner: whoever can write the store can mint a
-    generation or reseal a file (see ``docs/design.md``, "Priority rule").  The
-    anchor proves the bytes match a sealed receipt in the store; it does not
-    prove who wrote the store.
+    An ordinary store receipt proves integrity, not authority. The protected
+    publisher copies the complete generation into a root-controlled namespace.
+    Unknown authority grants no movement role and adds no launch refusal.
     """
-    try:
-        store = RETAINED_GENERATION_STORE.resolve(strict=True)
-        resolved = Path(path).resolve(strict=True)
-        relative = resolved.relative_to(store).parts
-        if not resolved.is_file() or len(relative) not in (3, 4) or relative[1] != "tools":
-            return None
-        if len(relative) == 4 and relative[2] != "fleet":
-            return None
-        generation = relative[0]
-        root = store / generation
-        if (generation.startswith(".") or root.resolve(strict=True) != root
-                or not root.is_dir() or root.stat().st_mode & 0o222):
-            return None
-        receipt_path = root / "RUNTIME_VERSION.json"
-        stamp = receipt_path.stat().st_mtime_ns
-        key = (str(root), stamp)
-        if key not in _RECEIPT_CACHE:
-            value = json.loads(receipt_path.read_text(encoding="utf-8"))
-            _RECEIPT_CACHE[key] = value if isinstance(value, dict) else None
-        receipt = _RECEIPT_CACHE[key]
-        if (receipt is None or receipt.get("schema") != RUNTIME_RECEIPT_SCHEMA
-                or receipt.get("generation") != generation
-                or re.fullmatch(r"[0-9a-f]{40}", str(receipt.get("commit", ""))) is None
-                or not isinstance(receipt.get("files"), dict)):
-            return None
-        member = "/".join(relative[1:])
-        expected = receipt["files"].get(member)
-        if (not isinstance(expected, str)
-                or re.fullmatch(r"[0-9a-f]{64}", expected) is None
-                or resolved.stat().st_mode & 0o222):
-            return None
-        status = resolved.stat()
-        seen = (str(resolved), status.st_mtime_ns, status.st_size, expected)
-        if seen not in _MEMBER_CACHE:
-            _MEMBER_CACHE[seen] = _sha256_file(resolved) == expected
-        return resolved if _MEMBER_CACHE[seen] else None
-    except (OSError, ValueError):
-        return None
+    from . import runtime_publication
+    return runtime_publication.published_member(Path(path))
 
 
 #: The receipt every published generation carries. ``publish_runtime``,

@@ -4981,48 +4981,52 @@ identity (`movement_actions.capacity_role`), never from a sidecar field or from
 `MOVEMENT_TASK` fields and the execution scope must be `MOVEMENT_EXECUTION_SCOPE`;
 the sealed environment must be exactly the movement launch (`movement_environment`
 plus the sealer's Docker ownership), so no `BASH_ENV`, `PYTHONPATH` or other startup
-hook reaches the wrapper; the interpreter must be `/usr/bin/python3`, the root-owned
-system python the fleet seals, never a submitter-owned python-named executable; and
-the script must resolve, with every symlink followed, to a file of a runtime
-generation this fleet published (`resource_scope.published_generation_member`): a
-regular file at `tools/<name>` or `tools/fleet/<name>` of a sealed (no write bits)
-direct child of `RETAINED_GENERATION_STORE`, whose `RUNTIME_VERSION.json` names the
-generation with a 40-hex commit and records the file's sha256, which it must match.
-The role is read off the RESOLVED member, and the sealed path must spell that member
-exactly: a submitter-owned alias can be retargeted after publication while the sealed
-command still names it, so an alias is an ordinary row, while the fleet's live `repo`
-link is resolved by the sealer before it seals. That is the store and the receipt
-rules the pool already applies before it launches a worker from a retained generation,
-so no per-host setting is added; it is not a file-name match and not the tier-announced
-`mover_tools_root` (which is only where the tier loop was run from). The demand must
-be the small one the node is sealed with: a returner at most one CPU and one GiB and
-no kind but a tier's; a mover carries its residency range; neither has a GPU. A
-`local_resident` row gets the returner role only for one literal `--operation evict`
-(the tool's own parsing decides what runs; a duplicate, an `--operation=value` form
-or a prefix abbreviation is ordinary). `recompute` is not a condition (the produced
-spool publishes genuine exports without it). Anything unreadable, unpublished or
-altered is an ordinary row, held by its demand; a tier loop run from a dev checkout
-rather than a published generation announces tools the anchor does not trust, so its
-movers are held by demand, the safe direction. Residual: a genuine published movement
-script run with submitter-chosen arguments still gets the role, bounded by that tool's
-own demand. Trust boundary: the anchor proves the sealed bytes match a sealed receipt
-in the store; it does not prove who wrote the store. Whoever can write the store (today
-the submitting principal on the shared fleet mount) can mint a generation or reseal a
-file, and so can obtain a role for arbitrary bytes. The role also trusts the queue
-writer like priority does: `gang_blocking` honours a `true` role mark on a READY row
-without re-deriving it from the sealed request, so a hand-written row with the mark
-set is honoured. A node with a role skips the reservation arithmetic and still needs
-its real ledger fit (tier tokens, CPU, memory), so it cannot take what is not free.
-This is what lets a gang member that takes every CPU on its host progress: the movers
-it waits for are admitted although no CPU slack remains. Every other row is held by
-its demand.
+hook reaches the wrapper. The interpreter must be the root-owned `/usr/bin/python3`, never a submitter-owned executable.
+The script must belong to a protected runtime copy.
+`resource_scope.published_generation_member` checks that independent publication authority.
+The copy lives under `/opt/prismabuild/movement-generations/<generation>`.
+Every path component, receipt, record, script, and import stays under root custody.
+Group or other write access, symlinks in that namespace, or an unknown record grant no role.
+`MOVEMENT_PUBLICATION.json` binds the generation to the administrator-approved SHA-256 of `RUNTIME_VERSION.json`.
+The receipt names the generation, a 40-hex commit, and each copied member digest.
+The classifier checks the receipt binding and the script digest.
+Its cache includes device, inode, ctime, and size for the record, receipt, and script.
+Mode checks alone do not establish publication authority.
 
-Authority prerequisite (#1659): CEO decision `dec-1009-062221-f41c` selects a
-publisher-controlled authority source. Submitters and store owners must not create
-or alter that source. The current receipt anchor does not meet this requirement.
-The repository has no separate publication registry with this boundary.
-PR #1584 needs that prerequisite before it can meet the movement-role acceptance
-criteria. This source correction does not qualify deployment or remove D45.
+The root-only `publish_runtime.py --publish-movement-generation PATH --receipt-sha256 DIGEST` interface creates these copies.
+The administrator selects the receipt digest after review.
+The interface copies all receipt members, including imports, without execution.
+It rejects changed bytes, unsafe member paths, symlinks, and unsafe store ancestry.
+It writes an independent authority record and seals the complete copy before an atomic rename.
+Publications are append-only.
+Ordinary publication, submissions, and tier announcements cannot create this authority.
+This interface grants movement roles only. It does not change runtime activation or add a launch refusal under D32.
+
+`seal_movement_action` selects the protected copy before it seals the command, wrapper, and Docker ownership.
+It requires an identical source receipt, not just an identical generation name.
+The sealed command must name the protected member exactly.
+A mutable alias or an ordinary retained-store path gets no role at publication.
+The sealer resolves the live `repo` link before it selects a protected copy.
+Without a protected copy, the original command stays an ordinary action.
+The demand limits remain unchanged: returners use at most one CPU and one GiB, with tier kinds only.
+Movers carry their residency range. Neither role permits a GPU.
+A resident returner needs one literal `--operation evict`.
+Duplicate, equals, and abbreviated operation forms stay ordinary.
+`recompute` is not a condition; produced spool exports use the same classifier.
+Anything unreadable, unpublished, or altered stays ordinary.
+Residual: a caller can choose arguments for a genuine published movement script, within that tool's demand limits.
+An ordinary store owner cannot grant a role through a self-written receipt or alter the protected copy.
+The queue writer remains trusted like priority.
+`gang_blocking` accepts a true role mark on a READY row without a new sealed-request check.
+Role exemptions retain real CPU, memory, GPU, and tier ledger admission.
+Thus required movers can use free capacity even when the gang reserves every CPU.
+
+CEO decision `dec-1009-062221-f41c` requires publication authority outside submitters and ordinary store owners.
+The protected copy interface implements that boundary for PR #1584.
+Deployment must install identical protected copies on the coordinator and each host that executes their movement commands.
+No deployment or live gang qualification is claimed here. D45 remains active.
+SC-01 remains PB-owned admission. SC-02 remains PB-owned movement.
+ID-08 still requires separate runtime deployment evidence; source support does not prove deployment.
 
 An incomplete movement environment produces an ordinary row.
 This rule also applies when both Docker ownership keys are present.

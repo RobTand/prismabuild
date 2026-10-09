@@ -3479,6 +3479,39 @@ from a umask-002 worktree would have published `0555`/`0444` (issue #316).
 Which members are programs comes from the Git index, not from a filename or the
 local filesystem, so the answer is the repository's and not the shell's.
 
+### Protected movement publications (#1659)
+
+An ordinary runtime receipt does not authorize movement roles.
+Store owners can write their own receipts.
+The role classifier trusts only complete copies under root-controlled `/opt/prismabuild/movement-generations`.
+It requires root custody through every ancestor and an independent receipt-bound publication record.
+
+Use the administrative interface after the source review and existing publication gates:
+
+1. Select the approved `RUNTIME_VERSION.json` SHA-256.
+2. Run this command as root on the coordinator and each host that executes the movement commands:
+
+   ```bash
+   /usr/bin/python3 -I tools/fleet/publish_runtime.py \
+     --publish-movement-generation /mnt/shared/prismabuild-fleet/runtime-generations/GENERATION \
+     --receipt-sha256 APPROVED_SHA256
+   ```
+
+The command copies every manifest member, including imports, without execution.
+It checks the selected receipt digest and every member digest.
+It refuses unsafe paths, symlinks, and an unsafe destination.
+It writes `MOVEMENT_PUBLICATION.json` and seals the copy before an atomic rename.
+
+The fixed destination needs no tier setting or submission token.
+The command does not activate a runtime or change its canary verdict.
+Do not grant submitters permission to run this administrative interface.
+
+The movement sealer selects a protected copy only when its receipt matches the original runtime receipt.
+It seals the protected path into both the command and capture wrapper.
+Missing authority leaves the original command ordinary; it does not cause a launch refusal.
+Copies must exist at the same fixed path on all relevant hosts before deployment acceptance.
+This source interface does not establish deployment, live gang qualification, or release of D45.
+
 ### The rollout canary gate (default-ON)
 
 `tools/fleet/publish_runtime.py` submits the fleet canary (issue #688)

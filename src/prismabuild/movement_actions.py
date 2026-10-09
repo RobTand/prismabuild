@@ -222,14 +222,10 @@ def capacity_role(action: Mapping[str, object], demand: Mapping[str, object], *,
       ``BASH_ENV``, ``PYTHONPATH`` or other startup hook reaches the wrapper;
     * the interpreter is :data:`MOVEMENT_PYTHON`, the root-owned system python
       the fleet seals; a submitter-owned python-named executable is ordinary;
-    * the script resolves, with every symlink followed, to a file of a runtime
-      generation this fleet published
-      (``resource_scope.published_generation_member``: a sealed direct child of
-      the retained store, receipt and manifest hash), not a file-name match and
-      not a host-announced directory; the role is read off the RESOLVED member,
-      and the sealed path must spell that member exactly (no alias: an alias
-      can be retargeted after publication while the sealed command still names
-      it);
+    * the script belongs to an administrator-approved runtime copy
+      (``resource_scope.published_generation_member``). Its receipt and
+      publication record have root custody through every path component.
+      The command names that protected member exactly, never a mutable alias;
     * the declared demand is the small one the node is sealed with.
 
     ``returns_capacity``: ``stage_release.py``, ``produced_export.py`` or a
@@ -237,12 +233,10 @@ def capacity_role(action: Mapping[str, object], demand: Mapping[str, object], *,
     ``--operation`` parsing, last wins) is a single literal ``--operation
     evict``; demanding at most one CPU and one GiB, no GPU, and no kind but a
     tier's (``kind@tier``).  ``serves_residency``: ``stage_move.py`` or
-    ``ram_promote.py`` carrying a residency range, no GPU.  Residual: a genuine
-    published movement script run with submitter-chosen arguments still gets the
-    role, bounded by that tool's own demand; the script itself, its interpreter
-    and its launch environment are PrismaBuild's, so the role never reaches
-    arbitrary code except through a store the submitter itself can write (see
-    ``docs/design.md``, "Priority rule").  ``recompute`` is not a condition.
+    ``ram_promote.py`` carrying a residency range, no GPU. A caller can choose
+    arguments for a genuine published tool, within that tool's demand limits.
+    Root publication authority controls the tool, its imports, and its path.
+    Ordinary store ownership grants no role. ``recompute`` is not a condition.
     """
     from . import resource_scope
     params = action.get("params")
@@ -791,6 +785,13 @@ def seal_movement_action(
         if name in template["params"]                     # type: ignore[operator]
     }
     params["command"] = list(command)
+    if len(params["command"]) >= 2:
+        from . import resource_scope, runtime_publication
+        protected = runtime_publication.movement_member(
+            Path(params["command"][1]),
+            retained_store=resource_scope.RETAINED_GENERATION_STORE)
+        if protected is not None:
+            params["command"][1] = str(protected)
     params["demand"] = {str(key): int(value) for key, value in dict(demand).items()}
     params["placement"] = {"required_tags": list(tags)}
     # A mover's retry policy is its own, not the consumer's (#603, #950).  The
