@@ -170,14 +170,15 @@ reset the count on a new cycle. This requires a deployed worker offering
 `progress-cycle-v1`; an old or unknown fleet refuses the submission. Existing
 sealed policies remain linear. A requested hard deadline still applies.
 
-`--lifetime-s N` (pool transport, 180 s to 7 days) is a different bound: it
-limits the whole life of the action, from publication to the return of its
-resources, not only the payload. The worker stops the payload 120 s before
-`published + N`, whatever `--timeout-s` has credited, and files per-phase
-evidence. Use it for short work that may run ahead of a waiting measurement:
-the pool admits such work only when its deadline falls strictly before that
-measurement's original opportunity, and only after a person has recorded
-acceptance of the settlement assumption (`python -m
+`--lifetime-s N` (pool transport, 180 s to 7 days) is a different bound: its
+deadline covers the whole life of the action, from publication to the return of
+its resources, not only the payload. The last 120 s depend on prompt answers
+from the kernel, the broker and the mount. The worker stops the payload 120 s
+before `published + N`, whatever `--timeout-s` has credited, and files
+per-phase evidence. Use it for short work that may run ahead of a waiting
+measurement: the pool admits such work only when its deadline falls strictly
+before that measurement's original opportunity, and only after a person has
+recorded acceptance of the settlement assumption (`python -m
 prismabuild.lifetime_acceptance`; an agent never records it, and without it the
 work waits as before). It never returns resources on a timer. A call that never
 returns keeps its tokens until settlement is proved.
