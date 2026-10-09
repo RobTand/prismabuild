@@ -3529,16 +3529,19 @@ chmod 0600 ~/.config/prismabuild/movement-approval.key
 # Then, as an administrator, on each fleet host that claims work:
 pb_enrollment_dir=$(mktemp -d /tmp/pb-movement-enrollment.XXXXXX)
 cp /mnt/shared/prismabuild-fleet/repo/tools/fleet/install_movement_publisher.sh \
-   /mnt/shared/prismabuild-fleet/repo/src/prismabuild/runtime_publication.py "$pb_enrollment_dir/"
+   /mnt/shared/prismabuild-fleet/repo/src/prismabuild/{runtime_publication,digest_primitives}.py "$pb_enrollment_dir/"
 sudo bash "$pb_enrollment_dir/install_movement_publisher.sh" --approval-key-file /tmp/movement-approval.key
 ```
 
-Stage both files on local storage as the publishing user, so NFS root squash stays on.
-The installer puts `runtime_publication.py` under the root-owned `/opt/prismabuild`,
-writes `/etc/prismabuild/movement-publish.json` (the live runtime pointer, the
-generation store and the status file), writes the verification secret root-only
-(`/etc/prismabuild/movement-approval.key`, 0400) and enables `prismabuild-movement-publish.timer`.
+Stage all three files on local storage as the publisher, so NFS root squash stays on.
+The installer puts both Python files under the root-owned `/opt/prismabuild`.
+It writes `/etc/prismabuild/movement-publish.json` with the runtime pointer, generation store, and status path.
+It writes the verification secret to `/etc/prismabuild/movement-approval.key` with root ownership and mode 0400.
+It enables `prismabuild-movement-publish.timer`.
 It refuses an install under an ancestor that has no root custody.
+The program uses isolated Python and imports the digest owner from that directory.
+The digest owner supplies SHA-256 and sorted JSON without a package installation.
+These functions preserve receipt bytes and signature inputs.
 
 **What the timer does.** The timer reads the live pointer once a minute.
 It requires a valid `<generation>.approval` before it creates a protected copy.

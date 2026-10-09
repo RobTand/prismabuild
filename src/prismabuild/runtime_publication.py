@@ -27,7 +27,6 @@ import argparse
 import errno
 import fcntl
 import functools
-import hashlib
 import json
 import math
 import os
@@ -39,6 +38,14 @@ import stat
 import sys
 import tempfile
 import time
+
+if __package__:
+    from .digest_primitives import new_sha256, raw_sha256, sorted_json
+else:
+    # The root installer ships the same digest owner beside this program.
+    # Isolated Python does not add the script directory to its import path.
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from digest_primitives import new_sha256, raw_sha256, sorted_json
 
 PROTECTED_GENERATION_STORE = Path("/opt/prismabuild/movement-generations")
 PUBLICATION_RECORD = "MOVEMENT_PUBLICATION.json"
@@ -129,7 +136,7 @@ def _receipt_sha256(path: Path) -> str:
     """Digest of one receipt file, read again only when the file changed."""
     key = (str(path), _stamp(path))
     if key not in _RECEIPT_SHA:
-        _RECEIPT_SHA[key] = hashlib.sha256(_regular_bytes(path)).hexdigest()
+        _RECEIPT_SHA[key] = raw_sha256(_regular_bytes(path))
     return _RECEIPT_SHA[key]
 
 
@@ -183,7 +190,7 @@ def publish_generation(source: Path, *, receipt_sha256: str) -> Path:
     if _GENERATION.fullmatch(source.name) is None:
         raise ValueError("invalid movement generation name")
     raw = _regular_bytes(source / "RUNTIME_VERSION.json")
-    if hashlib.sha256(raw).hexdigest() != receipt_sha256:
+    if raw_sha256(raw) != receipt_sha256:
         raise ValueError("runtime receipt differs from the selected digest")
     receipt = _receipt(raw, source.name)
     store = PROTECTED_GENERATION_STORE
@@ -214,18 +221,18 @@ def publish_generation(source: Path, *, receipt_sha256: str) -> Path:
                 if member.resolve(strict=True) != member:
                     raise ValueError(f"runtime member is a symlink: {name}")
                 data = _regular_bytes(member)
-                if hashlib.sha256(data).hexdigest() != expected:
+                if raw_sha256(data) != expected:
                     raise ValueError(f"runtime member digest differs: {name}")
                 copied = stage / name
                 _create_directories(copied.parent)
                 copied.write_bytes(data)
                 copied.chmod(0o555 if member.stat().st_mode & 0o111 else 0o444)
             (stage / "RUNTIME_VERSION.json").write_bytes(raw)
-            (stage / PUBLICATION_RECORD).write_text(json.dumps({
+            (stage / PUBLICATION_RECORD).write_text(sorted_json({
                 "schema": PUBLICATION_SCHEMA, "generation": source.name,
                 "receipt_sha256": receipt_sha256,
                 "published_unix": time.time(),
-            }, sort_keys=True) + "\n", encoding="utf-8")
+            }) + "\n", encoding="utf-8")
             for entry in stage.rglob("*"):
                 if entry.is_file():
                     with entry.open("rb") as stream:
@@ -270,7 +277,7 @@ def _read_approval_key() -> bytes:
 def approval_hmac(receipt_sha256: str, key: bytes) -> str:
     """The approval tag for ``receipt_sha256`` under ``key`` (#1659)."""
     import hmac as _hmac_mod
-    return _hmac_mod.new(key, receipt_sha256.encode("utf-8"), hashlib.sha256).hexdigest()
+    return _hmac_mod.new(key, receipt_sha256.encode("utf-8"), new_sha256).hexdigest()
 
 
 def _valid_approval(store: Path, generation: str, digest: str) -> bool:
@@ -334,7 +341,7 @@ def _write_status(path: Path, record: Mapping[str, object]) -> None:
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        temporary.write_text(json.dumps(record, sort_keys=True) + "\n", encoding="utf-8")
+        temporary.write_text(sorted_json(record) + "\n", encoding="utf-8")
         temporary.chmod(0o644)
         os.replace(temporary, path)
     except OSError:
@@ -363,7 +370,7 @@ def converge(config: Mapping[str, object], *, now: float | None = None) -> dict[
         if live.parent != store or _GENERATION.fullmatch(live.name) is None:
             raise ValueError("the live runtime is not a generation of the enrolled store")
         result["generation"] = live.name
-        digest = hashlib.sha256(_regular_bytes(live / "RUNTIME_VERSION.json")).hexdigest()
+        digest = raw_sha256(_regular_bytes(live / "RUNTIME_VERSION.json"))
         if not _valid_approval(store, live.name, digest):
             raise PermissionError(
                 "the live generation has no valid publisher approval; "
@@ -411,7 +418,7 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         result = {"schema": STATUS_SCHEMA, "state": "error",
                   "error": f"{type(exc).__name__}: {exc}"}
-    print(json.dumps(result, sort_keys=True))
+    print(sorted_json(result))
     return 0 if result["state"] in ("current", "published") else 1
 
 
@@ -454,7 +461,7 @@ def _published_root(root: Path) -> tuple[dict, str] | None:
     if key not in _ROOTS:
         authority = json.loads(_regular_bytes(record_path))
         raw = _regular_bytes(receipt_path)
-        digest = hashlib.sha256(raw).hexdigest()
+        digest = raw_sha256(raw)
         if (not isinstance(authority, dict)
                 or authority.get("schema") != PUBLICATION_SCHEMA
                 or authority.get("generation") != root.name
@@ -497,7 +504,7 @@ def published_member(path: Path) -> Path | None:
         expected = published[0]["files"].get("/".join(relative[1:]))
         key = (str(resolved), _stamp(resolved), expected)
         if key not in _MEMBERS:
-            if expected != hashlib.sha256(_regular_bytes(resolved)).hexdigest():
+            if expected != raw_sha256(_regular_bytes(resolved)):
                 return None
             _MEMBERS.add(key)
         return resolved

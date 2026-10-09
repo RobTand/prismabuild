@@ -8,9 +8,9 @@
 # publisher account can write: give this installer the 64-hex verification
 # secret once (``--approval-key HEX`` or ``--approval-key-file PATH``).
 # A generation without a valid approval gets no copy, and the host keeps the
-# behaviour it had before the reservation, and nothing is refused.  A fresh copy
-# grants no reservation authority until it matures (600 s), so pre-copy retained
-# rows drain first.
+# behaviour it had before the reservation, and nothing is refused. A fresh copy
+# grants no reservation authority until it matures (600 s). Claim admission
+# also proves that every unqualified movement row on this host has ended.
 #
 # Like the client upgrader (docs/client_upgrade.md), this delegates one act to
 # the dedicated publisher account: root copies what that account approved, after
@@ -19,11 +19,11 @@
 # that does not own the runtime store (0600, publisher-only). A person approves
 # that principal once.
 #
-# Stage this file and runtime_publication.py on local storage as the
-# publishing user (NFS root squash stays on), then run it as root:
+# Stage this file, runtime_publication.py, and digest_primitives.py on local
+# storage as the publishing user (NFS root squash stays on), then run as root:
 #   dir=$(mktemp -d /tmp/pb-movement-enrollment.XXXXXX)
 #   cp /mnt/shared/prismabuild-fleet/repo/tools/fleet/install_movement_publisher.sh \
-#      /mnt/shared/prismabuild-fleet/repo/src/prismabuild/runtime_publication.py "$dir/"
+#      /mnt/shared/prismabuild-fleet/repo/src/prismabuild/{runtime_publication,digest_primitives}.py "$dir/"
 #   sudo bash "$dir/install_movement_publisher.sh"
 set -euo pipefail
 umask 022
@@ -53,6 +53,11 @@ if [ ! -f "$module" ]; then
     echo 'runtime_publication.py must sit beside this installer' >&2
     exit 1
 fi
+owner="$source_dir/digest_primitives.py"
+if [ ! -f "$owner" ]; then
+    echo 'digest_primitives.py must sit beside this installer' >&2
+    exit 1
+fi
 # Root custody is the point: refuse an install under an ancestor that anyone
 # else can write or that is a link.
 for ancestor in /opt /etc /var/lib; do
@@ -67,6 +72,7 @@ install -d -o root -g root -m 0755 /opt/prismabuild/movement-generations
 install -d -o root -g root -m 0755 /etc/prismabuild
 install -d -o root -g root -m 0755 /var/lib/prismabuild-movement-publish
 install -o root -g root -m 0644 "$module" /opt/prismabuild/runtime_publication.py
+install -o root -g root -m 0644 "$owner" /opt/prismabuild/digest_primitives.py
 printf '%s\n' "$approval_key" > /etc/prismabuild/movement-approval.key
 chmod 0400 /etc/prismabuild/movement-approval.key
 chown root:root /etc/prismabuild/movement-approval.key

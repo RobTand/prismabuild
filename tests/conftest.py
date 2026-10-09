@@ -71,6 +71,11 @@ if str(_FLEET_TOOLS) not in sys.path:
     sys.path.insert(0, str(_FLEET_TOOLS))
 import pbstatus  # noqa: E402
 import prismabuild.core as pb_core  # noqa: E402
+# A private consumer suite can reuse this conftest through a symlink.
+# Resolve its helper directory from the source, not from the consumer's cwd.
+_TEST_HELPERS = str(Path(__file__).resolve().parent)
+if _TEST_HELPERS not in sys.path:
+    sys.path.append(_TEST_HELPERS)
 # Shared by the gang tests, whichever module imports ``gang_fleet``: a host that
 # holds the protected copy of the generation it runs (#1579, #1659).
 from movement_publication_support import movement_authority, publication_store  # noqa: E402,F401

@@ -464,13 +464,18 @@ INSTALLER = Path(__file__).resolve().parents[1] / "tools" / "fleet" / "install_m
 PROGRAM = Path(publication.__file__).resolve()
 
 
-def test_the_installed_program_runs_standalone_and_refuses_a_submitter():
-    """It is installed alone under a root-owned directory and run with ``-I``: no package imports."""
+def test_the_installed_program_runs_standalone_and_refuses_a_submitter(tmp_path):
+    """The installed program uses isolated Python and the shipped digest owner."""
+    import shutil
     import subprocess
     import sys
+    from prismabuild import digest_primitives
     if os.geteuid() == 0:
         pytest.skip("the refusal is for a submitter")
-    done = subprocess.run([sys.executable, "-I", str(PROGRAM), "--config", "/nonexistent"],
+    installed = tmp_path / "runtime_publication.py"
+    shutil.copyfile(PROGRAM, installed)
+    shutil.copyfile(digest_primitives.__file__, tmp_path / "digest_primitives.py")
+    done = subprocess.run([sys.executable, "-I", str(installed), "--config", "/nonexistent"],
                           capture_output=True, text=True, timeout=60)
     assert done.returncode == 2, (done.stdout, done.stderr)
     assert "requires root authority" in done.stderr

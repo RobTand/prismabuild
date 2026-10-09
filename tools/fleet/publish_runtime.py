@@ -682,12 +682,13 @@ def _fsync_directory(path: Path) -> None:
 
 
 def _write_receipt(path: Path, receipt: dict[str, object]) -> str:
+    from prismabuild.digest_primitives import raw_sha256
     raw = (json.dumps(receipt, indent=1) + "\n").encode("utf-8")
     with path.open("wb") as handle:
         handle.write(raw)
         handle.flush()
         os.fsync(handle.fileno())
-    return hashlib.sha256(raw).hexdigest()
+    return raw_sha256(raw)
 
 
 def _probe(root: Path) -> None:

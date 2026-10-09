@@ -5182,19 +5182,22 @@ alter a copy. Copies are append-only and are made without executing a byte of th
 A mover that runs from the copy imports from the copy, so its imports are as
 protected as the tool.
 
-**Publication without a person.** No root step runs per generation. A host is
-enrolled once, by an administrator, with `tools/fleet/install_movement_publisher.sh
---approval-key HEX`. That installs `runtime_publication.py` into the root-owned
-`/opt/prismabuild`, a root-owned settings file, a root-only verification secret
-(`/etc/prismabuild/movement-approval.key`, 0400) and a root timer,
-`prismabuild-movement-publish.timer`. Once a minute the timer's unit runs
-`runtime_publication.converge`: it reads the live runtime pointer of the enrolled
-generation store. It requires a publisher approval before it creates a copy.
+**Publication without a person.** No root step runs per generation.
+An administrator enrolls each host once with `tools/fleet/install_movement_publisher.sh --approval-key HEX`.
+The installer puts `runtime_publication.py` and `digest_primitives.py` under the root-owned `/opt/prismabuild`.
+It installs root-owned settings, a mode-0400 verification secret, and `prismabuild-movement-publish.timer`.
+The secret path is `/etc/prismabuild/movement-approval.key`.
+The timer calls `runtime_publication.converge` once a minute.
+The program reads the live runtime pointer from the enrolled store.
+It requires publisher approval before it creates a copy.
 The `<generation>.approval` sibling contains an HMAC of the trusted receipt digest.
 `publish_runtime.py` constructs the receipt bytes and retains their digest in memory.
 Its signer consumes that digest, not a receipt read from the exposed store.
 A replacement generation therefore cannot obtain approval for its replacement bytes.
 The timer verifies the exposed receipt and every member against that approval.
+The root program uses the standard-library digest owner beside its installed source.
+Isolated Python imports that owner only from the installed directory.
+The publisher and root program preserve the existing receipt and signature formats.
 
 The dedicated publisher account holds its 0600 secret outside submitter and store-owner accounts.
 A same-account key is refused. An administrator approves the account and enrolls each host once.
