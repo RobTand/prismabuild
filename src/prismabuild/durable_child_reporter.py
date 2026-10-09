@@ -30,6 +30,7 @@ class DurableChildReporter:
         parent_key: str,
         plan_key: str,
         child_keys: Sequence[str],
+        controller_state: str | Path,
         child_requests: Mapping[str, Mapping[str, Any]] | None = None,
         phase: str | None = None,
         unit: str | None = None,
@@ -38,6 +39,7 @@ class DurableChildReporter:
         self.parent_key = str(parent_key)
         self.plan_key = str(plan_key)
         self.child_keys = [str(key) for key in child_keys]
+        self.controller_state = str(controller_state)
         self.child_requests = (
             {str(key): dict(request)
              for key, request in dict(child_requests or {}).items()})
@@ -48,12 +50,14 @@ class DurableChildReporter:
         self.verified: dict[str, dict[str, Any]] = {}
 
     def _request_of(self, child_key: str) -> Mapping[str, Any] | None:
-        if child_key in self.child_requests:
-            return self.child_requests[child_key]
         try:
-            return self.cas.read_action_request(child_key)
+            request = self.cas.read_action_request(child_key)
         except (OSError, ValueError):
             return None
+        supplied = self.child_requests.get(child_key)
+        if supplied is not None and supplied != request:
+            return None
+        return request
 
     def _membership_of(self) -> tuple[Mapping[str, Any] | None, Mapping[str, Any] | None]:
         from . import decomposition as decomposition_mod
@@ -132,9 +136,17 @@ class DurableChildReporter:
     def newly_durable(self) -> list[str]:
         """Distinct children durable since the baseline, in key order."""
 
+        from .pool import PoolQueue
+
+        custody, _ = PoolQueue._awaited_controller_custody(
+            self.controller_state, parent_key=self.parent_key, plan_key=self.plan_key)
+        if custody is None:
+            return []
         fresh: list[str] = []
         for child_key in sorted(set(self.child_keys)):
             if child_key in self.baseline or child_key in self.counted:
+                continue
+            if child_key not in custody or not custody[child_key]["confirmed"]:
                 continue
             manifest = self._verifies(child_key)
             if manifest is None:
@@ -167,6 +179,7 @@ def run_reporter(
     parent_key: str,
     plan_key: str,
     child_keys: Sequence[str],
+    controller_state: str | Path,
     child_requests: Mapping[str, Mapping[str, Any]] | None = None,
     phase: str | None = None,
     unit: str | None = None,
@@ -178,6 +191,7 @@ def run_reporter(
     reporter = DurableChildReporter(
         cas=cas, parent_key=parent_key, plan_key=plan_key,
         child_keys=child_keys, child_requests=child_requests,
+        controller_state=controller_state,
         phase=phase, unit=unit)
     reporter.establish_baseline()
     reporter.commit()
@@ -191,7 +205,3 @@ def run_reporter(
         time.sleep(max(0.1, float(poll_s)))
 
 
-def reporter_state_path(progress_path: str | Path) -> str:
-    """Where a coordinator's reporter keeps its baseline, beside progress."""
-
-    return str(progress_path) + ".durable-children"

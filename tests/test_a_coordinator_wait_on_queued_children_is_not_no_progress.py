@@ -658,6 +658,7 @@ def test_the_reporter_counts_one_unit_per_newly_durable_child(
     reporter = DurableChildReporter(
         cas=cas, parent_key=plan["parent_key"], plan_key=plan["plan_key"],
         child_keys=[child["action_key"] for child in children],
+        controller_state=_controller_state(tmp_path, children),
         child_requests={child["action_key"]: child for child in children},
         phase="run")
     assert reporter.establish_baseline() == set()
@@ -699,6 +700,7 @@ def test_children_durable_at_start_count_zero(tmp_path: Path) -> None:
     reporter = DurableChildReporter(
         cas=cas, parent_key=plan["parent_key"], plan_key=plan["plan_key"],
         child_keys=[child["action_key"] for child in children],
+        controller_state=_controller_state(tmp_path, children),
         child_requests={child["action_key"]: child for child in children},
         phase="run")
     assert reporter.establish_baseline() == {children[0]["action_key"]}
@@ -712,6 +714,7 @@ def test_a_non_verifying_child_counts_zero(tmp_path: Path) -> None:
     cas, plan, children = _batch(tmp_path)
     reporter = DurableChildReporter(
         cas=cas, parent_key=plan["parent_key"], plan_key=plan["plan_key"],
+        controller_state=_controller_state(tmp_path, children),
         child_keys=["e" * 64], child_requests={}, phase="run")
     assert reporter.establish_baseline() == set()
     assert reporter.newly_durable() == []
@@ -738,6 +741,7 @@ def test_a_reporter_rejects_a_manifest_for_another_ordinal(
     reporter = DurableChildReporter(
         cas=cas, parent_key=plan["parent_key"], plan_key=plan["plan_key"],
         child_keys=[other["action_key"]],
+        controller_state=_controller_state(tmp_path, children),
         child_requests={other["action_key"]: children[0]}, phase="run")
     assert reporter.establish_baseline() == set()
     assert reporter.newly_durable() == []
@@ -931,6 +935,7 @@ def test_a_child_with_three_tasks_counts_one_unit(tmp_path: Path) -> None:
     reporter = DurableChildReporter(
         cas=cas, parent_key=plan["parent_key"], plan_key=plan["plan_key"],
         child_keys=[child["action_key"]],
+        controller_state=_controller_state(tmp_path, [child]),
         child_requests={child["action_key"]: child}, phase="run")
     assert reporter.establish_baseline() == {child["action_key"]}
     assert reporter.units == 0
@@ -943,14 +948,11 @@ def test_a_pending_only_child_earns_no_credit(tmp_path: Path) -> None:
     cas, plan, children = _batch(tmp_path)
     queue = _queue(tmp_path, cas)
     state = _controller_state(tmp_path, [], name="controller-pending")
-    (state / "wave-state.json").write_text(json.dumps({"waves": [{
-        "wave": 1, "closed": False,
-        "members": [{"batch": "pending_submission",
-                     "key": children[0]["action_key"]}]}]}))
-    (state / "sub-keys.txt").write_text(
-        f"pending_submission {children[0]['action_key']}\n")
+    (state / "wave-state.json").write_text(json.dumps({
+        "waves": [], "pending_submission": {
+            "batch": "child-00000", "key": children[0]["action_key"]}}))
     awaited = _awaited(plan, state)
-    # Intent only, in both files: the admitted set stays empty.
+    # The routed writer saves intent at the state level, not as a member.
     assert _admitted(queue, cas, plan, state) == {}
     verdict = queue.queued_child_wait_verdict(
         "c" * 64, cas_root=str(cas.root), awaited=awaited, admitted={})
@@ -1037,7 +1039,9 @@ def test_a_key_in_one_custody_file_earns_no_credit(tmp_path: Path) -> None:
     custody, refusal = queue._awaited_controller_custody(
         str(state), parent_key=plan["parent_key"], plan_key=plan["plan_key"])
     assert refusal == ""
-    assert custody == {children[0]["action_key"]: "child-00000"}, custody
+    assert custody == {
+        children[0]["action_key"]: {"batch": "child-00000", "confirmed": True},
+        children[1]["action_key"]: {"batch": "child-00001", "confirmed": False}}, custody
     assert set(_admitted(queue, cas, plan, state)) == {
         children[0]["action_key"]}
 
@@ -1211,25 +1215,198 @@ def test_a_blocked_interval_never_refunds(tmp_path: Path) -> None:
             phases=(pool.ProgressPhase("run", 60.0, None),),
             ceiling_s=None, awaited_batch=awaited),
         started=90.0)
-    first = queue.queued_child_wait_verdict(
-        "c" * 64, cas_root=str(cas.root), awaited=awaited,
-        admitted=_admitted(queue, cas, plan, state), prior=None)
+    item = {"action_key": "c" * 64, "cas_root": str(cas.root)}
+    queue._sample_queued_child_wait(
+        item, item["action_key"], watch, watch.policy, now=100.0)
+    first = watch.queued_child_wait
     assert first["exempt"] is False
     assert first["missing"] == [children[1]["action_key"]], first
     assert "since_monotonic" not in first
-    first["sample_monotonic"] = 100.0
-    watch.queued_child_wait = dict(first)
     queue.publish(
         action_key=children[1]["action_key"], cas_root=cas.root,
         checkout_root=checkout, worker_script="/bin/true")
-    second = queue.queued_child_wait_verdict(
-        "c" * 64, cas_root=str(cas.root), awaited=awaited,
-        admitted=_admitted(queue, cas, plan, state),
-        prior=watch.queued_child_wait)
-    # The newly live child is a baseline on its first look, so this
-    # interval cannot credit: the blocked gap earns nothing, and only a
-    # later interval with a carried child can, from its own start.
+    queue._sample_queued_child_wait(
+        item, item["action_key"], watch, watch.policy, now=110.0)
+    second = watch.queued_child_wait
+    assert second["exempt"] is False
+    assert "since_monotonic" not in second
     entries = {entry["key"]: entry for entry in second["children"]}
     assert entries[children[1]["action_key"]]["evidence"] == "baseline"
     assert watch.queued_child_wait_exempt_s == 0.0
+    assert watch.stall_deadline() == 150.0
+    queue._sample_queued_child_wait(
+        item, item["action_key"], watch, watch.policy, now=120.0)
+    assert watch.queued_child_wait["exempt"] is True
+    assert watch.queued_child_wait_exempt_s == 10.0
+    assert watch.stall_deadline() == 160.0
 
+
+@pytest.mark.parametrize("refusal", [
+    "missing-row", "unreadable-row", "unreadable-request",
+    "unreadable-custody", "unreadable-plan",
+])
+def test_recovery_requires_two_valid_endpoints(
+        tmp_path: Path, refusal: str) -> None:
+    """Recovery grants no credit until both samples have valid custody."""
+
+    cas, plan, children = _batch(tmp_path)
+    queue = _queue(tmp_path, cas)
+    checkout = tmp_path / "held-src"
+    checkout.mkdir()
+    (checkout / "t.py").write_text("x")
+    for child in children[:2]:
+        queue.publish(
+            action_key=child["action_key"], cas_root=cas.root,
+            checkout_root=checkout, worker_script="/bin/true")
+    state = _controller_state(tmp_path, children[:2])
+    awaited = _awaited(plan, state)
+    policy = pool.ProgressPolicy(
+        phases=(pool.ProgressPhase("run", 60.0, None),),
+        ceiling_s=None, awaited_batch=awaited)
+    watch = pool.ProgressWatch(
+        tmp_path / "progress.json", "t" * 32, policy, started=90.0)
+    item = {"action_key": "c" * 64, "cas_root": str(cas.root)}
+    queue._sample_queued_child_wait(item, item["action_key"], watch, policy, now=100.0)
+    assert watch.queued_child_wait["exempt"] is False
+    queue._sample_queued_child_wait(item, item["action_key"], watch, policy, now=110.0)
+    assert watch.queued_child_wait_exempt_s == 10.0
+    assert watch.stall_deadline() == 160.0
+
+    key = children[1]["action_key"]
+    paths = {
+        "missing-row": queue.item_path(pool.READY, key),
+        "unreadable-row": queue.item_path(pool.READY, key),
+        "unreadable-request": cas.root / "requests" / key[:2] / f"{key}.json",
+        "unreadable-custody": state / "wave-state.json",
+        "unreadable-plan": (
+            cas.root / "decompositions" / plan["parent_key"][:2]
+            / plan["parent_key"] / "plan.json"),
+    }
+    path = paths[refusal]
+    original = path.read_bytes()
+    path.unlink()
+    if refusal != "missing-row":
+        path.write_bytes(b"not JSON")
+    queue._sample_queued_child_wait(item, item["action_key"], watch, policy, now=120.0)
+    assert watch.queued_child_wait["exempt"] is False
+    assert watch.queued_child_wait_exempt_s == 10.0
+    assert watch.stall_deadline() == 160.0
+
+    path.write_bytes(original)
+    queue._sample_queued_child_wait(item, item["action_key"], watch, policy, now=130.0)
+    assert watch.queued_child_wait["exempt"] is False
+    assert "since_monotonic" not in watch.queued_child_wait
+    assert watch.queued_child_wait_exempt_s == 10.0
+    assert watch.stall_deadline() == 160.0
+    queue._sample_queued_child_wait(item, item["action_key"], watch, policy, now=140.0)
+    assert watch.queued_child_wait["exempt"] is True
+    assert watch.queued_child_wait_exempt_s == 20.0
+    assert watch.stall_deadline() == 170.0
+
+
+def test_the_fixed_writer_optional_fields_do_not_grant_credit(tmp_path: Path) -> None:
+    """The fa37751 optional fields are typed diagnostics, not child progress."""
+
+    cas, plan, children = _batch(tmp_path)
+    queue = _queue(tmp_path, cas)
+    state = _controller_state(tmp_path, [children[0]])
+    value = json.loads((state / "wave-state.json").read_text())
+    value.update({
+        "pending_submission": {"batch": "child-00001", "key": children[1]["action_key"]},
+        "last_completion": {"status": "done", "action_key": children[0]["action_key"]},
+        "wait_reason": "ship",
+        "last_disk_check": {"action_key": children[1]["action_key"], "evidence": {"pass": True}},
+        "disk_checks": [{"action_key": children[1]["action_key"], "evidence": {"pass": True}}],
+    })
+    value["waves"][0]["members"][0]["published_unix"] = 123.0
+    (state / "wave-state.json").write_text(json.dumps(value))
+    admitted = _admitted(queue, cas, plan, state)
+    assert set(admitted) == {children[0]["action_key"]}
+    verdict = queue.queued_child_wait_verdict(
+        "c" * 64, cas_root=str(cas.root), awaited=_awaited(plan, state),
+        admitted=admitted)
+    assert verdict["exempt"] is False
+    assert verdict["missing"] == [children[0]["action_key"]]
+
+
+@pytest.mark.parametrize(("name", "bad"), [
+    ("pending_submission", []), ("last_completion", "done"),
+    ("wait_reason", 1), ("last_disk_check", []), ("disk_checks", {}),
+    ("published_unix", True), ("writer_drift", 1),
+])
+def test_bad_optional_fields_refuse_and_name_the_field(
+        tmp_path: Path, name: str, bad: object) -> None:
+    """A field error refuses the whole read and appears in the observation."""
+
+    cas, plan, children = _batch(tmp_path)
+    queue = _queue(tmp_path, cas)
+    state = _controller_state(tmp_path, children[:1])
+    value = json.loads((state / "wave-state.json").read_text())
+    if name == "published_unix":
+        value["waves"][0]["members"][0][name] = bad
+    else:
+        value[name] = bad
+    (state / "wave-state.json").write_text(json.dumps(value))
+    policy = pool.ProgressPolicy(
+        phases=(pool.ProgressPhase("run", 60.0, None),),
+        ceiling_s=None, awaited_batch=_awaited(plan, state))
+    watch = pool.ProgressWatch(tmp_path / "progress.json", "t" * 32, policy, started=0.0)
+    item = {"action_key": "c" * 64, "cas_root": str(cas.root)}
+    queue._sample_queued_child_wait(item, item["action_key"], watch, policy, now=100.0)
+    assert watch.queued_child_wait["exempt"] is False
+    assert name in watch.queued_child_wait["reason"]
+    assert watch.queued_child_wait_exempt_s == 0.0
+
+
+@pytest.mark.parametrize("conflict", ["same-key", "same-batch"])
+def test_conflicting_custody_mappings_refuse_the_whole_read(
+        tmp_path: Path, conflict: str) -> None:
+    """Neither file can hide a conflicting candidate in the other file."""
+
+    cas, plan, children = _batch(tmp_path)
+    queue = _queue(tmp_path, cas)
+    state = _controller_state(tmp_path, children[:1])
+    if conflict == "same-key":
+        line = f"child-00001 {children[0]['action_key']}\n"
+    else:
+        line = f"child-00000 {children[1]['action_key']}\n"
+    (state / "sub-keys.txt").write_text(line)
+    custody, refusal = queue._awaited_controller_custody(
+        str(state), parent_key=plan["parent_key"], plan_key=plan["plan_key"])
+    assert custody is None
+    assert "two" in refusal
+    assert _admitted(queue, cas, plan, state) == {}
+
+
+def test_the_reporter_requires_confirmed_custody_even_with_a_durable_result(
+        tmp_path: Path) -> None:
+    """Prepared work and intent cannot produce progress from a CAS receipt."""
+
+    cas, plan, children = _batch(tmp_path)
+    queue = _queue(tmp_path, cas)
+    state = _controller_state(tmp_path, [])
+    key = children[0]["action_key"]
+    reporter = DurableChildReporter(
+        cas=cas, parent_key=plan["parent_key"], plan_key=plan["plan_key"],
+        child_keys=[key, key], controller_state=state, phase="run")
+    assert reporter.establish_baseline() == set()
+    checkout = tmp_path / "run-src"
+    checkout.mkdir()
+    (checkout / "t.py").write_text("x")
+    worker = Path(__file__).resolve().parents[1] / "tools" / "prismabuild_worker.py"
+    queue.publish(action_key=key, cas_root=cas.root, checkout_root=checkout, worker_script=worker)
+    outcome = queue.execute(queue.claim(), timeout_s=60.0, heartbeat_s=0.05, timeout_grace_s=0.2)
+    assert outcome["status"] == "executed", outcome
+    queue.finish(key, status="executed", detail=outcome)
+    queue.item_path(pool.DONE, key).unlink()
+    assert reporter.newly_durable() == []
+    (state / "wave-state.json").write_text(json.dumps({
+        "waves": [], "pending_submission": {"batch": "child-00000", "key": key}}))
+    assert reporter.newly_durable() == []
+    (state / "wave-state.json").write_text(json.dumps({"waves": [{
+        "wave": 1, "closed": False, "members": [{"batch": "child-00000", "key": key}]}]}))
+    assert reporter.newly_durable() == []
+    (state / "sub-keys.txt").write_text(f"child-00000 {key}\n")
+    assert reporter.newly_durable() == [key]
+    assert reporter.units == 1
+    assert reporter.newly_durable() == []

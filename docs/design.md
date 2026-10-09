@@ -12650,23 +12650,45 @@ ordinal equals its position in the stored publication's
 there. A child with other keys, with no `logical_batch`, with a foreign
 ordinal or task set, or with an unreadable sealed request earns none. A
 first sighting is a baseline and earns no credit; a child live at both
-ends of the interval is carried and credits only that interval's span. A
-replacement child is a new baseline. A blocked interval earns nothing and
-is never refunded later. A child that ends keeps the credit its verified
-intervals earned. The `no_progress` rung judges only the interval since
-the last sample. The credit uses the shared `_credit` arithmetic and
-invents no threshold.
+ends of the interval is carried and credits only that interval's span.
+A replacement child is a new baseline.
+A blocked interval earns nothing and receives no later credit.
+A child that ends keeps the credit its verified intervals earned.
+The `no_progress` rung judges only the interval since the last sample.
+The credit uses the shared `_credit` arithmetic and adds no threshold.
 
-**The awaited set.** The set of awaited children is the SDK-confirmed
-admitted or attached set: the controller's own accepted members, read
-from the sealed controller-state directory under an exact shape check
-(`wave-state.json` holds exactly `waves`, each wave exactly `closed`,
-`members` and `wave`, each member exactly `batch` and a 64-hex `key`;
-`sub-keys.txt` holds one `<batch> <key>` pair per line). A child is
-awaited only when both files name its key with the same batch; a key in
-one file only earns no credit. An unreadable file, an unknown shape, a
-missing or malformed member, a key outside the plan, or any read that
-fails refuses the credit rather than guessing. Every member is validated
+Both endpoints must have valid custody and no unresolved missing member.
+Recovery establishes a new valid sample but grants no credit across the refused endpoint.
+The next fully eligible interval can receive credit.
+
+**The awaited set.** The controller's accepted members define the SDK-confirmed admitted or attached set.
+The worker uses the closed typed projection `CONTROLLER_CUSTODY_SCHEMA_V1`
+(`prismabuild.d44_controller_custody.v1`) for the fixed `fa37751` routed writer.
+`wave-state.json` requires `waves`.
+Each wave requires exactly `wave` (integer), `closed` (boolean), and `members` (list).
+Each member requires `batch` (nonempty string) and `key` (64-hex action key).
+The member can also have `published_unix` (finite nonnegative number).
+The state accepts these optional fields:
+
+| Field | Type |
+| --- | --- |
+| `pending_submission` | An object with exactly `batch` (nonempty string) and `key` (64-hex action key) |
+| `last_completion` | An object from the native completion reader |
+| `wait_reason` | A string |
+| `last_disk_check` | An object with exactly `action_key` (64-hex) and `evidence` (an object from the disk checker) |
+| `disk_checks` | A list of `last_disk_check` objects |
+
+These fields are diagnostic metadata or intent, not admission or progress proof.
+Their types come from `next_wave.py` at `fa3775151f77dc713fd78882daf6e147ab471243`.
+Unknown fields refuse the whole read and appear by name in the progress observation.
+The projection version resides in PrismaBuild; the controller files need no new schema field.
+`sub-keys.txt` requires one `<batch> <key>` pair per complete line.
+The reader checks the union of both files for conflicts.
+A key in only one file is a candidate and earns no credit.
+Two batches for one key, or two keys for one batch, refuse the whole read.
+Only matching records in both files confirm a member.
+An accepted member that becomes a candidate retains custody but earns no credit.
+Every confirmed member is validated
 against the stored plan and publication read from the coordinator's CAS
 through the native validators. A missing or unreadable stored plan or
 publication refuses the credit. A child that is only prepared or in
@@ -12692,16 +12714,21 @@ and `queued_child_wait`: every awaited child with its verified state,
 ordinal and membership keys. A `no_progress` ending's `stall.credited_s`
 carries `queued_child_wait`.
 
-**The reporter.** A reporter runs beside the coordinator
-(`prismabuild.durable_child_reporter`). It reports one unit per distinct
-child whose native CAS lookup verifies the receipt, the result blob digest
-and exact manifest membership: parent and plan match, the sealed ordinal
-equals the publication slot, the sealed task set equals the plan partition,
-and the manifest answers exactly that task set. A child with several tasks
-still counts one unit. Children already durable at start are a verified
-baseline and count zero. A non-verifying child, queue waits, admission, logs
-and heartbeats count zero. It reports through `prismabuild.progress.commit`
-only.
+**The reporter.** A reporter runs beside the coordinator (`prismabuild.durable_child_reporter`).
+It reports one unit per distinct child after the native CAS verifies the receipt, result blob digest, and exact manifest membership.
+The parent and plan must match.
+The sealed ordinal must equal the publication slot.
+The sealed task set must equal the plan partition.
+The manifest must answer exactly that task set.
+
+The reporter requires `controller_state` and reads the same closed custody projection.
+Prepared children, pending intent, and single-file candidates count zero, even with a verified durable result.
+The reporter does not require a queue record for a confirmed durable child.
+A child with several tasks still counts one unit.
+Children already durable at start are a verified baseline and count zero.
+
+A non-verifying child, queue waits, admission, logs, and heartbeats count zero.
+The reporter reports through `prismabuild.progress.commit` only.
 
 ### Every leg has a row, and a blocked reader moves its horizon (#1018)
 

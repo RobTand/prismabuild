@@ -1096,6 +1096,12 @@ MAX_STAGE_OWNERSHIP_HOLDER_BYTES = 4096
 #: fixes, and refuses every other shape without credit.
 CONTROLLER_WAVE_STATE = "wave-state.json"
 CONTROLLER_SUB_KEYS = "sub-keys.txt"
+#: Closed typed projection of the fixed fa37751 routed controller writer.
+CONTROLLER_CUSTODY_SCHEMA_V1 = "prismabuild.d44_controller_custody.v1"
+CONTROLLER_STATE_OPTIONAL_FIELDS = {
+    "pending_submission": dict, "last_completion": dict,
+    "wait_reason": str, "last_disk_check": dict, "disk_checks": list,
+}
 #: The largest controller custody read. A 287-child run states two short
 #: lines per child; a megabyte bounds abuse without bounding the run.
 MAX_CONTROLLER_CUSTODY_BYTES = 1024 * 1024
@@ -10971,6 +10977,7 @@ class PoolQueue:
             str(entry.get("key")): entry
             for entry in ((prior or {}).get("children") or ())  # type: ignore[union-attr]
             if isinstance(entry, Mapping)}
+        prior_missing = bool((prior or {}).get("missing"))
         membership = self._awaited_batch_membership(
             cas_root, parent_key=parent_key, plan_key=plan_key,
             members=members)
@@ -11062,7 +11069,7 @@ class PoolQueue:
                 entry["ordinal"] = slots.get(child_key)
             children.append(entry)
         verdict: dict[str, object] = {
-            "exempt": live and not missing, "children": children,
+            "exempt": live and not missing and not prior_missing, "children": children,
             "missing": missing,
             "parent_key": parent_key, "plan_key": plan_key,
             "checked_unix": moment}
@@ -11081,6 +11088,9 @@ class PoolQueue:
                 verdict["reason"] = (
                     "an awaited child is missing or unreadable "
                     "with no verified durable result")
+            elif prior_missing:
+                verdict["reason"] = (
+                    "the prior sample has a missing or unreadable awaited child")
             else:
                 verdict["reason"] = "no awaited child is ready or claimed"
         return verdict
@@ -11261,6 +11271,7 @@ class PoolQueue:
             self, item: Mapping[str, object], *,
             awaited: Mapping[str, object],
             retained: Mapping[str, Mapping[str, object]] | None = None,
+            custody_read: tuple[dict[str, dict[str, object]] | None, str] | None = None,
     ) -> dict[str, dict[str, object]]:
         """The SDK-confirmed admitted or attached set for one batch (#1666).
 
@@ -11270,8 +11281,8 @@ class PoolQueue:
         Anything else gives no credit: an unreadable file, an unknown
         shape, a missing or malformed member, a key outside the plan, or
         any read that fails refuses the credit rather than guessing. A
-        key named in only one of the two files earns no credit until
-        campaign defines the reconciliation. ``pending_submission``
+        key named in only one of the two files earns no credit.
+        Both files must confirm admission. ``pending_submission``
         records intent only and proves no queue admission. A stored
         child request, or membership in the plan, does not prove queued
         work either. Future prepared plan entries earn no credit.
@@ -11292,8 +11303,10 @@ class PoolQueue:
                 for key, value in dict(
                     retained if isinstance(retained, Mapping) else {}).items()
                 if _is_hex64(key)}
-        custody, refusal = self._awaited_controller_custody(
-            state_dir, parent_key=parent_key, plan_key=plan_key)
+        custody, refusal = (
+            self._awaited_controller_custody(
+                state_dir, parent_key=parent_key, plan_key=plan_key)
+            if custody_read is None else custody_read)
         if custody is None:
             # Refusal, no credit: carry the retained keys so the verdict
             # names them as missing rather than dropping custody behind
@@ -11303,29 +11316,28 @@ class PoolQueue:
             return {key: {**value, "custody_refused": refusal}
                     for key, value in keep.items()}
         members: dict[str, dict[str, object]] = {}
-        for child_key in sorted(custody):
-            if child_key in keep:
-                members[child_key] = dict(keep[child_key])
-            else:
-                members[child_key] = {"batch": custody[child_key]}
+        for child_key, candidate in sorted(custody.items()):
+            if candidate["confirmed"]:
+                members[child_key] = {"batch": candidate["batch"]}
+            elif child_key in keep:
+                members[child_key] = {
+                    **keep[child_key],
+                    "custody_refused": "a key in only one custody file is a candidate"}
         # The controller's state is the set's only writer: a key it
         # stops naming leaves the set with it. Nothing here re-adds a
         # key the custody reader drops.
         return members
 
+    @staticmethod
     def _awaited_controller_custody(
-            self, state_dir: object, *, parent_key: str, plan_key: str,
-    ) -> tuple[dict[str, str] | None, str]:
+            state_dir: object, *, parent_key: str, plan_key: str,
+    ) -> tuple[dict[str, dict[str, object]] | None, str]:
         """Accepted members from the controller's own state, or the refusal.
 
-        Reads ``wave-state.json`` and ``sub-keys.txt`` under the exact
-        shape check the D44 decision fixes (dec-1009-073628-af15): the
-        state holds exactly ``waves``, each wave exactly ``closed``,
-        ``members`` and ``wave``, each member exactly ``batch`` and a
-        64-hex ``key``; the journal holds one ``<batch> <key>`` pair per
-        line with a 64-hex key. A child is awaited only when both files
-        name its key with the same batch. Returns ``(members, "")`` with
-        ``{key: batch}``, or ``(None, reason)`` on any refusal.
+        The closed projection has version ``CONTROLLER_CUSTODY_SCHEMA_V1``.
+        Both files contribute candidates. Only agreement confirms a member.
+        Optional diagnostic fields have declared types and grant no credit.
+        Unknown fields and conflicting batch/key mappings refuse the read.
         """
 
         if not parent_key or not plan_key:
@@ -11349,7 +11361,7 @@ class PoolQueue:
                 state_raw, where="controller wave state")
         except (pb.ActionContractError, RecursionError):
             return None, f"{CONTROLLER_WAVE_STATE} is not JSON"
-        state_members, reason = self._awaited_wave_members(state_value)
+        state_members, reason = PoolQueue._awaited_wave_members(state_value)
         if state_members is None:
             return None, reason
         try:
@@ -11361,36 +11373,62 @@ class PoolQueue:
         except (OSError, pb.ActionContractError, pb.CASTamperError,
                 pb.CASUnavailableError, pb.ReplacedRecordError) as exc:
             return None, f"{CONTROLLER_SUB_KEYS} is unreadable: {type(exc).__name__}"
-        journal_members, reason = self._awaited_journal_members(journal_raw)
+        journal_members, reason = PoolQueue._awaited_journal_members(journal_raw)
         if journal_members is None:
             return None, reason
-        members: dict[str, str] = {}
-        for key, batch in state_members.items():
-            if journal_members.get(key) == batch:
-                members[key] = batch
-        # A key named in only one of the two files earns no credit: the
-        # reconciliation is undefined until campaign defines it, so the
-        # credit never rests on one file's word alone.
-        return members, ""
+        combined = dict(state_members)
+        batches = {batch: key for key, batch in state_members.items()}
+        for key, batch in journal_members.items():
+            if key in combined and combined[key] != batch:
+                return None, f"custody names {key[:12]} for two batches"
+            if batch in batches and batches[batch] != key:
+                return None, f"custody names batch {batch} for two keys"
+            combined[key] = batch
+            batches[batch] = key
+        return {
+            key: {"batch": batch,
+                  "confirmed": state_members.get(key) == journal_members.get(key)}
+            for key, batch in combined.items()}, ""
 
     @staticmethod
     def _awaited_wave_members(
             value: object) -> tuple[dict[str, str] | None, str]:
         """Accepted ``{key: batch}`` from ``wave-state.json``, or the refusal."""
 
-        if not isinstance(value, Mapping) or set(value) != {"waves"}:
-            return None, (
-                f"{CONTROLLER_WAVE_STATE} must hold exactly waves")
+        if not isinstance(value, Mapping) or "waves" not in value:
+            return None, f"{CONTROLLER_WAVE_STATE} must hold waves"
+        unknown = set(value) - {"waves", *CONTROLLER_STATE_OPTIONAL_FIELDS}
+        if unknown:
+            return None, f"{CONTROLLER_WAVE_STATE} has undeclared fields: {sorted(unknown)}"
+        for name, expected in CONTROLLER_STATE_OPTIONAL_FIELDS.items():
+            if name in value and type(value[name]) is not expected:
+                return None, f"{CONTROLLER_WAVE_STATE} {name} must be {expected.__name__}"
+        pending = value.get("pending_submission")
+        if pending is not None and (
+                set(pending) != {"batch", "key"}
+                or not isinstance(pending["batch"], str) or not pending["batch"]
+                or not _is_hex64(pending["key"])):
+            return None, f"{CONTROLLER_WAVE_STATE} pending_submission must hold batch and key"
+        if "last_disk_check" in value:
+            reason = PoolQueue._awaited_disk_check(value["last_disk_check"])
+            if reason:
+                return None, f"{CONTROLLER_WAVE_STATE} last_disk_check {reason}"
+        for entry in value.get("disk_checks", []):
+            reason = PoolQueue._awaited_disk_check(entry)
+            if reason:
+                return None, f"{CONTROLLER_WAVE_STATE} disk_checks {reason}"
         waves = value["waves"]
         if not isinstance(waves, list):
             return None, f"{CONTROLLER_WAVE_STATE} waves is not a list"
         members: dict[str, str] = {}
+        batches: dict[str, str] = {}
         for position, wave in enumerate(waves):
             where = f"{CONTROLLER_WAVE_STATE} waves[{position}]"
-            if not isinstance(wave, Mapping) or set(wave) != {
-                    "closed", "members", "wave"}:
-                return None, (
-                    f"{where} must hold exactly closed, members and wave")
+            if not isinstance(wave, Mapping) or not {"closed", "members", "wave"} <= set(wave):
+                return None, f"{where} must hold closed, members and wave"
+            unknown = set(wave) - {"closed", "members", "wave"}
+            if unknown:
+                return None, f"{where} has undeclared fields: {sorted(unknown)}"
             if type(wave["wave"]) is not int or type(wave["closed"]) is not bool:
                 return None, f"{where} wave is not an integer or closed is not a boolean"
             entries = wave["members"]
@@ -11398,25 +11436,41 @@ class PoolQueue:
                 return None, f"{where} members is not a list"
             for index, entry in enumerate(entries):
                 at = f"{where} members[{index}]"
-                if not isinstance(entry, Mapping) or set(entry) != {"batch", "key"}:
-                    return None, (
-                        f"{at} must hold exactly batch and key")
+                if not isinstance(entry, Mapping) or not {"batch", "key"} <= set(entry):
+                    return None, f"{at} must hold batch and key"
+                unknown = set(entry) - {"batch", "key", "published_unix"}
+                if unknown:
+                    return None, f"{at} has undeclared fields: {sorted(unknown)}"
+                if "published_unix" in entry:
+                    stamp = entry["published_unix"]
+                    if (type(stamp) not in (int, float)
+                            or not math.isfinite(stamp) or stamp < 0):
+                        return None, f"{at} published_unix must be a finite nonnegative number"
                 batch = entry["batch"]
                 key = entry["key"]
                 if type(batch) is not str or not batch:
                     return None, f"{at} batch is not a non-empty string"
-                if batch == "pending_submission":
-                    # Intent only: the controller records the batch it
-                    # means to submit, which proves no queue admission.
-                    continue
                 if not _is_hex64(key):
                     return None, f"{at} key is not a 64-hex action key"
                 assert isinstance(key, str)
                 if key in members and members[key] != batch:
                     return None, (
                         f"{at} names {key[:12]} for another batch")
+                if batch in batches and batches[batch] != key:
+                    return None, f"{at} names batch {batch} for two keys"
+                batches[batch] = key
                 members[key] = batch
         return members, ""
+
+    @staticmethod
+    def _awaited_disk_check(value: object) -> str:
+        """Validate the routed writer's disk diagnostic envelope."""
+
+        if (not isinstance(value, dict) or set(value) != {"action_key", "evidence"}
+                or not _is_hex64(value["action_key"])
+                or not isinstance(value["evidence"], dict)):
+            return "must hold an action_key and an evidence object"
+        return ""
 
     @staticmethod
     def _awaited_journal_members(
@@ -11427,10 +11481,13 @@ class PoolQueue:
             text = raw.decode("utf-8")
         except UnicodeDecodeError:
             return None, f"{CONTROLLER_SUB_KEYS} is not UTF-8 text"
+        if text and not text.endswith("\n"):
+            return None, f"{CONTROLLER_SUB_KEYS} has an incomplete line"
         members: dict[str, str] = {}
+        batches: dict[str, str] = {}
         for number, line in enumerate(text.splitlines(), start=1):
             if not line.strip():
-                continue
+                return None, f"{CONTROLLER_SUB_KEYS} line {number} is empty"
             if len(line.encode("utf-8")) > MAX_CONTROLLER_JOURNAL_LINE_BYTES:
                 return None, (
                     f"{CONTROLLER_SUB_KEYS} line {number} is too long")
@@ -11440,8 +11497,6 @@ class PoolQueue:
                     f"{CONTROLLER_SUB_KEYS} line {number} "
                     "is not a batch and key pair")
             batch, key = parts
-            if batch == "pending_submission":
-                continue
             if not _is_hex64(key):
                 return None, (
                     f"{CONTROLLER_SUB_KEYS} line {number} "
@@ -11450,6 +11505,9 @@ class PoolQueue:
                 return None, (
                     f"{CONTROLLER_SUB_KEYS} line {number} "
                     f"names {key[:12]} for another batch")
+            if batch in batches and batches[batch] != key:
+                return None, f"{CONTROLLER_SUB_KEYS} batch {batch} has two keys"
+            batches[batch] = key
             members[key] = batch
         return members, ""
 
@@ -11514,16 +11572,23 @@ class PoolQueue:
                     for entry in watch.queued_child_wait.get("children") or ()  # type: ignore[union-attr]
                     if isinstance(entry, Mapping)
                     and _is_hex64(entry.get("key"))}
+            custody_read = self._awaited_controller_custody(
+                progress.awaited_batch.get("controller_state"),
+                parent_key=str(progress.awaited_batch["parent_key"]),
+                plan_key=str(progress.awaited_batch["plan_key"]))
             verdict = self.queued_child_wait_verdict(
                 key, cas_root=item.get("cas_root"),
                 awaited=progress.awaited_batch,
                 admitted=self._awaited_child_submissions(
                     item, awaited=progress.awaited_batch,
-                    retained=retained),
+                    retained=retained, custody_read=custody_read),
                 prior=watch.queued_child_wait,
                 now=_now())
-        except (OSError, ValueError, PoolContractError):
-            return
+            if custody_read[0] is None:
+                verdict.update({"exempt": False, "reason": custody_read[1]})
+        except (OSError, ValueError, PoolContractError) as exc:
+            verdict = {"exempt": False, "children": [],
+                       "reason": f"unreadable: {exc!r}"}
         verdict["sample_monotonic"] = float(now)
         # The sample and the credit: an eligible interval credits now,
         # through the shared mark, bounded by the prior sample's start.
@@ -28977,44 +29042,8 @@ class PoolQueue:
                             # same mark. A blocked gap never refunds, and a
                             # child that ended keeps its earned credit.
                             queued_checkpoint = time.monotonic()
-                            try:
-                                awaited = (progress.awaited_batch
-                                           if progress is not None else None)
-                                retained = None
-                                if isinstance(watch.queued_child_wait, Mapping):
-                                    retained = {
-                                        str(entry.get("key")): {}
-                                        for entry in watch.queued_child_wait.get("children") or ()  # type: ignore[union-attr]
-                                        if isinstance(entry, Mapping)
-                                        and _is_hex64(entry.get("key"))}
-                                queued = (
-                                    None if awaited is None
-                                    else self.queued_child_wait_verdict(
-                                        key, cas_root=item.get("cas_root"),
-                                        awaited=awaited,
-                                        admitted=self._awaited_child_submissions(
-                                            item, awaited=awaited,
-                                            retained=retained),
-                                        prior=watch.queued_child_wait,
-                                        now=_now()))
-                            except (OSError, ValueError, PoolContractError) as exc:
-                                queued = {"exempt": False, "children": [],
-                                          "reason": f"unreadable: {exc!r}"}
-                            if queued is not None:
-                                queued = dict(queued)
-                                queued["sample_monotonic"] = float(queued_checkpoint)
-                                earlier = queued.get("since_monotonic")
-                                if (queued.get("exempt") and isinstance(
-                                        earlier, (int, float))
-                                        and not isinstance(earlier, bool)):
-                                    watch.exempt_queued_child_wait(
-                                        queued, now=queued_checkpoint,
-                                        since_monotonic=float(earlier))
-                                else:
-                                    # A blocked or first look still becomes
-                                    # the prior: it carries the custody and
-                                    # blocks a later refund of this gap.
-                                    watch.queued_child_wait = dict(queued)
+                            self._sample_queued_child_wait(
+                                item, key, watch, progress, now=queued_checkpoint)
                             spent = time.monotonic() - queued_checkpoint
                             watch.shift(spent)
                             if deadline is not None:
