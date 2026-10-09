@@ -878,11 +878,8 @@ def test_a_mover_sealed_by_the_previous_sealer_runs_while_the_copy_is_fresh(
     queue, clock, publish, finish, gclaim, denial, members = gang_fleet
     away = store.with_name(store.name + ".away")
     store.rename(away)
-    try:
-        mover, cas, checkout, need, first, second = _whole_cpu_gang(
-            gang_fleet, monkeypatch, tmp_path, _tool(retained, "stage_move.py"), isolated=False)
-    finally:
-        away.rename(store)
+    mover, cas, checkout, need, first, second = _whole_cpu_gang(
+        gang_fleet, monkeypatch, tmp_path, _tool(retained, "stage_move.py"), isolated=False)
     _enqueue(queue, clock, mover, cas, checkout, resources=need, residency=RANGE)
     assert _roles(queue, mover) == [], "the previous sealer lacks isolated Python"
     clock[0] += reservation.GANG_RESERVE_AFTER_S + 1
