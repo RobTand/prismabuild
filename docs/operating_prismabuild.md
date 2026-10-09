@@ -4022,12 +4022,12 @@ host `--demand mem_gb=M`. The two memory domains have different accounting:
 
 | Memory domain | Budget contract |
 |---|---|
-| `shared_system` (GB10) | `mem_gb` covers aggregate physical DRAM used by the action. Each holder and each candidate charges the larger of its host memory and its GPU cap against the unified host offer; a CPU-only holder charges its memory alone, and a GPU cap above the offer refuses even first. Omitting the GPU budget defaults that cap to `mem_gb`. CPU and GPU allocation bounds are reconciled by the broker because CUDA allocations are not reliably charged to the cgroup. |
+| `shared_system` (GB10) | `mem_gb` covers aggregate physical DRAM used by the action. Admission charges every claimed and starting holder's host memory plus its declared GPU cap against the unified host offer, because CUDA allocations are not charged to the host cgroup. CPU-only candidates and RAM-fill mirrors charge their memory alone against the same held caps. Omitting the GPU budget defaults that cap to `mem_gb`. |
 | `discrete` | Host RAM and VRAM are independent reservations. `mem_gb` limits host memory, while `--gpu-memory-gb` limits VRAM and defaults to `mem_gb` when omitted. Both budgets must fit; unused RAM does not provide VRAM capacity. |
 
 For example, `--gpu --demand mem_gb=32 --gpu-memory-gb=8` reserves 32 GiB host
-RAM and 8 GiB VRAM on a discrete device; on GB10 it permits 32 GiB aggregate
-DRAM with an 8 GiB GPU subset cap. Missing VRAM counters refuse discrete GPU
+RAM and 8 GiB VRAM on a discrete device; on GB10 it charges 32 GiB host
+memory plus an 8 GiB GPU cap against the unified offer. Missing VRAM counters refuse discrete GPU
 admission. Unknown memory domains grant no capacity. `--gpu-memory-gb` is
 refused with `--transport slurm`, whose separate VRAM enforcement is unsupported.
 

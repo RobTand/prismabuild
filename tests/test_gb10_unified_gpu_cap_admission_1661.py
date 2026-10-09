@@ -121,12 +121,14 @@ def test_second_large_action_waits_while_first_holds_unified_gpu_cap(rig, tmp_pa
     assert decision["requested_mem_gb"] == SECOND["mem_gb"]
     assert decision["held_gpu_cap_total_gib"] == GPU_CAP_GB
     assert decision["held_mem_gb"] == FIRST["mem_gb"]
-    assert decision["committed_gib"] == GPU_CAP_GB
-    assert decision["candidate_charge_gib"] == GPU_CAP_GB
+    assert decision["held_ram_mem_gb"] == 0.0
+    assert decision["committed_gib"] == FIRST["mem_gb"] + GPU_CAP_GB
+    assert decision["candidate_charge_gib"] == SECOND["mem_gb"] + GPU_CAP_GB
     assert decision["mem_offer_gib"] == CAPACITY["mem_gb"]
     assert decision["held_gpu_caps"] == [
         {"action_key": first, "gpu_cap_gib": GPU_CAP_GB,
-         "mem_gb": float(FIRST["mem_gb"]), "charge_gib": GPU_CAP_GB}]
+         "mem_gb": float(FIRST["mem_gb"]),
+         "charge_gib": FIRST["mem_gb"] + GPU_CAP_GB}]
     queue.finish(first, status="executed", detail={})
     _tick(rig)
     assert queue.claim(**args)["action_key"] == second
@@ -164,8 +166,8 @@ def test_discrete_host_ignores_unified_gpu_caps(rig, tmp_path, monkeypatch):
     assert got["gpu_admission"]["memory_domain"] == "discrete"
 
 
-def test_cpu_only_candidate_ignores_unified_gpu_caps(rig, tmp_path):
-    """A CPU-only row claims beside a unified GPU holder."""
+def test_cpu_only_candidate_charges_held_unified_gpu_caps(rig, tmp_path):
+    """A CPU-only row refuses beside held GPU caps that fill the offer."""
     queue, now, sample, args = rig
     first, _, _ = _sealed(tmp_path, "gpu-first")
     _publish(queue, first, FIRST)
@@ -175,8 +177,17 @@ def test_cpu_only_candidate_ignores_unified_gpu_caps(rig, tmp_path):
                   worker_script="/w.py", resources={"cpu": 2, "mem_gb": 6},
                   priority=-10, tags=["gb10"])
     _tick(rig)
-    got = queue.claim(**args)
-    assert got is not None and got["action_key"] == cpu_key
+    assert queue.claim(**args) is None
+    denial = _denial(queue, cpu_key)
+    assert denial["reason"] == "adaptive_cpu_refused"
+    decision = denial["evidence"]["decision"]
+    assert decision["reason"] == "unified_gpu_memory_budget"
+    assert decision["requested_budget_gib"] == 0.0
+    assert decision["requested_mem_gb"] == 6
+    assert decision["held_gpu_cap_total_gib"] == GPU_CAP_GB
+    assert decision["committed_gib"] == FIRST["mem_gb"] + GPU_CAP_GB
+    assert decision["candidate_charge_gib"] == 6
+    assert decision["mem_offer_gib"] == CAPACITY["mem_gb"]
 
 
 def test_release_frees_the_unified_gpu_cap(rig, tmp_path):
@@ -219,8 +230,11 @@ def test_starting_reservation_charges_the_unified_gpu_cap(rig, tmp_path):
         decision = controller.last_decision
         assert decision["reason"] == "unified_gpu_memory_budget"
         assert decision["held_gpu_cap_total_gib"] == 2 * GPU_CAP_GB
-        assert decision["committed_gib"] == 2 * GPU_CAP_GB
-        assert decision["candidate_charge_gib"] == GPU_CAP_GB
+        assert decision["held_mem_gb"] == FIRST["mem_gb"] + SECOND["mem_gb"]
+        assert decision["held_ram_mem_gb"] == 0.0
+        assert decision["committed_gib"] == (
+            FIRST["mem_gb"] + SECOND["mem_gb"] + 2 * GPU_CAP_GB)
+        assert decision["candidate_charge_gib"] == SECOND["mem_gb"] + GPU_CAP_GB
         assert {entry["action_key"] for entry in decision["held_gpu_caps"]} == {
             first, handle}
     finally:
@@ -263,7 +277,7 @@ def test_first_cap_above_offer_refuses_on_an_empty_host(rig, tmp_path):
     assert decision["held_gpu_caps"] == []
     assert decision["held_gpu_cap_total_gib"] == 0.0
     assert decision["held_mem_gb"] == 0.0
-    assert decision["candidate_charge_gib"] == 120.0
+    assert decision["candidate_charge_gib"] == FIRST["mem_gb"] + 120.0
     assert decision["mem_offer_gib"] == CAPACITY["mem_gb"]
 
 
@@ -289,11 +303,11 @@ def test_cpu_holder_memory_counts_toward_the_unified_charge(rig, tmp_path):
     assert decision["held_gpu_cap_total_gib"] == 0.0
     assert decision["held_mem_gb"] == 60.0
     assert decision["committed_gib"] == 60.0
-    assert decision["candidate_charge_gib"] == GPU_CAP_GB
+    assert decision["candidate_charge_gib"] == SECOND["mem_gb"] + GPU_CAP_GB
 
 
-def test_candidate_mem_above_cap_charges_mem_not_cap(rig, tmp_path, monkeypatch):
-    """A 40 GiB mem demand with a 2 GiB cap charges 40, not 42."""
+def test_candidate_mem_and_cap_charge_additively(rig, tmp_path, monkeypatch):
+    """A 40 GiB mem demand with a 2 GiB cap charges 42, not 40."""
     from prismabuild import adaptive_gpu as _gpu
     monkeypatch.setattr(_gpu, "action_contract",
                         lambda item, demand: ("shape", False, False, 2 * GIB))
@@ -318,5 +332,52 @@ def test_candidate_mem_above_cap_charges_mem_not_cap(rig, tmp_path, monkeypatch)
     assert queue.claim(**args) is None
     decision = _denial(queue, third)["evidence"]["decision"]
     assert decision["reason"] == "unified_gpu_memory_budget"
-    assert decision["committed_gib"] == FIRST["mem_gb"] + 40
-    assert decision["candidate_charge_gib"] == 60.0
+    assert decision["committed_gib"] == FIRST["mem_gb"] + 40 + 2 * 2
+    assert decision["candidate_charge_gib"] == 60.0 + 2
+
+
+def test_ram_fill_memory_counts_toward_the_unified_charge(rig, tmp_path):
+    """40 GiB of RAM-fill memory leaves no room for a 98 GiB GPU cap."""
+    queue, now, sample, args = rig
+    queue.ledger().ensure_capacity(CAPACITY)
+    state, detail = queue.hold_tier_host_memory(
+        queue.ledger().host, "a" * 64, 40)
+    assert (state, detail) == ("taken", "")
+    gpu_key, _, _ = _sealed(tmp_path, "gpu-after-ram-fill")
+    _publish(queue, gpu_key, SECOND)
+    _tick(rig)
+    assert queue.claim(**args) is None
+    denial = _denial(queue, gpu_key)
+    assert denial["reason"] == "adaptive_gpu_refused"
+    decision = denial["evidence"]["decision"]
+    assert decision["reason"] == "unified_gpu_memory_budget"
+    assert decision["held_ram_mem_gb"] == 40.0
+    assert decision["held_mem_gb"] == 40.0
+    assert decision["committed_gib"] == 40.0
+    assert decision["candidate_charge_gib"] == SECOND["mem_gb"] + GPU_CAP_GB
+    queue.release_tier_host_memory(queue.ledger().host, "a" * 64)
+    _tick(rig)
+    assert queue.claim(**args)["action_key"] == gpu_key
+
+
+def test_small_cpu_only_candidate_fits_beside_small_unified_caps(
+        rig, tmp_path, monkeypatch):
+    """A 6 GiB CPU row claims beside two 2 GiB caps on the 104 GiB offer."""
+    from prismabuild import adaptive_gpu as _gpu
+    monkeypatch.setattr(_gpu, "action_contract",
+                        lambda item, demand: ("shape", False, False, 2 * GIB))
+    queue, now, sample, args = rig
+    first, _, _ = _sealed(tmp_path, "small-gpu-first")
+    _publish(queue, first, FIRST)
+    assert queue.claim(**args)["action_key"] == first
+    second, _, _ = _sealed(tmp_path, "small-gpu-second")
+    _publish(queue, second, SECOND)
+    _tick(rig)
+    assert queue.claim(**args)["action_key"] == second
+    cpu_key, _, _ = _sealed(tmp_path, "small-cpu-third")
+    queue.publish(action_key=cpu_key, cas_root="/cas", checkout_root="/co",
+                  worker_script="/w.py", resources={"cpu": 2, "mem_gb": 6},
+                  priority=-10, tags=["gb10"])
+    _tick(rig)
+    got = queue.claim(**args)
+    assert got is not None and got["action_key"] == cpu_key

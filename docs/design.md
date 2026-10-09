@@ -6213,13 +6213,14 @@ option seals `params.gpu_memory_gb`; its GiB value must convert to between 1
 and 2**63 - 1 integer bytes. Submission, admission, and execution use the same
 bounded conversion. Without it the GPU budget conservatively
 defaults to `mem_gb`. RAM-heavy, GPU-light jobs should declare their separate
-VRAM budget. On shared-memory devices each holder and each candidate charges
-the larger of its host memory and its GPU cap against the unified host offer:
-one action's host and GPU bytes share the same DRAM, so their sum would bill
-that DRAM twice. A CPU-only holder with no GPU cap charges its memory alone,
-and a first GPU cap above the offer refuses on an empty host. The exact
-GPU budget follows scope creation, durable recovery and release.
-SLURM refuses this option until its execution contract supports separate VRAM budgets.
+VRAM budget. On shared-memory devices admission charges each holder and each
+candidate's host memory plus its declared GPU cap against the unified host
+offer (#1661): the host cgroup cap does not count CUDA allocations, so the
+cap is an additional charge beside the host reservation. CPU-only holders
+and candidates charge their memory alone against the same held caps, RAM-fill
+mirrors count as memory holders, and a first GPU cap above the offer refuses
+on an empty host. The exact GPU budget follows scope creation, durable
+recovery and release. SLURM refuses this option until its execution contract supports separate VRAM budgets.
 Campaign rows expose the same budget as `gpu_memory_gb` and forward it through
 `pbrun`'s seal path, preserving action identity with an equivalent direct
 submission. Manifest preflight validates the bounded numeric conversion and

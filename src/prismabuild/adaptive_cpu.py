@@ -1247,13 +1247,17 @@ class Controller:
                 'owner_measurement': bool(meta_of_owner.get('measurement'))}, None
 
     def decision(self, item, demand, *, identity=None, owner=_UNREAD, allowance=None,
-                 foreign_load_exempt=False):
+                 foreign_load_exempt=False, unified_memory_budget=_UNREAD):
         """Decide under admission; callers may pre-read sealed action identity.
 
         ``owner`` is the producer a dependent serves, when the caller knows it
         (the pool reads it from the sealed request, outside this lock); left unread it is
         read only if a measurement holds the host (#982).  ``allowance`` is the
         export allowance a producer's claim reserves with itself (#985).
+        ``unified_memory_budget`` is the candidate's GPU cap in bytes on a
+        ``shared_system`` host, or ``None`` when the host is not unified:
+        left unread, no unified-memory gate runs. A CPU-only candidate
+        passes ``0`` so its host demand still charges held GPU caps.
         """
         funding_refusal = None
         measurement_drain = {}
@@ -1623,6 +1627,17 @@ class Controller:
                               lendable=lendable, available_cpu=available,
                               declared_cpu=declared, borrowable_cpus=len(borrowable),
                               last_borrow_sampled_unix=last)
+        if unified_memory_budget is not _UNREAD and unified_memory_budget is not None:
+            # Unified DRAM (#1661): host ``mem_gb`` tokens plus the declared
+            # GPU caps of ``shared_system`` holders share one pool. The GPU
+            # path refuses GPU candidates; this gate refuses CPU-only
+            # candidates, which never reach that controller, against the
+            # same held caps. ``None`` skips the gate on other hosts.
+            from . import adaptive_gpu
+            verdict = adaptive_gpu.unified_memory_verdict(
+                self.ledger, demand, unified_memory_budget)
+            if verdict is not None:
+                return refuse(verdict.pop("reason"), **verdict)
         self.last_decision = {"reason": "admitted", "sample": sample, **measurement_drain}
         return {'declared_cpu': declared, 'cost': cost, 'shape': shape,
                 'unbounded_cpu': unbounded_cpu,

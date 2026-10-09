@@ -357,20 +357,22 @@ def _number(value):
     return type(value) in (int, float) and math.isfinite(value) and value >= 0
 
 
-def _unified_committed_gib(ledger) -> tuple[list[dict[str, object]], float, float, float]:
+def _unified_committed_gib(ledger) -> tuple[list[dict[str, object]], float, float, float, float]:
     """Unified DRAM this host commits: per-holder charges and their total.
 
-    The walk covers every holder dir, claimed or still acquiring, and skips
-    only the RAM-fill mirror, exactly like the occupancy scan in
-    ``Controller.decision``. Each holder charges the larger of its held
-    ``mem_gb`` tokens and its declared GPU cap: one action's host and GPU
-    bytes share the same unified DRAM, so the sum of both would bill that
-    DRAM twice. The return is the per-holder list, the committed total,
-    the held GPU-cap total, and the held host-memory total.
+    The walk covers every holder dir, claimed or still acquiring, RAM-fill
+    mirrors included: a fill holds host ``mem_gb`` tokens from the same
+    unified pool. Each holder charges its held ``mem_gb`` tokens plus its
+    declared GPU cap (#1661): the host cgroup cap does not count CUDA
+    allocations, so the cap is an additional charge beside the host
+    reservation. The return is the per-holder list, the committed total,
+    the held GPU-cap total, the held host-memory total, and the RAM-fill
+    memory total.
     """
     caps: list[dict[str, object]] = []
     committed = 0.0
     cap_total = 0.0
+    ram_mem = 0.0
     try:
         held_mem = float(ledger.held().get("mem_gb", 0))
     except (OSError, ValueError):
@@ -378,27 +380,94 @@ def _unified_committed_gib(ledger) -> tuple[list[dict[str, object]], float, floa
     try:
         entries = list(ledger.held_dir.iterdir())
     except (FileNotFoundError, NotADirectoryError):
-        return [], 0.0, 0.0, held_mem
+        return [], 0.0, 0.0, held_mem, 0.0
     for holder in entries:
-        if not holder.is_dir() or holder.name.startswith(
-                adaptive_cpu.RAM_HOST_MEMORY_PREFIX):
+        if not holder.is_dir():
             continue
         try:
             mem_tokens = float(ledger.holder_tokens(holder.name).get("mem_gb", 0))
         except (OSError, ValueError):
             mem_tokens = 0.0
+        if holder.name.startswith(adaptive_cpu.RAM_HOST_MEMORY_PREFIX):
+            ram_mem += mem_tokens
+            committed += mem_tokens
+            caps.append({"action_key": holder.name, "gpu_cap_gib": 0.0,
+                         "mem_gb": mem_tokens, "charge_gib": mem_tokens})
+            continue
         cap_gib = 0.0
         meta = adaptive_cpu.read_json(holder / METADATA)
         if isinstance(meta, dict) and meta.get("memory_domain") == "shared_system":
             budget = meta.get("gpu_memory_budget_bytes")
             if type(budget) in (int, float) and math.isfinite(budget) and budget > 0:
                 cap_gib = float(budget) / float(GIB)
-        charge = max(mem_tokens, cap_gib)
+        charge = mem_tokens + cap_gib
         committed += charge
         cap_total += cap_gib
         caps.append({"action_key": holder.name, "gpu_cap_gib": cap_gib,
                      "mem_gb": mem_tokens, "charge_gib": charge})
-    return caps, committed, cap_total, held_mem
+    return caps, committed, cap_total, held_mem, ram_mem
+
+
+def unified_memory_verdict(ledger, demand, budget) -> dict[str, object] | None:
+    """The unified-memory refusal for one candidate, or ``None`` to admit.
+
+    Both the CPU and GPU controllers call this on a ``shared_system``
+    host: the CPU path covers CPU-only candidates, which never reach
+    the GPU controller. The census charges every holder dir, claimed
+    or still acquiring, RAM-fill mirrors included: host ``mem_gb``
+    tokens plus the declared GPU caps of ``shared_system`` holders.
+    The candidate charges its host demand plus its GPU cap (zero for
+    a CPU-only candidate). The refusal names every held cap and the
+    totals, so the reader sees which holders block the candidate.
+    """
+    held_caps, committed, held_total, held_mem, ram_mem = _unified_committed_gib(
+        ledger)
+    try:
+        offer_gib = float(ledger.capacity().get("mem_gb", 0))
+    except (OSError, ValueError):
+        offer_gib = 0.0
+    candidate_mem = demand.get("mem_gb", 0)
+    candidate_mem = float(candidate_mem) if type(candidate_mem) in (int, float) else 0.0
+    candidate_gib = 0.0
+    if type(budget) in (int, float) and math.isfinite(budget) and budget > 0:
+        candidate_gib = float(budget) / float(GIB)
+    candidate = candidate_mem + candidate_gib
+    if offer_gib <= 0 or committed + candidate <= offer_gib:
+        return None
+    return {"reason": "unified_gpu_memory_budget",
+            "requested_budget_bytes": budget,
+            "requested_budget_gib": candidate_gib,
+            "requested_mem_gb": candidate_mem,
+            "held_gpu_caps": held_caps,
+            "held_gpu_cap_total_gib": held_total,
+            "held_mem_gb": held_mem,
+            "held_ram_mem_gb": ram_mem,
+            "committed_gib": committed,
+            "candidate_charge_gib": candidate,
+            "mem_offer_gib": offer_gib}
+
+
+def unified_memory_domain(sample) -> bool:
+    """Whether one broker sample names a unified-memory host.
+
+    The CPU path calls this before the unified gate: only a fresh,
+    complete, attributed single-device sample whose device names
+    ``shared_system`` runs the gate. Anything else leaves the
+    candidate to the existing CPU and GPU decisions.
+    """
+    if not isinstance(sample, Mapping):
+        return False
+    devices = sample.get("devices")
+    sampled = sample.get("sampled_unix")
+    return (
+        isinstance(devices, list) and len(devices) == 1
+        and isinstance(devices[0], dict)
+        and devices[0].get("memory_domain") == "shared_system"
+        and sample.get("schema") == "prismabuild.gpu_capacity.v1"
+        and sample.get("complete") is True
+        and sample.get("attributed") is True
+        and _number(sampled)
+        and 0 <= time.time() - sampled <= MAX_SAMPLE_AGE_S)
 
 
 def _power_estimate(rows):
@@ -700,27 +769,11 @@ class Controller:
                               **({'baseline': idle} if measurement else {}))
             if device.get("memory_domain") == "shared_system":
                 if type(budget) in (int, float) and math.isfinite(budget) and budget > 0:
-                    held_caps, committed, held_total, held_mem = _unified_committed_gib(self.ledger)
-                    offer_gib = float(self.ledger.capacity().get("mem_gb", 0))
-                    host_gib = float(sample.get("host_total_bytes", 0)) / float(GIB)
-                    candidate_gib = float(budget) / float(GIB)
-                    candidate_mem = float(demand.get("mem_gb", 0))
-                    # Unified DRAM holds both host and GPU bytes. Each holder and
-                    # the candidate charge the larger of host memory and GPU cap:
-                    # charging the sum of both would bill one action's DRAM twice.
-                    candidate = max(candidate_mem, candidate_gib)
-                    if offer_gib > 0 and committed + candidate > offer_gib:
-                        return refuse("unified_gpu_memory_budget",
-                                      requested_budget_bytes=budget,
-                                      requested_budget_gib=candidate_gib,
-                                      requested_mem_gb=candidate_mem,
-                                      held_gpu_caps=held_caps,
-                                      held_gpu_cap_total_gib=held_total,
-                                      held_mem_gb=held_mem,
-                                      committed_gib=committed,
-                                      candidate_charge_gib=candidate,
-                                      mem_offer_gib=offer_gib,
-                                      host_total_gib=host_gib)
+                    verdict = unified_memory_verdict(self.ledger, demand, budget)
+                    if verdict is not None:
+                        host_gib = float(sample.get("host_total_bytes", 0)) / float(GIB)
+                        return refuse(verdict.pop("reason"),
+                                      host_total_gib=host_gib, **verdict)
             if device.get('memory_domain') == 'discrete':
                 fields = ('memory_total_bytes', 'memory_free_bytes', 'memory_used_bytes')
                 if not all(_number(device.get(k)) for k in fields):

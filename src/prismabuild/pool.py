@@ -696,6 +696,11 @@ def _adaptive_refusal_drains(
         return None, True
     if reason in DRAIN_EXCLUSIVE_CPU:
         return "exclusive", False
+    if reason == "unified_gpu_memory_budget":
+        # Unified DRAM (#1661): the holders named in the refusal free
+        # host memory and GPU caps when they drain, so the item waits
+        # on every holder, not only GPU holders.
+        return "exclusive", False
     declared = int(demand.get("cpu", 0) or 0)
     if reason == "host_pressure" and (measurement or not declared
                                       or (cpu_count is not None and declared == cpu_count)):
@@ -22063,10 +22068,26 @@ class PoolQueue:
                                     and 0 <= _now() - announced <= OFFER_TIMEOUT_S)
                                 refused = scratch_expired or scratch_changed
                             if controller is not None and not refused:
+                                unified_budget = None
+                                if gpu_controller is not None and not demand.get("gpu"):
+                                    # Unified DRAM (#1661): a CPU-only candidate
+                                    # never reaches the GPU controller, so the
+                                    # CPU gate charges its host demand beside
+                                    # held GPU caps. ``None`` skips the gate on
+                                    # other hosts; ``0`` is a zero GPU cap.
+                                    sample = getattr(gpu_controller, "_sample", None)
+                                    if sample is None:
+                                        try:
+                                            sample = gpu_controller.sample()
+                                        except (OSError, ValueError):
+                                            sample = None
+                                    if gpu_admission.unified_memory_domain(sample):
+                                        unified_budget = 0
                                 adaptive = controller.decision(
                                     item, demand, identity=identity, owner=dependent_owner,
                                     allowance=allowance,
-                                    foreign_load_exempt=canary_exempt)
+                                    foreign_load_exempt=canary_exempt,
+                                    unified_memory_budget=unified_budget)
                                 cpu_decision = getattr(controller, "last_decision", None)
                                 refused = adaptive is None
                                 if refused:
