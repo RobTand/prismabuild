@@ -43,6 +43,7 @@ import hashlib
 import json
 import os
 import socket
+import time
 from pathlib import Path
 import sys
 
@@ -176,6 +177,7 @@ def _claim_promotion(queue: pool.PoolQueue, tmp_path: Path, manifest: Path,
     row.write_text(json.dumps({
         "action_key": key,
         "cas_root": str(cas),
+        "published_unix": time.time(),
         "resources": {"cpu": 2, "mem_gb": 1,
                       f"{storage_tiers.RAM_CAPACITY_KIND}@{RAM_TIER}": 1},
     }))

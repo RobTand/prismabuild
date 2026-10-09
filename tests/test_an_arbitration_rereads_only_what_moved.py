@@ -90,16 +90,11 @@ _NOT_THE_FOREST = frozenset({"leases", "material"})
 
 
 def _filesystem_type(path: Path) -> str | None:
-    """The type ``/proc/self/mountinfo`` names for ``path``'s device."""
+    """The type the complete trust resolver names for ``path`` (#1506)."""
 
-    device = os.stat(path).st_dev
-    wanted = f"{os.major(device)}:{os.minor(device)}"
-    with open("/proc/self/mountinfo") as stream:
-        for line in stream:
-            fields = line.split()
-            if len(fields) > 2 and fields[2] == wanted and " - " in line:
-                return line.split(" - ", 1)[1].split()[0]
-    return None
+    info = os.stat(path)
+    return stage_move._object_filesystem_type(
+        info, path=path, follow_symlinks=False)
 
 
 #: Filesystems whose directory times come from this kernel's clock: the

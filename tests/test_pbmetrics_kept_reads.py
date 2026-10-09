@@ -129,7 +129,10 @@ class FsProbe:
 
     ``listings`` are ``scandir``/``listdir`` calls, ``stats`` every ``stat``
     and ``lstat`` (including a directory entry's first ``stat``), and
-    ``opens`` every ``open``, ``io.open`` and ``os.open``.  On the NFS
+    ``opens`` every ``open``, ``io.open`` and ``os.open`` of a record file.
+    The trusted-stamp check opens directories with ``O_PATH`` on filesystems
+    whose device the mount table does not list; a directory probe is a local
+    kernel observation, not a record read, and is not counted.  On the NFS
     mount each is at least one LOOKUP or GETATTR unless the client answers
     it from its attribute cache, so their sum is the lookup count #1020
     measures.  The exporter's read of its own ``/proc/self/status`` (its
@@ -181,6 +184,9 @@ class FsProbe:
             return real["lstat"](path, *args, **kwargs)
 
         def os_open(path, *args, **kwargs):
+            flags = args[1] if len(args) > 1 else kwargs.get("flags", 0)
+            if isinstance(flags, int) and (flags & os.O_PATH):
+                return real["os_open"](path, *args, **kwargs)
             self.opens.append(os.fspath(path))
             return real["os_open"](path, *args, **kwargs)
 
