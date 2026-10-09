@@ -19637,6 +19637,50 @@ class PoolQueue:
         return (not tiers and not host.get("gpu") and set(host) <= {"cpu", "mem_gb"}
                 and int(host.get("cpu", 0)) > 0 and int(host.get("mem_gb", 0)) > 0)
 
+    def _class_scoped_gpu_shape(
+        self, ready_gpu: Mapping[str, object],
+    ) -> tuple[str | None, bool | None, str | None]:
+        """The eligible GPU row's sealed shape and measurement flag, or why unknown (#1589).
+
+        Affirmative evidence only: an unreadable, missing, mismatched or invalid
+        sealed request is ``(None, None, reason)``, never an ordinary
+        non-measurement contract.  The real contract reader
+        (``gpu_admission.action_contract``) answers unknown the same way --
+        ``read_json`` turns I/O and JSON failures into ``{}``
+        (``adaptive_cpu.read_json``) and ``action_identity`` answers
+        ``(None, False)`` -- so this helper must not read the flag it
+        returns as proof of readability.
+        """
+        try:
+            key = str(ready_gpu.get("action_key", ""))
+            cas_root = ready_gpu.get("cas_root")
+            if not key or not isinstance(cas_root, str) or not cas_root:
+                return None, None, "gpu_row_request_unreadable"
+            request = _sealed_action_request(cas_root, key)
+        except (OSError, ValueError, PoolContractError, pb.PrismaBuildError):
+            return None, None, "gpu_row_request_unreadable"
+        if request is None:
+            return None, None, "gpu_row_request_unreadable"
+        try:
+            action = pb.validate_action(request)
+        except (ValueError, TypeError, KeyError, pb.ActionContractError):
+            return None, None, "gpu_row_request_unreadable"
+        if action.get("action_key") != key:
+            return None, None, "gpu_row_request_unreadable"
+        task = action.get("task")
+        if not isinstance(task, Mapping):
+            return None, None, "gpu_row_request_unreadable"
+        measurement = task.get("task_class") == "measurement"
+        try:
+            shape, flag = cpu_admission.action_identity(ready_gpu)
+        except (OSError, ValueError, TypeError):
+            return None, None, "gpu_row_request_unreadable"
+        if shape is None or flag != measurement:
+            # The cached identity disagrees with the sealed body just read:
+            # the request changed underfoot or never read cleanly.  Unknown.
+            return None, None, "gpu_row_request_unreadable"
+        return shape, measurement, None
+
     def _class_scoped_room(
         self, ready_gpu: Mapping[str, object], *, ledger: "ResourceLedger",
         total: Mapping[str, int], controller: object | None,
@@ -19652,10 +19696,14 @@ class PoolQueue:
         row must be one a running CPU holder cannot keep from starting beyond the
         tokens it takes: not a measurement row (it needs an idle host), with an
         explicit ``cpu`` and ``mem_gb`` (an unbounded row is refused whenever the
-        box holds anything), not a gang member (its election fences the host).
-        Then the room is the reservation its own claim charges
-        (:meth:`_ready_gpu_row_room`: under the facts its claim reads first, the
-        producer's export allowance included).
+        box holds anything), not a gang member (its election fences the host), a
+        readable sealed contract (an unreadable request is unknown, never an
+        ordinary non-measurement row), and headroom for the adaptive
+        projected-cost gate (a 2-CPU holder costs 2.5 CPUs, so six free tokens
+        do not admit a 6-CPU GPU row on an 8-CPU host).  Then the room is the
+        reservation its own claim charges (:meth:`_ready_gpu_row_room`: under
+        the facts its claim reads first, the producer's export allowance
+        included).
         """
         if ready_gpu.get("gang") is not None:
             return None, "gpu_row_is_gang_member"
@@ -19663,8 +19711,13 @@ class PoolQueue:
             host, _tiers = storage_tiers.split_demand(self.demand_of(ready_gpu))
             if int(host.get("cpu", 0)) <= 0 or int(host.get("mem_gb", 0)) <= 0:
                 return None, "gpu_row_cpu_unbounded"
-            _shape, measurement, _exclusive, _budget = gpu_admission.action_contract(
+            shape, measurement, _why = self._class_scoped_gpu_shape(ready_gpu)
+            if _why is not None or shape is None:
+                return None, "gpu_row_contract_unreadable"
+            _shape, _flag, _exclusive, _budget = gpu_admission.action_contract(
                 ready_gpu, host)
+            if _shape is None:
+                return None, "gpu_row_contract_unreadable"
         except (OSError, TypeError, ValueError, PoolContractError, pb.PrismaBuildError):
             return None, "gpu_row_contract_unreadable"
         if measurement:
@@ -19679,18 +19732,52 @@ class PoolQueue:
         return room, None
 
     @staticmethod
+    def _class_scoped_projected_headroom(
+        room: Mapping[str, object], demand: Mapping[str, int], *,
+        cpu_count: int,
+    ) -> dict[str, object] | None:
+        """``None`` when the GPU row keeps adaptive headroom beside ``demand``; else why not (#1589).
+
+        The token fit is not enough: ``adaptive_cpu.decision`` refuses the GPU
+        row on ``projected_cpu_cost`` when the holder's conservative cost plus
+        the GPU row's own cost crosses the host (a 2-CPU starter costs
+        ``2 * 1.25 = 2.5``; an unlearned GPU row costs its declared demand).
+        Both sides count at that conservative rate here, before admission, so
+        the exemption never spends headroom the GPU row's own decision needs.
+        Arithmetic only; no new read.  ``None`` when the CPU count is unknown.
+        """
+        try:
+            total_cpus = int(cpu_count)
+            holder_cost = float(int(demand.get("cpu", 0))) * 1.25
+            gpu_cost = float(int(room["room"].get("cpu", 0)))  # type: ignore[union-attr]
+        except (TypeError, ValueError):
+            return None
+        if total_cpus <= 0:
+            return None
+        if holder_cost + gpu_cost > float(total_cpus) + 0.01:
+            return {"gpu_row": str(room["action_key"])[:12],
+                    "kept_for": "class_scoped_cpu_projected_cpu_cost",
+                    "holder_cost": holder_cost, "gpu_cost": gpu_cost,
+                    "cpu_count": total_cpus}
+        return None
+
+    @staticmethod
     def _class_scoped_beside_room(
         room: Mapping[str, object], *, ledger: "ResourceLedger", identity: object,
-        demand: Mapping[str, int],
+        demand: Mapping[str, int], cpu_count: int | None = None,
     ) -> dict[str, object] | None:
         """``None`` when a class-scoped CPU row may take its tokens now; else why not (#1589).
 
         Called under host admission, with the row's own demand known, just before
         it takes its tokens; it reads nothing but the free tokens.  The row passes
         only if, after it takes its own, ``room`` (:meth:`_class_scoped_room`) still
-        fits them.  Incumbents hold tokens and every earlier admission has taken
-        its share, so the GPU row is never what a class-scoped row delays.  A
-        measurement row is held (its exclusivity contracts are its own).
+        fits them, and the adaptive projected-cost gate keeps headroom for the
+        GPU row beside the new holder (a 2-CPU starter costs 2.5 CPUs).  The
+        headroom check needs the host CPU count; without one it binds nothing
+        beyond the token fit, and the GPU row's own decision still guards it.
+        Incumbents hold tokens and every earlier admission has taken its share,
+        so the GPU row is never what a class-scoped row delays.  A measurement
+        row is held (its exclusivity contracts are its own).
         """
         if isinstance(identity, tuple) and len(identity) > 1 and identity[1]:
             return {"class_scoped": "measurement_row"}
@@ -19698,12 +19785,17 @@ class PoolQueue:
             available = ledger.available()
         except OSError:
             return {"class_scoped": "free_tokens_unreadable"}
-        if all(int(available.get(kind, 0)) - int(demand.get(kind, 0)) >= int(need)
-               for kind, need in room["room"].items()):          # type: ignore[union-attr]
-            return None
-        return {"gpu_row": str(room["action_key"])[:12], "room": dict(room["room"]),  # type: ignore[call-overload]
-                "kept_for": "class_scoped_cpu_beside_ready_gpu",
-                "available": dict(available), "demand": dict(demand)}
+        if any(int(available.get(kind, 0)) - int(demand.get(kind, 0)) < int(need)
+               for kind, need in room["room"].items()):  # type: ignore[union-attr]
+            return {"gpu_row": str(room["action_key"])[:12], "room": dict(room["room"]),  # type: ignore[call-overload]
+                    "kept_for": "class_scoped_cpu_beside_ready_gpu",
+                    "available": dict(available), "demand": dict(demand)}
+        if cpu_count is not None:
+            headroom = PoolQueue._class_scoped_projected_headroom(
+                room, demand, cpu_count=cpu_count)
+            if headroom is not None:
+                return dict(headroom, available=dict(available), demand=dict(demand))
+        return None
 
     def claim(
         self, *, tags: Iterable[str] = (), has_gpu: bool = False,
@@ -20571,6 +20663,10 @@ class PoolQueue:
         #: The room each eligible GPU row asks of a class-scoped CPU row, read once
         #: per pass and before any admission lock (#1589).
         class_rooms: dict[str, tuple[dict[str, object] | None, str | None]] = {}
+        #: Host CPUs this pass may admit on, for the class-scoped adaptive
+        #: headroom check (#1589).  Set with the capacity prelude below; ``None``
+        #: when the map is unknown, and the token fit then stands alone.
+        class_cpu_count: int | None = None
 
         def offer_records() -> list[dict[str, object]]:
             nonlocal retained_offers
@@ -20610,6 +20706,8 @@ class PoolQueue:
                     ledger.retire_free_capacity({"cpu": int(capacity.get("cpu", 0))})
                 ledger.ensure_capacity(capacity)
                 total = ledger.capacity()
+                if cpu_tiers is not None:
+                    class_cpu_count = sum(map(len, cpu_tiers.values()))
         if ready is None:
             with ready_placement(tagset, has_gpu):
                 ready = self.ready_items()
@@ -21620,9 +21718,12 @@ class PoolQueue:
                                 adaptive = None
                             if not refused and class_scoped:
                                 # #1589: beside the eligible GPU row's own room, now.
+                                # The adaptive headroom needs the host CPU count;
+                                # a funded remainder still pays its holder cost.
                                 why = self._class_scoped_beside_room(
                                     class_room, ledger=ledger, identity=identity,
-                                    demand=reservation_demand)
+                                    demand=reservation_demand,
+                                    cpu_count=class_cpu_count)
                                 if why is not None:
                                     refused = True
                                     refusal_source = "deferred_for_ready_gpu_row"

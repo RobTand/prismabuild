@@ -5117,12 +5117,20 @@ every claimant waits on), the eligible GPU row's room is read
 (`_class_scoped_room`): the GPU row must be one a running CPU holder cannot keep
 from starting beyond the tokens it takes, so not a measurement row (it needs an
 idle host), with an explicit `cpu` and `mem_gb` (an unbounded row is refused
-whenever the box holds anything) and not a gang member; the room is then the
+whenever the box holds anything), not a gang member, and with a readable sealed
+contract (an unreadable request is unknown, never an ordinary non-measurement
+row: the contract reader answers it as `(None, measurement, True, budget)`,
+so the exemption requires affirmative shape evidence); the room is then the
 reservation its own claim charges (`_ready_gpu_row_room`: under the facts its claim
 reads first, the producer's export allowance included). Without such a room the row
 stays deferred and the denial names why. At the token boundary, under host
 admission, `_class_scoped_beside_room` reads only the free tokens: the row passes
-only if, after it takes its own, that room still fits them. Incumbents hold tokens
+only if, after it takes its own, that room still fits them, and the adaptive
+projected-cost gate keeps headroom for the GPU row beside the new holder (a
+2-CPU starter costs `2.5` CPUs, so six free tokens do not admit a 6-CPU GPU
+row on an 8-CPU host). The headroom check is arithmetic on the host CPU count;
+without one the token fit stands alone and the GPU row's own decision still
+guards it. Incumbents hold tokens
 and every earlier admission has taken its share, so the GPU row is never what a
 class-scoped row delays, however many such rows there are. A measurement row is
 held (its exclusivity contracts are its own), and free tokens that do not read hold
