@@ -183,21 +183,28 @@ def test_discrete_host_ignores_the_unified_gate(rig, tmp_path, monkeypatch):
     """A discrete device sums VRAM budgets; no unified refusal fires."""
     from prismabuild import adaptive_gpu as _gpu
     monkeypatch.setattr(_gpu, "action_contract",
-                        lambda item, demand: ("shape", False, False, 64 * GIB))
+                        lambda item, demand: ("shape", False, False, 60 * GIB))
     queue, now, sample, args = rig
     sample["devices"][0].update(
-        memory_domain="discrete", memory_total_bytes=200 * GIB,
-        memory_free_bytes=200 * GIB, memory_used_bytes=0)
+        memory_domain="discrete", memory_total_bytes=100 * GIB,
+        memory_free_bytes=100 * GIB, memory_used_bytes=0)
     first, _, _ = _sealed(tmp_path, "discrete-first")
-    _publish(queue, first, {"cpu": 2, "gpu": 1, "mem_gb": 80})
+    _publish(queue, first, {"cpu": 2, "gpu": 1, "mem_gb": 60})
     assert queue.claim(**args)["action_key"] == first
     second, _, _ = _sealed(tmp_path, "discrete-second")
-    _publish(queue, second, {"cpu": 2, "gpu": 1, "mem_gb": 32})
+    _publish(queue, second, {"cpu": 2, "gpu": 1, "mem_gb": 30})
+    _tick(rig)
+    assert queue.claim(**args) is None
+    decision = _denial(queue, second)["evidence"]["decision"]
+    assert decision["reason"] == "gpu_memory_budget"
+    assert decision["held_budget_bytes"] == 60 * GIB
+    sample["devices"][0].update(
+        memory_total_bytes=200 * GIB, memory_free_bytes=200 * GIB,
+        memory_used_bytes=0)
     _tick(rig)
     got = queue.claim(**args)
     assert got is not None and got["action_key"] == second
     assert got["gpu_admission"]["memory_domain"] == "discrete"
-
 
 def test_external_bytes_count_only_foreign_shared_system():
     """Attributed and discrete bytes never count; unknown flags, never hides."""
@@ -292,8 +299,6 @@ def test_external_gpu_bytes_refuse_a_cpu_only_candidate(rig, tmp_path, monkeypat
     assert queue.claim(**args)["action_key"] == first
     cpu_key, _, _ = _sealed(tmp_path, "cpu-after-foreign")
     _publish_cpu(queue, cpu_key, {"cpu": 2, "mem_gb": 32})
-    gpu_key, _, _ = _sealed(tmp_path, "gpu-after-foreign")
-    _publish(queue, gpu_key, SMALL)
     _tick(rig)
     sample["foreign_processes"] = [{
         "pid": 999, "start_ticks": 1, "cgroup": "/user.slice",
@@ -306,12 +311,27 @@ def test_external_gpu_bytes_refuse_a_cpu_only_candidate(rig, tmp_path, monkeypat
     assert cpu_denial["external_gpu_gib"] == 30
     assert cpu_denial["external_gpu_bytes"] == 30 * GIB
     assert cpu_denial["mem_offer_gib"] == CAPACITY["mem_gb"]
-    gpu_denial = _denial(queue, gpu_key)["evidence"]["decision"]
-    assert gpu_denial["reason"] == "host_or_device_congested"
     sample["foreign_processes"] = []
     _tick(rig)
     got = queue.claim(**args)
     assert got is not None and got["action_key"] == cpu_key
+
+
+def test_foreign_gpu_processes_keep_the_gpu_congestion_refusal(rig, tmp_path):
+    """Foreign processes refuse GPU rows as congested, before any budget gate."""
+    queue, now, sample, args = rig
+    first, _, _ = _sealed(tmp_path, "congested-holder")
+    _publish(queue, first, {"cpu": 2, "gpu": 1, "mem_gb": 60})
+    assert queue.claim(**args)["action_key"] == first
+    gpu_key, _, _ = _sealed(tmp_path, "gpu-after-foreign")
+    _publish(queue, gpu_key, SMALL)
+    _tick(rig)
+    sample["foreign_processes"] = [{
+        "pid": 999, "start_ticks": 1, "cgroup": "/user.slice",
+        "gpu_uuid": "GPU-1", "used_bytes": 30 * GIB}]
+    assert queue.claim(**args) is None
+    gpu_denial = _denial(queue, gpu_key)["evidence"]["decision"]
+    assert gpu_denial["reason"] == "host_or_device_congested"
 
 
 def test_absent_cap_defaults_to_mem_gb(rig, tmp_path, real_gpu_contract):
