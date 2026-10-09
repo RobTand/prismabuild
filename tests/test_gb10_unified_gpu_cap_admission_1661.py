@@ -185,3 +185,51 @@ def test_release_frees_the_unified_gpu_cap(rig, tmp_path):
     _publish(queue, second, SECOND)
     _tick(rig)
     assert queue.claim(**args)["action_key"] == second
+
+
+def test_starting_reservation_charges_the_unified_gpu_cap(rig, tmp_path):
+    """A private acquiring dir holds GPU metadata and blocks the next cap."""
+    from prismabuild import adaptive_gpu as _gpu
+    queue, now, sample, args = rig
+    first, _, _ = _sealed(tmp_path, "starting-first")
+    _publish(queue, first, FIRST)
+    assert queue.claim(**args)["action_key"] == first
+    ledger = queue.ledger()
+    handle = ledger.begin_acquire(
+        "f" * 64, SECOND, adaptive_gpu={
+            "action_key": "f" * 64, "admitted_unix": now[0], "probe": True,
+            "gpu_memory_budget_bytes": GPU_CAP_GB * GIB,
+            "memory_domain": "shared_system"})
+    assert handle is not None
+    assert handle.startswith(pool.ACQUIRING_PREFIX)
+    try:
+        controller = _gpu.Controller(ledger)
+        controller._sample = dict(sample)
+        item = adaptive_cpu.read_json(
+            queue.item_path(pool.CLAIMED, first))
+        assert controller.decision(
+            item, SECOND,
+            contract=("shape", False, False, GPU_CAP_GB * GIB)) is None
+        assert controller.last_decision["reason"] == "unified_gpu_memory_budget"
+        assert controller.last_decision["held_gpu_cap_total_gib"] == 2 * GPU_CAP_GB
+    finally:
+        ledger.abandon_acquire(handle)
+
+
+def test_host_without_gpu_keeps_plain_token_admission(rig, tmp_path):
+    """No GPU controller runs, so no unified charge can refuse."""
+    queue, now, sample, args = rig
+    first, _, _ = _sealed(tmp_path, "nogpu-first")
+    queue.publish(action_key=first, cas_root="/cas", checkout_root="/co",
+                  worker_script="/w.py", resources={"cpu": 2, "mem_gb": 60},
+                  priority=-10, tags=["gb10"])
+    plain = dict(args, has_gpu=False)
+    assert queue.claim(**plain)["action_key"] == first
+    cpu_key, _, _ = _sealed(tmp_path, "nogpu-second")
+    queue.publish(action_key=cpu_key, cas_root="/cas", checkout_root="/co",
+                  worker_script="/w.py", resources={"cpu": 2, "mem_gb": 40},
+                  priority=-10, tags=["gb10"])
+    _tick(rig)
+    got = queue.claim(**plain)
+    assert got is not None and got["action_key"] == cpu_key
+    assert "gpu_admission" not in got
