@@ -885,7 +885,7 @@ def _shape_gate_line(record: dict[str, object]) -> str:
             f"(tables {', '.join(map(str, record.get('tables') or ()))})")
 
 
-def _roster_option_names(args: object) -> set[str]:
+def _roster_option_names(args: object, *, where: str) -> set[str]:
     """The ``--`` option names ``args`` declares, without values.
 
     Only the names matter: a value that moves (``--mem-gb 96`` to
@@ -894,14 +894,19 @@ def _roster_option_names(args: object) -> set[str]:
     option count as the same name (``--python X`` and ``--python=X``).
     A bare ``--`` token ends the options, as it does on a command
     line; anything after it is a positional, not an option.
+
+    A box that declares no list of args is malformed, not empty: the
+    gate refuses it rather than reading silence as "no options to
+    keep" (#1664).  ``where`` names the roster side in that refusal.
     """
 
+    if not isinstance(args, list) or not all(isinstance(arg, str)
+                                             for arg in args):
+        raise SystemExit(f"refusing to publish: {where} declares no usable "
+                         f"loop args (#1664). Nothing was published and the "
+                         f"live runtime still points where it did.")
     names: set[str] = set()
-    if not isinstance(args, list):
-        return names
     for arg in args:
-        if not isinstance(arg, str):
-            continue
         if arg == "--":
             break
         if not arg.startswith("--") or len(arg) == 2:
@@ -916,24 +921,40 @@ def _dropped_roster_options(live: object, candidate: object) -> dict[str, list[s
     Every box the live roster declares is compared under its own key;
     an alias answers for the box's placement tags, never for its
     options, so the same key must carry the same names in both
-    rosters.  A box the candidate adds starts fresh, and a box it
-    removes is the barrier roster's refusal, not this gate's: the
-    names are compared only where both rosters declare the box.
+    rosters.  A box the candidate adds starts fresh.  A box the
+    candidate removes or reshapes without a usable ``args`` list drops
+    every live name the box declared: the seal and the mirror carry the
+    candidate's bytes, so a missing entry cannot keep a live flag.
     """
 
     dropped: dict[str, list[str]] = {}
     live_boxes = live.get("boxes") if isinstance(live, dict) else None
     candidate_boxes = (candidate.get("boxes") if isinstance(candidate, dict)
                        else None)
-    if not isinstance(live_boxes, dict) or not isinstance(candidate_boxes, dict):
+    if not isinstance(live_boxes, dict):
         return dropped
+    if not isinstance(candidate_boxes, dict):
+        raise SystemExit("refusing to publish: the candidate roster has no "
+                         "boxes mapping (#1664). Nothing was published and "
+                         "the live runtime still points where it did.")
     for key in sorted(live_boxes):
         live_entry = live_boxes[key]
-        candidate_entry = candidate_boxes.get(key)
-        if not isinstance(live_entry, dict) or not isinstance(candidate_entry, dict):
+        if not isinstance(live_entry, dict):
             continue
-        missing = sorted(_roster_option_names(live_entry.get("args"))
-                         - _roster_option_names(candidate_entry.get("args")))
+        live_names = _roster_option_names(
+            live_entry.get("args"), where=f"live box {key!r}")
+        candidate_entry = candidate_boxes.get(key)
+        if not isinstance(candidate_entry, dict):
+            missing = sorted(live_names)
+        else:
+            try:
+                candidate_names = _roster_option_names(
+                    candidate_entry.get("args"),
+                    where=f"candidate box {key!r}")
+            except SystemExit:
+                missing = sorted(live_names)
+            else:
+                missing = sorted(live_names - candidate_names)
         if missing:
             dropped[key] = missing
     return dropped
@@ -2285,6 +2306,7 @@ def _run_publication(args) -> int:
             # purpose (#1664): who removed it, why, and which names per box.
             **({"roster_option_override": roster_override}
                if roster_override is not None else {}),
+            "generation": generation_name,
             "published_unix": time.time(),
             "published_by": socket.gethostname(),
             "files": published,

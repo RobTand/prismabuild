@@ -146,7 +146,54 @@ def test_a_candidate_that_keeps_every_live_option_publishes(
 
     assert publish_runtime.main() == 0
     assert live.resolve() != prior
+    receipt = json.loads(
+        (live.resolve() / "RUNTIME_VERSION.json").read_text())
+    assert receipt["generation"] == live.resolve().name, (
+        "the receipt lost its generation name; the supervisor and the "
+        "barrier read it to adopt and qualify (#1664)")
+    assert receipt["commit"] == "a" * 40
+    assert isinstance(receipt["files"], dict)
 
+
+def test_a_candidate_that_removes_a_live_box_is_refused(
+        tmp_path, monkeypatch) -> None:
+    live, prior = _live(tmp_path, monkeypatch, _roster(LIVE_ARGS))
+    checkout = _checkout(tmp_path / "checkout", {"boxes": {}})
+    _publish(tmp_path, monkeypatch, checkout, [])
+    monkeypatch.setattr(publish_runtime, "MIRROR", live)
+
+    with pytest.raises(SystemExit, match="--gang-admission"):
+        publish_runtime.main()
+
+    assert live.resolve() == prior, "the live pointer moved on a refusal"
+
+
+def test_a_candidate_with_malformed_box_args_is_refused(
+        tmp_path, monkeypatch) -> None:
+    live, prior = _live(tmp_path, monkeypatch, _roster(LIVE_ARGS))
+    checkout = _checkout(
+        tmp_path / "checkout",
+        {"boxes": {"sparky": {"loops": 5, "args": "--gang-admission"}}})
+    _publish(tmp_path, monkeypatch, checkout, [])
+    monkeypatch.setattr(publish_runtime, "MIRROR", live)
+
+    with pytest.raises(SystemExit, match="--gang-admission"):
+        publish_runtime.main()
+
+    assert live.resolve() == prior, "the live pointer moved on a refusal"
+
+
+def test_a_candidate_without_a_boxes_mapping_is_refused(
+        tmp_path, monkeypatch) -> None:
+    live, prior = _live(tmp_path, monkeypatch, _roster(LIVE_ARGS))
+    checkout = _checkout(tmp_path / "checkout", {"fleet": []})
+    _publish(tmp_path, monkeypatch, checkout, [])
+    monkeypatch.setattr(publish_runtime, "MIRROR", live)
+
+    with pytest.raises(SystemExit, match="no boxes mapping"):
+        publish_runtime.main()
+
+    assert live.resolve() == prior, "the live pointer moved on a refusal"
 
 def test_a_changed_value_keeps_an_unchanged_option_name(
         tmp_path, monkeypatch) -> None:
@@ -178,11 +225,13 @@ def test_an_override_names_who_and_why_and_is_recorded(
     assert live.resolve() != prior
     receipt = json.loads(
         (live.resolve() / "RUNTIME_VERSION.json").read_text())
+    assert receipt["generation"] == live.resolve().name, (
+        "the override receipt lost its generation name; the supervisor "
+        "and the barrier read it to adopt and qualify (#1664)")
     override = receipt["roster_option_override"]
     assert override["by"] == "rob"
     assert "gangs retired" in override["reason"]
     assert override["dropped"] == {"sparky": ["--gang-admission"]}
-
 
 def test_a_half_named_override_is_a_usage_error(tmp_path, monkeypatch) -> None:
     _live(tmp_path, monkeypatch, _roster(LIVE_ARGS))

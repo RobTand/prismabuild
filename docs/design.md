@@ -4756,17 +4756,22 @@ the candidate `fleet_boxes.json` with the live generation's roster
 before the live pointer moves, inside the publication lock and before
 anything is staged.  A candidate that drops any `--` option name the
 live roster declares for any box is refused; the live pointer and the
-previous generation are untouched.  Only names are compared: values
-may move, aliases answer for placement tags rather than options, and a
-box is compared under its own roster key.  The live roster is read
-from the sealed generation the pointer names, never from a mirror
-copy beside it.  `--drop-roster-option-by WHO` with
-`--drop-roster-option-reason WHY` removes an option on purpose; both
-are recorded in `RUNTIME_VERSION.json` as `roster_option_override`
-with the dropped names per box.  Rollback restores a sealed generation
-and takes neither flag.  No seal or identity contract changes: the
-gate reads the same roster and receipt every generation already
-carries.
+previous generation are untouched.  A box the candidate removes, or
+reshapes without a usable `args` list, drops every live name it
+declared; the gate fails closed rather than reading a missing entry
+as "no options".  Only names are compared: values may move, aliases
+answer for placement tags rather than options, and a box is compared
+under its own roster key.  The live roster is read from the sealed
+generation the pointer names, never from a mirror copy beside it.
+`--drop-roster-option-by WHO` with `--drop-roster-option-reason WHY`
+removes an option on purpose; both are recorded in
+`RUNTIME_VERSION.json` as `roster_option_override` with the dropped
+names per box.  The receipt keeps every adoption field it carried:
+`generation` still names the generation, so the supervisor and the
+barrier qualification read it as before.  Rollback restores a sealed
+generation and takes neither flag.  No seal or identity contract
+changes: the gate reads the same roster and receipt every generation
+already carries.
 
 The harness's own tests, `tests/test_the_campaign_shape_harness.py`, run in
 the ordinary suite on a small shape of the same kind.  One of them puts the
