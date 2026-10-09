@@ -422,22 +422,19 @@ What PB does with it:
 
 Practical rules:
 
-- Reference forms. `sha256:<64 hex>` matches the local image **ID**, or the
-  digest part of any **RepoDigest** the box reports (decided 2026-10-05: a
-  digest is content-addressed, so this carries a pulled image across both
-  stores); `repository@sha256:<64 hex>` matches that exact **RepoDigest**,
-  repository context included, and is never satisfied by a bare ID;
-  `content:sha256:<64 hex>` matches the image's store-independent
-  **content**. Mutable tags
-  (`repo:tag`) are refused; use a digest.
-- Prefer the content form for work any box holding the image may run. An
-  image ID is what that box's own image store calls the image, and the two
-  Sparks run different stores (#805): a bare-digest seal places on both only
-  while the image was pulled, so its RepoDigest appears on the classic store
-  too -- a locally built or `docker load`-ed image has no RepoDigest there,
-  so the content form is the only portable seal for it. Read a portable
-  reference off a box that holds the image with `python3 -m
-  prismabuild.container_images <repo:tag>`.
+- A bare `sha256:<64 hex>` requirement matches the local image **ID** or
+  the digest part of any reported **RepoDigest**. The digest must match in full.
+  Placement, claim admission, and GPU room checks use `container_images.missing`.
+  That function checks each requirement through `container_images.satisfied`.
+- A `repository@sha256:<64 hex>` requirement matches only that exact **RepoDigest**,
+  with the repository name included. A bare ID cannot satisfy it.
+  A `content:sha256:<64 hex>` requirement matches only that exact **content** reference.
+  Mutable tags (`repo:tag`) remain invalid.
+- Prefer the content form for portable work. The two Sparks use different
+  image stores, which can report different IDs for the same image (#805).
+  A pulled image can satisfy a bare digest through its RepoDigest.
+  A locally built or loaded image can lack a RepoDigest on the classic store.
+  Read its portable reference with `python3 -m prismabuild.container_images <repo:tag>`.
 - The image must be local *before* the action is claimed. A workflow that
   loads its image from an archive inside the action (PrismaQuant's
   `container.archive`) must **not** declare it: PB would deny the claim

@@ -794,32 +794,23 @@ def image_ids(text: str) -> tuple[str, ...]:
 
 
 def satisfied(ref, present) -> bool:
-    """Whether one requirement is positively satisfied by an inventory.
+    """Return whether an inventory satisfies one normalized requirement.
 
-    A bare ``sha256:<64 hex>`` requirement is satisfied by an entry that is
-    exactly that image ID, or by any ``repository@sha256:<64 hex>`` entry
-    whose digest part is exactly that hex -- both stores' inventories
-    (decided 2026-10-05, the two-store row ``fd9ca6b5...``): a
-    repository-qualified digest is content-addressed, so the same 64 hex
-    under any repository name is the same bytes.  A ``repository@sha256:``
-    requirement is exact -- a bare ID never satisfies it -- and so is
-    ``content:sha256:``.  Every match is a full, shape-checked string match
-    against :data:`_IMAGE_ID`/:data:`_REPO_DIGEST`; a hex that appears as a
-    prefix, a suffix, a tag or any other bystander string satisfies nothing.
+    A bare ``sha256:<64 hex>`` requirement matches an image ID or the digest
+    part of any valid RepoDigest. The digest must match in full.
+    Qualified RepoDigests and content references match only their exact strings.
 
-    ``present`` is a collection of inventory entries -- list, tuple, set,
-    frozenset all fine -- and is iterated exactly once; it is not required
-    to be a set.  :func:`missing` materializes it once for all of
-    ``required``, so callers holding a one-shot iterator should go through
-    :func:`missing` rather than call this per requirement.
+    This function consumes ``present`` at most once. Use :func:`missing` for
+    multiple requirements with a one-shot inventory iterator.
     """
 
     text = str(ref)
+    bare_digest = _IMAGE_ID.fullmatch(text) is not None
     for entry in present:
         candidate = str(entry)
         if candidate == text:
             return True
-        if _IMAGE_ID.fullmatch(text):
+        if bare_digest:
             match = _REPO_DIGEST.fullmatch(candidate)
             if match is not None and match.group("digest") == text:
                 return True

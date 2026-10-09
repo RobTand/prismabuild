@@ -16,6 +16,7 @@ repository name is the same bytes.  The qualified forms stay exact: a
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 from pathlib import Path
 import sys
 
@@ -53,10 +54,6 @@ def announce(queue, host, *, tags=("gb10", pb.CONTAINER_IMAGE_TAG),
              observed_images=None, capacity=CAPACITY, gpu=False):
     queue.announce(host=host, tags=list(tags), has_gpu=gpu,
                    capacity=dict(capacity), observed_images=observed_images)
-
-
-def item_of(queue, key):
-    return queue.item_path(pool.READY, key).read_text(encoding="utf-8")
 
 
 def denials(queue):
@@ -99,15 +96,17 @@ def test_the_placement_surface_matches_on_both_stores(tmp_path):
     assert queue.placeable_hosts(ready) == ["sparklina", "sparky"]
 
 
-def test_the_claim_is_admitted_on_the_store_that_holds_only_the_repo_digest(tmp_path):
-    """(c) The claim path admits sparklina and still denies a true absence."""
+@pytest.mark.parametrize("inventory", [SPARKY_SET, SPARKLINA_SET],
+                         ids=["containerd", "classic"])
+def test_the_claim_is_admitted_on_the_store_that_holds_only_the_repo_digest(tmp_path, inventory):
+    """Both stores admit the same bare digest requirement."""
 
     queue = pool.PoolQueue(tmp_path / "queue")
     queue.ledger().ensure_capacity(CAPACITY)
     publish(queue, KEY_A, resources={"cpu": 1, "mem_gb": 1},
             container_images=[BARE])
     claimed = queue.claim(capacity=CAPACITY, tags=CLAIM_TAGS,
-                          observed_images=sorted(SPARKLINA_SET))
+                          observed_images=sorted(inventory))
     assert claimed is not None and claimed["action_key"] == KEY_A
 
 
@@ -124,6 +123,66 @@ def test_a_box_holding_neither_the_id_nor_the_repo_digest_still_denies(tmp_path)
     assert denial["reason"] == "container_image_absent"
     assert denial["evidence"]["absent"] == [BARE]
     assert queue.item_path(pool.READY, KEY_A).exists()
+
+
+def test_an_unknown_inventory_stays_unknown_for_placement_and_claim(tmp_path):
+    queue = pool.PoolQueue(tmp_path / "queue")
+    publish(queue, KEY_A, resources={"cpu": 1, "mem_gb": 1},
+            container_images=[BARE], tags=["gb10", pb.CONTAINER_IMAGE_TAG])
+    announce(queue, "unknown", observed_images=None)
+    assert queue.placeable_hosts(queue.ready_items()[0]) == []
+    assert queue.claim(capacity=CAPACITY, tags=["gb10", *CLAIM_TAGS],
+                       observed_images=None) is None
+    assert denials(queue)[-1]["reason"] == "container_image_presence_unknown"
+    assert queue.item_path(pool.READY, KEY_A).exists()
+
+
+@pytest.mark.parametrize("inventory,keeps_room", [
+    (SPARKY_SET, True),
+    (SPARKLINA_SET, True),
+    ([SPARKLINA_SET[0]], False),
+    (None, False),
+], ids=["containerd", "classic", "absent", "unknown"])
+def test_a_busy_gpu_row_keeps_room_only_where_its_image_is_present(
+        tmp_path, monkeypatch, inventory, keeps_room):
+    """The image predicate also controls CPU admission behind a busy GPU row."""
+
+    # A host-pinned CPU row bypasses the broader ready-GPU preference.
+    # The GPU room rule must still protect the requested memory.
+    monkeypatch.setattr(pool.socket, "gethostname", lambda: "test-box")
+
+    queue = pool.PoolQueue(tmp_path / "queue")
+    gpu_demand = {"cpu": 1, "mem_gb": 16, "gpu": 1}
+    cpu_key = "b" * 64
+    publish(queue, KEY_A, resources=gpu_demand, container_images=[BARE])
+    publish(queue, cpu_key, resources={"cpu": 1, "mem_gb": 1}, tags=["test-box"])
+    real_hold = queue._timed_transition_hold
+
+    @contextmanager
+    def hold(action_key, holds):
+        if action_key == KEY_A:
+            yield False
+        else:
+            with real_hold(action_key, holds) as acquired:
+                yield acquired
+
+    with monkeypatch.context() as patch:
+        patch.setattr(queue, "_timed_transition_hold", hold)
+        claimed = queue.claim(capacity=CAPACITY, has_gpu=True,
+                              tags=[*CLAIM_TAGS, "test-box"],
+                              observed_images=inventory)
+    if keeps_room:
+        assert claimed is None
+        by_key = {entry["action_key"]: entry for entry in denials(queue)}
+        assert by_key[KEY_A]["evidence"]["gpu_room_kept"] == gpu_demand
+        assert by_key[cpu_key]["reason"] == "deferred_for_ready_gpu_row"
+        assert queue.item_path(pool.READY, cpu_key).exists()
+        assert queue.claim(capacity=CAPACITY, has_gpu=True,
+                           tags=[*CLAIM_TAGS, "test-box"],
+                           observed_images=inventory)["action_key"] == KEY_A
+    else:
+        assert claimed is not None and claimed["action_key"] == cpu_key
+        assert queue.item_path(pool.READY, KEY_A).exists()
 
 
 # --------------------------------------------------------------------------
@@ -178,19 +237,14 @@ def test_any_repository_carrying_the_digest_satisfies_a_bare_requirement():
 
 
 def test_missing_judges_every_requirement_against_the_whole_inventory():
-    """A one-shot ``present`` must not starve the second requirement.
+    """Every requirement reads the complete inventory, even from an iterator."""
 
-    Pre-fix failure (tip f997a4cf): ``missing([BARE, BARE], iter([BARE]))``
-    raised ``AssertionError: (BARE,)`` -- ``satisfied`` had consumed the
-    generator on the first requirement, so the second was judged against an
-    exhausted iterator.
-    """
-
+    other = "sha256:" + "e" * 64
+    inventory = [BARE, other]
     assert container_images.missing(
-        [BARE, BARE], (entry for entry in [BARE])) == ()
+        [BARE, other], (entry for entry in inventory)) == ()
     assert container_images.missing(
-        [BARE, "sha256:" + "e" * 64],
-        (entry for entry in SPARKLINA_SET)) == ("sha256:" + "e" * 64,)
+        [BARE, other], (entry for entry in SPARKLINA_SET)) == (other,)
 
 
 @pytest.mark.parametrize("shape", [list, tuple, set, frozenset])

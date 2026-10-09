@@ -3569,19 +3569,17 @@ inside its wrapper, spending its only attempt (2026-09-20, `gb10`).
 
 Contract:
 
-- **Reference forms.** `sha256:<64 hex>` names a local image ID, satisfied
-  by that ID or by any `repository@sha256:<64 hex>` entry whose digest part
-  is exactly that hex (decided 2026-10-05: a repository-qualified digest is
-  content-addressed, so the same hex under any repository name is the same
-  bytes, on either store);
-  `repository@sha256:<64 hex>` names a repository manifest digest, matched
-  only as that exact `repository@sha256:...` string -- a bare ID never
-  satisfies it; `content:sha256:<64
-  hex>` names the image's store-independent content (#805, below). The
-  inventory presents RepoDigests repository-qualified and never bare, and
-  only the bare-ID requirement reads their digest part. A mutable tag is
-  refused at declaration: it is not an identity and
-  cannot be sealed into an action key.
+- **Reference forms.** A bare `sha256:<64 hex>` requirement matches an image ID
+  or the digest part of any reported `repository@sha256:<64 hex>` entry.
+  The digest must match in full.
+  A `repository@sha256:<64 hex>` requirement matches only that exact repository
+  and digest. A bare ID cannot satisfy it.
+  A `content:sha256:<64 hex>` requirement matches only that exact content reference (#805).
+  The inventory keeps RepoDigests repository-qualified.
+  Placement, claim admission, and GPU room checks use `container_images.missing`.
+  That function checks each requirement through `container_images.satisfied`.
+  It retains the whole inventory for every requirement.
+  Unknown inventories remain unknown. Mutable tags remain invalid.
 - **Store-independent content identity (#805).** An image ID is what the
   box's own image store calls the image, and the two Sparks do not agree.
   Measured 2026-09-21, both on Docker Engine 29.6.2: sparky runs the
