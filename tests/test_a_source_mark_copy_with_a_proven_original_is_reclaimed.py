@@ -368,11 +368,12 @@ def test_restore_round_trips_bytes_marks_and_times(fleet) -> None:
     assert restored["entries_restored"] == len(NAMES)
     for name in NAMES:
         path = _staged(stage, mount, name)
+        # Stat first: the test's own read moves atime past it.
+        live = os.stat(path)
         assert path.read_bytes() == before[name][0]
         assert os.getxattr(path,
                             prewarm_loop.STAGE_SOURCE_XATTR) == before[
             name][1]
-        live = os.stat(path)
         assert live.st_mtime_ns == before[name][2].st_mtime_ns
         assert live.st_atime_ns == before[name][2].st_atime_ns
     again = stage_reclaim.restore_run(
