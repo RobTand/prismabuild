@@ -1705,6 +1705,7 @@ The standard eight-character suffix leaves an 86-byte socket path under
 and a 12-character file name (#1709).
 The worker removes only that attempt's directory after pytest exits 0.
 It keeps the directory on a non-zero exit, as the failed-only retention policy does.
+When removal meets a filesystem or mount refusal, a passing shard also keeps its directory with a completion time, and still reports exit 0.
 Default retained scratch expires after 24 hours (#1710).
 The worker supervisor runs a pass at startup and once per hour while it remains active.
 It sweeps registered sealed `TMPDIR` roots even when all worker loops execute actions.
@@ -1713,7 +1714,7 @@ The registry uses `<account-home>/.local/state/prismabuild/pbtest-scratch`, inde
 The shard source records each root before pytest starts.
 The supervisor records each pass in its log as `pbtest-scratch-expiry`.
 
-The retention clock starts when pytest returns a nonzero exit code.
+The retention clock starts when the attempt keeps scratch and stamps its completion time.
 A root lock protects startup, completion, and deletion.
 An attempt lock protects the shard until its interpreter exits.
 Expiry also checks the exact broker scope for absence or `populated 0`.
