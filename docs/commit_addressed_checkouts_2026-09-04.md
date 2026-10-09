@@ -295,9 +295,9 @@ number.
 | `core._verify_pbrun_checkout_ancestry` | `def _verify_pbrun_checkout_ancestry(` |
 | `materialize._execution_checkout`, the sequence | `def _execution_checkout(` |
 | `materialize`, the record the bundle must agree with | `                    f"checkout snapshot bundle contradicts sealed ref {name!r}"` |
-| `pool._execution_checkout`, the queue's root | `def _execution_checkout(item: Mapping[str, object]) -> Iterator[Path]:` |
+| `pool._execution_checkout`, the queue's root | `def _execution_checkout(` |
 | `pool`, mutually exclusive addressing | `                    "checkout_root and checkout_snapshot are mutually exclusive"` |
-| `pool.PoolQueue.execute` | `        with _execution_checkout(item) as checkout_root:` |
+| `pool.PoolQueue.execute` | `            with _execution_checkout(item, **fence) as checkout_root:` |
 | `core`, subdirectory agreement | `            "pbrun checkout stamp cwd differs from snapshot subdirectory"` |
 | `core.verify_code_closure` | `def verify_code_closure(value: object, root: str \| Path) -> dict[str, object]:` |
 | `core.seal_action` | `def seal_action(value: object) -> dict[str, object]:` |
