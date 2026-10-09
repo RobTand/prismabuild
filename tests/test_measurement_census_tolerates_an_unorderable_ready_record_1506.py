@@ -61,8 +61,9 @@ def test_a_ready_record_the_queue_cannot_order_does_not_blank_the_census(
 
     census = mr._capture(queue)
 
-    assert set(census) == {"measurements", "elections", "selections",
-                           "opportunities", "keys", "gang_elections"}
+    assert not census["measurements"]
+    assert not census["elections"]
+    assert not census["gang_elections"]
 
 
 @pytest.mark.parametrize("value", [5.5, True, "5"])

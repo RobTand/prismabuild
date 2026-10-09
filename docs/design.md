@@ -4955,15 +4955,14 @@ declared demand on each elected host (#1579): a new equal-priority row is admitt
 only if, in every dimension the member declares, `held + row + reserved <=
 capacity`, with `held` and `capacity` read from the host's resource ledger under
 host admission. Otherwise it is denied as `deferred_for_gang_reservation`, and the
-denial's `reservation` names the dimension and the shortfall. Running work is never
-touched. The rule reads only what the claim pass already reads (the member's census
-row, the candidate's demand, the ledger): no plan reads, no prerequisite walk, no
-new census work. On the reservation's own host the reservation arithmetic lends
-nothing: a reservation-denied row is refused, not lent. The gang backfill loan above
-still applies where its own contract allows, so a strictly lower-priority restartable
-row can borrow a fresh-ready member's host while peers cannot commit, and the
-reservation it meets there is that election's fence. A reservation shortfall never
-becomes a loan. The claim loop refuses it before it checks backfill eligibility.
+denial names each dimension and its shortfall. The rule never changes running work.
+The arithmetic uses the census row, the actual claim demand, and the host ledger.
+The claim demand includes any export allowance for a producer.
+The bounded census also projects movement identities from requests it already reads.
+It reads no plan and does not trace prerequisites.
+Bootstrap precedence needs one additional bounded census before admission.
+A reservation shortfall never becomes a loan.
+The existing lower-priority backfill rule remains unchanged.
 
 Unknown is consuming, never exempt. A candidate that omits `cpu` or `mem_gb`, that
 declares `cpu` as zero (`adaptive_cpu` reads that as unbounded CPU use), or whose
@@ -4972,13 +4971,10 @@ zero unless the row sets `needs_gpu`, and so is any other omitted ledger dimensi
 such as `spool_gb`. A member whose demand does not read reserves the whole host. A host
 ledger that does not read denies the row for the pass.
 
-Only a waiting member reserves. The census marks an election `waiting` when its member
-row is READY. A member that has started holds its tokens on the ledger, so reserving
-its demand again would count them twice and refuse rows that fit beside it. A member
-that has ended has no demand left, and its host is idle for other work, although its
-election stays until the last member of the gang ends. The reservation and the
-measurement precedence below skip an election that is not waiting. The fence against
-strictly lower priority stays for the whole life of the gang, as before.
+Only a READY member reserves. The census records `member_state` for the exact publication.
+A CLAIMED member already holds ledger tokens. A terminal member holds no tokens.
+Neither state reserves more demand or suspends measurement precedence.
+The lower-priority fence lasts until the gang ends.
 
 A member that reserves anything on a host and leaves its `cpu` or `mem_gb` out, or
 declares `cpu` as zero, is unknown in that dimension, as a candidate row is: it
@@ -4992,24 +4988,24 @@ priority. Withdraw the gang to release them. Never held: the gang's own members 
 are ordered by `rank`), higher priority, a verified publication canary slot (its
 own next-free-safe-boundary contract) and the two roles PrismaBuild itself assigns.
 
-**Where the reservation applies (#1659).** Only on a host that holds a mature
-protected copy of the runtime generation its process runs
-(`runtime_publication.live_authority`). A host without that copy keeps what it
-had before the reservation: the fence against strictly lower priority, and
-nothing more. Equal-priority work is not held, and the measurement precedence
-below does not apply. This is the behaviour of main, and it is the rule for
-every way the copy can be missing: the host is not enrolled, the copy of a new
-generation has not arrived yet, the process is not a published generation (a
-checkout), or the copy was made from other bytes than the generation's receipt.
-A fresh copy also grants no authority until it is older than
-`PROTECTED_COPY_MATURITY_S` (600 s, one gang-wait period): pre-copy rows sealed
-from the retained store execute mutable bytes and never get a role, so holding
-them would deadlock the gang they serve. The host keeps the behaviour of main
-until the copy matures, so those rows drain first. The reason is liveness. The
-reservation spares the movement nodes that the gang waits on (below). A host can
-tell those nodes from other work only through a mature copy. A skipped
-publication step must never deadlock a gang, so a missing, stale or fresh copy
-falls back to main and adds no refusal.
+**Where the reservation applies (#1659).** The host needs two proofs:
+
+- `runtime_publication.live_authority` verifies a mature copy of the process's generation.
+- `movement_drained` verifies that no live, unqualified movement row can run on this host.
+
+Copy age alone does not prove drain completion. READY time has no execution deadline.
+The bounded census includes READY, CLAIMED, and transition records.
+An unqualified movement row keeps the host on main's fallback until that row ends.
+This rule covers retained tools, older generations, and the previous non-isolated sealer.
+The host evaluates tags and GPU requirements with its existing placement predicate.
+A CLAIMED row belongs to its recorded host.
+The claim refreshes the proof under host admission.
+Measurement election and bootstrap precedence use the same proof.
+
+A missing, stale, or fresh copy also keeps main's fallback.
+The fallback preserves the lower-priority fence and adds no equal-priority reservation.
+It grants no movement role and bypasses no resource limit.
+It does not change a sealed action or refuse a payload launch.
 
 **The two roles.** `returns_capacity` marks a node whose whole job is to give
 capacity back: a stage or RAM egress (`stage_release.py`), a produced export
@@ -5064,21 +5060,20 @@ enrolled once, by an administrator, with `tools/fleet/install_movement_publisher
 (`/etc/prismabuild/movement-approval.key`, 0400) and a root timer,
 `prismabuild-movement-publish.timer`. Once a minute the timer's unit runs
 `runtime_publication.converge`: it reads the live runtime pointer of the enrolled
-generation store, and when the generation it names has no copy here, it checks the
-publisher approval sibling (`<generation>.approval` in the store, the HMAC of the
-receipt digest under the publisher secret). The publisher principal
-(`tools/fleet/publish_runtime.py`, run as the dedicated publisher account with its
-0600 signing secret in its own home) writes that sibling automatically after each
-publication, with no person. The signing secret must live under an account that
-does not own the runtime store: a same-account key is refused, so a store writer
-cannot approve its own bytes. Without a valid approval there is no copy. It
-publishes only that live generation. A host that still runs an older generation has
-that copy from when it was live. A fresh copy grants no reservation authority until
-it matures (`PROTECTED_COPY_MATURITY_S`). The unit writes
-`/var/lib/prismabuild-movement-publish/status.json` (`published`, `current` or
-`error`, with the generation and the reason). An error leaves the host without a
-copy, which is the fallback above, and the next minute tries again. A person (Rob
-or the CEO) approves the dedicated publisher account once, not per generation.
+generation store. It requires a publisher approval before it creates a copy.
+The `<generation>.approval` sibling contains an HMAC of the trusted receipt digest.
+`publish_runtime.py` constructs the receipt bytes and retains their digest in memory.
+Its signer consumes that digest, not a receipt read from the exposed store.
+A replacement generation therefore cannot obtain approval for its replacement bytes.
+The timer verifies the exposed receipt and every member against that approval.
+
+The dedicated publisher account holds its 0600 secret outside submitter and store-owner accounts.
+A same-account key is refused. An administrator approves the account and enrolls each host once.
+Each later publication needs no person or root command.
+The timer copies only the approved live generation.
+Older workers retain copies from previous publications.
+The unit records `published`, `current`, or `error` in `/var/lib/prismabuild-movement-publish/status.json`.
+A publication error preserves main's fallback. The next timer pass can retry.
 
 **Tool roots.** A box that holds the copy of its tier loop's generation announces the
 copy's tool directory as `mover_tools_root` (`tier_loop.announced_tools_root`); a box
@@ -5092,23 +5087,21 @@ one (`produced_spool.export_tool`). A change of `mover_tools_root` is a new tier
 announcement, and the shared-range registry already replaces a registration sealed
 against another announcement.
 
-Residual and limits. A caller can still choose the arguments of a genuine protected
-tool, within that tool's demand limits. Queue writers remain trusted like priority: a
-hand-written READY row cannot obtain the exemption without a protected tool path that
-verifies on the enforcing host, but it can pair that path with another action. Only a
-pending member reserves: a running member already holds its demand in the ledger, and
-a terminal member holds nothing, so neither reserves (the strictly-lower fence stays).
-No retained-store path ever exempts: those bytes are mutable to ordinary store owners,
-so a retained mover is an ordinary held row once its host's copy matures. A fresh copy
-grants no authority until it matures, so pre-copy rows (with or without isolated
-Python, including movers sealed by the previous sealer) drain first and the gang
-starts through them. After the bound new movers must seal from the protected twin.
-A complete copy is about 27 MB per generation, and the store only grows. Removing an
-old copy is an administrator's act, and a copy that a sealed row still names must stay.
-Role exemptions retain real CPU, memory, GPU and tier ledger admission, so required
-movers use free capacity even when the gang reserves every CPU. The role check is a
-scheduling classification. It adds no launch refusal under D32 and changes no
-allocator or kernel path under D41.
+Residual and limits. A caller can choose arguments for a genuine protected tool within its demand limits.
+Queue writers remain trusted, as they are for priority.
+A queue writer can pair a valid protected path with another action.
+The submission API cannot do this.
+
+A retained path never grants a role. Its bytes remain mutable to ordinary store owners.
+An unqualified movement row suspends reservation on each host that can run it.
+A stream of such rows can delay reservation without a fixed bound.
+This conservative fallback avoids a prerequisite deadlock without trusting mutable code.
+New movements use the protected tool root after its tier announces that root.
+
+Protected copies are append-only. An administrator must retain every copy that a sealed row still names.
+Role exemptions retain CPU, memory, GPU, and tier admission.
+The role check adds no launch refusal under D32.
+The change modifies no allocator or kernel path under D41.
 
 CEO decision `dec-1009-062221-f41c` requires publication authority outside
 submitters and ordinary store owners. The decision of 2026-10-09 for PR #1584 removes
@@ -5137,10 +5130,9 @@ its place ahead of the gang and still elects and withholds: that is the priority
 order, not a reservation exception (gangs may run at a priority above routine work,
 and under D45 at 0, so only a ship-window measurement outranks them). A suspended
 measurement row stays READY and withholds again once the gang has started and no
-waiting gang reserves the host. The gang therefore starts within ten minutes plus the
-longest running job on its hosts (each capped), plus the runs of the roles it waits
-on. On a host without the copy none of this applies and a waiting measurement keeps its
-place, as on main.
+READY gang reserves the host. Main's fallback also preserves measurement precedence.
+These source tests do not prove a live gang start-time bound.
+Legacy drain time and unrelated movement traffic can extend the wait.
 
 Known limit: the roles are exempt from the arithmetic but not unbounded in effect.
 A stream of unrelated movers or releases on a member host can each delay the gang by
@@ -5148,11 +5140,9 @@ one run, and token-bounded movers do not prove that the gang progresses in every
 configuration: the tier ledger can still refuse a mover whose tokens are held by work
 that waits on the gang. The reservation bounds what new ordinary work can take; it
 does not make the tier's own accounting live. A returner or mover published by an
-older generation has the same role only if its sealed definition matches. A row
-published before this change carries no role; on a host that holds the copy it is held
-by its demand while a reservation is active, and on a host without the copy it is not
-held at all. Before 2026-10-06 equal priority was never fenced: a whole-box -10 gang
-waited fourteen minutes while smaller -10 singles took both Sparks.
+older generation has the same role only when its sealed definition and protected copy qualify.
+Otherwise, its live movement row preserves main's fallback until it ends.
+Before 2026-10-06, equal-priority singles could refill both Sparks while a gang waited fourteen minutes.
 
 **Mixed generations.** An old worker offers no `gang-v1` and ignores `gangs/`, so
 it never claims a member. During a rolling publish it may not honour a gang

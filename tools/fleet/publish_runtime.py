@@ -670,12 +670,13 @@ def _fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
-def _write_receipt(path: Path, receipt: dict[str, object]) -> None:
-    with path.open("w", encoding="utf-8") as handle:
-        json.dump(receipt, handle, indent=1)
-        handle.write("\n")
+def _write_receipt(path: Path, receipt: dict[str, object]) -> str:
+    raw = (json.dumps(receipt, indent=1) + "\n").encode("utf-8")
+    with path.open("wb") as handle:
+        handle.write(raw)
         handle.flush()
         os.fsync(handle.fileno())
+    return hashlib.sha256(raw).hexdigest()
 
 
 def _probe(root: Path) -> None:
@@ -720,7 +721,7 @@ def _seal_generation(root: Path) -> None:
             path.chmod(PUBLISHED_FILE_MODE)
     root.chmod(PUBLISHED_DIRECTORY_MODE)
 
-def _sign_movement_approval(generation: Path) -> None:
+def _sign_movement_approval(generation: Path, *, receipt_sha256: str) -> None:
     """Write the movement-role publisher approval sibling (#1659).
 
     Best effort: without the dedicated publisher principal's signing secret
@@ -729,6 +730,8 @@ def _sign_movement_approval(generation: Path) -> None:
     0600, owned by the publisher account, and under an account that does not
     own the runtime store: a same-account key is refused, so a store writer
     cannot approve its own bytes. A person approves that principal once.
+    The digest comes from the receipt bytes constructed by this publisher.
+    Never read approval input from the exposed generation store.
     """
     try:
         import hashlib as _hashlib
@@ -746,9 +749,9 @@ def _sign_movement_approval(generation: Path) -> None:
         secret = key_path.read_text(encoding="utf-8").strip()
         if not __import__("re").fullmatch(r"[0-9a-f]{64}", secret):
             return
-        raw = (generation / "RUNTIME_VERSION.json").read_bytes()
-        digest = _hashlib.sha256(raw).hexdigest()
-        tag = _hmac.new(bytes.fromhex(secret), digest.encode("utf-8"), _hashlib.sha256).hexdigest()
+        if not re.fullmatch(r"[0-9a-f]{64}", receipt_sha256):
+            return
+        tag = _hmac.new(bytes.fromhex(secret), receipt_sha256.encode("utf-8"), _hashlib.sha256).hexdigest()
         sibling = generation.parent / f"{generation.name}.approval"
         sibling.write_text(tag + "\n", encoding="utf-8")
     except (OSError, ValueError):
@@ -2168,13 +2171,13 @@ def _run_publication(args) -> int:
             "published_by": socket.gethostname(),
             "files": published,
         }
-        _write_receipt(stage / "RUNTIME_VERSION.json", receipt)
+        receipt_sha256 = _write_receipt(stage / "RUNTIME_VERSION.json", receipt)
         _probe(stage)
         _seal_generation(stage)
         _fsync_directory(stage)
         os.replace(stage, generation)
         _fsync_directory(store)
-        _sign_movement_approval(generation)
+        _sign_movement_approval(generation, receipt_sha256=receipt_sha256)
         if args.stage_only:
             print(json.dumps({"state": "staged", "generation": generation_name,
                               "path": str(generation), "activated": False,

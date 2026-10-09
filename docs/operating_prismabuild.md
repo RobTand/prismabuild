@@ -3518,20 +3518,20 @@ generation store and the status file), writes the verification secret root-only
 (`/etc/prismabuild/movement-approval.key`, 0400) and enables `prismabuild-movement-publish.timer`.
 It refuses an install under an ancestor that has no root custody.
 
-**What the timer does.** Once a minute, `runtime_publication.py` reads the live runtime
-pointer. When the generation it names has no copy on this host, it first checks the
-publisher approval sibling (`<generation>.approval` in the store, the HMAC of the receipt
-digest under the publisher secret). `tools/fleet/publish_runtime.py`, run as the
-dedicated publisher account, writes that sibling automatically after each publication
-from its 0600 signing secret. A key in the same account that owns the runtime store is
-refused, so a store writer cannot approve its own bytes. Without a valid approval there
-is no copy. It then copies every member of the generation's receipt, byte for byte and
-without executing any of it, into `/opt/prismabuild/movement-generations/<generation>`.
-It checks each member against the receipt, writes `MOVEMENT_PUBLICATION.json` (with
-`published_unix`), seals the copy and renames it into place. Copies are append-only. Each
-approved live generation therefore gets its copy within about a minute of the pointer
-moving, with no one present. A fresh copy grants no reservation authority until it is
-older than `PROTECTED_COPY_MATURITY_S` (600 s), so pre-copy retained rows drain first.
+**What the timer does.** The timer reads the live pointer once a minute.
+It requires a valid `<generation>.approval` before it creates a protected copy.
+`publish_runtime.py` constructs the receipt bytes and retains their digest in memory.
+The dedicated account signs that digest with its 0600 secret.
+The signer never reads approval input from the exposed generation.
+A replacement receipt cannot obtain approval for replacement tools.
+The timer checks the exposed receipt and every copied member against the approved digest.
+It creates the copy without executing its code.
+It records `published_unix`, seals the copy, and renames it into place.
+Copies remain append-only. Each publication requires no manual root command.
+
+A copy needs 600 seconds before it can support reservation.
+This delay does not prove that legacy movers have drained.
+Claim admission also requires a complete census with no live, unqualified movement row on the host.
 
 **Check a host.**
 
@@ -3547,18 +3547,18 @@ tier record shows the effect: `mover_tools_root` names a path under
 `/opt/prismabuild/movement-generations` once the host holds the copy of its tier loop's
 generation, and its own generation directory before that.
 
-**A missing, stale or fresh copy is not an outage.** The reservation applies only on
-a host that holds a mature copy of the generation its process runs. Until the copy
-exists and matures (the host is not enrolled, the unit failed, a new generation has
-not been copied yet, or the copy just arrived) the host behaves as before the
-reservation: it fences strictly lower priority work for an elected gang and holds
-nothing else. No action is refused and no mover fails to launch. No retained-store
-path ever exempts: those bytes are mutable, so a retained mover is an ordinary row
-once the copy matures. While the copy is fresh the gang starts through its pre-copy
-movers, including movers sealed by the previous sealer without isolated Python.
-Movers are sealed from the tool root their tier announces, which a host announces only
-when it has the copy, so a box without the copy is never sent a path it lacks. An
-`error` in the status file is the thing to fix, and nothing waits on it.
+**Fallback preserves main's behavior.** A missing, stale, or fresh copy disables equal-priority reservation.
+A READY or CLAIMED movement row without protected authority also disables reservation on its eligible hosts.
+The fallback lasts until that row ends, even when an incumbent outlasts the copy's 600-second delay.
+The host preserves its lower-priority fence and ordinary resource admission.
+Legacy rows never obtain roles from mutable retained bytes.
+Their sealed requests remain unchanged.
+
+The claim refreshes drain proof under admission.
+The same proof controls measurement precedence and measurement election.
+Tier announcements select tool roots on the execution host.
+The sealer does not substitute a path from another host.
+Inspect a timer `error` before you claim publication support.
 
 **Limits.** A complete copy is about 27 MB per generation and the store only grows. The
 unit publishes nothing when less than 1 GiB is free on the filesystem, and the status
@@ -3570,6 +3570,10 @@ starts them. The local resident tier loop does not announce a protected root yet
 local resident evict carries no role. The unit changes no runtime
 activation and no canary verdict. This is source support; a live gang qualification and
 a deployment record are separate evidence (D45 stays in force until they exist).
+
+Use a private `--basetemp` below an existing, owned `/tmp` directory for parallel clock-controlled test suites.
+This prevents another pytest session from removing numbered scratch directories during the claim tests.
+Keep terminal results, logs, and CAS receipts distinct from deployment evidence.
 
 ### The rollout canary gate (default-ON)
 

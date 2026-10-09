@@ -12124,9 +12124,10 @@ class PoolQueue:
                     self.__dict__.setdefault("_drain_notes", {})[key] = notes
 
     def _canonical_measurement_verdict(self, item, verdict, *, ledger, controller,
-                                       cpu_decision, gpu_sample):
+                                       cpu_decision, gpu_sample, authority=False,
+                                       tags=frozenset(), has_gpu=False):
         """Separate bounded attention from the persisted host election (#1419)."""
-        from . import _measurement_reservation as reservation, runtime_publication
+        from . import _measurement_reservation as reservation
         sample = cpu_decision.get("sample") if isinstance(cpu_decision, Mapping) else None
         sampled = sample.get("sampled_unix") if isinstance(sample, Mapping) else None
         try:
@@ -12134,7 +12135,7 @@ class PoolQueue:
                 self, ledger, controller, item,
                 verdict if _measurement_foreign_clear(cpu_decision) else dict(verdict, withhold=False),
                 sampled_unix=sampled, gpu_sample=gpu_sample,
-                authority=runtime_publication.live_authority())
+                authority=authority, tags=tags, has_gpu=has_gpu)
         except reservation.CensusUnavailable as exc:
             return dict(verdict, withhold=True, why="measurement_census_unavailable",
                         census_error=str(exc))
@@ -21192,16 +21193,25 @@ class PoolQueue:
         #: not of strictly higher priority (#1579): higher priority goes first.
         ready_priority = {str(row.get("action_key", "")): int(row.get("priority", 0))
                           for row in ready if isinstance(row.get("priority", 0), int)}
-        #: Whether this host holds the protected copy of the runtime it runs
-        #: (#1579): read at most once per pass, and only when a gang's
-        #: reservation asks.
-        pass_authority: list[bool] = []
+        # Read copy authority outside admission locks. Copy age does not
+        # prove that a READY prerequisite has ended.
+        from . import _measurement_reservation as measurement_reservation, runtime_publication
+        copy_authority = runtime_publication.live_authority()
+        bootstrap_authority: list[bool] = []
 
         def movement_authority() -> bool:
-            if not pass_authority:
-                from . import runtime_publication
-                pass_authority.append(runtime_publication.live_authority())
-            return pass_authority[0]
+            # Only bootstrap precedence needs a census before row admission.
+            if not bootstrap_authority:
+                drained = False
+                if copy_authority and ledger is not None:
+                    try:
+                        drained = measurement_reservation.movement_drained(
+                            measurement_reservation.CensusReader(self, ledger).capture(), self,
+                            tags=tagset, has_gpu=has_gpu, host=ledger.base.name)
+                    except measurement_reservation.CensusUnavailable:
+                        pass
+                bootstrap_authority.append(drained)
+            return bootstrap_authority[0]
 
         #: Whether a row this pass already withheld the whole box for (#1230
         #: review): ``carry_withhold``'s None then means "held elsewhere in
@@ -22023,9 +22033,13 @@ class PoolQueue:
                             # against strictly lower priority that it always had.
                             from . import movement_actions
                             reservation_now = _now()
+                            reservation_authority = (
+                                copy_authority and measurement_reservation.movement_drained(
+                                    census, self, tags=tagset, has_gpu=has_gpu, host=ledger.base.name))
                             reserving_priority = measurement_reservation.reservation_priority_on(
                                 census, host=ledger.base.name, now=reservation_now,
-                                authority=movement_authority())
+                                authority=reservation_authority,
+                                exclude_group=gang["group"] if gang is not None else None)
                             # This row's own measurement withhold yields only to a
                             # gang of its priority or higher.
                             measurement_suspended = (reserving_priority is not None
@@ -22034,7 +22048,7 @@ class PoolQueue:
                             if reserving_priority is not None:
                                 try:
                                     reservation_held = ledger.held()
-                                    reservation_capacity = ledger.capacity()
+                                    reservation_capacity = total
                                 except (OSError, ValueError, PoolContractError):
                                     reservation_held = reservation_capacity = None  # fail safe
                             census_blocked = measurement_reservation.blocking_selection(
@@ -22061,15 +22075,9 @@ class PoolQueue:
                                     "withheld_for": census_blocked["action_key"],
                                     "selection": census_blocked, "candidate_release_bound": "UNKNOWN"})
                                 continue
-                            # A role mark exempts the row only if this host holds
-                            # a mature protected copy of the tool the row names
-                            # (#1579, #1659). Asked only when an election could
-                            # hold the row. A retained-store path never exempts:
-                            # those bytes are mutable to ordinary store owners,
-                            # so they stay ordinary held rows. Pre-copy rows
-                            # progress because a fresh copy grants no authority
-                            # until it matures (``live_authority``), and the host
-                            # keeps the behaviour of main meanwhile.
+                            # A protected role skips only reservation arithmetic.
+                            # Legacy movement rows keep the host on main's fallback
+                            # until the complete census proves that they have ended.
                             role_exempt = (bool(census.get("gang_elections"))
                                            and movement_actions.authorized_role(item))
                             gang_blocked = (None if serves_incumbent else
@@ -22079,7 +22087,7 @@ class PoolQueue:
                                                 now=reservation_now, held=reservation_held,
                                                 capacity=reservation_capacity,
                                                 exempt=role_exempt,
-                                                authority=movement_authority()))
+                                                authority=reservation_authority, demand=reservation_demand))
                             while gang_blocked is not None:
                                 # A demand shortfall cannot become a loan (#1579).
                                 if "reservation" in gang_blocked:
@@ -22109,7 +22117,7 @@ class PoolQueue:
                                     remaining, item, host=ledger.base.name, group=None,
                                     now=reservation_now, held=reservation_held,
                                     capacity=reservation_capacity, exempt=role_exempt,
-                                    authority=movement_authority())
+                                    authority=reservation_authority, demand=reservation_demand)
                             if gang_blocked is not None:
                                 self.record_denial(item, "deferred_for_gang_reservation", {
                                     "withheld_for": gang_blocked["action_key"],
@@ -22332,7 +22340,8 @@ class PoolQueue:
                                 verdict = self._canonical_measurement_verdict(
                                     item, verdict, ledger=ledger, controller=controller,
                                     cpu_decision=cpu_decision,
-                                    gpu_sample=_gpu_sample_for(gpu_controller, demand))
+                                    gpu_sample=_gpu_sample_for(gpu_controller, demand),
+                                    authority=copy_authority, tags=tagset, has_gpu=has_gpu)
                             if (verdict is not None and verdict["withhold"]
                                     and isinstance(decision, Mapping)
                                     and decision.get("reason") == "measurement_holder"
@@ -22420,7 +22429,8 @@ class PoolQueue:
                                 verdict = self._canonical_measurement_verdict(
                                     item, verdict, ledger=ledger, controller=controller,
                                     cpu_decision=cpu_decision,
-                                    gpu_sample=_gpu_sample_for(gpu_controller, demand))
+                                    gpu_sample=_gpu_sample_for(gpu_controller, demand),
+                                    authority=copy_authority, tags=tagset, has_gpu=has_gpu)
                             denials = self.record_pass(key)
                             if not preempted:
                                 # Selection reacquires admission, while the separate

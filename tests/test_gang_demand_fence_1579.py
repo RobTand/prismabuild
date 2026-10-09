@@ -26,7 +26,7 @@ def _census(priority=-10, demand=MEMBER, host="sparky", other=None, waiting=True
     elections = {"g" * 63 + "1": {
         "group": "g" * 32, "index": 0, "action_key": "g" * 63 + "1", "host": host,
         "priority": priority, "rank": [-priority, FIRST, "g" * 32], "demand": demand,
-        "waiting": waiting}}
+        "member_state": "ready" if waiting else "claimed"}}
     if other is not None:
         elections.update(other)
     return {"gang_elections": elections}
@@ -216,9 +216,9 @@ def test_a_member_that_has_ended_leaves_its_host_idle_for_other_work():
     assert _blocked(_row(resources={"cpu": 8, "mem_gb": 64}), waiting=False) is None
 
 
-def test_an_election_that_does_not_say_whether_its_member_waits_reserves_nothing():
+def test_an_election_with_no_member_state_reserves_nothing():
     census = _census()
-    del next(iter(census["gang_elections"].values()))["waiting"]
+    del next(iter(census["gang_elections"].values()))["member_state"]
     assert _blocked(_row(), census=census) is None
 
 

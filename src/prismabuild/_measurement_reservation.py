@@ -121,7 +121,6 @@ def _scan_publications(queue: PoolQueue) -> dict:
     from . import pool
     rows: dict[str, list[dict]] = {}
     unorderable: dict[str, list[dict]] = {}   # live members, never candidates
-    ready: set[str] = set()                   # keys that have a READY row
     selected: dict[str, dict] = {}
     opportunities: dict[str, dict] = {}
     count = 0
@@ -206,6 +205,8 @@ def _scan_publications(queue: PoolQueue) -> dict:
                             "claimed_unix": record.get("claimed_unix"),
                             "generation": queue.attempt_generation(record)}
     measurements: dict[str, list[dict]] = {}
+    movements: dict[str, list[dict]] = {}
+    from . import movement_actions
     for key, versions in rows.items():
         for record in versions:
             # An absent request is the supported legacy direct-publication
@@ -213,6 +214,11 @@ def _scan_publications(queue: PoolQueue) -> dict:
             action = pool._sealed_action_request(str(record.get("cas_root")), key,
                                                 max_bytes=MAX_RECORD_BYTES)
             task = action.get("task") if action is not None else None
+            if movement_actions.pending_movement(action):
+                fields = ("action_key", "tags", "needs_gpu", "claimed_host",
+                          movement_actions.ROLE_SCRIPT_FIELD, *movement_actions.CAPACITY_ROLE_FIELDS)
+                movements.setdefault(key, []).append(
+                    {field: record[field] for field in fields if field in record})
             if isinstance(task, Mapping) and task.get("task_class") == "measurement":
                 measurements.setdefault(key, []).append(record)
     elections: dict[str, dict] = {}
@@ -246,6 +252,7 @@ def _scan_publications(queue: PoolQueue) -> dict:
             continue
         elections[key] = chosen  # missing authority stays fenced, indefinitely
     return {"measurements": measurements, "elections": elections, "selections": selected,
+            "movements": movements,
             "opportunities": opportunities, "keys": sorted(set(measurements) | set(selected)),
             "gang_elections": _gang_elections(
                 queue, {key: rows.get(key, []) + unorderable.get(key, [])
@@ -480,10 +487,10 @@ class CensusReader:
             value = reply.get("value")
             if (not isinstance(value, dict)
                     or set(value) != {"measurements", "elections", "selections", "opportunities", "keys",
-                                      "gang_elections"}
+                                      "gang_elections", "movements"}
                     or not all(isinstance(value[field], dict)
                                for field in ("measurements", "elections", "selections", "opportunities",
-                                             "gang_elections"))
+                                             "gang_elections", "movements"))
                     or not isinstance(value["keys"], list)
                     or len(value["keys"]) > MAX_RECORDS
                     or any(not isinstance(key, str) or len(key) != 64
@@ -602,15 +609,35 @@ def reserves_after(first_published: object, now: float, *, authority: bool) -> b
 
 def _gang_reserves(chosen: dict, now: float, authority: bool) -> bool:
     """Whether the gang behind election ``chosen`` reserves its host (:func:`reserves_after`)."""
-    state = chosen.get("member_state", "ready")
-    if state not in ("ready", None):
+    state = chosen.get("member_state")
+    if state != "ready":
         return False
     rank = chosen.get("rank")
     return reserves_after(rank[1] if isinstance(rank, list) and len(rank) == 3 else None, now,
                           authority=authority)
 
 
-def reservation_priority_on(census: dict, *, host: str, now: float, authority: bool) -> int | None:
+def movement_drained(census: dict, queue: PoolQueue, *, tags: frozenset[str],
+                     has_gpu: bool, host: str) -> bool:
+    """Prove that this host has no live movement row without protected authority."""
+    from . import movement_actions
+    movements = census.get("movements")
+    if not isinstance(movements, dict):
+        return False
+    for versions in movements.values():
+        for row in versions:
+            claimed_host = row.get("claimed_host")
+            if claimed_host is not None and claimed_host != host:
+                continue
+            if (claimed_host == host
+                    or queue._placement_matches(row, tags=tags, has_gpu=has_gpu)):
+                if not movement_actions.authorized_role(row):
+                    return False
+    return True
+
+
+def reservation_priority_on(census: dict, *, host: str, now: float, authority: bool,
+                            exclude_group: str | None = None) -> int | None:
     """The highest priority among gangs that reserve ``host`` now, else ``None``.
 
     A gang reserves a host once its wait passed the bound, on a host that holds
@@ -621,7 +648,8 @@ def reservation_priority_on(census: dict, *, host: str, now: float, authority: b
     that is the priority order, not a reservation exception (#1579).
     """
     reserving = [chosen["priority"] for chosen in census.get("gang_elections", {}).values()
-                 if chosen["host"] == host and _gang_reserves(chosen, now, authority)]
+                 if chosen["host"] == host and chosen["group"] != exclude_group
+                 and _gang_reserves(chosen, now, authority)]
     return max(reserving) if reserving else None
 
 
@@ -653,7 +681,7 @@ def _reserved(member_demand: object, capacity: Mapping) -> dict[str, int]:
 
 
 def reservation_shortfall(item: dict, member_demand: object, *, held: object,
-                          capacity: object) -> dict | None:
+                          capacity: object, demand: object = None) -> dict | None:
     """``None`` when ``item`` fits beside the member's reservation; else why not.
 
     For every dimension the member reserves::
@@ -668,7 +696,7 @@ def reservation_shortfall(item: dict, member_demand: object, *, held: object,
     """
     if not (isinstance(held, dict) and isinstance(capacity, dict)):
         return {"unknown": "host ledger unreadable"}
-    resources = item.get("resources")
+    resources = demand if demand is not None else item.get("resources")
     short: dict[str, int] = {}
     for kind, reserved in _reserved(member_demand, capacity).items():
         total = int(capacity[kind])
@@ -691,7 +719,7 @@ def reservation_shortfall(item: dict, member_demand: object, *, held: object,
 def gang_blocking(census: dict, item: dict, *, host: str, group: str | None,
                   now: float | None = None, held: object = None,
                   capacity: object = None, exempt: bool = False,
-                  authority: bool = False) -> dict | None:
+                  authority: bool = False, demand: object = None) -> dict | None:
     """What a live gang election does to ``item`` on its host (#1517, #1579).
 
     Strictly lower priority is fenced from election, as before.  Equal
@@ -725,7 +753,8 @@ def gang_blocking(census: dict, item: dict, *, host: str, group: str | None,
                 or exempt is True
                 or not _gang_reserves(chosen, now, authority)):
             continue
-        short = reservation_shortfall(item, chosen.get("demand"), held=held, capacity=capacity)
+        short = reservation_shortfall(item, chosen.get("demand"), held=held, capacity=capacity,
+                                      demand=demand)
         if short is not None:
             return {**chosen, "reservation": short}
     return None
@@ -733,11 +762,14 @@ def gang_blocking(census: dict, item: dict, *, host: str, group: str | None,
 
 def elect(queue: PoolQueue, ledger: ResourceLedger, controller, item: dict,
           verdict: dict, *, sampled_unix: object, gpu_sample: Mapping | None,
-          authority: bool = False) -> dict | None:
+          authority: bool = False, tags: frozenset[str] = frozenset(),
+          has_gpu: bool = False) -> dict | None:
     """Choose a host once; a finite incumbent *opportunity* is metadata, not a bound."""
     from . import pool
     generation = queue.attempt_generation(item)
     with locked_census(queue, ledger, controller) as census:
+        authority = authority and movement_drained(
+            census, queue, tags=tags, has_gpu=has_gpu, host=ledger.base.name)
         prior = _read(queue.passes_path(item["action_key"]), optional=True) or {}
         chosen = selection(prior)
         if chosen is not None and chosen["generation"] == generation:

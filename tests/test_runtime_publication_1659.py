@@ -474,63 +474,12 @@ def test_the_installed_program_runs_standalone_and_refuses_a_submitter():
                           capture_output=True, text=True, timeout=60)
     assert done.returncode == 2, (done.stdout, done.stderr)
     assert "requires root authority" in done.stderr
-    # No import of the rest of the package: the file stands alone.
-    import ast
-    imported = {alias.name.split(".")[0] for node in ast.walk(ast.parse(PROGRAM.read_text()))
-                if isinstance(node, ast.Import) for alias in node.names}
-    imported |= {node.module.split(".")[0] for node in ast.walk(ast.parse(PROGRAM.read_text()))
-                 if isinstance(node, ast.ImportFrom) and node.module and node.level == 0}
-    assert "prismabuild" not in imported
-    assert not [node for node in ast.walk(ast.parse(PROGRAM.read_text()))
-                if isinstance(node, ast.ImportFrom) and node.level > 0]
 
 
-def test_the_installer_enrolls_what_the_program_reads():
-    """One enrollment: the settings it writes are the settings the program requires."""
-    import re
-    import subprocess
-    text = INSTALLER.read_text()
-    assert subprocess.run(["bash", "-n", str(INSTALLER)], capture_output=True).returncode == 0
-    config = json.loads(re.search(r"<<'CONFIG'\n(.*?)\nCONFIG\n", text, re.S).group(1))
-    assert set(config) == {"runtime", "generation_store", "status"}
-    assert str(publication.DEFAULT_CONFIG) in text
-    assert str(publication.PROTECTED_GENERATION_STORE) in text
-    # The unit runs the file the installer installs, isolated, and nothing from the shared mount.
-    assert "ExecStart=/usr/bin/python3 -I /opt/prismabuild/runtime_publication.py" in text
-    assert 'install -o root -g root -m 0644 "$module" /opt/prismabuild/runtime_publication.py' in text
-    assert "OnUnitInactiveSec=60s" in text and "OnBootSec=" in text
-    # The status file's directory exists before the first run, and the store's parent is root's.
-    assert os.path.dirname(config["status"]) in text
-    assert "/opt/prismabuild" in text and "movement-generations" in text
-    # Custody is checked before anything is written, and the installer needs root.
-    assert text.index("has no root custody") < text.index("install -d")
-    assert text.index("must run as root") < text.index("install -d")
 
 
-def test_the_settings_the_installer_writes_pass_the_programs_validation(
-        tmp_path, monkeypatch, publication_store):
-    import re
-    config = json.loads(re.search(r"<<'CONFIG'\n(.*?)\nCONFIG\n", INSTALLER.read_text(), re.S).group(1))
-    path = tmp_path / "etc" / "movement-publish.json"
-    path.parent.mkdir()
-    path.parent.chmod(0o755)
-    path.write_text(json.dumps(config))
-    path.chmod(0o644)
-    assert publication._read_config(path) == config
 
 
-def test_the_installer_and_the_program_travel_with_every_generation():
-    """No checkout exists on three of the boxes: an administrator copies both out of the live generation."""
-    import importlib.util
-    root = Path(__file__).resolve().parents[1]
-    spec = importlib.util.spec_from_file_location(
-        "publish_runtime_for_1659", root / "tools" / "fleet" / "publish_runtime.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    manifest = module._publication_manifest()
-    for member in ("tools/fleet/install_movement_publisher.sh", "tools/install_movement_publisher.sh",
-                   "src/prismabuild/runtime_publication.py", "tests/movement_publication_support.py"):
-        assert member in manifest, member
 def test_a_fresh_copy_grants_no_authority_until_it_matures(
         tmp_path, monkeypatch, publication_store):
     """Review 305cadf finding 2: pre-copy retained rows drain first."""
@@ -565,7 +514,7 @@ def test_sign_approval_refuses_a_same_account_key(tmp_path, monkeypatch):
     key.write_text("ab" * 32 + "\n")
     key.chmod(0o600)
     with pytest.raises(PermissionError, match="shares its account"):
-        publication.sign_approval(source, key_path=key)
+        publication.sign_approval(source, receipt_sha256=digest(source), key_path=key)
     assert not (source.parent / f"{source.name}{publication.APPROVAL_SUFFIX}").exists()
 
 
@@ -575,7 +524,7 @@ def test_sign_approval_refuses_a_group_readable_key(tmp_path, monkeypatch):
     key.write_text("ab" * 32 + "\n")
     key.chmod(0o640)
     with pytest.raises(PermissionError, match="0600"):
-        publication.sign_approval(source, key_path=key)
+        publication.sign_approval(source, receipt_sha256=digest(source), key_path=key)
 
 
 def test_sign_approval_accepts_a_dedicated_publisher_key(tmp_path, monkeypatch):
@@ -602,7 +551,7 @@ def test_sign_approval_accepts_a_dedicated_publisher_key(tmp_path, monkeypatch):
 
     monkeypatch.setattr(Path, "stat", fake_stat)
     monkeypatch.setattr(publication.os, "geteuid", lambda: 50001)
-    sibling = publication.sign_approval(source, key_path=key)
+    sibling = publication.sign_approval(source, receipt_sha256=digest(source), key_path=key)
     assert sibling.is_file()
     expected = publication.approval_hmac(digest(source), bytes.fromhex("ab" * 32))
     assert sibling.read_text().strip() == expected

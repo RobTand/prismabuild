@@ -1009,3 +1009,79 @@ def test_publish_refuses_a_script_whose_import_it_does_not_carry(
     with pytest.raises(SystemExit, match="tier_loop.py imports manifest_promotion"):
         publish_runtime.main()
     assert not mirror.exists()
+
+
+def test_the_automatic_signer_does_not_approve_a_replaced_generation(
+        tmp_path, monkeypatch, publication_store):
+    """A store owner cannot change the receipt that the trusted publisher approves."""
+    import hashlib
+    from movement_publication_support import unseal
+    from prismabuild import runtime_publication as publication
+
+    checkout = _checkout(tmp_path / "checkout", "trusted")
+    mirror = tmp_path / "fleet" / "repo"
+    store = mirror.parent / "runtime-generations"
+    home = tmp_path / "publisher-home"
+    key = home / ".config" / "prismabuild" / "movement-approval.key"
+    key.parent.mkdir(parents=True)
+    secret = bytes.fromhex("ab" * 32)
+    key.write_text(secret.hex() + "\n")
+    key.chmod(0o600)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    real_stat = Path.stat
+
+    def principal_stat(path, *args, **kwargs):
+        info = real_stat(path, *args, **kwargs)
+        if path in (key, store):
+            return SimpleNamespace(st_uid=50001 if path == key else 50002,
+                                   st_mode=info.st_mode)
+        return info
+
+    monkeypatch.setattr(Path, "stat", principal_stat)
+    monkeypatch.setattr(os, "geteuid", lambda: 50001)
+    monkeypatch.setattr(publish_runtime, "CHECKOUT", checkout)
+    monkeypatch.setattr(publish_runtime, "MIRROR", mirror)
+    monkeypatch.setattr(publish_runtime, "FLEET_SCRIPTS", ())
+    monkeypatch.setattr(publish_runtime, "FLEET_DATA", ())
+    monkeypatch.setattr(publish_runtime.subprocess, "run", _fake_git_and_probe("a" * 40))
+    monkeypatch.setattr(sys, "argv", [
+        "publish_runtime.py", "--stage-only", "--rollout", "rolling",
+        "--rollout-reason", "fixture publication", "--shape-gate-waiver", "fixture publication"])
+    real_sync = publish_runtime._fsync_directory
+    trusted = {}
+
+    def replace_exposed_generation(path):
+        real_sync(path)
+        if path != store:
+            return
+        generation = next(p for p in store.iterdir() if not p.name.startswith("."))
+        original = generation.with_name("." + generation.name + ".original")
+        generation.rename(original)
+        raw = (original / "RUNTIME_VERSION.json").read_bytes()
+        trusted["digest"] = hashlib.sha256(raw).hexdigest()
+        trusted["generation"] = generation
+        shutil.copytree(original, generation)
+        unseal(generation)
+        member = generation / "src" / "prismabuild" / "core.py"
+        member.chmod(0o644)
+        member.write_text("raise SystemExit(73)\n")
+        receipt = json.loads(raw)
+        receipt["files"]["src/prismabuild/core.py"] = hashlib.sha256(member.read_bytes()).hexdigest()
+        receipt_path = generation / "RUNTIME_VERSION.json"
+        receipt_path.chmod(0o644)
+        receipt_path.write_text(json.dumps(receipt))
+        publish_runtime._seal_generation(generation)
+
+    monkeypatch.setattr(publish_runtime, "_fsync_directory", replace_exposed_generation)
+    assert publish_runtime.main() == 0
+    generation = trusted["generation"]
+    approval = store / f"{generation.name}.approval"
+    assert approval.read_text().strip() == publication.approval_hmac(trusted["digest"], secret)
+    mirror.symlink_to(generation)
+    monkeypatch.setattr(publication, "_read_approval_key", lambda: secret)
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    result = publication.converge({
+        "runtime": str(mirror), "generation_store": str(store)})
+    assert result["state"] == "error", result
+    assert "no valid publisher approval" in result["error"]
+    assert not (publication_store / generation.name).exists()

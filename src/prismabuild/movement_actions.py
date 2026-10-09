@@ -204,6 +204,29 @@ def _spells_operation(part: str) -> bool:
     return len(head) >= 3 and "--operation".startswith(head)
 
 
+def pending_movement(action: Mapping[str, object] | None) -> bool:
+    """Recognize movement intent, including the previous non-isolated launch.
+
+    This predicate grants no role. An unqualified movement row keeps main's
+    fallback until it ends, because a gang can depend on that row.
+    """
+    if not isinstance(action, Mapping):
+        return False
+    task, params = action.get("task"), action.get("params")
+    if not isinstance(task, Mapping) or not isinstance(params, Mapping):
+        return False
+    command = params.get("command")
+    if (not isinstance(command, list) or len(command) < 2
+            or not all(isinstance(part, str) for part in command)
+            or any(task.get(name) != value for name, value in MOVEMENT_TASK.items())):
+        return False
+    script_index = 2 if command[1] == "-I" else 1
+    if len(command) <= script_index:
+        return False
+    script = Path(command[script_index])
+    return script.is_absolute() and any(script.name in scripts for scripts in ROLE_SCRIPTS.values())
+
+
 def capacity_role(action: Mapping[str, object], demand: Mapping[str, object], *,
                   residency: Mapping[str, object] | None) -> CapacityRole | None:
     """The role PrismaBuild's own movement nodes have, from their executed identity.

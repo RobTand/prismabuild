@@ -54,15 +54,9 @@ DEFAULT_CONFIG = Path("/etc/prismabuild/movement-publish.json")
 APPROVAL_SUFFIX = ".approval"
 #: Where the enrolled host holds the verification secret (root-only, 0400).
 APPROVAL_KEY_PATH = Path("/etc/prismabuild/movement-approval.key")
-#: How long a protected copy must exist before a gang reservation applies on
-#: that host (#1659): one gang-wait period. A copy that just arrived may have
-#: pre-copy rows still queued from the retained store (sealed before the copy,
-#: with or without isolated Python). Those rows execute mutable retained bytes,
-#: so they never get a role. The reservation stays off while they drain, and
-#: the host keeps the behaviour of main. After this bound any remaining
-#: retained row is held by demand like other ordinary work, which forces new
-#: movers to seal from the protected twin. A copy without a publication time
-#: (published before this bound existed) counts as mature.
+#: Copy age supplies a minimum transition delay, not evidence of completion.
+#: Claim admission also requires a complete census with no unqualified
+#: movement row on this host. READY time has no execution deadline.
 PROTECTED_COPY_MATURITY_S = 600.0
 #: The movement tool every tool root carries; its copy stands for the root.
 PROBE_TOOL = "stage_release.py"
@@ -294,7 +288,8 @@ def _valid_approval(store: Path, generation: str, digest: str) -> bool:
         return False
 
 
-def sign_approval(generation_dir: Path, *, key_path: Path | None = None) -> Path:
+def sign_approval(generation_dir: Path, *, receipt_sha256: str,
+                  key_path: Path | None = None) -> Path:
     """Write the publisher approval sibling for ``generation_dir`` (#1659).
 
     The publisher principal runs this after publishing a generation, with its
@@ -307,9 +302,9 @@ def sign_approval(generation_dir: Path, *, key_path: Path | None = None) -> Path
     for tampered bytes. The deployment contract names the publisher account;
     a person (Rob or the CEO) approves that principal once, not per generation.
     """
-    source = Path(generation_dir).resolve(strict=True)
-    raw = _regular_bytes(source / "RUNTIME_VERSION.json")
-    digest = hashlib.sha256(raw).hexdigest()
+    source = Path(generation_dir).absolute()
+    if _DIGEST.fullmatch(receipt_sha256) is None:
+        raise ValueError("trusted receipt digest is not 64 hex")
     key_file = key_path if key_path is not None else Path.home() / ".config" / "prismabuild" / "movement-approval.key"
     info = key_file.stat()
     if info.st_mode & 0o077:
@@ -328,7 +323,7 @@ def sign_approval(generation_dir: Path, *, key_path: Path | None = None) -> Path
     secret = _regular_bytes(key_file).decode("utf-8").strip()
     if _DIGEST.fullmatch(secret) is None:
         raise ValueError("movement signing key is not 64 hex")
-    tag = approval_hmac(digest, bytes.fromhex(secret))
+    tag = approval_hmac(receipt_sha256, bytes.fromhex(secret))
     sibling = source.parent / f"{source.name}{APPROVAL_SUFFIX}"
     sibling.write_text(tag + "\n", encoding="utf-8")
     return sibling
@@ -351,11 +346,11 @@ def converge(config: Mapping[str, object], *, now: float | None = None) -> dict[
 
     ``config`` names ``runtime`` (the live pointer), ``generation_store`` (the
     store the pointer must lead into) and ``status`` (where the result is
-    recorded).  The generation the pointer names is the authority: the receipt
-    digest passed on is that generation's own, so it guards against a change
-    during the copy and proves nothing about its publisher.  The live generation is the only one published: a host that
-    still runs an older one has that copy from when it was live.  The result
-    is ``current`` (the copy exists and matches), ``published`` or ``error``;
+    recorded). A dedicated publisher approves the trusted receipt digest.
+    The timer compares that approval with the exposed receipt and verifies
+    every copied member. The live generation is the only one published.
+    A host that runs an older generation retains its existing protected copy.
+    The result is ``current``, ``published`` or ``error``.
     an error leaves the host without a copy, and a host without a copy keeps
     the behaviour it had before roles existed.
     """
@@ -537,12 +532,9 @@ def live_authority(*, now: float | None = None) -> bool:
     has not arrived, the process is not a published generation) nothing a gang
     waits on can be told apart, so the reservation does not apply.
 
-    A copy that just arrived does not yet authorize a reservation either
-    (#1659): pre-copy rows sealed from the retained store (with or without
-    isolated Python) execute mutable bytes and never get a role, so holding
-    them would deadlock the gang they serve. The host keeps the behaviour of
-    main until the copy is older than :data:`PROTECTED_COPY_MATURITY_S`. A copy
-    without a publication time counts as mature.
+    Copy age supplies only a minimum transition delay. The claim path also
+    requires a complete census that proves all unqualified movement rows
+    have ended on this host. Legacy rows never gain a role from mutable bytes.
     """
     root = executing_generation()
     if root is None:
