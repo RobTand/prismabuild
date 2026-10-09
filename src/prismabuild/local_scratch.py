@@ -446,8 +446,11 @@ def build_scratch_lifetime_selection(entries: object) -> dict[str, object]:
 
     The pool validates the same shape again at publication; the SDK builds the
     exact object the sealed ``DECLARATIONS_ENV`` variable carries. A builder
-    output never grants cleanup, quota, or deletion authority.
+    output never grants cleanup, quota, or deletion authority. The builder
+    enforces the pool's 16 KiB sealed-input bound on its canonical bytes.
     """
+    from . import core
+
     if not isinstance(entries, list) or len(entries) > _MAX_DECLARATIONS:
         raise LocalScratchError("scratch lifetime selection needs at most 64 entries")
     checked = []
@@ -462,7 +465,11 @@ def build_scratch_lifetime_selection(entries: object) -> dict[str, object]:
     seen = {(entry["root_env"], entry["name"]) for entry in checked}
     if len(seen) != len(checked):
         raise LocalScratchError("duplicate scratch lifetime selection")
-    return {"schema": SCRATCH_LIFETIME_SELECTION_SCHEMA_V1, "entries": checked}
+    selection: dict[str, object] = {"schema": SCRATCH_LIFETIME_SELECTION_SCHEMA_V1,
+                                    "entries": checked}
+    if len(core._canonical_bytes(selection)) > _MAX_DECLARATION_INPUT_BYTES:
+        raise LocalScratchError("scratch lifetime selection exceeds 16 KiB")
+    return selection
 
 
 def _scratch_lifetime_selections(variables: Mapping[str, str]) -> list[dict[str, object]]:

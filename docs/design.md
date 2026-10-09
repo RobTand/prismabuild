@@ -16545,10 +16545,10 @@ exact versioned object, never silently upgrading a legacy naming array:
 ```
 
 Every pair is sealed and charged through the existing `spool_gb` host ledger.
-The bounded parser uses the naming limits (16 KiB, 64 entries), rejects unknown
-fields, duplicate selections and overlapping ephemeral/persistent roots, and
-never infers a lifetime from a variable name. ROOT/MAX is a reservation, not a
-filesystem quota. Persistent entries convey no directory/deletion identity;
+The bounded parser and the SDK builder use the same limits (16 KiB canonical
+selection bytes, 64 entries), reject unknown fields, duplicate selections and
+overlapping ephemeral/persistent roots, and never infer a lifetime from a
+variable name. ROOT/MAX is a reservation, not a filesystem quota. Persistent entries convey no directory/deletion identity;
 PB neither creates nor traverses their paths. Ordinary persistent Triton and
 Inductor caches therefore remain producer-owned and must be separately bounded.
 
@@ -16556,7 +16556,7 @@ Pool publication derives the `scratch-lifetime-v1` worker requirement from
 nonempty versioned intent and refuses inadequate sealed scratch funding. Old
 workers do not offer it. The source worker loop offers this code capability;
 this is not evidence of a deployed runtime generation or PQ workload acceptance.
-SDK4 exports, signatures, legacy arrays and SDK `CAPABILITIES` remain unchanged.
+SDK6 adds the `scratch-lifetime-v1` tag and the sealed selection builder; other exports, signatures and legacy arrays remain unchanged.
 
 `PoolQueue._record_scratch_lifetimes` uses the existing transition lock and
 contained prelaunch owner. It files `prismabuild.scratch_lifetime_record.v1` in

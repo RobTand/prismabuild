@@ -75,6 +75,33 @@ def test_sdk_selection_builder_matches_pool_intent(tmp_path):
 def test_sdk_selection_builder_refuses_without_io(entries):
     with pytest.raises(local_scratch.LocalScratchError):
         client.build_scratch_lifetime_selection(entries)
+def test_sdk_selection_builder_refuses_pool_byte_bound():
+    oversized = [{"root_env": "R" * 16384, "name": "row",
+                 "lifetime": "ephemeral"}]
+    with pytest.raises(local_scratch.LocalScratchError):
+        client.build_scratch_lifetime_selection(oversized)
+
+
+def test_sdk_selection_builder_output_fits_pool_parser(tmp_path):
+    variables = {
+        local_scratch.PAIRS_ENV: "TEMP_ROOT:TEMP_MAX,CACHE_ROOT:CACHE_MAX",
+        "TEMP_ROOT": str(tmp_path / "temporary"), "TEMP_MAX": "1024",
+        "CACHE_ROOT": str(tmp_path / "persistent"), "CACHE_MAX": "2048",
+    }
+    selection = client.build_scratch_lifetime_selection([
+        {"root_env": "TEMP_ROOT", "name": "row-temp",
+         "lifetime": "ephemeral"},
+        {"root_env": "CACHE_ROOT", "name": "compile",
+         "lifetime": "persistent"},
+    ])
+    sealed = {**variables,
+              client.SCRATCH_LIFETIME_DECLARATIONS_ENV: json.dumps(selection)}
+    assert len(json.dumps(
+        selection, sort_keys=True, separators=(",", ":")).encode("utf-8")) <= 16 * 1024
+    assert (local_scratch._scratch_lifetime_selections(sealed)
+            == local_scratch._scratch_lifetime_selections(
+                {**variables, local_scratch.DECLARATIONS_ENV:
+                 json.dumps(selection)}))
 
 
 def test_sdk_selection_builder_empty_is_opt_out():
