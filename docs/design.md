@@ -5152,13 +5152,31 @@ transfer. The record binds valid retained mover tokens and the exact remaining
 group tokens. A deferred rotation moves no tokens. A partial transfer retains
 that generation, and a retry moves only its missing tokens. Foreign live
 records still refuse, and foreign spent recovery keeps its existing rule.
+A group that shares chunk movers with pinned movers of earlier consumers
+counts those pins as shared coverage beside its own holder, handles,
+bound mover tokens and released counts (#1690). A shared pin is a mover
+that still holds the intent's whole span under a live `transferring`
+fence for the same tier and range, or a done `executed` record that
+covers the chunk on the tier. The fresh begin asks the ledger only for
+the deficit, the demand less all coverage, and commits when holder plus
+shared cover the demand. The window's `blocked_gib` and the begin's
+`need_gib` come from one computation: the stall's blocked amount is the
+deficit itself. The window reads this cycle's fresh begin or recovery
+event when the reserve pass begins. Otherwise, it uses the prospective census.
+A successful recovery returns its requested amount before acquisition changes the census.
+The window reports that amount and omits any previous decline cause. A
+declined begin journals its need with the ledger's own shortage reason,
+and the stall carries that cause beside the wait reason. A contended
+mutation lock names `mutation_lock_busy`, never a capacity shortage.
+A republished mover keeps its fence: the terminal settle skips a key
+whose terminal records all finished before its live row published.
 A committed group whose census reads short with an empty holder lost its
 tokens to a path that wrote no release receipt (live, 2026-10-08: the PACT band
 source).  Its receipt still said committed, so the unit was never a newcomer
-again and no pass restored the tokens.  The writer now begins one acquisition
-for the deficit, the filed demand less the holder, bound mover and released
-counts, into the same holder, and the next pass settles it like any begun
-acquisition.  The intent is not recomputed.  No room files
+again and no pass restored the tokens. The writer begins one acquisition
+for the deficit under the same holder. The deficit subtracts holder tokens,
+bound mover tokens, shared pins and released counts from the filed demand.
+The next pass settles the acquisition. The intent remains immutable. No room files
 `prelaunch-begin-declined` and waits.  A committed group that is short with
 holder tokens still releases them first, as before, and tops up on the next
 pass.  Only the top-up and the settling of its handle are writer-only; the
