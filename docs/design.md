@@ -1660,14 +1660,23 @@ through its public interfaces. Those are the fleet tools (`pbrun`, `pbtest`,
 internal. It can change in any release, and a client that imports it takes on
 that risk alone.
 
-**Versioning.** `client.SDK_VERSION` names the contract; it is `5`.
+**Versioning.** `client.SDK_VERSION` names the contract; it is `6`.
 Version 2 adds nondestructive ephemeral scratch naming; version 3 adds durable
 sealed declaration evidence before pool payload launch (Refs #1360); version 4
 adds the bounded verified action-result read and the standard-capture command
 binding (#1446). Version 5 adds the opt-in native producer context from the
-selected immutable attempt and exact execution receipt (#1481). The generic
-result mapping remains unchanged when the new requirement is false. Earlier
+selected immutable attempt and exact execution receipt (#1481). Version 6
+exposes the generation-bound scratch lifetime contract (Refs #1360): the
+`scratch-lifetime-v1` capability tag, its selection/record schemas, its claim
+field, its sealed variable, and a builder for the sealed selection. Earlier
 exports and capability tags remain available.
+
+The CEO approved additive SDK6 in decision `dec-1009-090451-62a1`.
+SDK5 consumers must keep their existing behavior.
+Qualification is limited to isolated x86 work.
+The decision authorizes no deployment or issue closure; pb-integrator owns publication.
+The published generation in the #1360 record still uses SDK5.
+
 `tests/test_client_sdk_surface.py` pins everything the SDK exports: the set of
 names, each callable's parameters (name, kind, default), each constant's value,
 and, for each re-exported name, that it is the internal object itself. An
@@ -1681,7 +1690,7 @@ generation. A client imports `prismabuild.client` from `<root>/src`, so the
 SDK and the runtime that launched the action are one generation. The variable
 names the generation root, never `src`; the client appends `src` itself.
 
-**The surface (version 5).**
+**The surface (version 6).**
 
 | Area | Names |
 |---|---|
@@ -1691,6 +1700,7 @@ names the generation root, never `src`; the client appends `src` itself.
 | Produced output | `declared_template`, `validate_template`, `bind_declared_instance`, `declare_instance`, `admit_instance`, `validate_instance`, `instance_dir`, `checked_instance_maxima`, `owner_demand_terms`, `admit_funded_window`, `refill_window`, `require_prewrite`, `abort_prewrite`, `validate_descriptor`, `output_manifest_sha256`, `batch_namespace`, `output_fragment_root`, `publish_prepaid_batch`, `commit_batch`, `commit_origin_batch`, `retire_batch`, `reclaim_origin`, `recover_batches`, `due_mover_rows`, `materialization_state`, `ensure_batch_materialized`, `safe_release_instance`, `release_produced_instance`, `TEMPLATE_SCHEMA_V1`, `DESCRIPTOR_SCHEMA_V2` |
 | Residency maps | `validate_residency_map`, `read_residency_map`, `read_residency_fragments`, `compose_residency_map`, `write_residency_map`, `residency_map_key`, `ResidencyMapError`, `RESIDENCY_MAP_ENV`, `RESIDENCY_MAP_SCHEMA_V1`, `RESIDENCY_MAP_FRAGMENT_SCHEMA_V1`, `RESIDENCY_LANDING_SCHEMA_V1`, `LANDING_STATES` |
 | Ephemeral scratch naming (no lifetime capability) | `bind_ephemeral_scratch`, `ephemeral_scratch_path`, `EPHEMERAL_SCRATCH_SCHEMA_V1`, `LocalScratchError` |
+| Generation-bound scratch lifetime (`scratch-lifetime-v1`) | `build_scratch_lifetime_selection`, `SCRATCH_LIFETIME_TAG`, `SCRATCH_LIFETIME_SELECTION_SCHEMA_V1`, `SCRATCH_LIFETIME_RECORD_SCHEMA_V1`, `SCRATCH_LIFETIME_FIELD`, `SCRATCH_LIFETIME_DECLARATIONS_ENV` |
 | Receipts | `cas_receipt_self_check`, `RECEIPT_REFUSALS`, `CAS_RECEIPT_SCHEMA_V3`, `WORKER_ATTESTATION_SCHEMA_V2` |
 | Verified action results (`verified-action-result-v1`; native context `native-producer-context-v1`) | `read_verified_action_result`, `bind_standard_capture_command`, `ActionResultError`, `ACTION_RESULT_SCHEMA_V1`, `VERIFIED_ACTION_RESULT_TAG`, `NATIVE_PRODUCER_CONTEXT_SCHEMA_V1`, `NATIVE_PRODUCER_CONTEXT_TAG` |
 | Identifiers and digests | `ID_PATTERN`, `ENV_NAME_PATTERN`, `canonical_sha256` |
@@ -1789,11 +1799,13 @@ that are not internal: `produced_output.batch_record` and `batch_records`
 `progress-v1`, `decomposition-v1` (`pbcampaign` can decompose a logical
 request, #517/#518), and `verified-action-result-v1` (the bounded
 verified-result read, #1446), plus `native-producer-context-v1` (strict selected
-producer provenance, #1481). A client asks for a capability by tag, never by
-probing files or function names. The surface test fails if a tag is advertised
-without the code behind it. The SDK's scratch additions are naming only:
-`CAPABILITIES` does **not** advertise `scratch-lifetime-v1` or any scratch
-cleanup capability. SDK version 2 is not evidence of a deployed finalizer.
+producer provenance, #1481) and `scratch-lifetime-v1` (the generation-bound
+scratch lifetime contract, Refs #1360). A client asks for a capability by tag,
+never by probing files or function names. The surface test fails if a tag is
+advertised without the code behind it. The SDK's scratch naming additions
+grant no deletion authority; the versioned pool input below supplies the
+opt-in lifetime contract. A naming-only client is not evidence of a deployed
+finalizer.
 
 ### Generated files in a pbrun checkout
 
@@ -16882,18 +16894,24 @@ exact versioned object, never silently upgrading a legacy naming array:
 ```
 
 Every pair is sealed and charged through the existing `spool_gb` host ledger.
-The bounded parser uses the naming limits (16 KiB, 64 entries), rejects unknown
-fields, duplicate selections and overlapping ephemeral/persistent roots, and
-never infers a lifetime from a variable name. ROOT/MAX is a reservation, not a
-filesystem quota. Persistent entries convey no directory/deletion identity;
-PB neither creates nor traverses their paths. Ordinary persistent Triton and
-Inductor caches therefore remain producer-owned and must be separately bounded.
+The builder and parser allow 64 entries.
+The builder limits compact canonical selection bytes to 16 KiB.
+The pool limits raw UTF-8 input bytes to 16 KiB, including whitespace.
+Use `json.dumps(selection, sort_keys=True, separators=(",", ":"))` for the sealed input.
+Other JSON encodings can exceed the raw input limit.
+Both paths reject unknown fields and duplicate selections.
+
+The pool also rejects overlapping ephemeral/persistent roots and never infers a lifetime from a variable name.
+ROOT/MAX is a reservation, not a filesystem quota.
+Persistent entries convey no directory/deletion identity; PB neither creates nor traverses their paths.
+Persistent Triton and Inductor caches remain producer-owned and need separate write bounds.
 
 Pool publication derives the `scratch-lifetime-v1` worker requirement from
 nonempty versioned intent and refuses inadequate sealed scratch funding. Old
 workers do not offer it. The source worker loop offers this code capability;
 this is not evidence of a deployed runtime generation or PQ workload acceptance.
-SDK4 exports, signatures, legacy arrays and SDK `CAPABILITIES` remain unchanged.
+The approved SDK6 adds the capability tag and the selection builder.
+Other exports, signatures and legacy arrays remain unchanged.
 
 `PoolQueue._record_scratch_lifetimes` uses the existing transition lock and
 contained prelaunch owner. It files `prismabuild.scratch_lifetime_record.v1` in
@@ -16947,17 +16965,73 @@ record; retry shaping strips it.
 
 File fsync and atomic record publication use the existing process-crash storage
 contract, not new NFS/server power-loss qualification (DUR-01). CPU tempdir fault
-fixtures qualify only the source behavior. Deployment, real worker-crash/cross-
-host recovery, real PQ Stage A/B sizing and persistent-cache bounds remain owed;
-no live scratch, model bytes, serving gate or GPU workload is changed here.
+fixtures qualify only the source behavior. The deployment record below covers
+normal, failed, descendant-SIGKILL and launcher-SIGKILL cleanup on one live
+worker; worker-process loss, reboot/cross-host recovery, fault-injected retry,
+real PQ Stage A/B sizing and persistent-cache bounds remain owed. No model
+bytes, serving gate or GPU workload is changed here.
 
 Final source-only security review repaired exact tombstone and widowed-lease
 ownership recovery. The changed-source integrated campaign passed711 distinct
 tests across34 files with0 skips; all20 PB-planned shards and the four-file
 compile have authenticated SDK4/Core receipts and raw snapshot bindings.
 See `evidence/issue1360_scratch_final_source_acceptance_2026-10-03.json`.
-This completes the source review gate only; #1360 and the deployment/crash/PQ
-workload obligations above remain open.
+That record completes the source review gate only.
+
+Deployment evidence (2026-10-09): six admitted CPU-only lifetime actions ran
+on published generation `c8daa1be416c-1791512870-55b0e8c72f6b` (commit
+`c8daa1be416cd4d7fe8a8e55c49924ab33c4de39`, SDK5 pool code): normal, failed,
+SIGKILLed-descendant, symlink-guard, launcher-victim (returncode -9) and
+launcher-killer scenarios on sparky. Each row carried sealed 1-GiB
+TEMP/CACHE pairs (`spool_gb` 2) and the pool derived the
+`scratch-lifetime-v1` placement tag. Every terminal record shows a complete
+registration with both entries cleaned. Follow-up actions on the same host
+prove each ephemeral leaf absent, the declared roots intact, the persistent
+markers intact, and the symlink guard target intact without being followed.
+The victim's export verdict shows a stopped, empty, settled scope. The
+harness is `tools/fleet/qualify_scratch_lifetime.py`; it reads only its own
+claim and leaf. See
+`evidence/issue1360_scratch_lifetime_deployment_2026-10-09.json`. Worker loss
+with successor retry, reboot/cross-host recovery, injected cleanup/record
+faults with capacity retention, and PQ sizing/GPU acceptance remain open.
+
+Keep #1360 open.
+The evidence does not establish worker-loss recovery or durable cleanup retry on a published runtime.
+The historical launcher qualifier used numeric PIDs after a delay.
+Its observed cleanup remains historical evidence, not proof of safe process signals.
+The corrected qualifier verifies start ticks and command arguments around `pidfd_open`.
+It uses `pidfd_send_signal` and closes every handle.
+
+Unreadable or changed identities refuse the operation before any signal.
+The admitted CPU smoke checks only an owned inert launcher, not loss of a live fleet worker.
+The x86 offer observed on 2026-10-09 includes `scratch-lifetime-v1` but no `spool_gb`.
+Do not substitute synthetic capacity or a Spark tag for a measured x86 scratch offer.
+A supervisor must supply the measured scratch offer.
+The CEO permits only isolated x86 qualification; no live worker service fault is authorized.
+No runtime publication or worker service restart occurred.
+
+The admitted x86 probe `ee950a85ee9d` used published generation `c8daa1be416c-1791512870-55b0e8c72f6b`.
+It observed immutable creation time on `/tmp`, but the lifetime and spool guards refused its `tmpfs` filesystem.
+The supervisor also refused a proposed `/tmp` disk offer.
+The roster has no `local_disk` or `--spool-gb` for dl380g10.
+This is a separate deployment prerequisite, not a missing finalizer.
+
+Provide a qualified disk-backed mount beneath `/tmp` through an operator-approved provisioning change.
+Measure its capacity through the existing supervisor before an action reserves it.
+Do not add `tmpfs` to the disk policy or reuse the HDD pool to bypass this prerequisite.
+The CEO approved option 1 in decision `dec-1009-090451-62a1`.
+SDK6 must remain additive, and qualification must stay in isolation on x86.
+This decision approves no deployment or closure.
+pb-integrator owns publication.
+The measured scratch prerequisite remains open.
+
+Admitted smoke `b4e28cac15b8` compared SDK6 with the published SDK5 client.
+It preserved all 84 earlier exports, 52 callable signatures, and 26 constants.
+It exercised legacy claim reads, nondestructive scratch paths, and receipt refusals against SDK6 internals.
+The three-file compatibility run passed all 278 collected cases with no skips.
+Its actions are `e1be6ee1e1cc` (171 cases), `28de31f1d4d4` (78 cases) and `385ca2b7db00` (29 cases).
+The evidence record keeps their full keys, receipts and payload digests.
+These checks establish the exercised compatibility, not full consumer or crash-recovery acceptance.
 
 **Still open.**
 

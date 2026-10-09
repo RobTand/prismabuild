@@ -4277,6 +4277,13 @@ cache roots in separate charged ROOT/MAX pairs, and seal this selection:
 ]}
 ```
 
+The CEO approved the additive SDK6 builder in decision `dec-1009-090451-62a1`.
+SDK5 consumers must keep their existing behavior; the cited published runtime still uses SDK5.
+Qualification is limited to isolated x86 work.
+The decision approves no deployment or closure; pb-integrator owns publication.
+Use `json.dumps(selection, sort_keys=True, separators=(",", ":"))` to seal compact JSON.
+The pool counts all raw UTF-8 bytes, including whitespace, against the 16 KiB limit.
+
 Pass that JSON as `PRISMABUILD_EPHEMERAL_SCRATCH_DECLARATIONS`. PB derives the
 worker capability requirement, registers a private ephemeral leaf before
 launch and cleans it only after exact stopped-attempt proof. The existing
@@ -4292,8 +4299,31 @@ Cleanup failure, inode/ancestry replacement or an existing leaf whose identity
 was never committed retains the owning claim and charged capacity. Existing
 finish/reaper/late-finish recovery retries deterministic ownership, never
 adopts an ambiguous path. The owner UID may not mutate PB's private state or
-namespace control. Source CPU fixtures are not deployment qualification: check
-the actual worker offers before using this feature in PQ or another workload.
+namespace control. Check the actual worker offers before using this feature:
+the action needs a worker that offers both `spool_gb` and
+`scratch-lifetime-v1`. On 2026-10-09 six CPU-only lifetime scenarios ran on
+sparky under published generation `c8daa1be416c-1791512870-55b0e8c72f6b`
+(normal, failed, SIGKILLed descendant, symlink guard, launcher SIGKILL
+victim/killer); every terminal record shows a complete registration with
+both entries cleaned, and follow-up actions prove the leaves absent with
+roots, persistent markers and the guard target intact. See
+`docs/evidence/issue1360_scratch_lifetime_deployment_2026-10-09.json`.
+
+This record supplies partial evidence only. Keep #1360 open.
+Worker-loss recovery and injected cleanup/record failures remain unqualified on the published runtime.
+The historical launcher qualifier used numeric PIDs after a delay.
+The corrected qualifier requires Linux pidfds and verifies process identity before any signal.
+Its CPU smoke targets an owned inert process, not a live worker service.
+The current x86 offer advertises no `spool_gb`; obtain a supervisor-owned measured scratch offer before lifetime scenarios.
+The admitted read-only probe `ee950a85ee9d` confirms that `/tmp` is `tmpfs` on this x86 host.
+Its immutable creation time exists, but the lifetime, spool, and supervisor guards refuse that filesystem.
+The roster also lacks `local_disk` and `--spool-gb` for dl380g10.
+Provision a qualified disk-backed mount beneath `/tmp` through an operator-approved change.
+Use the existing supervisor to measure its offer.
+Do not weaken filesystem checks, invent capacity, or place these CPU scenarios on a Spark.
+Decision `dec-1009-090451-62a1` approves additive SDK6 and isolated x86 qualification only.
+It does not permit deployment, closure, or faults against live worker services.
+The measured scratch prerequisite remains open.
 
 ### Write outputs that a later action reads
 
