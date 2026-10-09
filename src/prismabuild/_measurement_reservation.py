@@ -485,6 +485,85 @@ class PassCensus:
         self._selections = dict(census.get("selections") or {})
         self._gang_elections = dict(census.get("gang_elections") or {})
 
+    def _refresh_dynamic_elections(self) -> bool:
+        """Re-read live elections into the stored census (#1571).
+
+        A sibling loop's gang or measurement election lands between
+        this pass's candidates, while these locks are released. The
+        stored elections would miss it, and the blocking checks would
+        admit work a live election fences -- the unsafe direction. So
+        every reuse re-reads the two small election sources (one
+        listing plus one small read per live gang group, one listing
+        plus one small read per passes sidecar, no fence, no scan).
+        Election files are no-clobber writes, and a member row this
+        pass is about to elect re-checks standing under the re-taken
+        admission lock anyway. Only fences are added, never removed:
+        a newly found measurement selection joins the stored
+        selections and elections (missing authority stays fenced,
+        exactly as in :func:`locked_census`), while a stored election
+        whose measurement ended between candidates stays fenced until
+        the next pass reads fresh. A malformed election record fails
+        closed: the stored census is dropped and the caller reads
+        fresh. ``False`` means just that.
+        """
+        from . import _gang
+        from . import pool as pool_mod
+        assert self._census is not None
+        try:
+            try:
+                gang_names = sorted(
+                    entry.name for entry in os.scandir(_gang.root(self._queue)))
+            except FileNotFoundError:
+                gang_names = []
+            gang_found: dict[str, dict] = {}
+            for name in gang_names:
+                if not name.endswith(".json") or name.startswith("."):
+                    continue
+                group = name[:-5]
+                record = _gang.read_group(self._queue, group)
+                if record is None or _gang.teardown(self._queue, group) is not None:
+                    continue
+                rank = list(_gang.rank(record))
+                for index, election in _gang.elections(
+                        self._queue, group, record["size"]).items():
+                    gang_found[election["action_key"]] = {
+                        "group": group, "index": index, "action_key": election["action_key"],
+                        "host": election["host"], "priority": election["priority"], "rank": rank}
+            try:
+                pass_names = sorted(
+                    entry.name for entry in os.scandir(
+                        self._queue.root / pool_mod.PASSES))
+            except FileNotFoundError:
+                pass_names = []
+            selections = dict(self._selections or {})
+            elections = dict((self._census.get("elections") or {}))
+            for name in pass_names:
+                if not name.endswith(".json") or not pool_mod._is_hex64(name[:-5]):
+                    continue
+                record = _read(self._queue.root / pool_mod.PASSES / name,
+                               optional=True)
+                if record is None:
+                    continue
+                chosen = selection(record)
+                if chosen is None:
+                    continue
+                key = chosen["action_key"]
+                if key not in selections:
+                    selections[key] = chosen
+                    elections[key] = chosen
+        except (_gang.GangContractError, OSError, ValueError,
+                CensusUnavailable, pool_mod.PoolContractError):
+            self.invalidate()
+            return False
+        current = dict(self._census)
+        current["gang_elections"] = gang_found
+        current["selections"] = selections
+        current["elections"] = elections
+        self._census = current
+        self._gang_elections = dict(gang_found)
+        self._selections = selections
+        return True
+
     def acquire(self) -> ExitStack | None:
         """Take the locks a reused census needs, without a scan (#1571).
 
@@ -498,6 +577,8 @@ class PassCensus:
         already uses.
         """
         if self._census is None:
+            return None
+        if not self._refresh_dynamic_elections():
             return None
         from . import pool as pool_mod
         held = ExitStack()
