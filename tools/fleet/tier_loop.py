@@ -8944,6 +8944,17 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
         # run-ahead budget (#903): a leg past it publishes on the cycle the
         # consumer's progress brings it inside, and not before.
         if prelaunch_unit is not None:
+            need_now = None
+            try:
+                census_now = prelaunch_group.census(
+                    queue, tier_id, prelaunch_unit.unit,
+                    prelaunch_unit.holder, prelaunch_unit.demand_gib,
+                    [leg["mover_key"] for leg in prelaunch_unit.legs])
+                if not census_now.unknown and not census_now.funding_unknown:
+                    need_now = prelaunch_group.incremental_need_gib(
+                        census_now, prelaunch_unit.demand_gib)
+            except (OSError, pool.PoolContractError, ValueError):
+                need_now = None
             decision = residency_plan.window(
                 plan, accepted_phase=consumer["accepted_phase"],  # type: ignore[arg-type]
                 free_gib=int(free), capacity_gib=int(capacity),
@@ -8951,7 +8962,8 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
                 withdrawn=sorted(cancelled),
                 horizon_end_bytes=horizon_of(consumer, plan, tier_id),
                 prelaunch_held=bool(
-                    prelaunch_authority.get(prelaunch_unit.unit)))
+                    prelaunch_authority.get(prelaunch_unit.unit)),
+                prelaunch_need_gib=need_now)
         else:
             decision = residency_plan.window(
                 plan, accepted_phase=consumer["accepted_phase"],  # type: ignore[arg-type]
@@ -8974,7 +8986,8 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
                                   "blocked_phase", "blocked_gib", "runahead_gib",
                                   "runahead_budget_gib", "free_gib",
                                   "capacity_gib", "reason", "waiting_for")},
-                              "chunk_index": stall.get("chunk_index")})
+                              "chunk_index": stall.get("chunk_index"),
+                              "need_gib": stall.get("need_gib")})
         by_name = {str(entry["name"]): entry for entry in plan["phases"]
                    if isinstance(entry, Mapping)}
         # A superseded plan publishes its egresses -- cleanup the consumer has

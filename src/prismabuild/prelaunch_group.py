@@ -72,6 +72,8 @@ class GroupCensus:
     p: int = 0
     #: Named funding tokens held under this group's chunk movers.
     m: int = 0
+    #: Pinned tokens under chunk movers bound to earlier consumers (#1690).
+    s: int = 0
     #: Tokens the release function already returned for ended chunks.
     r: int = 0
     #: Receipt filename to parsed body, None when unreadable.
@@ -94,6 +96,10 @@ class ReconcileOutcome:
     events: list[str] = field(default_factory=list)
     authority: bool = False
     census: GroupCensus | None = None
+    #: The tokens the begin asked for, when it began or declined.
+    need_gib: int | None = None
+    #: Why a declined begin could not reserve (ledger shortage, cause).
+    decline_reason: str | None = None
 
 
 @dataclass
@@ -308,6 +314,142 @@ def _chunk_binds(intent: dict | None, record: Mapping[str, object],
     return False
 
 
+def _intent_span_gib(intent: dict | None, mover: str) -> int:
+    """The intent's ledger demand for one mover, or zero when unknown."""
+    if intent is None:
+        return 0
+    chunks = intent.get("chunks")
+    if not isinstance(chunks, list):
+        return 0
+    for entry in chunks:
+        if not isinstance(entry, Mapping):
+            continue
+        try:
+            if str(entry.get("mover_action_key")) != mover:
+                continue
+            gib = int(entry["stage_gib"])  # type: ignore[index]
+        except (TypeError, ValueError):
+            continue
+        if gib > 0:
+            return gib
+    return 0
+
+
+def _done_covers_chunk(done: Mapping[str, object], intent: dict | None,
+                       mover: str, tier_id: str) -> bool:
+    """True when one done record staged this group's chunk on this tier."""
+    block = done.get("residency")
+    if not isinstance(block, Mapping):
+        return False
+    if block.get("tier_id") != tier_id:
+        return False
+    if intent is None:
+        return False
+    chunks = intent.get("chunks")
+    if not isinstance(chunks, list):
+        return False
+    for entry in chunks:
+        if not isinstance(entry, Mapping):
+            continue
+        try:
+            if str(entry.get("mover_action_key")) != mover:
+                continue
+            start = int(entry["start_bytes"])  # type: ignore[index]
+            end = int(entry["end_bytes"])  # type: ignore[index]
+        except (TypeError, ValueError):
+            continue
+        try:
+            if (int(block.get("range_start_bytes")) == start  # type: ignore[arg-type]
+                    and int(block.get("range_end_bytes")) == end):  # type: ignore[arg-type]
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
+
+
+def _record_covers_chunk(record: Mapping[str, object], intent: dict | None,
+                         mover: str, tier_id: str) -> bool:
+    """True when one funding record fences this group's chunk on this tier."""
+    if str(record.get("tier_id")) != tier_id:
+        return False
+    if str(record.get("mover_action_key")) != mover:
+        return False
+    if intent is None:
+        return False
+    chunks = intent.get("chunks")
+    if not isinstance(chunks, list):
+        return False
+    try:
+        want = (int(record["range_start_bytes"]),  # type: ignore[index]
+                int(record["range_end_bytes"]))  # type: ignore[index]
+    except (KeyError, TypeError, ValueError):
+        return False
+    for entry in chunks:
+        if not isinstance(entry, Mapping):
+            continue
+        try:
+            if str(entry.get("mover_action_key")) != mover:
+                continue
+            if (int(entry["start_bytes"]),  # type: ignore[index]
+                    int(entry["end_bytes"])) == want:  # type: ignore[index]
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
+
+
+def _count_shared_pinned(queue: pool.PoolQueue, ledger: pool.ResourceLedger,
+                         kind: str, mover: str, intent: dict | None,
+                         tier_id: str, found: GroupCensus) -> None:
+    """Count a pinned earlier consumer's tokens as shared coverage (#1690).
+
+    A chunk mover key is a content address, so a later consumer names the
+    same mover an earlier consumer already staged. The earlier funding
+    record binds another consumer and plan, so it never counts as this
+    group's own fence. When the mover still holds pinned tokens for the
+    intent's whole span, they cover this chunk too. The group begins only
+    the deficit and republishes the uncovered chunks.
+    """
+    span = _intent_span_gib(intent, mover)
+    if span <= 0:
+        return
+    held = _held_or_unknown(ledger, mover, found)
+    if held is None:
+        return
+    names = sorted(name for name in held if name.startswith(kind + "-"))
+    if len(names) < span:
+        return
+    try:
+        if queue.item_path(pool.CLAIMED, mover).exists():
+            return
+        done = pool._read_json(queue.item_path(pool.DONE, mover))
+    except (OSError, pool.PoolContractError, ValueError):
+        found.funding_unknown.append(mover)
+        return
+    if isinstance(done, Mapping) and done.get("status") == "executed":
+        if _done_covers_chunk(done, intent, mover, tier_id):
+            found.s += span
+            return
+    # No terminal record: the PACT shape. The mover holds pinned tokens
+    # under a live transferring fence for the same tier and range, filed
+    # by the earlier consumer before its row ended. That fence is the
+    # pin: only transferring authorizes a claim subtraction.
+    try:
+        status, record, _ = queue.read_funding_evidence(mover, tier_id)
+    except (OSError, pool.PoolContractError, ValueError):
+        found.funding_unknown.append(mover)
+        return
+    if status != "record" or record is None:
+        if status == "unknown":
+            found.funding_unknown.append(mover)
+        return
+    if str(record.get("state")) != "transferring":
+        return
+    if not _record_covers_chunk(record, intent, mover, tier_id):
+        return
+    found.s += span
+
+
 def _held_or_unknown(ledger: pool.ResourceLedger, key: str,
                      found: GroupCensus) -> set[str] | None:
     """One holder's token names, or None with the mover marked unknown."""
@@ -370,6 +512,9 @@ def census(queue: pool.PoolQueue, tier_id: str, unit: str, holder: str,
         if status != "record" or record is None:
             if status == "unknown":
                 found.funding_unknown.append(mover)
+            else:
+                _count_shared_pinned(queue, ledger, kind, mover, intent,
+                                     tier_id, found)
             continue
         # A bound token the mover holds is the mover's, whatever the record
         # says: ``publish_chunk`` moves the tokens first and closes the record
@@ -381,6 +526,8 @@ def census(queue: pool.PoolQueue, tier_id: str, unit: str, holder: str,
         if (str(record.get("state")) not in ("reserved", "transferring",
                                              "consumed")
                 or not _chunk_binds(intent, record, mover)):
+            _count_shared_pinned(queue, ledger, kind, mover, intent,
+                                 tier_id, found)
             continue
         held = _held_or_unknown(ledger, mover, found)
         if held is None:
@@ -409,9 +556,9 @@ def census(queue: pool.PoolQueue, tier_id: str, unit: str, holder: str,
 
 
 def incremental_need_gib(found: GroupCensus, demand_gib: int) -> int:
-    """The gate need: a begun acquisition owns the whole demand already."""
+    """The tokens the begin must still reserve: demand less all coverage."""
     demand = _check_demand(demand_gib)
-    return max(0, demand - (found.h + found.p + found.m))
+    return max(0, demand - (found.h + found.p + found.m + found.s))
 
 
 # ------------------------------------------------------------- reconcile
@@ -428,8 +575,8 @@ def _is_dead(host: str, pid: int) -> bool:
 
 
 def _accounted(found: GroupCensus, demand: int) -> tuple[str, bool]:
-    """The committed state from h+m+r against the demand."""
-    total = found.h + found.m + found.r
+    """The committed state from h+m+s+r against the demand."""
+    total = found.h + found.m + found.s + found.r
     if total != demand:
         return ("short" if total < demand else "overfull", False)
     if found.m == 0 and found.r == 0:
@@ -500,7 +647,7 @@ def _top_up(ledger: pool.ResourceLedger, kind: str, holder: str,
     the settled group is exactly the filed demand again and the intent is
     never recomputed.  No room is a wait: the next pass asks again.
     """
-    deficit = demand - (found.h + found.m + found.r)
+    deficit = demand - (found.h + found.m + found.s + found.r)
     try:
         handle = ledger.begin_acquire(str(holder), {kind: deficit})
     except (OSError, pool.PoolContractError, ValueError):
@@ -509,10 +656,28 @@ def _top_up(ledger: pool.ResourceLedger, kind: str, holder: str,
                                 False, found)
     if handle is None:
         return ReconcileOutcome("short", events + ["prelaunch-begin-declined"],
-                                False, found)
+                                False, found, need_gib=deficit,
+                                decline_reason=_shortage_reason(ledger))
     return ReconcileOutcome("acquiring",
                             events + ["prelaunch-group-topped-up"],
                             False, found)
+
+
+def _shortage_reason(ledger: pool.ResourceLedger) -> str:
+    """The ledger's own words for why a begin declined, never a bare wait."""
+    try:
+        shortage = ledger.last_token_shortage
+    except (OSError, pool.PoolContractError, ValueError, AttributeError):
+        return "ledger unreadable"
+    if not isinstance(shortage, Mapping):
+        return "no room for the deficit"
+    resource = shortage.get("resource")
+    requested = shortage.get("requested")
+    available = shortage.get("available")
+    reason = shortage.get("reason")
+    if isinstance(reason, str) and reason:
+        return f"{reason}: asked {requested}, free {available}"
+    return f"no room: {resource} asked {requested}, free {available}"
 
 
 def reconcile(queue: pool.PoolQueue, tier_id: str, unit: str, holder: str,
@@ -567,7 +732,7 @@ def reconcile(queue: pool.PoolQueue, tier_id: str, unit: str, holder: str,
                                 False, found)
     if found.p > 0:
         return _settle_handles(ledger, holder, found, events)
-    if found.h == demand:
+    if found.h + found.s == demand or found.h == demand:
         try:
             result = _commit_receipt(queue, unit, tier_id, holder, demand)
         except (OSError, pool.PoolContractError, ValueError):
@@ -605,26 +770,46 @@ def reconcile(queue: pool.PoolQueue, tier_id: str, unit: str, holder: str,
         return ReconcileOutcome("unreserved",
                                 events + ["prelaunch-group-rolled-back"],
                                 False, found)
+    need = incremental_need_gib(found, demand)
+    if need <= 0:
+        try:
+            result = _commit_receipt(queue, unit, tier_id, holder, demand)
+        except (OSError, pool.PoolContractError, ValueError):
+            return ReconcileOutcome(
+                "unknown", events + ["prelaunch-unknown-evidence"],
+                False, found)
+        if result == "conflict":
+            return ReconcileOutcome(
+                "unknown", events + ["prelaunch-unknown-evidence"],
+                False, found)
+        if result == "filed":
+            events.append("prelaunch-group-committed")
+        state, authority = _accounted(found, demand)
+        if authority:
+            return ReconcileOutcome(state, events, True, found)
+        return ReconcileOutcome(state, events + ["prelaunch-group-short"],
+                                False, found)
     try:
-        handle = ledger.begin_acquire(str(holder), {kind: demand})
+        handle = ledger.begin_acquire(str(holder), {kind: need})
     except (OSError, pool.PoolContractError, ValueError):
         return ReconcileOutcome("unknown",
                                 events + ["prelaunch-unknown-evidence"],
                                 False, found)
     if handle is None:
-        return ReconcileOutcome("unreserved",
-                                events + ["prelaunch-begin-declined"],
-                                False, found)
-    # The begun acquisition owns the whole demand in its private handle, so
-    # the census this pass reports is read again after the begin: the gate
-    # reads need from it, and the tokens have already left free.
+        events.append("prelaunch-begin-declined")
+        return ReconcileOutcome("unreserved", events, False, found,
+                                need_gib=need,
+                                decline_reason=_shortage_reason(ledger))
+    # The begun acquisition owns the deficit in its private handle, so the
+    # census this pass reports is read again after the begin: the gate reads
+    # need from it, and the tokens have already left free.
     try:
         after = census(queue, tier_id, unit, holder, demand, movers)
     except (OSError, pool.PoolContractError, ValueError):
         after = found
         events.append("prelaunch-unknown-evidence")
     return ReconcileOutcome("acquiring", events + ["prelaunch-group-begun"],
-                            False, after)
+                            False, after, need_gib=need)
 
 
 # ------------------------------------------------------------- funding
@@ -1199,7 +1384,7 @@ def has_holdings(queue: pool.PoolQueue, unit: str) -> bool:
             except (OSError, pool.PoolContractError, ValueError):
                 return True
             if (found.unknown or found.funding_unknown
-                    or found.h + found.p + found.m > 0):
+                    or found.h + found.p + found.m + found.s > 0):
                 return True
             if found.receipts.get("committed.json") is not None and found.r < demand:
                 return True

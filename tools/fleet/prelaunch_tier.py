@@ -396,8 +396,15 @@ def reserve_pass(queue, tier_id: str, units: Sequence[Unit], *, admitted,
             queue, tier_id, unit.unit, unit.holder, unit.demand_gib, movers,
             writer_is_me=writer_is_me)
         for name in outcome.events:
-            events.append(_unit_event(unit, tier_id, name,
-                                      state=outcome.state))
+            fields: dict = {"state": outcome.state}
+            if outcome.need_gib is not None and name in (
+                    "prelaunch-group-begun", "prelaunch-begin-declined",
+                    "prelaunch-group-topped-up"):
+                fields["need_gib"] = outcome.need_gib
+            if (outcome.decline_reason is not None and name in (
+                    "prelaunch-begin-declined",)):
+                fields["reason"] = outcome.decline_reason
+            events.append(_unit_event(unit, tier_id, name, **fields))
         authority[unit.unit] = bool(outcome.authority)
     return (events, authority)
 

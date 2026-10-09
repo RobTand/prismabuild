@@ -3023,7 +3023,8 @@ def window(plan: Mapping[str, object], *, accepted_phase: str | None,
            mover_role: str = "mover_row",
            withdrawn: Sequence[str] = (),
            horizon_end_bytes: int | None = None,
-           prelaunch_held: bool | None = None) -> dict[str, object]:
+           prelaunch_held: bool | None = None,
+           prelaunch_need_gib: int | None = None) -> dict[str, object]:
     """What the coordinator should publish and evict on this cycle.
 
     ``accepted_phase`` is the phase the consumer's progress record says it is
@@ -3177,6 +3178,8 @@ def window(plan: Mapping[str, object], *, accepted_phase: str | None,
                 "reason": _credit.REASON_PRELAUNCH_WAIT,
                 "waiting_for": "the prelaunch group reservation",
             }
+            if prelaunch_need_gib is not None:
+                stall["need_gib"] = int(prelaunch_need_gib)
             return {"publish": publish, "evict": evict, "stall": stall}
     for leg in legs:
         if leg["phase"] not in ahead_names:

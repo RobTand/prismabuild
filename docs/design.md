@@ -5025,6 +5025,17 @@ transfer. The record binds valid retained mover tokens and the exact remaining
 group tokens. A deferred rotation moves no tokens. A partial transfer retains
 that generation, and a retry moves only its missing tokens. Foreign live
 records still refuse, and foreign spent recovery keeps its existing rule.
+A group that shares chunk movers with pinned movers of earlier consumers
+counts those pins as shared coverage beside its own holder, handles,
+bound mover tokens and released counts (#1690). A shared pin is a mover
+that still holds the intent's whole span under a live `transferring`
+fence for the same tier and range, or a done `executed` record that
+covers the chunk on the tier. The fresh begin asks the ledger only for
+the deficit, the demand less all coverage, and commits when holder plus
+shared cover the demand. The window's `blocked_gib` and the begin's
+`need_gib` come from that one computation: the stall carries the need,
+and a declined begin files its need with the ledger's own shortage
+reason instead of a bare `unreserved`.
 A committed group whose census reads short with an empty holder lost its
 tokens to a path that wrote no release receipt (live, 2026-10-08: the PACT band
 source).  Its receipt still said committed, so the unit was never a newcomer
