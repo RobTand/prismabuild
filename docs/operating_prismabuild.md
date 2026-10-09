@@ -1695,14 +1695,15 @@ unchanged; descriptor-based temporary-directory cleanup can therefore finish
 under the failed-only retention policy instead of failing in the fixture itself.
 Only `tmp_path` is removed per test. A directory made with `tmp_path_factory.mktemp`,
 and the directory of any failing test, lasts as long as the session's base temporary
-directory. By default `pbtest` passes no `--basetemp`, so that base is
-`$TMPDIR/pytest-of-<user>/pytest-N`, where `TMPDIR` is the default `/home/rob/tmp` or the
-`--tmpdir` directory when one is given. pytest removes the whole directory itself when
-the session ends with exit status 0 (policy `failed`); after a session with any failure it
-stays until later sessions prune older numbered directories (pytest keeps the newest three
-by default). With `--basetemp root` pytest does not remove the directory at the end of the
-session: it deletes and recreates the root at the start of the next session that uses that
-path, so a leftover root has to be cleaned by whoever sealed it.
+directory. Without `--basetemp` each attempt owns its base temp (#1542):
+`<tmpdir>/pbtest-<action-key12>/<attempt>/pytest`, where `tmpdir` is the
+default `/home/rob/tmp` or the `--tmpdir` directory when one is given. The
+worker removes only that attempt's directory after pytest exits 0, and keeps
+it on a non-zero exit, as the failed-only retention policy does. Expiry of
+kept directories is out of scope. With `--basetemp root` pytest does not
+remove the directory at the end of the session: it deletes and recreates
+the root at the start of the next session that uses that path, so a leftover
+root has to be cleaned by whoever sealed it.
 
 `--basetemp root` seals a separate scratch root for pytest's own temporary
 files (#1469), so selecting real test scratch no longer moves the process
@@ -1724,16 +1725,16 @@ action root. The root stays unsupported through `--pytest-args`: the closed
 vocabulary does not grow.
 
 Nothing removes the derived `root/<action-key>/<attempt>/pytest` namespaces
-automatically. pytest deletes only the basetemp it is handed, at its own
-start. A sealed root is not PrismaBuild-admitted scratch: the attempt
-lifetime contract (#1463, refs #1360) owns declared, registered ephemeral
-roots, not a caller-provisioned `--basetemp` root, so D1 disk admission does
-not see what accumulates there. A relative root needs no extra owner -- it
-lives inside the attempt's materialized checkout and is removed with it. An
-absolute root grows outside every PB accounting path, so the caller who
-provisions ROOT owns the removal of its action namespaces; until #1360
-extends scratch lifetime to sealed client roots, provision absolute roots
-under a retention policy of your own.
+of a sealed `--basetemp` automatically. pytest deletes only the basetemp it
+is handed, at its own start. A sealed root is not PrismaBuild-admitted
+scratch: the attempt lifetime contract (#1463, refs #1360) owns declared,
+registered ephemeral roots, not a caller-provisioned `--basetemp` root, so
+D1 disk admission does not see what accumulates there. A relative root needs
+no extra owner -- it lives inside the attempt's materialized checkout and is
+removed with it. An absolute root grows outside every PB accounting path, so
+the caller who provisions ROOT owns the removal of its action namespaces;
+until #1360 extends scratch lifetime to sealed client roots, provision
+absolute roots under a retention policy of your own.
 
 Every requested path must be a file or directory. A missing or invalid path
 refuses the whole submission with exit code 2 and a diagnostic before any
@@ -3886,11 +3887,47 @@ map uses the existing idle-queue procedure.
 CPU samples, learned profiles, interval state, spent borrowing samples, the
 GPU probe state and each running scope's live telemetry live in the host-local
 `PRISMABUILD_BOX_STATE_ROOT` directory, keyed by ledger and hostname. The default root is `/tmp/prismabuild-admission-<uid>`. Do not delete
-it while workers run. A cold start relearns intervals and profiles; shared
+it while workers run. Each genuinely new digest files `<digest>.origin.json`
+once, naming its queue root, hostname, pid, executable and creation time;
+an entry that already owns state when the code first sees it keeps no
+record: it is a legacy entry, and nothing invents its origin. Entries
+without one are legacy entries. The admission path probes only the
+digest's own paths, never the whole directory.
+
+Maintenance-only prune (`survey_box_state`, `prune_box_state`, `prove_box_quiescent`)
+uses a dry run by default. An entry includes every `<digest>.*` sibling,
+even without an adaptive CPU directory. Lock-only, sweep-only, and
+preemption-only entries qualify by the same identity and age rules.
+The default age floor is seven days. Apply removes at most 100 entries
+per pass; the 5,000-entry target prioritizes older eligible entries.
+
+Stop all relevant users and bar new openers before apply.
+Acknowledge the maintenance hold. Apply also requires a proven-quiet box:
+no live worker loop, unresolved claim, or live scope, with complete queue evidence.
+Each `.lock`, `.preemption`, `.sweep`, and `.guard` file must pass
+a non-blocking `flock` probe. Configured roots and unresolved census readers stay.
+An absent roots list, missing queue, or incomplete evidence refuses apply without removal.
+
+An old unheld `.sweep` marker and a released `.preemption` lock never keep
+an entry alone. Partial or unreadable evidence counts as "not quiet".
+Age and count select candidates; neither permits unsafe removal.
+No rename of a held inode ever happens.
+A cold start relearns intervals and profiles; shared
 copies are never recovery authority. For this authority migration or rollback,
 keep the queue drained until every worker loop reports the selected generation.
 Before rollback to shared authority, verify all snapshot publishers have
 actually exited as well; a stalled publisher blocks that rollback.
+
+The R13 bench binds admission state to `<work>/box-state` before queue use
+in both parent and child processes. A nonempty explicit override remains unchanged.
+Use a new or empty work directory. The bench refuses a nonempty or unreadable
+directory before queue use and names that directory. It deletes nothing from a prior run.
+
+Claims, census fences, guard files, and claim-denial records remain across reuse attempts.
+Neither `finish` nor direct child exit proves settlement or permits removal.
+
+This source repair does not establish runtime deployment.
+Obtain CEO approval before runtime publication.
 
 Remote status readers still read `reservations/<host>/adaptive/`, now populated
 by an independent publisher after admission is released. Its CPU and GPU
@@ -4277,6 +4314,13 @@ cache roots in separate charged ROOT/MAX pairs, and seal this selection:
 ]}
 ```
 
+The CEO approved the additive SDK6 builder in decision `dec-1009-090451-62a1`.
+SDK5 consumers must keep their existing behavior; the cited published runtime still uses SDK5.
+Qualification is limited to isolated x86 work.
+The decision approves no deployment or closure; pb-integrator owns publication.
+Use `json.dumps(selection, sort_keys=True, separators=(",", ":"))` to seal compact JSON.
+The pool counts all raw UTF-8 bytes, including whitespace, against the 16 KiB limit.
+
 Pass that JSON as `PRISMABUILD_EPHEMERAL_SCRATCH_DECLARATIONS`. PB derives the
 worker capability requirement, registers a private ephemeral leaf before
 launch and cleans it only after exact stopped-attempt proof. The existing
@@ -4292,8 +4336,31 @@ Cleanup failure, inode/ancestry replacement or an existing leaf whose identity
 was never committed retains the owning claim and charged capacity. Existing
 finish/reaper/late-finish recovery retries deterministic ownership, never
 adopts an ambiguous path. The owner UID may not mutate PB's private state or
-namespace control. Source CPU fixtures are not deployment qualification: check
-the actual worker offers before using this feature in PQ or another workload.
+namespace control. Check the actual worker offers before using this feature:
+the action needs a worker that offers both `spool_gb` and
+`scratch-lifetime-v1`. On 2026-10-09 six CPU-only lifetime scenarios ran on
+sparky under published generation `c8daa1be416c-1791512870-55b0e8c72f6b`
+(normal, failed, SIGKILLed descendant, symlink guard, launcher SIGKILL
+victim/killer); every terminal record shows a complete registration with
+both entries cleaned, and follow-up actions prove the leaves absent with
+roots, persistent markers and the guard target intact. See
+`docs/evidence/issue1360_scratch_lifetime_deployment_2026-10-09.json`.
+
+This record supplies partial evidence only. Keep #1360 open.
+Worker-loss recovery and injected cleanup/record failures remain unqualified on the published runtime.
+The historical launcher qualifier used numeric PIDs after a delay.
+The corrected qualifier requires Linux pidfds and verifies process identity before any signal.
+Its CPU smoke targets an owned inert process, not a live worker service.
+The current x86 offer advertises no `spool_gb`; obtain a supervisor-owned measured scratch offer before lifetime scenarios.
+The admitted read-only probe `ee950a85ee9d` confirms that `/tmp` is `tmpfs` on this x86 host.
+Its immutable creation time exists, but the lifetime, spool, and supervisor guards refuse that filesystem.
+The roster also lacks `local_disk` and `--spool-gb` for dl380g10.
+Provision a qualified disk-backed mount beneath `/tmp` through an operator-approved change.
+Use the existing supervisor to measure its offer.
+Do not weaken filesystem checks, invent capacity, or place these CPU scenarios on a Spark.
+Decision `dec-1009-090451-62a1` approves additive SDK6 and isolated x86 qualification only.
+It does not permit deployment, closure, or faults against live worker services.
+The measured scratch prerequisite remains open.
 
 ### Write outputs that a later action reads
 
