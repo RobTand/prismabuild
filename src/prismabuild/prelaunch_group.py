@@ -758,7 +758,7 @@ def _top_up(ledger: pool.ResourceLedger, kind: str, holder: str,
                                 declined=True)
     return ReconcileOutcome("acquiring",
                             events + ["prelaunch-group-topped-up"],
-                            False, found)
+                            False, found, need_gib=deficit)
 
 
 def _shortage_reason(ledger: pool.ResourceLedger) -> str:

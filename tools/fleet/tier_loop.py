@@ -9008,10 +9008,13 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
             # older journaled decline stands when this cycle asked
             # nothing new, so the stall never lags the reservation.
             need_now = None
+            began_now = False
             for event in published:
                 if (event.get("unit") == prelaunch_unit.unit
                         and event.get("tier_id") == tier_id):
-                    if event.get("event") == "prelaunch-group-begun":
+                    if event.get("event") in ("prelaunch-group-begun",
+                                              "prelaunch-group-topped-up"):
+                        began_now = True
                         asked = event.get("need_gib")
                         if isinstance(asked, int) and asked >= 0:
                             need_now = asked
@@ -9034,7 +9037,7 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
                 except (OSError, pool.PoolContractError, ValueError):
                     need_now = None
             if (need_now is not None and need_now > 0
-                    and decline_reason_now is None):
+                    and decline_reason_now is None and not began_now):
                 decline_reason_now = prelaunch_group.latest_decline_reason(
                     queue, prelaunch_unit.unit, tier_id)
             decision = residency_plan.window(

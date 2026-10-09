@@ -5114,8 +5114,10 @@ covers the chunk on the tier. The fresh begin asks the ledger only for
 the deficit, the demand less all coverage, and commits when holder plus
 shared cover the demand. The window's `blocked_gib` and the begin's
 `need_gib` come from one computation: the stall's blocked amount is the
-deficit itself, read from this cycle's begin event when the reserve pass
-began, else from the same prospective census the begin will use. A
+deficit itself. The window reads this cycle's fresh begin or recovery
+event when the reserve pass begins. Otherwise, it uses the prospective census.
+A successful recovery returns its requested amount before acquisition changes the census.
+The window reports that amount and omits any previous decline cause. A
 declined begin journals its need with the ledger's own shortage reason,
 and the stall carries that cause beside the wait reason. A contended
 mutation lock names `mutation_lock_busy`, never a capacity shortage.
@@ -5124,10 +5126,10 @@ whose terminal records all finished before its live row published.
 A committed group whose census reads short with an empty holder lost its
 tokens to a path that wrote no release receipt (live, 2026-10-08: the PACT band
 source).  Its receipt still said committed, so the unit was never a newcomer
-again and no pass restored the tokens.  The writer now begins one acquisition
-for the deficit, the filed demand less the holder, bound mover and released
-counts, into the same holder, and the next pass settles it like any begun
-acquisition.  The intent is not recomputed.  No room files
+again and no pass restored the tokens. The writer begins one acquisition
+for the deficit under the same holder. The deficit subtracts holder tokens,
+bound mover tokens, shared pins and released counts from the filed demand.
+The next pass settles the acquisition. The intent remains immutable. No room files
 `prelaunch-begin-declined` and waits.  A committed group that is short with
 holder tokens still releases them first, as before, and tops up on the next
 pass.  Only the top-up and the settling of its handle are writer-only; the

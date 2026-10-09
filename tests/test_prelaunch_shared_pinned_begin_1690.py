@@ -17,6 +17,9 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -500,3 +503,115 @@ def test_a_busy_ledger_lock_reports_contention_not_a_shortage(
     assert stalls
     assert any(event.get("decline_reason") == declines[0]["reason"]
                for event in stalls), stalls
+
+
+def _prepared_shared_recovery(tmp_path):
+    """Lose an unstaged chunk's row and tokens after the shared group commits."""
+    import prelaunch_tier as pt
+    queue, tiers, consumer, plan, movers = _state_1690(tmp_path)
+    ledger = queue.tier_ledger(TIER)
+    unit = pt.declared_units(queue, tiers, [_consumer(consumer)])[0]
+    for _ in range(10):
+        tier_loop.residency_window(queue, tiers=tiers)
+        assert ledger.held().get("stage_gib", 0) <= CAPACITY
+    found = pg.census(queue, TIER, unit.unit, unit.holder,
+                      unit.demand_gib, movers)
+    assert (found.h, found.p, found.m, found.s) == (0, 0, 41, 80)
+    assert found.receipts["committed.json"]["demand_gib"] == 121
+    assert queue.item_path(pool.READY, movers[2]).exists()
+    assert not queue.item_path(pool.CLAIMED, movers[2]).exists()
+    shared = {mover: set(pool.held_names_visible(ledger, mover))
+              for mover in movers[:2]}
+    # The orphan sweep removed this range. Its replacement has not run,
+    # so this fault loses tokens without leaving staged bytes uncovered.
+    namespace = residency_plan.share_namespace(
+        str(plan["manifest_sha256"]), TIER,
+        80 * storage_tiers.GIB, 120 * storage_tiers.GIB)
+    assert not residency_map.read_fragments(
+        queue.residency_fragment_root(), namespace)
+    assert ledger.release(movers[2]) == 40
+    queue.item_path(pool.READY, movers[2]).unlink()
+    found = pg.census(queue, TIER, unit.unit, unit.holder,
+                      unit.demand_gib, movers)
+    assert (found.h, found.p, found.m, found.s) == (0, 0, 1, 80)
+    return queue, tiers, consumer, plan, movers, unit, shared
+
+
+@pytest.mark.parametrize("shortage", [False, True])
+def test_shared_recovery_preserves_request_amount_and_admits(
+        tmp_path, shortage) -> None:
+    """Recovery reports its actual request, then admits through shared pins."""
+    queue, tiers, consumer, plan, movers, unit, shared = (
+        _prepared_shared_recovery(tmp_path))
+    ledger = queue.tier_ledger(TIER)
+    intent_before = (unit.receipt_dir / "intent.json").read_bytes()
+    if shortage:
+        assert ledger.acquire("recovery-obstruction", {"stage_gib": 50})
+        assert ledger.available()["stage_gib"] == 19
+        events = tier_loop.residency_window(queue, tiers=tiers)
+        decline = next(event for event in events
+                       if event["event"] == "prelaunch-begin-declined"
+                       and event["unit"] == unit.unit)
+        stalls = [event for event in events
+                  if event["event"] == "window-stalled"
+                  and event["consumer"] == consumer]
+        assert decline["need_gib"] == 40
+        assert "asked 40" in decline["reason"]
+        assert "free 19" in decline["reason"]
+        assert stalls
+        for stall in stalls:
+            assert stall["blocked_gib"] == stall["need_gib"] == 40
+            assert stall["decline_reason"] == decline["reason"]
+        assert ledger.available()["stage_gib"] == 19
+        assert ledger.release("recovery-obstruction") == 50
+
+    free_before = ledger.available()["stage_gib"]
+    events = tier_loop.residency_window(queue, tiers=tiers)
+    recovered = next(event for event in events
+                     if event["event"] == "prelaunch-group-topped-up"
+                     and event["unit"] == unit.unit)
+    stalls = [event for event in events
+              if event["event"] == "window-stalled"
+              and event["consumer"] == consumer]
+    assert stalls
+    amounts = [recovered.get("need_gib")]
+    amounts.extend(stall[field] for stall in stalls
+                   for field in ("blocked_gib", "need_gib"))
+    assert amounts == [40] * len(amounts), (recovered, stalls)
+    assert ledger.available()["stage_gib"] == free_before - 40
+    assert all("decline_reason" not in stall for stall in stalls)
+
+    for _ in range(6):
+        tier_loop.residency_window(queue, tiers=tiers)
+        assert ledger.held().get("stage_gib", 0) <= CAPACITY
+        for mover, tokens in shared.items():
+            assert set(pool.held_names_visible(ledger, mover)) == tokens
+    names = set()
+    for holder in [unit.holder, "filler-1690", *movers]:
+        held = set(pool.held_names_visible(ledger, holder))
+        assert not names.intersection(held)
+        names.update(held)
+    assert len(names) == 127
+    for mover, gib in zip(movers[2:], (40, 1)):
+        row = pool.read_queue_record(queue.item_path(pool.READY, mover))
+        assert queue.funded_cover(TIER, row, "stage_gib", gib)[0] == gib
+    stage_root = Path(tiers[TIER]["mountpoint"])
+    for _ in range(2):
+        mover = _claim_chunk(queue, 0)
+        assert mover in movers[2:]
+        _finish_claimed(queue, stage_root, mover, consumer,
+                        str(plan["manifest_sha256"]))
+    tier_loop.fan_out_shared_ranges(
+        queue, tier_loop._planned_consumers(queue, tiers))
+    for _ in range(4):
+        tier_loop.residency_window(queue, tiers=tiers)
+    held_before = dict(ledger.held())
+    claimed = queue.claim(tags=["dl380g10"], owner="w-1690-recovered")
+    assert claimed is not None and claimed["action_key"] == consumer
+    assert claimed["residency_verdict"]["state"] == "resident"
+    assert dict(ledger.held()) == held_before
+    assert held_before["stage_gib"] == 127 <= CAPACITY
+    for mover, gib in zip(movers, (40, 40, 40, 1)):
+        assert _holder_tokens(queue, mover) == gib
+        assert queue.move_record(mover)["bytes_staged"] == gib * storage_tiers.GIB
+    assert (unit.receipt_dir / "intent.json").read_bytes() == intent_before
