@@ -2049,6 +2049,7 @@ pytest receives its `pytest` child as the base temp.
 The short name leaves room for xdist worker directories and AF_UNIX sockets.
 No action key or attempt identity is truncated to create this namespace.
 Exit 0 removes only this attempt directory; a nonzero exit retains it.
+When removal meets a filesystem or mount refusal, exit 0 also keeps the directory with a completion time, so cleanup never turns a green result red.
 The worker supervisor expires retained default scratch after 24 hours (#1710).
 It sweeps each registered sealed `TMPDIR` root once per hour, even while worker loops execute actions.
 With complete custody and an ended scope, retention is at most 25 hours plus a supervisor tick and the sweep duration.

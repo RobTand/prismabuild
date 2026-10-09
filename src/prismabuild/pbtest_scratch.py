@@ -125,13 +125,53 @@ class Attempt:
                                  follow_symlinks=False)) != _identity(os.fstat(self.directory_fd)):
                 raise ValueError("scratch attempt identity changed")
             if int(code) == 0:
-                _no_mounts(self.directory)
-                shutil.rmtree(self.record["name"], dir_fd=self.root_fd)
+                try:
+                    _no_mounts(self.directory)
+                    shutil.rmtree(self.record["name"], dir_fd=self.root_fd)
+                except (OSError, ValueError):
+                    self._keep_after_failed_cleanup()
+                    return code
                 self.close()
             else:
                 self.record["kept_unix"] = time.time()
                 _write(self.directory_fd, OWNER, self.record)
         return code
+
+    def _keep_after_failed_cleanup(self):
+        """Stamp kept time and restore the lock after partial removal."""
+        try:
+            self.record["kept_unix"] = time.time()
+            _write(self.directory_fd, OWNER, self.record)
+        except (OSError, ValueError):
+            pass
+        try:
+            probe = os.open(LOCK, os.O_RDWR | _FILE_FLAGS, dir_fd=self.directory_fd)
+        except FileNotFoundError:
+            pass
+        except (OSError, ValueError):
+            return
+        else:
+            os.close(probe)
+            return
+        try:
+            fresh = os.open(LOCK, os.O_RDWR | os.O_CREAT | os.O_EXCL | _FILE_FLAGS,
+                            0o600, dir_fd=self.directory_fd)
+        except (OSError, ValueError):
+            return
+        try:
+            fcntl.flock(fresh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (OSError, ValueError):
+            try:
+                os.close(fresh)
+            except (OSError, ValueError):
+                pass
+            return
+        if self.lock_fd >= 0:
+            try:
+                os.close(self.lock_fd)
+            except (OSError, ValueError):
+                pass
+        self.lock_fd = fresh
 
     def close(self):
         for name in ("lock_fd", "directory_fd", "root_fd"):
