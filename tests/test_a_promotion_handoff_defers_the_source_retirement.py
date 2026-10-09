@@ -63,7 +63,6 @@ CONSUMER_A = "a" * 64
 CONSUMER_B = "b" * 64
 MOVER_A = "1" * 64
 MOVER_B = "2" * 64
-RAM_MOVER = "e" * 64
 SIZE = 16 * 1024
 
 
@@ -141,21 +140,34 @@ def _staged_path(queue: pool.PoolQueue, consumer: str) -> Path:
 
 
 def _claim_promotion(queue: pool.PoolQueue, tmp_path: Path, manifest: Path,
-                     manifest_sha: str, *, key: str = RAM_MOVER) -> Path:
+                     manifest_sha: str) -> tuple[Path, str]:
     """A live RAM promotion claim over this stage's source leg.
 
     The shape ``ram_promote`` runs under: a claimed row demanding ram tokens,
     naming its own CAS root, plus the sealed request whose command carries
     ``--source-stage-root`` and the range, and the manifest blob that request's
-    input names.  ``_claimed_source_paths`` reads exactly this.
+    input names.  ``_claimed_source_paths`` reads exactly this.  The request
+    is a real sealed v2 action filed through the CAS, so the key is the one
+    the sealer derives, never a fixed constant.
     """
 
-    cas = tmp_path / "cas"
-    blob = pb.PrismaBuildCAS(cas).blob_path(manifest_sha)
-    blob.parent.mkdir(parents=True, exist_ok=True)
-    blob.write_bytes(manifest.read_bytes())
-    request = {
-        "action_key": key,
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    manifest_input, _ = cas.ingest_input(
+        manifest, input_id=pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID)
+    checkout = tmp_path / "promotion-checkout"
+    checkout.mkdir(parents=True, exist_ok=True)
+    (checkout / "task_code.py").write_text(
+        "raise SystemExit(0)\n", encoding="utf-8")
+    action = pb.seal_action({
+        "schema": pb.ACTION_SCHEMA_V2,
+        "task": {"definition_id": "tests/promotion-handoff",
+                 "definition_version": "v1", "task_class": "generation",
+                 "determinism": "deterministic",
+                 "artifact_family": "generic", "artifact_kind": "generic",
+                 "argv": ["/bin/true"], "working_directory": ".",
+                 "result_path": "result"},
+        "inputs": [manifest_input],
+        "code_closure": pb.build_code_closure(checkout, ["task_code.py"]),
         "params": {"command": [
             "python3", "ram_promote.py",
             "--consumer-action-key", CONSUMER_A,
@@ -165,23 +177,24 @@ def _claim_promotion(queue: pool.PoolQueue, tmp_path: Path, manifest: Path,
             "--range-start-bytes", "0",
             "--range-end-bytes", str(SIZE),
         ]},
-        "inputs": [{"id": pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID,
-                    "sha256": manifest_sha, "bytes": blob.stat().st_size}],
-    }
-    sealed = cas / "requests" / key[:2] / f"{key}.json"
-    sealed.parent.mkdir(parents=True, exist_ok=True)
-    sealed.write_text(json.dumps(request))
+        "environment": {"variables": {"PATH": "/usr/bin:/bin"},
+                        "toolchain": {}},
+        "execution_scope": {"portability": "portable", "platform_key": None,
+                            "host_class": None},
+    })
+    key = str(action["action_key"])
+    cas.publish_action_request(action)
     claimed = queue.dir(pool.CLAIMED)
     claimed.mkdir(parents=True, exist_ok=True)
     row = claimed / f"{key}.json"
     row.write_text(json.dumps({
         "action_key": key,
-        "cas_root": str(cas),
+        "cas_root": str(tmp_path / "cas"),
         "published_unix": time.time(),
         "resources": {"cpu": 2, "mem_gb": 1,
                       f"{storage_tiers.RAM_CAPACITY_KIND}@{RAM_TIER}": 1},
     }))
-    return row
+    return row, key
 
 
 def _charged(queue: pool.PoolQueue, mover: str = MOVER_A) -> None:
@@ -323,7 +336,7 @@ def test_a_handoff_only_deferral_files_no_retiring_mark(
     """
 
     queue, stage, staged, manifest_sha, manifest = _world(tmp_path)
-    _claim_promotion(queue, tmp_path, manifest, manifest_sha)
+    _, promotion_key = _claim_promotion(queue, tmp_path, manifest, manifest_sha)
 
     receipt = _evict(queue, stage)
     assert receipt["entries_deferred"] == 1
@@ -340,7 +353,7 @@ def test_a_handoff_only_deferral_files_no_retiring_mark(
     promotion = ram_promote.promote(ram_promote.build_parser().parse_args([
         "--pool-root", str(queue.root),
         "--cas-root", str(tmp_path / "cas"),
-        "--action-key", RAM_MOVER,
+        "--action-key", promotion_key,
         "--consumer-action-key", CONSUMER_A,
         "--tier-id", RAM_TIER,
         "--ram-root", str(ram),
@@ -363,7 +376,7 @@ def test_a_handoff_only_deferral_files_no_retiring_mark(
     # vouch for the surviving SSD incarnation, which is why the SSD
     # fragment had to stay.
     ram_fragment = residency_map.validate_fragment(json.loads(
-        _fragment_path(queue, CONSUMER_A, RAM_MOVER).read_text()))
+        _fragment_path(queue, CONSUMER_A, promotion_key).read_text()))
     assert ram_fragment["tier_id"] == RAM_TIER
     assert ram_fragment["stage_root"] == str(ram)
     assert str(staged) not in [
@@ -437,7 +450,7 @@ def test_the_deferred_proof_still_adopts_for_a_current_publisher(
 def test_the_retry_after_the_handoff_deletes_and_releases_exactly_once(
         tmp_path: Path) -> None:
     queue, stage, staged, manifest_sha, manifest = _world(tmp_path)
-    row = _claim_promotion(queue, tmp_path, manifest, manifest_sha)
+    row, _ = _claim_promotion(queue, tmp_path, manifest, manifest_sha)
     assert _evict(queue, stage)["entries_deferred"] == 1
 
     row.unlink()                      # the promotion ends; the claim is gone
@@ -467,7 +480,7 @@ def test_the_retry_after_the_handoff_retains_for_a_real_co_owner(
     """A real same-path owner keeps the bytes; the duplicate is decharged."""
 
     queue, stage, staged, manifest_sha, manifest = _world(tmp_path)
-    row = _claim_promotion(queue, tmp_path, manifest, manifest_sha)
+    row, _ = _claim_promotion(queue, tmp_path, manifest, manifest_sha)
     assert _evict(queue, stage)["entries_deferred"] == 1
 
     _stage(queue, tmp_path, manifest, manifest_sha, CONSUMER_B, MOVER_B)
@@ -502,7 +515,7 @@ def test_a_pin_and_a_handoff_on_one_mover_both_defer(tmp_path: Path) -> None:
     """
 
     queue, stage, staged, manifest_sha, manifest = _world(tmp_path)
-    row = _claim_promotion(queue, tmp_path, manifest, manifest_sha)
+    row, _ = _claim_promotion(queue, tmp_path, manifest, manifest_sha)
     key = residency_map.residency_map_key(
         str(tmp_path / "origin" / "calib.bin"), 0)
     proof = reader_lease.acquire(

@@ -184,7 +184,7 @@ class FsProbe:
             return real["lstat"](path, *args, **kwargs)
 
         def os_open(path, *args, **kwargs):
-            flags = args[1] if len(args) > 1 else kwargs.get("flags", 0)
+            flags = args[0] if args else kwargs.get("flags", 0)
             if isinstance(flags, int) and (flags & os.O_PATH):
                 return real["os_open"](path, *args, **kwargs)
             self.opens.append(os.fspath(path))
