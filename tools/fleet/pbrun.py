@@ -2091,6 +2091,71 @@ def container_image_notice(queue, intent: Mapping[str, object]) -> str:
     return line + "."
 
 
+def producer_allowance_room_refusal(queue, action: Mapping[str, object]) -> str | None:
+    """Why a spool producer's demand leaves no room for its exports, or ``None`` (#1571).
+
+    A producer whose sealed environment configures a produced-output spool
+    will have exports, each needing ``EXPORT_DEMAND`` from the export
+    allowance the producer's own claim reserves beside its demand. The
+    allowance is the sealed ``EXPORT_SLOTS_ENV`` when declared, else the
+    unmeasured default of one slot. When the demand plus that minimum
+    allowance exceeds the largest recorded ``mem_gb`` among the boxes
+    eligible by tags, the producer can never run with room for even one
+    export: the 2026-10-06 forward declared mem_gb 104 of sparky's 104
+    tokens and its 1 GiB dependents starved on ``token_shortage``. Refuse
+    at submission with the numbers, before publication. Unknown capacity
+    never refuses: no recorded offer means no evidence, not no room.
+    """
+
+    from prismabuild import adaptive_cpu as cpu_admission
+    variables = (action.get("environment") or {}).get("variables") or {}
+    if not isinstance(variables, dict) or not variables.get(cpu_admission.SPOOL_ROOT_ENV):
+        return None
+    demand = (action.get("params") or {}).get("demand") or {}
+    if not isinstance(demand, dict):
+        return None
+    raw_slots = variables.get(cpu_admission.EXPORT_SLOTS_ENV)
+    if raw_slots is None:
+        slots = cpu_admission.DEFAULT_EXPORT_SLOTS
+        basis = "unmeasured default of one slot"
+    elif (isinstance(raw_slots, str) and raw_slots.isascii() and raw_slots.isdigit()
+            and int(raw_slots) > 0):
+        slots = int(raw_slots)
+        basis = f"sealed {cpu_admission.EXPORT_SLOTS_ENV}={slots}"
+    else:
+        return None
+    need = int(demand.get("mem_gb", 0) or 0) + slots * int(
+        cpu_admission.EXPORT_DEMAND.get("mem_gb", 0))
+    if need <= 0:
+        return None
+    tags = ((action.get("params") or {}).get("placement") or {}).get("required_tags") or []
+    eligible = queue.placeable_hosts(
+        {"tags": list(tags), "resources": {}}, max_age_s=RECORDED_OFFER_MAX_AGE_S) or []
+    if not eligible:
+        return None
+    best = 0
+    for offer in queue.offers(max_age_s=RECORDED_OFFER_MAX_AGE_S):
+        host = str(offer.get("host") or "?")
+        if host not in eligible:
+            continue
+        capacity = offer.get("capacity") or {}
+        if isinstance(capacity, Mapping) and "mem_gb" in capacity:
+            try:
+                best = max(best, int(capacity["mem_gb"]))
+            except (TypeError, ValueError):
+                continue
+    if best <= 0 or need <= best:
+        return None
+    return (
+        f"pbrun: this spool producer declares mem_gb "
+        f"{int(demand.get('mem_gb', 0) or 0)} but its export allowance needs "
+        f"{slots * int(cpu_admission.EXPORT_DEMAND.get('mem_gb', 0))} more "
+        f"({basis}), for {need} GiB against the largest recorded box total "
+        f"of {best} GiB. Its exports could never run beside it. Declare at "
+        f"most {best - slots * int(cpu_admission.EXPORT_DEMAND.get('mem_gb', 0))} "
+        f"GiB, or wait for a larger box. Nothing was sealed or published.")
+
+
 def placement_capacity_notice(queue, intent: Mapping[str, object]) -> str:
     """Name recorded capacity terms that prevent this request from fitting."""
 
@@ -8130,6 +8195,9 @@ def announce_placement(
             f"{queue.offered_tags(max_age_s=RECORDED_OFFER_MAX_AGE_S)}\n"
             f"{remedy}"
         )
+    producer_room_refusal = producer_allowance_room_refusal(queue, action)
+    if producer_room_refusal is not None:
+        raise SystemExit(producer_room_refusal)
     if capability_verdict is None:
         if intent.get("container_images"):
             # No worker has announced at all, so no inventory exists to place

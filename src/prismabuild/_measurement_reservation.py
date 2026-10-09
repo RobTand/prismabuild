@@ -433,6 +433,121 @@ class CensusReader:
             raise CensusUnavailable(str(exc)) from exc
 
 
+class PassCensus:
+    """One successful census a claim pass reuses for later candidates (#1571).
+
+    The census reads the whole queue, not the candidate, so a pass with a
+    free fence paid two bounded-child scans per candidate: the discovery
+    read outside host admission and the refresh read under it. Both run
+    inside one held reader fence, and the refresh runs while the pass
+    holds host admission and the elected measurement keys of this host.
+    Reuse keeps the first successful census for the rest of the pass:
+    later candidates re-take only those locks, never the fence or scan.
+
+    Reuse ends where authority may have changed: this pass claims a row,
+    elects a gang member on this host, or elects a measurement on this
+    host; or a sibling loop's claim, gang election, or measurement
+    election lands under a later candidate. Each of those is found by a
+    fresh read, under that candidate's transition lock, before its
+    rename. A change that cannot retire authority -- a denial, a pass
+    count, a withhold -- changes nothing. Retirement itself needs an
+    exact ending or a strictly newer live publication, both durable, so
+    a census held across candidates of one pass only ever errs toward
+    fencing: a missing row is not retirement, exactly as in
+    :func:`locked_census`. A refusal is never reused: it ends the census
+    for the pass as before.
+    """
+
+    def __init__(self, queue: PoolQueue, ledger: ResourceLedger, controller):
+        self._queue = queue
+        self._ledger = ledger
+        self._controller = controller
+        self._census: dict | None = None
+        self._selections: dict | None = None
+        self._gang_elections: dict | None = None
+        self._busy: set[str] = set()
+
+    @property
+    def census(self) -> dict | None:
+        """The census the pass reuses, or ``None`` before the first read."""
+        return self._census
+
+    def invalidate(self) -> None:
+        """Drop the reused census after authority may have changed (#1571)."""
+        self._census = None
+        self._selections = None
+        self._gang_elections = None
+        self._busy = set()
+
+    def store(self, census: dict) -> None:
+        """Keep one successful locked census for the rest of the pass."""
+        self._census = census
+        self._selections = dict(census.get("selections") or {})
+        self._gang_elections = dict(census.get("gang_elections") or {})
+
+    def acquire(self) -> ExitStack | None:
+        """Take the locks a reused census needs, without a scan (#1571).
+
+        The reader fence and the queue scan stay untouched. Only the
+        elected measurement keys of this host plus host admission are
+        re-taken, exactly as :func:`locked_census` takes them for a
+        fresh read. Returns the lock stack the caller holds across
+        the candidate, or ``None`` when the locks did not come. A
+        busy elected key is recorded for :meth:`reused` to keep as a
+        live election, the conservative reading :func:`locked_census`
+        already uses.
+        """
+        if self._census is None:
+            return None
+        from . import pool as pool_mod
+        held = ExitStack()
+        try:
+            busy: set[str] = set()
+            here = self._ledger.base.name
+            for key in sorted(self._selections or {}):
+                chosen = (self._selections or {}).get(key)
+                if not isinstance(chosen, dict) or chosen.get("host") != here:
+                    continue
+                if not held.enter_context(
+                        self._queue._transition_locked(key, blocking=False)):
+                    busy.add(key)
+            held.enter_context(
+                self._queue._admission_lock(self._controller))
+        except pool_mod.cpu_admission.AdmissionBusy:
+            held.close()
+            return None
+        except OSError:
+            held.close()
+            return None
+        self._busy = busy
+        return held
+
+    def reused(self) -> dict:
+        """The stored census, with the locks :meth:`acquire` holds (#1571).
+
+        Applies the same two adjustments :func:`locked_census` makes
+        after its refresh read: an elected key another loop holds
+        mid-transition stays a live election for this candidate, and a
+        held elected key on this host fences it. Call only while the
+        stack :meth:`acquire` returned is held.
+        """
+        current = dict(self._census or {})
+        elections = dict(current.get("elections") or {})
+        for key in self._busy:
+            prior = (self._selections or {}).get(key)
+            kept = current.get("selections", {}).get(key, prior)
+            if kept is not None:
+                elections[key] = kept
+        for key in self._ledger.held_keys():
+            chosen = current.get("selections", {}).get(key)
+            if (isinstance(chosen, dict)
+                    and chosen.get("host") == self._ledger.base.name):
+                elections[key] = chosen
+        current["elections"] = elections
+        self._census = current
+        return current
+
+
 @contextmanager
 def locked_census(queue: PoolQueue, ledger: ResourceLedger, controller):
     """Elections on this host (sorted/nonblocking) BEFORE H; refresh through acquire.
@@ -480,6 +595,42 @@ def locked_census(queue: PoolQueue, ledger: ResourceLedger, controller):
                 if chosen is not None and chosen["host"] == here:
                     current["elections"][key] = chosen
             yield current
+
+
+@contextmanager
+def pass_admission_census(pass_census: PassCensus, queue: PoolQueue,
+                           ledger: ResourceLedger, controller):
+    """One census for one candidate of a claim pass, scanned once (#1571).
+
+    The first candidate reads through :func:`admission_census`: the
+    reader fence plus the discovery scan outside host admission and
+    the refresh scan under it, holding the elected measurement keys
+    of this host and host admission for its body. That census is
+    stored, and every later candidate re-takes only those locks --
+    never the fence or a scan -- and reads the stored bytes.
+
+    The locks are held for the whole candidate body either way, so a
+    gang election, gang ready mark, or measurement election the body
+    writes on this host serializes against the next candidate's
+    lock take, exactly as today. A refusal is never stored: it ends
+    the census for the pass as before, and the next pass reads
+    fresh. Where authority may have changed -- this pass's own
+    claim, gang election, or measurement election -- the caller
+    invalidates the stored census and the next candidate reads
+    fresh.
+    """
+    reused = pass_census.acquire()
+    if reused is not None:
+        with reused:
+            yield pass_census.reused()
+        return
+    with admission_census(queue, ledger, controller) as census:
+        if "unavailable" in census:
+            pass_census.invalidate()
+            yield census
+            return
+        pass_census.store(census)
+        yield census
 
 
 @contextmanager

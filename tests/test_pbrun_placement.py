@@ -1452,6 +1452,59 @@ def test_exclusive_demands_what_a_box_actually_offers(tmp_path):
     assert pbrun.exclusive_gpu_demand(queue, ["sparklina"]) == 1
 
 
+def test_a_spool_producer_with_no_room_for_its_exports_is_refused(tmp_path):
+    """A spool producer declaring the box's whole pool is refused (#1571).
+
+    The 2026-10-06 forward declared mem_gb 104 of sparky's 104 tokens, so
+    its 1 GiB dependents starved on ``token_shortage``. The producer's
+    sealed spool root means exports will come; the unmeasured default of
+    one slot needs 1 GiB beside the demand. A producer that fits only
+    without that room is refused at submission, before publication.
+    """
+    from prismabuild import adaptive_cpu as cpu_admission
+    queue = pool_module.PoolQueue(tmp_path / "q")
+    queue.announce(host="sparky", tags=["gb10", "sparky"], has_gpu=True,
+                   capacity={"gpu": 1, "mem_gb": 104})
+    action = {
+        "params": {"demand": {"cpu": 10, "mem_gb": 104},
+                   "placement": {"required_tags": ["sparky"]}},
+        "environment": {"variables": {
+            cpu_admission.SPOOL_ROOT_ENV: "/spool",
+            "PRISMABUILD_PRODUCED_SPOOL_MAX_BYTES": "256"}},
+    }
+    refusal = pbrun.producer_allowance_room_refusal(queue, action)
+    assert refusal is not None and "104" in refusal, refusal
+
+
+def test_a_spool_producer_with_room_for_its_exports_submits(tmp_path):
+    """A producer declaring 100 of 104 GiB keeps its export room (#1571)."""
+    from prismabuild import adaptive_cpu as cpu_admission
+    queue = pool_module.PoolQueue(tmp_path / "q")
+    queue.announce(host="sparky", tags=["gb10", "sparky"], has_gpu=True,
+                   capacity={"gpu": 1, "mem_gb": 104})
+    action = {
+        "params": {"demand": {"cpu": 10, "mem_gb": 100},
+                   "placement": {"required_tags": ["sparky"]}},
+        "environment": {"variables": {
+            cpu_admission.SPOOL_ROOT_ENV: "/spool",
+            "PRISMABUILD_PRODUCED_SPOOL_MAX_BYTES": "256"}},
+    }
+    assert pbrun.producer_allowance_room_refusal(queue, action) is None
+
+
+def test_an_ordinary_action_needs_no_export_room(tmp_path):
+    """No spool root means no exports: the room check stays silent (#1571)."""
+    queue = pool_module.PoolQueue(tmp_path / "q")
+    queue.announce(host="sparky", tags=["gb10", "sparky"], has_gpu=True,
+                   capacity={"gpu": 1, "mem_gb": 104})
+    action = {
+        "params": {"demand": {"cpu": 10, "mem_gb": 104},
+                   "placement": {"required_tags": ["sparky"]}},
+        "environment": {"variables": {}},
+    }
+    assert pbrun.producer_allowance_room_refusal(queue, action) is None
+
+
 def test_exclusive_refuses_rather_than_guesses_when_nothing_offers(tmp_path):
     """A CPU-only fleet has no answer to "the whole GPU", and says so."""
     queue = pool_module.PoolQueue(tmp_path / "q")

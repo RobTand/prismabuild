@@ -7498,17 +7498,23 @@ class PoolQueue:
         item: Mapping[str, object], *, controller: object | None,
         total: Mapping[str, int], sealed_host_demand: Mapping[str, int],
         reservation_demand: Mapping[str, int],
-    ) -> dict[str, object] | None:
+    ) -> tuple[dict[str, object] | None, dict[str, object] | None]:
         """The export allowance a producer's claim adds to its reservation (#985).
 
-        ``None`` unless the box admits adaptively and the row carries a
-        producer's ``produced_output`` reference.  An unbounded-CPU producer
-        gets none, and nor does one that fits this box only without it.  The
-        claim pass and the ready GPU row's room (#1169) read the same answer.
+        ``(allowance, refusal)``: one is ``None``.  ``(None, None)`` unless
+        the box admits adaptively and the row carries a producer's
+        ``produced_output`` reference.  An unbounded-CPU producer gets none,
+        and nor does one that fits this box only without it -- except the
+        second case now refuses instead of running without room for its
+        dependents (#1571): a producer that seals a spool root will have
+        exports, and running it without the allowance strands every one
+        of them behind ``token_shortage`` while the producer holds the
+        whole pool, which is the 2026-10-06 forward shape.  The claim
+        pass and the ready GPU row's room (#1169) read the same answer.
         """
 
         if controller is None or item.get("produced_output") is None:
-            return None
+            return None, None
         allowance = cpu_admission.producer_allowance(
             item, cpu_admission.read_json(
                 controller.base / cpu_admission.EXPORT_RATES))  # type: ignore[attr-defined]
@@ -7516,15 +7522,23 @@ class PoolQueue:
             # An unbounded-CPU producer inherits the worker's whole affinity:
             # there is no CPU set to carve an allowance out of, and adding one
             # would turn its historical unbounded demand into a bounded one.
-            return None
+            return None, None
         if allowance and any(
                 total.get(kind, 0)
                 < reservation_demand.get(kind, 0) + int(allowance[kind])
                 for kind in cpu_admission.EXPORT_DEMAND):
-            # A producer that fits this box only without the allowance runs
-            # as it did before it existed.
-            return None
-        return allowance or None
+            # The allowance does not fit beside the producer's own demand
+            # in this box's total (#1571).  Running without it strands the
+            # producer's exports: refuse the producer with the numbers, so
+            # the box does other work and the declaration is fixed, instead
+            # of stalling the producer and starving its dependents.
+            return None, {
+                "demand": dict(reservation_demand),
+                "allowance": {kind: int(allowance[kind])
+                              for kind in cpu_admission.EXPORT_DEMAND},
+                "capacity_total": dict(total),
+            }
+        return allowance or None, None
 
     def _gpu_first_order(
         self, ready: list[dict[str, object]], *, ledger: "ResourceLedger",
@@ -7645,7 +7659,7 @@ class PoolQueue:
                 return None
             host, _tiers = storage_tiers.split_demand(self.demand_of(item))
             reservation = self._reservation_demand(host, gpu_controller=gpu_controller)
-            allowance = self._export_allowance(
+            allowance, _allowance_refusal = self._export_allowance(
                 item, controller=controller, total=total, sealed_host_demand=host,
                 reservation_demand=reservation)
             if allowance:
@@ -21261,6 +21275,15 @@ class PoolQueue:
         #: measurement stayed READY behind 'reader busy'.  Refusing never
         #: authorizes anything; the next pass takes the fence afresh.
         census_refusal: dict[str, object] | None = None
+        #: One successful census this pass reuses for later candidates
+        #: (#1571): with a free fence each candidate otherwise paid two
+        #: bounded-child scans, the discovery read and the refresh read.
+        #: Later candidates re-take only the elected keys of this host
+        #: plus host admission, never the fence or the scan.  Reset where
+        #: authority may have changed: this pass's own claim, gang
+        #: election, or measurement election.
+        from . import _measurement_reservation as _pass_reservation
+        pass_census = _pass_reservation.PassCensus(self, ledger, host_gate)
         for item in ready:
             key = str(item.get("action_key", ""))
             held_back = withheld_for is not None and (
@@ -21835,10 +21858,43 @@ class PoolQueue:
                         # ask, so no ordinary candidate pays for them.
                         if controller is not None:
                             if item.get("produced_output") is not None:
-                                allowance = self._export_allowance(
+                                allowance, allowance_refusal = self._export_allowance(
                                     item, controller=controller, total=total,
                                     sealed_host_demand=sealed_host_demand,
                                     reservation_demand=reservation_demand)
+                                if allowance_refusal is not None:
+                                    # The producer's export allowance does
+                                    # not fit beside its own demand in this
+                                    # box's total (#1571): running it would
+                                    # strand every export behind a shortage
+                                    # while it holds the pool. Refuse with
+                                    # the numbers; a drain resolves it, as
+                                    # for a token shortage.
+                                    self.record_pass(key)
+                                    verdict = self._withhold_verdict(
+                                        key, ledger=ledger, need=reservation_demand,
+                                        mode="tokens",
+                                        gpu_sample=_gpu_sample_for(gpu_controller, demand),
+                                        measurement=False)
+                                    evidence = {
+                                        "demand": dict(reservation_demand),
+                                        "allowance": allowance_refusal["allowance"],
+                                        "capacity_total": dict(total),
+                                        "withhold": verdict,
+                                    }
+                                    reason = "producer_allowance_does_not_fit"
+                                    if verdict["eligible"]:
+                                        evidence["starved"] = {
+                                            "why": verdict["why"],
+                                            "holders": verdict.get("holders")}
+                                        if verdict["withhold"]:
+                                            self.record_denial(
+                                                item, reason + "_withholding", evidence)
+                                            withhold(key, None)
+                                            continue
+                                        reason += _starved_suffix(verdict)
+                                    self.record_denial(item, reason, evidence)
+                                    continue
                                 if allowance:
                                     for kind in cpu_admission.EXPORT_DEMAND:
                                         demand[kind] = int(demand.get(kind, 0)) + int(allowance[kind])
@@ -21938,7 +21994,8 @@ class PoolQueue:
                         if census_refusal is not None:
                             self.record_denial(item, "measurement_census_unavailable", census_refusal)
                             continue
-                        census_guard = measurement_reservation.admission_census(self, ledger, host_gate)
+                        census_guard = measurement_reservation.pass_admission_census(
+                            pass_census, self, ledger, host_gate)
                         with census_guard as census:
                             if "unavailable" in census:
                                 census_refusal = census
@@ -22557,9 +22614,12 @@ class PoolQueue:
                         continue
                     # This pass renamed into ``claimed/``: a later candidate
                     # of the same pass lists it again (#993), and reads the
-                    # tiers' reading sets again (#1091 review 1).
+                    # tiers' reading sets again (#1091 review 1). The rename
+                    # also moves a publication the reused census read, so the
+                    # next candidate reads fresh (#1571).
                     claimed_listed = None
                     reader_plans.clear()
+                    pass_census.invalidate()
                     moved_record = _read_json(dst)
                     moved = moved_record or item
                     if container_class_policy is not None:
